@@ -1389,6 +1389,10 @@ impl Run {
     /// runs follow Rovik's permissions): answered as a call of Rovik's tool
     /// of the same kind is, by `authorize`: refused by the settings, run,
     /// or put to the user or the AI reviewer, an edit as its changes.
+    ///
+    /// A shell command that can't run where the chat works (git that
+    /// changes the repository, in a chat's copy of the project) is refused
+    /// first, as Rovik's own `bash` refuses it.
     pub(super) async fn answer_tool_ask(&self, ask: crate::connectors::ToolAsk) {
         let call = ToolCall {
             id: ask.call_id,
@@ -1396,6 +1400,19 @@ impl Run {
             arguments: ask.arguments,
             extra_content: None,
         };
+        if call.name == "bash" {
+            let args = permissions::parse_args(&call.arguments);
+            let command = args.get("command").and_then(Value::as_str).unwrap_or("");
+            let owner = self.overlay_owner();
+            if let Some(reason) =
+                tools::copy_command_problem(&owner, self.core.agents.on_server(), command)
+            {
+                let _ = ask
+                    .reply
+                    .send(crate::connectors::ToolAnswer::Deny { reason });
+                return;
+            }
+        }
         let authorized = self.authorize(&call, None).await;
         let answer = match authorized.refusal {
             Some(reason) => crate::connectors::ToolAnswer::Deny { reason },

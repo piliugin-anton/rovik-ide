@@ -90,6 +90,10 @@ pub struct Turn {
     pub prompt: String,
     /// The folder it works in: the chat's project (or worktree on a host).
     pub cwd: Option<PathBuf>,
+    /// `cwd` is the chat's copy of the project (its overlay, or a server's
+    /// worktree): it changes the project by landing, so git that changes
+    /// the repository is denied to the harness's own tools.
+    pub isolated: bool,
     /// The harness's conversation for this chat, to continue; none starts one.
     pub session: Option<String>,
     /// The prompt for a new session when the one to continue is gone: the
@@ -386,6 +390,7 @@ pub async fn run_chat(
         system_context,
         prompt,
         cwd: params.cwd.clone(),
+        isolated: params.isolated,
         session,
         recap,
         one_shot: !has_history,

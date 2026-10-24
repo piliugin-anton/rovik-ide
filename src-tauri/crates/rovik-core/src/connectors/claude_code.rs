@@ -320,6 +320,61 @@ pub fn system_text(settings: &Settings, turn: &Turn, rovik_tools: bool) -> Strin
     }
 }
 
+/// `--disallowedTools`: the settings' rules, and in a chat's copy of the
+/// project (`Turn::isolated`) the git commands that change the repository,
+/// whatever the permission mode: they'd change files that then land in the
+/// project as edits, or reach the remote. Claude Code matches each part of
+/// a compound command; other spellings (`git -C . checkout`) it doesn't,
+/// and Rovik refuses those when it's asked (agent_run `answer_tool_ask`).
+fn push_disallowed(args: &mut Vec<String>, settings: &Settings, turn: &Turn) {
+    let mut disallowed = rules(&settings.disallowed_tools);
+    if turn.isolated {
+        disallowed.extend(git_deny_rules());
+    }
+    if !disallowed.is_empty() {
+        args.push("--disallowedTools".into());
+        args.extend(disallowed);
+    }
+}
+
+/// Claude Code's deny rules for the git commands a chat's copy of the
+/// project refuses (overlay::chats `git_changes_repo`), as far as a rule on
+/// how a command starts can say them: creating a branch or a tag, and
+/// changing the repository's own config, only touch the copy's `.git`,
+/// which never lands, and are left to Rovik's check.
+fn git_deny_rules() -> Vec<String> {
+    use crate::overlay::chats::{
+        GIT_BRANCH_CHANGES, GIT_CHANGES_REPO, GIT_REFLOG_CHANGES, GIT_REMOTE_CHANGES,
+    };
+    /// `git stash` without `list` or `show`, and git's config outside the project.
+    const MORE: &[&str] = &[
+        "stash push",
+        "stash pop",
+        "stash apply",
+        "stash drop",
+        "stash clear",
+        "stash save",
+        "stash store",
+        "stash create",
+        "stash branch",
+        "config --global",
+        "config --system",
+    ];
+    let words = GIT_CHANGES_REPO
+        .iter()
+        .map(|sub| sub.to_string())
+        .chain(GIT_BRANCH_CHANGES.iter().map(|o| format!("branch {o}")))
+        .chain(GIT_REMOTE_CHANGES.iter().map(|s| format!("remote {s}")))
+        .chain(GIT_REFLOG_CHANGES.iter().map(|s| format!("reflog {s}")))
+        .chain(MORE.iter().map(|s| s.to_string()));
+    // `Bash(git stash *)` would take `git stash list` too: bare `git stash`
+    // is a rule of its own.
+    words
+        .map(|w| format!("Bash(git {w} *)"))
+        .chain(std::iter::once("Bash(git stash)".to_string()))
+        .collect()
+}
+
 /// The arguments of one turn's `claude` run: the common ones, then the
 /// turn's. `session` is the session to resume, or the new one's id;
 /// `prompt_file` holds the system prompt (`system_text`), read from a file
@@ -389,11 +444,7 @@ pub fn args_for(
             args.push("--permission-prompt-tool".into());
             args.push(format!("{TOOL_PREFIX}{APPROVE_TOOL}"));
         }
-        let disallowed = rules(&settings.disallowed_tools);
-        if !disallowed.is_empty() {
-            args.push("--disallowedTools".into());
-            args.extend(disallowed);
-        }
+        push_disallowed(&mut args, settings, turn);
     } else if let Some(config) = mcp_config {
         // Rovik's tools alone: none of Claude Code's own, Rovik's server
         // alone, and its tools allowed, since Rovik decides on each call.
@@ -417,11 +468,7 @@ pub fn args_for(
             args.push("--allowedTools".into());
             args.extend(allowed);
         }
-        let disallowed = rules(&settings.disallowed_tools);
-        if !disallowed.is_empty() {
-            args.push("--disallowedTools".into());
-            args.extend(disallowed);
-        }
+        push_disallowed(&mut args, settings, turn);
     }
     if !turn.one_shot {
         if let Some(turns) = settings.max_turns.filter(|t| *t > 0) {
@@ -2259,6 +2306,7 @@ mod tests {
             system_prompt: "Be brief.".into(),
             prompt: prompt.into(),
             cwd: None,
+            isolated: false,
             session: None,
             recap: None,
             one_shot: false,
@@ -2359,6 +2407,91 @@ mod tests {
         assert!(none.contains("--system-prompt-snapshot off"), "{none}");
         assert!(!joined.contains("--permission-mode"), "{joined}");
         assert!(joined.ends_with("--resume s-0"), "{joined}");
+    }
+
+    #[test]
+    fn in_a_chats_copy_its_own_tools_are_denied_git_that_changes_the_repository() {
+        let session = Session::New("s-1".into());
+        let mut t = turn("Fix it");
+        t.isolated = true;
+        let disallowed = |args: &[String]| -> Vec<String> {
+            let at = args.iter().position(|a| a == "--disallowedTools");
+            at.map(|i| {
+                args[i + 1..]
+                    .iter()
+                    .take_while(|a| !a.starts_with("--"))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+        };
+        // Whatever the mode, with the settings' own rules first, in one flag.
+        for mode in ["bypassPermissions", "acceptEdits", "auto", "rovik"] {
+            let settings = Settings::from_value(&json!({
+                "permissionMode": mode,
+                "disallowedTools": "WebFetch",
+            }));
+            // Rovik's approvals server is there only when Rovik decides.
+            let config = (mode == "rovik").then(|| Path::new("/tmp/mcp.json"));
+            let args = args_for(&settings, &t, &session, None, config);
+            let rules = disallowed(&args);
+            assert_eq!(rules[0], "WebFetch", "{mode}");
+            for rule in [
+                "Bash(git checkout *)",
+                "Bash(git push *)",
+                "Bash(git branch -D *)",
+                "Bash(git stash)",
+            ] {
+                assert!(
+                    rules.iter().any(|r| r == rule),
+                    "{mode}: {rule} in {rules:?}"
+                );
+            }
+            assert_eq!(args.iter().filter(|a| *a == "--disallowedTools").count(), 1);
+        }
+        // In the project itself, only the settings' rules.
+        t.isolated = false;
+        let settings = Settings::from_value(&json!({ "permissionMode": "bypassPermissions" }));
+        let args = args_for(&settings, &t, &session, None, None);
+        assert!(disallowed(&args).is_empty(), "{args:?}");
+    }
+
+    #[test]
+    fn each_git_deny_rule_names_a_command_rovik_refuses_and_reading_stays_free() {
+        let rules = git_deny_rules();
+        let command = |rule: &str| {
+            rule.trim_start_matches("Bash(")
+                .trim_end_matches(')')
+                .trim_end_matches(" *")
+                .to_string()
+        };
+        for rule in &rules {
+            let words: Vec<String> = command(rule).split(' ').map(str::to_string).collect();
+            assert!(
+                crate::overlay::chats::git_changes_repo(&words).is_some(),
+                "{rule} isn't refused by Rovik's own check"
+            );
+        }
+        // Reading the repository matches none of them.
+        for read in [
+            "git status",
+            "git log --oneline",
+            "git stash list",
+            "git branch",
+            "git diff",
+        ] {
+            assert!(
+                !rules.iter().any(|r| {
+                    let c = command(r);
+                    if r.ends_with(" *)") {
+                        read == c || read.starts_with(&format!("{c} "))
+                    } else {
+                        read == c
+                    }
+                }),
+                "{read} is denied"
+            );
+        }
     }
 
     #[test]

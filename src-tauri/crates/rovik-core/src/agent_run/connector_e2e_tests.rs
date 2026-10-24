@@ -154,4 +154,66 @@ async fn claude_code_asks_rovik_before_its_own_tools() {
     let messages = h.messages().await;
     let reply = messages.last().unwrap();
     assert_eq!(reply.content, "deny, allow, allow");
+    // Working in the project itself, git is the user's to allow.
+    assert!(!args.contains("Bash(git checkout *)"), "{args}");
+}
+
+/// In a chat's copy of the project (here a server's worktree, D8; an
+/// isolated chat's overlay is the same), Claude Code's own git commands
+/// that would change the repository are refused, whatever its permission
+/// mode: by its deny rules, and by Rovik when it asks about a spelling the
+/// rules don't match.
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_code_in_a_chats_copy_is_refused_git_that_changes_the_repository() {
+    let h = harness(&[("src/a.txt", "one\n")]).await;
+    h.core.agents.set_on_server();
+    let asks = json!([
+        ["Bash", { "command": "git checkout main" }, "toolu_1"],
+        ["Bash", { "command": "cd src && git -C .. push origin main" }, "toolu_2"],
+        ["Bash", { "command": "git status" }, "toolu_3"],
+    ]);
+    let Some(program) = crate::connectors::fake_claude_asking(&h._dir.0, &asks) else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    // Every command would be allowed: the refusal isn't the settings'.
+    let permissions = Permissions {
+        allow_any_command: true,
+        ..quiet_permissions()
+    };
+    let mut request = h.request(
+        "connector://claude-code",
+        Harness::send("Ship it"),
+        permissions,
+    );
+    request.profile.id = "cc::sonnet".into();
+    request.profile.model = "sonnet".into();
+    request.profile.connector = Some(json!({ "program": program }));
+    h.start(request).await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    let decisions: Value =
+        serde_json::from_str(&std::fs::read_to_string(h._dir.0.join("decisions.json")).unwrap())
+            .unwrap();
+    for (i, what) in [(0, "git checkout"), (1, "git push")] {
+        assert_eq!(decisions[i]["behavior"], "deny", "{decisions:#?}");
+        let why = decisions[i]["message"].as_str().unwrap();
+        assert!(
+            why.contains(&format!("`{what}` changes the repository")),
+            "{why}"
+        );
+    }
+    // Reading the repository is fine.
+    assert_eq!(decisions[2]["behavior"], "allow");
+    assert!(
+        h.events_of("approvalRequested").is_empty(),
+        "nothing was put to the user"
+    );
+
+    // Its own permission modes can't let them by: Claude Code is told to deny them.
+    let args = std::fs::read_to_string(h._dir.0.join("args.txt")).unwrap();
+    assert!(args.contains("--disallowedTools"), "{args}");
+    assert!(args.contains("Bash(git checkout *)"), "{args}");
+    assert!(args.contains("Bash(git push *)"), "{args}");
 }

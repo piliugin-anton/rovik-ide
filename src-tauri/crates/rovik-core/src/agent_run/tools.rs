@@ -1051,29 +1051,21 @@ async fn run(
                 .filter(|s| *s > 0.0)
                 .map(|s| (s * 1000.0) as u64);
             let stop = stop.clone();
-            match crate::overlay::chats::get(&ctx.owner) {
-                Some(o) => {
-                    if let Some(problem) = o.command_problem(command) {
-                        return Ok(ToolResult::text(problem));
-                    }
-                }
-                // Working in the project itself: one such chat at a time
-                // runs commands that write. On a server, the project is
-                // the chat's own worktree (D8).
-                None => {
-                    if core.agents.on_server() {
-                        if let Some(problem) = super::server::command_problem(command) {
-                            return Ok(ToolResult::text(problem));
-                        }
-                    }
-                    if super::permissions::command_modifies_files(command) {
-                        if let Err(problem) = crate::overlay::chats::claim_direct_writes(
-                            std::path::Path::new(root_owned.as_str()),
-                            &ctx.owner,
-                        ) {
-                            return Ok(ToolResult::text(problem));
-                        }
-                    }
+            if let Some(problem) =
+                copy_command_problem(&ctx.owner, core.agents.on_server(), command)
+            {
+                return Ok(ToolResult::text(problem));
+            }
+            // Working in the project itself: one such chat at a time runs
+            // commands that write.
+            if crate::overlay::chats::get(&ctx.owner).is_none()
+                && super::permissions::command_modifies_files(command)
+            {
+                if let Err(problem) = crate::overlay::chats::claim_direct_writes(
+                    std::path::Path::new(root_owned.as_str()),
+                    &ctx.owner,
+                ) {
+                    return Ok(ToolResult::text(problem));
                 }
             }
             let note = ctx.note.clone();
@@ -1705,6 +1697,24 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
         }
         _ => None,
     }
+}
+
+/// Why `command` can't run where the chat works, if it can't: an isolated
+/// chat works in its overlay, and a chat on a server in its own worktree
+/// (D8). Both change the project by landing, not through git, so git
+/// commands that change the repository are refused there. For Rovik's
+/// `bash`, and for a harness's shell commands it asks about.
+pub(super) fn copy_command_problem(owner: &str, on_server: bool, command: &str) -> Option<String> {
+    match crate::overlay::chats::get(owner) {
+        Some(o) => o.command_problem(command),
+        None if on_server => super::server::command_problem(command),
+        None => None,
+    }
+}
+
+/// Whether the chat works in a copy of the project (`copy_command_problem`).
+pub(super) fn works_in_copy(owner: &str, on_server: bool) -> bool {
+    on_server || crate::overlay::chats::get(owner).is_some()
 }
 
 #[cfg(test)]

@@ -2227,6 +2227,10 @@ impl Run {
                 history_window: self.history_window.clone(),
                 connector: self.profile.connector.clone(),
                 cwd: self.root.clone().map(std::path::PathBuf::from),
+                isolated: super::tools::works_in_copy(
+                    &self.overlay_owner(),
+                    self.core.agents.on_server(),
+                ),
                 tool_asks,
             };
 
