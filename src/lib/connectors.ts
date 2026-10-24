@@ -29,7 +29,13 @@ export type ClaudeCodeSettings = {
   program: string;
   /** How it signs in: this computer's login, a `claude setup-token` token, or an API key. */
   auth: 'login' | 'token' | 'apiKey';
-  permissionMode: 'acceptEdits' | 'bypassPermissions' | 'default' | 'plan' | 'dontAsk' | 'auto';
+  /**
+   * `rovik`: Rovik's permissions and approvals decide each call Claude Code
+   * would ask about (claude_code.rs `ROVIK_PERMISSIONS`); the others are
+   * Claude Code's own modes.
+   */
+  permissionMode:
+    'rovik' | 'acceptEdits' | 'bypassPermissions' | 'default' | 'plan' | 'dontAsk' | 'auto';
   /** `--allowedTools` rules, one per line. */
   allowedTools: string;
   disallowedTools: string;
@@ -56,7 +62,7 @@ export type ClaudeCodeSettings = {
 export const CLAUDE_CODE_DEFAULTS: ClaudeCodeSettings = {
   program: 'claude',
   auth: 'login',
-  permissionMode: 'acceptEdits',
+  permissionMode: 'rovik',
   allowedTools: '',
   disallowedTools: '',
   systemPrompt: 'append',
@@ -89,6 +95,11 @@ export const PERMISSION_MODES: {
   label: string;
   hint: string;
 }[] = [
+  {
+    value: 'rovik',
+    label: 'Follow Rovik’s permissions',
+    hint: 'Each call Claude Code would ask about goes to Permissions & approval, as the agent’s own would: commands by the allowed list, edits reviewed in the editor, approvals by you or the AI reviewer',
+  },
   {
     value: 'acceptEdits',
     label: 'Accept edits',

@@ -881,6 +881,10 @@ pub struct ChatParams {
     // profile carries them, and the folder it works in (the run's root).
     pub connector: Option<serde_json::Value>,
     pub cwd: Option<std::path::PathBuf>,
+    // A connector's model whose harness runs its own tools under Rovik's
+    // permissions: where it asks before a call (the run answers each as
+    // it would a call of its own tool, `agent_run` `answer_tool_ask`).
+    pub tool_asks: Option<crate::connectors::ToolAsks>,
 }
 
 /// A request the frontend makes itself, outside any run (a chat's title):
@@ -950,6 +954,7 @@ pub async fn run_chat(
         history_window,
         connector: _,
         cwd: _,
+        tool_asks: _,
     } = params;
     let chat_id = chat_id.or_else(|| dialog_id.clone());
 

@@ -1373,6 +1373,27 @@ impl Run {
         }
     }
 
+    /// A connector's harness asks before one of its own tools runs (its
+    /// runs follow Rovik's permissions): answered as a call of Rovik's tool
+    /// of the same kind is, by `authorize`: refused by the settings, run,
+    /// or put to the user or the AI reviewer, an edit as its changes.
+    pub(super) async fn answer_tool_ask(&self, ask: crate::connectors::ToolAsk) {
+        let call = ToolCall {
+            id: ask.call_id,
+            name: ask.tool,
+            arguments: ask.arguments,
+            extra_content: None,
+        };
+        let authorized = self.authorize(&call, None).await;
+        let answer = match authorized.refusal {
+            Some(reason) => crate::connectors::ToolAnswer::Deny { reason },
+            None => crate::connectors::ToolAnswer::Allow {
+                arguments: authorized.args_override,
+            },
+        };
+        let _ = ask.reply.send(answer);
+    }
+
     /// An approved edit whose file changed while the approval waited (another
     /// chat, the user, a command). Writing the approved file whole would
     /// erase that change, so the approved changes are merged into the file
@@ -1780,7 +1801,9 @@ impl Run {
             (None, Some(edits)) => {
                 if self.plan_draft.is_none() {
                     let file = match self.in_autopilot() {
-                        true => super::autopilot::task_plan_file(&self.core, &self.dialog_id).await?,
+                        true => {
+                            super::autopilot::task_plan_file(&self.core, &self.dialog_id).await?
+                        }
                         false => chat_plan_file(&recent),
                     };
                     self.plan_draft = file.and_then(|f| std::fs::read_to_string(f).ok());
@@ -1842,7 +1865,10 @@ impl Run {
         // Step 10: what a submit did before the checks' verdict.
         if self.balanced_autopilot() {
             let from_reply = recent.iter().rev().take(3).any(|m| {
-                m.meta.as_ref().and_then(|v| v.get("harness")).and_then(Value::as_str)
+                m.meta
+                    .as_ref()
+                    .and_then(|v| v.get("harness"))
+                    .and_then(Value::as_str)
                     == Some("planFromReply")
             });
             log::write(
@@ -1882,7 +1908,12 @@ impl Run {
             // apply to next.
             self.plan_draft = Some(plan_text.to_string());
             return self
-                .add_tool_result(&tc.id, content, Some(json!({ "plan": plan_text })), Vec::new())
+                .add_tool_result(
+                    &tc.id,
+                    content,
+                    Some(json!({ "plan": plan_text })),
+                    Vec::new(),
+                )
                 .await;
         }
         // Plans are the project's, not a chat's change.
@@ -1911,7 +1942,8 @@ impl Run {
             .await?;
         let record = review.record;
         let checked = plan_text.to_string();
-        let ide_fixed = (!fixes.is_empty()).then(|| format!(" The IDE fixed: {}.", fixes.join("; ")));
+        let ide_fixed =
+            (!fixes.is_empty()).then(|| format!(" The IDE fixed: {}.", fixes.join("; ")));
         let (plan_text, note) = match review.decision {
             super::plan_review::Decision::Hold { result } => {
                 return self
@@ -1988,7 +2020,10 @@ pub(super) fn apply_plan_edits(draft: &str, edits: &[Value]) -> Result<String, S
     for (i, edit) in edits.iter().enumerate() {
         let text = |k: &str| edit.get(k).and_then(Value::as_str);
         let (Some(old), Some(new)) = (text("old_text"), text("new_text")) else {
-            return Err(format!("Edit {}: it needs both `old_text` and `new_text`.", i + 1));
+            return Err(format!(
+                "Edit {}: it needs both `old_text` and `new_text`.",
+                i + 1
+            ));
         };
         plan = crate::edit_file::apply_edit(&plan, old, new, None, None)
             .map_err(|e| format!("Edit {}: {e}", i + 1))?
@@ -2001,7 +2036,11 @@ pub(super) fn apply_plan_edits(draft: &str, edits: &[Value]) -> Result<String, S
 /// or, when one of them doesn't match it, to that plan as the agent sent
 /// it (`sent`): an `old_text` copied from its own submission names a path
 /// the IDE corrected. The draft's error when neither matches.
-pub(super) fn edit_last_plan(draft: &str, sent: Option<&str>, edits: &[Value]) -> Result<String, String> {
+pub(super) fn edit_last_plan(
+    draft: &str,
+    sent: Option<&str>,
+    edits: &[Value],
+) -> Result<String, String> {
     let e = match apply_plan_edits(draft, edits) {
         Ok(plan) => return Ok(plan),
         Err(e) => e,
@@ -2044,14 +2083,23 @@ mod tests {
         let draft = "# Fix users\n\n## Steps\n\n1. Change users\n   Files: `src/api/users.rs`\n";
         let edit = |old: &str, new: &str| vec![json!({ "old_text": old, "new_text": new })];
 
-        let from_sent = edit("Files: `../../src/api/users.rs`", "Files: `../../src/api/users.rs`, `src/db.rs`");
+        let from_sent = edit(
+            "Files: `../../src/api/users.rs`",
+            "Files: `../../src/api/users.rs`, `src/db.rs`",
+        );
         let edited = edit_last_plan(draft, Some(sent), &from_sent).unwrap();
-        assert!(edited.contains("`../../src/api/users.rs`, `src/db.rs`"), "{edited}");
+        assert!(
+            edited.contains("`../../src/api/users.rs`, `src/db.rs`"),
+            "{edited}"
+        );
 
         let from_draft = edit("# Fix users", "# Fix the users page");
         let edited = edit_last_plan(draft, Some(sent), &from_draft).unwrap();
         assert!(edited.starts_with("# Fix the users page\n"), "{edited}");
-        assert!(edited.contains("`src/api/users.rs`"), "the draft's fix stays");
+        assert!(
+            edited.contains("`src/api/users.rs`"),
+            "the draft's fix stays"
+        );
 
         let neither = edit("Files: `nowhere.rs`", "x");
         let err = edit_last_plan(draft, Some(sent), &neither).unwrap_err();

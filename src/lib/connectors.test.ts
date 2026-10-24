@@ -113,7 +113,7 @@ test('a kind’s spec gives a new connector its settings and its row its summary
   const spec = specOf(claude);
   assert.ok(spec);
   assert.deepEqual(claude.settings, CLAUDE_CODE_DEFAULTS);
-  assert.equal(spec.summary(claude.settings ?? {}), 'claude · Accept edits');
+  assert.equal(spec.summary(claude.settings ?? {}), 'claude · Follow Rovik’s permissions');
   assert.equal(
     spec.summary({ tools: 'rovik', program: '/opt/claude' }),
     '/opt/claude · Rovik’s tools'

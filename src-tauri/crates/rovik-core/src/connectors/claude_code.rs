@@ -31,7 +31,7 @@ use super::mcp::{McpCall, McpReply, McpServer, SERVER_NAME, TOOL_PREFIX};
 use super::{
     harness_error, trimmed_text, trimmed_value, usage_value, Answers, Connector, ConnectorAuth,
     ConnectorKind, ConnectorModel, ConnectorProbe, HarnessStep, ProbeRequest, ProbeRequestArgs,
-    SetupAction, SetupCommand, Turn,
+    SetupAction, SetupCommand, ToolAnswer, ToolAsk, ToolAsks, Turn,
 };
 use crate::agent::{ChatStreamEvent, ReasoningEffort};
 use crate::chat_request::{ChatError, ErrorKind};
@@ -67,6 +67,14 @@ const INSTALL: &str = if cfg!(windows) {
 } else {
     "curl -fsSL https://claude.ai/install.sh | bash"
 };
+
+/// The permission mode in which Rovik decides: Claude Code runs as in its
+/// manual mode, and each call that would ask goes to Rovik's permissions
+/// and approvals (`--permission-prompt-tool`), as a call of Rovik's tool of
+/// the same kind would (`asked_call`).
+pub const ROVIK_PERMISSIONS: &str = "rovik";
+/// The tool on Rovik's MCP server that Claude Code asks, in that mode.
+const APPROVE_TOOL: &str = "approve";
 
 /// The connector.
 pub struct ClaudeCode;
@@ -118,8 +126,9 @@ pub struct Settings {
     /// The program: `claude`, found on the PATH, or a path to it.
     pub program: String,
     pub auth: Auth,
-    /// `acceptEdits` (the default), `bypassPermissions`, `default`, `plan`,
-    /// `dontAsk` or `auto`.
+    /// `rovik` (the default: Rovik's permissions and approvals decide what
+    /// would ask, `ROVIK_PERMISSIONS`), or Claude Code's own: `acceptEdits`,
+    /// `bypassPermissions`, `default`, `plan`, `dontAsk` or `auto`.
     pub permission_mode: String,
     /// `--allowedTools` rules, one per line or separated by commas.
     pub allowed_tools: String,
@@ -144,7 +153,7 @@ impl Default for Settings {
         Settings {
             program: "claude".into(),
             auth: Auth::Login,
-            permission_mode: "acceptEdits".into(),
+            permission_mode: ROVIK_PERMISSIONS.into(),
             allowed_tools: String::new(),
             disallowed_tools: String::new(),
             max_turns: None,
@@ -310,6 +319,9 @@ pub fn args_for(
     prompt_file: Option<&Path>,
     mcp_config: Option<&Path>,
 ) -> Vec<String> {
+    // Rovik answers what would ask, through its server; otherwise nobody
+    // is there to, and it's denied.
+    let rovik_decides = follows_rovik(settings) && mcp_config.is_some() && !turn.one_shot;
     let mut args: Vec<String> = vec![
         "-p".into(),
         "--output-format".into(),
@@ -317,7 +329,7 @@ pub fn args_for(
         "--verbose".into(),
         "--include-partial-messages".into(),
         "--permission-prompts".into(),
-        "none".into(),
+        if rovik_decides { "host" } else { "none" }.into(),
     ];
     if settings.bare {
         args.push("--bare".into());
@@ -350,6 +362,23 @@ pub fn args_for(
         args.push("--max-turns".into());
         args.push("1".into());
         args.push("--no-session-persistence".into());
+    } else if follows_rovik(settings) {
+        // Claude Code's own tools, as in its manual mode: what it would ask
+        // about, Rovik decides (none of the settings' allowed tools, which
+        // would pass it by).
+        args.push("--permission-mode".into());
+        args.push("default".into());
+        if let Some(config) = mcp_config {
+            args.push("--mcp-config".into());
+            args.push(config.to_string_lossy().into_owned());
+            args.push("--permission-prompt-tool".into());
+            args.push(format!("{TOOL_PREFIX}{APPROVE_TOOL}"));
+        }
+        let disallowed = rules(&settings.disallowed_tools);
+        if !disallowed.is_empty() {
+            args.push("--disallowedTools".into());
+            args.extend(disallowed);
+        }
     } else if let Some(config) = mcp_config {
         // Rovik's tools alone: none of Claude Code's own, Rovik's server
         // alone, and its tools allowed, since Rovik decides on each call.
@@ -1091,6 +1120,192 @@ fn prompt_file(
     TempFile::write("prompt", "md", &text).map(Some)
 }
 
+/// Whether Rovik's permissions decide on Claude Code's own tools.
+fn follows_rovik(settings: &Settings) -> bool {
+    settings.tools == ToolsMode::Own && settings.permission_mode.trim() == ROVIK_PERMISSIONS
+}
+
+/// The tool Claude Code asks before a call, as `--permission-prompt-tool`
+/// calls it: the tool, its input, and the tool use.
+fn approve_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": APPROVE_TOOL,
+            "description": "Decides whether one of Claude Code's tool calls may run, by Rovik IDE's permissions and approvals.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_name": { "type": "string" },
+                    "input": { "type": "object" },
+                    "tool_use_id": { "type": "string" },
+                },
+                "required": ["tool_name", "input"],
+            },
+        },
+    })
+}
+
+/// A call Claude Code asks about, as the call of Rovik's tool of the same
+/// kind that Rovik's permissions judge.
+#[derive(Debug, Clone, PartialEq)]
+struct AskedCall {
+    tool: String,
+    arguments: Value,
+    /// An edit's file as it is: what a partly accepted edit replaces.
+    current: Option<String>,
+}
+
+/// Claude Code's `tool_name` and `input` as Rovik's call: `Bash` as `bash`;
+/// its file edits as `write` of the whole file they make, so the change is
+/// reviewed as Rovik's own edits are (a file outside `root` is refused, as
+/// Rovik's are); any other tool by its own name, under the approval of
+/// Rovik's other tools.
+fn asked_call(tool: &str, input: &Value, root: Option<&Path>) -> AskedCall {
+    let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or("");
+    let plain = |tool: &str, arguments: Value| AskedCall {
+        tool: tool.into(),
+        arguments,
+        current: None,
+    };
+    let edits: Vec<(String, String, bool)> = match tool {
+        "Edit" => vec![(
+            text("old_string").into(),
+            text("new_string").into(),
+            input
+                .get("replace_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        )],
+        "MultiEdit" => input
+            .get("edits")
+            .and_then(Value::as_array)
+            .map(|edits| {
+                edits
+                    .iter()
+                    .map(|e| {
+                        let s =
+                            |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                        let all = e
+                            .get("replace_all")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        (s("old_string"), s("new_string"), all)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    match tool {
+        "Bash" => plain("bash", json!({ "command": text("command") })),
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
+            let file = match tool {
+                "NotebookEdit" => text("notebook_path"),
+                _ => text("file_path"),
+            };
+            let path = root
+                .and_then(|root| Path::new(file).strip_prefix(root).ok())
+                .map(|rel| rel.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file.to_string());
+            let current = std::fs::read_to_string(file).ok();
+            let content = match tool {
+                "Write" => Some(text("content").to_string()),
+                "Edit" | "MultiEdit" => current.as_ref().and_then(|current| {
+                    edits
+                        .iter()
+                        .try_fold(current.clone(), |content, (old, new, all)| {
+                            (!old.is_empty() && content.contains(old.as_str())).then(|| {
+                                if *all {
+                                    content.replace(old.as_str(), new)
+                                } else {
+                                    content.replacen(old.as_str(), new, 1)
+                                }
+                            })
+                        })
+                }),
+                _ => None,
+            };
+            // Without the content it would make (an edit that won't apply,
+            // a notebook), it's asked about as an edit of the file.
+            let arguments = match content {
+                Some(content) => json!({ "path": path, "content": content }),
+                None => json!({ "path": path }),
+            };
+            AskedCall {
+                tool: "write".into(),
+                arguments,
+                current,
+            }
+        }
+        _ => plain(tool, input.clone()),
+    }
+}
+
+/// Rovik's answer as Claude Code's permission tool returns it: allowed,
+/// with the input Rovik changed (an edit of which only some changes were
+/// accepted: the whole file replaced with what was), or denied, why.
+fn permission_result(tool: &str, input: &Value, asked: &AskedCall, answer: ToolAnswer) -> Value {
+    let arguments = match answer {
+        ToolAnswer::Deny { reason } => return json!({ "behavior": "deny", "message": reason }),
+        ToolAnswer::Allow { arguments } => arguments,
+    };
+    let content = arguments
+        .and_then(|a| serde_json::from_str::<Value>(&a).ok())
+        .and_then(|a| a.get("content").and_then(Value::as_str).map(str::to_string));
+    let mut input = input.clone();
+    match (tool, content, &asked.current) {
+        ("Write", Some(content), _) => input["content"] = json!(content),
+        ("Edit", Some(content), Some(current)) => {
+            input["old_string"] = json!(current);
+            input["new_string"] = json!(content);
+            input["replace_all"] = json!(false);
+        }
+        ("MultiEdit", Some(content), Some(current)) => {
+            input["edits"] = json!([{ "old_string": current, "new_string": content }]);
+        }
+        _ => {}
+    }
+    json!({ "behavior": "allow", "updatedInput": input })
+}
+
+/// Answers Claude Code's permission tool: the call it asks about goes to
+/// the run as Rovik's call of the same kind, and the run's answer back.
+fn ask_rovik(call: McpCall, asks: &ToolAsks, root: Option<PathBuf>) {
+    let tool = call
+        .arguments
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let input = call.arguments.get("input").cloned().unwrap_or(json!({}));
+    let call_id = call
+        .arguments
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(call.tool_use_id)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let asked = asked_call(&tool, &input, root.as_deref());
+    let (reply, answer) = oneshot::channel();
+    let sent = asks.send(ToolAsk {
+        call_id,
+        tool: asked.tool.clone(),
+        arguments: asked.arguments.to_string(),
+        reply,
+    });
+    tokio::spawn(async move {
+        let answer = match (sent, answer.await) {
+            (Ok(()), Ok(answer)) => answer,
+            _ => ToolAnswer::Deny {
+                reason: "Rovik couldn't decide on this call: its run has ended.".into(),
+            },
+        };
+        let result = permission_result(&tool, &input, &asked, answer);
+        let _ = call.reply.send(McpReply::text(result.to_string()));
+    });
+}
+
 /// Runs one `claude` turn with its own tools, reporting it through `emit`.
 async fn run_turn(
     turn: &Turn,
@@ -1101,12 +1316,26 @@ async fn run_turn(
     let settings = Settings::from_value(&turn.settings);
     let program = resolve_program(&settings.program)?;
     let prompt = prompt_file(&settings, turn, false)?;
+    // Rovik's permissions: the server Claude Code asks before a call.
+    let asks = turn
+        .asks
+        .clone()
+        .filter(|_| follows_rovik(&settings) && !turn.one_shot);
+    let mut approvals = None;
+    if asks.is_some() {
+        let instructions = "Rovik IDE decides whether Claude Code's tool calls may run.";
+        let (server, calls) = McpServer::start(&[approve_tool()], instructions)
+            .await
+            .map_err(|e| format!("Couldn't start Rovik's approvals for Claude Code: {e}"))?;
+        let config = TempFile::write("mcp", "json", &server.config_json())?;
+        approvals = Some((server, calls, config));
+    }
     let args = args_for(
         &settings,
         turn,
         &session,
         prompt.as_ref().map(TempFile::path),
-        None,
+        approvals.as_ref().map(|(_, _, config)| config.path()),
     );
     let env = env_for(&settings, &turn.api_key);
     let mut process = Process::spawn(
@@ -1119,7 +1348,13 @@ async fn run_turn(
         prompt.into_iter().collect(),
     )?;
     let mut parser = Parser::default();
-    let stop = pump(&mut process, &mut parser, None, &mut |_| {}, cancel, emit).await;
+    let root = turn.cwd.clone();
+    let mut on_call = |call: McpCall| match &asks {
+        Some(asks) => ask_rovik(call, asks, root.clone()),
+        None => drop(call),
+    };
+    let calls = approvals.as_mut().map(|(_, calls, _)| calls);
+    let stop = pump(&mut process, &mut parser, calls, &mut on_call, cancel, emit).await;
     let resumed = matches!(session, Session::Resume(_));
     Ok(conclude(&mut process, &parser, stop, resumed, emit).await)
 }
@@ -1719,6 +1954,7 @@ mod tests {
             tools: Vec::new(),
             answers: None,
             continue_reply: false,
+            asks: None,
         }
     }
 
@@ -1873,6 +2109,186 @@ mod tests {
         let plain = json!({ "program": program.to_string_lossy() });
         let login = step(SetupAction::Login, plain).unwrap().unwrap();
         assert_eq!(login.args, ["auth", "login"]);
+    }
+
+    #[test]
+    fn rovik_decides_what_claude_code_would_ask_about() {
+        let settings = Settings::from_value(&json!({
+            "allowedTools": "Bash(npm test *)",
+            "disallowedTools": "WebFetch",
+        }));
+        assert_eq!(settings.permission_mode, ROVIK_PERMISSIONS, "the default");
+        let t = turn("Fix it");
+        let config = Path::new("/tmp/mcp.json");
+        let args = args_for(&settings, &t, &Session::New("s".into()), None, Some(config));
+        let joined = args.join(" ");
+        assert!(joined.contains("--permission-prompts host"), "{joined}");
+        assert!(
+            joined.contains(
+                "--permission-mode default --mcp-config /tmp/mcp.json \
+                 --permission-prompt-tool mcp__rovik__approve --disallowedTools WebFetch"
+            ),
+            "{joined}"
+        );
+        // An allowed-tools rule would pass Rovik by; Claude Code's own
+        // tools stay, and the user's own MCP servers with them.
+        assert!(!joined.contains("--allowedTools"), "{joined}");
+        assert!(
+            !joined.contains("--strict-mcp-config") && !joined.contains("--tools"),
+            "{joined}"
+        );
+
+        // Nobody to ask (a request outside a run): what would ask is denied.
+        let args = args_for(&settings, &t, &Session::New("s".into()), None, None);
+        let joined = args.join(" ");
+        assert!(joined.contains("--permission-prompts none"), "{joined}");
+        assert!(joined.contains("--permission-mode default"), "{joined}");
+        assert!(!joined.contains("--permission-prompt-tool"), "{joined}");
+
+        // Claude Code's own modes are as before.
+        let own = Settings::from_value(&json!({ "permissionMode": "acceptEdits" }));
+        let joined = args_for(&own, &t, &Session::New("s".into()), None, None).join(" ");
+        assert!(joined.contains("--permission-mode acceptEdits"), "{joined}");
+        assert!(joined.contains("--permission-prompts none"), "{joined}");
+    }
+
+    #[test]
+    fn claude_codes_calls_are_asked_as_rovik_s_of_the_same_kind() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.as_path();
+        let file = root.join("src.txt");
+        std::fs::write(&file, "one two one\n").unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let bash = asked_call(
+            "Bash",
+            &json!({ "command": "npm i", "timeout": 5 }),
+            Some(root),
+        );
+        assert_eq!(
+            (bash.tool.as_str(), bash.arguments.clone()),
+            ("bash", json!({ "command": "npm i" }))
+        );
+
+        // An edit is the whole file it makes, at its path in the project.
+        let edit = json!({ "file_path": path, "old_string": "one", "new_string": "1" });
+        let asked = asked_call("Edit", &edit, Some(root));
+        assert_eq!(asked.tool, "write");
+        assert_eq!(
+            asked.arguments,
+            json!({ "path": "src.txt", "content": "1 two one\n" })
+        );
+        assert_eq!(asked.current.as_deref(), Some("one two one\n"));
+        let all = json!({ "file_path": path, "old_string": "one", "new_string": "1", "replace_all": true });
+        assert_eq!(
+            asked_call("Edit", &all, Some(root)).arguments["content"],
+            "1 two 1\n"
+        );
+        let multi = json!({ "file_path": path, "edits": [
+            { "old_string": "two", "new_string": "2" },
+            { "old_string": "one", "new_string": "1", "replace_all": true },
+        ] });
+        assert_eq!(
+            asked_call("MultiEdit", &multi, Some(root)).arguments["content"],
+            "1 2 1\n"
+        );
+        let write = json!({ "file_path": root.join("new.txt"), "content": "hi" });
+        assert_eq!(
+            asked_call("Write", &write, Some(root)).arguments,
+            json!({ "path": "new.txt", "content": "hi" })
+        );
+        // One that won't apply is asked about as an edit of its file; one
+        // outside the project keeps its path, which Rovik refuses.
+        let stale = json!({ "file_path": path, "old_string": "gone", "new_string": "x" });
+        assert_eq!(
+            asked_call("Edit", &stale, Some(root)).arguments,
+            json!({ "path": "src.txt" })
+        );
+        let outside = json!({ "file_path": "/etc/hosts", "content": "x" });
+        assert_eq!(
+            asked_call("Write", &outside, Some(root)).arguments["path"],
+            "/etc/hosts"
+        );
+        // Any other tool by its own name.
+        let fetch = json!({ "url": "https://example.com" });
+        assert_eq!(asked_call("WebFetch", &fetch, Some(root)).tool, "WebFetch");
+    }
+
+    #[test]
+    fn rovik_s_answer_is_the_permission_tool_s_result() {
+        let edit = json!({ "file_path": "/p/a.txt", "old_string": "a", "new_string": "b" });
+        let asked = AskedCall {
+            tool: "write".into(),
+            arguments: json!({ "path": "a.txt", "content": "b\nc\n" }),
+            current: Some("a\nc\n".into()),
+        };
+        let deny = ToolAnswer::Deny {
+            reason: "Not allowed.".into(),
+        };
+        assert_eq!(
+            permission_result("Edit", &edit, &asked, deny),
+            json!({ "behavior": "deny", "message": "Not allowed." })
+        );
+        let allow = ToolAnswer::Allow { arguments: None };
+        assert_eq!(
+            permission_result("Edit", &edit, &asked, allow),
+            json!({ "behavior": "allow", "updatedInput": edit })
+        );
+        // Some of the changes accepted: the file as it is, replaced whole.
+        let partial = ToolAnswer::Allow {
+            arguments: Some(json!({ "path": "a.txt", "content": "a\nc\nd\n" }).to_string()),
+        };
+        assert_eq!(
+            permission_result("Edit", &edit, &asked, partial.clone())["updatedInput"],
+            json!({ "file_path": "/p/a.txt", "old_string": "a\nc\n", "new_string": "a\nc\nd\n", "replace_all": false })
+        );
+        let write = json!({ "file_path": "/p/a.txt", "content": "b\nc\n" });
+        assert_eq!(
+            permission_result("Write", &write, &asked, partial)["updatedInput"]["content"],
+            "a\nc\nd\n"
+        );
+    }
+
+    /// The real `claude` with its own tools under Rovik's permissions: its
+    /// Bash call comes to the run as `bash`, and runs or not as answered.
+    ///   ROVIK_REAL_CLAUDE=1 cargo test -p rovik-core real_claude -- --ignored
+    #[tokio::test]
+    #[ignore = "runs the real claude: set ROVIK_REAL_CLAUDE=1 and pass --ignored"]
+    async fn real_claude_asks_rovik_before_its_own_tools() {
+        if std::env::var("ROVIK_REAL_CLAUDE").is_err() {
+            return;
+        }
+        for allow in [false, true] {
+            let dir = crate::testing::temp_dir();
+            let mut t = turn("Run exactly this shell command with your Bash tool: echo hi > out.txt. Then reply done.");
+            t.model = "haiku".into();
+            t.cwd = Some(dir.0.clone());
+            let (asks, mut asked) = mpsc::unbounded_channel();
+            t.asks = Some(asks);
+            let answering = tokio::spawn(async move {
+                let ask: ToolAsk = asked.recv().await.expect("Claude Code asks");
+                let seen = (ask.tool.clone(), ask.arguments.clone());
+                let answer = if allow {
+                    ToolAnswer::Allow { arguments: None }
+                } else {
+                    ToolAnswer::Deny {
+                        reason: "The user said no.".into(),
+                    }
+                };
+                ask.reply.send(answer).unwrap();
+                seen
+            });
+            let (_tx, mut cancel) = watch::channel(false);
+            let mut events = Vec::new();
+            ClaudeCode
+                .run(t, &mut cancel, &mut |e| events.push(e))
+                .await
+                .unwrap();
+            let (tool, arguments) = answering.await.unwrap();
+            assert_eq!(tool, "bash");
+            assert!(arguments.contains("out.txt"), "{arguments}");
+            assert_eq!(dir.0.join("out.txt").exists(), allow, "{events:#?}");
+        }
     }
 
     #[test]

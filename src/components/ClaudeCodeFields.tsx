@@ -27,6 +27,8 @@ export interface ConnectorFieldsProps {
 
 export default function ClaudeCodeFields(props: ConnectorFieldsProps) {
   const settings = () => claudeCodeSettings(props.connector);
+  /** Rovik's permissions decide: Claude Code's allowed-tools rules would pass them by. */
+  const followsRovik = () => settings().permissionMode === 'rovik';
   const patchSettings = (changes: Partial<ClaudeCodeSettings>) =>
     props.update({ settings: { ...settings(), ...changes } });
   const numberValue = (raw: string, min: number, max: number): number | undefined => {
@@ -130,24 +132,28 @@ export default function ClaudeCodeFields(props: ConnectorFieldsProps) {
           </select>
         </SettingRow>
         <p class="settings-hint setting-explain">
-          {PERMISSION_MODES.find((m) => m.value === settings().permissionMode)?.hint}. Nothing waits
-          for a prompt: what the mode and the rules below don’t allow is denied.
+          {PERMISSION_MODES.find((m) => m.value === settings().permissionMode)?.hint}.{' '}
+          {followsRovik()
+            ? 'Reads in the project and Claude Code’s read-only commands run without asking.'
+            : 'Nothing waits for a prompt: what the mode and the rules below don’t allow is denied.'}
         </p>
 
-        <label>
-          Allowed tools
-          <textarea
-            class="settings-textarea"
-            rows={2}
-            value={settings().allowedTools}
-            onInput={(e) => patchSettings({ allowedTools: e.currentTarget.value })}
-            placeholder={'Bash(npm test *)\nBash(git diff *)'}
-            spellcheck={false}
-          />
-          <span class="setting-explain">
-            Permission rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`).
-          </span>
-        </label>
+        <Show when={!followsRovik()}>
+          <label>
+            Allowed tools
+            <textarea
+              class="settings-textarea"
+              rows={2}
+              value={settings().allowedTools}
+              onInput={(e) => patchSettings({ allowedTools: e.currentTarget.value })}
+              placeholder={'Bash(npm test *)\nBash(git diff *)'}
+              spellcheck={false}
+            />
+            <span class="setting-explain">
+              Permission rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`).
+            </span>
+          </label>
+        </Show>
         <label>
           Denied tools
           <textarea

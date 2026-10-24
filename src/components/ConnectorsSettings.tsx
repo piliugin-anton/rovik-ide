@@ -219,10 +219,11 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
             A connector is a coding harness installed on the computer a chat runs on, used in place
             of a model provider: the chat hands it the task and its system prompt, picks one of its
             models, and shows what it did, its tokens and its cost with the reply. With its own
-            tools, the harness works in the project folder under the permission mode set here, and
-            Rovik’s approval settings don’t apply to it. With Rovik’s tools (via MCP), it’s the
-            model behind Rovik’s agent: Rovik runs each call, under Permissions & approval. On a
-            cloud host, the host needs its own installation.
+            tools, the harness works in the project folder under the permission mode set here: by
+            default, Rovik’s Permissions & approval decide each call it would ask about, and an
+            approval waits in the chat. With Rovik’s tools (via MCP), it’s the model behind Rovik’s
+            agent: Rovik runs each call, under Permissions & approval. On a cloud host, the host
+            needs its own installation.
           </p>
           <For
             each={connectors()}

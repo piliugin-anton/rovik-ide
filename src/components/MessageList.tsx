@@ -1408,7 +1408,13 @@ export default function MessageList(props: {
                   verification record instead. */}
                 {/* A connector's harness at work: its steps, then what it used. */}
                 <Show when={m.role === 'assistant' && m.meta?.connector}>
-                  {(meta) => <ConnectorRecord meta={meta()} running={!!m.pending} />}
+                  {(meta) => (
+                    <ConnectorRecord
+                      meta={meta()}
+                      running={!!m.pending}
+                      dialogId={props.dialogId}
+                    />
+                  )}
                 </Show>
                 {/* The model's thinking, apart from the reply. */}
                 <Show when={m.role === 'assistant' && m.meta?.reasoning?.text}>

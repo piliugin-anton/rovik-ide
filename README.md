@@ -340,9 +340,17 @@ continued on each message. A connector's **Tools** setting picks how it
 works:
 
 - **Claude Code's own.** It runs its own tools (Read, Edit, Bash…) in the
-  project folder, under the permission mode and tool rules of the
-  connector's settings; Rovik's approval settings don't apply to it. Its
-  reply shows a record above the text: each tool it ran with its result.
+  project folder. With the permission mode **Follow Rovik's permissions**
+  (the default), each call it would ask about goes to **Permissions &
+  approval**, as a call of the agent's own tool of the same kind would
+  (`--permission-prompt-tool`): its commands are judged by the allowed and
+  denied commands, its edits are reviewed in the editor change by change,
+  and what needs an approval waits for yours or the AI reviewer's, shown
+  in the reply's record. Reads in the project and its read-only commands
+  run without asking, as Claude Code's manual mode has them. With one of
+  Claude Code's own modes (Accept edits, Everything, Auto, Manual, Plan)
+  and its tool rules, Rovik's approval settings don't apply. Its reply
+  shows a record above the text: each tool it ran with its result.
 - **Rovik's (via MCP).** Claude Code is the model behind Rovik's agent.
   Rovik serves the run's tools to it over MCP (a server on 127.0.0.1 for
   that run alone, behind a token only it has), with Claude Code's own

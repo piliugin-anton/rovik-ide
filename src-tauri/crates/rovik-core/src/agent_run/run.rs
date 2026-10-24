@@ -1183,9 +1183,13 @@ impl Run {
         // Balanced Autopilot's plan reviews go on by the plan-fix limits.
         if run.balanced_autopilot() {
             let fix = run.plan_fix();
-            run.plan_review_progress = super::loops::Progress::with(fix.stall_rounds, fix.max_rounds);
+            run.plan_review_progress =
+                super::loops::Progress::with(fix.stall_rounds, fix.max_rounds);
             if let Err(e) = run.restore_plan_state().await {
-                eprintln!("agent: chat {}: the plan's state wasn't restored: {e}", run.dialog_id);
+                eprintln!(
+                    "agent: chat {}: the plan's state wasn't restored: {e}",
+                    run.dialog_id
+                );
             }
         }
         Ok(Some((run, entry)))
@@ -2003,11 +2007,11 @@ impl Run {
         // As a failed turn in the run: what arrived is kept, else the error shows.
         let kept = self
             .store_failed_turn(
-                        &turn.message_id,
-                        &turn.text,
-                        turn_meta(turn.reasoning, turn.connector),
-                        &error,
-                    )
+                &turn.message_id,
+                &turn.text,
+                turn_meta(turn.reasoning, turn.connector),
+                &error,
+            )
             .await?;
         self.settle(kept).await;
         Ok(error.kind == ErrorKind::Cancelled || self.stopped())
@@ -2022,8 +2026,7 @@ impl Run {
         meta: Option<Value>,
         error: &ChatError,
     ) -> Result<bool, String> {
-        settle_failed_turn(&self.core, &self.dialog_id, message_id, text, meta, error)
-        .await
+        settle_failed_turn(&self.core, &self.dialog_id, message_id, text, meta, error).await
     }
 
     /*
@@ -2182,6 +2185,11 @@ impl Run {
         let mut carried_notes: Vec<String> = Vec::new();
 
         loop {
+            // A connector's harness asks before its own tools run, when its
+            // runs follow Rovik's permissions: answered here, as the
+            // request goes on (`answer_tool_ask`).
+            let (tool_asks, mut asks) = tokio::sync::mpsc::unbounded_channel();
+            let tool_asks = self.profile.connector.is_some().then_some(tool_asks);
             let params = ChatParams {
                 base_url: self.profile.base_url.clone(),
                 api_key: self.profile.api_key.clone(),
@@ -2211,6 +2219,7 @@ impl Run {
                 history_window: self.history_window.clone(),
                 connector: self.profile.connector.clone(),
                 cwd: self.root.clone().map(std::path::PathBuf::from),
+                tool_asks,
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -2232,6 +2241,7 @@ impl Run {
             let mut wants_again = false;
             let mut ask_again = false;
             let vfs = &self.core.vfs;
+            let mut asked: Vec<String> = Vec::new();
             let result = {
                 // ROVIK_API_LOG writes who each request is for (S09).
                 let request = crate::api_log::TAGS.scope(
@@ -2252,9 +2262,15 @@ impl Run {
                 // Asking again: the cancelled request gets as long to end as on Stop.
                 let mut again_deadline: Option<Instant> = None;
                 let mut effort_open = true;
+                let mut answering = futures_util::stream::FuturesUnordered::new();
                 loop {
                     tokio::select! {
                         r = &mut request => break Some(r),
+                        Some(ask) = asks.recv() => {
+                            asked.push(ask.call_id.clone());
+                            answering.push(self.answer_tool_ask(ask));
+                        }
+                        Some(()) = futures_util::StreamExt::next(&mut answering), if !answering.is_empty() => {}
                         _ = ticker.tick() => {
                             lock(&stream).tick(started, stop_deadline.is_some());
                             if wants_again && !ask_again && stop_deadline.is_none() && lock(&stream).may_ask_again() {
@@ -2298,6 +2314,16 @@ impl Run {
                 }
             };
 
+            // What the harness asked and nobody answered before its turn
+            // ended (stopped, killed) leaves the chat.
+            for id in asked.drain(..) {
+                self.core.agents.resolve_approval(
+                    &self.core,
+                    &self.dialog_id,
+                    &id,
+                    super::ApprovalDecision::Deny,
+                );
+            }
             let mut s = lock(&stream);
             let failure = match result {
                 None => Some(ChatError::stopped()),

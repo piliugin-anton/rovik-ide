@@ -43,7 +43,7 @@ pub use setup::{setup, SetupCommand};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// The most of a chat's earlier turns a new harness session is told about.
 const RECAP_CHARS: usize = 24_000;
@@ -108,7 +108,38 @@ pub struct Turn {
     pub answers: Option<Answers>,
     /// Continue an interrupted reply.
     pub continue_reply: bool,
+    /// Where the harness asks before one of its own tools runs, when its
+    /// runs follow Rovik's permissions: the run answers. None (a one-off
+    /// request, a request outside a run): what would ask is denied.
+    pub asks: Option<ToolAsks>,
 }
+
+/// A harness's request to run one of its own tools, put to the run's
+/// permissions and approvals as a call of Rovik's tool of the same kind
+/// would be (Claude Code's `Bash` as `bash`, its file edits as `write`):
+/// refused, run, or shown for the user's or the AI reviewer's approval.
+#[derive(Debug)]
+pub struct ToolAsk {
+    /// The harness's tool use: the id of its step in the reply.
+    pub call_id: String,
+    /// Rovik's tool it's asked as, and that tool's arguments (JSON).
+    pub tool: String,
+    pub arguments: String,
+    pub reply: oneshot::Sender<ToolAnswer>,
+}
+
+/// The run's answer to a `ToolAsk`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolAnswer {
+    /// It may run; with these arguments (Rovik's tool's) when the user
+    /// changed them: some of an edit's changes accepted.
+    Allow { arguments: Option<String> },
+    /// It may not: why, for the model.
+    Deny { reason: String },
+}
+
+/// Where a harness's `ToolAsk`s go.
+pub type ToolAsks = mpsc::UnboundedSender<ToolAsk>;
 
 /// The tool calls of the chat's last reply, as Rovik ran them: what a
 /// harness that made them (Rovik's tools mode) is answered with.
@@ -297,6 +328,7 @@ pub async fn run_chat(
         tools,
         answers,
         continue_reply: continuing,
+        asks: params.tool_asks.clone(),
     };
     // The session the harness opens or continues is kept for the chat's
     // next turn, as the events say it.
@@ -708,6 +740,72 @@ out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Got: 
 "#;
     let path = dir.join("claude");
     std::fs::write(&path, script.replace("READ_PATH", read_path)).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// A stand-in for `claude` with its own tools under Rovik's permissions
+/// (tests): for each of `asks` (Claude Code's tool name and input, and the
+/// tool use's id) it shows the tool use, asks Rovik's `approve` tool over
+/// MCP as Claude Code does, and keeps the answer in `decisions.json`; its
+/// reply lists the answers. None without python3.
+#[cfg(all(test, unix))]
+pub(crate) fn fake_claude_asking(dir: &std::path::Path, asks: &Value) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    if !crate::process::on_path("python3") {
+        return None;
+    }
+    let script = r#"#!/usr/bin/env python3
+import json, os, sys, urllib.request
+here = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+open(os.path.join(here, 'args.txt'), 'w').write(' '.join(args))
+sys.stdin.read()
+server = json.load(open(args[args.index('--mcp-config') + 1]))['mcpServers']['rovik']
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+def post(body):
+    headers = dict(server['headers'])
+    headers.update({'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'})
+    request = urllib.request.Request(server['url'], data=json.dumps(body).encode(), headers=headers)
+    with opener.open(request) as response:
+        text = response.read().decode()
+    if text.startswith('{'):
+        return json.loads(text)
+    for line in text.splitlines():
+        if line.startswith('data: '):
+            return json.loads(line[6:])
+def out(value):
+    print(json.dumps(value), flush=True)
+def event(e):
+    out({'type': 'stream_event', 'event': e, 'parent_tool_use_id': None})
+post({'jsonrpc': '2.0', 'id': 0, 'method': 'initialize', 'params': {'protocolVersion': '2025-11-25'}})
+out({'type': 'system', 'subtype': 'init', 'session_id': 's-7', 'model': 'claude-sonnet-5', 'tools': ['Bash', 'Edit']})
+decisions = []
+for n, (tool, given, use) in enumerate(ASKS):
+    given = dict(given)
+    if 'file_path' in given:
+        given['file_path'] = os.path.join(os.getcwd(), given['file_path'])
+    event({'type': 'message_start', 'message': {'id': 'm%d' % n, 'usage': {'input_tokens': 4}}})
+    event({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'tool_use', 'id': use, 'name': tool, 'input': {}}})
+    event({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(given)}})
+    event({'type': 'content_block_stop', 'index': 0})
+    event({'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}, 'usage': {'output_tokens': 3}})
+    event({'type': 'message_stop'})
+    asked = {'tool_name': tool, 'input': given, 'tool_use_id': use}
+    result = post({'jsonrpc': '2.0', 'id': 10 + n, 'method': 'tools/call', 'params': {'name': 'approve', 'arguments': asked, '_meta': {'claudecode/toolUseId': use}}})
+    decision = json.loads(result['result']['content'][0]['text'])
+    decisions.append(decision)
+    out({'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': use, 'content': decision['behavior']}]}})
+json.dump(decisions, open(os.path.join(here, 'decisions.json'), 'w'))
+reply = ', '.join(d['behavior'] for d in decisions)
+event({'type': 'message_start', 'message': {'id': 'last'}})
+event({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': reply}})
+event({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'}, 'usage': {'output_tokens': 2}})
+event({'type': 'message_stop'})
+out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': reply, 'usage': {}, 'total_cost_usd': 0.01, 'num_turns': 1})
+"#;
+    let path = dir.join("claude");
+    std::fs::write(&path, script.replace("ASKS", &asks.to_string())).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     Some(path.to_string_lossy().into_owned())
 }

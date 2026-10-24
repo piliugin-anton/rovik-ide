@@ -397,8 +397,9 @@ Code's own conversation for a chat (its session) is kept by the program
 in that user's home; Rovik remembers which session each chat continues.
 
 Claude Code runs the agent's commands itself, not through Rovik's
-sandbox: what it may do is the permission mode and the allowed tools of
-the connector's settings.
+sandbox. What it may do is decided by Rovik's Permissions & approval
+(the connector's default permission mode), or by Claude Code's own
+permission mode and allowed tools when the connector's settings pick one.
 
 ## Upgrades
 

@@ -320,6 +320,10 @@ pub(super) async fn pump(
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
 ) -> Stop {
     let mut stopping = false;
+    // A call to Rovik's server waits on Rovik (an approval the user takes
+    // their time over): the program is silent, not stalled, until its
+    // next line.
+    let mut waiting = false;
     loop {
         let timeout = if process.got_line {
             IDLE
@@ -336,6 +340,7 @@ pub(super) async fn pump(
             line = process.lines.recv() => match line {
                 Some(line) => {
                     process.got_line = true;
+                    waiting = false;
                     parser.on_line(&line, emit);
                     if parser.yielded() && !stopping {
                         return Stop::Yielded;
@@ -343,7 +348,10 @@ pub(super) async fn pump(
                 }
                 None => return if stopping { Stop::Stopped } else { Stop::Ended },
             },
-            Some(call) = call => on_call(call),
+            Some(call) = call => {
+                waiting = true;
+                on_call(call);
+            }
             _ = crate::chat_request::cancelled(cancel), if !stopping => {
                 stopping = true;
                 process.kill(false);
@@ -352,7 +360,7 @@ pub(super) async fn pump(
                 process.kill(true);
                 return Stop::Stopped;
             }
-            _ = tokio::time::sleep(timeout), if !stopping => {
+            _ = tokio::time::sleep(timeout), if !stopping && !waiting => {
                 process.kill(true);
                 return Stop::Stalled;
             }

@@ -5,7 +5,9 @@
 // claude-sonnet-5 · 7 steps · 12.3k tokens · $0.04", open to each step
 // (the tool it ran, what with, and the first lines of its result). Updates
 // live while the harness works: the steps arrive as it runs them, the
-// tokens and the cost with its result.
+// tokens and the cost with its result. A step that waits for the user's
+// approval (its runs follow Rovik's permissions) shows the request under
+// the line, open or not, as a tool call of Rovik's does.
 import { createSignal, For, Show } from 'solid-js';
 import {
   connectorHeadline,
@@ -13,20 +15,36 @@ import {
   type ConnectorMeta,
   type HarnessStep,
 } from '../lib/connectors';
+import { pendingApprovalsOf } from '../lib/approvals';
+import { ApprovalBar } from './ToolCallBlock';
 
-export default function ConnectorRecord(props: { meta: ConnectorMeta; running: boolean }) {
+interface RecordProps {
+  meta: ConnectorMeta;
+  running: boolean;
+  /** The chat it's in: its steps' approvals wait there. */
+  dialogId?: string | null;
+}
+
+export default function ConnectorRecord(props: RecordProps) {
   // With Rovik's tools, the reply's calls show as Rovik's own: the record
   // only says what it used, once it's known.
   return (
     <Show when={!props.meta.rovikTools || props.meta.usage}>
-      <Record meta={props.meta} running={props.running} />
+      <Record {...props} />
     </Show>
   );
 }
 
-function Record(props: { meta: ConnectorMeta; running: boolean }) {
+function Record(props: RecordProps) {
   const [open, setOpen] = createSignal(false);
   const steps = () => props.meta.steps ?? [];
+  /** The approvals its steps wait for. */
+  const waiting = () => {
+    const ids = new Set(steps().map((s) => s.id));
+    return props.dialogId
+      ? pendingApprovalsOf(props.dialogId).filter((r) => ids.has(r.toolCallId))
+      : [];
+  };
   const working = () => props.running && !props.meta.usage;
   const failed = () => steps().filter((s) => s.ok === false).length;
   const denied = () => props.meta.usage?.connector?.permissionDenials ?? 0;
@@ -69,6 +87,14 @@ function Record(props: { meta: ConnectorMeta; running: boolean }) {
           <span class="tool-call-spinner" aria-label="Working" />
         </Show>
       </div>
+      <For each={waiting()}>
+        {(request) => (
+          <div class="chat-connector-approval">
+            <div class="chat-connector-approval-what">{request.summary}</div>
+            <ApprovalBar request={request} />
+          </div>
+        )}
+      </For>
       <Show when={open()}>
         <div class="tool-group-calls chat-connector-steps">
           <Show when={steps().length === 0}>

@@ -212,6 +212,7 @@ pub async fn complete_once(
     chat_id: Option<String>,
 ) -> Result<String, String> {
     let params = ChatParams {
+        tool_asks: None,
         base_url: profile.base_url.clone(),
         api_key: profile.api_key.clone(),
         model: profile.model.clone(),
