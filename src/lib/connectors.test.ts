@@ -14,7 +14,9 @@ import {
   resetStartCheck,
   type ConnectorAuth,
   usesRovikTools,
-  connectorHeadline,
+  connectorSegments,
+  type ConnectorMeta,
+  type ConnectorSegment,
   connectorKindOf,
   connectorsSummary,
   connectorUsage,
@@ -24,7 +26,6 @@ import {
   probeModels,
   probeSummary,
   splitSources,
-  stepLabel,
   titleProfile,
   specOf,
 } from './connectors';
@@ -183,27 +184,9 @@ test('a probe’s models merge as a provider’s do, and its summary says what a
   assert.equal(probeSummary({ ...probe, request: null }), 'Connected: 2.1.309 (Claude Code)');
 });
 
-test('a reply’s record: steps in a few words, and a headline with what it used', () => {
-  assert.equal(
-    stepLabel({ id: '1', name: 'Read', input: { file_path: 'src/a.rs' } }),
-    'Read src/a.rs'
-  );
-  assert.equal(
-    stepLabel({ id: '2', name: 'Bash', input: { command: 'npm test' } }),
-    'Bash npm test'
-  );
-  assert.equal(stepLabel({ id: '3', name: 'TodoWrite', input: { todos: [] } }), 'TodoWrite');
-  assert.equal(
-    stepLabel({ id: '4', name: 'Grep', input: { pattern: 'x'.repeat(100) } }),
-    `Grep ${'x'.repeat(77)}…`
-  );
+test('what a reply used counts in the subagents’ totals; a command that asked nothing, none', () => {
   const meta = {
     kind: 'claude-code',
-    model: 'claude-sonnet-5',
-    steps: [
-      { id: '1', name: 'Read', input: {} },
-      { id: '2', name: 'Edit', input: {} },
-    ],
     usage: {
       prompt_tokens: 12_000,
       completion_tokens: 300,
@@ -212,21 +195,61 @@ test('a reply’s record: steps in a few words, and a headline with what it used
       connector: { kind: 'claude-code', numTurns: 3, model: 'claude-sonnet-5' },
     },
   };
-  assert.equal(
-    connectorHeadline(meta, false),
-    'Claude Code · claude-sonnet-5 · 2 steps · 12.3k tokens (8.1k cached) · $0.04 · 3 turns'
-  );
-  assert.equal(connectorHeadline({ kind: 'claude-code' }, true), 'Claude Code · working…');
   assert.deepEqual(connectorUsage(meta), { inputTokens: 12_000, outputTokens: 300, cost: 0.04 });
   assert.equal(connectorUsage({ kind: 'claude-code' }), null);
   // A command run without a request to the model (`/context`): no cost, nothing counted.
   const command = {
     kind: 'claude-code',
-    model: 'claude-sonnet-5',
     usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0, connector: { numTurns: 0 } },
   };
-  assert.equal(connectorHeadline(command, false), 'Claude Code · claude-sonnet-5');
   assert.equal(connectorUsage(command), null);
+});
+
+test('a reply’s steps show as Rovik’s work does: its thoughts apart, its calls as Rovik’s', () => {
+  const meta: ConnectorMeta = {
+    kind: 'claude-code',
+    steps: [
+      { id: 'thinking-1', name: '', input: null, thinking: 'Read it first.', ms: 1_200 },
+      { id: 't1', name: 'Read', input: { file_path: 'src/a.rs' }, result: 'fn a() {}', ok: true },
+      { id: 't2', name: 'Bash', input: { command: 'npm test' }, result: 'boom', ok: false },
+      // A subagent's step isn't the reply's: the call that started it has its report.
+      { id: 't9', name: 'Grep', input: { pattern: 'x' }, parent: 't3' },
+      { id: 't3', name: 'Task', input: { description: 'Look around' } },
+      { id: 'thinking-2', name: '', input: null, thinking: 'Done.' },
+    ],
+  };
+  const segments = connectorSegments(meta);
+  assert.deepEqual(
+    segments.map((s) => ('thought' in s ? `thought:${s.thought.id}` : 'calls')),
+    ['thought:thinking-1', 'calls', 'thought:thinking-2']
+  );
+  const calls = 'calls' in segments[1] ? segments[1].calls : [];
+  assert.deepEqual(
+    calls.map((c) => [c.call.id, c.call.name, JSON.parse(c.call.arguments)]),
+    [
+      ['t1', 'read', { path: 'src/a.rs' }],
+      ['t2', 'bash', { command: 'npm test' }],
+      // Rovik has no tool like it: its own name and input.
+      ['t3', 'Task', { description: 'Look around' }],
+    ]
+  );
+  assert.equal(calls[0].result?.content, 'fn a() {}');
+  assert.equal(calls[0].result?.tool_call_id, 't1');
+  assert.equal(calls[1].result?.content, 'Error: boom', 'a failed step reads as a failed call');
+  assert.equal(calls[2].result, undefined, 'still running');
+});
+
+test('a step that hasn’t changed is the same call, so its block keeps its state', () => {
+  const kept = new Map();
+  const step = { id: 't1', name: 'Read', input: { file_path: 'a.rs' } };
+  const first = connectorSegments({ kind: 'claude-code', steps: [step] }, kept);
+  const done = { ...step, result: 'x', ok: true };
+  const later = connectorSegments({ kind: 'claude-code', steps: [done] }, kept);
+  const only = (s: ConnectorSegment[]) => ('calls' in s[0] ? s[0].calls[0] : undefined);
+  assert.equal(only(later)?.call, only(first)?.call, 'the same call, now with its result');
+  assert.equal(only(later)?.result?.content, 'x');
+  const again = connectorSegments({ kind: 'claude-code', steps: [done] }, kept);
+  assert.equal(only(again)?.result, only(later)?.result);
 });
 
 /*
@@ -364,27 +387,6 @@ test('with Rovik’s tools, a connector’s model is offered the run’s tools',
   assert.ok(!usesRovikTools(openai), 'a provider is no connector');
 });
 
-test('with Rovik’s tools, a reply’s record says what it used, its run’s cost on the last', () => {
-  assert.equal(connectorHeadline({ kind: 'claude-code', rovikTools: true }, true), 'Claude Code');
-  assert.equal(
-    connectorHeadline(
-      {
-        kind: 'claude-code',
-        rovikTools: true,
-        usage: {
-          prompt_tokens: 2035,
-          completion_tokens: 5,
-          prompt_tokens_details: { cached_tokens: 1936 },
-          cost: 0.00045,
-          connector: { model: 'claude-haiku-5-5', costCovers: 'harnessTurn', numTurns: 2 },
-        },
-      },
-      false
-    ),
-    'Claude Code · claude-haiku-5-5 · 2.0k tokens (1.9k cached) · $0.0004 for its run · 2 turns'
-  );
-});
-
 test('the choices’ tooltips have no markup characters, which WebKitGTK can’t show', () => {
   const choices = [...AUTH_KINDS, ...PERMISSION_MODES, ...USE_MODES];
   const tips = [...choices.flatMap((c) => [c.hint, c.detail ?? '']), ...EFFORTS.map((c) => c.hint)];
@@ -409,24 +411,4 @@ test('the context shown is the one the latest connector reply reported', () => {
     { kind: 'claude-code', context: { used: 40, window: 100 } }
   );
   assert.equal(latestConnectorContext([reply({ used: 1, window: 0 })]), null);
-});
-
-test('while it runs, a reply’s record says its state in place of “working…”', () => {
-  const meta = { kind: 'claude-code', model: 'claude-sonnet-5' };
-  assert.equal(connectorHeadline(meta, true), 'Claude Code · claude-sonnet-5 · working…');
-  assert.equal(
-    connectorHeadline(meta, true, 'Still waiting for a response… 6 s'),
-    'Claude Code · claude-sonnet-5 · Still waiting for a response… 6 s'
-  );
-  const stepped = { ...meta, steps: [{ id: 't1', name: 'Read', input: {} }] };
-  assert.equal(connectorHeadline(stepped, true), 'Claude Code · claude-sonnet-5 · 1 step');
-  assert.equal(
-    connectorHeadline(stepped, true, 'Stopping…'),
-    'Claude Code · claude-sonnet-5 · 1 step · Stopping…'
-  );
-  // Ended: no state.
-  assert.equal(
-    connectorHeadline(stepped, false, 'Stopping…'),
-    'Claude Code · claude-sonnet-5 · 1 step'
-  );
 });

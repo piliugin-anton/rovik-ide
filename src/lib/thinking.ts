@@ -1,8 +1,7 @@
 // thinking.ts
 //
-// How a model's thinking reads in the chat, wherever it shows: a reply's
-// own (MessageList's ThinkingBlock), or a connector's among its steps
-// (ConnectorRecord): its line's label, and its latest line while it thinks.
+// How a model's thinking reads in the chat (ThinkingBlock): its line's
+// label, and its latest line while it thinks.
 
 /** "Thinking…" while it thinks; then "Thought for 12 s", or "Thought" when its time isn't known. */
 export function thoughtLabel(thinking: boolean, ms?: number | null): string {

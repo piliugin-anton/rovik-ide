@@ -50,7 +50,7 @@ import PickRecord from './PickRecord';
 import ReportFacts from './ReportFacts';
 import ReviewRecord from './ReviewRecord';
 import StageRecord from './StageRecord';
-import ConnectorRecord from './ConnectorRecord';
+import ConnectorSteps from './ConnectorSteps';
 import { currentTask, stageOf } from '../lib/autopilot';
 import { liveSubagent } from '../lib/subagents';
 import { indexToolResults } from '../lib/toolResults';
@@ -60,7 +60,7 @@ import { isSettled, parseTodo } from '../lib/todo';
 import { isRequestMessage } from '../lib/requests';
 import { LATE_LABEL } from '../lib/steering';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
-import { latestLine, thoughtLabel } from '../lib/thinking';
+import ThinkingBlock from './ThinkingBlock';
 
 const BOTTOM_TOLERANCE_PX = 8;
 /** A scroll this soon after wheel/touch/key/scrollbar input is the user's. */
@@ -197,11 +197,12 @@ export default function MessageList(props: {
     return at >= 0 && list.slice(at + 1).every((x) => !!x.meta?.planner);
   };
   /**
-   * A connector's record shows the reply's state itself (what it's doing,
-   * a status, an approval it waits for): no other "working" line beside it.
-   * With Rovik's tools its calls show as Rovik's, and the lines stay.
+   * A connector running its own tools has shown steps of its own for the
+   * reply (ConnectorSteps): as its tool calls would, they stand for the
+   * reply's work so far. With Rovik's tools its calls are the reply's own.
    */
-  const recordShowsState = (m: ChatMessage) => !!m.meta?.connector && !m.meta.connector.rovikTools;
+  const hasConnectorSteps = (m: ChatMessage) =>
+    !!m.meta?.connector?.steps?.length && !m.meta.connector.rovikTools;
   const requestUndelivered = () => {
     const list = messages();
     for (let i = list.length - 1; i >= 0; i--) {
@@ -1364,7 +1365,7 @@ export default function MessageList(props: {
                     m.content.length === 0 &&
                     !m.toolCalls?.length &&
                     !m.meta?.reasoning &&
-                    !recordShowsState(m)
+                    !hasConnectorSteps(m)
                   }
                 >
                   <div class="tool-group active chat-waiting" role="status">
@@ -1375,23 +1376,12 @@ export default function MessageList(props: {
                   </div>
                 </Show>
 
-                {/* A connector's harness at work: its steps, then what it used;
-                    before an error, what led to it. A failed reply that ran
-                    nothing has nothing to show but the error. */}
-                <Show
-                  when={
-                    m.role === 'assistant' &&
-                    !(m.error && !m.meta?.connector?.steps?.length) &&
-                    m.meta?.connector
-                  }
-                >
+                {/* A connector's harness at work with its own tools: its
+                    thinking and its calls as Rovik's show, before its words
+                    (or the error they led to). */}
+                <Show when={m.role === 'assistant' && hasConnectorSteps(m) && m.meta?.connector}>
                   {(meta) => (
-                    <ConnectorRecord
-                      meta={meta()}
-                      running={!!m.pending}
-                      status={m.pending && m.status ? statusText(m) : undefined}
-                      dialogId={props.dialogId}
-                    />
+                    <ConnectorSteps meta={meta()} running={!!m.pending} dialogId={props.dialogId} />
                   )}
                 </Show>
 
@@ -1533,8 +1523,7 @@ export default function MessageList(props: {
                   when={
                     m.pending &&
                     m.status &&
-                    (m.content.length > 0 || m.toolCalls?.length) &&
-                    !recordShowsState(m)
+                    (m.content.length > 0 || m.toolCalls?.length || hasConnectorSteps(m))
                   }
                 >
                   <span
@@ -1961,50 +1950,6 @@ function CopyMessageButton(props: { segments: DraftSegment[] }) {
 }
 
 /**
- * The model's reasoning, as a line like a tool call's: "Thinking…" with its
- * latest line while it thinks, "Thought for 12 s" after; opens to the whole
- * text (plain, it can be long).
- */
-function ThinkingBlock(props: { text: string; ms?: number; thinking: boolean }) {
-  const [open, setOpen] = createSignal(false);
-  return (
-    <div class="tool-group" classList={{ open: open(), active: props.thinking }}>
-      <div class="tool-group-header" onClick={() => setOpen((o) => !o)}>
-        <button type="button" class="tool-group-toggle" aria-expanded={open()}>
-          <svg
-            class="chat-pasted-caret"
-            classList={{ open: open() }}
-            width="10"
-            height="10"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M6 4l4 4-4 4" />
-          </svg>
-          {thoughtLabel(props.thinking, props.ms)}
-        </button>
-        <Show when={props.thinking && !open()}>
-          <span class="tool-group-items chat-thinking-preview">{latestLine(props.text)}</span>
-        </Show>
-        <Show when={props.thinking}>
-          <span class="tool-call-spinner" aria-label="Thinking" />
-        </Show>
-      </div>
-      <Show when={open()}>
-        <div class="tool-group-calls">
-          <div class="chat-thinking-text">{props.text}</div>
-        </div>
-      </Show>
-    </div>
-  );
-}
-
-/**
  * Roughly how tall a message renders, for its placeholder before it's drawn
  * (content-visibility). A fixed 120px was far off for short user messages
  * (about 56px) and long replies alike, and the difference moved the view
@@ -2027,6 +1972,8 @@ function estimatedHeight(m: ChatMessage): number {
     const fences = (m.content.match(/```/g) ?? []).length / 2;
     height += 24 + LINE * lines(m.content) + fences * 40 + 24;
   }
-  height += (m.toolCalls?.length ?? 0) * 40;
+  // A connector's own steps show as lines too (ConnectorSteps).
+  const steps = m.meta?.connector?.rovikTools ? [] : (m.meta?.connector?.steps ?? []);
+  height += ((m.toolCalls?.length ?? 0) + steps.filter((s) => !s.parent).length) * 40;
   return Math.max(40, Math.round(height));
 }

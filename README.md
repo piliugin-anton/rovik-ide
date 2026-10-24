@@ -358,13 +358,15 @@ it** picks how it works:
   (`--permission-prompt-tool`): its commands are judged by the allowed and
   denied commands, its edits are reviewed in the editor change by change,
   and what needs an approval waits for yours or the AI reviewer's, shown
-  in the reply's record. Reads in the project and its read-only commands
+  on its call's line. Reads in the project and its read-only commands
   run without asking, as Claude Code's manual mode has them. With one of
   Claude Code's own modes (Accept edits, Everything, Auto, Manual, Plan)
   and its tool rules, Rovik's approval settings don't apply. Its reply
-  shows a record above the text: each tool it ran with its result, and
-  in their places the stretches of its thinking ("Thought for 3 s", open
-  to the text), its latest line on the record's line while it thinks. In a
+  shows its work as Rovik's agent's shows, in the order it went: each
+  stretch of its thinking ("Thought for 3 s", open to the text), and its
+  tool calls as the lines of Rovik's tools of the same kind ("Read
+  app.ts", "Edited app.ts", "Ran npm", its checklist as Rovik's), then its
+  answer. In a
   chat's own copy of the project (an isolated chat, or one on a cloud
   host), git commands that change the repository (`checkout`, `switch`,
   `reset`, `commit`, `push`…) are refused in every mode, as they are to
@@ -390,14 +392,11 @@ it** picks how it works:
   (`--system-prompt-snapshot off`), so a changed setting applies to a
   chat's next message.
 
-Either way, the reply shows the tokens it used (cached ones apart) and
-what it cost by Claude Code's own estimate; with Rovik's tools, the cost
-of a run of several replies comes with its last. Its thinking shows too:
-Rovik asks Claude Code for it (`--thinking-display summarized`), since
-current Claude models send none unless asked. What comes is the API's
-summary of the thinking, and it costs nothing more; with Rovik's tools,
-it shows above the reply, as any model's does. Connector models take no
-images or PDFs from the chat.
+Either way, its thinking shows: Rovik asks Claude Code for it
+(`--thinking-display summarized`), since current Claude models send none
+unless asked. What comes is the API's summary of the thinking, and it
+costs nothing more; with Rovik's tools, it shows above the reply, as any
+model's does. Connector models take no images or PDFs from the chat.
 
 **Commands.** In a chat on a connector, typing `/` at the start of the
 message lists the commands the harness offers there: Claude Code's own

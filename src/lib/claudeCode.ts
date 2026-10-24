@@ -4,7 +4,7 @@
 // choices its form offers, and its `ConnectorSpec`. Its form's fields are
 // ClaudeCodeFields.tsx; its harness is the core's connectors/claude_code.rs.
 import type { Provider } from '../types';
-import type { ConnectorSpec } from './connectors';
+import type { ChatCall, ConnectorSpec } from './connectors';
 
 /** Claude Code's settings (claude_code.rs `Settings`, the same fields and defaults). */
 export type ClaudeCodeSettings = {
@@ -168,6 +168,71 @@ export function claudeCodeSettings(p: Pick<Provider, 'settings'>): ClaudeCodeSet
   };
 }
 
+/** Its checklist's statuses as Rovik's checklist has them. */
+const TODO_STATUS: Record<string, string> = {
+  pending: 'pending',
+  in_progress: 'in_progress',
+  completed: 'done',
+};
+
+/**
+ * One of Claude Code's tool calls as the call of Rovik's tool of the same
+ * kind (`ConnectorSpec.chatCall`): its file tools as `read` and `write`
+ * (an edit as a partial write), its shell as `bash`, its searches as
+ * `search_code`, its web tools as `browse_url` and `web_search`, its
+ * checklist as `todo`. The paths are the project's (the core makes them
+ * relative to the folder it ran in). Its other tools have no like.
+ */
+export function claudeCodeChatCall(
+  name: string,
+  input: Record<string, unknown>
+): ChatCall | undefined {
+  const text = (key: string) => (typeof input[key] === 'string' ? input[key] : undefined);
+  const count = (key: string) => (typeof input[key] === 'number' ? input[key] : undefined);
+  switch (name) {
+    case 'Read': {
+      const start = count('offset');
+      const lines = count('limit');
+      const range = start
+        ? { start_line: start, ...(lines ? { end_line: start + lines - 1 } : {}) }
+        : {};
+      return { name: 'read', arguments: { path: text('file_path'), ...range } };
+    }
+    case 'Write':
+      return { name: 'write', arguments: { path: text('file_path'), content: text('content') } };
+    case 'Edit':
+      return {
+        name: 'write',
+        arguments: {
+          path: text('file_path'),
+          old_text: text('old_string'),
+          content: text('new_string'),
+        },
+      };
+    case 'Bash':
+      return { name: 'bash', arguments: { command: text('command') } };
+    case 'Grep':
+    case 'Glob':
+      return { name: 'search_code', arguments: { query: text('pattern'), path: text('path') } };
+    case 'LS':
+      return { name: 'list_dir', arguments: { path: text('path') } };
+    case 'WebFetch':
+      return { name: 'browse_url', arguments: { url: text('url') } };
+    case 'WebSearch':
+      return { name: 'web_search', arguments: { query: text('query') } };
+    case 'TodoWrite': {
+      const todos = Array.isArray(input.todos) ? (input.todos as Record<string, unknown>[]) : [];
+      const items = todos.map((t) => ({
+        title: typeof t?.content === 'string' ? t.content : '',
+        status: TODO_STATUS[String(t?.status)] ?? 'pending',
+      }));
+      return { name: 'todo', arguments: { items } };
+    }
+    default:
+      return undefined;
+  }
+}
+
 /** Claude Code, as the app knows it. */
 export const CLAUDE_CODE: ConnectorSpec = {
   kind: 'claude-code',
@@ -184,4 +249,5 @@ export const CLAUDE_CODE: ConnectorSpec = {
   },
   titleModel: CLAUDE_CODE_TITLE_MODEL,
   planMode: true,
+  chatCall: claudeCodeChatCall,
 };

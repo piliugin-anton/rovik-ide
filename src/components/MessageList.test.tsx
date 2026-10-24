@@ -1,7 +1,8 @@
 // Component test: a connector's reply in the chat shows one line of what
-// it's doing. Before its harness has said anything, "Starting Claude
-// Code…"; then its record, which carries the run's status, with no other
-// "working" line beside it. Run with: npm test
+// it's doing, the chat's own: before its harness has said anything,
+// "Starting Claude Code…"; then the run's status, as for any reply. Its
+// steps show as Rovik's tool calls do, with no line of the connector's
+// own. Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -39,7 +40,7 @@ function list(messages: ChatMessage[], connectorTitle?: string) {
 
 const user: ChatMessage = { id: 'u1', role: 'user', content: 'Add a test', finalized: true };
 const working = (root: HTMLElement) =>
-  [...root.querySelectorAll('[role="status"], .chat-connector-headline')].map((e) => e.textContent);
+  [...root.querySelectorAll('[role="status"]')].map((e) => e.textContent);
 
 test('a connector’s reply not started yet says the connector is starting', () => {
   const reply: ChatMessage = { id: 'a1', role: 'assistant', content: '', pending: true };
@@ -52,7 +53,7 @@ test('a connector’s reply not started yet says the connector is starting', () 
   model.dispose();
 });
 
-test('once the harness has started, its record alone says what it’s doing', () => {
+test('once the harness has started, the run’s status is the chat’s own line', () => {
   const reply: ChatMessage = {
     id: 'a1',
     role: 'assistant',
@@ -62,15 +63,37 @@ test('once the harness has started, its record alone says what it’s doing', ()
     meta: { connector: { kind: 'claude-code', model: 'claude-sonnet-5', steps: [] } },
   };
   const { root, dispose } = list([user, reply], 'Claude Code');
-  assert.deepEqual(working(root), ['Claude Code · claude-sonnet-5 · Still waiting for a response']);
+  assert.deepEqual(working(root), ['Still waiting for a response']);
   dispose();
-  // Text arriving, then a pause: still one line, the record's.
+  // Text arriving, then a pause: still one line.
   const writing = list(
     [user, { ...reply, content: 'Added a test that', status: { text: 'Still generating' } }],
     'Claude Code'
   );
-  assert.deepEqual(working(writing.root), ['Claude Code · claude-sonnet-5 · Still generating']);
+  assert.deepEqual(working(writing.root), ['Still generating']);
   writing.dispose();
+  // Its steps so far, then a pause: they show as Rovik's calls do, the status after them.
+  const stepped = list(
+    [
+      user,
+      {
+        ...reply,
+        status: { text: 'Stopping' },
+        meta: {
+          connector: {
+            kind: 'claude-code',
+            steps: [
+              { id: 't1', name: 'Read', input: { file_path: 'a.rs' }, result: 'x', ok: true },
+            ],
+          },
+        },
+      },
+    ],
+    'Claude Code'
+  );
+  assert.deepEqual(working(stepped.root), ['Stopping']);
+  assert.match(stepped.root.querySelector('.tool-group-header')?.textContent ?? '', /Read/);
+  stepped.dispose();
 });
 
 test('a failed reply that ran nothing shows the error alone', () => {
@@ -83,7 +106,7 @@ test('a failed reply that ran nothing shows the error alone', () => {
     meta: { connector: { kind: 'claude-code', steps: [] } },
   };
   const { root, dispose } = list([user, failed], 'Claude Code');
-  assert.equal(root.querySelector('.chat-connector-headline'), null);
+  assert.equal(root.querySelector('.tool-group'), null);
   assert.match(root.textContent ?? '', /isn’t signed in/);
   dispose();
 });

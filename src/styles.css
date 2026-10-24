@@ -10153,16 +10153,6 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 11px;
 }
 
-/* A Claude Code step waiting for the user's approval (ConnectorRecord.tsx) */
-.chat-connector-approval {
-  padding: 4px 10px 6px;
-}
-
-.chat-connector-approval-what {
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
 /* A connector's "Set up" (ConnectorSetup.tsx) */
 .connector-setup {
   display: flex;
@@ -10219,92 +10209,6 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 /* A connector's models have fewer columns than a provider's. */
 .connector-models .provider-models-list {
   grid-template-columns: minmax(max-content, 1fr) 136px 68px 60px 22px;
-}
-
-/* A connector's record above its reply (ConnectorRecord.tsx) */
-
-.chat-connector-headline {
-  white-space: nowrap;
-}
-
-.chat-connector-steps {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.chat-connector-empty,
-.chat-connector-session {
-  padding: 2px 0;
-  color: var(--fg-dim);
-  font-size: 11px;
-}
-
-.chat-connector-step-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  min-width: 0;
-  padding: 2px 0;
-  background: none;
-  border: 0;
-  color: var(--fg-muted);
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.chat-connector-step-line:hover {
-  color: var(--fg);
-}
-
-.chat-connector-step.sub .chat-connector-step-line {
-  padding-left: 14px;
-}
-
-.chat-connector-step-mark {
-  flex: 0 0 12px;
-  text-align: center;
-  color: var(--fg-dim);
-}
-
-.chat-connector-step.ok .chat-connector-step-mark {
-  color: var(--success);
-}
-
-.chat-connector-step.error .chat-connector-step-mark {
-  color: var(--error);
-}
-
-.chat-connector-step-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-connector-step-body {
-  margin: 2px 0 6px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.chat-connector-step-input,
-.chat-connector-step-result {
-  margin: 0;
-  padding: 6px 8px;
-  max-height: 200px;
-  overflow: auto;
-  background: var(--bg-editor);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 11px;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 /* A connector's sign-in, as its last check found (lib/connectors.ts). */
