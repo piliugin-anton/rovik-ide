@@ -322,7 +322,10 @@ the same port, and no one else's process can reach it: nothing comes into
 the network from outside. The agent tests its servers there as it would on
 the user's computer, with `curl localhost:3000` or a test suite. The ports
 are the user's to share among their own servers, from all their chats: one
-that a server holds is busy for the others.
+that a server holds is busy for the others, and the agent is told which of
+the user's processes holds it (`port 3000 is held by "node server.js" (pid
+4242)`). A connection refused at a local address is explained to it too:
+nothing listens there, or the server was still starting.
 
 Connections out work as they do on the server: pasta, from the distro's
 `passt` package, carries them through ordinary sockets of the user's. DNS
