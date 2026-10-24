@@ -27,10 +27,14 @@ import {
   splitSources,
   stepLabel,
   titleProfile,
+  AUTH_KINDS,
+  PERMISSION_MODES,
+  TOOLS_MODES,
   specOf,
   CLAUDE_CODE_TITLE_MODEL,
 } from './connectors';
 import { providersSummary, resolveProfile } from './aiSettings';
+import { EFFORTS } from './reasoning';
 import { dismiss, notifications } from './notifications';
 
 // The notifications' timers are the window's.
@@ -362,4 +366,9 @@ test('with Rovik’s tools, a reply’s record says what it used, its run’s co
     ),
     'Claude Code · claude-haiku-5-5 · 2.0k tokens (1.9k cached) · $0.0004 for its run · 2 turns'
   );
+});
+
+test('the choices’ tooltips have no markup characters, which WebKitGTK can’t show', () => {
+  const hints = [...AUTH_KINDS, ...PERMISSION_MODES, ...TOOLS_MODES, ...EFFORTS].map((c) => c.hint);
+  for (const hint of hints) assert.doesNotMatch(hint, /[&<>]/, hint);
 });

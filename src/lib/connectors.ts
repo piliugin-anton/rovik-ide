@@ -81,7 +81,7 @@ export const TOOLS_MODES: { value: ClaudeCodeSettings['tools']; label: string; h
   {
     value: 'rovik',
     label: 'Rovik’s (via MCP)',
-    hint: 'Claude Code is the model behind Rovik’s agent: it gets Rovik’s tools over MCP, and Rovik runs each call under Permissions & approval, in the chat’s copy of the project, with its checks, checklist, plans and subagents.',
+    hint: 'Claude Code is the model behind Rovik’s agent: it gets Rovik’s tools over MCP, and Rovik runs each call under Permissions and approval, in the chat’s copy of the project, with its checks, checklist, plans and subagents.',
   },
 ];
 
@@ -89,6 +89,13 @@ export const TOOLS_MODES: { value: ClaudeCodeSettings['tools']; label: string; h
 export function usesRovikTools(p: Pick<Provider, 'baseUrl' | 'connector' | 'settings'>): boolean {
   return specOf(p)?.usesRovikTools(p.settings ?? {}) ?? false;
 }
+
+/*
+ * The hints of the settings' choices are their options' tooltips. On Linux,
+ * WebKitGTK shows an open <select>'s tooltips as GTK markup, in which `&`,
+ * `<` and `>` break the text ("Entity did not end with a semicolon"), so
+ * they are written without them (connectors.test.ts checks).
+ */
 
 export const PERMISSION_MODES: {
   value: ClaudeCodeSettings['permissionMode'];
@@ -98,7 +105,7 @@ export const PERMISSION_MODES: {
   {
     value: 'rovik',
     label: 'Follow Rovik’s permissions',
-    hint: 'Each call Claude Code would ask about goes to Permissions & approval, as the agent’s own would: commands by the allowed list, edits reviewed in the editor, approvals by you or the AI reviewer',
+    hint: 'Each call Claude Code would ask about goes to Permissions and approval, as the agent’s own would: commands by the allowed list, edits reviewed in the editor, approvals by you or the AI reviewer',
   },
   {
     value: 'acceptEdits',
