@@ -863,6 +863,11 @@ impl Run {
         let Some(root) = self.root.clone() else {
             return;
         };
+        // Outside the project the write is refused anyway; recorded, a
+        // rollback would write the file back there (`roll_back`).
+        if crate::agent_tools::resolve_within_root(&root, path).is_err() {
+            return;
+        }
         let key = rel_key(&root, path);
         // E03: the lead changes a test the test writer wrote.
         if self.sub().is_none()
@@ -999,6 +1004,12 @@ impl Run {
         let mut diffs: Vec<String> = Vec::new();
         let mut written: Vec<(String, Option<String>, String, bool)> = Vec::new();
         for (key, target) in &targets {
+            // Only ever a file inside the project (a checkpoint saved by an
+            // older version may name one outside it).
+            if crate::agent_tools::resolve_within_root(&root, key).is_err() {
+                result.skipped.push(key.clone());
+                continue;
+            }
             let abs = tools::to_absolute_path(key, &root);
             let path = Path::new(&abs);
             let Ok(current) = read(path) else {

@@ -837,14 +837,32 @@ static NODE_MISSING: LazyLock<Regex> = LazyLock::new(|| {
 });
 /// Python: `ModuleNotFoundError: No module named 'requests'`, and
 /// `python3: No module named pytest` (`python -m pytest` without it).
+/// `No module named 'myapp.utils'` of the project's own `myapp` is the
+/// code's ([`is_project_module`]).
 static PYTHON_MISSING: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"No module named ['"]?[A-Za-z_][\w.]*['"]?"#).unwrap());
+    LazyLock::new(|| Regex::new(r#"No module named ['"]?(?P<name>[A-Za-z_][\w.]*)['"]?"#).unwrap());
 /// cargo run where there's no crate.
 static NO_CARGO_TOML: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"could not find `Cargo\.toml`").unwrap());
 
 /// Longest line kept to say what failed.
 const ENVIRONMENT_LINE_CHARS: usize = 200;
+
+/// Whether Python module `name` is the project's own: its top-level
+/// package or module is a folder or a `.py` file in one of `roots` (the
+/// check's folders), or in its `src/` (the src layout). A missing one is
+/// the code's failure (a module the change renamed or broke), not a
+/// package left uninstalled.
+fn is_project_module(name: &str, roots: &[String]) -> bool {
+    let top = name.split('.').next().unwrap_or_default();
+    !top.is_empty()
+        && roots.iter().any(|root| {
+            let root = std::path::Path::new(root);
+            [root.to_path_buf(), root.join("src")]
+                .iter()
+                .any(|dir| dir.join(top).is_dir() || dir.join(format!("{top}.py")).is_file())
+        })
+}
 
 /// Whether a module a failure names is a package (`vitest`, `@scope/x`,
 /// `lodash/fp`), not a path (`./util`, `/abs`, `C:\x`) or Node's own
@@ -865,8 +883,13 @@ fn is_package_name(name: &str) -> bool {
 /// find module" of a package, Python's "No module named"), no
 /// `Cargo.toml` where it ran. The line that says so, or for exit code 127
 /// with none, what that code means. None: the code's failure, as far as
-/// the output tells.
-pub fn environment_failure(exit_code: Option<i32>, output: &str) -> Option<String> {
+/// the output tells. `roots`: the check's folders, where the project's own
+/// Python modules are.
+pub fn environment_failure(
+    exit_code: Option<i32>,
+    output: &str,
+    roots: &[String],
+) -> Option<String> {
     let clean = clean_output(output);
     let line_of = |line: &str| {
         crate::chat_db::store::char_prefix(line.trim(), ENVIRONMENT_LINE_CHARS).to_string()
@@ -886,8 +909,10 @@ pub fn environment_failure(exit_code: Option<i32>, output: &str) -> Option<Strin
                 return Some(line_of(trimmed));
             }
         }
-        if PYTHON_MISSING.is_match(trimmed) {
-            return Some(line_of(trimmed));
+        if let Some(c) = PYTHON_MISSING.captures(trimmed) {
+            if !is_project_module(&c["name"], roots) {
+                return Some(line_of(trimmed));
+            }
         }
     }
     (exit_code == Some(127)).then(|| "exit code 127: a program it runs wasn't found".to_string())
@@ -1411,6 +1436,25 @@ mod tests {
         }
     }
 
+    /// A Python module the project has (a package folder, a module file,
+    /// one in `src/`) missing is the code's failure; one it doesn't have
+    /// is a package left uninstalled.
+    #[test]
+    fn a_missing_python_module_of_the_projects_own_is_the_codes_failure() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.clone();
+        std::fs::create_dir_all(root.join("myapp")).unwrap();
+        std::fs::create_dir_all(root.join("src/srcpkg")).unwrap();
+        std::fs::write(root.join("helpers.py"), "").unwrap();
+        let roots = [root.to_string_lossy().into_owned()];
+        for own in ["myapp.utils", "srcpkg", "helpers"] {
+            let output = format!("E   ModuleNotFoundError: No module named '{own}'");
+            assert_eq!(environment_failure(Some(1), &output, &roots), None, "{own}");
+        }
+        let output = "E   ModuleNotFoundError: No module named 'requests'";
+        assert!(environment_failure(Some(1), output, &roots).is_some());
+    }
+
     #[test]
     fn an_environment_failure_is_told_from_the_codes() {
         let cases: &[(Option<i32>, &str, &str)] = &[
@@ -1429,20 +1473,24 @@ mod tests {
         ];
         for (code, output, line) in cases {
             assert_eq!(
-                environment_failure(*code, output).as_deref(),
+                environment_failure(*code, output, &[]).as_deref(),
                 Some(*line),
                 "{output}"
             );
         }
         // Color codes and CRLF don't hide it.
         assert_eq!(
-            environment_failure(Some(127), "\x1b[31msh: 1: vitest: not found\x1b[0m\r\n")
-                .as_deref(),
+            environment_failure(
+                Some(127),
+                "\x1b[31msh: 1: vitest: not found\x1b[0m\r\n",
+                &[]
+            )
+            .as_deref(),
             Some("sh: 1: vitest: not found")
         );
         // Exit code 127 with nothing to say what wasn't found.
         assert_eq!(
-            environment_failure(Some(127), "").as_deref(),
+            environment_failure(Some(127), "", &[]).as_deref(),
             Some("exit code 127: a program it runs wasn't found")
         );
     }
@@ -1481,7 +1529,7 @@ mod tests {
             (Some(1), "Cannot find module"),
         ];
         for (code, output) in cases {
-            assert_eq!(environment_failure(*code, output), None, "{output:?}");
+            assert_eq!(environment_failure(*code, output, &[]), None, "{output:?}");
         }
     }
 }

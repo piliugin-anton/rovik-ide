@@ -352,7 +352,7 @@ fn not_found(d: &InstallResult) -> Option<&str> {
     let code @ Some(127 | 9009) = d.exit_code.flatten() else {
         return None;
     };
-    let line = super::command_output::environment_failure(code, d.output.as_deref()?)?;
+    let line = super::command_output::environment_failure(code, d.output.as_deref()?, &[])?;
     line.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
         .any(|word| word == program)
         .then_some(program)
@@ -648,7 +648,7 @@ impl Run {
         let dir = Path::new(root).join(&install.folder);
         let stop = self.stop.clone();
         let overlay = crate::overlay::chats::get(chat);
-        let mut queued = crate::command_tool::Queued::check(chat, overlay.as_deref());
+        let mut queued = crate::command_tool::Queued::check(chat, overlay.as_deref()).whole(true);
         let (command, env) = install_command(install, &dir);
         queued.env.extend(env);
         // `cargo fetch`: the crates the last chat on this host left in the
@@ -703,13 +703,17 @@ impl Run {
                         focused
                     });
                 }
-                // Kept whole, as a check's output is (4.3): `@checks/prepare-1.log`.
-                if !combined.is_empty() {
+                // Kept whole, as a check's output is (4.3): `@checks/prepare-1.log`,
+                // not the start and end `combined` keeps.
+                let whole = out
+                    .whole_text()
+                    .map_or_else(|| combined.clone(), |w| clean_output(&w));
+                if !whole.is_empty() {
                     let name = match install.folder.as_str() {
                         "" => format!("{}", index + 1),
                         folder => format!("{folder}-{}", index + 1),
                     };
-                    r.saved_output = check_output::save(chat, stem, &name, &combined);
+                    r.saved_output = check_output::save(chat, stem, &name, &whole);
                 }
             }
             Err(e) => {

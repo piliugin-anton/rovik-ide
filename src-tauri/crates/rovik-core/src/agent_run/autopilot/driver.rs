@@ -1089,6 +1089,9 @@ pub(in crate::agent_run) enum Crash {
     /// After recording a candidate's implementation, before its run; set
     /// on the task's chat (candidates.rs).
     BeforeCandidate,
+    /// After the pick decided on its winner, before it took its change; on
+    /// the task's chat. The run goes no further.
+    BeforeAdopt,
     /// After the pick took its winner's change, before its record says so;
     /// on the task's chat. The run goes no further.
     AfterAdopt,

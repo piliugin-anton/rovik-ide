@@ -1701,7 +1701,7 @@ impl Run {
                         } else {
                             r.status = "failed";
                             let environment = (!out.timed_out)
-                                .then(|| environment_failure(out.exit_code, &combined))
+                                .then(|| environment_failure(out.exit_code, &combined, &roots))
                                 .flatten();
                             // V03: in Autopilot, whether its environment failed.
                             if self.in_autopilot() {
@@ -1719,7 +1719,7 @@ impl Run {
                             // A timeout says nothing of what it didn't reach,
                             // and an environment's failure nothing of the code.
                             if !out.timed_out && environment.is_none() {
-                                compare = Some(whole);
+                                compare = Some(whole.clone());
                             }
                             let focused = focus_failures(&combined, FAILURE_OUTPUT_CHARS);
                             let output = if focused.is_empty() {
@@ -1737,12 +1737,14 @@ impl Run {
                                 });
                             }
                             r.output = Some(output);
-                            if combined.chars().count() > FAILURE_OUTPUT_CHARS {
+                            // What the reports call the whole output: not the
+                            // start and end `combined` keeps (V07).
+                            if whole.chars().count() > FAILURE_OUTPUT_CHARS {
                                 r.saved_output = super::check_output::save(
                                     &self.dialog_id,
                                     saved_as,
                                     &r.kind,
-                                    &combined,
+                                    &whole,
                                 );
                             }
                         }

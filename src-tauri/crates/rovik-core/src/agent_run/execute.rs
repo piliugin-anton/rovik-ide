@@ -498,8 +498,19 @@ impl Run {
             ) {
                 let key = super::repair::rel_key(root, path);
                 let exists = std::path::Path::new(&tools::to_absolute_path(&key, root)).exists();
-                if !scope.allows(&key, exists) {
-                    let content = super::worker::outside_scope(&key, scope);
+                // By its name, and by where it really lands: a link in the
+                // step's folder (or a granted path that is one) isn't a way
+                // into another step's files.
+                let real = super::repair::real_key(root, path);
+                if !scope.allows(&key, exists)
+                    || !real.as_deref().is_some_and(|r| scope.allows(r, exists))
+                {
+                    // Named by where it leads when only that is outside.
+                    let named = match &real {
+                        Some(r) if scope.allows(&key, exists) => r.as_str(),
+                        _ => key.as_str(),
+                    };
+                    let content = super::worker::outside_scope(named, scope);
                     return self.answer_unrun(tc, content, true, None).await;
                 }
             }
@@ -708,15 +719,16 @@ impl Run {
         }
 
         let auth = self.authorize(tc, resume_note).await;
-        // Stop may have been pressed while approval was pending.
-        if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
+        // Stop may have been pressed while approval was pending (the user's,
+        // which Stop answers "no", or the AI reviewer's, whose "yes" may
+        // come after it): nothing runs once the run is stopped.
+        if self.stopped() {
             return self.stopped_result(tc).await;
         }
         let auth = self.reconcile_review(tc, auth).await;
-        if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
+        if self.stopped() {
             return self.stopped_result(tc).await;
         }
-        // Stop answers a waiting approval "no" too: that one ended above.
         self.denied_by_user = auth.by_user && self.sub().is_none();
         // G02: its time is its own from here, not its approval's wait.
         self.calls.start(&tc.id);

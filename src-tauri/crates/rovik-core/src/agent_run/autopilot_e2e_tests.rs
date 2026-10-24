@@ -7154,6 +7154,80 @@ async fn a_pick_cut_after_it_took_its_winner_goes_on_with_that_winner() {
     assert_eq!(h.file("other.txt"), None, "b's change never landed");
 }
 
+/// R03: the process dies after the pick decided on its winner, before it
+/// took its change. After the restart the winner's copy is only on disk:
+/// the resumed pick opens it again and takes it, rather than failing the
+/// task.
+#[tokio::test]
+async fn a_pick_cut_before_it_took_its_winner_takes_it_after_a_restart() {
+    let script = candidates_script(
+        &[("ok.txt", "ok")],
+        &[("ok.txt", "ok"), ("other.txt", "b\n")],
+    );
+    let Some((h, _, url, request)) = candidates_start(Vec::new(), script).await else {
+        return;
+    };
+    crash_at(&h.dialog_id, Crash::BeforeAdopt);
+    h.start(request).await;
+    for _ in 0..3000 {
+        if !super::autopilot::crash_due(&h.dialog_id, Crash::BeforeAdopt) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!super::autopilot::crash_due(
+        &h.dialog_id,
+        Crash::BeforeAdopt
+    ));
+    // The restart: the run is forgotten, and so are the open copies (their
+    // stores stay on disk).
+    let pick_run = h
+        .events_of("runStarted")
+        .iter()
+        .rev()
+        .find(|e| e["dialogId"] == h.dialog_id.as_str())
+        .and_then(|e| e["runId"].as_str().map(str::to_string))
+        .expect("the pick's run");
+    h.core.agents.unregister(&h.dialog_id, &pick_run);
+    let messages = h.messages().await;
+    let candidates: Vec<String> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("candidates").cloned())
+        .flat_map(|row| {
+            row["candidates"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|c| c["chat"].as_str().map(str::to_string))
+        })
+        .collect();
+    assert!(!candidates.is_empty());
+    crate::rt::spawn_blocking(move || {
+        for chat in candidates {
+            crate::overlay::chats::forget_child_as_if_restarted(&chat);
+        }
+    })
+    .await
+    .unwrap();
+    let mut resume = h.request(&url, StartKind::Resume, Permissions::default());
+    resume.mode = Some("autopilot".into());
+    resume.isolate = Some(true);
+    resume.config = None;
+    h.start(resume).await;
+    let records = delivered_slowly(&h).await;
+    let pick = records.iter().find(|r| r.name == Stage::Pick).unwrap();
+    assert_eq!(pick.status, Status::Done, "{records:#?}");
+    let messages = h.messages().await;
+    let row = pick_row(&messages);
+    assert_eq!(
+        (&row["winner"], &row["adopted"]),
+        (&json!("a"), &json!(true))
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+    assert_eq!(h.file("other.txt"), None, "b's change never landed");
+}
+
 /// T05 (R03): a round a Stop ended is never picked: its copies go with it,
 /// and so does a round of an earlier task that nothing ended, once the
 /// next round is made, so they don't take the room the new copies share.

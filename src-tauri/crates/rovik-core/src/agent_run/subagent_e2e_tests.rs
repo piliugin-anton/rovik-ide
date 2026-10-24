@@ -3546,6 +3546,57 @@ async fn a_worker_that_wrote_nothing_leaves_its_step_open() {
     assert!(r.meta.as_ref().unwrap().get("checklistUpdate").is_none());
 }
 
+/// A path in a worker's scope that is a link to a file outside it (granted
+/// here) is checked by where it lands: the file behind it isn't written.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_in_scope_isnt_a_way_to_write_outside_it() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("c.txt", "keep\n")]).await;
+    std::os::unix::fs::symlink("c.txt", h.project.join("link.txt")).unwrap();
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            vec![
+                Reply::Call {
+                    id: "e1",
+                    name: "extend_scope",
+                    args: json!({ "paths": ["link.txt"], "reason": "mirrored there" }),
+                },
+                write_call("w1", "link.txt", "changed\n"),
+                write_call("w2", "a.txt", "hello\n"),
+                worker_report("Greeted.", &["a.txt"]),
+            ],
+        )],
+        vec![
+            checklist_call(),
+            step("s1", 1),
+            checklist_closed(),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let child = h.child_of("s1").await;
+    let work = h.messages_of(&child.id).await;
+    let result = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .unwrap()
+            .content
+            .clone()
+    };
+    assert!(result("e1").starts_with("Granted"), "{}", result("e1"));
+    assert!(
+        result("w1").contains("outside your write scope"),
+        "{}",
+        result("w1")
+    );
+    assert_eq!(h.file("c.txt").as_deref(), Some("keep\n"));
+    assert_eq!(h.file("a.txt").as_deref(), Some("hello\n"));
+}
+
 #[tokio::test]
 async fn a_write_outside_the_scope_is_refused_until_extended() {
     let h = plan_harness(&[("a.txt", "old\n"), ("c.txt", "keep\n")]).await;

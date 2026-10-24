@@ -309,7 +309,7 @@ struct RedPlace {
 /// A test run's word on the code as it is: its tests pass (true) or fail
 /// (false). None: it can't say: cut short, or it ran no test at all (R03:
 /// `cargo test` whose filter matches nothing exits 0).
-fn passes_as_it_is(out: &CommandOutput) -> Option<bool> {
+pub(super) fn passes_as_it_is(out: &CommandOutput) -> Option<bool> {
     if out.timed_out || out.stopped {
         return None;
     }

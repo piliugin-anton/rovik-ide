@@ -66,7 +66,7 @@ impl Before {
             return Before::Passed;
         }
         let text = out.text();
-        if environment_failure(out.exit_code, &text).is_some() {
+        if environment_failure(out.exit_code, &text, roots).is_some() {
             return Before::Unknown;
         }
         let whole = out.whole_text().unwrap_or(text);
