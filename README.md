@@ -427,7 +427,9 @@ On a cloud host, the host needs its own installation: an administrator
 runs `sudo /opt/rovik/bin/rovik-agentd admin claude-code` once, which
 installs Anthropic's package for every user (see
 [docs/cloud-hosts.md](docs/cloud-hosts.md)), or each user runs **Set up**
-with the host chosen, which installs it for them alone. Each user's chats
+with the host chosen, which installs it for them alone. The host's page in
+**Settings → Cloud hosts** lists the connectors installed there for you, in
+one line: "Connectors installed: Claude Code". Each user's chats
 sign in with the token or key of the connector's settings, or the login
 Set up made for them there.
 

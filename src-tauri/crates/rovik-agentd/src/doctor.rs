@@ -15,6 +15,7 @@ use crate::home::{self, Home};
 use crate::host;
 use crate::limits::{size_of, AdminFile, ADMIN_FILE};
 use crate::network;
+use rovik_protocol::connectors::ConnectorKind;
 use rovik_protocol::host::{Disk, Doctor, Finding, InstallLimits, Level, Storage};
 use rovik_protocol::PROTOCOL;
 use std::ffi::CString;
@@ -72,6 +73,9 @@ pub struct Server {
     pub private_network: Option<Result<(), String>>,
     /// The shared Rust and Node versions (installer/toolchains.rs).
     pub toolchains: PathBuf,
+    /// The connectors whose program is installed here
+    /// (`rovik_core::connectors::installed`).
+    pub connectors: Vec<ConnectorKind>,
     pub git: Option<String>,
     /// A folder's file system: its free and total bytes.
     pub disk: fn(&Path) -> Option<(u64, u64)>,
@@ -105,6 +109,7 @@ impl Server {
             landlock: rovik_core::overlay::confine::landlock_works(),
             private_network,
             toolchains: PathBuf::from(crate::installer::TOOLCHAINS),
+            connectors: rovik_core::connectors::installed(),
             git: git_version(),
             disk: free_space,
         })
@@ -214,6 +219,14 @@ pub fn gather(server: &Server) -> Doctor {
         }
     };
     findings.toolchains(&admin, install.is_some(), &server.toolchains);
+    let connectors: Vec<&str> = server.connectors.iter().map(|kind| kind.title()).collect();
+    findings.ok(format!(
+        "connectors installed: {}",
+        match connectors.is_empty() {
+            true => "none".to_string(),
+            false => connectors.join(", "),
+        }
+    ));
     let other_daemons =
         host::other_daemons(&server.cgroups, &server.proc, server.uid, &server.user);
     let slots = admin.slots(user_slots, other_daemons);
@@ -471,9 +484,9 @@ mod tests {
 
     /// What `doctor` says on a fixture: an account whose folders are its
     /// own, a config.toml naming two computers, no daemon answering, FUSE
-    /// but no Chrome, user namespaces allowed, git, a team server whose
-    /// administrators set limits, another user's daemon running, and some
-    /// files in Rovik's folders.
+    /// but no Chrome, user namespaces allowed, Claude Code, git, a team
+    /// server whose administrators set limits, another user's daemon
+    /// running, and some files in Rovik's folders.
     #[test]
     fn the_report_on_a_fixture() {
         let dir = rovik_core::testing::temp_dir();
@@ -551,6 +564,7 @@ mod tests {
             landlock: true,
             private_network: Some(Ok(())),
             toolchains: dir.0.join("toolchains"),
+            connectors: vec![ConnectorKind::ClaudeCode],
             git: Some("2.43.0".into()),
             disk: |_| Some((12 << 30, 40 << 30)),
         };
@@ -571,6 +585,7 @@ rovik-agentd {VERSION} (protocol {PROTOCOL}, serves apps from protocol {MIN_PROT
   ok       bubblewrap: /usr/bin/bwrap sandboxes the agent's commands
   ok       a private network for this user's commands: their servers' ports are theirs alone
   ok       shared toolchains in /home/ann/toolchains: installed: Rust 1.82.0, Node 20.11.0; chats may install a version, the package caches are shared
+  ok       connectors installed: Claude Code
   git      2.43.0
   storage  projects 3.0 MB, working copies 1.0 MB, chats and attachments 20 KB, temporary files 0 B
   logs     2.0 KB, rotated at 5 MB with 3 kept
@@ -607,6 +622,14 @@ rovik-agentd {VERSION} (protocol {PROTOCOL}, serves apps from protocol {MIN_PROT
         // And where none is wanted (WSL, a daemon in development), nothing.
         server.private_network = None;
         assert!(!render(&gather(&server)).contains("private network"));
+
+        // A server without any connector's program says so.
+        server.connectors = Vec::new();
+        let shown = render(&gather(&server));
+        assert!(
+            shown.contains("ok       connectors installed: none\n"),
+            "{shown}"
+        );
     }
 
     #[test]

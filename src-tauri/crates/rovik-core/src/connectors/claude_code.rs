@@ -2236,6 +2236,11 @@ impl Connector for ClaudeCode {
         })
     }
 
+    /// `claude` on the PATH, or where an installer puts it.
+    fn installed(&self) -> bool {
+        resolve_program("").is_ok()
+    }
+
     /// The native installer; `claude auth login` and `logout` with a run's
     /// settings folder, a Console login for an API-key connector. The
     /// login opens the browser where it runs, and prints the page to open

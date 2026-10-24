@@ -23,6 +23,13 @@ pub struct HostInfo {
     /// The Chrome the browser tools would start, when one is installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chrome: Option<String>,
+    /// The connectors whose program is installed there, where a chat's run
+    /// finds it when the connector's settings name none, by id
+    /// (`claude-code`). Ids rather than `ConnectorKind`s, so an app that
+    /// doesn't know a newer daemon's kind still reads the rest. None from a
+    /// daemon that can't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connectors: Option<Vec<String>>,
     /// Unprivileged user namespaces are allowed (Chrome's sandbox needs them).
     pub user_namespaces: bool,
     /// Rovik as installed for the whole server (D17), when it is.

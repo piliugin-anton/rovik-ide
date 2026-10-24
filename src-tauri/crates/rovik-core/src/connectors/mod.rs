@@ -18,13 +18,13 @@
 //! cleared folder), the turn starts a new one with a recap of the chat.
 //!
 //! Every connector implements [`Connector`]: a probe for "Test & refresh
-//! models", its sign-in check, a turn, and, where it has them, what its
-//! "Set up" steps run (setup.rs runs them, the same for every connector),
-//! its commands, its newest version and its plan mode. A new harness
-//! (Codex, say) is one more module here implementing it, one more
-//! `ConnectorKind`, and its line in [`connector`]; nothing else here or in
-//! the run changes. The app's side is its `ConnectorSpec` and its
-//! `ConnectorFields` (src/lib/connectors.ts).
+//! models", its sign-in check, whether its program is installed, a turn,
+//! and, where it has them, what its "Set up" steps run (setup.rs runs
+//! them, the same for every connector), its commands, its newest version
+//! and its plan mode. A new harness (Codex, say) is one more module here
+//! implementing it, one more `ConnectorKind`, and its line in
+//! [`connector`]; nothing else here or in the run changes. The app's side
+//! is its `ConnectorSpec` and its `ConnectorFields` (src/lib/connectors.ts).
 
 mod claude_code;
 mod harness;
@@ -208,6 +208,12 @@ pub trait Connector: Send + Sync {
         args: &'a ProbeRequestArgs,
     ) -> BoxFuture<'a, Result<ConnectorAuth, String>>;
 
+    /// Whether its program is installed on this computer, where a chat's
+    /// run finds it when the connector's settings name no program: what a
+    /// cloud host reports it has (its page, `rovik-agentd doctor`). It
+    /// looks for the program and runs nothing.
+    fn installed(&self) -> bool;
+
     /// Runs one turn, reporting it through `on_event` as a provider's
     /// request would: `Delta`, `Reasoning`, `HarnessStep`, `HarnessSession`,
     /// `Finished` (its usage), `Done`, or `Error`. `Err` is for what fails
@@ -275,6 +281,15 @@ pub fn connector(kind: ConnectorKind) -> &'static dyn Connector {
     match kind {
         ConnectorKind::ClaudeCode => &claude_code::ClaudeCode,
     }
+}
+
+/// The connectors whose program is installed on this computer
+/// ([`Connector::installed`]), in the order of `ConnectorKind::ALL`.
+pub fn installed() -> Vec<ConnectorKind> {
+    ConnectorKind::ALL
+        .into_iter()
+        .filter(|kind| connector(*kind).installed())
+        .collect()
 }
 
 /// How long finding out the newest version may take: it's the probe's
