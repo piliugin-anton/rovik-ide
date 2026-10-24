@@ -176,6 +176,54 @@ fn a_moved_folder_keeps_its_files_and_a_replaced_one_is_deleted_first() {
     );
 }
 
+/// A folder the view listed, untouched, leaves it with all it holds when
+/// it leaves the project; a file the project turned into a folder (or the
+/// other way) is seen as it is now. One the chat changed inside stays.
+#[test]
+fn a_listed_folder_that_left_the_project_leaves_the_view_and_kinds_follow_it() {
+    let d = setup(&[("gen/a.txt", "a"), ("keep/b.txt", "b"), ("x", "file")]);
+    let o = overlay(&d);
+    o.readdir_plus(ROOT).unwrap();
+    o.readdir_plus(ino(&o, "gen")).unwrap();
+    o.readdir_plus(ino(&o, "keep")).unwrap();
+    write_all(&o, "keep/b.txt", "the chat's");
+    fs::remove_dir_all(d.project().join("gen")).unwrap();
+    fs::remove_dir_all(d.project().join("keep")).unwrap();
+    fs::remove_file(d.project().join("x")).unwrap();
+    fs::create_dir_all(d.project().join("x")).unwrap();
+    fs::write(d.project().join("x/inside.txt"), "i").unwrap();
+    o.project_changed_everywhere();
+    let mut names: Vec<String> = o
+        .readdir_plus(ROOT)
+        .unwrap()
+        .into_iter()
+        .map(|(e, _)| e.name)
+        .collect();
+    names.sort();
+    assert_eq!(names, ["keep", "x"]);
+    assert_eq!(read_all(&o, "keep/b.txt"), "the chat's");
+    assert_eq!(read_all(&o, "x/inside.txt"), "i");
+}
+
+/// On Unix a backslash is part of a name: a file named `a\b` is that
+/// file, found again by its path after the overlay reopens, not `a/b`.
+#[cfg(unix)]
+#[test]
+fn a_backslash_in_a_name_is_part_of_the_name() {
+    let d = setup(&[("a/b", "the folder's")]);
+    {
+        let o = overlay(&d);
+        let f = o
+            .create(ROOT, "a\\b", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
+        o.write(f.ino, 0, b"the backslash's").unwrap();
+        o.flush();
+    }
+    let o = overlay(&d);
+    assert_eq!(read_all(&o, "a\\b"), "the backslash's");
+    assert_eq!(read_all(&o, "a/b"), "the folder's");
+}
+
 #[test]
 fn files_appearing_in_the_project_show_up_unless_the_chat_removed_them() {
     let d = setup(&[("a.txt", "a")]);
@@ -459,6 +507,47 @@ fn a_saved_path_outside_the_project_is_left_out() {
     let plan = super::land::plan(&d.project(), &[outside], false);
     let reasons: Vec<&str> = plan.conflicts.iter().map(|c| c.reason.as_str()).collect();
     assert_eq!(reasons, ["it isn't a path inside the project"]);
+}
+
+/// A saved change whose files can't be this overlay's (a list written by
+/// hand) is left out too: its content from outside a store's folders, or
+/// the project's file from outside the project, never lands.
+#[test]
+fn a_saved_change_naming_files_outside_its_store_or_project_is_left_out() {
+    let d = setup(&[("a.txt", "a")]);
+    let secret = d.root.join("secret.txt");
+    fs::write(&secret, b"not the chat's").unwrap();
+    let upper = d.store().join("upper");
+    fs::create_dir_all(&upper).unwrap();
+    fs::write(upper.join("1"), b"the chat's").unwrap();
+    let write =
+        |origin: Option<&str>, upper: PathBuf, base_copy: Option<PathBuf>| OverlayChange::Write {
+            path: "b.txt".into(),
+            kind: Kind::File,
+            origin: origin.map(str::to_string),
+            upper: Some(upper),
+            base_copy,
+            perm: 0o644,
+            perm_changed: false,
+            target: None,
+            by_product: false,
+        };
+    for bad in [
+        write(None, secret.clone(), None),
+        write(None, upper.join("1"), Some(secret.clone())),
+        write(Some("../secret.txt"), upper.join("1"), None),
+        write(None, d.store().join("upper/../../secret.txt"), None),
+    ] {
+        super::fs::write_manifest(&d.store(), 2, vec![bad.clone()]).unwrap();
+        let o = overlay(&d);
+        assert!(o.changes().is_empty(), "{bad:?}: {:?}", o.changes());
+    }
+    // This store's own file is fine; so is one saved where the app's data
+    // folder was before it moved: it's this store's by folder and name.
+    for own in [upper.join("1"), PathBuf::from("/moved/data/store/upper/1")] {
+        super::fs::write_manifest(&d.store(), 2, vec![write(None, own, None)]).unwrap();
+        assert_eq!(read_all(&overlay(&d), "b.txt"), "the chat's");
+    }
 }
 
 mod mounted {

@@ -115,6 +115,21 @@ fn snapshot(path: &Path) -> Snapshot {
     }
 }
 
+/// Whether a folder on the way from `project` to `rel` (not `rel` itself)
+/// is a link: writing there would write wherever the link leads, outside
+/// the project perhaps, rather than into the project's folder.
+fn through_link(project: &Path, rel: &str) -> bool {
+    let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+    let mut at = project.to_path_buf();
+    for part in parts.iter().take(parts.len().saturating_sub(1)) {
+        at.push(part);
+        if fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
+            return true;
+        }
+    }
+    false
+}
+
 fn abs(project: &Path, rel: &str) -> PathBuf {
     let mut p = project.to_path_buf();
     p.extend(rel.split('/').filter(|s| !s.is_empty()));
@@ -154,6 +169,15 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
             conflicts.push(Conflict {
                 path,
                 reason: "it isn't a path inside the project".into(),
+            });
+            continue;
+        }
+        // A folder on its way that became a link in the project: what the
+        // chat wrote there isn't where it would land.
+        if through_link(project, &path) {
+            conflicts.push(Conflict {
+                path,
+                reason: "a folder on its way is a link in the project now".into(),
             });
             continue;
         }
@@ -727,6 +751,13 @@ fn write_content(
             return Err(format!("{rel}: injected failure"));
         }
         let _ = content;
+    }
+    // Checked again as it's written: a folder on the way may have become a
+    // link since the plan.
+    if through_link(project, rel) {
+        return Err(format!(
+            "{rel}: a folder on its way is a link in the project now"
+        ));
     }
     let path = abs(project, rel);
     let err = |e: std::io::Error| format!("{rel}: {e}");
@@ -1322,6 +1353,45 @@ mod tests {
         let anyway = plan(&project, &changes, true);
         assert!(anyway.conflicts.is_empty());
         assert_eq!(anyway.paths(), ["notes.md"]);
+    }
+
+    /// A folder of the project that became a link is never written
+    /// through: what the chat wrote under it is a conflict, and the file
+    /// where the link leads stays as it was.
+    #[cfg(unix)]
+    #[test]
+    fn a_landing_never_writes_through_a_folder_that_became_a_link() {
+        let dir = crate::testing::temp_dir();
+        let (project, elsewhere) = (dir.0.join("project"), dir.0.join("elsewhere"));
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("a.txt"), "not the project's\n").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, project.join("src")).unwrap();
+        let ours = dir.0.join("ours");
+        fs::write(&ours, "the chat's\n").unwrap();
+        let changes = [OverlayChange::Write {
+            path: "src/a.txt".into(),
+            kind: Kind::File,
+            origin: None,
+            upper: Some(ours),
+            base_copy: None,
+            perm: 0o644,
+            perm_changed: false,
+            target: None,
+            by_product: false,
+        }];
+        let stopped = plan(&project, &changes, true);
+        assert!(stopped.actions.is_empty());
+        assert_eq!(stopped.conflicts[0].path, "src/a.txt");
+        let content = Content::File {
+            file: dir.0.join("ours"),
+            perm: None,
+        };
+        assert!(write_content(&project, "src/a.txt", &content, "chat").is_err());
+        assert_eq!(
+            fs::read_to_string(elsewhere.join("a.txt")).unwrap(),
+            "not the project's\n"
+        );
     }
 
     #[test]

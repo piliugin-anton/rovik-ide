@@ -38,7 +38,7 @@ pub const WARN_AT: f64 = 0.8;
 const RELIST_AFTER: Duration = Duration::from_secs(2);
 /// The list of changes is saved at most this often while things change;
 /// `flush` saves at once.
-const SAVE_EVERY: Duration = Duration::from_secs(2);
+pub(super) const SAVE_EVERY: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug)]
 struct Meta {
@@ -149,6 +149,13 @@ pub enum DeletedBase {
         #[serde(default)]
         files: Vec<(String, String)>,
     },
+}
+
+/// Whether `c` separates a path's parts here: `/`, and on Windows `\`
+/// too. Elsewhere a backslash is part of a name, as `check_name` lets it
+/// be: split there, `a\b` would resolve to another file.
+fn separator(c: char) -> bool {
+    c == '/' || (cfg!(windows) && c == '\\')
 }
 
 /// Files above this are recorded by size and time, not hashed.
@@ -727,38 +734,47 @@ impl OverlayFs {
         let Some(path) = Self::path_in(inner, ino) else {
             return Ok(Vec::new());
         };
-        // Only a folder still at its place in the project mirrors it.
-        let listing: Vec<String> = match &node.origin {
+        // Only a folder still at its place in the project mirrors it. Each
+        // entry with its kind, as the listing says it.
+        let kinds: BTreeMap<String, Option<Kind>> = match &node.origin {
             Some(origin) if *origin == path => fs::read_dir(self.abs(origin))
                 .map(|rd| {
                     rd.filter_map(|e| e.ok())
-                        .filter_map(|e| e.file_name().into_string().ok())
+                        .filter_map(|e| {
+                            let kind = e.file_type().ok().map(|t| {
+                                if t.is_symlink() {
+                                    Kind::Symlink
+                                } else if t.is_dir() {
+                                    Kind::Dir
+                                } else {
+                                    Kind::File
+                                }
+                            });
+                            Some((e.file_name().into_string().ok()?, kind))
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
-            _ => Vec::new(),
+            _ => BTreeMap::new(),
         };
+        let listing: Vec<String> = kinds.keys().cloned().collect();
         let mut changes = Vec::new();
         let node = inner.nodes.get(&ino).unwrap();
         let mut children = node.children.clone().unwrap_or_default();
         let removed = node.removed.clone();
         let names: BTreeSet<&String> = listing.iter().collect();
         if loaded {
-            // Untouched entries that left the project leave the view.
+            // Untouched entries that left the project leave the view, a
+            // listed folder with all it holds; one whose kind changed there
+            // (a file now a folder) goes too, and is read again below.
             let gone: Vec<(String, Ino)> = children
                 .iter()
-                .filter(|(name, _)| !names.contains(name))
                 .filter(|(name, c)| {
-                    inner.nodes.get(c).is_some_and(|n| {
-                        n.origin.as_deref() == Some(join(&path, name).as_str())
-                            && !n.perm_changed
-                            && n.open == 0
-                            && match n.kind {
-                                Kind::Dir => n.children.is_none(),
-                                _ => n.data != Data::None || n.kind == Kind::Symlink,
-                            }
-                            && !matches!(n.data, Data::Upper { .. })
-                    })
+                    let at = join(&path, name);
+                    let kind = inner.nodes.get(c).map(|n| n.kind);
+                    let changed = kinds.get(*name).is_some_and(|k| k.is_some() && *k != kind);
+                    let left = !names.contains(name) || changed;
+                    left && Self::mirrors_project(inner, **c, &at)
                 })
                 .map(|(n, c)| (n.clone(), *c))
                 .collect();
@@ -768,9 +784,7 @@ impl OverlayFs {
                 // other names; only this name goes.
                 let node = inner.nodes.get_mut(&c).unwrap();
                 node.links.retain(|(p, n)| !(*p == ino && *n == name));
-                if node.links.is_empty() {
-                    inner.nodes.remove(&c);
-                }
+                self.collect(inner, c);
                 changes.push(Change::Entry { parent: ino, name });
             }
         }
@@ -1121,6 +1135,31 @@ impl OverlayFs {
         }
         if let Some(b) = base {
             inner.deleted.insert(path, b);
+        }
+    }
+
+    /// Whether node `ino`, at `path`, only mirrors the project's entry
+    /// there: at its own place, nothing about it changed, not open, and,
+    /// a folder, nothing beneath it either.
+    fn mirrors_project(inner: &Inner, ino: Ino, path: &str) -> bool {
+        let Some(n) = inner.nodes.get(&ino) else {
+            return false;
+        };
+        let own = n.origin.as_deref() == Some(path)
+            && !n.perm_changed
+            && n.open == 0
+            && !matches!(n.data, Data::Upper { .. });
+        own && match n.kind {
+            Kind::Dir => {
+                n.removed.is_empty()
+                    && n.children.as_ref().is_none_or(|children| {
+                        children
+                            .iter()
+                            .all(|(name, c)| Self::mirrors_project(inner, *c, &join(path, name)))
+                    })
+            }
+            Kind::File => n.data != Data::None,
+            Kind::Symlink => true,
         }
     }
 
@@ -1685,10 +1724,16 @@ impl OverlayFs {
         for change in changes {
             let path = change.path();
             // A saved path is the chat's own: one that isn't (a list
-            // written by hand) never reaches outside the project.
-            if !path.split('/').all(|part| check_name(part).is_ok()) {
+            // written by hand) never reaches outside the project, nor
+            // its files outside the store.
+            let rehomed = self.rehomed(change);
+            let Some(change) = rehomed
+                .as_ref()
+                .filter(|_| path.split('/').all(|part| check_name(part).is_ok()))
+            else {
+                log::warn!("overlay: a saved change to {path} names files outside its project or store; left out");
                 continue;
-            }
+            };
             let (dir_path, name) = match path.rsplit_once('/') {
                 Some((d, n)) => (d, n),
                 None => ("", path),
@@ -1816,9 +1861,54 @@ impl OverlayFs {
         }
     }
 
+    /// A saved `change` as this overlay would have written it, or None
+    /// when it names what it never would: its project file (`origin`) by
+    /// a path outside the project, or its files of content (`upper`,
+    /// `base_copy`) anywhere but a store's `upper/` and `base/`, by a plain
+    /// name. Those are taken as this store's (by folder and name, as the
+    /// sweep takes them: the app's data folder may have moved since).
+    /// Landing reads them and writes what they hold into the project, so a
+    /// list changed by hand mustn't point them anywhere else.
+    fn rehomed(&self, change: &OverlayChange) -> Option<OverlayChange> {
+        let OverlayChange::Write {
+            origin,
+            upper,
+            base_copy,
+            ..
+        } = change
+        else {
+            return Some(change.clone());
+        };
+        if !origin
+            .as_deref()
+            .is_none_or(|o| o.split('/').all(|part| check_name(part).is_ok()))
+        {
+            return None;
+        }
+        let here = |file: &Option<PathBuf>, folder: &str| -> Option<Option<PathBuf>> {
+            let Some(file) = file else {
+                return Some(None);
+            };
+            let name = file.file_name()?.to_str()?;
+            let parent = file.parent()?.file_name()?.to_str()?;
+            (parent == folder && check_name(name).is_ok())
+                .then(|| Some(self.store.join(folder).join(name)))
+        };
+        let (new_upper, new_base) = (here(upper, "upper")?, here(base_copy, "base")?);
+        let mut change = change.clone();
+        if let OverlayChange::Write {
+            upper, base_copy, ..
+        } = &mut change
+        {
+            *upper = new_upper;
+            *base_copy = new_base;
+        }
+        Some(change)
+    }
+
     fn resolve_in(&self, inner: &mut Inner, path: &str) -> VfsResult<Ino> {
         let mut ino = ROOT;
-        for part in path.split(['/', '\\']).filter(|p| !p.is_empty()) {
+        for part in path.split(separator).filter(|p| !p.is_empty()) {
             ino = self.find(inner, ino, part)?;
         }
         Ok(ino)
@@ -2388,8 +2478,8 @@ impl Backend for OverlayFs {
     }
 
     fn resolve_parent<'a>(&self, path: &'a str) -> VfsResult<(Ino, &'a str)> {
-        let path = path.trim_end_matches(['/', '\\']);
-        let (dir, name) = match path.rfind(['/', '\\']) {
+        let path = path.trim_end_matches(separator);
+        let (dir, name) = match path.rfind(separator) {
             Some(i) => (&path[..i], &path[i + 1..]),
             None => ("", path),
         };
