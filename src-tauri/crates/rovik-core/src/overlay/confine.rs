@@ -10,7 +10,15 @@
 //!   and the toolchains' caches under the home folder.
 //! - **The credential stores are empty** (`hide`): the provider keys
 //!   (`~/.rovik`, keys.json on a server) and the user's SSH, cloud and
-//!   signing credentials ([`secret_dirs`]).
+//!   signing credentials, folders and single files (`~/.netrc`, cargo's
+//!   token) ([`secret_paths`]).
+//! - **The local services are closed** (`sockets`): the agents that sign
+//!   with the user's keys (ssh-agent, gpg-agent), the desktop session (X11,
+//!   Wayland, D-Bus, which can start programs outside the sandbox) and the
+//!   container daemons ([`local_sockets`]). A read-only folder doesn't stop
+//!   a connection to a socket in it, so each mechanism closes them its own
+//!   way; the variables that name them are left out of the command's
+//!   environment ([`SESSION_VARIABLES`]).
 //! - **The redirect**: an isolated chat's commands see its view at the
 //!   project's own path too, so one that names the project by its full
 //!   path (`cd /home/me/app`, a build script) still stays in the chat.
@@ -52,25 +60,30 @@ pub use crate::vfs::driver::InstallOutcome;
 
 /// What a confined command may see. The project's path shows the chat's
 /// `view` (no redirect when the two are the same: the command already runs
-/// in its own copy, as on a server), the directories in `hide` are empty to
-/// it, and it may write only under those in `writable`.
+/// in its own copy, as on a server), the folders and files in `hide` are
+/// empty to it, and it may write only under the folders in `writable`.
 #[derive(Clone, Debug)]
 pub struct Confine {
     pub view: PathBuf,
     pub project: PathBuf,
-    /// Directories made inaccessible to the command.
+    /// Folders and files made inaccessible to the command.
     pub hide: Vec<PathBuf>,
     /// Directories the command may write to; the rest is read-only.
     pub writable: Vec<PathBuf>,
+    /// The user's local services' sockets, and folders of them, closed to
+    /// the command ([`local_sockets`]).
+    pub sockets: Vec<PathBuf>,
 }
 
 impl Confine {
     /// An isolated chat's command: the project's path shows its view, and
     /// it may write to the view and the usual folders ([`writable_dirs`]).
     pub fn redirecting(view: PathBuf, project: PathBuf) -> Confine {
+        let writable = writable_dirs(&view);
         Confine {
-            writable: writable_dirs(&view),
-            hide: secret_dirs(),
+            sockets: local_sockets(&writable),
+            writable,
+            hide: secret_paths(),
             view,
             project,
         }
@@ -79,9 +92,11 @@ impl Confine {
     /// A command that already runs in its own copy (a server worktree, or a
     /// chat that works in the project directly): nothing is redirected.
     pub fn hiding(root: PathBuf) -> Confine {
+        let writable = writable_dirs(&root);
         Confine {
-            writable: writable_dirs(&root),
-            hide: secret_dirs(),
+            sockets: local_sockets(&writable),
+            writable,
+            hide: secret_paths(),
             view: root.clone(),
             project: root,
         }
@@ -136,40 +151,66 @@ fn home() -> Option<PathBuf> {
         .filter(|h| !h.as_os_str().is_empty())
 }
 
-/// Those of `dirs` that exist, each as the file system has it, once.
-fn existing(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = dirs
+/// Those of `paths` that exist, each as the file system has it, once.
+fn existing(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = paths
         .into_iter()
         .filter_map(|d| d.canonicalize().ok())
-        .filter(|d| d.is_dir())
         .collect();
-    dirs.sort();
-    dirs.dedup();
-    dirs
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
-/// The credential directories a chat's commands are kept out of: the app's
-/// own provider keys (`~/.rovik`, keys.json on a server) and the user's
-/// SSH, cloud, container and signing credentials, plus whatever the app
-/// registered with [`protect`]. Only those that exist right now. A command
-/// that legitimately needs one of these (network git over SSH, a cloud
-/// deploy) is one an isolated or server chat refuses anyway, and the user's
-/// own terminal isn't confined.
-pub fn secret_dirs() -> Vec<PathBuf> {
+/// The credentials a chat's commands are kept out of: the app's own
+/// provider keys (`~/.rovik`, keys.json on a server) and the user's SSH,
+/// cloud, container, package registry and signing credentials, folders and
+/// single files, plus whatever the app registered with [`protect`]. Only
+/// those that exist right now. A command that legitimately needs one of
+/// these (network git over SSH, a cloud deploy, a publish) is one an
+/// isolated or server chat refuses anyway, and the user's own terminal
+/// isn't confined.
+pub fn secret_paths() -> Vec<PathBuf> {
     const UNDER_HOME: &[&str] = &[
         ".rovik",
         ".ssh",
         ".aws",
+        ".azure",
         ".gnupg",
         ".config/gcloud",
         ".config/gh",
+        ".config/op",
+        ".config/doctl",
+        ".config/rclone",
+        ".oci",
         ".kube",
         ".docker",
+        ".terraform.d",
+        ".password-store",
+        // GNOME's keyring files.
+        ".local/share/keyrings",
         // Expo's and EAS's login, beside the state Expo's CLI writes on
         // every run: the CLI gets a folder of its own ([`TOOL_HOMES`]).
         ".expo",
         // macOS: the keychains' files.
         "Library/Keychains",
+        // Single files: logins for git, package registries, databases
+        // and the X server.
+        ".netrc",
+        ".git-credentials",
+        ".config/git/credentials",
+        ".config/hub",
+        ".npmrc",
+        ".yarnrc",
+        ".pypirc",
+        ".gem/credentials",
+        ".pgpass",
+        ".my.cnf",
+        ".Xauthority",
+        // Cargo's registry token, in `~/.cargo`, which commands may write
+        // ([`TOOL_DIRS`]).
+        ".cargo/credentials.toml",
+        ".cargo/credentials",
     ];
     let under_home = home()
         .into_iter()
@@ -181,6 +222,69 @@ pub fn secret_dirs() -> Vec<PathBuf> {
         .cloned()
         .collect::<Vec<_>>();
     existing(under_home.chain(registered))
+}
+
+/// The variables that tell a program where the session's services are:
+/// left out of a confined command's environment, whose sockets are closed
+/// to it anyway ([`local_sockets`]), so a tool doesn't try them.
+const SESSION_VARIABLES: &[&str] = &[
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
+    "GPG_AGENT_INFO",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+];
+
+/// Sockets the system's services listen on, whatever the session says.
+const SYSTEM_SOCKETS: &[&str] = &[
+    // X11's sockets and the session manager's.
+    "/tmp/.X11-unix",
+    "/tmp/.ICE-unix",
+    // The system bus: polkit lets a desktop user mount disks and change
+    // the network through it.
+    "/run/dbus/system_bus_socket",
+    // Container daemons, which run what they're asked as root. On macOS
+    // Docker's is a link into the home folder, followed.
+    "/run/docker.sock",
+    "/var/run/docker.sock",
+    "/run/podman",
+    "/run/containerd/containerd.sock",
+];
+
+/// The sockets of the user's local services a confined command is kept
+/// from: the ssh-agent's (`SSH_AUTH_SOCK`), the user's runtime folder
+/// (`XDG_RUNTIME_DIR`, `/run/user/<uid>`: the session bus, Wayland, audio,
+/// gpg-agent, the keyring and systemd's user manager, which runs anything
+/// it's asked to outside the sandbox), an XQuartz display, and
+/// [`SYSTEM_SOCKETS`]. Each as the file system has it, once; only those
+/// that exist and aren't one of the command's `writable` folders (a
+/// runtime folder that is the temporary folder stays the command's).
+pub fn local_sockets(writable: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = ["SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DISPLAY"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .collect();
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: getuid can't fail.
+        let uid = unsafe { libc::getuid() };
+        paths.push(PathBuf::from(format!("/run/user/{uid}")));
+    }
+    if cfg!(unix) {
+        paths.extend(SYSTEM_SOCKETS.iter().map(PathBuf::from));
+    }
+    let mut paths: Vec<PathBuf> = paths
+        .into_iter()
+        .filter_map(|p| p.canonicalize().ok())
+        .filter(|p| !writable.contains(p))
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 /// When a folder of [`TOOL_DIRS`] that isn't there yet is made before a
@@ -276,11 +380,11 @@ pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
     if cfg!(target_os = "macos") {
         dirs.extend(std::env::temp_dir().parent().map(|d| d.join("C")));
     }
-    existing(dirs)
+    existing(dirs).into_iter().filter(|d| d.is_dir()).collect()
 }
 
 /// Tools that keep a login in the folder they write their other state to,
-/// a folder [`secret_dirs`] hides: the variable each reads its folder from,
+/// a folder [`secret_paths`] hides: the variable each reads its folder from,
 /// and the folder of its own a confined command gets instead, under
 /// [`TOOL_HOMES_DIR`]. Expo's CLI (`expo lint`, `expo install`, …) writes
 /// its state file on every run and fails where it can't; pointed there it
@@ -427,6 +531,9 @@ pub fn command(c: &Confine, program: &str, args: &[&str]) -> Command {
             let mut cmd = m.command(c, program, args);
             for (var, dir) in home().map(|h| tool_home_env(&h)).unwrap_or_default() {
                 cmd.env(var, dir);
+            }
+            for var in SESSION_VARIABLES {
+                cmd.env_remove(var);
             }
             cmd
         }
@@ -598,10 +705,51 @@ mod linux {
             for dir in c.hide.iter().filter(|d| d.is_dir() && inside(d, &back)) {
                 cmd.arg("--tmpfs").arg(dir);
             }
+            // Hidden files and the local services: a file or a socket gets
+            // `/dev/null` over it, read-only (empty to read, refusing a
+            // connection, and as a mount point it can't be replaced or
+            // deleted), a folder of sockets is emptied. Last, so a writable
+            // folder bound above (`~/.cargo`, `/tmp`) doesn't bring them
+            // back; one inside a hidden folder is gone already.
+            let closed = c.hide.iter().filter(|p| !p.is_dir()).chain(&c.sockets);
+            for path in closed.filter(|p| !inside(p, &c.hide) || inside(p, &back)) {
+                match std::fs::symlink_metadata(path) {
+                    Ok(m) if m.is_dir() => {
+                        cmd.arg("--tmpfs").arg(path);
+                    }
+                    Ok(_) => {
+                        cmd.arg("--ro-bind").arg("/dev/null").arg(path);
+                    }
+                    Err(_) => {}
+                }
+            }
+            // A writable folder inside a folder of sockets (a temporary
+            // folder in the runtime folder) stays the command's.
+            for dir in c
+                .writable
+                .iter()
+                .filter(|d| d.is_dir() && inside(d, &c.sockets))
+            {
+                cmd.arg("--bind").arg(dir).arg(dir);
+            }
             // Run by root, bwrap keeps the capabilities unless told; run by
-            // a user it drops them anyway.
-            cmd.args(["--unshare-pid", "--die-with-parent", "--cap-drop", "ALL"]);
+            // a user it drops them anyway. Its own IPC namespace keeps the
+            // command from the session's shared memory and message queues.
+            cmd.args([
+                "--unshare-pid",
+                "--unshare-ipc",
+                "--die-with-parent",
+                "--cap-drop",
+                "ALL",
+            ]);
             cmd.arg("--").arg(program).args(args);
+            // Abstract sockets have no file to mount over: X11's and older
+            // systems' session bus listen on one too. Landlock closes them
+            // to the command (Linux 6.12 on). Not to a set-user-ID bwrap,
+            // which a process that can't gain privileges couldn't start.
+            if !setuid() {
+                super::landlock::close_abstract_sockets(&mut cmd);
+            }
             cmd
         }
 
@@ -612,6 +760,18 @@ mod linux {
         fn hides_processes(&self) -> bool {
             true
         }
+    }
+
+    /// Whether the installed bwrap is set-user-ID (older distributions'),
+    /// found once.
+    fn setuid() -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        static SETUID: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+            distro::which(PROGRAM)
+                .and_then(|p| std::fs::metadata(p).ok())
+                .is_some_and(|m| m.permissions().mode() & 0o4000 != 0)
+        });
+        *SETUID
     }
 
     /// `bwrap --version`'s first line.
@@ -665,9 +825,10 @@ mod linux {
 
     /// What the fallback does and doesn't, for the user.
     const LANDLOCK_INSTEAD: &str = "The agent's commands run under Landlock instead, which \
-        keeps them out of your credentials and writing only in their own folders, but doesn't \
-        hide your other processes from them, and gives an isolated chat's commands the project \
-        read-only rather than the chat's own copy at its path.";
+        keeps them out of your credentials (but cargo's token) and writing only in their own \
+        folders, but doesn't hide your other processes from them, can't close your SSH and GPG \
+        agents' and desktop session's sockets to them, and gives an isolated chat's commands the \
+        project read-only rather than the chat's own copy at its path.";
 
     /// Installs bubblewrap where it's missing, and where AppArmor restricts
     /// user namespaces adds the profile that lets it make its sandbox
@@ -785,7 +946,7 @@ const SEATBELT_DEVICES: &[&str] = &[
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn seatbelt_profile(c: &Confine) -> (String, Vec<(String, PathBuf)>) {
     let writable: Vec<&PathBuf> = c.writable.iter().filter(|d| d.is_dir()).collect();
-    let hidden: Vec<&PathBuf> = c.hide.iter().filter(|d| d.is_dir()).collect();
+    let hidden: Vec<&PathBuf> = c.hide.iter().filter(|d| d.exists()).collect();
     let mut params: Vec<(String, PathBuf)> = Vec::new();
     for (i, dir) in writable.iter().enumerate() {
         params.push((format!("W{i}"), dir.to_path_buf()));
@@ -809,7 +970,9 @@ fn seatbelt_profile(c: &Confine) -> (String, Vec<(String, PathBuf)>) {
             .filter(|(_, w)| *w != dir && w.starts_with(dir))
             .map(|(j, _)| under(format!("W{j}")))
             .collect();
-        let filter = if inside.is_empty() {
+        let filter = if !dir.is_dir() {
+            format!(r#"(literal (param "H{i}"))"#)
+        } else if inside.is_empty() {
             under(format!("H{i}"))
         } else {
             format!(
@@ -819,6 +982,21 @@ fn seatbelt_profile(c: &Confine) -> (String, Vec<(String, PathBuf)>) {
             )
         };
         profile += &format!("(deny file-read* file-write* {filter})\n");
+    }
+    // The local services: no connection to a socket in a folder of them,
+    // or to one of them.
+    let mut closed = Vec::new();
+    for (i, path) in c.sockets.iter().filter(|p| p.exists()).enumerate() {
+        let name = format!("S{i}");
+        closed.push(if path.is_dir() {
+            under(name.clone())
+        } else {
+            format!(r#"(literal (param "{name}"))"#)
+        });
+        params.push((name, path.to_path_buf()));
+    }
+    if !closed.is_empty() {
+        profile += &format!("(deny network-outbound {})\n", any(closed));
     }
     (profile, params)
 }
@@ -971,6 +1149,36 @@ mod tool_home_tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The variables that name the session's services (the ssh-agent's
+    /// socket, the display, the session bus) are left out of a confined
+    /// command's environment.
+    #[test]
+    fn a_confined_command_doesnt_get_the_sessions_socket_variables() {
+        let root = std::env::temp_dir().join(format!("session-vars-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let c = Confine::hiding(root.clone());
+        if !available(&c) {
+            eprintln!("no sandbox here: skipped");
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let cmd = command(&c, "/bin/sh", &["-c", "true"]);
+        let removed: Vec<String> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        for var in [
+            "SSH_AUTH_SOCK",
+            "DISPLAY",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "XAUTHORITY",
+        ] {
+            assert!(removed.iter().any(|r| r == var), "{var}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A confined command has the variable, and may write where it points:
     /// Expo's CLI writes its state file there instead of `~/.expo`, which
     /// the sandbox hides (it holds the user's Expo login).
@@ -1022,6 +1230,7 @@ mod seatbelt_profile_tests {
             project: work.clone(),
             hide: vec![daemon.clone(), secret.clone(), root.join("gone")],
             writable: vec![work.clone(), root.join("gone-too")],
+            sockets: Vec::new(),
         };
         let (profile, params) = seatbelt_profile(&c);
         let names: Vec<(&str, &Path)> = params
@@ -1049,6 +1258,42 @@ mod seatbelt_profile_tests {
             r#"(deny file-read* file-write* (require-all (subpath (param "H0")) (require-not (require-any (subpath (param "W0"))))))"#
         ));
         assert!(profile.contains(r#"(deny file-read* file-write* (subpath (param "H1")))"#));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// The Seatbelt profile closes the local services' sockets and hides
+/// single files.
+#[cfg(test)]
+mod seatbelt_socket_tests {
+    use super::*;
+
+    #[test]
+    fn the_profile_denies_connecting_to_the_local_sockets_and_reading_a_hidden_file() {
+        let root = std::env::temp_dir().join(format!("sbsock-{}", std::process::id()));
+        let runtime = root.join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let agent = root.join("agent");
+        std::fs::write(&agent, "").unwrap();
+        let netrc = root.join(".netrc");
+        std::fs::write(&netrc, "").unwrap();
+        let c = Confine {
+            view: root.clone(),
+            project: root.clone(),
+            hide: vec![netrc.clone()],
+            writable: vec![root.clone()],
+            sockets: vec![runtime.clone(), agent.clone(), root.join("gone")],
+        };
+        let (profile, params) = seatbelt_profile(&c);
+        assert!(params.contains(&("S0".to_string(), runtime.clone())));
+        assert!(params.contains(&("S1".to_string(), agent.clone())));
+        assert!(!params.iter().any(|(n, _)| n == "S2"), "gone: left out");
+        // A hidden file is out of reach by its exact path.
+        assert!(params.contains(&("H0".to_string(), netrc.clone())));
+        assert!(profile.contains(r#"(deny file-read* file-write* (literal (param "H0")))"#));
+        assert!(profile.contains(
+            r#"(deny network-outbound (require-any (subpath (param "S0")) (literal (param "S1"))))"#
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -1109,6 +1354,7 @@ mod macos_tests {
             project: mine.clone(),
             hide: Vec::new(),
             writable: vec![mine.clone()],
+            sockets: Vec::new(),
         };
         let script = format!(
             "echo ok > {m}/a.txt && echo gone > /dev/null && \
@@ -1147,6 +1393,7 @@ mod macos_tests {
             project: work.clone(),
             hide: vec![secret.clone(), daemon.clone(), deep.clone()],
             writable: vec![work.clone(), secret.clone()],
+            sockets: Vec::new(),
         };
         let script = format!(
             "cat {s}/key {d}/keys.json {w}/.ssh/id 2>/dev/null; \
@@ -1186,6 +1433,7 @@ mod tests {
             project: root.clone(),
             hide: Vec::new(),
             writable: writable.iter().map(|p| p.to_path_buf()).collect(),
+            sockets: Vec::new(),
         };
         (root, c)
     }
@@ -1355,6 +1603,165 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A hidden file is empty to the command, inside a folder it may write
+    /// to too (cargo's token in `~/.cargo`), and it can't be written,
+    /// replaced or deleted; the folder's other files are the command's.
+    #[test]
+    fn a_hidden_file_is_empty_and_kept_even_in_a_writable_folder() {
+        let (root, mut c) = fresh("hidefile", &[]);
+        let cargo = root.join("cargo");
+        std::fs::create_dir_all(&cargo).unwrap();
+        let (token, netrc) = (cargo.join("credentials.toml"), root.join(".netrc"));
+        std::fs::write(&token, "token = \"SECRET\"\n").unwrap();
+        std::fs::write(&netrc, "password SECRET\n").unwrap();
+        c.writable = vec![cargo.clone()];
+        c.hide = vec![token.clone(), netrc.clone()];
+        let script = format!(
+            "cat {t} {n}; echo; echo x > {t} 2>/dev/null || echo no-write; \
+             echo y > {k}/new && mv {k}/new {t} 2>/dev/null || echo no-replace; \
+             rm -f {t} 2>/dev/null || echo no-delete; \
+             echo z > {k}/config.toml && echo other-written",
+            t = token.display(),
+            n = netrc.display(),
+            k = cargo.display()
+        );
+        let Some(out) = run(&c, &cargo, &script) else {
+            return;
+        };
+        assert_eq!(
+            stdout(&out),
+            "\nno-write\nno-replace\nno-delete\nother-written\n",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&token).unwrap(),
+            "token = \"SECRET\"\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Whether a client inside `c` connects to `addr` (a path, or an
+    /// abstract name after `@`): None where bwrap or python3 can't run here.
+    fn connects(c: &Confine, cwd: &Path, addr: &str) -> Option<bool> {
+        if crate::distro::which("python3").is_none() {
+            eprintln!("no python3 to connect with: skipped");
+            return None;
+        }
+        let script = format!(
+            "python3 -c \"import socket,sys; a=sys.argv[1]; s=socket.socket(socket.AF_UNIX); \
+             s.connect(chr(0)+a[1:] if a.startswith('@') else a); print('connected')\" '{addr}' \
+             2>/dev/null || echo refused"
+        );
+        let out = run(c, cwd, &script)?;
+        Some(stdout(&out) == "connected\n")
+    }
+
+    /// A socket of the user's (an agent's) and a folder of them (the
+    /// runtime folder) are closed to the command, though they're in a
+    /// folder it may write to; another socket there stays open.
+    #[test]
+    fn the_local_services_sockets_are_closed_to_the_command() {
+        use std::os::unix::net::UnixListener;
+        let (root, mut c) = fresh("sockets", &[]);
+        let run_dir = root.join("run");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let (agent, bus, other) = (root.join("agent"), run_dir.join("bus"), root.join("other"));
+        let _listeners: Vec<UnixListener> = [&agent, &bus, &other]
+            .iter()
+            .map(|p| UnixListener::bind(p).unwrap())
+            .collect();
+        c.writable = vec![root.clone()];
+        c.sockets = vec![agent.clone(), run_dir.clone()];
+        let script = format!(
+            "[ -S {a} ] || echo agent-closed; ls -A {r} | wc -l; [ -S {o} ] && echo other-open; \
+             echo x > {root}/written && echo written",
+            a = agent.display(),
+            r = run_dir.display(),
+            o = other.display(),
+            root = root.display(),
+        );
+        let Some(out) = run(&c, &root, &script) else {
+            return;
+        };
+        assert_eq!(
+            stdout(&out).replace(' ', ""),
+            "agent-closed\n0\nother-open\nwritten\n",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for (path, open) in [(&agent, false), (&bus, false), (&other, true)] {
+            if let Some(connected) = connects(&c, &root, &path.to_string_lossy()) {
+                assert_eq!(connected, open, "{}", path.display());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A writable folder inside a folder of sockets (a temporary folder in
+    /// the runtime folder) stays the command's.
+    #[test]
+    fn a_writable_folder_inside_a_folder_of_sockets_stays_writable() {
+        let (root, mut c) = fresh("socketdir", &[]);
+        let runtime = root.join("runtime");
+        let tmp = runtime.join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(runtime.join("keyring"), "").unwrap();
+        c.writable = vec![tmp.clone()];
+        c.sockets = vec![runtime.clone()];
+        let script = format!(
+            "[ -e {r}/keyring ] || echo closed; echo x > {t}/f && echo written",
+            r = runtime.display(),
+            t = tmp.display()
+        );
+        let Some(out) = run(&c, &tmp, &script) else {
+            return;
+        };
+        assert_eq!(stdout(&out), "closed\nwritten\n");
+        assert!(tmp.join("f").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An abstract socket made outside the sandbox (X11's) is closed to the
+    /// command where the kernel can (Linux 6.12 on); one the command makes
+    /// itself stays its own.
+    #[test]
+    fn an_abstract_socket_made_outside_is_closed_to_the_command() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::{SocketAddr, UnixListener};
+        if landlock::abstract_socket_scope() == 0 {
+            eprintln!("this kernel has no Landlock scopes: skipped");
+            return;
+        }
+        let (root, mut c) = fresh("abstract", &[]);
+        c.writable = vec![root.clone()];
+        let name = format!("rovik-test-{}", std::process::id());
+        let addr = SocketAddr::from_abstract_name(name.as_bytes()).unwrap();
+        let _listener = UnixListener::bind_addr(&addr).unwrap();
+        if let Some(connected) = connects(&c, &root, &format!("@{name}")) {
+            assert!(!connected);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The runtime folder and the system's service sockets are closed, as
+    /// the file system has them, once; one that's the command's own
+    /// writable folder isn't.
+    #[test]
+    fn the_local_sockets_are_the_existing_ones_but_the_writable() {
+        let all = local_sockets(&[]);
+        for path in &all {
+            assert!(path.exists(), "{}", path.display());
+            assert_eq!(path, &path.canonicalize().unwrap(), "{}", path.display());
+        }
+        let mut sorted = all.clone();
+        sorted.dedup();
+        assert_eq!(sorted, all);
+        if let Some(first) = all.first() {
+            assert!(!local_sockets(std::slice::from_ref(first)).contains(first));
+        }
+    }
+
     /// The hiding-only policy (a server worktree, a chat in the project
     /// directly) redirects nothing: the command runs where it was started
     /// and can write there.
@@ -1379,18 +1786,19 @@ mod tests {
     /// The built-in lists name only folders that exist, as the file system
     /// has them; what the app registers is hidden too.
     #[test]
-    fn the_secret_and_writable_dirs_are_the_existing_ones() {
-        for dir in secret_dirs()
-            .iter()
-            .chain(&writable_dirs(&std::env::temp_dir()))
-        {
+    fn the_secret_paths_and_writable_dirs_are_the_existing_ones() {
+        for dir in &writable_dirs(&std::env::temp_dir()) {
             assert!(dir.is_dir(), "{}", dir.display());
             assert_eq!(dir, &dir.canonicalize().unwrap(), "{}", dir.display());
+        }
+        for path in &secret_paths() {
+            assert!(path.exists(), "{}", path.display());
+            assert_eq!(path, &path.canonicalize().unwrap(), "{}", path.display());
         }
         let registered = std::env::temp_dir().join(format!("protected-{}", std::process::id()));
         std::fs::create_dir_all(&registered).unwrap();
         protect([registered.clone(), registered.clone()]);
-        assert!(secret_dirs().contains(&registered.canonicalize().unwrap()));
+        assert!(secret_paths().contains(&registered.canonicalize().unwrap()));
         let _ = std::fs::remove_dir_all(&registered);
         assert!(writable_dirs(&std::env::temp_dir())
             .contains(&std::env::temp_dir().canonicalize().unwrap()));
