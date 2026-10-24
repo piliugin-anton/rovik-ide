@@ -517,6 +517,14 @@ pub async fn confirm(
 /// (`known`, their SHA-256) or one of its version's release, as the
 /// release's signed `SHA256SUMS` lists them. Without systemd, only the
 /// binary is checked.
+///
+/// What it catches is a binary or unit changed by mistake, by an install
+/// outside Rovik, or by a command that changed only the daemon's files.
+/// The hash and the unit are what the host's own `sha256sum` and
+/// `systemctl` print, run as the user: code running as that user, or as
+/// root, can make them print what this expects. It makes such tampering
+/// harder to miss, not impossible (cloud-agent-dev-plan.md, "Same-user
+/// tampering").
 pub async fn check_install(
     shell: &dyn HostShell,
     known: &[String],

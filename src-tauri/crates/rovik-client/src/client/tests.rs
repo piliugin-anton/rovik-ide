@@ -319,3 +319,37 @@ async fn a_jump_of_the_wall_clock_is_a_sleep() {
     let woke = tokio::time::timeout(Duration::from_secs(10), slept(tick, wall(3))).await;
     assert!(woke.is_ok(), "a sleep");
 }
+
+/// A daemon whose Welcome is bigger than a frame may be.
+struct Oversized;
+
+impl Connector for Oversized {
+    fn connect(&self) -> Connecting<'_> {
+        Box::pin(async move {
+            let (client, server) = tokio::io::duplex(1 << 16);
+            tokio::spawn(async move {
+                let Ok(mut socket) = tokio_tungstenite::accept_async(server).await else {
+                    return;
+                };
+                let _ = next_frame(&mut socket).await;
+                let welcome = Frame::Welcome {
+                    protocol: PROTOCOL,
+                    min_protocol: PROTOCOL,
+                    daemon: "x".repeat(2 * MAX_FRAME),
+                    boot: "boot".into(),
+                    features: Vec::new(),
+                };
+                let _ = socket.send(text(&welcome)).await;
+            });
+            Ok(Box::new(client) as Io)
+        })
+    }
+}
+
+/// A frame over `MAX_FRAME` from the daemon ends the link: the client
+/// never takes in more than the protocol lets a frame carry.
+#[tokio::test]
+async fn a_frame_over_the_protocols_limit_is_refused() {
+    let welcomed = welcome(&Oversized, &identity("big")).await;
+    assert!(welcomed.is_err(), "{:?}", welcomed.map(|d| d.daemon.len()));
+}

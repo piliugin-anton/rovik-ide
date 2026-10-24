@@ -6,14 +6,14 @@
 
 use crate::client::{unreachable, Identity};
 use crate::connector::Connector;
-use http_body_util::{BodyExt, Empty, Full};
+use http_body_util::{BodyExt, Empty, Full, LengthLimitError, Limited};
 use hyper::body::{Body, Bytes, Frame as BodyFrame, Incoming, SizeHint};
 use hyper::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST};
 use hyper::{Method, StatusCode};
 use hyper_util::rt::TokioIo;
 use rovik_protocol::packs::{Fetch, Pushed, Refs, Update};
 use rovik_protocol::sync::Imported;
-use rovik_protocol::{Fail, FailCode, Frame, Response};
+use rovik_protocol::{Fail, FailCode, Frame, Response, MAX_BLOB, MAX_BUNDLE, MAX_FRAME};
 use serde::de::DeserializeOwned;
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -22,6 +22,14 @@ use tokio::sync::mpsc;
 
 /// How much of a file goes at a time, and between two progress reports.
 const CHUNK: usize = 64 << 10;
+
+/// The most a small JSON answer (refs, a push's or an import's result, a
+/// refusal, `/health`) takes: what a frame does.
+const ANSWER: usize = MAX_FRAME;
+
+/// The most a `POST /call` answer takes: the most the protocol moves at
+/// once, a chat's rows (the daemon's replies have no smaller bound).
+const CALL_ANSWER: usize = MAX_BUNDLE;
 const JSON: &str = "application/json";
 const FILE: &str = "application/octet-stream";
 const PACK: &str = "application/x-git-packed-objects";
@@ -33,7 +41,16 @@ pub async fn post_call(
     call: String,
 ) -> Result<Response, Fail> {
     let body = Full::new(Bytes::from(call));
-    let (status, body) = exchange(connector, identity, Method::POST, "/call", JSON, body).await?;
+    let (status, body) = exchange(
+        connector,
+        identity,
+        Method::POST,
+        "/call",
+        JSON,
+        body,
+        CALL_ANSWER,
+    )
+    .await?;
     if status != StatusCode::OK {
         return Err(refusal(status, &body));
     }
@@ -61,7 +78,8 @@ pub async fn import_chat(
         progress,
     };
     let path = format!("/chats/import?move_id={move_id}");
-    let (status, body) = exchange(connector, identity, Method::POST, &path, JSON, body).await?;
+    let (status, body) =
+        exchange(connector, identity, Method::POST, &path, JSON, body, ANSWER).await?;
     reply(status, &body)
 }
 
@@ -79,7 +97,8 @@ pub async fn put_blob(
         progress,
     };
     let path = format!("/blobs/{id}");
-    let (status, body) = exchange(connector, identity, Method::PUT, &path, FILE, body).await?;
+    let (status, body) =
+        exchange(connector, identity, Method::PUT, &path, FILE, body, ANSWER).await?;
     if status == StatusCode::OK {
         Ok(())
     } else {
@@ -95,7 +114,16 @@ pub async fn get_blob(
 ) -> Result<Option<Bytes>, Fail> {
     let path = format!("/blobs/{id}");
     let body = Empty::<Bytes>::new();
-    let (status, body) = exchange(connector, identity, Method::GET, &path, FILE, body).await?;
+    let (status, body) = exchange(
+        connector,
+        identity,
+        Method::GET,
+        &path,
+        FILE,
+        body,
+        MAX_BLOB,
+    )
+    .await?;
     match status {
         StatusCode::OK => Ok(Some(body)),
         StatusCode::NOT_FOUND => Ok(None),
@@ -112,7 +140,8 @@ pub async fn pack_refs(
 ) -> Result<Refs, Fail> {
     let path = format!("/packs/{project}/refs");
     let body = Empty::<Bytes>::new();
-    let (status, body) = exchange(connector, identity, Method::GET, &path, JSON, body).await?;
+    let (status, body) =
+        exchange(connector, identity, Method::GET, &path, JSON, body, ANSWER).await?;
     reply(status, &body)
 }
 
@@ -132,7 +161,8 @@ pub async fn push_pack(
         sent: 0,
         progress,
     };
-    let (status, body) = exchange(connector, identity, Method::POST, &path, PACK, body).await?;
+    let (status, body) =
+        exchange(connector, identity, Method::POST, &path, PACK, body, ANSWER).await?;
     reply(status, &body)
 }
 
@@ -150,13 +180,16 @@ pub async fn fetch_pack(
         return Ok(response.into_body());
     }
     let status = response.status();
-    let body = response.into_body().collect().await;
-    let body = body.map_err(|_| unreachable(&identity.host))?.to_bytes();
+    let body = Limited::new(response.into_body(), ANSWER).collect().await;
+    let body = body
+        .map_err(|e| too_large(&*e, ANSWER).unwrap_or_else(|| unreachable(&identity.host)))?
+        .to_bytes();
     Err(refusal(status, &body))
 }
 
 /// One request with this computer's token, on a connection of its own:
-/// the response's status and body.
+/// the response's status and body, of at most `limit` bytes. A daemon
+/// that sends more is refused as it does, never held whole in memory.
 async fn exchange<B>(
     connector: &dyn Connector,
     identity: &Identity,
@@ -164,6 +197,7 @@ async fn exchange<B>(
     path: &str,
     content_type: &str,
     body: B,
+    limit: usize,
 ) -> Result<(StatusCode, Bytes), Fail>
 where
     B: Body<Data = Bytes> + Send + 'static,
@@ -172,12 +206,25 @@ where
     let response = send(connector, identity, method, path, content_type, body).await?;
     let status = response.status();
     let (body, moved) = Watched::new(response.into_body());
-    let body = while_moving(body.collect(), &moved, STALL_WAIT)
+    let body = while_moving(Limited::new(body, limit).collect(), &moved, STALL_WAIT)
         .await
         .ok_or_else(|| unreachable(&identity.host))?
-        .map_err(|_| unreachable(&identity.host))?
+        .map_err(|e| too_large(&*e, limit).unwrap_or_else(|| unreachable(&identity.host)))?
         .to_bytes();
     Ok((status, body))
+}
+
+/// The refusal for an answer over `limit` bytes, when that's why reading
+/// it failed (`Limited`'s error); None for any other failure.
+fn too_large(error: &(dyn std::error::Error + 'static), limit: usize) -> Option<Fail> {
+    error.downcast_ref::<LengthLimitError>()?;
+    Some(Fail::new(
+        FailCode::TooLarge,
+        format!(
+            "The daemon's answer is over the {} MB it may be.",
+            limit.div_ceil(1 << 20)
+        ),
+    ))
 }
 
 /// A body that notes when it last moved (a frame read or written), for
@@ -341,8 +388,10 @@ async fn health_now(connector: &dyn Connector) -> Result<Health, Fail> {
         .await
         .map_err(|e| lost(e.to_string()))?;
     let status = response.status();
-    let body = response.into_body().collect().await;
-    let body = body.map_err(|e| lost(e.to_string()))?.to_bytes();
+    let body = Limited::new(response.into_body(), ANSWER).collect().await;
+    let body = body
+        .map_err(|e| too_large(&*e, ANSWER).unwrap_or_else(|| lost(e.to_string())))?
+        .to_bytes();
     reply(status, &body)
 }
 
@@ -448,6 +497,19 @@ mod tests {
         let never = std::future::pending::<()>();
         assert_eq!(while_moving(never, &still, stall).await, None);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// An answer over its limit is refused as too large, not read whole.
+    #[tokio::test]
+    async fn an_answer_over_its_limit_is_refused_as_too_large() {
+        let body = Full::new(Bytes::from(vec![0u8; 2 << 20]));
+        let read = Limited::new(body, 1 << 20).collect().await;
+        let error = read.expect_err("over the limit");
+        let fail = too_large(&*error, 1 << 20).expect("a TooLarge refusal");
+        assert_eq!(fail.code, FailCode::TooLarge);
+        assert!(fail.message.contains("1 MB"), "{}", fail.message);
+        let other: Box<dyn std::error::Error + Send + Sync> = "reset".into();
+        assert!(too_large(&*other, 1 << 20).is_none());
     }
 
     /// Reading a watched body moves it.
