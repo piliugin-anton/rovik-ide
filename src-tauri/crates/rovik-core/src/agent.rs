@@ -881,6 +881,9 @@ pub struct ChatParams {
     // profile carries them, and the folder it works in (the run's root).
     pub connector: Option<serde_json::Value>,
     pub cwd: Option<std::path::PathBuf>,
+    // `cwd` is the chat's copy of the project (its overlay, or a server's
+    // worktree): git that changes the repository isn't the harness's to run.
+    pub isolated: bool,
     // A connector's model whose harness runs its own tools under Rovik's
     // permissions: where it asks before a call (the run answers each as
     // it would a call of its own tool, `agent_run` `answer_tool_ask`).
@@ -954,6 +957,7 @@ pub async fn run_chat(
         history_window,
         connector: _,
         cwd: _,
+        isolated: _,
         tool_asks: _,
     } = params;
     let chat_id = chat_id.or_else(|| dialog_id.clone());

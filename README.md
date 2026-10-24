@@ -361,7 +361,13 @@ works:
   run without asking, as Claude Code's manual mode has them. With one of
   Claude Code's own modes (Accept edits, Everything, Auto, Manual, Plan)
   and its tool rules, Rovik's approval settings don't apply. Its reply
-  shows a record above the text: each tool it ran with its result.
+  shows a record above the text: each tool it ran with its result. In a
+  chat's own copy of the project (an isolated chat, or one on a cloud
+  host), git commands that change the repository (`checkout`, `switch`,
+  `reset`, `commit`, `push`…) are refused in every mode, as they are to
+  Rovik's agent: Claude Code is given deny rules for them, and Rovik
+  refuses other spellings (`git -C . push`) when Claude Code asks. The
+  chat's changes reach the project when they land.
 - **Rovik's (via MCP).** Claude Code is the model behind Rovik's agent.
   Rovik serves the run's tools to it over MCP (a server on 127.0.0.1 for
   that run alone, behind a token only it has), with Claude Code's own

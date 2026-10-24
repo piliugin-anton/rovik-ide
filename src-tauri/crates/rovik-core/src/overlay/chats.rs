@@ -108,49 +108,87 @@ impl ChatOverlay {
     }
 }
 
+/// Git commands that change the repository whatever follows them.
+pub(crate) const GIT_CHANGES_REPO: &[&str] = &[
+    "checkout",
+    "switch",
+    "reset",
+    "commit",
+    "push",
+    "pull",
+    "merge",
+    "rebase",
+    "clean",
+    "restore",
+    "cherry-pick",
+    "revert",
+    "am",
+    "apply",
+    "rm",
+    "mv",
+    "fetch",
+    "gc",
+    "worktree",
+    "init",
+    "clone",
+    "update-ref",
+    "symbolic-ref",
+    "notes",
+    "submodule",
+    "replace",
+    "filter-branch",
+    "filter-repo",
+    "prune",
+    "update-index",
+    "commit-tree",
+    "read-tree",
+    "write-tree",
+    "pack-refs",
+    "repack",
+    "bisect",
+];
+
+/// `git branch` options that create, delete, move or force a branch
+/// (listing is fine).
+pub(crate) const GIT_BRANCH_CHANGES: &[&str] = &[
+    "-d",
+    "-D",
+    "-f",
+    "-m",
+    "-M",
+    "-c",
+    "-C",
+    "--delete",
+    "--force",
+    "--move",
+    "--copy",
+    "--set-upstream-to",
+    "-u",
+    "--unset-upstream",
+    "--edit-description",
+];
+
+/// `git remote` subcommands that change the remotes.
+pub(crate) const GIT_REMOTE_CHANGES: &[&str] = &[
+    "add",
+    "remove",
+    "rm",
+    "rename",
+    "set-url",
+    "set-head",
+    "set-branches",
+    "prune",
+    "update",
+];
+
+/// `git reflog` subcommands that change the reflog.
+pub(crate) const GIT_REFLOG_CHANGES: &[&str] = &["expire", "delete"];
+
 /// The git command a command segment runs, if it changes the repository
 /// (and so has no place in an isolated chat). Git's own options before the
 /// command (`-C dir`, `-c key=value`) are skipped; ones that point it at
 /// another repository are refused outright.
 pub(crate) fn git_changes_repo(segment: &[String]) -> Option<String> {
-    const CHANGES_REPO: &[&str] = &[
-        "checkout",
-        "switch",
-        "reset",
-        "commit",
-        "push",
-        "pull",
-        "merge",
-        "rebase",
-        "clean",
-        "restore",
-        "cherry-pick",
-        "revert",
-        "am",
-        "apply",
-        "rm",
-        "mv",
-        "fetch",
-        "gc",
-        "worktree",
-        "init",
-        "clone",
-        "update-ref",
-        "symbolic-ref",
-        "notes",
-        "submodule",
-        "replace",
-        "filter-branch",
-        "filter-repo",
-        "prune",
-        "update-index",
-        "commit-tree",
-        "read-tree",
-        "write-tree",
-        "pack-refs",
-        "repack",
-        "bisect",
-    ];
     let mut words = segment.iter().map(String::as_str);
     let program = words.next()?;
     let name = program
@@ -184,35 +222,20 @@ pub(crate) fn git_changes_repo(segment: &[String]) -> Option<String> {
         })
     };
     let changes = match sub {
-        s if CHANGES_REPO.contains(&s) => true,
+        s if GIT_CHANGES_REPO.contains(&s) => true,
         // Listing is fine; creating, deleting, moving or forcing isn't.
         "branch" => {
-            has(&[
-                "-d",
-                "-D",
-                "-f",
-                "-m",
-                "-M",
-                "-c",
-                "-C",
-                "--delete",
-                "--force",
-                "--move",
-                "--copy",
-                "--set-upstream-to",
-                "-u",
-                "--unset-upstream",
-                "--edit-description",
-            ]) || args.iter().any(|a| !a.starts_with('-'))
-                && !has(&[
-                    "--list",
-                    "-l",
-                    "--contains",
-                    "--no-contains",
-                    "--merged",
-                    "--no-merged",
-                    "--points-at",
-                ])
+            has(GIT_BRANCH_CHANGES)
+                || args.iter().any(|a| !a.starts_with('-'))
+                    && !has(&[
+                        "--list",
+                        "-l",
+                        "--contains",
+                        "--no-contains",
+                        "--merged",
+                        "--no-merged",
+                        "--points-at",
+                    ])
         }
         "tag" => {
             !(args.is_empty()
@@ -237,21 +260,8 @@ pub(crate) fn git_changes_repo(segment: &[String]) -> Option<String> {
             "--show-origin",
             "--show-scope",
         ]),
-        "remote" => matches!(
-            args.first().copied(),
-            Some(
-                "add"
-                    | "remove"
-                    | "rm"
-                    | "rename"
-                    | "set-url"
-                    | "set-head"
-                    | "set-branches"
-                    | "prune"
-                    | "update"
-            )
-        ),
-        "reflog" => matches!(args.first().copied(), Some("expire" | "delete")),
+        "remote" => args.first().is_some_and(|a| GIT_REMOTE_CHANGES.contains(a)),
+        "reflog" => args.first().is_some_and(|a| GIT_REFLOG_CHANGES.contains(a)),
         _ => false,
     };
     changes.then(|| sub.to_string())
