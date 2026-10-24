@@ -499,10 +499,14 @@ async fn the_daemon_refuses_what_isnt_a_file_it_takes() {
         "{reason}"
     );
 
-    let big = pdf_file(21 << 20);
-    let (status, reason) = put(big.clone(), attachments::id_of(&big)).await;
+    // Too big: refused from the size its head declares, before its body.
+    let path = format!("/blobs/{}", "1".repeat(64));
+    let (status, body) = daemon
+        .http_declared("PUT", &path, &daemon.token, 21 << 20)
+        .await;
+    let reason: Value = serde_json::from_slice(&body).unwrap_or_default();
     assert_eq!(
-        (status, reason.as_str()),
+        (status.as_u16(), reason["message"].as_str().unwrap_or("")),
         (413, "A file takes 20 MB at most.")
     );
 

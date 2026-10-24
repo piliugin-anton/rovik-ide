@@ -39,6 +39,18 @@ pub struct ModelProfile {
     /// "responses"), once found (`chat_request::responses`).
     #[serde(default)]
     pub api_route: Option<String>,
+    /// A connector's settings (rovik_protocol::connectors): what the
+    /// harness needs to run, as the frontend keeps them with its entry.
+    /// Set for a profile whose base URL is a connector's, none otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connector: Option<serde_json::Value>,
+}
+
+impl ModelProfile {
+    /// The connector this profile runs on, if its base URL names one.
+    pub fn connector_kind(&self) -> Option<crate::connectors::ConnectorKind> {
+        crate::connectors::kind_of(&self.base_url)
+    }
 }
 
 impl std::fmt::Debug for ModelProfile {
@@ -56,6 +68,7 @@ impl std::fmt::Debug for ModelProfile {
             .field("no_tools", &self.no_tools)
             .field("first_byte_timeout_ms", &self.first_byte_timeout_ms)
             .field("api_route", &self.api_route)
+            .field("connector", &self.connector)
             .finish()
     }
 }

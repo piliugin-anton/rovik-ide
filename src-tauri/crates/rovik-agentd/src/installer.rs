@@ -37,6 +37,7 @@ use toolchains::Kind;
 
 mod browser;
 mod bubblewrap;
+mod claude_code;
 mod packages;
 /// `user toolchain <kind> <version>` and `admin toolchain …`: the shared
 /// Rust and Node versions, and the caches their packages download into.
@@ -483,6 +484,9 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
             leave_group(sys, user)
         }
         ["browser"] => browser::ensure(sys),
+        // Claude Code for the connector of that name, from Anthropic's
+        // package repository, once for everyone (installer/claude_code.rs).
+        ["claude-code"] => claude_code::ensure(sys),
         // The shared toolchains and caches go in whether bubblewrap's
         // package does or not: a server installed before this has no
         // `rovik` group and no folder for them yet, and the daemons that
@@ -525,7 +529,7 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
         ["uninstall"] => uninstall(sys),
         _ => Err(
             "admin takes: limits [name=value ...], add USER, remove USER, browser, \
-             bubblewrap, toolchain list | add KIND VERSION | remove KIND VERSION | prune DAYS, \
+             bubblewrap, claude-code, toolchain list | add KIND VERSION | remove KIND VERSION | prune DAYS, \
              toolchains user-install|shared-caches on|off, toolchains setup, upgrade FILE \
              [--allow-downgrade], uninstall"
                 .into(),

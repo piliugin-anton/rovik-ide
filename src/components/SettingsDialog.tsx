@@ -30,6 +30,7 @@ import {
 import SettingsMenu from './SettingsMenu';
 import EditorSettings from './EditorSettings';
 import ModelProvidersSettings, { type ProvidersSettingsController } from './ModelProvidersSettings';
+import ConnectorsSettings, { type ConnectorsSettingsController } from './ConnectorsSettings';
 import PermissionsSettings from './PermissionsSettings';
 import AgentRunsSettings from './AgentRunsSettings';
 import SubagentSettings from './SubagentSettings';
@@ -45,6 +46,7 @@ import UpdatesSettings from './UpdatesSettings';
 /** The pages that edit the AI settings: shown once those are read. */
 const AI_PAGES: SettingsPage[] = [
   'providers',
+  'connectors',
   'permissions',
   'agent',
   'subagents',
@@ -63,6 +65,7 @@ interface SettingsDialogProps {
 export default function SettingsDialog(props: SettingsDialogProps) {
   const [page, setPage] = createSignal<SettingsPage>(props.initialPage ?? 'menu');
   const [providersApi, setProvidersApi] = createSignal<ProvidersSettingsController | null>(null);
+  const [connectorsApi, setConnectorsApi] = createSignal<ConnectorsSettingsController | null>(null);
   const [hostsApi, setHostsApi] = createSignal<HostsSettingsController | null>(null);
 
   // The saved settings as they are now: the chat panel may have changed
@@ -72,12 +75,14 @@ export default function SettingsDialog(props: SettingsDialogProps) {
 
   const title = () => {
     if (page() === 'providers') return providersApi()?.draftTitle() ?? PAGE_TITLE.providers;
+    if (page() === 'connectors') return connectorsApi()?.draftTitle() ?? PAGE_TITLE.connectors;
     if (page() === 'hosts') return hostsApi()?.title() ?? PAGE_TITLE.hosts;
     return PAGE_TITLE[page()];
   };
 
   const backLabel = () => {
     if (page() === 'providers' && providersApi()?.draftTitle() != null) return 'Model providers';
+    if (page() === 'connectors' && connectorsApi()?.draftTitle() != null) return 'Connectors';
     if (page() === 'hosts' && hostsApi()?.title() != null) return 'Cloud hosts';
     return 'Settings';
   };
@@ -87,6 +92,11 @@ export default function SettingsDialog(props: SettingsDialogProps) {
     if (page() === 'providers' && api?.draftTitle() != null) {
       // Back from the provider form returns to the list (like Cancel).
       api.closeDraft();
+      return;
+    }
+    const connectors = connectorsApi();
+    if (page() === 'connectors' && connectors?.draftTitle() != null) {
+      connectors.closeDraft();
       return;
     }
     const hosts = hostsApi();
@@ -115,7 +125,7 @@ export default function SettingsDialog(props: SettingsDialogProps) {
       <div
         class="modal model-settings ai-settings"
         // The providers page holds the models table: full names need room.
-        classList={{ wide: page() === 'providers' }}
+        classList={{ wide: page() === 'providers' || page() === 'connectors' }}
         role="dialog"
         aria-modal="true"
         aria-label={title()}
@@ -165,6 +175,13 @@ export default function SettingsDialog(props: SettingsDialogProps) {
                 providers={aiProviders()}
                 onChange={updateProviders}
                 controller={setProvidersApi}
+              />
+            </Match>
+            <Match when={page() === 'connectors'}>
+              <ConnectorsSettings
+                providers={aiProviders()}
+                onChange={updateProviders}
+                controller={setConnectorsApi}
               />
             </Match>
             <Match when={page() === 'permissions'}>

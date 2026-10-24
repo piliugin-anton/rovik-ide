@@ -6,7 +6,7 @@
 //! fails, the IDE writes it from the facts alone.
 
 use super::autopilot::ReportFacts;
-use super::run::{reasoning_meta, text_before_cut, Run, IDE_NOTE};
+use super::run::{text_before_cut, turn_meta, Run, IDE_NOTE};
 use serde_json::json;
 
 /// The report brief's first line: what the IDE asks for (S09).
@@ -307,7 +307,7 @@ impl Run {
                 Some(view) => format!("{}\n\n{VIEW_SECTION}\n\n{view}", content.trim_end()),
                 None => content,
             };
-            let mut meta = reasoning_meta(turn.reasoning).unwrap_or_else(|| json!({}));
+            let mut meta = turn_meta(turn.reasoning, turn.connector).unwrap_or_else(|| json!({}));
             meta["report"] = json!(facts);
             if by_ide {
                 meta["report"]["byIde"] = json!(true);

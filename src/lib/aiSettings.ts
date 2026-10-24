@@ -2,6 +2,7 @@ import { settingOf } from './reasoning';
 import { invoke } from '@tauri-apps/api/core';
 import { plural } from './textUtils';
 import type { ModelProfile, ModelSelection, Provider, ProviderModel } from '../types';
+import { connectorProfile, isConnector, kindOfProvider, splitSources } from './connectors';
 import { DEFAULT_PERMISSIONS, normalizePermissions, type AgentPermissions } from './permissions';
 import {
   DEFAULT_SUBAGENT_SETTINGS,
@@ -146,9 +147,17 @@ export function createAiSettingsHolder(
   };
 }
 
-/** One line for the Settings menu: how many providers and models there are to pick from. */
-export function providersSummary(providers: Provider[]): string {
-  if (providers.length === 0) return 'No providers yet: add one to chat';
+/**
+ * One line for the Settings menu: how many model providers (connectors
+ * aside, lib/connectors.ts) and models there are to pick from.
+ */
+export function providersSummary(all: Provider[]): string {
+  const { providers, connectors } = splitSources(all);
+  if (providers.length === 0) {
+    return connectors.length > 0
+      ? 'No providers: chats use connectors'
+      : 'No providers yet: add one to chat';
+  }
   const models = providers.reduce((n, p) => n + p.models.filter((m) => m.enabled).length, 0);
   return `${plural(providers.length, 'provider')}, ${plural(models, 'model')} enabled`;
 }
@@ -252,6 +261,9 @@ export function resolveProfile(
   const provider = providers.find((p) => p.id === selection.providerId);
   const model = provider?.models.find((m) => m.id === selection.modelId);
   if (!provider || !model) return null;
+  // A connector's model: the harness runs the turn (lib/connectors.ts).
+  const kind = kindOfProvider(provider);
+  if (kind && isConnector(provider)) return connectorProfile(provider, model, kind);
 
   return {
     id: `${provider.id}::${model.id}`,

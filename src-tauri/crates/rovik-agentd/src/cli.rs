@@ -49,7 +49,7 @@ usage: rovik-agentd <command>
       nightly-YYYY-MM-DD, 1.N or 1.N.P; node: lts, a major version or
       X.Y.Z). An administrator can turn this off in agentd.toml.
   admin [limits [NAME=VALUE ...] | add USER | remove USER | browser |
-         bubblewrap | toolchain list | toolchain add KIND VERSION |
+         bubblewrap | claude-code | toolchain list | toolchain add KIND VERSION |
          toolchain remove KIND VERSION | toolchain prune DAYS |
          toolchains user-install|shared-caches on|off | toolchains setup |
          upgrade FILE [--allow-downgrade] | uninstall] [--root DIR]
@@ -58,7 +58,9 @@ usage: rovik-agentd <command>
       the browser tools (the Chrome for Testing Rovik pins, which install
       and upgrade put in place too), bubblewrap, which confines the chats'
       commands (install and upgrade put it in place too, from the distro's
-      package), the shared Rust and Node versions and the package caches
+      package), Claude Code for the connector of that name (Anthropic's
+      package, installed once for every user's chats, or updated), the
+      shared Rust and Node versions and the package caches
       the daemons share (toolchain add works whether or not users may
       install them; prune takes the versions no chat used for DAYS),
       an upgrade for everyone (a release's

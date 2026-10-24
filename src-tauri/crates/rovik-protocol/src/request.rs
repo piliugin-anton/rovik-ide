@@ -9,6 +9,7 @@ use crate::agent::{
 use crate::autopilot::{AutonomyConfig, ChatTask, DeliveryTest};
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
+use crate::connectors::{ConnectorAuth, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp};
 use crate::host::{HostInfo, KeyInfo, Storage};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
@@ -92,6 +93,19 @@ pub enum Request {
     WorkloadFocus {
         dialog_id: Option<String>,
     },
+    /// "Test & refresh models" on a connector (rovik_protocol::connectors):
+    /// whether its program runs on the computer asked, its version and its
+    /// models, served where the chat would run it (here, or on a host). →
+    /// `ConnectorProbe`.
+    ConnectorProbe(ProbeRequestArgs),
+    /// Whether a connector's program is signed in on the computer asked,
+    /// without a request (the app's start, Settings → Connectors). The
+    /// args' `request` is ignored. → `ConnectorAuth`.
+    ConnectorAuthStatus(ProbeRequestArgs),
+    /// A connector's "Set up" step (install, sign in, sign out) on the
+    /// computer asked: started, followed, answered or stopped. →
+    /// `ConnectorSetup`.
+    ConnectorSetup(SetupOp),
 
     // Chat: writes to a chat's rows.
     ChatRename {
@@ -362,6 +376,9 @@ impl Request {
             | Request::TaskStatus
             | Request::AgentSetEffort { .. }
             | Request::WorkloadFocus { .. }
+            | Request::ConnectorProbe(_)
+            | Request::ConnectorAuthStatus(_)
+            | Request::ConnectorSetup(_)
             | Request::BlobsMissing { .. }
             | Request::ProjectEnsure { .. }
             | Request::WorkResults
@@ -420,6 +437,12 @@ pub enum Response {
     DeliveryTested(DeliveryTest),
     /// `TaskStatus`.
     Tasks(Vec<ChatTask>),
+    /// `ConnectorProbe`.
+    ConnectorProbe(ConnectorProbe),
+    /// `ConnectorAuthStatus`.
+    ConnectorAuth(ConnectorAuth),
+    /// `ConnectorSetup`.
+    ConnectorSetup(SetupJob),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -478,4 +501,7 @@ replies! {
     Storage => Storage,
     DeliveryTested => DeliveryTest,
     Tasks => Vec<ChatTask>,
+    ConnectorProbe => ConnectorProbe,
+    ConnectorAuth => ConnectorAuth,
+    ConnectorSetup => SetupJob,
 }

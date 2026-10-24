@@ -38,6 +38,8 @@ fn names(events: &[ChatStreamEvent]) -> Vec<String> {
             ChatStreamEvent::ToolCallComplete {
                 name, arguments, ..
             } => format!("tool_done:{name}:{arguments}"),
+            ChatStreamEvent::HarnessStep { step } => format!("harness_step:{}", step.name),
+            ChatStreamEvent::HarnessSession { session, .. } => format!("harness_session:{session}"),
         })
         .collect()
 }

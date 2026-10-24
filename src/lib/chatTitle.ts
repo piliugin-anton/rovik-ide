@@ -1,6 +1,7 @@
 import type { ChatMessage, ModelProfile } from '../types';
 import { completeOnce, LEAN_THEN_PLAIN, stripThinking } from './oneShot';
 import { withoutBlockMarkup } from './textBlocks';
+import { titleProfile } from './connectors';
 
 const MAX_TITLE_CHARS = 60;
 const MAX_MESSAGE_CHARS = 1_500;
@@ -49,9 +50,11 @@ export async function generateChatTitle(
     },
   ];
 
+  // A Claude Code chat is titled by Haiku (lib/connectors.ts).
+  const asked = titleProfile(profile);
   for (const options of ATTEMPTS) {
     const result = await completeOnce({
-      profile,
+      profile: asked,
       systemPrompt: SYSTEM_PROMPT,
       messages: request,
       options,

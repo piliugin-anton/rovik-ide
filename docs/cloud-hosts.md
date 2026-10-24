@@ -20,6 +20,7 @@ Rovik is installed once per server, by root:
 | `/etc/sudoers.d/rovik`                                       | Lets users run the commands described below.                               |
 | `/opt/rovik/browser/<version>/`                              | The browser tools' browser (below), owned by root.                         |
 | `/opt/rovik/toolchains/rust/`, `/opt/rovik/toolchains/node/` | The Rust and Node versions every user's chats run (below), owned by root.  |
+| The distro's `claude-code` package, on request               | Claude Code for the connector of that name (below), once for everyone.     |
 | `/var/cache/rovik/npm`, `/var/cache/rovik/crates`            | The package caches the daemons share, owned by root and the `rovik` group. |
 | The distro's `bubblewrap` package                            | Confines the chats' commands (see What can read what).                     |
 | The `rovik-admin` group                                      | The administrators.                                                        |
@@ -102,6 +103,7 @@ sudo /opt/rovik/bin/rovik-agentd admin add USER
 sudo /opt/rovik/bin/rovik-agentd admin remove USER
 sudo /opt/rovik/bin/rovik-agentd admin browser                   # install it if it's missing
 sudo /opt/rovik/bin/rovik-agentd admin bubblewrap                # install it if it's missing
+sudo /opt/rovik/bin/rovik-agentd admin claude-code               # Claude Code for everyone, or its update
 sudo /opt/rovik/bin/rovik-agentd admin toolchain list            # the versions installed
 sudo /opt/rovik/bin/rovik-agentd admin toolchain add rust 1.82   # for everyone
 sudo /opt/rovik/bin/rovik-agentd admin toolchain add node 20
@@ -358,6 +360,49 @@ The browser tools use the pinned browser first, then Chromium
 They drive it over a pipe, never a DevTools port, and they close a Chrome
 that listens on a TCP port anyway, which a flag in a Chrome flags file can
 make it do.
+
+## Claude Code
+
+The Claude Code connector (Settings → Connectors) runs `claude` on the
+computer a chat runs on, so a chat on a server needs Claude Code there.
+An administrator installs it once for everyone, from Anthropic's own
+package repository for the server's package manager (apt, dnf or apk):
+
+```sh
+sudo /opt/rovik/bin/rovik-agentd admin claude-code      # install, or update
+```
+
+It lands in the system's `bin`, where each user's daemon finds it on the
+PATH, as `claude` installed by hand would be found too (the native
+installer puts it in `~/.local/bin`, for that user alone). The package
+doesn't update itself: run the command again for the newest version.
+Where the server has another package manager, install Claude Code by hand
+or name the program's path in the connector's settings. A user can also
+install it for themselves alone: **Set up** in Settings → Connectors, with
+the host chosen, runs Anthropic's installer as that user, which puts
+`claude` in their `~/.local/bin` (it needs `curl` and `bash` on the
+server). **Update to …**, offered there when a newer version is out, runs
+`claude update` as that user: it updates their own installation, while
+the shared package is updated by the administrator with `admin
+claude-code`.
+
+Each user signs in as their own. The token or key of the connector's
+settings travels with the chat's model and reaches the program as
+`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`; the daemon keeps it as
+it keeps providers' keys ([What can read what](#what-can-read-what)). A
+connector set to the computer's login uses the login in that user's
+`~/.claude` on the server, made by running `claude` there once, or by
+**Set up**: it runs `claude auth login` as that user on the server, opens
+the sign-in page in the browser of the user's own computer, and passes
+the code that page shows back to the program. The login is that user's
+alone. Claude
+Code's own conversation for a chat (its session) is kept by the program
+in that user's home; Rovik remembers which session each chat continues.
+
+Claude Code runs the agent's commands itself, not through Rovik's
+sandbox. What it may do is decided by Rovik's Permissions & approval
+(the connector's default permission mode), or by Claude Code's own
+permission mode and allowed tools when the connector's settings pick one.
 
 ## Upgrades
 

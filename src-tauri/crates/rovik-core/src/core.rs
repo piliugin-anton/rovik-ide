@@ -98,6 +98,7 @@ impl Core {
     /// mount where the virtual files were, paused commands resumed and the
     /// workload's history written, and the database marked closed cleanly.
     pub async fn shutdown(&self) {
+        crate::connectors::end_all();
         self.browser.shutdown().await;
         let _ = self.vfs.unmount();
         crate::overlay::chats::close_all();

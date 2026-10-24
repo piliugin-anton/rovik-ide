@@ -14,6 +14,7 @@ pub mod agent;
 pub mod autopilot;
 pub mod chat;
 pub mod clm;
+pub mod connectors;
 pub mod diff;
 pub mod events;
 mod frame;

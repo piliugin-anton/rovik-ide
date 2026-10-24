@@ -13,6 +13,9 @@ use rovik_core::agent_run::{
 };
 use rovik_core::chat_request::ChatRequests;
 use rovik_core::Core;
+use rovik_protocol::connectors::{
+    ConnectorAuth, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp,
+};
 use rovik_protocol::Request;
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -251,6 +254,57 @@ pub async fn chat_context_estimate(
         extra_chars,
     )
     .await
+}
+
+/// "Test & refresh models" on a connector (Settings → Connectors): whether
+/// its program runs, its version and its models, here or on `host`, the
+/// computer the chats using it would run it on.
+#[tauri::command]
+pub async fn connector_probe(
+    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
+    args: ProbeRequestArgs,
+    host: Option<String>,
+) -> Result<ConnectorProbe, String> {
+    match host.filter(|h| !h.is_empty()) {
+        Some(host) => answer(remote.host_call(&host, Request::ConnectorProbe(args)).await),
+        None => call(&core, Request::ConnectorProbe(args)).await,
+    }
+}
+
+/// Whether a connector's program is signed in, here or on `host`, without
+/// a request: the app's start checks each connector a chat can pick.
+#[tauri::command]
+pub async fn connector_auth_status(
+    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
+    args: ProbeRequestArgs,
+    host: Option<String>,
+) -> Result<ConnectorAuth, String> {
+    match host.filter(|h| !h.is_empty()) {
+        Some(host) => answer(
+            remote
+                .host_call(&host, Request::ConnectorAuthStatus(args))
+                .await,
+        ),
+        None => call(&core, Request::ConnectorAuthStatus(args)).await,
+    }
+}
+
+/// A connector's "Set up" step (install, sign in, sign out), here or on
+/// `host`: started, followed, given the user's line, or stopped
+/// (`SetupOp`). A step on a host runs as the user's own daemon there.
+#[tauri::command]
+pub async fn connector_setup(
+    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
+    op: SetupOp,
+    host: Option<String>,
+) -> Result<SetupJob, String> {
+    match host.filter(|h| !h.is_empty()) {
+        Some(host) => answer(remote.host_call(&host, Request::ConnectorSetup(op)).await),
+        None => call(&core, Request::ConnectorSetup(op)).await,
+    }
 }
 
 /// `GET {base_url}/models` on an OpenAI-compatible server.

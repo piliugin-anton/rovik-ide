@@ -26,6 +26,7 @@ fn model(id: &str, base_url: &str, key: &str) -> ModelProfile {
         no_tools: false,
         first_byte_timeout_ms: None,
         api_route: None,
+        connector: None,
     }
 }
 

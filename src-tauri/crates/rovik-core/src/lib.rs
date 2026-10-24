@@ -15,6 +15,7 @@ pub mod chat_request;
 pub mod clm;
 pub mod code_search;
 pub mod command_tool;
+pub mod connectors;
 pub mod core;
 mod dispatch;
 #[cfg(target_os = "linux")]

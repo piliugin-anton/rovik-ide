@@ -202,6 +202,7 @@ fn start(dialog_id: &str, kind: StartKind, current: Option<&str>) -> StartReques
             no_tools: false,
             first_byte_timeout_ms: None,
             api_route: None,
+            connector: None,
         },
         options: None,
         mode: Some("agent".into()),

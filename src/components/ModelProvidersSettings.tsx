@@ -1,13 +1,15 @@
-import { describeReasoning, settingOf } from '../lib/reasoning';
-import { createMemo, createSignal, For, Show } from 'solid-js';
+// ModelProvidersSettings.tsx
+//
+// Settings → Model providers: the OpenAI-compatible endpoints chats can
+// use, each with its API key and its models (ProviderModelsTable.tsx).
+// Connectors, harnesses such as Claude Code, have their own page
+// (ConnectorsSettings.tsx); the entries here are the providers alone.
+import { createSignal, For, Show } from 'solid-js';
 import type { Provider } from '../types';
-import {
-  fetchModels,
-  formatModelLabel,
-  guessProviderName,
-  mergeRemoteModels,
-} from '../lib/aiSettings';
+import { fetchModels, guessProviderName, mergeRemoteModels } from '../lib/aiSettings';
+import { isConnector } from '../lib/connectors';
 import { confirmDialog } from './ConfirmDialog';
+import ProviderModelsTable, { PROVIDER_COLUMNS } from './ProviderModelsTable';
 
 /** Lets the settings modal show the open form's name and close it with Back. */
 export interface ProvidersSettingsController {
@@ -40,13 +42,6 @@ const BASE_URL_PRESETS = [
   'http://localhost:1234/v1',
 ];
 
-const CONTEXT_MIN = 1_000;
-const CONTEXT_MAX = 2_000_000;
-const DEFAULT_CONTEXT = 32_000;
-const FIRST_TOKEN_MIN = 5;
-const FIRST_TOKEN_MAX = 1_800;
-const DEFAULT_FIRST_TOKEN = 60;
-
 const emptyDraft = (): Provider => ({
   id: crypto.randomUUID(),
   name: '',
@@ -58,14 +53,16 @@ const emptyDraft = (): Provider => ({
 
 export default function ModelProvidersSettings(props: ModelProvidersSettingsProps) {
   // The list is the dialog's state (lib/aiSettingsStore.ts): every change
-  // goes up and comes back down, saved.
-  const providers = () => props.providers;
-  const setProviders = (fn: (prev: Provider[]) => Provider[]) => props.onChange(fn(providers()));
+  // goes up and comes back down, saved. Connectors are among the saved
+  // entries (lib/connectors.ts) but not this page's: they're kept as they are.
+  const providers = () => props.providers.filter((p) => !isConnector(p));
+  const setProviders = (fn: (prev: Provider[]) => Provider[]) => {
+    const connectors = props.providers.filter(isConnector);
+    props.onChange([...fn(providers()), ...connectors]);
+  };
   const [draft, setDraft] = createSignal<Provider | null>(null);
   const [nameTouched, setNameTouched] = createSignal(false);
   const [test, setTest] = createSignal<TestState>({ kind: 'idle' });
-  const [modelFilter, setModelFilter] = createSignal('');
-  const [manualModel, setManualModel] = createSignal('');
   const [formError, setFormError] = createSignal<string | null>(null);
 
   // Ignore results from a test that was started before the URL/key changed.
@@ -80,8 +77,6 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
     setDraft({ ...p, models: p.models.map((m) => ({ ...m })) });
     setNameTouched(!isNew);
     setTest({ kind: 'idle' });
-    setModelFilter('');
-    setManualModel('');
     setFormError(null);
     testRun++;
   }
@@ -138,100 +133,6 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
     const t = test();
     return t.kind === 'error' ? t : null;
   };
-
-  const filteredModels = createMemo(() => {
-    const d = draft();
-    if (!d) return [];
-    const q = modelFilter().trim().toLowerCase();
-    return q ? d.models.filter((m) => m.id.toLowerCase().includes(q)) : d.models;
-  });
-
-  const enabledCount = () => draft()?.models.filter((m) => m.enabled).length ?? 0;
-
-  function toggleModel(id: string, enabled: boolean) {
-    const d = draft();
-    if (!d) return;
-    patch({ models: d.models.map((m) => (m.id === id ? { ...m, enabled } : m)) });
-  }
-
-  /** Empty clears the override; out-of-range values are ignored. */
-  function setContextOverride(id: string, raw: string) {
-    const d = draft();
-    if (!d) return;
-    const digits = raw.replace(/[^\d]/g, '');
-    const value = digits ? Number(digits) : undefined;
-    const valid = value === undefined || (value >= CONTEXT_MIN && value <= CONTEXT_MAX);
-    if (!valid) return;
-    patch({ models: d.models.map((m) => (m.id === id ? { ...m, contextOverride: value } : m)) });
-  }
-
-  /**
-   * Reasoning on (the effort is sent, in the forms detected for the model)
-   * or off (never sent). Switching it on starts detection afresh.
-   */
-  function toggleReasoning(id: string) {
-    const d = draft();
-    if (!d) return;
-    patch({
-      models: d.models.map((m) =>
-        m.id === id
-          ? {
-              ...m,
-              reasoning: {
-                choice: settingOf(m).choice === 'off' ? ('auto' as const) : ('off' as const),
-              },
-            }
-          : m
-      ),
-    });
-  }
-
-  function toggleTools(id: string) {
-    const d = draft();
-    if (!d) return;
-    patch({ models: d.models.map((m) => (m.id === id ? { ...m, noTools: !m.noTools } : m)) });
-  }
-
-  /** Seconds to wait for the first token; empty restores the 60 s default. */
-  function setFirstTokenTimeout(id: string, raw: string) {
-    const d = draft();
-    if (!d) return;
-    const digits = raw.replace(/[^\d]/g, '');
-    const value = digits ? Number(digits) : undefined;
-    if (value !== undefined && (value < FIRST_TOKEN_MIN || value > FIRST_TOKEN_MAX)) return;
-    patch({
-      models: d.models.map((m) => (m.id === id ? { ...m, firstTokenTimeoutSec: value } : m)),
-    });
-  }
-
-  /** Vision or PDF: what the model takes besides text, attached in the chat. */
-  function toggleInput(id: string, input: 'vision' | 'pdf') {
-    const d = draft();
-    if (!d) return;
-    patch({ models: d.models.map((m) => (m.id === id ? { ...m, [input]: !m[input] } : m)) });
-  }
-
-  function setAllFiltered(enabled: boolean) {
-    const d = draft();
-    if (!d) return;
-    const ids = new Set(filteredModels().map((m) => m.id));
-    patch({ models: d.models.map((m) => (ids.has(m.id) ? { ...m, enabled } : m)) });
-  }
-
-  function removeModel(id: string) {
-    const d = draft();
-    if (d) patch({ models: d.models.filter((m) => m.id !== id) });
-  }
-
-  function addManualModel() {
-    const id = manualModel().trim();
-    const d = draft();
-    if (!id || !d) return;
-    if (!d.models.some((m) => m.id === id)) {
-      patch({ models: [...d.models, { id, enabled: true }] });
-    }
-    setManualModel('');
-  }
 
   function saveDraft() {
     const d = draft();
@@ -397,205 +298,12 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
             </Show>
           </div>
 
-          <div class="provider-models">
-            <div class="provider-models-header">
-              <span>
-                Models, {enabledCount()} of {d().models.length} enabled
-              </span>
-              <Show when={d().models.length > 0}>
-                <span class="provider-models-bulk">
-                  <button class="link-button" onClick={() => setAllFiltered(true)}>
-                    All
-                  </button>
-                  <button class="link-button" onClick={() => setAllFiltered(false)}>
-                    None
-                  </button>
-                </span>
-              </Show>
-            </div>
-
-            <Show when={d().models.length > 8}>
-              <input
-                class="provider-models-filter"
-                value={modelFilter()}
-                onInput={(e) => setModelFilter(e.currentTarget.value)}
-                placeholder="Filter models"
-                spellcheck={false}
-              />
-            </Show>
-
-            <div class="provider-models-list">
-              {/* Column titles: stay at the top while the list scrolls. */}
-              <Show when={filteredModels().length > 0}>
-                <div class="provider-models-head" role="row">
-                  <span role="columnheader" title="Shown in the chat's model picker when checked">
-                    Model
-                  </span>
-                  <span
-                    role="columnheader"
-                    class="numeric"
-                    title="Context window in tokens: how much of the chat is sent with each request. Empty uses the size the provider reports, or the default."
-                  >
-                    Context
-                  </span>
-                  <span
-                    role="columnheader"
-                    title="The model accepts images: images attached in the chat are sent to it, and the agent gets the browser_screenshot tool"
-                  >
-                    Vision
-                  </span>
-                  <span
-                    role="columnheader"
-                    title="The model accepts PDF files: PDFs attached in the chat are sent to it. OpenAI's and Anthropic's models and OpenRouter take them (Anthropic's are set from its model list); Gemini's OpenAI-compatible API doesn't"
-                  >
-                    PDF
-                  </span>
-                  <span
-                    role="columnheader"
-                    title="The model can call tools (read and edit files, run commands). Turn off for models without tool-call support."
-                  >
-                    Tools
-                  </span>
-                  <span
-                    role="columnheader"
-                    title="A reasoning effort can be chosen for the model in the chat; the forms its provider accepts are detected automatically"
-                  >
-                    Reasoning
-                  </span>
-                  <span
-                    role="columnheader"
-                    class="numeric"
-                    title="How long to wait for the first token before retrying. Each retry after no answer waits twice as long. Raise it for slow reasoning models."
-                  >
-                    Timeout
-                  </span>
-                  <span role="columnheader" aria-label="Remove" />
-                </div>
-              </Show>
-              <For
-                each={filteredModels()}
-                fallback={
-                  <div class="provider-models-empty">
-                    {d().models.length === 0
-                      ? 'Test the connection to load models, or add one by ID below.'
-                      : 'No models match the filter.'}
-                  </div>
-                }
-              >
-                {(m) => (
-                  <div class="provider-model-row">
-                    <label title={formatModelLabel(d().name, m)}>
-                      <input
-                        type="checkbox"
-                        checked={m.enabled}
-                        onChange={(e) => toggleModel(m.id, e.currentTarget.checked)}
-                      />
-                      <span class="provider-model-name">{m.id}</span>
-                    </label>
-                    <input
-                      class="context-input"
-                      inputMode="numeric"
-                      value={m.contextOverride?.toLocaleString() ?? ''}
-                      placeholder={
-                        m.contextLength
-                          ? `${m.contextLength.toLocaleString()} reported`
-                          : `${DEFAULT_CONTEXT.toLocaleString()} default`
-                      }
-                      title="Context window in tokens. Leave empty to use the reported value or the default."
-                      aria-label={`Context window for ${m.id}`}
-                      onChange={(e) => {
-                        setContextOverride(m.id, e.currentTarget.value);
-                        // Show the stored value (or empty if rejected).
-                        const stored = draft()?.models.find((x) => x.id === m.id)?.contextOverride;
-                        e.currentTarget.value = stored?.toLocaleString() ?? '';
-                      }}
-                    />
-                    <input
-                      type="checkbox"
-                      class="model-flag"
-                      checked={!!m.vision}
-                      onChange={() => toggleInput(m.id, 'vision')}
-                      aria-label={`${m.id} accepts images`}
-                      title={m.vision ? 'Accepts images' : 'No images'}
-                    />
-                    <input
-                      type="checkbox"
-                      class="model-flag"
-                      checked={!!m.pdf}
-                      onChange={() => toggleInput(m.id, 'pdf')}
-                      aria-label={`${m.id} accepts PDF files`}
-                      title={m.pdf ? 'Accepts PDF files' : 'No PDF files'}
-                    />
-                    <input
-                      type="checkbox"
-                      class="model-flag"
-                      checked={!m.noTools}
-                      onChange={() => toggleTools(m.id)}
-                      aria-label={`${m.id} can use tools`}
-                      title={
-                        m.noTools
-                          ? 'Tools off: this model is sent no tools (for models without tool-call support)'
-                          : 'Tools on. Turn off for models that go silent or fail after tool calls'
-                      }
-                    />
-                    <input
-                      type="checkbox"
-                      class="model-flag"
-                      checked={settingOf(m).choice !== 'off'}
-                      onChange={() => toggleReasoning(m.id)}
-                      aria-label={`${m.id} takes a reasoning effort`}
-                      title={
-                        settingOf(m).choice === 'off'
-                          ? 'Reasoning off: no effort is sent to this model, and the effort selector is hidden'
-                          : `Reasoning on: the effort chosen in the chat is sent in the forms this model accepts. ${describeReasoning(settingOf(m))}`
-                      }
-                    />
-                    <input
-                      class="context-input timeout-input"
-                      inputMode="numeric"
-                      value={m.firstTokenTimeoutSec ? `${m.firstTokenTimeoutSec} s` : ''}
-                      placeholder={`${DEFAULT_FIRST_TOKEN} s`}
-                      title="How long to wait for the first token before retrying. Each retry after no answer waits twice as long. Raise it for slow reasoning models."
-                      aria-label={`First-token timeout for ${m.id}, in seconds`}
-                      onChange={(e) => {
-                        setFirstTokenTimeout(m.id, e.currentTarget.value);
-                        const stored = draft()?.models.find(
-                          (x) => x.id === m.id
-                        )?.firstTokenTimeoutSec;
-                        e.currentTarget.value = stored ? `${stored} s` : '';
-                      }}
-                    />
-                    <button
-                      class="icon-button"
-                      onClick={() => removeModel(m.id)}
-                      aria-label={`Remove ${m.id}`}
-                      title="Remove"
-                    >
-                      ×
-                    </button>
-                  </div>
-                )}
-              </For>
-            </div>
-
-            <div class="provider-manual-row">
-              <input
-                value={manualModel()}
-                onInput={(e) => setManualModel(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addManualModel();
-                  }
-                }}
-                placeholder="Add model ID manually"
-                spellcheck={false}
-              />
-              <button onClick={addManualModel} disabled={!manualModel().trim()}>
-                Add
-              </button>
-            </div>
-          </div>
+          <ProviderModelsTable
+            providerName={d().name}
+            models={d().models}
+            onChange={(models) => patch({ models })}
+            columns={PROVIDER_COLUMNS}
+          />
 
           <Show when={formError()}>
             <div class="provider-test-status error">{formError()}</div>

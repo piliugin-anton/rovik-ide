@@ -917,6 +917,7 @@ impl ChromePatcher {
 
         let sign_path = self.patched_bundle.as_ref().unwrap_or(&self.patched_path);
 
+        clear_extended_attributes(sign_path);
         tracing::info!("Re-signing {:?} with ad-hoc signature...", sign_path);
 
         // A plain ad-hoc signature, without the original's entitlements and
@@ -965,6 +966,32 @@ impl ChromePatcher {
             ));
         }
         Ok(())
+    }
+}
+
+/// Clears the extended attributes of the owned copy, which `fs::copy` keeps
+/// from the installed Chrome. `codesign` refuses a bundle whose files carry
+/// Finder information or a resource fork ("resource fork, Finder information,
+/// or similar detritus not allowed"), as Chrome's do on some machines, the
+/// macOS CI runners among them. Only the copy is changed. A failure here is
+/// logged, not returned: `codesign` reports what still stands in its way.
+#[cfg(target_os = "macos")]
+fn clear_extended_attributes(path: &Path) {
+    use std::process::Command;
+
+    match Command::new("/usr/bin/xattr").arg("-cr").arg(path).output() {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => tracing::warn!(
+            "Clearing extended attributes of {:?} failed ({}): {}",
+            path,
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(error) => tracing::warn!(
+            "Clearing extended attributes of {:?} failed: {}",
+            path,
+            error
+        ),
     }
 }
 

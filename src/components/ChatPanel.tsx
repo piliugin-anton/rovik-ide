@@ -4363,7 +4363,10 @@ export default function ChatPanel(props: ChatProps) {
       {/* What this request's subagents used, as their providers reported it. */}
       <Show when={usageLabel(runUsage(messages()))}>
         {(label) => (
-          <div class="subagent-run-usage" title="Tokens used by subagents for the latest request">
+          <div
+            class="subagent-run-usage"
+            title="Tokens used for the latest request by subagents and connectors"
+          >
             Subagents: {label()}
           </div>
         )}
@@ -4602,7 +4605,7 @@ export default function ChatPanel(props: ChatProps) {
             providers={providers()}
             selection={selection()}
             onSelect={handleModelChange}
-            onOpenSettings={() => openAppSettings('providers')}
+            onOpenSettings={(page) => openAppSettings(page)}
           />
           <Show when={showEffort()}>
             <EffortSelector value={effortFor(activeProfile()?.id)} onChange={setEffort} />

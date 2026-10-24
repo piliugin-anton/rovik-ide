@@ -497,7 +497,7 @@ function ApprovalDetails(props: { approval: ToolApproval }) {
  * edits are reviewed change by change in the editor; this offers the
  * shortcuts.
  */
-function ApprovalBar(props: { request: PendingApproval }) {
+export function ApprovalBar(props: { request: PendingApproval }) {
   const dialogId = () => props.request.dialogId;
   const id = () => props.request.toolCallId;
   const counts = () => (props.request.edit ? hunkCounts(props.request.edit) : null);

@@ -63,6 +63,8 @@ export interface ModelProfile {
   reasoning: import('./lib/reasoning').ReasoningSetting;
   /** The API route the model was found to work on, once known. */
   apiRoute?: ApiRoute;
+  /** A connector's settings, when the model is a connector's (lib/connectors.ts). */
+  connector?: Record<string, unknown>;
 }
 
 /**
@@ -89,7 +91,14 @@ export interface ProviderModel {
   apiRoute?: ApiRoute;
 }
 
-/** One OpenAI-compatible endpoint + credentials, with the models it serves. */
+/**
+ * One source of models: an OpenAI-compatible endpoint with its credentials,
+ * or a connector (lib/connectors.ts), a coding harness such as Claude Code
+ * installed on the computer the chat runs on. A connector's `baseUrl` is
+ * `connector://<kind>`, its token or key is `apiKey`, and what the harness
+ * needs to run is `settings`; everything else (the models, the picker, the
+ * saved model of a chat, the keychain) works as for a provider.
+ */
 export interface Provider {
   id: string;
   name: string; // e.g. "OpenRouter"
@@ -97,7 +106,14 @@ export interface Provider {
   apiKey: string;
   stream: boolean;
   models: ProviderModel[];
+  /** A connector's kind; absent for a model provider. */
+  connector?: ConnectorKind;
+  /** A connector's settings (lib/connectors.ts, by kind). */
+  settings?: Record<string, unknown>;
 }
+
+/** The harnesses that can be connected (rovik_protocol::connectors). */
+export type ConnectorKind = 'claude-code';
 
 export interface ModelSelection {
   providerId: string;
@@ -265,6 +281,8 @@ export interface ToolMeta {
   pick?: import('./lib/autopilot').PickMeta;
   /** A task's report, its final message: the facts it was written from (lib/autopilot.ts). */
   report?: import('./lib/autopilot').ReportMeta;
+  /** An assistant message a connector's harness wrote: what it did (lib/connectors.ts). */
+  connector?: import('./lib/connectors').ConnectorMeta;
   /**
    * A user-role message the IDE wrote (check failures for the agent). Not
    * shown as a user message, and never mistaken for the user's request.

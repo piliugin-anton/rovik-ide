@@ -18,6 +18,7 @@ import {
 } from '../lib/aiSettingsStore';
 import { editorSettings, editorSummary } from '../lib/editorSettings';
 import { providersSummary } from '../lib/aiSettings';
+import { cantRun, connectorAuthState, connectorsSummary, splitSources } from '../lib/connectors';
 import { agentRunsSummary, permissionsSummary } from '../lib/permissions';
 import { subagentSummary } from '../lib/subagentSettings';
 import { autopilotSummary } from '../lib/autopilotSettings';
@@ -115,6 +116,18 @@ export default function SettingsMenu(props: SettingsMenuProps) {
           about="The models chats can use, with your API keys. The AI reviewer and the subagents pick theirs here too."
           state={ai(() => providersSummary(aiProviders()))}
           warning={aiSettingsLoaded() && aiProviders().length === 0}
+        />
+        <Item
+          page="connectors"
+          label="Connectors"
+          about="Coding harnesses such as Claude Code, installed where a chat runs, used in place of a model: the chat hands them the task and shows their steps, tokens and cost."
+          state={ai(() => connectorsSummary(aiProviders()))}
+          warning={
+            aiSettingsLoaded() &&
+            splitSources(aiProviders()).connectors.some(
+              (c) => !c.models.some((m) => m.enabled) || cantRun(connectorAuthState(c.id))
+            )
+          }
         />
         <Item
           page="permissions"

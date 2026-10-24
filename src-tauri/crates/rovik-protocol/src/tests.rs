@@ -158,6 +158,7 @@ fn profile(id: &str) -> ModelProfile {
         no_tools: false,
         first_byte_timeout_ms: Some(30_000),
         api_route: Some("responses".into()),
+        connector: None,
     }
 }
 
@@ -518,6 +519,28 @@ fn every_request_round_trips() {
             Request::WorkloadFocus {
                 dialog_id: Some("d".into()),
             },
+            Request::ConnectorProbe(crate::connectors::ProbeRequestArgs {
+                kind: crate::connectors::ConnectorKind::ClaudeCode,
+                settings: serde_json::json!({ "program": "claude" }),
+                api_key: String::new(),
+                request: false,
+            }),
+            Request::ConnectorAuthStatus(crate::connectors::ProbeRequestArgs {
+                kind: crate::connectors::ConnectorKind::ClaudeCode,
+                settings: serde_json::json!({ "auth": "token" }),
+                api_key: "tok".into(),
+                request: false,
+            }),
+            Request::ConnectorSetup(crate::connectors::SetupOp::Start {
+                args: crate::connectors::ProbeRequestArgs {
+                    kind: crate::connectors::ConnectorKind::ClaudeCode,
+                    settings: serde_json::json!({}),
+                    api_key: String::new(),
+                    request: false,
+                },
+                action: crate::connectors::SetupAction::Install,
+            }),
+            Request::ConnectorSetup(crate::connectors::SetupOp::Cancel { id: "j".into() }),
             Request::ChatRename {
                 dialog_id: "d".into(),
                 title: "New title".into(),
@@ -858,6 +881,35 @@ fn every_response_round_trips() {
                 pull_requests: Some("`gh` is logged in to github.com".into()),
             }),
             Response::DeliveryTested(crate::autopilot::DeliveryTest::default()),
+            Response::ConnectorProbe(crate::connectors::ConnectorProbe {
+                program: "claude".into(),
+                version: "2.1.309 (Claude Code)".into(),
+                models: vec![crate::connectors::ConnectorModel {
+                    id: "sonnet".into(),
+                    owned_by: Some("anthropic".into()),
+                    context_length: Some(200_000),
+                    description: Some("The latest Sonnet".into()),
+                }],
+                request: None,
+                notes: Vec::new(),
+                auth: None,
+                update: Some("2.1.310".into()),
+            }),
+            Response::ConnectorAuth(crate::connectors::ConnectorAuth {
+                logged_in: true,
+                method: Some("claude.ai".into()),
+                config_dir: Some("/home/ann/.claude".into()),
+                detail: None,
+            }),
+            Response::ConnectorSetup(crate::connectors::SetupJob {
+                id: "j".into(),
+                action: crate::connectors::SetupAction::Login,
+                command: "claude auth login".into(),
+                output: "Paste code here if prompted >".into(),
+                url: Some("https://claude.com/cai/oauth/authorize?code=true".into()),
+                done: false,
+                error: None,
+            }),
             Response::Tasks(vec![
                 crate::autopilot::ChatTask {
                     chat: "c1".into(),

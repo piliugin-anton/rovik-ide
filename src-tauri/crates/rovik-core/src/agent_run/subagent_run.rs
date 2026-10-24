@@ -25,7 +25,7 @@
 use super::events::AgentEvent;
 use super::guard::FinishedCall;
 use super::run::{
-    new_message, reasoning_meta, text_before_cut, unanswered_tool_calls, Role, Run, IDE_NOTE,
+    new_message, text_before_cut, turn_meta, unanswered_tool_calls, Role, Run, IDE_NOTE,
 };
 use super::subagent::{
     self, Brief, Budget, ChildWrite, Kind, SubResult, SubStatus, SubagentConfig, SubagentSettings,
@@ -1084,6 +1084,8 @@ impl Run {
         // Its time starts now, not when it was prepared (it may have waited
         // for a free place).
         self.started_at = Instant::now();
+        // A harness waiting on its tool calls ends with it (connectors).
+        let _harness = super::run::HarnessGuard::new(&self.dialog_id);
         #[cfg(test)]
         if self.sub().is_some_and(|s| {
             PANIC_SUB
@@ -1313,7 +1315,12 @@ impl Run {
             // which isn't a failure or the user's Stop (handled below).
             let repeated = turn.repetition_cut.is_some() && !self.stopped();
             if let Some(error) = turn.failure.filter(|_| !repeated) {
-                self.store_failed_turn(&turn.message_id, &turn.text, turn.reasoning, &error)
+                self.store_failed_turn(
+                    &turn.message_id,
+                    &turn.text,
+                    turn_meta(turn.reasoning, turn.connector),
+                    &error,
+                )
                     .await?;
                 if !turn.text.trim().is_empty() {
                     last_text = turn.text.clone();
@@ -1350,7 +1357,7 @@ impl Run {
                 ),
                 None => (turn.text.clone(), turn.tool_calls.clone()),
             };
-            let meta = reasoning_meta(turn.reasoning);
+            let meta = turn_meta(turn.reasoning, turn.connector);
             self.finalize(&turn.message_id, text.clone(), calls.clone(), meta, None)
                 .await?;
             if !text.trim().is_empty() {
@@ -1586,12 +1593,17 @@ impl Run {
         self.words_only = true;
         let turn = self.model_turn().await?;
         if let Some(error) = &turn.failure {
-            self.store_failed_turn(&turn.message_id, &turn.text, turn.reasoning.clone(), error)
+            self.store_failed_turn(
+                &turn.message_id,
+                &turn.text,
+                turn_meta(turn.reasoning.clone(), turn.connector.clone()),
+                error,
+            )
                 .await?;
             return Ok(turn.text);
         }
         let text = text_before_cut(&turn.text, turn.repetition_cut).to_string();
-        let meta = reasoning_meta(turn.reasoning);
+        let meta = turn_meta(turn.reasoning, turn.connector);
         // Calls a provider sent anyway aren't run, and aren't kept either.
         self.finalize(&turn.message_id, text.clone(), Vec::new(), meta, None)
             .await?;

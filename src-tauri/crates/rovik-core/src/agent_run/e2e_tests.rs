@@ -32,6 +32,10 @@ mod autopilot_tests;
 #[path = "steer_e2e_tests.rs"]
 mod steer_tests;
 
+#[cfg(test)]
+#[path = "connector_e2e_tests.rs"]
+mod connector_tests;
+
 /*
  * The operations, as the app and the daemon call them: through `dispatch`.
  * These stand in for agent_run's functions of the same names, so every
@@ -244,6 +248,7 @@ impl Harness {
                 no_tools: false,
                 first_byte_timeout_ms: None,
                 api_route: None,
+                connector: None,
             },
             options: None,
             mode: Some("agent".into()),
