@@ -254,13 +254,14 @@ export default function ModelPicker(props: ModelPickerProps) {
                     role="radio"
                     aria-checked={source() === f.value}
                     classList={{ selected: source() === f.value }}
+                    data-source={f.value}
                     title={f.title}
                     onClick={() => pickSource(f.value)}
                   >
                     <Show when={f.value !== 'all'}>
                       <ModelSourceIcon source={f.value as ModelSource} size={11} />
                     </Show>
-                    {f.label}
+                    <span class="model-picker-source-label">{f.label}</span>
                     <span class="model-picker-source-count">{counts()[f.value]}</span>
                   </button>
                 )}

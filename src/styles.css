@@ -9975,8 +9975,15 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   text-overflow: ellipsis;
 }
 
-/* The switch between all models, the providers' and the connectors'. */
+/* The switch between all models, the providers' and the connectors'. It
+   keeps its height: the popover's height is capped, and what doesn't fit
+   is the list's to scroll, not the switch's to give up (a long list
+   squeezed it to a sliver). */
+/* The three share the popover's width: in a narrow chat a label is cut
+   short, never a whole button (the row clips what doesn't fit). */
 .model-picker-sources {
+  display: flex;
+  flex: 0 0 auto;
   margin: 0 6px 6px;
 }
 
@@ -9984,9 +9991,27 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   justify-content: center;
+  padding: 4px 6px;
   font-size: 11px;
+}
+
+.model-picker-sources .segmented-option > * {
+  flex: 0 0 auto;
+}
+
+/* "All" is short: the long labels give way, never it. */
+.model-picker-sources .segmented-option[data-source='all'] {
+  flex: 0 0 auto;
+}
+
+.model-picker-sources .segmented-option > .model-picker-source-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .model-picker-source-count {

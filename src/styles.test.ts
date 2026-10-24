@@ -183,6 +183,32 @@ test('a chat record card wraps what it holds instead of spilling out of it', () 
   );
 });
 
+test('the model picker’s source switch keeps its height and its three buttons', () => {
+  // The popover's height is capped: a long list scrolls, and once squeezed
+  // the switch above it all but vanished. In a narrow chat the long labels
+  // are cut short, never "All" or a whole button.
+  assert.ok(
+    bodiesOf('.model-picker-sources').some((b) => /flex:\s*0 0 auto/.test(b)),
+    'the switch never shrinks in the popover'
+  );
+  assert.ok(
+    bodiesOf('.model-picker-sources .segmented-option').some((b) => /min-width:\s*0/.test(b)),
+    'a button may be narrower than its label'
+  );
+  assert.ok(
+    bodiesOf('.model-picker-sources .segmented-option > .model-picker-source-label').some((b) =>
+      /text-overflow:\s*ellipsis/.test(b)
+    ),
+    'a label is cut short with an ellipsis'
+  );
+  assert.ok(
+    bodiesOf(".model-picker-sources .segmented-option[data-source='all']").some((b) =>
+      /flex:\s*0 0 auto/.test(b)
+    ),
+    '"All" keeps its width'
+  );
+});
+
 test('criterion 2: App owns the expanded state and marks its root with sidebar-expanded', () => {
   const app = readFileSync('src/App.tsx', 'utf8');
   assert.match(app, /sidebar-expanded/, 'the root .app element gets the sidebar-expanded class');
