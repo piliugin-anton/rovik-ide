@@ -806,6 +806,7 @@ fn every_response_round_trips() {
                 virtual_files: false,
                 virtual_files_problem: Some("/dev/fuse is missing".into()),
                 chrome: Some("/usr/bin/chromium".into()),
+                connectors: Some(vec!["claude-code".into()]),
                 user_namespaces: true,
                 install: Some(Install {
                     admins: vec!["me".into()],
@@ -1588,4 +1589,17 @@ fn a_result_from_a_daemon_that_numbers_none_reads_as_zero() {
     }))
     .unwrap();
     assert_eq!(older.seq, 0, "a daemon from T05");
+}
+
+/// A daemon from before the connectors were listed can't say which it
+/// has; one that has none says so.
+#[test]
+fn host_info_tells_no_connectors_from_a_daemon_that_cant_say() {
+    let mut json = serde_json::to_value(HostInfo::default()).unwrap();
+    assert_eq!(json.get("connectors"), None);
+    let older: HostInfo = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(older.connectors, None, "a daemon from 0.1.45");
+    json["connectors"] = json!([]);
+    let none: HostInfo = serde_json::from_value(json).unwrap();
+    assert_eq!(none.connectors, Some(Vec::new()));
 }

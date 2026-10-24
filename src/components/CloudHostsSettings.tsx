@@ -12,8 +12,9 @@
 // - what Rovik's folders take on the server, and "Clean up now";
 // - the providers whose key the server keeps, never the keys, with
 //   "Remove keys from this server";
-// - Rovik on the server, its version and administrators, and for an
-//   administrator, the limits and "Upgrade for everyone".
+// - Rovik on the server, its version and administrators, the connectors
+//   installed there, and for an administrator, the limits and "Upgrade for
+//   everyone".
 import {
   createEffect,
   createMemo,
@@ -31,7 +32,9 @@ import { confirmDialog } from './ConfirmDialog';
 import HostAutonomy from './HostAutonomy';
 import HostTasks from './HostTasks';
 import { onCloudEvent, refreshHosts } from '../lib/cloud';
+import { connectorTitle } from '../lib/connectors';
 import { formatBytes, plural } from '../lib/textUtils';
+import type { ConnectorKind } from '../types';
 import {
   addressOf,
   asDeployFailure,
@@ -698,6 +701,12 @@ function HostPage(props: {
     return parts.join(' ');
   };
 
+  /** The connectors installed there, by name; a kind this app doesn't know, by its id. */
+  const connectorsNote = (kinds: string[]) => {
+    const names = kinds.map((kind) => connectorTitle(kind as ConnectorKind));
+    return `Connectors installed: ${names.join(', ') || 'none'}.`;
+  };
+
   /** An older daemon than this app: who can upgrade it. */
   const upgradeNote = (d: HostDetails) => {
     const older = `Rovik ${d.info.version} here is older than this app (${d.appVersion}).`;
@@ -826,6 +835,9 @@ function HostPage(props: {
             }
           >
             <p class="settings-hint">{deployedNote()}</p>
+            <Show when={details()?.info.connectors}>
+              {(kinds) => <p class="settings-hint host-connectors">{connectorsNote(kinds())}</p>}
+            </Show>
             <Show when={details()?.upgrade && details()}>
               {(d) => (
                 <>

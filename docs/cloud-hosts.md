@@ -244,8 +244,9 @@ server lack for their daemon (pasta, and a network of their own that their
 commands can't get without it, among them), then the versions, the free space where
 Rovik's folders are, the install and its limits, the shared Rust and
 Node versions (and whether chats may install one and the caches are
-shared), the heavy commands their daemon runs at once, and what its
-folders and logs take. The app's
+shared), the connectors installed for them
+(`connectors installed: Claude Code`), the heavy commands their daemon
+runs at once, and what its folders and logs take. The app's
 connection test reads the same once Rovik is deployed. The daemon's log,
 `~/.rovik/logs/agentd.log`, is rotated at 5 MB, with 3 older files kept.
 
@@ -445,7 +446,10 @@ the host chosen, runs Anthropic's installer as that user, which puts
 server). **Update to …**, offered there when a newer version is out, runs
 `claude update` as that user: it updates their own installation, while
 the shared package is updated by the administrator with `admin
-claude-code`.
+claude-code`. However it was installed, the host's page in Settings →
+Cloud hosts then says "Connectors installed: Claude Code", as
+`rovik-agentd doctor` run as that user does: both look for the program
+where that user's chats look when the connector's settings name none.
 
 Each user signs in as their own. The token or key of the connector's
 settings travels with the chat's model and reaches the program as

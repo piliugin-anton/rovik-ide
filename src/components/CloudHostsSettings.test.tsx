@@ -345,6 +345,22 @@ test('deployed: its version, what it stores, and the providers whose keys it kee
   assert.equal(root.querySelector('.host-limits'), null, 'limits are for administrators');
 });
 
+test('deployed: one line names the connectors installed there, comma separated, or none', async () => {
+  const line = async (connectors?: string[]) => {
+    const details = { ...DETAILS, info: { ...DETAILS.info, connectors } };
+    const { root } = await hostPage(hostsList(DEPLOYED), { hosts_details: () => details });
+    return root.querySelector('.host-connectors')?.textContent ?? null;
+  };
+  assert.equal(await line(['claude-code']), 'Connectors installed: Claude Code.');
+  assert.equal(
+    await line(['claude-code', 'codex']),
+    'Connectors installed: Claude Code, codex.',
+    'a newer daemon’s kind, by its id'
+  );
+  assert.equal(await line([]), 'Connectors installed: none.');
+  assert.equal(await line(undefined), null, 'a daemon that can’t say');
+});
+
 test('“Clean up now”: what the server no longer needs goes, and it’s measured again', async () => {
   const after = { ...DETAILS.storage!, work: 128 * 1024 ** 2 };
   const { root } = await hostPage(hostsList(DEPLOYED), {

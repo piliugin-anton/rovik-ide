@@ -152,6 +152,12 @@ export interface HostInfo {
   virtualFiles: boolean;
   virtualFilesProblem?: string;
   chrome?: string;
+  /**
+   * The connectors whose program is installed there, by kind
+   * (`claude-code`); a newer daemon may name a kind this app doesn't know.
+   * Absent from a daemon that can't say.
+   */
+  connectors?: string[];
   userNamespaces: boolean;
   install?: { admins: string[] };
   otherDaemons: number;

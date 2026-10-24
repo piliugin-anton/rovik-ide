@@ -455,6 +455,7 @@ async fn keys_are_listed_without_themselves_then_removed() {
 #[tokio::test]
 async fn doctor_says_it_as_json_for_the_app() {
     let daemon = Daemon::start(&[]).await;
+    install_claude(&daemon.dir.0);
     let out = Command::new(BINARY)
         .args(["doctor", "--json", "--data"])
         .arg(&daemon.data)
@@ -474,4 +475,34 @@ async fn doctor_says_it_as_json_for_the_app() {
     );
     assert!(report.storage.data > 0, "the chat database: {report:?}");
     assert_eq!(report.disks.len(), 1, "--data: one folder");
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.text == "connectors installed: Claude Code"),
+        "{report:?}"
+    );
+}
+
+/// The hosts page's line: the daemon names the connectors whose program
+/// its user's chats there would run, Claude Code here, where Anthropic's
+/// installer puts it for that user alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn host_info_names_the_connectors_installed() {
+    let daemon = Daemon::start(&[]).await;
+    install_claude(&daemon.dir.0);
+    let mut session = daemon.session().await;
+    let Ok(Response::HostInfo(info)) = session.call(Request::HostInfo).await else {
+        panic!("no host info\n{}", daemon.output());
+    };
+    assert_eq!(info.connectors, Some(vec!["claude-code".to_string()]));
+}
+
+/// `claude` in `home`'s `~/.local/bin`, as Anthropic's installer leaves it.
+fn install_claude(home: &std::path::Path) {
+    let bin = home.join(".local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(&claude, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
 }

@@ -33,6 +33,12 @@ pub async fn info(daemon: &Daemon) -> HostInfo {
         virtual_files: mounted,
         virtual_files_problem: problem,
         chrome: rovik_core::browser_tools::chrome_path().map(|p| p.to_string_lossy().into_owned()),
+        connectors: Some(
+            rovik_core::connectors::installed()
+                .into_iter()
+                .map(|kind| kind.id().to_string())
+                .collect(),
+        ),
         user_namespaces: user_namespaces(Path::new("/proc/sys")),
         install: install(Path::new(ADMIN_FILE)),
     })
