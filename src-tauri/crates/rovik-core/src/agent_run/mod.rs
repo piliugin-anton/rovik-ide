@@ -38,6 +38,7 @@ pub mod command_output;
 pub mod diff;
 #[cfg(test)]
 mod e2e_tests;
+pub mod environment;
 pub mod events;
 mod execute;
 pub mod failure;

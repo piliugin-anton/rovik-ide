@@ -5,7 +5,8 @@
 // thinking a ThinkingBlock, its tool calls the lines and blocks of Rovik's
 // tools of the same kind (ToolCallGroup; the kind's ConnectorSpec says
 // which), in the order it went (lib/connectors.ts connectorSegments). A
-// call waiting for the user's approval shows the request, as Rovik's do.
+// call waiting for the user's approval shows the request, as Rovik's do,
+// and one waiting on what Rovik installs for it says so on its line.
 import { createMemo, Index, Match, Switch } from 'solid-js';
 import type { ChatMessage, ChatToolCall } from '../types';
 import {
@@ -28,6 +29,8 @@ export default function ConnectorSteps(props: {
   running: boolean;
   /** The chat it's in: its calls' approvals wait there. */
   dialogId: string | null;
+  /** Live notes on its calls by id while they wait, e.g. on a toolchain's install. */
+  notes?: Record<string, string>;
 }) {
   const kept = new Map<string, KeptStep>();
   const segments = createMemo(() => connectorSegments(props.meta, kept));
@@ -46,6 +49,7 @@ export default function ConnectorSteps(props: {
       toolCall={call}
       result={resultOf(call)}
       running={props.running}
+      note={props.notes?.[call.id]}
     />
   );
   return (

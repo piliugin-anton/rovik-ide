@@ -406,9 +406,10 @@ const TOOL_DIRS: &[(&str, Make)] = &[
 ];
 
 /// Makes the folders of [`TOOL_DIRS`] under `home` that should be there
-/// and aren't, `installed` saying whether a program is. A cloud host's
-/// shared Rust runs cargo without cargo being on this account's PATH, and
-/// cargo keeps `~/.cargo` either way ([`crate::toolchains`]).
+/// and aren't, `installed` saying whether a program is: where the
+/// project's commands find it, a cloud host's shared Rust and Node and
+/// this user's Yarn and pnpm included ([`crate::toolchains::finder`]),
+/// though they aren't on this account's PATH.
 fn make_missing(home: &Path, installed: impl Fn(&str) -> bool) {
     if !home.is_dir() {
         return;
@@ -417,9 +418,7 @@ fn make_missing(home: &Path, installed: impl Fn(&str) -> bool) {
         let dir = home.join(rel);
         let wanted = match make {
             Make::Always => true,
-            Make::With(program) => {
-                installed(program) || (*program == "cargo" && crate::toolchains::shared_rust())
-            }
+            Make::With(program) => installed(program),
             Make::Never => false,
         };
         if wanted && !dir.exists() {
@@ -459,7 +458,7 @@ pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
     }
     if let Some(home) = home() {
         if cfg!(unix) {
-            make_missing(&home, crate::process::on_path);
+            make_missing(&home, crate::toolchains::finder(root));
         }
         dirs.extend(TOOL_DIRS.iter().map(|(rel, _)| home.join(rel)));
     }

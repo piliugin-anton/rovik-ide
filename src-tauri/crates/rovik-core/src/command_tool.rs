@@ -1001,6 +1001,7 @@ mod tests {
             root: root.clone(),
             caches: None,
             installer: None,
+            bin: None,
         });
         let shown = "echo \"$RUSTUP_HOME|$RUSTUP_AUTO_INSTALL|${PATH%%:*}\"";
         // Without a policy (a machine with no sandbox) and confined, as a

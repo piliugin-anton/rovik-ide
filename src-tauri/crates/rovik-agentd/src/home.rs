@@ -68,6 +68,13 @@ impl Home {
         self.share.join("work")
     }
 
+    /// This user's Yarn and pnpm, which Rovik runs through Corepack on a
+    /// host's Node (rovik_core::toolchains::add_shim), at the end of the
+    /// agent's commands' PATH.
+    pub fn bin(&self) -> PathBuf {
+        self.share.join("bin")
+    }
+
     /// Creates the folders the first time. Refuses ones another user owns
     /// or that others can open: chats and keys are kept in them.
     pub fn prepare(&self) -> Result<(), String> {

@@ -18,6 +18,13 @@
 //!   call in its stream.
 //! - `GET` (a stream of server messages) isn't offered: 405.
 //!
+//! It also takes a harness's hooks, as Claude Code's `http` hooks post
+//! them: `POST /hooks` with the hook's event as its body. The event goes
+//! to the connector as a call named [`HOOK`], and the answer is the JSON
+//! the connector replies, in a chunked body that a space keeps open every
+//! few seconds until then: what the hook waits for (a toolchain's
+//! install) may take minutes.
+//!
 //! Only the harness may call: the server listens on 127.0.0.1 alone, and
 //! every request carries a bearer token made for it, which the harness
 //! reads from a file only this user can read. On a shared server, other
@@ -45,6 +52,9 @@ use tokio::task::JoinHandle;
 pub const SERVER_NAME: &str = "rovik";
 /// What a harness puts before a tool's name.
 pub const TOOL_PREFIX: &str = "mcp__rovik__";
+/// The name a hook's event comes with to the connector: never one of
+/// Rovik's tools.
+pub const HOOK: &str = "hook";
 /// The protocol version answered when the client names none.
 const PROTOCOL: &str = "2025-06-18";
 /// The most a tool's text result may be before Claude Code saves it to a
@@ -182,6 +192,17 @@ impl McpServer {
         format!("http://127.0.0.1:{}/mcp", self.port)
     }
 
+    /// Where a harness posts its hooks' events.
+    pub fn hooks_url(&self) -> String {
+        format!("http://127.0.0.1:{}/hooks", self.port)
+    }
+
+    /// The `Authorization` header every request carries, with the token:
+    /// for a file only this user can read, never a command line.
+    pub fn authorization(&self) -> String {
+        format!("Bearer {}", self.token)
+    }
+
     /// The harness's MCP configuration for it, with the token: for a file
     /// only this user can read, never a command line.
     pub fn config_json(&self) -> String {
@@ -190,7 +211,7 @@ impl McpServer {
                 SERVER_NAME: {
                     "type": "http",
                     "url": self.url(),
-                    "headers": { "Authorization": format!("Bearer {}", self.token) },
+                    "headers": { "Authorization": self.authorization() },
                 }
             }
         })
@@ -252,8 +273,12 @@ async fn serve(stream: TcpStream, shared: Arc<Shared>) -> std::io::Result<()> {
         if !bearer.is_some_and(|t| same(t, &shared.token)) {
             return respond(&mut write, 401, &[], b"", true).await;
         }
-        if request.path.split('?').next() != Some("/mcp") {
-            return respond(&mut write, 404, &[], b"", true).await;
+        match request.path.split('?').next() {
+            Some("/mcp") => {}
+            Some("/hooks") if request.method == "POST" => {
+                return hook(&mut write, &shared, &request.body).await
+            }
+            _ => return respond(&mut write, 404, &[], b"", true).await,
         }
         match request.method.as_str() {
             "POST" => {}
@@ -381,6 +406,47 @@ async fn call(
     };
     let event = format!("event: message\ndata: {}\n\n", call_result(id, &result));
     write.write_all(event.as_bytes()).await?;
+    write.flush().await?;
+    write.shutdown().await
+}
+
+/// A hook's event: handed to the connector as a call named [`HOOK`], its
+/// answer the JSON the connector replies, `{}` when the run is over. The
+/// body is chunked, a space at a time while the connector works: the
+/// harness's client sees the response start at once, and its wait for the
+/// body is never idle for long.
+async fn hook(write: &mut OwnedWriteHalf, shared: &Shared, body: &[u8]) -> std::io::Result<()> {
+    let Ok(event) = serde_json::from_slice::<Value>(body) else {
+        return respond(write, 400, &[], b"", true).await;
+    };
+    let tool_use_id = event
+        .get("tool_use_id")
+        .and_then(|t| t.as_str())
+        .map(str::to_string);
+    let (reply, mut replied) = oneshot::channel();
+    let sent = shared.calls.send(McpCall {
+        tool_use_id,
+        name: HOOK.to_string(),
+        arguments: event,
+        reply,
+    });
+    if sent.is_err() {
+        return respond_json(write, &json!({}), &[], true).await;
+    }
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    write.write_all(head.as_bytes()).await?;
+    write.flush().await?;
+    let answer = loop {
+        tokio::select! {
+            got = &mut replied => break got.map(|r| r.text).unwrap_or_else(|_| "{}".into()),
+            _ = tokio::time::sleep(KEEPALIVE) => {
+                write.write_all(b"1\r\n \r\n").await?;
+                write.flush().await?;
+            }
+        }
+    };
+    let last = format!("{:x}\r\n{answer}\r\n0\r\n\r\n", answer.len());
+    write.write_all(last.as_bytes()).await?;
     write.flush().await?;
     write.shutdown().await
 }
@@ -613,6 +679,79 @@ mod tests {
             .as_str()
             .unwrap();
         header.strip_prefix("Bearer ").unwrap().to_string()
+    }
+
+    /// Posts `event` to the server's hooks with `token`: the status, and
+    /// the body as its chunks make it.
+    async fn post_hook(port: u16, token: &str, event: &Value) -> (u16, String) {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let body = event.to_string();
+        let request = format!(
+            "POST /hooks HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut all = String::new();
+        stream.read_to_string(&mut all).await.unwrap();
+        let (head, mut rest) = all.split_once("\r\n\r\n").unwrap();
+        let status: u16 = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+        if !head
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked")
+        {
+            return (status, rest.to_string());
+        }
+        let mut body = String::new();
+        loop {
+            let (size, after) = rest.split_once("\r\n").unwrap();
+            let size = usize::from_str_radix(size.trim(), 16).unwrap();
+            if size == 0 {
+                break;
+            }
+            body.push_str(&after[..size]);
+            rest = &after[size + 2..];
+        }
+        (status, body)
+    }
+
+    /// A hook's event reaches the connector as a call named `hook`, with
+    /// the tool use it's for; its answer is the response. Without the token
+    /// it's refused; with the run over, it's answered with nothing to say.
+    #[tokio::test]
+    async fn a_hooks_event_is_answered_by_the_connector() {
+        let (server, mut calls) = McpServer::start(&[], "test", None).await.unwrap();
+        let token = token_of(&server);
+        let event = json!({
+            "hook_event_name": "PostToolUseFailure",
+            "tool_use_id": "toolu_1",
+            "tool_input": { "command": "npm test" },
+            "error": "Exit code 127\n/bin/bash: line 1: npm: command not found",
+        });
+        let expected = event.clone();
+        let answering = tokio::spawn(async move {
+            let call = calls.recv().await.unwrap();
+            assert_eq!(call.name, HOOK);
+            assert_eq!(call.tool_use_id.as_deref(), Some("toolu_1"));
+            assert_eq!(call.arguments, expected);
+            let said = json!({ "hookSpecificOutput": { "additionalContext": "Installed." } });
+            call.reply.send(McpReply::text(said.to_string())).unwrap();
+            calls
+        });
+        let (status, body) = post_hook(server.port, &token, &event).await;
+        assert_eq!(status, 200);
+        let body: Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(
+            body["hookSpecificOutput"]["additionalContext"],
+            "Installed."
+        );
+        let calls = answering.await.unwrap();
+
+        let (refused, _) = post_hook(server.port, "not-the-token", &event).await;
+        assert_eq!(refused, 401);
+        drop(calls);
+        let (status, body) = post_hook(server.port, &token, &event).await;
+        assert_eq!((status, body.trim()), (200, "{}"));
+        assert!(server.hooks_url().ends_with("/hooks"));
     }
 
     #[test]

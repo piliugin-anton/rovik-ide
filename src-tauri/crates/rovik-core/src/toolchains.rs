@@ -9,15 +9,18 @@
 //! `rovik` group shares (`/var/cache/rovik`), and how to have a missing
 //! version installed as root.
 //!
-//! - [`wanted`] reads a project's `rust-toolchain.toml`, `rust-toolchain`,
-//!   `.nvmrc`, `.node-version` or `engines.node`.
+//! - [`wanted`] is the versions a project's packages ask for, as the
+//!   project's one scan reads them (ecosystems/): its `rust-toolchain`
+//!   files, its `.nvmrc`, `.node-version` or `engines.node`, its
+//!   workspace's members'.
 //! - [`env_for`] is the environment every command the agent runs gets
 //!   (command_tool.rs): the toolchains' `bin` folders in front of the
-//!   PATH and, once the shared Rust is installed, one shared
-//!   `RUSTUP_HOME` and `RUSTUP_AUTO_INSTALL=0`, since rustup can't write
-//!   into the shared folder.
-//! - [`ensure`] has the versions a project asks for and the host lacks
-//!   installed, through the root command (`rovik-agentd user toolchain …`).
+//!   PATH, this user's folder of Yarn and pnpm at its end ([`add_shim`]),
+//!   and, once the shared Rust is installed, one shared `RUSTUP_HOME` and
+//!   `RUSTUP_AUTO_INSTALL=0`, since rustup can't write into the shared
+//!   folder. [`env_script`] is the same for a harness's own shell.
+//! - [`ensure`] has the versions asked for that the host lacks installed,
+//!   through the root command (`rovik-agentd user toolchain …`).
 //! - [`seed_crates`] and [`publish_crates`] move crates between the
 //!   shared store and the user's own cargo cache, each checked against
 //!   the `Cargo.lock` it came from: cargo trusts what's in its cache.
@@ -52,15 +55,6 @@ impl Kind {
         match self {
             Kind::Rust => "Rust",
             Kind::Node => "Node",
-        }
-    }
-
-    /// The toolchain `program` comes with: `cargo` is Rust's, `npm` Node's.
-    pub fn of_program(program: &str) -> Option<Kind> {
-        match program {
-            "cargo" | "rustc" | "rustup" => Some(Kind::Rust),
-            "node" | "npm" | "npx" => Some(Kind::Node),
-            _ => None,
         }
     }
 }
@@ -105,9 +99,10 @@ impl Want {
 pub type Installer = dyn Fn(Want) -> Result<(), String> + Send + Sync;
 
 /// What a cloud host shares, which the daemon calls [`set`] with: the
-/// versions' root, the caches the `rovik` group writes, and how to install
+/// versions' root, the caches the `rovik` group writes, how to install
 /// what's missing (None: an administrator installs them,
-/// `admin toolchain add`).
+/// `admin toolchain add`), and this user's folder of what Rovik adds for
+/// a Node without it.
 #[derive(Clone)]
 pub struct Shared {
     /// `/opt/rovik/toolchains`: `rust/` and `node/`, owned by root.
@@ -116,6 +111,11 @@ pub struct Shared {
     /// `crates/`.
     pub caches: Option<PathBuf>,
     pub installer: Option<Arc<Installer>>,
+    /// This user's folder, at the end of every command's PATH, of the
+    /// package managers Rovik runs through Corepack ([`add_shim`]): the
+    /// daemon's `~/.local/share/rovik/bin`, which the agent's sandboxed
+    /// commands read but can't change. None: none are added.
+    pub bin: Option<PathBuf>,
 }
 
 /// What the daemon set, if it did: nothing on the user's own computer.
@@ -166,12 +166,6 @@ pub fn on_host() -> bool {
     shared().is_some()
 }
 
-/// Whether the shared Rust is in place: a chat's `cargo` commands run with
-/// it even where cargo isn't on this account's PATH.
-pub fn shared_rust() -> bool {
-    shared().is_some_and(|shared| shared.root.join("rust/cargo/bin/cargo").is_file())
-}
-
 /// Whether a missing version can be installed here, by the root command.
 pub fn can_install() -> bool {
     shared().is_some_and(|shared| shared.installer.is_some())
@@ -183,99 +177,16 @@ pub fn can_install() -> bool {
  * ---------------------------------------------------------------------------
  */
 
-/// The versions the project at `root` asks for: Rust when it has a
-/// `Cargo.toml`, Node when it has a `package.json`.
+/// The versions the project at `root` asks for: those of the ecosystems
+/// it has packages of whose toolchain a host installs, as the project's
+/// one scan reads them (ecosystems/).
 pub fn wanted(root: &Path) -> Vec<Want> {
-    let mut wanted = Vec::new();
-    if root.join("Cargo.toml").is_file() {
-        let (version, components, targets) = rust_toolchain(root);
-        wanted.push(Want {
-            kind: Kind::Rust,
-            version,
-            components,
-            targets,
-        });
-    }
-    if root.join("package.json").is_file() {
-        wanted.push(Want {
-            kind: Kind::Node,
-            version: node_version(root),
-            components: Vec::new(),
-            targets: Vec::new(),
-        });
-    }
-    wanted
-}
-
-/// The Rust version `root` names: `rust-toolchain.toml`'s `channel`, with
-/// its `components` and `targets`; else `rust-toolchain`'s; else `stable`.
-/// What isn't a version Rovik installs is left to `stable`: a file that
-/// names one (a date, a custom toolchain) is the project's own.
-fn rust_toolchain(root: &Path) -> (String, Vec<String>, Vec<String>) {
-    let toml = std::fs::read_to_string(root.join("rust-toolchain.toml"))
-        .or_else(|_| std::fs::read_to_string(root.join("rust-toolchain")));
-    let Ok(text) = toml else {
-        return ("stable".into(), Vec::new(), Vec::new());
-    };
-    let channel = setting(&text, "channel").filter(|c| rust_version_ok(c));
-    let version = match channel {
-        Some(channel) => channel,
-        // A plain `rust-toolchain` is the channel alone.
-        None => match text.lines().map(str::trim).find(|line| {
-            !line.is_empty() && !line.starts_with('#') && !line.contains('=') && !line.starts_with('[')
-        }) {
-            Some(line) if rust_version_ok(line) => line.to_string(),
-            _ => "stable".into(),
-        },
-    };
-    (
-        version,
-        setting_list(&text, "components"),
-        setting_list(&text, "targets"),
-    )
-}
-
-/// One `key = "value"` of a toolchain file, with the comments taken off.
-fn setting(text: &str, key: &str) -> Option<String> {
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or_default().trim();
-        let Some((name, value)) = line.split_once('=') else {
-            continue;
-        };
-        if name.trim() != key {
-            continue;
-        }
-        let value = value.trim().trim_matches(['"', '\'']);
-        if !value.is_empty() {
-            return Some(value.to_string());
-        }
-    }
-    None
-}
-
-/// One `key = ["a", "b"]` of a toolchain file.
-fn setting_list(text: &str, key: &str) -> Vec<String> {
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or_default().trim();
-        let Some((name, value)) = line.split_once('=') else {
-            continue;
-        };
-        if name.trim() != key {
-            continue;
-        }
-        let value = value.trim().trim_start_matches('[').trim_end_matches(']');
-        return value
-            .split(',')
-            .map(|item| item.trim().trim_matches(['"', '\'']).to_string())
-            .filter(|item| checked_name(item))
-            .collect();
-    }
-    Vec::new()
+    crate::ecosystems::wanted(root)
 }
 
 /// `stable`, `beta`, `nightly`, `nightly-YYYY-MM-DD`, `1.82` or `1.82.0`:
 /// what the root command takes (installer/toolchains.rs).
-fn rust_version_ok(version: &str) -> bool {
+pub(crate) fn rust_version_ok(version: &str) -> bool {
     match version {
         "stable" | "beta" | "nightly" => return true,
         _ => {}
@@ -290,12 +201,12 @@ fn rust_version_ok(version: &str) -> bool {
 }
 
 /// `lts`, a major version, or `X.Y.Z`.
-fn node_version_ok(version: &str) -> bool {
+pub(crate) fn node_version_ok(version: &str) -> bool {
     version == "lts" || digits(version) || dotted(version, 3)
 }
 
 /// Whether `text` is all digits, and not empty.
-fn digits(text: &str) -> bool {
+pub(crate) fn digits(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
 }
 
@@ -307,40 +218,12 @@ fn dotted(version: &str, parts: usize) -> bool {
 
 /// Whether `name` is a component or target name rustup takes: lowercase
 /// letters, digits, dashes and underscores (`x86_64-unknown-linux-gnu`).
-fn checked_name(name: &str) -> bool {
+pub(crate) fn checked_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
         && name.bytes().all(|b| {
             b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'
         })
-}
-
-/// The Node version `root` names: `.nvmrc`, `.node-version`, the major
-/// version in `engines.node`, else `lts`.
-fn node_version(root: &Path) -> String {
-    let written = [".nvmrc", ".node-version"].iter().find_map(|name| {
-        let text = std::fs::read_to_string(root.join(name)).ok()?;
-        let version = text.lines().next()?.trim().trim_start_matches('v');
-        (!version.is_empty()).then(|| version.to_string())
-    });
-    if let Some(version) = written.filter(|v| node_version_ok(v)) {
-        return version;
-    }
-    engines_major(root).unwrap_or_else(|| "lts".into())
-}
-
-/// The first version `package.json`'s `engines.node` allows (`>=18 <21`
-/// is `18`), where it names one.
-fn engines_major(root: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(root.join("package.json")).ok()?;
-    let package: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let range = package["engines"]["node"].as_str()?;
-    let start = range.find(|c: char| c.is_ascii_digit())?;
-    let major: String = range[start..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits(&major).then_some(major)
 }
 
 /*
@@ -453,8 +336,9 @@ pub fn node_installed(root: &Path, version: &str) -> Option<String> {
     }
 }
 
-/// Orders version folders by their numbers, not their letters.
-fn version_order(one: &str, other: &str) -> std::cmp::Ordering {
+/// Orders versions by their numbers, not their letters: `20.11.0` after
+/// `20` and `9.5.1`.
+pub(crate) fn version_order(one: &str, other: &str) -> std::cmp::Ordering {
     let parts = |version: &str| -> Vec<u64> {
         version
             .split('.')
@@ -470,63 +354,198 @@ fn version_order(one: &str, other: &str) -> std::cmp::Ordering {
  * ---------------------------------------------------------------------------
  */
 
-/// What a command run in `project` gets: `PATH`, with the shared Rust's
-/// `bin` and the project's Node `bin` in front of the one the app's
-/// programs have; and, once the shared Rust is installed, `RUSTUP_HOME`,
-/// the one shared and read-only, and `RUSTUP_AUTO_INSTALL=0`, so rustup
-/// never tries to install into it. `CARGO_HOME` isn't set: cargo keeps `~/.cargo`, each user's own. Empty
-/// when nothing is shared.
-pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
-    let Some(shared) = shared() else {
-        return Vec::new();
-    };
-    if !shared.root.is_dir() {
-        return Vec::new();
-    }
-    let mut dirs: Vec<PathBuf> = Vec::new();
+/// What a command run in `project` gets besides the environment it has:
+/// the folders in front of its PATH (the shared Rust's `bin`, and the
+/// `bin` of the Node version the project runs), those at its end (this
+/// user's folder of package managers, [`add_shim`], so one installed by
+/// the user comes first), and the variables to set. None when nothing is
+/// shared.
+struct Additions {
+    front: Vec<PathBuf>,
+    back: Vec<PathBuf>,
+    vars: Vec<(&'static str, OsString)>,
+}
+
+fn additions(project: &Path) -> Option<Additions> {
+    let shared = shared().filter(|shared| shared.root.is_dir())?;
+    let mut front: Vec<PathBuf> = Vec::new();
     let cargo_bin = shared.root.join("rust/cargo/bin");
     // The shared rustup's settings only with its programs: a host with no
     // shared Rust yet (the root folder is made empty at install) leaves the
     // user's own rustup, if any, as it is.
     let shared_rust = cargo_bin.is_dir();
     if shared_rust {
-        dirs.push(cargo_bin);
+        front.push(cargo_bin);
     }
-    let node = wanted(project)
-        .iter()
-        .find(|want| want.kind == Kind::Node)
+    // The version the project's packages ask for, else the newest there:
+    // a project that has none yet (`npx create-vite`) runs Node too.
+    let node = crate::ecosystems::toolchain_for("node", project)
         .and_then(|want| node_installed(&shared.root, &want.version))
         .map(|version| shared.root.join("node").join(version).join("bin"))
         .filter(|bin| bin.is_dir());
-    dirs.extend(node);
-    let path = crate::process::child_var("PATH").unwrap_or_default();
-    dirs.extend(std::env::split_paths(&path));
-    let mut vars: Vec<(&'static str, OsString)> = vec![("PATH", std::env::join_paths(dirs).unwrap_or(path))];
+    front.extend(node);
+    let mut vars: Vec<(&'static str, OsString)> = Vec::new();
     if shared_rust {
         vars.push(("RUSTUP_HOME", shared.root.join("rust/rustup").into_os_string()));
         vars.push(("RUSTUP_AUTO_INSTALL", OsString::from("0")));
     }
+    Some(Additions {
+        front,
+        back: shared.bin.iter().cloned().collect(),
+        vars,
+    })
+}
+
+/// What a command run in `project` gets: `PATH`, with the shared Rust's
+/// `bin` and the project's Node `bin` in front of the one the app's
+/// programs have and this user's folder of package managers after it;
+/// and, once the shared Rust is installed, `RUSTUP_HOME`, the one shared
+/// and read-only, and `RUSTUP_AUTO_INSTALL=0`, so rustup never tries to
+/// install into it. `CARGO_HOME` isn't set: cargo keeps `~/.cargo`, each
+/// user's own. Empty when nothing is shared.
+pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
+    let Some(additions) = additions(project) else {
+        return Vec::new();
+    };
+    let path = crate::process::child_var("PATH").unwrap_or_default();
+    let dirs: Vec<PathBuf> = additions
+        .front
+        .into_iter()
+        .chain(std::env::split_paths(&path))
+        .chain(additions.back)
+        .collect();
+    let mut vars = vec![("PATH", std::env::join_paths(dirs).unwrap_or(path))];
+    vars.extend(additions.vars);
     vars
 }
 
-/// Whether `program` is one of the toolchains' own: a Rust or Node program
-/// whose missing version a host installs, rather than one its setup script
-/// does.
-pub fn toolchain_program(program: &str) -> bool {
-    Kind::of_program(program).is_some()
+/// [`env_for`] as a POSIX shell script, for a harness that runs its own
+/// shell: its lines add the shared folders to the PATH that shell has, and
+/// set the variables. A harness that runs it before each command (Claude
+/// Code's `CLAUDE_ENV_FILE`) finds what was installed after it started.
+/// Empty when nothing is shared.
+pub fn env_script(project: &Path) -> String {
+    let Some(additions) = additions(project) else {
+        return String::new();
+    };
+    let quoted = |path: &Path| shell_quoted(&path.to_string_lossy());
+    let mut parts: Vec<String> = additions.front.iter().map(|dir| quoted(dir)).collect();
+    parts.push("\"$PATH\"".into());
+    parts.extend(additions.back.iter().map(|dir| quoted(dir)));
+    let mut lines = vec![format!("export PATH={}", parts.join(":"))];
+    for (key, value) in &additions.vars {
+        lines.push(format!(
+            "export {key}={}",
+            shell_quoted(&value.to_string_lossy())
+        ));
+    }
+    lines.join("\n") + "\n"
 }
 
-/// Whether `program` is in the environment [`env_for`] gives a command run
-/// in `project`: the shared versions' folders first, then the PATH's own.
-pub fn on_path(project: &Path, program: &str) -> bool {
-    let path = env_for(project)
-        .into_iter()
-        .find(|(key, _)| *key == "PATH")
-        .map(|(_, value)| value);
-    match path {
-        Some(path) => std::env::split_paths(&path).any(|dir| dir.join(program).is_file()),
-        None => false,
+/// `text` in single quotes, as a POSIX shell reads it back unchanged.
+fn shell_quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// Whether `program` is found by a command run in `project`: on the PATH
+/// [`env_for`] gives it on a cloud host (the shared versions' folders, the
+/// app's PATH, the package managers' folder), on the app's own elsewhere.
+pub fn found(project: &Path, program: &str) -> bool {
+    finder(project)(program)
+}
+
+/// [`found`] for the programs of one project, its folders read once: what
+/// asks about many (the sandbox's tool folders, overlay/confine.rs).
+pub fn finder(project: &Path) -> impl Fn(&str) -> bool {
+    let shared: Vec<PathBuf> = additions(project)
+        .map(|additions| additions.front.into_iter().chain(additions.back).collect())
+        .unwrap_or_default();
+    move |program| {
+        shared.iter().any(|dir| dir.join(program).is_file())
+            || (!lacks(program) && crate::process::on_path(program))
     }
+}
+
+/// Whether a test has this machine's own PATH lack `program`
+/// ([`lacking`]); never outside tests.
+#[cfg(not(test))]
+fn lacks(_program: &str) -> bool {
+    false
+}
+
+#[cfg(test)]
+thread_local! {
+    static LACKING: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn lacks(program: &str) -> bool {
+    LACKING.with(|lacking| lacking.borrow().iter().any(|p| p == program))
+}
+
+/// For a test, on its thread until the guard drops: this machine's own
+/// PATH lacks `programs`, as a computer or a server without them would,
+/// so [`found`] finds them only where a host puts them.
+#[cfg(test)]
+pub(crate) fn lacking(programs: &[&str]) -> impl Drop {
+    struct Restore(Vec<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LACKING.with(|lacking| *lacking.borrow_mut() = std::mem::take(&mut self.0));
+        }
+    }
+    let before = LACKING.with(|lacking| {
+        let mut lacking = lacking.borrow_mut();
+        let before = lacking.clone();
+        lacking.extend(programs.iter().map(|p| p.to_string()));
+        before
+    });
+    Restore(before)
+}
+
+/// The package managers Corepack runs for a Node that has none of them:
+/// Yarn's programs and pnpm's.
+pub const COREPACK_PROGRAMS: &[&str] = &["yarn", "yarnpkg", "pnpm", "pnpx"];
+
+/// `program`, one of [`COREPACK_PROGRAMS`], in this user's folder of
+/// package managers ([`Shared::bin`]): a script that runs it through the
+/// newest Corepack (npm's `npx` fetches it once), at the version the
+/// project's `packageManager` names, and never pins one into its
+/// package.json. A shared Node 25 or later has no Corepack of its own,
+/// and an older one's may not know the newest pnpm. True once it's
+/// there; false when this host has no such folder or the program isn't
+/// Corepack's.
+pub fn add_shim(program: &str) -> Result<bool, String> {
+    let Some(bin) = shared().and_then(|shared| shared.bin.clone()) else {
+        return Ok(false);
+    };
+    if !COREPACK_PROGRAMS.contains(&program) {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    // `npx` missing (no Node yet) says so as a shell would: a command
+    // that fails on it has Node installed for it (agent_run/environment.rs).
+    let script = format!(
+        "#!/bin/sh\n\
+         # Rovik IDE: {program} through Corepack, at the version the project's\n\
+         # packageManager names, for a Node without it.\n\
+         export COREPACK_ENABLE_AUTO_PIN=0 COREPACK_ENABLE_DOWNLOAD_PROMPT=0\n\
+         command -v npx >/dev/null 2>&1 || {{ echo \"sh: 1: npx: not found\" >&2; exit 127; }}\n\
+         exec npx --yes --prefer-offline corepack@latest {program} \"$@\"\n"
+    );
+    let path = bin.join(program);
+    // Written once: a command may be running it.
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(script.as_str()) {
+        crate::atomic_file::write_atomic_private(&path, script.as_bytes())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(true)
 }
 
 /*
@@ -535,11 +554,11 @@ pub fn on_path(project: &Path, program: &str) -> bool {
  * ---------------------------------------------------------------------------
  */
 
-/// The versions `root` asks for and the host doesn't have, installed as
-/// root, one after another: each with its outcome. Nothing when nothing is
-/// shared, when they're all there, or when no administrator lets a chat
-/// install them.
-pub async fn ensure(root: &Path) -> Vec<(Want, Result<(), String>)> {
+/// Of `wants`, the versions the host doesn't have, installed as root, one
+/// after another: each with its outcome. Nothing when nothing is shared,
+/// when they're all there, or when no administrator lets a chat install
+/// them.
+pub async fn ensure(wants: &[Want]) -> Vec<(Want, Result<(), String>)> {
     let Some(shared) = shared() else {
         return Vec::new();
     };
@@ -547,8 +566,8 @@ pub async fn ensure(root: &Path) -> Vec<(Want, Result<(), String>)> {
         return Vec::new();
     };
     let mut done = Vec::new();
-    for want in wanted(root) {
-        if installed_in(&shared.root, &want) {
+    for want in wants {
+        if installed_in(&shared.root, want) {
             continue;
         }
         let key = want.words().join(" ");
@@ -558,7 +577,7 @@ pub async fn ensure(root: &Path) -> Vec<(Want, Result<(), String>)> {
             .filter(|(at, _)| at.elapsed() < RETRY_AFTER)
             .map(|(_, why)| why.clone());
         if let Some(why) = remembered {
-            done.push((want, Err(why)));
+            done.push((want.clone(), Err(why)));
             continue;
         }
         let asked = want.clone();
@@ -578,7 +597,7 @@ pub async fn ensure(root: &Path) -> Vec<(Want, Result<(), String>)> {
             }
         }
         drop(memo);
-        done.push((want, outcome));
+        done.push((want.clone(), outcome));
     }
     done
 }
@@ -915,8 +934,31 @@ fn write_atomically(to: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A Node version in a test host's shared folder, as the root command
+    /// leaves it: its `node`, `npm` and `npx` linked to this machine's own
+    /// where it has them, so the commands of tests running beside this
+    /// one, which may find this folder on their PATH while the host is
+    /// set, still run them; empty files where it hasn't.
+    pub(crate) fn put_node(root: &Path, version: &str) {
+        let bin = root.join("node").join(version).join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for program in ["node", "npm", "npx"] {
+            let real = crate::process::child_var("PATH").and_then(|path| {
+                std::env::split_paths(&path)
+                    .map(|dir| dir.join(program))
+                    .find(|file| file.is_file())
+            });
+            let at = bin.join(program);
+            match real {
+                #[cfg(unix)]
+                Some(real) => std::os::unix::fs::symlink(real, &at).unwrap(),
+                _ => std::fs::write(&at, "").unwrap(),
+            }
+        }
+    }
 
     /// A shared root in a temporary folder, with what the daemon sets.
     fn host(dir: &Path) -> (PathBuf, PathBuf) {
@@ -983,59 +1025,24 @@ mod tests {
         assert_eq!(components, ["clippy"]);
     }
 
+    /// The versions asked for are those of the ecosystems the project has
+    /// packages of, as its one scan reads them (ecosystems/ tests each).
     #[test]
-    fn a_project_names_its_versions() {
+    fn a_project_wants_the_toolchains_of_its_packages() {
         let dir = crate::testing::temp_dir();
         let root = &dir.0;
         assert!(wanted(root).is_empty());
-
         write(root, "Cargo.toml", "[package]\nname = \"t\"\n");
         write(root, "package.json", "{}");
-        let plain = wanted(root);
-        assert_eq!(plain[0].version, "stable");
-        assert_eq!(plain[1].version, "lts");
-
-        write(
-            root,
-            "rust-toolchain.toml",
-            "[toolchain]\nchannel = \"1.82\"\ncomponents = [\"rustfmt\", \"clippy\"]\n\
-             targets = [\"x86_64-unknown-linux-gnu\"]\n",
+        write(root, ".nvmrc", "20\n");
+        let both: Vec<(Kind, String)> = wanted(root)
+            .into_iter()
+            .map(|w| (w.kind, w.version))
+            .collect();
+        assert_eq!(
+            both,
+            [(Kind::Node, "20".into()), (Kind::Rust, "stable".into())]
         );
-        write(root, ".nvmrc", "v20.11.0\n");
-        let named = wanted(root);
-        assert_eq!(named[0].version, "1.82");
-        assert_eq!(named[0].components, ["rustfmt", "clippy"]);
-        assert_eq!(named[0].targets, ["x86_64-unknown-linux-gnu"]);
-        assert_eq!(named[1].version, "20.11.0");
-
-        // A plain `rust-toolchain` is the channel alone; `.node-version`
-        // stands in for `.nvmrc`; `engines.node` names a major version.
-        std::fs::remove_file(root.join("rust-toolchain.toml")).unwrap();
-        write(root, "rust-toolchain", "nightly-2024-09-05\n");
-        std::fs::remove_file(root.join(".nvmrc")).unwrap();
-        write(root, ".node-version", "22\n");
-        assert_eq!(wanted(root)[0].version, "nightly-2024-09-05");
-        assert_eq!(wanted(root)[1].version, "22");
-        std::fs::remove_file(root.join(".node-version")).unwrap();
-        write(
-            root,
-            "package.json",
-            r#"{ "engines": { "node": ">=18 <21" } }"#,
-        );
-        assert_eq!(wanted(root)[1].version, "18");
-    }
-
-    /// A version Rovik doesn't install is the project's own: `stable`.
-    #[test]
-    fn a_toolchain_file_naming_another_version_is_left_alone() {
-        let dir = crate::testing::temp_dir();
-        write(&dir.0, "Cargo.toml", "[package]\n");
-        write(
-            &dir.0,
-            "rust-toolchain.toml",
-            "[toolchain]\nchannel = \"my-custom-toolchain\"\n",
-        );
-        assert_eq!(wanted(&dir.0)[0].version, "stable");
     }
 
     // The PATH's `:`: cloud hosts are Linux.
@@ -1053,6 +1060,7 @@ mod tests {
             root: root.clone(),
             caches: None,
             installer: None,
+            bin: None,
         });
         let env: std::collections::HashMap<_, _> = env_for(&dir.0)
             .into_iter()
@@ -1087,11 +1095,174 @@ mod tests {
             root: root.clone(),
             caches: None,
             installer: None,
+            bin: None,
         });
         let env: std::collections::HashMap<_, _> = env_for(&dir.0).into_iter().collect();
         assert!(!env.contains_key("RUSTUP_HOME"), "{env:?}");
         assert!(!env.contains_key("RUSTUP_AUTO_INSTALL"), "{env:?}");
         assert!(env.contains_key("PATH"));
+    }
+
+    /// A project that names no Node version yet (no package.json: a new
+    /// app is about to be made) runs the newest Node there; the user's
+    /// folder of package managers ends the PATH, so theirs come first.
+    #[cfg(unix)]
+    #[test]
+    fn a_project_without_a_package_runs_the_newest_node_with_the_shims_last() {
+        let _guard = Guard::new();
+        let dir = crate::testing::temp_dir();
+        let (root, _) = host(&dir.0);
+        for version in ["20.11.0", "22.3.0", "9.5.1"] {
+            put_node(&root, version);
+        }
+        let bin = dir.0.join("home-bin");
+        set(Shared {
+            root: root.clone(),
+            caches: None,
+            installer: None,
+            bin: Some(bin.clone()),
+        });
+        let project = dir.0.join("app");
+        std::fs::create_dir_all(&project).unwrap();
+        let env: std::collections::HashMap<_, _> = env_for(&project)
+            .into_iter()
+            .map(|(key, value)| (key, value.to_string_lossy().into_owned()))
+            .collect();
+        let path = &env["PATH"];
+        let node = root.join("node/22.3.0/bin");
+        assert!(path.contains(&format!(":{}:", node.display())), "{path}");
+        assert!(path.ends_with(&format!(":{}", bin.display())), "{path}");
+    }
+
+    /// The script a harness's own shell runs: the shared folders around
+    /// the PATH that shell has, the variables set, each quoted so a shell
+    /// reads them back as they are.
+    #[cfg(unix)]
+    #[test]
+    fn the_env_script_adds_the_shared_folders_to_the_shells_own_path() {
+        let _guard = Guard::new();
+        let dir = crate::testing::temp_dir();
+        assert_eq!(env_script(&dir.0), "", "nothing shared, nothing to say");
+        let (root, _) = host(&dir.0);
+        let bin = dir.0.join("it's bin");
+        set(Shared {
+            root: root.clone(),
+            caches: None,
+            installer: None,
+            bin: Some(bin.clone()),
+        });
+        let script = env_script(&dir.0);
+        let cargo = root.join("rust/cargo/bin");
+        assert!(
+            script.starts_with(&format!(
+                "export PATH='{}':\"$PATH\":'{}'\n",
+                cargo.display(),
+                bin.display().to_string().replace('\'', r"'\''")
+            )),
+            "{script}"
+        );
+        assert!(
+            script.contains(&format!(
+                "export RUSTUP_HOME='{}'\n",
+                root.join("rust/rustup").display()
+            )),
+            "{script}"
+        );
+        // A shell reads it back as it is.
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "PATH=/usr/bin:/bin; {script} printf '%s' \"$PATH\""
+            ))
+            .output()
+            .unwrap();
+        let path = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            path,
+            format!("{}:/usr/bin:/bin:{}", cargo.display(), bin.display())
+        );
+    }
+
+    /// A program is found where a command in the project looks: the shared
+    /// folders and the package managers' on a host, the app's PATH anywhere.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_is_found_where_the_projects_commands_look() {
+        let _guard = Guard::new();
+        let dir = crate::testing::temp_dir();
+        assert!(found(&dir.0, "sh"), "the app's own PATH");
+        assert!(!found(&dir.0, "rovik-no-such-program"));
+        let (root, _) = host(&dir.0);
+        std::fs::write(root.join("rust/cargo/bin/cargo"), "").unwrap();
+        let bin = dir.0.join("bin");
+        set(Shared {
+            root: root.clone(),
+            caches: None,
+            installer: None,
+            bin: Some(bin.clone()),
+        });
+        assert!(found(&dir.0, "cargo"));
+        assert!(found(&dir.0, "sh"));
+        // One of Corepack's this machine doesn't have: found once shimmed.
+        if let Some(program) = COREPACK_PROGRAMS
+            .iter()
+            .find(|p| !crate::process::on_path(p))
+        {
+            assert!(!found(&dir.0, program));
+            assert_eq!(add_shim(program), Ok(true));
+            assert!(found(&dir.0, program));
+        }
+    }
+
+    /// Yarn and pnpm go in the user's folder as scripts that run them
+    /// through Corepack; written once, executable, and only for Corepack's
+    /// own programs, where a host has the folder.
+    #[cfg(unix)]
+    #[test]
+    fn a_corepack_shim_runs_the_package_manager_the_project_names() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = Guard::new();
+        assert_eq!(add_shim("yarn"), Ok(false), "no host, no folder");
+        let dir = crate::testing::temp_dir();
+        let (root, _) = host(&dir.0);
+        let bin = dir.0.join("bin");
+        set(Shared {
+            root,
+            caches: None,
+            installer: None,
+            bin: Some(bin.clone()),
+        });
+        assert_eq!(add_shim("make"), Ok(false));
+        assert!(!bin.join("make").exists());
+        for program in COREPACK_PROGRAMS {
+            assert_eq!(add_shim(program), Ok(true), "{program}");
+            let script = std::fs::read_to_string(bin.join(program)).unwrap();
+            assert!(script.starts_with("#!/bin/sh\n"), "{script}");
+            assert!(
+                script.contains(&format!(
+                    "exec npx --yes --prefer-offline corepack@latest {program} \"$@\""
+                )),
+                "{script}"
+            );
+            assert!(script.contains("COREPACK_ENABLE_AUTO_PIN=0"), "{script}");
+            let mode = std::fs::metadata(bin.join(program))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o700, "{program}");
+        }
+        // Without npx (no Node yet), it fails as a shell says so.
+        let out = std::process::Command::new(bin.join("pnpm"))
+            .arg("--version")
+            .env("PATH", dir.0.join("nothing-here"))
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(127));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            "sh: 1: npx: not found\n"
+        );
     }
 
     /// The shared store is written by every group member: a symlink one of
@@ -1232,6 +1403,7 @@ mod tests {
             root: root.clone(),
             caches: Some(caches.clone()),
             installer: None,
+            bin: None,
         });
         assert_eq!(seed_crates(&dir.0), 1);
         let cache = home.join("registry/cache/index.crates.io-1949cf8c6b5b557f");
@@ -1288,8 +1460,9 @@ mod tests {
             root: root.clone(),
             caches: None,
             installer: Some(installer),
+            bin: None,
         };
-        let ensure_now = || crate::rt::block_on(ensure(&dir.0));
+        let ensure_now = || crate::rt::block_on(ensure(&wanted(&dir.0)));
         set(host_with(refusing(calls.clone())));
         let first = ensure_now();
         assert_eq!(first.len(), 1);

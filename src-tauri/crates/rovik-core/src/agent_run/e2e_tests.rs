@@ -4707,6 +4707,132 @@ fn needs_user_approval() -> Permissions {
     }
 }
 
+/// A Node project whose dependencies aren't installed (no `node_modules`,
+/// as in a server's worktree): `npm test` finds no `vitest`. Its lockfile
+/// installs from a folder of its own, with no registry asked.
+async fn project_without_its_dependencies() -> Harness {
+    harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "version": "1.0.0", "private": true, "scripts": { "test": "vitest" }, "devDependencies": { "vitest": "file:vendor/vitest" } }"#,
+        ),
+        (
+            "package-lock.json",
+            r#"{ "name": "t", "version": "1.0.0", "lockfileVersion": 3, "requires": true, "packages": { "": { "name": "t", "version": "1.0.0", "devDependencies": { "vitest": "file:vendor/vitest" } }, "node_modules/vitest": { "resolved": "vendor/vitest", "link": true }, "vendor/vitest": { "version": "0.0.1", "dev": true, "bin": { "vitest": "bin.js" } } } }"#,
+        ),
+        (
+            "vendor/vitest/package.json",
+            r#"{ "name": "vitest", "version": "0.0.1", "bin": { "vitest": "bin.js" } }"#,
+        ),
+        (
+            "vendor/vitest/bin.js",
+            "#!/usr/bin/env node\nconsole.log(' Tests  1 passed (1)');\n",
+        ),
+    ])
+    .await
+}
+
+/// The agent's command fails for want of the project's dependencies: the
+/// project's install runs (the user's permissions let it run unasked), and
+/// the command, a lone program call, runs again by itself. The model sees
+/// the second run, and why there was one. Needs npm.
+#[tokio::test]
+async fn a_command_missing_the_projects_dependencies_runs_again_once_theyre_installed() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = project_without_its_dependencies().await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "b1",
+            name: "bash",
+            args: json!({ "command": "npm test" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("Run the tests"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let result = &messages.iter().find(|m| m.role == "tool").unwrap().content;
+    assert!(result.starts_with("$ npm test\nexit code 0"), "{result}");
+    assert!(result.contains("Tests  1 passed"), "{result}");
+    assert!(
+        result.contains("(Its first run failed: The project's dependencies weren't installed: `npm ci --no-audit --no-fund` ran"),
+        "{result}"
+    );
+    assert!(result.ends_with("It ran again, as above.)"), "{result}");
+    assert!(h.project.join("node_modules/.bin/vitest").exists());
+}
+
+/// A command of several parts isn't run again by Rovik, which could repeat
+/// what its first parts did: the model is told what was installed, and to
+/// run it again. One the user's permissions would ask about first is the
+/// model's to run. Needs npm.
+#[tokio::test]
+async fn a_compound_command_is_left_to_the_model_to_run_again() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = project_without_its_dependencies().await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "b1",
+            name: "bash",
+            args: json!({ "command": "echo first && npm test" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("Run the tests"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let result = &messages.iter().find(|m| m.role == "tool").unwrap().content;
+    assert!(result.contains("exit code 127"), "{result}");
+    assert!(
+        result.ends_with("`npm ci --no-audit --no-fund` ran (its output: @checks/install-1.log). Run the command again.)"),
+        "{result}"
+    );
+
+    // Allowed only `echo` and `npm test`: the install is the model's to run.
+    let h = project_without_its_dependencies().await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "b1",
+            name: "bash",
+            args: json!({ "command": "npm test" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allowed_commands: vec!["npm test".into()],
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("Run the tests"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let result = &messages.iter().find(|m| m.role == "tool").unwrap().content;
+    assert!(
+        result.ends_with("(The project's dependencies aren't installed: run `npm ci --no-audit --no-fund`, then the command again.)"),
+        "{result}"
+    );
+    assert!(!h.project.join("node_modules").exists());
+}
+
 fn has_npm() -> bool {
     std::process::Command::new("npm")
         .arg("--version")

@@ -891,6 +891,10 @@ pub struct ChatParams {
     // permissions: where it asks before a call (the run answers each as
     // it would a call of its own tool, `agent_run` `answer_tool_ask`).
     pub tool_asks: Option<crate::connectors::ToolAsks>,
+    // A connector's model whose harness runs its own shell: where it
+    // reports each of its commands, before it runs and after it failed (the
+    // run makes ready what it needs, `agent_run` `answer_command_check`).
+    pub command_checks: Option<crate::connectors::CommandChecks>,
 }
 
 /// A request the frontend makes itself, outside any run (a chat's title):
@@ -963,6 +967,7 @@ pub async fn run_chat(
         isolated: _,
         plan_mode: _,
         tool_asks: _,
+        command_checks: _,
     } = params;
     let chat_id = chat_id.or_else(|| dialog_id.clone());
 

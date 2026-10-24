@@ -149,6 +149,7 @@ async fn run(
         &limits.admin,
         Path::new(installer::TOOLCHAINS),
         Path::new(installer::CACHES),
+        &home.bin(),
     ) {
         log::info!(
             "shared toolchains in {}, caches: {}",
@@ -287,13 +288,15 @@ async fn run(
 
 /// The shared toolchains this daemon's chats use (rovik_core::toolchains,
 /// docs/cloud-hosts.md): the versions under `root`, the caches at
-/// `caches` when its settings share them and it may write them, and the
-/// root command that installs what's missing when its settings allow that.
-/// None where they aren't Rovik's: the user's own computer.
+/// `caches` when its settings share them and it may write them, the root
+/// command that installs what's missing when its settings allow that, and
+/// `bin`, this user's folder of Yarn and pnpm. None where they aren't
+/// Rovik's: the user's own computer.
 fn shared_toolchains(
     admin: &AdminFile,
     root: &Path,
     caches: &Path,
+    bin: &Path,
 ) -> Option<rovik_core::toolchains::Shared> {
     if !root.is_dir() {
         return None;
@@ -313,6 +316,7 @@ fn shared_toolchains(
         root: root.to_path_buf(),
         caches,
         installer,
+        bin: Some(bin.to_path_buf()),
     })
 }
 
@@ -533,7 +537,7 @@ mod tests {
         let admin = AdminFile::default();
         // Not there yet: the daemon keeps its own.
         assert_eq!(
-            shared_toolchains(&admin, &toolchains, &caches)
+            shared_toolchains(&admin, &toolchains, &caches, &dir.0.join("bin"))
                 .unwrap()
                 .caches,
             None
@@ -542,7 +546,7 @@ mod tests {
         for folder in ["npm", "crates"] {
             std::fs::create_dir_all(caches.join(folder)).unwrap();
         }
-        let shared = shared_toolchains(&admin, &toolchains, &caches).unwrap();
+        let shared = shared_toolchains(&admin, &toolchains, &caches, &dir.0.join("bin")).unwrap();
         assert_eq!(shared.caches, Some(caches.clone()));
         assert!(shared.installer.is_some(), "chats may install one");
 
@@ -550,19 +554,27 @@ mod tests {
         let mut off = admin.clone();
         off.toolchains.shared_caches = false;
         assert_eq!(
-            shared_toolchains(&off, &toolchains, &caches)
+            shared_toolchains(&off, &toolchains, &caches, &dir.0.join("bin"))
                 .unwrap()
                 .caches,
             None
         );
         off.toolchains.user_install = false;
-        assert!(shared_toolchains(&off, &toolchains, &caches)
-            .unwrap()
-            .installer
-            .is_none());
+        assert!(
+            shared_toolchains(&off, &toolchains, &caches, &dir.0.join("bin"))
+                .unwrap()
+                .installer
+                .is_none()
+        );
 
         // No shared versions on this host at all: nothing to set.
-        assert!(shared_toolchains(&admin, &dir.0.join("elsewhere"), &caches).is_none());
+        assert!(shared_toolchains(
+            &admin,
+            &dir.0.join("elsewhere"),
+            &caches,
+            &dir.0.join("bin")
+        )
+        .is_none());
 
         // A daemon that can't write them (another user's folder) keeps the
         // user's own caches, and still shares the versions.
@@ -582,7 +594,8 @@ mod tests {
                 )
                 .unwrap();
             }
-            let shared = shared_toolchains(&admin, &toolchains, &theirs).unwrap();
+            let shared =
+                shared_toolchains(&admin, &toolchains, &theirs, &dir.0.join("bin")).unwrap();
             assert_eq!(shared.caches, None);
         }
     }

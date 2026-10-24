@@ -1,7 +1,8 @@
 //! Prepare (autopilot-plan 4.3, D19): the installs a working copy's
-//! lockfiles imply, or a Node package's manifest names without one, where
-//! the dependencies they install aren't there, run as heavy work with the
-//! checks' timeout.
+//! packages need where their dependencies aren't there, as the project's
+//! one scan finds them (ecosystems/: lockfiles, a Node package's manifest
+//! without one, a workspace installed from its root), run as heavy work
+//! with the checks' timeout.
 //!
 //! S03: an Autopilot task's Prepare stage runs them before the tests and
 //! the code (`prepare_stage`), in a run of its own with no model turn; a
@@ -14,213 +15,47 @@
 //! the change's failure, so it isn't counted, and the checks run again
 //! once the installs are done.
 //!
-//! A program an install runs that isn't on the PATH (`npm`, `cargo`) may
-//! have been installed since the app started, or a server's daemon: the
-//! login shell's PATH is read again before the installs (`find_programs`).
+//! The programs the installs run (`npm`, `cargo`, `pnpm`) are made ready
+//! first, as for any command the agent runs (environment.rs): a cloud
+//! host's version of the toolchain the project asks for, Yarn or pnpm
+//! through Corepack, a program installed since the app started.
 
 use super::check_output;
 use super::command_output::{clean_output, focus_failures};
+use super::environment;
 use super::log;
 use super::run::Run;
 use super::verify::{self, CheckResult, FAILURE_OUTPUT_CHARS};
+use super::StopSignal;
+use crate::ecosystems::Install;
+use crate::toolchains::Want;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-/// An install a package needs: its lockfile's, or npm's of its package.json.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Install {
-    /// Where it runs, from the project's folder: "" for the folder itself.
-    pub folder: String,
-    pub command: String,
-}
-
-use crate::project_profile::NOT_PACKAGES;
-use crate::toolchains::Want;
-
-/// Node's lockfiles, any of which says how its packages install.
-const NODE_LOCKFILES: &[&str] = &[
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "bun.lockb",
-    "bun.lock",
-];
-
-/// A Node package's install without a lockfile: npm's, at the latest
-/// versions its package.json allows, writing no lockfile (it would be a
-/// file the change adds).
-const UNLOCKED_NODE_INSTALL: &str = "npm install --no-package-lock --no-audit --no-fund";
-
-/// The installs the packages in `root` and one folder down need, where
-/// what they install isn't there: `node_modules` (or Yarn's `.pnp.cjs`)
-/// for Node, the `.venv` uv makes, a virtual environment for pip's
-/// requirements, `target` for Cargo (never built there), `vendor` for Go.
-/// A lockfile says how; a Node package without one, whose dependencies
-/// npm installs, gets npm's install (a server's copy of a project that
-/// commits no lockfile has nothing installed). A Node workspace's packages
-/// install with it, from its root, never each on its own. The folder
-/// itself first, then the others by name.
-pub fn needed(root: &Path) -> Vec<Install> {
-    let mut folders = vec![String::new()];
-    if let Ok(entries) = std::fs::read_dir(root) {
-        let mut below: Vec<String> = entries
-            .flatten()
-            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-            .filter_map(|e| e.file_name().to_str().map(str::to_string))
-            .filter(|name| !name.starts_with('.') && !NOT_PACKAGES.contains(&name.as_str()))
-            .collect();
-        below.sort();
-        folders.extend(below);
-    }
-    let (inside, root_is_one) = (below_a_workspace(root), workspace_root(root));
-    folders
-        .into_iter()
-        .flat_map(|folder| {
-            let in_workspace = inside || (root_is_one && !folder.is_empty());
-            installs_in(root, folder, in_workspace)
-        })
-        .collect()
-}
-
-/// The installs `folder`'s own lockfiles imply, or its package.json names
-/// without one, unless it's `in_workspace`: a package of a Node workspace,
-/// which its root installs.
-fn installs_in(root: &Path, folder: String, in_workspace: bool) -> Vec<Install> {
-    let dir = root.join(&folder);
-    let has = |name: &str| dir.join(name).exists();
-    let mut commands: Vec<&'static str> = Vec::new();
-    if has("package.json") && !has("node_modules") && !has(".pnp.cjs") {
-        if NODE_LOCKFILES.iter().any(|l| has(l)) {
-            commands.push(node_install(&dir));
-        } else if !in_workspace && npm_installs(&dir) {
-            commands.push(UNLOCKED_NODE_INSTALL);
-        }
-    }
-    if has("Cargo.toml") && has("Cargo.lock") && !has("target") {
-        commands.push("cargo fetch");
-    }
-    if has("uv.lock") {
-        if !has(".venv") {
-            commands.push("uv sync");
-        }
-    } else if has("requirements.txt") && !has(".venv") && !has("venv") {
-        commands.push("pip install -r requirements.txt");
-    }
-    if has("go.mod") && has("go.sum") && !has("vendor") {
-        commands.push("go mod download");
-    }
-    commands
-        .into_iter()
-        .map(|command| Install {
-            folder: folder.clone(),
-            command: command.to_string(),
-        })
-        .collect()
-}
-
-/// The install of a Node package's lockfile, by its package manager.
-fn node_install(dir: &Path) -> &'static str {
-    use crate::project_profile::workspaces::{detect_package_manager, is_yarn_berry};
-    let pkg = package_json(dir);
-    match detect_package_manager(dir) {
-        "pnpm" => "pnpm install --frozen-lockfile",
-        "yarn" if is_yarn_berry(dir, pkg.as_ref()) => "yarn install --immutable",
-        "yarn" => "yarn install --frozen-lockfile",
-        "bun" => "bun install --frozen-lockfile",
-        // No audit: a request to the registry nobody reads here.
-        _ => "npm ci --no-audit --no-fund",
-    }
-}
-
-/// Whether npm installs what `dir`'s package.json, which has no lockfile
-/// beside it, names: dependencies, or the packages of the workspace it's
-/// the root of, and no other package manager's (its `packageManager`,
-/// Yarn's settings, a pnpm workspace).
-fn npm_installs(dir: &Path) -> bool {
-    use crate::project_profile::workspaces::{detect_package_manager, is_yarn_berry};
-    let Some(pkg) = package_json(dir) else {
-        return false;
-    };
-    let names = ["dependencies", "devDependencies", "optionalDependencies"]
-        .iter()
-        .any(|key| pkg[*key].as_object().is_some_and(|deps| !deps.is_empty()))
-        || !pkg["workspaces"].is_null();
-    let npms = pkg["packageManager"]
-        .as_str()
-        .is_none_or(|manager| manager.starts_with("npm@"));
-    names && npms && detect_package_manager(dir) == "npm" && !is_yarn_berry(dir, Some(&pkg))
-}
-
-/// `dir`'s package.json, when it reads.
-fn package_json(dir: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(dir.join("package.json")).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-/// Whether `dir` is a Node workspace's root: its package.json names
-/// workspaces, or a pnpm-workspace.yaml does.
-fn workspace_root(dir: &Path) -> bool {
-    dir.join("pnpm-workspace.yaml").exists()
-        || package_json(dir).is_some_and(|pkg| !pkg["workspaces"].is_null())
-}
-
-/// Whether a folder above `root`, up to its repository's top, is a Node
-/// workspace's root: `root`'s packages are that workspace's.
-fn below_a_workspace(root: &Path) -> bool {
-    let mut dir = root;
-    while !dir.join(".git").exists() {
-        let Some(parent) = dir.parent() else {
-            return false;
-        };
-        if workspace_root(parent) {
-            return true;
-        }
-        dir = parent;
-    }
-    false
-}
-
-/// The programs `installs` run (`npm` of `npm ci`) that aren't on the PATH
-/// the chat's commands get may have been installed since the app started,
-/// or since a server's daemon did: a host's setup script installs the
-/// toolchains after its daemon started, and the daemon read its login
-/// shell's PATH as it started. That PATH is read again then
-/// (`process::refresh_login_path`), for these installs and the commands
-/// after them: the checks, the agent's. Logs what it found.
-///
-/// Before that, a cloud host's shared Rust and Node versions the packages
-/// ask for and the host lacks are installed, through the root command
-/// (toolchains): what the installs below run. Each with its outcome, for
-/// the line that says how the installs went.
-async fn find_programs(root: &str, installs: &[Install]) -> Vec<(Want, Result<(), String>)> {
-    let toolchains = crate::toolchains::ensure(Path::new(root)).await;
-    let mut missing: Vec<String> = Vec::new();
+/// Before the installs: the versions the project asks for that a cloud
+/// host lacks, installed as root (toolchains), each with its outcome for
+/// the line that says how the installs went; then the programs the
+/// installs run made ready, as any command's are (environment.rs), the
+/// login shell's PATH read again too: nothing runs an install again once
+/// it failed for want of one.
+async fn find_programs(
+    cx: &environment::Context,
+    installs: &[Install],
+) -> Vec<(Want, Result<(), String>)> {
+    let toolchains =
+        crate::toolchains::ensure(&crate::toolchains::wanted(Path::new(&cx.root))).await;
     for install in installs {
-        let Some(program) = install.command.split_whitespace().next() else {
-            continue;
-        };
-        if !missing.iter().any(|m| m == program) && !crate::process::on_path(program) {
-            missing.push(program.to_string());
+        let ready = environment::before(cx, &install.command, environment::Look::Everywhere).await;
+        if ready.changed() {
+            ::log::info!(
+                "prepare: before `{}`: {}",
+                install.command,
+                ready.done.join("; ")
+            );
         }
     }
-    if missing.is_empty() {
-        return toolchains;
-    }
-    let read = crate::rt::spawn_blocking(crate::process::refresh_login_path)
-        .await
-        .unwrap_or(false);
-    let found: Vec<&String> = missing
-        .iter()
-        .filter(|p| crate::process::on_path(p))
-        .collect();
-    let path = match read {
-        true => "read again",
-        false => "couldn't be read",
-    };
-    ::log::info!(
-        "prepare: {missing:?} not on the PATH; the login shell's PATH {path}; found now: {found:?}"
-    );
     toolchains
 }
 
@@ -397,10 +232,10 @@ impl InstallResult {
 
 impl Run {
     /// S03 (4.3): the Prepare stage's run. The installs the packages need
-    /// (`needed`) run where what they install isn't there, a record
-    /// showing each; the stage's record says how it went, and counts the
-    /// installs that failed (`failures`). "stopped" when the user stopped
-    /// it, else "done": a failed install doesn't end the task.
+    /// (`ecosystems::installs`) run where what they install isn't there, a
+    /// record showing each; the stage's record says how it went, and counts
+    /// the installs that failed (`failures`). "stopped" when the user
+    /// stopped it, else "done": a failed install doesn't end the task.
     pub(super) async fn prepare_stage(&mut self) -> Result<String, String> {
         use super::autopilot::Status;
         if self.stage.is_none() {
@@ -411,7 +246,7 @@ impl Run {
                 .await?;
             return Ok("done".into());
         };
-        let installs = needed(Path::new(&root));
+        let installs = crate::ecosystems::installs(Path::new(&root));
         if installs.is_empty() {
             let why = "Nothing to install: the dependencies are there";
             self.end_own_stage(Status::Skipped, why, None).await?;
@@ -426,7 +261,7 @@ impl Run {
         row.meta = Some(meta("running", &done));
         let record_id = row.id.clone();
         self.append(vec![row]).await?;
-        let toolchains = find_programs(&root, &installs).await;
+        let toolchains = find_programs(&self.environment(&self.dialog_id, &root), &installs).await;
         for (i, install) in installs.iter().enumerate() {
             if self.stopped() {
                 done[i].status = "skipped";
@@ -434,7 +269,9 @@ impl Run {
             }
             done[i].status = "running";
             self.update_meta(&record_id, meta("running", &done)).await?;
-            done[i] = self.install(&root, install, i, "prepare").await;
+            done[i] = self
+                .install_in(&self.dialog_id, &root, install, i, "prepare")
+                .await;
             self.update_meta(&record_id, meta("running", &done)).await?;
         }
         let failed: Vec<&InstallResult> = done.iter().filter(|d| d.status == "failed").collect();
@@ -490,11 +327,11 @@ impl Run {
         if !self.config().autopilot.prepare {
             return None;
         }
-        let installs = needed(Path::new(root));
+        let installs = crate::ecosystems::installs(Path::new(root));
         if installs.is_empty() {
             return None;
         }
-        let toolchains = find_programs(root, &installs).await;
+        let toolchains = find_programs(&self.environment(chat, root), &installs).await;
         let mut done: Vec<InstallResult> = installs.iter().map(InstallResult::pending).collect();
         for (i, install) in installs.iter().enumerate() {
             if self.stopped() {
@@ -544,7 +381,7 @@ impl Run {
     ) -> Result<String, String> {
         let prepare = self.config().autopilot.prepare;
         let installs = if prepare {
-            needed(Path::new(root))
+            crate::ecosystems::installs(Path::new(root))
         } else {
             Vec::new()
         };
@@ -569,7 +406,7 @@ impl Run {
         // counted again if they don't fix it. Prepare off: nothing is
         // installed, the host's toolchains included.
         let toolchains = match prepare {
-            true => find_programs(root, &installs).await,
+            true => find_programs(&self.environment(&self.dialog_id, root), &installs).await,
             false => Vec::new(),
         };
         self.update_meta(record_id, meta(&done, &toolchains)).await?;
@@ -581,7 +418,9 @@ impl Run {
             done[i].status = "running";
             self.update_meta(record_id, meta(&done, &toolchains)).await?;
             // Its own names: the Prepare stage's output stays as it was.
-            done[i] = self.install(root, install, i, "prepare-again").await;
+            done[i] = self
+                .install_in(&self.dialog_id, root, install, i, "prepare-again")
+                .await;
             self.update_meta(record_id, meta(&done, &toolchains)).await?;
         }
         log::write(
@@ -618,24 +457,8 @@ impl Run {
         Ok("continue".into())
     }
 
-    /// Runs one install as heavy work, as the checks run; its output is
-    /// saved as `@checks/<stem>-…`.
-    async fn install(
-        &self,
-        root: &str,
-        install: &Install,
-        index: usize,
-        stem: &str,
-    ) -> InstallResult {
-        let chat = self.dialog_id.clone();
-        self.install_in(&chat, root, install, index, stem).await
-    }
-
-    /// `install`, in `chat`'s name: its copy's environment and confinement,
-    /// its saved output; this run's Stop stops it. A cloud host's shared
-    /// caches are used where they're safe: npm's for `npm ci` with a
-    /// lockfile, and the crates' for `cargo fetch`, seeded from the store
-    /// before it and added to it after it succeeds (`toolchains`).
+    /// Runs one install for `chat` as heavy work, by this run: its Stop
+    /// stops it ([`run_install`]).
     async fn install_in(
         &self,
         chat: &str,
@@ -644,85 +467,118 @@ impl Run {
         index: usize,
         stem: &str,
     ) -> InstallResult {
-        let mut r = InstallResult::pending(install);
-        let dir = Path::new(root).join(&install.folder);
-        let stop = self.stop.clone();
-        let overlay = crate::overlay::chats::get(chat);
-        let mut queued = crate::command_tool::Queued::check(chat, overlay.as_deref()).whole(true);
-        let (command, env) = install_command(install, &dir);
-        queued.env.extend(env);
-        // `cargo fetch`: the crates the last chat on this host left in the
-        // shared store, each checked against this project's lockfile.
-        let cargo_fetch = install.command.starts_with("cargo fetch");
-        let shared_crates = cargo_fetch && crate::toolchains::crate_cache().is_some();
-        if shared_crates {
-            let seeded = dir.clone();
-            let copied = crate::rt::spawn_blocking(move || crate::toolchains::seed_crates(&seeded))
-                .await
-                .unwrap_or_default();
-            if copied > 0 {
-                ::log::info!("prepare: {copied} crate(s) from the shared store in {dir:?}");
-            }
-        }
-        let outcome = crate::command_tool::run_command(
-            dir.to_string_lossy().into_owned(),
-            command,
-            Some(verify::check_timeout_ms(&self.dialog_id)),
-            move || stop.is_set(),
-            Some(queued),
-        )
-        .await;
-        match outcome {
-            Ok(out) if out.stopped => r.status = "skipped",
-            Ok(out) => {
-                r.duration_ms = Some(out.duration_ms);
-                r.exit_code = Some(out.exit_code);
-                r.timed_out = Some(out.timed_out);
-                let combined = clean_output(
-                    &[out.stderr.trim(), out.stdout.trim()]
-                        .into_iter()
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                );
-                let passed = out.exit_code == Some(0) && !out.timed_out;
-                r.status = if passed { "passed" } else { "failed" };
-                if passed && shared_crates {
-                    // What this chat fetched, for the next user's chat here.
-                    let published = dir.clone();
-                    let _ = crate::rt::spawn_blocking(move || {
-                        crate::toolchains::publish_crates(&published)
-                    })
-                    .await;
-                }
-                if !passed {
-                    let focused = focus_failures(&combined, FAILURE_OUTPUT_CHARS);
-                    r.output = Some(if focused.is_empty() {
-                        "(no output)".into()
-                    } else {
-                        focused
-                    });
-                }
-                // Kept whole, as a check's output is (4.3): `@checks/prepare-1.log`,
-                // not the start and end `combined` keeps.
-                let whole = out
-                    .whole_text()
-                    .map_or_else(|| combined.clone(), |w| clean_output(&w));
-                if !whole.is_empty() {
-                    let name = match install.folder.as_str() {
-                        "" => format!("{}", index + 1),
-                        folder => format!("{folder}-{}", index + 1),
-                    };
-                    r.saved_output = check_output::save(chat, stem, &name, &whole);
-                }
-            }
-            Err(e) => {
-                r.status = "failed";
-                r.output = Some(format!("Could not run the command: {e}"));
-            }
-        }
-        r
+        let timeout = verify::check_timeout_ms(&self.dialog_id);
+        run_install(chat, root, install, index, stem, &self.stop, timeout).await
     }
+
+    /// Where `chat`'s commands run in `root`, for making them ready
+    /// (environment.rs): this run's Stop, nothing to note while it
+    /// installs, which the installs' record shows.
+    pub(super) fn environment(&self, chat: &str, root: &str) -> environment::Context {
+        environment::Context {
+            core: self.core.clone(),
+            chat: chat.to_string(),
+            root: root.to_string(),
+            stop: self.stop.clone(),
+            note: Arc::new(|_| {}),
+            plan_mode: self.plan_mode,
+        }
+    }
+}
+
+/// Runs one install as heavy work, as the checks run, in `chat`'s name: its
+/// copy's environment and confinement; its output saved as
+/// `@checks/<stem>-…`. `stop` stops it. A cloud host's shared caches are
+/// used where they're safe: npm's for `npm ci` with a lockfile, and the
+/// crates' for `cargo fetch`, seeded from the store before it and added to
+/// it after it succeeds (`toolchains`).
+pub(super) async fn run_install(
+    chat: &str,
+    root: &str,
+    install: &Install,
+    index: usize,
+    stem: &str,
+    stop: &Arc<StopSignal>,
+    timeout_ms: u64,
+) -> InstallResult {
+    let mut r = InstallResult::pending(install);
+    let dir = Path::new(root).join(&install.folder);
+    let stop = stop.clone();
+    let overlay = crate::overlay::chats::get(chat);
+    let mut queued = crate::command_tool::Queued::check(chat, overlay.as_deref()).whole(true);
+    let (command, env) = install_command(install, &dir);
+    queued.env.extend(env);
+    // `cargo fetch`: the crates the last chat on this host left in the
+    // shared store, each checked against this project's lockfile.
+    let cargo_fetch = install.command.starts_with("cargo fetch");
+    let shared_crates = cargo_fetch && crate::toolchains::crate_cache().is_some();
+    if shared_crates {
+        let seeded = dir.clone();
+        let copied = crate::rt::spawn_blocking(move || crate::toolchains::seed_crates(&seeded))
+            .await
+            .unwrap_or_default();
+        if copied > 0 {
+            ::log::info!("prepare: {copied} crate(s) from the shared store in {dir:?}");
+        }
+    }
+    let outcome = crate::command_tool::run_command(
+        dir.to_string_lossy().into_owned(),
+        command,
+        Some(timeout_ms),
+        move || stop.is_set(),
+        Some(queued),
+    )
+    .await;
+    match outcome {
+        Ok(out) if out.stopped => r.status = "skipped",
+        Ok(out) => {
+            r.duration_ms = Some(out.duration_ms);
+            r.exit_code = Some(out.exit_code);
+            r.timed_out = Some(out.timed_out);
+            let combined = clean_output(
+                &[out.stderr.trim(), out.stdout.trim()]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            let passed = out.exit_code == Some(0) && !out.timed_out;
+            r.status = if passed { "passed" } else { "failed" };
+            if passed && shared_crates {
+                // What this chat fetched, for the next user's chat here.
+                let published = dir.clone();
+                let _ = crate::rt::spawn_blocking(move || {
+                    crate::toolchains::publish_crates(&published)
+                })
+                .await;
+            }
+            if !passed {
+                let focused = focus_failures(&combined, FAILURE_OUTPUT_CHARS);
+                r.output = Some(if focused.is_empty() {
+                    "(no output)".into()
+                } else {
+                    focused
+                });
+            }
+            // Kept whole, as a check's output is (4.3): `@checks/prepare-1.log`,
+            // not the start and end `combined` keeps.
+            let whole = out
+                .whole_text()
+                .map_or_else(|| combined.clone(), |w| clean_output(&w));
+            if !whole.is_empty() {
+                let name = match install.folder.as_str() {
+                    "" => format!("{}", index + 1),
+                    folder => format!("{folder}-{}", index + 1),
+                };
+                r.saved_output = check_output::save(chat, stem, &name, &whole);
+            }
+        }
+        Err(e) => {
+            r.status = "failed";
+            r.output = Some(format!("Could not run the command: {e}"));
+        }
+    }
+    r
 }
 
 /// The command an install runs in `dir`, and the environment it gets.
@@ -815,233 +671,7 @@ fn npm_credential_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn project(files: &[&str]) -> crate::testing::TempDir {
-        let dir = crate::testing::temp_dir();
-        for f in files {
-            let path = dir.0.join(f);
-            if f.ends_with('/') {
-                std::fs::create_dir_all(&path).unwrap();
-            } else {
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(&path, "{}").unwrap();
-            }
-        }
-        dir
-    }
-
-    fn commands(root: &Path) -> Vec<(String, String)> {
-        needed(root)
-            .into_iter()
-            .map(|i| (i.folder, i.command))
-            .collect()
-    }
-
-    fn at(folder: &str, command: &str) -> (String, String) {
-        (folder.to_string(), command.to_string())
-    }
-
-    /// Writes `content` to `path` in `dir`.
-    fn write(dir: &Path, path: &str, content: &str) {
-        let path = dir.join(path);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, content).unwrap();
-    }
-
-    /// A package.json that names a dependency.
-    const DEPENDS: &str = r#"{ "name": "t", "devDependencies": { "vitest": "^3.2.0" } }"#;
-
-    /// 4.3: each lockfile's install, where what it installs isn't there.
-    #[test]
-    fn a_lockfile_without_its_dependencies_needs_its_install() {
-        let cases: &[(&[&str], &str)] = &[
-            (
-                &["package.json", "package-lock.json"],
-                "npm ci --no-audit --no-fund",
-            ),
-            (
-                &["package.json", "pnpm-lock.yaml"],
-                "pnpm install --frozen-lockfile",
-            ),
-            (
-                &["package.json", "yarn.lock"],
-                "yarn install --frozen-lockfile",
-            ),
-            (
-                &["package.json", "yarn.lock", ".yarnrc.yml"],
-                "yarn install --immutable",
-            ),
-            (
-                &["package.json", "bun.lockb"],
-                "bun install --frozen-lockfile",
-            ),
-            (&["Cargo.toml", "Cargo.lock"], "cargo fetch"),
-            (&["pyproject.toml", "uv.lock"], "uv sync"),
-            (&["requirements.txt"], "pip install -r requirements.txt"),
-            (&["go.mod", "go.sum"], "go mod download"),
-        ];
-        for (files, command) in cases {
-            let dir = project(files);
-            assert_eq!(commands(&dir.0), [at("", command)], "{files:?}");
-        }
-    }
-
-    /// Installed already, or nothing to install from: nothing.
-    #[test]
-    fn installed_dependencies_or_no_lockfile_need_nothing() {
-        let cases: &[&[&str]] = &[
-            &["package.json", "package-lock.json", "node_modules/"],
-            &["package.json", "yarn.lock", ".pnp.cjs"],
-            &["package.json"],
-            &["package-lock.json"],
-            &["Cargo.toml", "Cargo.lock", "target/"],
-            &["Cargo.toml"],
-            &["pyproject.toml", "uv.lock", ".venv/"],
-            &["requirements.txt", ".venv/"],
-            &["requirements.txt", "venv/"],
-            &["go.mod", "go.sum", "vendor/"],
-            &["go.mod"],
-            &[],
-        ];
-        for files in cases {
-            let dir = project(files);
-            assert_eq!(commands(&dir.0), [], "{files:?}");
-        }
-        // uv's lockfile says how: not pip's requirements beside it.
-        let dir = project(&["uv.lock", "requirements.txt", ".venv/"]);
-        assert_eq!(commands(&dir.0), []);
-    }
-
-    /// One folder down too (a monorepo's `api/` and `web/`), the folder
-    /// itself first; never in what's installed, built or hidden.
-    #[test]
-    fn a_package_one_folder_down_is_prepared_too() {
-        let dir = project(&[
-            "package.json",
-            "package-lock.json",
-            "web/package.json",
-            "web/pnpm-lock.yaml",
-            "api/Cargo.toml",
-            "api/Cargo.lock",
-            "api/deep/requirements.txt",
-            ".cache/package.json",
-            ".cache/package-lock.json",
-            "dist/requirements.txt",
-        ]);
-        assert_eq!(
-            commands(&dir.0),
-            [
-                at("", "npm ci --no-audit --no-fund"),
-                at("api", "cargo fetch"),
-                at("web", "pnpm install --frozen-lockfile"),
-            ]
-        );
-        // An installed package's own lockfile isn't the project's.
-        let installed = project(&[
-            "package.json",
-            "package-lock.json",
-            "node_modules/x/package.json",
-            "node_modules/x/package-lock.json",
-        ]);
-        assert_eq!(commands(&installed.0), []);
-    }
-
-    /// A file where a folder would be, or an unreadable folder: no install,
-    /// no panic.
-    #[test]
-    fn odd_folders_are_left_alone() {
-        let dir = project(&["package.json", "package-lock.json", "node_modules"]);
-        // `node_modules` is a file here: it's there, so nothing installs.
-        assert_eq!(commands(&dir.0), []);
-        assert_eq!(commands(&dir.0.join("missing")), []);
-    }
-
-    /// A Node package that commits no lockfile, as a server's copy of it
-    /// has it, with nothing installed: npm installs what its package.json
-    /// names, writing no lockfile.
-    #[test]
-    fn a_package_without_a_lockfile_installs_what_it_names() {
-        let cases = [
-            DEPENDS,
-            r#"{ "dependencies": { "left-pad": "1.3.0" } }"#,
-            r#"{ "optionalDependencies": { "fsevents": "*" } }"#,
-            r#"{ "packageManager": "npm@10.8.2", "dependencies": { "a": "1" } }"#,
-            // A workspace's root, whose packages npm installs.
-            r#"{ "private": true, "workspaces": ["packages/*"] }"#,
-        ];
-        for manifest in cases {
-            let dir = project(&[".git/"]);
-            write(&dir.0, "package.json", manifest);
-            assert_eq!(
-                commands(&dir.0),
-                [at("", "npm install --no-package-lock --no-audit --no-fund")],
-                "{manifest}"
-            );
-        }
-    }
-
-    /// Nothing for npm to install, or another package manager's package:
-    /// nothing.
-    #[test]
-    fn a_package_without_a_lockfile_npm_wouldnt_install_needs_nothing() {
-        let cases: &[(&str, &[&str])] = &[
-            (r#"{ "scripts": { "test": "node t.js" } }"#, &[]),
-            (r#"{ "dependencies": {} }"#, &[]),
-            ("not json", &[]),
-            (DEPENDS, &["node_modules/"]),
-            (DEPENDS, &[".pnp.cjs"]),
-            (
-                r#"{ "packageManager": "pnpm@9.1.0", "dependencies": { "a": "1" } }"#,
-                &[],
-            ),
-            (
-                r#"{ "packageManager": "yarn@1.22.22", "dependencies": { "a": "1" } }"#,
-                &[],
-            ),
-            (DEPENDS, &[".yarnrc.yml"]),
-            (DEPENDS, &["pnpm-workspace.yaml"]),
-        ];
-        for (manifest, files) in cases {
-            let dir = project(files);
-            std::fs::create_dir_all(dir.0.join(".git")).unwrap();
-            write(&dir.0, "package.json", manifest);
-            assert_eq!(commands(&dir.0), [], "{manifest} {files:?}");
-        }
-    }
-
-    /// A Node workspace's packages install with it, from its root: never
-    /// each on its own, one folder down or as the project's own folder.
-    #[test]
-    fn a_workspaces_packages_install_from_its_root() {
-        let unlocked = "npm install --no-package-lock --no-audit --no-fund";
-        let dir = project(&[".git/"]);
-        write(&dir.0, "package.json", r#"{ "workspaces": ["web"] }"#);
-        write(&dir.0, "web/package.json", DEPENDS);
-        assert_eq!(commands(&dir.0), [at("", unlocked)]);
-        // Its lockfile says how.
-        write(&dir.0, "package-lock.json", "{}");
-        assert_eq!(commands(&dir.0), [at("", "npm ci --no-audit --no-fund")]);
-        // pnpm's, with no lockfile: not npm's to install.
-        let pnpm = project(&[".git/", "pnpm-workspace.yaml"]);
-        write(&pnpm.0, "package.json", "{}");
-        write(&pnpm.0, "web/package.json", DEPENDS);
-        assert_eq!(commands(&pnpm.0), []);
-        // A package of its own beside a root that isn't a workspace's.
-        let apart = project(&[".git/"]);
-        write(&apart.0, "package.json", r#"{ "name": "tools" }"#);
-        write(&apart.0, "web/package.json", DEPENDS);
-        assert_eq!(commands(&apart.0), [at("web", unlocked)]);
-        // The project is a package of a workspace above it in its
-        // repository, or a folder of its packages.
-        let repo = project(&[".git/"]);
-        write(&repo.0, "package.json", r#"{ "workspaces": ["apps/*"] }"#);
-        write(&repo.0, "apps/web/package.json", DEPENDS);
-        assert_eq!(commands(&repo.0.join("apps/web")), []);
-        assert_eq!(commands(&repo.0.join("apps")), []);
-        // A workspace above its repository's top isn't its.
-        std::fs::create_dir_all(repo.0.join("apps/web/.git")).unwrap();
-        assert_eq!(commands(&repo.0.join("apps/web")), [at("", unlocked)]);
-    }
+    use crate::ecosystems::tests::write;
 
     /// A failed install's line names the program its shell didn't find:
     /// not one a package's script runs, nor a failure of another kind.
@@ -1211,6 +841,7 @@ mod tests {
                 root: dir.0.join("toolchains"),
                 caches: Some(caches),
                 installer: None,
+                bin: None,
             });
             // The folder outlives the guard, which only forgets the host.
             std::mem::forget(dir);
