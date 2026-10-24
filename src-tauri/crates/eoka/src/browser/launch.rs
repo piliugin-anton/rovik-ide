@@ -279,6 +279,17 @@ pub(super) fn prepare_browser_launch(
                  or leave pipe off"
             )));
         }
+        // The pipe's messages are JSON, each ended by a NUL: a mode such as
+        // `cbor` frames them otherwise, and nothing read would make sense.
+        if let Some(arg) = config
+            .extra_args
+            .iter()
+            .find(|arg| arg.starts_with("--remote-debugging-pipe="))
+        {
+            return Err(Error::Launch(format!(
+                "StealthConfig::pipe speaks JSON: remove {arg} from extra_args"
+            )));
+        }
     }
     crate::cdp::types::EmulationSetDeviceMetricsOverride::new(
         config.viewport_width,
@@ -713,6 +724,26 @@ mod pipe_launch_tests {
             );
         }
         // Refused before anything was made for the launch.
+        assert_eq!(std::fs::read_dir(&runtime).unwrap().count(), 0);
+        std::fs::remove_dir_all(&runtime).unwrap();
+    }
+
+    #[test]
+    fn a_pipe_launch_refuses_a_pipe_mode_it_cant_read() {
+        let runtime = temp_dir("runtime-mode");
+        let Err(error) = prepare(StealthConfig {
+            pipe: true,
+            runtime_dir: Some(runtime.to_string_lossy().into_owned()),
+            extra_args: vec!["--remote-debugging-pipe=cbor".into()],
+            ..Default::default()
+        }) else {
+            panic!("a CBOR pipe was accepted");
+        };
+        let error = error.to_string();
+        assert!(
+            error.contains("speaks JSON") && error.contains("=cbor"),
+            "{error}"
+        );
         assert_eq!(std::fs::read_dir(&runtime).unwrap().count(), 0);
         std::fs::remove_dir_all(&runtime).unwrap();
     }

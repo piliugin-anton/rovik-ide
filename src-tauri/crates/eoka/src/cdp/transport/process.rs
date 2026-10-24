@@ -191,6 +191,10 @@ fn launch_chrome_impl(
     Ok((guard.take()?, ws_url))
 }
 
+/// Held while a launch makes its DevTools pipes and spawns Chrome with them.
+#[cfg(unix)]
+static PIPE_SPAWN: Mutex<()> = Mutex::new(());
+
 /// Starts Chrome with `--remote-debugging-pipe`, its fds 3 and 4 the
 /// pipes whose other ends are returned. Chrome opens no DevTools port
 /// unless `args` ask for one. It isn't waited for: the first command's
@@ -219,6 +223,11 @@ pub(crate) fn launch_chrome_with_pipe(
         .stdout(Stdio::null())
         // Kept for reports when Chrome doesn't answer.
         .stderr(Stdio::piped());
+    // One launch's pipes at a time, made and spawned: where pipes can't be
+    // made close-on-exec at once (macOS), another launch's Chrome can't
+    // inherit these in between, which would keep them open past this
+    // Chrome's exit.
+    let spawning = PIPE_SPAWN.lock().unwrap_or_else(|e| e.into_inner());
     let (pipe, chrome_ends) = super::pipe::devtools_pipes()
         .map_err(|e| Error::Launch(format!("Failed to create the DevTools pipe: {}", e)))?;
     chrome_ends.hand_to(&mut cmd);
@@ -230,9 +239,10 @@ pub(crate) fn launch_chrome_with_pipe(
         spawn_when_not_busy(&mut cmd)
             .map_err(|e| Error::Launch(format!("Failed to launch Chrome: {}", e)))?,
     );
-    // Chrome has its own copies now. Ours must close, or Chrome's exit would
-    // never reach the reader as EOF.
-    drop(chrome_ends);
+    // Chrome has its own copies now. Ours, which the command holds, must
+    // close, or Chrome's exit would never reach the reader as EOF.
+    drop(cmd);
+    drop(spawning);
     let stderr = guard
         .child
         .as_mut()

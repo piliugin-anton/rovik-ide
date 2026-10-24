@@ -73,19 +73,24 @@ impl ChromeEnds {
         (self.read, self.write)
     }
 
-    /// Makes these ends the child's fds 3 and 4.
-    pub(crate) fn hand_to(&self, command: &mut Command) {
+    /// Makes these ends the child's fds 3 and 4. The command owns them from
+    /// here: they stay open while it can spawn, and close with it, so the
+    /// numbers its children get are always these ends, never descriptors
+    /// opened later under the same numbers.
+    pub(crate) fn hand_to(self, command: &mut Command) {
         use std::os::unix::process::CommandExt;
 
-        let read = self.read.as_raw_fd();
-        let write = self.write.as_raw_fd();
-        // SAFETY: between fork and exec the closure only calls dup2, which is
-        // async-signal-safe, and reads errno. Both sources are above 4, so
-        // neither dup2 replaces the other's source, and stdio set-up (0-2)
-        // doesn't touch them. dup2 clears close-on-exec on 3 and 4 only.
+        // SAFETY: between fork and exec the closure only reads two fields
+        // and calls dup2, which is async-signal-safe, and reads errno. Both
+        // sources are above 4, so neither dup2 replaces the other's source,
+        // and stdio set-up (0-2) doesn't touch them. dup2 clears
+        // close-on-exec on 3 and 4 only.
         unsafe {
             command.pre_exec(move || {
-                if libc::dup2(read, 3) == -1 || libc::dup2(write, 4) == -1 {
+                let ends = &self;
+                if libc::dup2(ends.read.as_raw_fd(), 3) == -1
+                    || libc::dup2(ends.write.as_raw_fd(), 4) == -1
+                {
                     return Err(io::Error::last_os_error());
                 }
                 Ok(())
@@ -106,7 +111,9 @@ fn cloexec_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 }
 
 /// Without pipe2 (macOS), a fork in another thread before close-on-exec is
-/// set can inherit these, as with every pipe `std` makes there.
+/// set can inherit these, as with every pipe `std` makes there. Chromes this
+/// crate starts can't: their pipes are made and handed over under
+/// `PIPE_SPAWN` (process.rs).
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn cloexec_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [-1; 2];
@@ -412,6 +419,25 @@ mod tests {
             .expect("shutdown must wake the waiting writer")
             .unwrap();
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    /// A command handed Chrome's ends gives them to its child as fds 3 and
+    /// 4, and holds them only while it lives: once it's gone, the child's
+    /// exit reaches our end as EOF.
+    #[test]
+    fn a_command_owns_the_ends_it_hands_to_its_child() {
+        use std::io::Read;
+        let (ours, chrome) = devtools_pipes().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf ready >&4"]);
+        chrome.hand_to(&mut command);
+        let mut child = command.spawn().unwrap();
+        child.wait().unwrap();
+        drop(command);
+        let mut from_chrome = std::fs::File::from(ours.from_chrome);
+        let mut said = String::new();
+        from_chrome.read_to_string(&mut said).unwrap();
+        assert_eq!(said, "ready");
     }
 
     #[test]
