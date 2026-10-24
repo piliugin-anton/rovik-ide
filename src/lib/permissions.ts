@@ -218,7 +218,7 @@ export function normalizePermissions(raw: unknown): AgentPermissions {
  */
 
 interface ParsedCommand {
-  /** Simple commands, each as words (leading VAR=value assignments removed). */
+  /** Simple commands, each as words (leading harmless VAR=value assignments removed). */
   segments: string[][];
   /** Output redirected into a file (> or >>), other than /dev/null. */
   writesViaRedirect: boolean;
@@ -338,10 +338,49 @@ export function parseCommand(command: string): ParsedCommand {
   return { segments, writesViaRedirect, opaque };
 }
 
+/**
+ * Variables a leading `NAME=value` may set without changing which program
+ * runs or what it runs. Mirrors `HARMLESS_VARIABLES` in permissions.rs.
+ */
+const HARMLESS_VARIABLES = new Set([
+  'CI',
+  'NO_COLOR',
+  'FORCE_COLOR',
+  'CLICOLOR',
+  'CLICOLOR_FORCE',
+  'CARGO_TERM_COLOR',
+  'TERM',
+  'COLUMNS',
+  'LANG',
+  'LANGUAGE',
+  'LC_ALL',
+  'LC_CTYPE',
+  'LC_MESSAGES',
+  'LC_COLLATE',
+  'TZ',
+  'RUST_LOG',
+  'RUST_BACKTRACE',
+  'PYTHONUNBUFFERED',
+  'PYTHONDONTWRITEBYTECODE',
+]);
+
+/** A harmless variable set to a plain value: no path, quotes or expansions. */
+function harmlessAssignment(word: string): boolean {
+  const eq = word.indexOf('=');
+  if (eq < 0) return false;
+  return (
+    HARMLESS_VARIABLES.has(word.slice(0, eq)) && /^[A-Za-z0-9_.,:@+-]*$/.test(word.slice(eq + 1))
+  );
+}
+
+/**
+ * Drops leading harmless assignments. Any other assignment stays part of the
+ * command (`GIT_EXTERNAL_DIFF=./x git diff` runs `./x`), so an allowed
+ * `git diff` doesn't permit it.
+ */
 function dropAssignments(words: string[]): string[] {
   let i = 0;
-  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++;
-  // "sudo"/"env" style wrappers would hide the real command.
+  while (i < words.length && harmlessAssignment(words[i])) i++;
   return words.slice(i);
 }
 

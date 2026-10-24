@@ -162,8 +162,23 @@
       "command": "RUST_LOG=debug cargo test",
       "expect": { "segments": [["cargo", "test"]], "permitted": true, "modifiesFiles": false }
     },
-    { "command": "A=1 B=2 ls", "expect": { "segments": [["ls"]], "permitted": true } },
-    { "command": "FOO=bar", "expect": { "segments": [], "permitted": false } },
+    {
+      "command": "LC_ALL=C NO_COLOR=1 ls",
+      "expect": { "segments": [["ls"]], "permitted": true }
+    },
+    {
+      "command": "A=1 B=2 ls",
+      "expect": { "segments": [["A=1", "B=2", "ls"]], "permitted": false }
+    },
+    {
+      "command": "GIT_EXTERNAL_DIFF=./x git diff",
+      "expect": { "segments": [["GIT_EXTERNAL_DIFF=./x", "git", "diff"]], "permitted": false }
+    },
+    {
+      "command": "LANG=./evil ls",
+      "expect": { "segments": [["LANG=./evil", "ls"]], "permitted": false }
+    },
+    { "command": "FOO=bar", "expect": { "segments": [["FOO=bar"]], "permitted": false } },
     { "command": "sudo ls", "expect": { "segments": [["sudo", "ls"]], "permitted": false } },
     { "command": "rm -rf build", "expect": { "permitted": false } },
     {

@@ -35,7 +35,8 @@ pub use rovik_protocol::permissions::{
 
 #[derive(Debug, PartialEq)]
 pub struct ParsedCommand {
-    /// Simple commands, each as words (leading VAR=value assignments removed).
+    /// Simple commands, each as words (leading harmless VAR=value assignments
+    /// removed: see [`drop_assignments`]).
     pub segments: Vec<Vec<String>>,
     /// Output redirected into a file (> or >>), other than /dev/null.
     pub writes_via_redirect: bool,
@@ -323,11 +324,52 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
     }
 }
 
-static ASSIGNMENT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*=").unwrap());
+/// Variables a leading `NAME=value` may set without changing which program
+/// runs or what it runs: locale, colour, logging and CI flags. Any other
+/// variable can (`GIT_EXTERNAL_DIFF`, `LD_PRELOAD`, `PAGER`, `NODE_OPTIONS`,
+/// `PATH`…), so it stays part of the command it prefixes.
+const HARMLESS_VARIABLES: &[&str] = &[
+    "CI",
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "CLICOLOR",
+    "CLICOLOR_FORCE",
+    "CARGO_TERM_COLOR",
+    "TERM",
+    "COLUMNS",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_COLLATE",
+    "TZ",
+    "RUST_LOG",
+    "RUST_BACKTRACE",
+    "PYTHONUNBUFFERED",
+    "PYTHONDONTWRITEBYTECODE",
+];
 
+/// A plain value: no path (a locale or terminal name with `/` loads that
+/// file), quotes or expansions.
+static PLAIN_VALUE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_.,:@+-]*$").unwrap());
+
+/// Whether `word` is a `NAME=value` assignment that can't change what runs:
+/// a variable on [`HARMLESS_VARIABLES`] set to a plain value.
+fn harmless_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, value)| {
+        HARMLESS_VARIABLES.contains(&name) && PLAIN_VALUE.is_match(value)
+    })
+}
+
+/// Drops leading harmless assignments (`RUST_LOG=debug cargo test` is
+/// checked as `cargo test`). Any other assignment is kept, so the segment
+/// matches an allowed entry only if that entry names it: an allowed
+/// `git diff` doesn't permit `GIT_EXTERNAL_DIFF=./x git diff`, which runs
+/// `./x`.
 fn drop_assignments(words: Vec<String>) -> Vec<String> {
-    let skip = words.iter().take_while(|w| ASSIGNMENT.is_match(w)).count();
+    let skip = words.iter().take_while(|w| harmless_assignment(w)).count();
     words.into_iter().skip(skip).collect()
 }
 
@@ -1218,32 +1260,50 @@ static HIDDEN_PARTS: LazyLock<Regex> =
 static CMD_HIDDEN_PARTS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%[^%\s]+%|\^").unwrap());
 static PART_SPLIT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s*(?:&&|\|\||;|\||&|\n|[(){}])\s*").unwrap());
-static WRAPPERS: LazyLock<[Regex; 5]> = LazyLock::new(|| {
+static WRAPPERS: LazyLock<[Regex; 4]> = LazyLock::new(|| {
     [
         Regex::new(r"^(if|then|elif|else|fi|while|until|do|done|for|in|case|esac|!)\s+").unwrap(),
         Regex::new(
             r"^(command|builtin|exec|env|nohup|time|timeout(\s+\S+)?|nice|watch|npx|bunx|pnpx)\s+",
         )
         .unwrap(),
-        Regex::new(r#"^[A-Za-z_][A-Za-z0-9_]*=[^\s'"\\$]*\s+"#).unwrap(),
         Regex::new(r"^\\").unwrap(),
         Regex::new(r#"^[^\s'"\\$]*/"#).unwrap(),
     ]
 });
+/// A leading `NAME=value` word, as `bare_command` strips it.
+static LEADING_ASSIGNMENT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*=\S*)\s+").unwrap());
 
-/// Strips wrappers and prefixes until the program name is bare.
-fn bare_command(part: &str) -> String {
+/// Strips wrappers and prefixes until the program name is bare. None when
+/// a stripped assignment isn't [`harmless_assignment`]: it can change what
+/// the program runs, whatever the program is. Assignments are looked for
+/// before each wrapper is stripped, so the path prefix rule doesn't take
+/// `GIT_EXTERNAL_DIFF=./` for a folder.
+fn bare_command(part: &str) -> Option<String> {
     let mut current = part.to_string();
     loop {
         let mut next = current.trim().to_string();
         for re in WRAPPERS.iter() {
-            next = re.replace(&next, "").into_owned();
+            next = re.replace(&strip_assignments(next)?, "").into_owned();
         }
+        let next = strip_assignments(next)?;
         if next == current {
-            return current;
+            return Some(current);
         }
         current = next;
     }
+}
+
+/// `part` without its leading harmless assignments; None at one that isn't.
+fn strip_assignments(mut part: String) -> Option<String> {
+    while let Some(m) = LEADING_ASSIGNMENT.captures(&part) {
+        if !harmless_assignment(&m[1]) {
+            return None;
+        }
+        part = part[m[0].len()..].to_string();
+    }
+    Some(part)
 }
 
 /// A command the AI reviewer must never approve on its own.
@@ -1257,7 +1317,7 @@ pub fn is_risky_command(command: &str) -> bool {
     PART_SPLIT
         .split(command)
         .map(bare_command)
-        .any(|part| RISKY_COMMANDS.iter().any(|p| p.is_match(&part)))
+        .any(|part| part.is_none_or(|part| RISKY_COMMANDS.iter().any(|p| p.is_match(&part))))
 }
 
 /// A file whose edits the AI reviewer must never approve on its own.
@@ -1538,7 +1598,7 @@ mod tests {
 
     #[test]
     fn splits_commands_respecting_quotes() {
-        let p = parse_command(r#"FOO=1 git status -s && echo "a && b" | wc -l; ls 2>/dev/null"#);
+        let p = parse_command(r#"LC_ALL=C git status -s && echo "a && b" | wc -l; ls 2>/dev/null"#);
         assert_eq!(
             p.segments,
             vec![
@@ -1717,8 +1777,12 @@ mod tests {
         assert!(parse_command("ls &> all.txt").writes_via_redirect);
         assert!(!parse_command("wc -l < input.txt 2>&1").writes_via_redirect);
         assert!(!parse_command("ls > NUL").writes_via_redirect);
-        // Only assignments: no command.
-        assert!(parse_command("FOO=1 BAR=2").segments.is_empty());
+        // Only harmless assignments: no command. Others are the command.
+        assert!(parse_command("LC_ALL=C TZ=UTC").segments.is_empty());
+        assert_eq!(
+            parse_command("FOO=1 BAR=2").segments,
+            vec![words(&["FOO=1", "BAR=2"])]
+        );
         assert!(parse_command("cat <(ls)").opaque);
         assert!(parse_command("(cd x && ls)").opaque);
     }
@@ -1739,11 +1803,15 @@ mod tests {
         assert!(
             matches!(check_command("git status | sh", &p), Verdict::Refused(r) if r.contains("\"sh\""))
         );
-        // A leading assignment doesn't hide the command.
+        // A harmless leading assignment doesn't hide the command…
         assert!(matches!(
-            check_command("GIT_DIR=x git status", &p),
+            check_command("LC_ALL=C git status", &p),
             Verdict::Permitted { .. }
         ));
+        // …and one that can change what runs is part of it.
+        assert!(
+            matches!(check_command("GIT_DIR=x git status", &p), Verdict::Refused(r) if r.contains("\"GIT_DIR=x git status\""))
+        );
         let none = Permissions {
             allowed_commands: vec![],
             ..Permissions::default()
@@ -1779,6 +1847,51 @@ mod tests {
             "a single file without -r/-f"
         );
         assert!(is_risky_command("'rm' x"), "quoted program name");
+    }
+
+    #[test]
+    fn an_assignment_that_can_change_what_runs_isnt_hidden_from_the_allowed_list() {
+        let p = Permissions::default();
+        // `git diff` is allowed by default; these make it run other programs.
+        for command in [
+            "GIT_EXTERNAL_DIFF=./x git diff",
+            "GIT_PAGER=./x git diff",
+            "LD_PRELOAD=./x.so git diff",
+            "PATH=. git diff",
+            "LANG=C GIT_EXTERNAL_DIFF=./x git diff",
+            "git status && GIT_EXTERNAL_DIFF=./x git diff",
+        ] {
+            assert!(
+                matches!(check_command(command, &p), Verdict::Refused(_)),
+                "{command}"
+            );
+        }
+        // Locale, colour and logging settings leave the command as it is.
+        for command in ["RUST_LOG=debug git diff", "LC_ALL=C NO_COLOR=1 git diff"] {
+            assert!(
+                matches!(check_command(command, &p), Verdict::Permitted { .. }),
+                "{command}"
+            );
+        }
+        // A harmless name with a path or an expansion as its value isn't.
+        assert!(matches!(
+            check_command("LC_ALL=./evil git diff", &p),
+            Verdict::Refused(_)
+        ));
+        assert!(matches!(
+            check_command("TERM=$X git diff", &p),
+            Verdict::Refused(_)
+        ));
+    }
+
+    #[test]
+    fn an_assignment_that_can_change_what_runs_is_never_approved_by_the_reviewer_alone() {
+        assert!(is_risky_command("GIT_EXTERNAL_DIFF=./x git diff"));
+        assert!(is_risky_command("env NODE_OPTIONS=--require=./x npm test"));
+        assert!(is_risky_command("npm test; PAGER=./x git log"));
+        assert!(is_risky_command("FOO=\"a b\" ls"), "a quoted value");
+        assert!(!is_risky_command("RUST_LOG=debug cargo test"));
+        assert!(!is_risky_command("CI=1 npm test"));
     }
 
     #[test]
