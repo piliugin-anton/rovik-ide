@@ -1381,7 +1381,12 @@ export default function MessageList(props: {
                     (or the error they led to). */}
                 <Show when={m.role === 'assistant' && hasConnectorSteps(m) && m.meta?.connector}>
                   {(meta) => (
-                    <ConnectorSteps meta={meta()} running={!!m.pending} dialogId={props.dialogId} />
+                    <ConnectorSteps
+                      meta={meta()}
+                      running={!!m.pending}
+                      dialogId={props.dialogId}
+                      notes={props.toolNotes}
+                    />
                   )}
                 </Show>
 

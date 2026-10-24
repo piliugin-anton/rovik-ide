@@ -437,8 +437,41 @@ When the agent runs commands from the IDE, they get the same `PATH` as your
 login shell, so tools like `npm`, `cargo` and Homebrew packages are found
 even when you start the app from a desktop icon. A tool installed after the
 app (or a cloud host's daemon) started, by a host's setup script for one, is
-found too: when an Autopilot install needs a program that isn't on that
-`PATH`, the login shell's is read again first.
+found too: when a command fails for want of a program that isn't on that
+`PATH`, or an Autopilot install needs one, the login shell's is read again.
+
+Rovik makes ready what a command needs, before it runs and again when it
+fails for want of a program or a package. The same goes for the agent's own
+commands and for Claude Code's own shell (through Rovik's hooks, whatever
+its permission mode):
+
+- **Toolchains.** On a cloud host, the Node or Rust version the project asks
+  for is installed for the whole server if it isn't there, and Yarn and pnpm
+  run through Corepack at the version the project's `packageManager` names
+  ([docs/cloud-hosts.md](docs/cloud-hosts.md), "Shared toolchains and
+  caches"). On your own computer Rovik installs no toolchain: the agent is
+  told what's missing, so it can tell you.
+- **Dependencies.** When a command fails for want of the project's
+  dependencies (no `node_modules`, so `vite: not found` or
+  `Cannot find module 'react'`), the project's install runs (`npm ci`,
+  `pnpm install --frozen-lockfile`, `uv sync`…), as the Autopilot Prepare
+  stage runs it: once, at a workspace's root, only where Permissions &
+  approval would let that install run without asking (in an Autopilot task,
+  where its Prepare setting is on too), and never in Plan mode. Otherwise
+  the agent is told which install to run.
+- **Running it again.** A command that is one program (`npm test`) runs again
+  by itself once what it lacked is there, and the agent sees both why and the
+  second run. A longer one (`cd web && npm test`) is left to the agent, since
+  running it twice could repeat its first parts; Claude Code is told beside
+  the failed command's result.
+
+What a project needs is read the same way everywhere (these checks, the
+Prepare stage, the toolchains a host installs): its own folder, the packages
+one folder down (a monorepo's `web/`, a Tauri app's `src-tauri/`), and a Node
+workspace's members wherever they are. A root `package.json` that only lists
+its workspaces still gets the Node version its members name, and one install
+at the root. A language is one module (`src-tauri/crates/rovik-core/src/ecosystems/`):
+Node, Rust, Python and Go are there, and another implements the same trait.
 
 ---
 

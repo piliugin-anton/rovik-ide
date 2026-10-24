@@ -158,6 +158,153 @@ async fn claude_code_asks_rovik_before_its_own_tools() {
     assert!(!args.contains("Bash(git checkout *)"), "{args}");
 }
 
+/// Claude Code's own shell, around each command, whatever its permission
+/// mode: Rovik's hooks. Before one runs, what it starts is made ready
+/// (here everything is there: nothing to say). After one failed for want
+/// of the project's dependencies, they're installed, as the user's
+/// permissions let that install run unasked, and Claude Code is told to
+/// run it again; a program nothing installs is the user's, and it's told
+/// so. Needs npm.
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_codes_own_commands_have_what_they_need_made_ready() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = project_without_its_dependencies().await;
+    let commands = json!([
+        ["npm test", null, "toolu_1"],
+        [
+            "npm test",
+            "Exit code 127\nsh: 1: vitest: not found",
+            "toolu_2"
+        ],
+        [
+            "rovik-no-such-tool --help",
+            "Exit code 127\n/bin/bash: line 1: rovik-no-such-tool: command not found",
+            "toolu_3"
+        ],
+    ]);
+    let Some(program) = crate::connectors::fake_claude_with_hooks(&h._dir.0, &commands) else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    let request = own_tools_send(&h, &program, "agent", "Run the tests");
+    h.start(request).await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    let answers: Value =
+        serde_json::from_str(&std::fs::read_to_string(h._dir.0.join("hooks.json")).unwrap())
+            .unwrap();
+    let answer = |event: &str, use_id: &str| {
+        answers
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["event"] == event && a["use"] == use_id)
+            .map(|a| a["answer"].clone())
+            .unwrap_or_else(|| panic!("no {event} for {use_id}: {answers:#?}"))
+    };
+    // `npm` is there: nothing to make ready, nothing said.
+    assert_eq!(answer("PreToolUse", "toolu_1"), json!({}));
+    // The dependencies weren't: installed, and the model is told so.
+    let installed = answer("PostToolUseFailure", "toolu_2");
+    assert_eq!(
+        installed["hookSpecificOutput"]["hookEventName"],
+        "PostToolUseFailure"
+    );
+    let said = installed["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        said.starts_with("Rovik IDE: The project's dependencies weren't installed: `npm ci --no-audit --no-fund` ran"),
+        "{said}"
+    );
+    assert!(said.ends_with("Run the command again."), "{said}");
+    assert!(h.project.join("node_modules/.bin/vitest").exists());
+    // On its call's line while it installed, then cleared.
+    let notes: Vec<Value> = h
+        .events_of("toolNote")
+        .into_iter()
+        .filter(|e| e["toolCallId"] == "toolu_2")
+        .map(|e| e["note"].clone())
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            json!("Installing the dependencies: npm ci --no-audit --no-fund…"),
+            Value::Null
+        ],
+        "{notes:?}"
+    );
+    // A program nothing installs: the user's.
+    let missing = answer("PostToolUseFailure", "toolu_3");
+    let said = missing["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        said.contains("`rovik-no-such-tool` isn't installed on this computer"),
+        "{said}"
+    );
+    // Its hooks go with every run of its own tools, whatever its mode.
+    let args = std::fs::read_to_string(h._dir.0.join("args.txt")).unwrap();
+    assert!(args.contains("--settings "), "{args}");
+    assert!(
+        args.contains("--permission-mode bypassPermissions"),
+        "{args}"
+    );
+}
+
+/// On a cloud host, Claude Code's shell gets the host's toolchains from a
+/// file it runs before each command (`CLAUDE_ENV_FILE`): the PATH its
+/// shell has, with the shared Node in front and the user's package
+/// managers at its end, as Rovik's own commands get them.
+#[cfg(unix)]
+#[tokio::test]
+// The lock keeps other tests' hosts out; this test's one thread holds it
+// across its awaits.
+#[allow(clippy::await_holding_lock)]
+async fn on_a_host_claude_codes_shell_gets_the_hosts_toolchains() {
+    let _lock = crate::toolchains::test_lock();
+    /// Forgets the host however the test ends, before the lock goes.
+    struct Forget;
+    impl Drop for Forget {
+        fn drop(&mut self) {
+            crate::toolchains::unset();
+        }
+    }
+    let _forget = Forget;
+    let host = crate::testing::temp_dir();
+    let root = host.0.join("toolchains");
+    crate::toolchains::tests::put_node(&root, "22.3.0");
+    crate::toolchains::set(crate::toolchains::Shared {
+        root: root.clone(),
+        caches: None,
+        installer: None,
+        bin: Some(host.0.join("bin")),
+    });
+    let h = harness(&[("package.json", "{}")]).await;
+    let commands = json!([["node --version", null, "toolu_1"]]);
+    let Some(program) = crate::connectors::fake_claude_with_hooks(&h._dir.0, &commands) else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    let request = own_tools_send(&h, &program, "agent", "Which Node?");
+    h.start(request).await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+    let script = std::fs::read_to_string(h._dir.0.join("env.txt")).unwrap();
+    let node = root.join("node/22.3.0/bin");
+    assert!(
+        script.starts_with(&format!(
+            "export PATH='{}':\"$PATH\":'{}'",
+            node.display(),
+            host.0.join("bin").display()
+        )),
+        "{script}"
+    );
+}
+
 /// In a chat's copy of the project (here a server's worktree, D8; an
 /// isolated chat's overlay is the same), Claude Code's own git commands
 /// that would change the repository are refused, whatever its permission

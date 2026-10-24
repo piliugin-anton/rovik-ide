@@ -20,6 +20,7 @@ pub mod core;
 mod dispatch;
 #[cfg(target_os = "linux")]
 pub mod distro;
+pub mod ecosystems;
 mod edit_file;
 pub mod file_guard;
 #[cfg(target_os = "linux")]

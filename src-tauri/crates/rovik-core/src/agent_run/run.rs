@@ -2208,6 +2208,10 @@ impl Run {
             // request goes on (`answer_tool_ask`).
             let (tool_asks, mut asks) = tokio::sync::mpsc::unbounded_channel();
             let tool_asks = self.profile.connector.is_some().then_some(tool_asks);
+            // And reports the commands its own shell runs, which the run
+            // makes ready (`answer_command_check`).
+            let (command_checks, mut checks) = tokio::sync::mpsc::unbounded_channel();
+            let command_checks = self.profile.connector.is_some().then_some(command_checks);
             let params = ChatParams {
                 base_url: self.profile.base_url.clone(),
                 api_key: self.profile.api_key.clone(),
@@ -2243,6 +2247,7 @@ impl Run {
                 ),
                 plan_mode: self.plan_mode,
                 tool_asks,
+                command_checks,
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -2286,6 +2291,7 @@ impl Run {
                 let mut again_deadline: Option<Instant> = None;
                 let mut effort_open = true;
                 let mut answering = futures_util::stream::FuturesUnordered::new();
+                let mut checking = futures_util::stream::FuturesUnordered::new();
                 loop {
                     tokio::select! {
                         r = &mut request => break Some(r),
@@ -2293,7 +2299,9 @@ impl Run {
                             asked.push(ask.call_id.clone());
                             answering.push(self.answer_tool_ask(ask));
                         }
+                        Some(check) = checks.recv() => checking.push(self.answer_command_check(check)),
                         Some(()) = futures_util::StreamExt::next(&mut answering), if !answering.is_empty() => {}
+                        Some(()) = futures_util::StreamExt::next(&mut checking), if !checking.is_empty() => {}
                         _ = ticker.tick() => {
                             lock(&stream).tick(started, stop_deadline.is_some());
                             if wants_again && !ask_again && stop_deadline.is_none() && lock(&stream).may_ask_again() {

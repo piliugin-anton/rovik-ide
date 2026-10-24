@@ -12,6 +12,10 @@ use std::path::Path;
 pub const MAX_WORKSPACE_PATTERNS: usize = 8;
 pub const MAX_WORKSPACE_MEMBERS: usize = 20;
 
+/// The Node package manager of the package at `root`: its lockfile's, or
+/// pnpm's for a pnpm workspace; without a lockfile, the one its
+/// package.json's `packageManager` names (`pnpm@9.12.0`), as Corepack
+/// reads it; else npm.
 pub fn detect_package_manager(root: &Path) -> &'static str {
     if root.join("pnpm-lock.yaml").exists() || root.join("pnpm-workspace.yaml").exists() {
         "pnpm"
@@ -19,8 +23,24 @@ pub fn detect_package_manager(root: &Path) -> &'static str {
         "yarn"
     } else if root.join("bun.lockb").exists() || root.join("bun.lock").exists() {
         "bun"
-    } else {
+    } else if root.join("package-lock.json").exists() {
         "npm"
+    } else {
+        named_package_manager(root).unwrap_or("npm")
+    }
+}
+
+/// The package manager `root`'s package.json names in `packageManager`.
+fn named_package_manager(root: &Path) -> Option<&'static str> {
+    let text = fs::read_to_string(root.join("package.json")).ok()?;
+    let pkg: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let named = pkg.get("packageManager")?.as_str()?;
+    match named.split('@').next()? {
+        "pnpm" => Some("pnpm"),
+        "yarn" => Some("yarn"),
+        "bun" => Some("bun"),
+        "npm" => Some("npm"),
+        _ => None,
     }
 }
 

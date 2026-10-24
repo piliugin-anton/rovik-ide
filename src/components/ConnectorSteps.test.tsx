@@ -104,3 +104,26 @@ test('a call waiting for approval shows its request, and Allow answers it', asyn
   assert.equal(pendingApproval('d1', 'toolu_1'), undefined);
   dispose();
 });
+
+test('a call waiting on what Rovik installs for it says so on its line', () => {
+  const meta: ConnectorMeta = {
+    kind: 'claude-code',
+    steps: [{ id: 'toolu_1', name: 'Bash', input: { command: 'npm run dev' } }],
+  };
+  const root = container();
+  const notes = { toolu_1: 'Installing Node 22 for this project…' };
+  const dispose = render(
+    () => <ConnectorSteps meta={meta} running={true} dialogId="d1" notes={notes} />,
+    root
+  );
+  // Its line, open, as a call of Rovik's own says what it waits for.
+  (root.querySelector('.tool-group-header') as HTMLElement).click();
+  assert.match(root.textContent ?? '', /Installing Node 22 for this project…/);
+  dispose();
+  // Without a note, the line is the call's own.
+  const plain = container();
+  const gone = render(() => <ConnectorSteps meta={meta} running={true} dialogId="d1" />, plain);
+  (plain.querySelector('.tool-group-header') as HTMLElement).click();
+  assert.doesNotMatch(plain.textContent ?? '', /Installing/);
+  gone();
+});

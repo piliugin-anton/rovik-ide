@@ -11,7 +11,11 @@
 //! Rovik answers (under Rovik's permissions, and in Plan mode) or its
 //! permission mode decides, without a prompt in a terminal; a turn is
 //! bounded by the settings' turns and budget (`--max-turns`,
-//! `--max-budget-usd`).
+//! `--max-budget-usd`). Around each command its own shell runs, Rovik's
+//! hooks (`hook_settings`) have the run make ready what it needs, before
+//! it runs and after it failed (agent_run/environment.rs), and a file its
+//! shell runs first (`CLAUDE_ENV_FILE`) gives it a cloud host's toolchains
+//! as they're installed.
 //!
 //! What it does comes back as the IDE shows a reply: its text as it streams
 //! (`--include-partial-messages`), its thinking as reasoning, each tool it
@@ -29,11 +33,12 @@
 use super::harness::{
     self, expand_home, pump, split_args, Lines, Process, Stop, TempFile, MIN_FIRST_LINE,
 };
-use super::mcp::{McpCall, McpReply, McpServer, SERVER_NAME, TOOL_PREFIX};
+use super::mcp::{McpCall, McpReply, McpServer, HOOK, SERVER_NAME, TOOL_PREFIX};
 use super::{
-    harness_error, trimmed_text, trimmed_value, usage_value, Answers, Connector, ConnectorAuth,
-    ConnectorCommand, ConnectorKind, ConnectorModel, ConnectorProbe, HarnessStep, ProbeRequest,
-    ProbeRequestArgs, SetupAction, SetupCommand, ToolAnswer, ToolAsk, ToolAsks, Turn,
+    harness_error, trimmed_text, trimmed_value, usage_value, Answers, CommandCheck, CommandChecks,
+    Connector, ConnectorAuth, ConnectorCommand, ConnectorKind, ConnectorModel, ConnectorProbe,
+    HarnessStep, ProbeRequest, ProbeRequestArgs, SetupAction, SetupCommand, ToolAnswer, ToolAsk,
+    ToolAsks, Turn,
 };
 use crate::agent::{ChatStreamEvent, ReasoningEffort};
 use crate::chat_request::{ChatError, ErrorKind};
@@ -362,13 +367,16 @@ fn git_deny_rules() -> Vec<String> {
 /// turn's. `session` is the session to resume, or the new one's id;
 /// `prompt_file` holds the system prompt (`system_text`), read from a file
 /// rather than the command line, which a long prompt would overflow on
-/// Windows; `mcp_config` is Rovik's tools' server, in that mode.
+/// Windows; `mcp_config` is Rovik's tools' server, in that mode;
+/// `hooks_file` is the settings with Rovik's hooks around its own shell's
+/// commands (`hook_settings`), when the run makes them ready.
 pub fn args_for(
     settings: &Settings,
     turn: &Turn,
     session: &Session,
     prompt_file: Option<&Path>,
     mcp_config: Option<&Path>,
+    hooks_file: Option<&Path>,
 ) -> Vec<String> {
     // Rovik answers what would ask, through its server; otherwise nobody
     // is there to, and it's denied.
@@ -472,6 +480,11 @@ pub fn args_for(
                 args.push(id.clone());
             }
         }
+    }
+    // Before the settings' own arguments: a `--settings` of theirs wins.
+    if let Some(hooks) = hooks_file {
+        args.push("--settings".into());
+        args.push(hooks.to_string_lossy().into_owned());
     }
     args.extend(split_args(&settings.extra_args));
     args
@@ -1759,28 +1772,68 @@ async fn run_turn(
     let prompt = prompt_file(&settings, turn, false)?;
     // Rovik's permissions: the server Claude Code asks before a call.
     let asks = turn.asks.clone().filter(|_| rovik_answers(&settings, turn));
+    // The commands its own shell runs, made ready around each by the run,
+    // whatever its permission mode: Rovik's hooks.
+    let checks = turn.commands.clone().filter(|_| !turn.one_shot);
     // On a team server, the user's private network: Claude Code runs in
     // it, and the servers it starts take their ports there.
     let network = crate::overlay::confine::network::current();
-    let mut approvals = None;
-    if asks.is_some() {
+    let mut served = None;
+    if asks.is_some() || checks.is_some() {
+        let tools = match asks {
+            Some(_) => vec![approve_tool()],
+            None => Vec::new(),
+        };
         let instructions = "Rovik IDE decides whether Claude Code's tool calls may run.";
-        let (server, calls) = McpServer::start(&[approve_tool()], instructions, network.as_ref())
+        let started = McpServer::start(&tools, instructions, network.as_ref())
             .await
-            .map_err(|e| format!("Couldn't start Rovik's approvals for Claude Code: {e}"))?;
-        let config = TempFile::write("mcp", "json", &server.config_json())?;
-        approvals = Some((server, calls, config));
+            .map_err(|e| format!("Couldn't start Rovik's server for Claude Code: {e}"))?;
+        served = Some(started);
     }
+    let cwd = cwd_of(turn);
+    let (mcp_config, hooks, env_file) = match &served {
+        Some((server, _)) => (
+            asks.as_ref()
+                .map(|_| TempFile::write("mcp", "json", &server.config_json()))
+                .transpose()?,
+            checks
+                .as_ref()
+                .map(|_| TempFile::write("settings", "json", &hook_settings(server)))
+                .transpose()?,
+            // Its shell runs this before each command: what's installed
+            // while it works reaches the next one (a cloud host's).
+            checks
+                .as_ref()
+                .map(|_| crate::toolchains::env_script(&cwd))
+                .filter(|script| !script.is_empty())
+                .map(|script| TempFile::write("env", "sh", &script))
+                .transpose()?,
+        ),
+        None => (None, None, None),
+    };
     let args = args_for(
         &settings,
         turn,
         &session,
         prompt.as_ref().map(TempFile::path),
-        approvals.as_ref().map(|(_, _, config)| config.path()),
+        mcp_config.as_ref().map(TempFile::path),
+        hooks.as_ref().map(TempFile::path),
     );
-    let env = env_for(&settings, &turn.api_key);
-    let cwd = cwd_of(turn);
+    let mut env = env_for(&settings, &turn.api_key);
+    let env_path = env_file.as_ref().map(|file| file.path().to_path_buf());
+    if let Some(path) = &env_path {
+        env.push((
+            "CLAUDE_ENV_FILE".into(),
+            path.to_string_lossy().into_owned(),
+        ));
+    }
     let chat = turn.dialog_id.as_deref().unwrap_or_default();
+    let files: Vec<TempFile> = prompt
+        .into_iter()
+        .chain(mcp_config)
+        .chain(hooks)
+        .chain(env_file)
+        .collect();
     let mut process = Process::spawn(
         &program,
         &args,
@@ -1789,21 +1842,124 @@ async fn run_turn(
         network.as_deref().map(|network| (network, chat)),
         turn.prompt.clone(),
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
-        prompt.into_iter().collect(),
+        files,
     )?;
     let mut parser = Parser {
-        root: Some(cwd),
+        root: Some(cwd.clone()),
         ..Parser::default()
     };
     let root = turn.cwd.clone();
-    let mut on_call = |call: McpCall| match &asks {
-        Some(asks) => ask_rovik(call, asks, root.clone()),
-        None => drop(call),
+    let mut on_call = |call: McpCall| match (call.name == HOOK, &checks, &asks) {
+        (true, Some(checks), _) => answer_hook(call, checks, env_path.clone(), cwd.clone()),
+        (false, _, Some(asks)) => ask_rovik(call, asks, root.clone()),
+        _ => drop(call),
     };
-    let calls = approvals.as_mut().map(|(_, calls, _)| calls);
+    let calls = served.as_mut().map(|(_, calls)| calls);
     let stop = pump(&mut process, &mut parser, calls, &mut on_call, cancel, emit).await;
     let resumed = matches!(session, Session::Resume(_));
     Ok(conclude(&mut process, &parser, stop, resumed, emit).await)
+}
+
+/// How long Claude Code waits on one of Rovik's hooks: an hour, for a Rust
+/// version and the project's dependencies to install.
+const HOOK_TIMEOUT_SECS: u64 = 3600;
+
+/// Claude Code's settings with Rovik's hooks around its own shell's
+/// commands: before each (`PreToolUse`) and after one fails
+/// (`PostToolUseFailure`), the event is posted to Rovik's server for this
+/// turn with its token (the settings are a private file, as the MCP
+/// configuration is), and Claude Code waits for the answer. The hooks
+/// decide nothing: the command runs as Claude Code's permission mode, or
+/// Rovik's permissions, have it.
+fn hook_settings(server: &McpServer) -> String {
+    let hook = json!([{
+        "matcher": "Bash",
+        "hooks": [{
+            "type": "http",
+            "url": server.hooks_url(),
+            "timeout": HOOK_TIMEOUT_SECS,
+            "headers": { "Authorization": server.authorization() },
+        }],
+    }]);
+    json!({ "hooks": { "PreToolUse": hook, "PostToolUseFailure": hook } }).to_string()
+}
+
+/// Answers one of Rovik's hooks: the `Bash` command it's for goes to the
+/// run, before it runs or after it failed (`CommandCheck`), and what the
+/// run says of it reaches the model beside the call's result
+/// (`additionalContext`). Its shell's environment file (`env_file`) is
+/// written again first, so its next command finds what was installed.
+/// Any other event, or an interrupted command, is answered with nothing.
+fn answer_hook(call: McpCall, checks: &CommandChecks, env_file: Option<PathBuf>, cwd: PathBuf) {
+    let event = &call.arguments;
+    let name = event
+        .get("hook_event_name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let command = event
+        .pointer("/tool_input/command")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let interrupted = event.get("is_interrupt").and_then(Value::as_bool) == Some(true);
+    let failed = match name.as_str() {
+        "PreToolUse" => None,
+        "PostToolUseFailure" if !interrupted => {
+            let error = event.get("error").and_then(Value::as_str).unwrap_or("");
+            Some(exit_and_output(error))
+        }
+        _ => {
+            let _ = call.reply.send(McpReply::text("{}"));
+            return;
+        }
+    };
+    if command.trim().is_empty() {
+        let _ = call.reply.send(McpReply::text("{}"));
+        return;
+    }
+    let (reply, said) = oneshot::channel();
+    let sent = checks.send(CommandCheck {
+        call_id: call.tool_use_id.clone().unwrap_or_default(),
+        command,
+        failed,
+        reply,
+    });
+    tokio::spawn(async move {
+        let said = match (sent, said.await) {
+            (Ok(()), Ok(said)) => said,
+            _ => None,
+        };
+        // The file is the turn's, gone with it: never made again here.
+        if let Some(file) = env_file.filter(|file| file.exists()) {
+            let script = crate::toolchains::env_script(&cwd);
+            if let Err(e) = crate::atomic_file::write_atomic_private(&file, script.as_bytes()) {
+                ::log::warn!("claude code: its environment file {}: {e}", file.display());
+            }
+        }
+        let answer = match said {
+            Some(text) => json!({
+                "hookSpecificOutput": { "hookEventName": name, "additionalContext": text },
+            }),
+            None => json!({}),
+        };
+        let _ = call.reply.send(McpReply::text(answer.to_string()));
+    });
+}
+
+/// A failed command's exit code and output from Claude Code's `error`,
+/// which says the code on its first line (`Exit code 127`) where the
+/// command ran and exited.
+fn exit_and_output(error: &str) -> (Option<i32>, String) {
+    let (first, rest) = error.split_once('\n').unwrap_or((error, ""));
+    match first
+        .trim()
+        .strip_prefix("Exit code ")
+        .and_then(|code| code.trim().parse().ok())
+    {
+        Some(code) => (Some(code), rest.to_string()),
+        None => (None, error.to_string()),
+    }
 }
 
 /*
@@ -1967,6 +2123,7 @@ async fn start_live(
         session,
         system.as_ref().map(TempFile::path),
         Some(config.path()),
+        None,
     );
     let mut env = env_for(settings, &turn.api_key);
     env.extend(rovik_tools_env());
@@ -2480,6 +2637,7 @@ mod tests {
             answers: None,
             continue_reply: false,
             asks: None,
+            commands: None,
         }
     }
 
@@ -2538,7 +2696,14 @@ mod tests {
         let mut t = turn("Fix it");
         t.effort = Some(ReasoningEffort::High);
         let file = Path::new("/tmp/prompt.md");
-        let args = args_for(&settings, &t, &Session::New("s-1".into()), Some(file), None);
+        let args = args_for(
+            &settings,
+            &t,
+            &Session::New("s-1".into()),
+            Some(file),
+            None,
+            None,
+        );
         let joined = args.join(" ");
         assert!(joined.starts_with("-p --output-format stream-json --verbose --include-partial-messages --permission-prompts none"), "{joined}");
         // Its own tools: its own prompt, whatever file there is.
@@ -2552,8 +2717,15 @@ mod tests {
         // A stored choice of the prompt, from before there was none, is
         // read as nothing.
         let stored = Settings::from_value(&json!({ "systemPrompt": "append" }));
-        let joined_stored =
-            args_for(&stored, &t, &Session::New("s-1".into()), Some(file), None).join(" ");
+        let joined_stored = args_for(
+            &stored,
+            &t,
+            &Session::New("s-1".into()),
+            Some(file),
+            None,
+            None,
+        )
+        .join(" ");
         assert!(
             !joined_stored.contains("system-prompt-file"),
             "{joined_stored}"
@@ -2575,6 +2747,7 @@ mod tests {
             &Session::Resume("s-0".into()),
             Some(file),
             None,
+            None,
         )
         .join(" ");
         assert!(!joined.contains("--model"), "{joined}");
@@ -2583,7 +2756,15 @@ mod tests {
             "{joined}"
         );
         // No prompt: no prompt's flag; the snapshot is still rebuilt.
-        let none = args_for(&settings, &t, &Session::Resume("s-0".into()), None, None).join(" ");
+        let none = args_for(
+            &settings,
+            &t,
+            &Session::Resume("s-0".into()),
+            None,
+            None,
+            None,
+        )
+        .join(" ");
         assert!(!none.contains("system-prompt-file"), "{none}");
         assert!(none.contains("--system-prompt-snapshot off"), "{none}");
         assert!(!joined.contains("--permission-mode"), "{joined}");
@@ -2614,7 +2795,7 @@ mod tests {
             }));
             // Rovik's approvals server is there only when Rovik decides.
             let config = (mode == "rovik").then(|| Path::new("/tmp/mcp.json"));
-            let args = args_for(&settings, &t, &session, None, config);
+            let args = args_for(&settings, &t, &session, None, config, None);
             let rules = disallowed(&args);
             assert_eq!(rules[0], "WebFetch", "{mode}");
             for rule in [
@@ -2633,7 +2814,7 @@ mod tests {
         // In the project itself, only the settings' rules.
         t.isolated = false;
         let settings = Settings::from_value(&json!({ "permissionMode": "bypassPermissions" }));
-        let args = args_for(&settings, &t, &session, None, None);
+        let args = args_for(&settings, &t, &session, None, None, None);
         assert!(disallowed(&args).is_empty(), "{args:?}");
     }
 
@@ -2685,6 +2866,7 @@ mod tests {
             &t,
             &Session::New("s".into()),
             Some(file),
+            None,
             None,
         );
         let joined = args.join(" ");
@@ -2755,7 +2937,14 @@ mod tests {
         assert_eq!(settings.permission_mode, ROVIK_PERMISSIONS, "the default");
         let t = turn("Fix it");
         let config = Path::new("/tmp/mcp.json");
-        let args = args_for(&settings, &t, &Session::New("s".into()), None, Some(config));
+        let args = args_for(
+            &settings,
+            &t,
+            &Session::New("s".into()),
+            None,
+            Some(config),
+            None,
+        );
         let joined = args.join(" ");
         assert!(joined.contains("--permission-prompts host"), "{joined}");
         assert!(
@@ -2774,7 +2963,7 @@ mod tests {
         );
 
         // Nobody to ask (a request outside a run): what would ask is denied.
-        let args = args_for(&settings, &t, &Session::New("s".into()), None, None);
+        let args = args_for(&settings, &t, &Session::New("s".into()), None, None, None);
         let joined = args.join(" ");
         assert!(joined.contains("--permission-prompts none"), "{joined}");
         assert!(joined.contains("--permission-mode default"), "{joined}");
@@ -2782,7 +2971,7 @@ mod tests {
 
         // Claude Code's own modes are as before.
         let own = Settings::from_value(&json!({ "permissionMode": "acceptEdits" }));
-        let joined = args_for(&own, &t, &Session::New("s".into()), None, None).join(" ");
+        let joined = args_for(&own, &t, &Session::New("s".into()), None, None, None).join(" ");
         assert!(joined.contains("--permission-mode acceptEdits"), "{joined}");
         assert!(joined.contains("--permission-prompts none"), "{joined}");
     }
@@ -2805,7 +2994,7 @@ mod tests {
                 "allowedTools": "Bash(*)",
             }));
             assert!(rovik_answers(&settings, &t), "{mode}");
-            let joined = args_for(&settings, &t, &session, None, Some(config)).join(" ");
+            let joined = args_for(&settings, &t, &session, None, Some(config), None).join(" ");
             assert!(
                 joined.contains("--permission-prompts host"),
                 "{mode}: {joined}"
@@ -2826,14 +3015,14 @@ mod tests {
         // of Claude Code's, nothing for Rovik to answer.
         let rovik = Settings::from_value(&json!({ "tools": "rovik" }));
         assert!(!rovik_answers(&rovik, &t));
-        let joined = args_for(&rovik, &t, &session, None, Some(config)).join(" ");
+        let joined = args_for(&rovik, &t, &session, None, Some(config), None).join(" ");
         assert!(joined.contains("--permission-mode dontAsk"), "{joined}");
         assert!(!joined.contains("--permission-mode plan"), "{joined}");
         // In Agent mode, Claude Code's own modes are its own.
         t.plan_mode = false;
         let own = Settings::from_value(&json!({ "permissionMode": "bypassPermissions" }));
         assert!(!rovik_answers(&own, &t));
-        let joined = args_for(&own, &t, &session, None, None).join(" ");
+        let joined = args_for(&own, &t, &session, None, None, None).join(" ");
         assert!(
             joined.contains("--permission-mode bypassPermissions"),
             "{joined}"
@@ -3115,7 +3304,15 @@ mod tests {
         // No file to read, and none of the system prompt flags.
         assert!(prompt_file(&settings, &t, false).unwrap().is_none());
         let file = Path::new("/tmp/prompt.md");
-        let joined = args_for(&settings, &t, &Session::New("s".into()), Some(file), None).join(" ");
+        let joined = args_for(
+            &settings,
+            &t,
+            &Session::New("s".into()),
+            Some(file),
+            None,
+            None,
+        )
+        .join(" ");
         assert!(!joined.contains("system-prompt-file"), "{joined}");
         // A session that began with Rovik's prompt takes its own from now on.
         assert!(joined.contains("--system-prompt-snapshot off"), "{joined}");
@@ -3123,7 +3320,15 @@ mod tests {
         // Rovik's goes in its place.
         let rovik = Settings::from_value(&json!({ "tools": "rovik" }));
         assert!(sends_rovik_prompt(&rovik, &t));
-        let joined = args_for(&rovik, &t, &Session::New("s".into()), Some(file), None).join(" ");
+        let joined = args_for(
+            &rovik,
+            &t,
+            &Session::New("s".into()),
+            Some(file),
+            None,
+            None,
+        )
+        .join(" ");
         assert!(
             joined.contains("--system-prompt-file /tmp/prompt.md"),
             "{joined}"
@@ -3141,6 +3346,7 @@ mod tests {
             &one,
             &Session::New("s".into()),
             Some(written.path()),
+            None,
             None,
         )
         .join(" ");
@@ -3574,9 +3780,16 @@ mod tests {
         let asks = |settings: Value, one_shot: bool| {
             let mut t = turn("Hi");
             t.one_shot = one_shot;
-            args_for(&Settings::from_value(&settings), &t, &session, None, None)
-                .join(" ")
-                .contains("--thinking-display summarized")
+            args_for(
+                &Settings::from_value(&settings),
+                &t,
+                &session,
+                None,
+                None,
+                None,
+            )
+            .join(" ")
+            .contains("--thinking-display summarized")
         };
         assert!(asks(json!({}), false), "its own tools");
         assert!(asks(json!({ "tools": "rovik" }), false), "Rovik's tools");
@@ -3804,6 +4017,7 @@ fi
             &Session::New("s".into()),
             Some(Path::new("/tmp/p.md")),
             Some(Path::new("/tmp/mcp.json")),
+            None,
         );
         let joined = args.join(" ");
         assert!(joined.contains("--tools  --mcp-config /tmp/mcp.json --strict-mcp-config --permission-mode dontAsk --allowedTools mcp__rovik --max-turns 40 --session-id s"), "{joined}");
@@ -4261,6 +4475,57 @@ fi
         assert!(models()
             .iter()
             .all(|m| m.description.is_some() && m.context_length.is_some()));
+    }
+
+    /// Rovik's hooks, around its own shell's commands: before each and
+    /// after one fails, posted to this turn's server with its token, an
+    /// hour to wait; and the settings file they're in goes before the
+    /// connector's own arguments, so a `--settings` of theirs wins.
+    #[tokio::test]
+    async fn rovik_hooks_wrap_claude_codes_own_shell_commands() {
+        let (server, _calls) = McpServer::start(&[], "test", None).await.unwrap();
+        let hooks: Value = serde_json::from_str(&hook_settings(&server)).unwrap();
+        for event in ["PreToolUse", "PostToolUseFailure"] {
+            let entry = &hooks["hooks"][event][0];
+            assert_eq!(entry["matcher"], "Bash", "{event}");
+            let hook = &entry["hooks"][0];
+            assert_eq!(hook["type"], "http");
+            assert_eq!(hook["url"], server.hooks_url());
+            assert_eq!(hook["timeout"], 3600);
+            assert_eq!(hook["headers"]["Authorization"], server.authorization());
+        }
+        let settings = Settings::from_value(&json!({ "extraArgs": "--settings mine.json" }));
+        let t = turn("hi");
+        let joined = args_for(
+            &settings,
+            &t,
+            &Session::New("s".into()),
+            None,
+            None,
+            Some(Path::new("/tmp/hooks.json")),
+        )
+        .join(" ");
+        assert!(
+            joined.ends_with("--settings /tmp/hooks.json --settings mine.json"),
+            "{joined}"
+        );
+    }
+
+    /// Claude Code's `error` for a failed command: the exit code on its
+    /// first line where it exited, the output after it.
+    #[test]
+    fn a_failed_commands_exit_code_is_read_from_its_error() {
+        assert_eq!(
+            exit_and_output("Exit code 127\n/bin/bash: line 2: node: command not found"),
+            (
+                Some(127),
+                "/bin/bash: line 2: node: command not found".to_string()
+            )
+        );
+        assert_eq!(
+            exit_and_output("Command timed out after 2m"),
+            (None, "Command timed out after 2m".to_string())
+        );
     }
 
     #[test]

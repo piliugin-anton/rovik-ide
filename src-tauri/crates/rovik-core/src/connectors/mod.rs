@@ -133,6 +133,11 @@ pub struct Turn {
     /// runs follow Rovik's permissions: the run answers. None (a one-off
     /// request, a request outside a run): what would ask is denied.
     pub asks: Option<ToolAsks>,
+    /// Where the harness reports the commands its own shell runs, before
+    /// each and after one fails, so the run makes ready what they need
+    /// (agent_run/environment.rs): the run answers. None (a one-off
+    /// request, a request outside a run): nothing is made ready.
+    pub commands: Option<CommandChecks>,
 }
 
 /// A harness's request to run one of its own tools, put to the run's
@@ -161,6 +166,26 @@ pub enum ToolAnswer {
 
 /// Where a harness's `ToolAsk`s go.
 pub type ToolAsks = mpsc::UnboundedSender<ToolAsk>;
+
+/// A command the harness's own shell runs, put to the run before it runs
+/// and after it failed: the run makes ready what it needs (a cloud host's
+/// Node, Yarn through Corepack, the project's dependencies) and answers
+/// with what the model should know of it, if anything.
+#[derive(Debug)]
+pub struct CommandCheck {
+    /// The harness's tool use: the id of its step in the reply.
+    pub call_id: String,
+    /// The command line, as its shell runs it.
+    pub command: String,
+    /// None: it's about to run. Some: it failed, with its exit code (None
+    /// when its harness doesn't say) and its output.
+    pub failed: Option<(Option<i32>, String)>,
+    /// What the model should be told of it; None for nothing.
+    pub reply: oneshot::Sender<Option<String>>,
+}
+
+/// Where a harness's `CommandCheck`s go.
+pub type CommandChecks = mpsc::UnboundedSender<CommandCheck>;
 
 /// The tool calls of the chat's last reply, as Rovik ran them: what a
 /// harness that made them (Rovik's tools mode) is answered with.
@@ -441,6 +466,7 @@ pub async fn run_chat(
         answers,
         continue_reply: continuing,
         asks: params.tool_asks.clone(),
+        commands: params.command_checks.clone(),
     };
     // The session the harness opens or continues is kept for the chat's
     // next turn, as the events say it.
@@ -957,6 +983,73 @@ out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': reply,
 "#;
     let path = dir.join("claude");
     std::fs::write(&path, script.replace("ASKS", &asks.to_string())).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// A stand-in for `claude` running its own shell under Rovik's hooks
+/// (tests): for each of `commands` (the command, the `error` Claude Code
+/// reports when it fails or null, and the tool use's id) it shows the
+/// `Bash` tool use, posts its `PreToolUse` event to the hooks its
+/// `--settings` name, and, for one that fails, its `PostToolUseFailure`
+/// event, as Claude Code does. The answers, with each event's name and
+/// tool use, go to `hooks.json`, and what its `CLAUDE_ENV_FILE` holds to
+/// `env.txt`. None without python3.
+#[cfg(all(test, unix))]
+pub(crate) fn fake_claude_with_hooks(dir: &std::path::Path, commands: &Value) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    if !crate::process::on_path("python3") {
+        return None;
+    }
+    let script = r#"#!/usr/bin/env python3
+import json, os, sys, urllib.request
+here = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+open(os.path.join(here, 'args.txt'), 'w').write(' '.join(args))
+env_file = os.environ.get('CLAUDE_ENV_FILE')
+open(os.path.join(here, 'env.txt'), 'w').write(open(env_file).read() if env_file else '')
+sys.stdin.read()
+settings = json.load(open(args[args.index('--settings') + 1]))
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+def hook(event):
+    entry = settings['hooks'][event['hook_event_name']][0]
+    assert entry['matcher'] == 'Bash'
+    target = entry['hooks'][0]
+    headers = dict(target['headers'])
+    headers['Content-Type'] = 'application/json'
+    request = urllib.request.Request(target['url'], data=json.dumps(event).encode(), headers=headers)
+    with opener.open(request) as response:
+        return json.loads(response.read().decode().strip() or '{}')
+def out(value):
+    print(json.dumps(value), flush=True)
+def event(e):
+    out({'type': 'stream_event', 'event': e, 'parent_tool_use_id': None})
+out({'type': 'system', 'subtype': 'init', 'session_id': 's-8', 'model': 'claude-sonnet-5', 'tools': ['Bash']})
+answers = []
+commands = json.loads(r'''COMMANDS''')
+for n, (command, error, use) in enumerate(commands):
+    given = {'command': command, 'description': 'run it'}
+    event({'type': 'message_start', 'message': {'id': 'm%d' % n, 'usage': {'input_tokens': 4}}})
+    event({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'tool_use', 'id': use, 'name': 'Bash', 'input': {}}})
+    event({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(given)}})
+    event({'type': 'content_block_stop', 'index': 0})
+    event({'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}, 'usage': {'output_tokens': 3}})
+    event({'type': 'message_stop'})
+    common = {'session_id': 's-8', 'cwd': os.getcwd(), 'tool_name': 'Bash', 'tool_input': given, 'tool_use_id': use}
+    answers.append({'event': 'PreToolUse', 'use': use, 'answer': hook(dict(common, hook_event_name='PreToolUse'))})
+    if error is not None:
+        failed = dict(common, hook_event_name='PostToolUseFailure', error=error, is_interrupt=False)
+        answers.append({'event': 'PostToolUseFailure', 'use': use, 'answer': hook(failed)})
+    out({'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': use, 'content': error or 'ok', 'is_error': error is not None}]}})
+json.dump(answers, open(os.path.join(here, 'hooks.json'), 'w'))
+event({'type': 'message_start', 'message': {'id': 'last'}})
+event({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': 'Done.'}})
+event({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'}, 'usage': {'output_tokens': 2}})
+event({'type': 'message_stop'})
+out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Done.', 'usage': {}, 'total_cost_usd': 0.01, 'num_turns': 1})
+"#;
+    let path = dir.join("claude");
+    std::fs::write(&path, script.replace("COMMANDS", &commands.to_string())).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     Some(path.to_string_lossy().into_owned())
 }

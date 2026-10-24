@@ -1426,6 +1426,49 @@ impl Run {
         let _ = ask.reply.send(answer);
     }
 
+    /// A connector's harness reports a command its own shell runs, before
+    /// it runs (nothing is installed then in Plan mode) and after it
+    /// failed: what it needs is made ready as for Rovik's own commands
+    /// (environment.rs), noted on its call's line while something
+    /// installs. The model is told what was done, and, after a failure,
+    /// that the command can run again.
+    pub(super) async fn answer_command_check(&self, check: crate::connectors::CommandCheck) {
+        let Some(root) = self.root.clone() else {
+            let _ = check.reply.send(None);
+            return;
+        };
+        let (core, dialog_id, call) = (
+            self.core.clone(),
+            self.dialog_id.clone(),
+            check.call_id.clone(),
+        );
+        let cx = super::environment::Context {
+            core: self.core.clone(),
+            chat: self.dialog_id.clone(),
+            root,
+            stop: self.stop.clone(),
+            note: std::sync::Arc::new(move |note| {
+                core.emit(AgentEvent::ToolNote {
+                    dialog_id: dialog_id.clone(),
+                    tool_call_id: call.clone(),
+                    note,
+                })
+            }),
+            plan_mode: self.plan_mode,
+        };
+        let said = match &check.failed {
+            None => super::environment::before_harness_command(&cx, &check.command)
+                .await
+                .done_sentence()
+                .map(|done| format!("Rovik IDE, before this command ran: {done}")),
+            Some((code, output)) => super::environment::after(&cx, &check.command, *code, output)
+                .await
+                .note()
+                .map(|note| format!("Rovik IDE: {note}")),
+        };
+        let _ = check.reply.send(said);
+    }
+
     /// An approved edit whose file changed while the approval waited (another
     /// chat, the user, a command). Writing the approved file whole would
     /// erase that change, so the approved changes are merged into the file

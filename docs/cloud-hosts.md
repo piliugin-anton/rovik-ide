@@ -174,11 +174,28 @@ sudo /opt/rovik/bin/rovik-agentd user toolchain node 20
 
 What a project asks for comes from its `rust-toolchain.toml` or
 `rust-toolchain` (the `channel`, with any `components` and `targets` it
-names), and from its `.nvmrc`, `.node-version` or `engines.node`. Without
-them, Rust is `stable` and Node the latest LTS. Rovik installs it before
-the installs that prepare the project, and again when a command fails
-because its program isn't found. The versions install while the chat
-waits: a Rust version is about 1 GB on disk and takes a few minutes.
+names), and from its `.nvmrc`, `.node-version` or `engines.node`: in the
+project's own folder, else in a Cargo project one folder down (a Tauri
+app's `src-tauri/`) or, for Node, the newest any of its packages names (a
+workspace's members wherever they are, the packages one folder down), so
+a root `package.json` that only lists its workspaces still gets its
+members' version. Without them, Rust is `stable` and Node the latest LTS;
+a project with no `package.json` yet runs the newest Node there. Rovik
+installs a version before a command that starts one of its programs
+(`node`, `npm`, `cargo`…; in Plan mode, which refuses most commands, only
+once one failed), before the installs that prepare the project, and again
+when a command fails because its program isn't found: the agent's own
+commands and Claude Code's alike ([Claude Code](#claude-code)).
+The versions install while the command waits: a Rust version is about
+1 GB on disk and takes a few minutes.
+
+A shared Node has no Yarn or pnpm of its own (Node 25 and later ship no
+Corepack either). Each user's chats get them from a small script Rovik
+puts in `~/.local/share/rovik/bin`, at the end of their commands' PATH so
+one the host's setup script installs comes first: it runs the newest
+Corepack, which `npx` fetches once, at the version the project's
+`packageManager` names, and never writes one into its `package.json`.
+Corepack keeps what it downloads in `~/.cache/node/corepack`.
 
 Root checks every word first. A version is `stable`, `beta`, `nightly`,
 `nightly-YYYY-MM-DD`, `1.N` or `1.N.P` for Rust, and `lts`, a major
@@ -468,6 +485,15 @@ Claude Code runs the agent's commands itself, not through Rovik's
 sandbox. What it may do is decided by Rovik's Permissions & approval
 (the connector's default permission mode), or by Claude Code's own
 permission mode and allowed tools when the connector's settings pick one.
+Whatever its mode, Rovik's hooks (Claude Code's `http` hooks, posted to
+the run's own server on 127.0.0.1 with its token) have each command made
+ready as the agent's own are: a version the project needs and the host
+lacks is installed before the command runs, and after one fails for want
+of a program or of the project's dependencies, they're installed and
+Claude Code is told to run it again. It finds the host's toolchains
+through a file its shell runs before each command (`CLAUDE_ENV_FILE`),
+written again whenever something was installed, so its next command
+finds that too.
 
 ## Upgrades
 

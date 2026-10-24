@@ -1068,25 +1068,44 @@ async fn run(
                     return Ok(ToolResult::text(problem));
                 }
             }
-            let note = ctx.note.clone();
-            let agent = crate::workload::JobKind::Agent {
-                owner: ctx.owner.clone(),
+            // What it needs that isn't there yet (a cloud host's Node, Yarn
+            // through Corepack), made ready first; what it lacked when it
+            // failed, after, and a lone program call runs again
+            // (environment.rs).
+            let ready = super::environment::Context {
+                core: core.clone(),
+                chat: ctx.owner.clone(),
+                root: root_owned.clone(),
+                stop: stop.clone(),
+                note: ctx.note.clone(),
+                // Plan mode has no `bash` (PLAN_BLOCKED_TOOLS).
+                plan_mode: false,
             };
-            let overlay = crate::overlay::chats::get(&ctx.owner);
-            let queued =
-                crate::command_tool::Queued::of(agent, overlay.as_deref()).noting(move |n| note(n));
-            let out = crate::command_tool::run_command(
-                root_owned.clone(),
-                command.into(),
-                timeout,
-                move || stop.is_set(),
-                Some(queued),
-            )
-            .await?;
+            let before =
+                super::environment::before(&ready, command, super::environment::Look::Host).await;
+            let mut notes: Vec<String> = before
+                .done_sentence()
+                .map(|done| format!("Before it ran: {done}"))
+                .into_iter()
+                .collect();
+            let mut out = run_agent_command(&root_owned, command, timeout, &stop, ctx).await?;
+            if !out.stopped && !out.timed_out && out.exit_code != Some(0) {
+                let after =
+                    super::environment::after(&ready, command, out.exit_code, &out.text()).await;
+                match after.done_sentence() {
+                    Some(done) if super::environment::runs_one_program(command) => {
+                        out = run_agent_command(&root_owned, command, timeout, &stop, ctx).await?;
+                        notes.push(format!(
+                            "Its first run failed: {done} It ran again, as above."
+                        ));
+                        notes.extend(after.missing);
+                    }
+                    _ => notes.extend(after.note()),
+                }
+            }
             let mut content = format_command_output(command, &out);
-            if let Some(note) = missing_program_note(core.agents.on_server(), &root_owned, &out).await
-            {
-                content.push_str(&note);
+            for note in notes {
+                content.push_str(&format!("\n({note})"));
             }
             // On a team server, a port the command had trouble with in the
             // user's private network: who holds it, or why nothing answers.
@@ -1248,154 +1267,32 @@ async fn run(
     Ok(ToolResult::text(content))
 }
 
-/// A note for a command whose shell didn't find a program. It may have been
-/// installed since the process started (a server's setup script runs after
-/// its daemon did): the login shell's PATH is read again, and if it's there
-/// now, the model is told to run the command again. A Rust or Node program
-/// on a cloud host has the version its project asks for installed as root
-/// (`crate::toolchains`); one that still isn't there is the server's to
-/// install, and the model is told to say so rather than install a
-/// toolchain itself.
-async fn missing_program_note(
-    on_server: bool,
+/// One run of the agent's `command` in `root`, for the chat of `ctx`: as
+/// the agent's heavy work (src/workload), its wait for a CPU slot noted on
+/// the call, killed by Stop.
+async fn run_agent_command(
     root: &str,
-    out: &CommandOutput,
-) -> Option<String> {
-    // The shared rustup, with RUSTUP_AUTO_INSTALL=0, names a version the
-    // host lacks rather than a program the shell didn't find.
-    if crate::toolchains::on_host() && rustup_lacks_toolchain(&out.text()) {
-        return rust_version_note(root).await;
-    }
-    let program = super::command_output::program_not_found(out.exit_code, &out.text())?;
-    // On the PATH already: the shell ran with another (the command's own),
-    // and reading the login shell's again changes nothing.
-    if crate::process::on_path(&program) {
-        return None;
-    }
-    if crate::toolchains::toolchain_program(&program) && crate::toolchains::on_host() {
-        return toolchain_note(root, &program).await;
-    }
-    let _ = crate::rt::spawn_blocking(crate::process::refresh_login_path).await;
-    if crate::process::on_path(&program) {
-        return Some(format!(
-            "\n(`{program}` is installed: it wasn't on the PATH the command got, which has just been read again from the login shell. Run the command again.)"
-        ));
-    }
-    on_server.then(|| {
-        format!(
-            "\n(`{program}` isn't installed on this server. Tell the user: the host's setup script, in Settings → Cloud hosts, installs what the project needs (e.g. Rust with `curl https://sh.rustup.rs -sSf | sh -s -- -y`), then Run setup.)"
-        )
-    })
-}
-
-/// Whether `text` is rustup saying the toolchain a command asked for isn't
-/// installed: `error: toolchain '1.82-x86_64-unknown-linux-gnu' is not
-/// installed`.
-fn rustup_lacks_toolchain(text: &str) -> bool {
-    text.lines()
-        .any(|line| line.contains("toolchain '") && line.contains("' is not installed"))
-}
-
-/// `missing_program_note` for rustup's missing version, on a host that
-/// shares them: the project's Rust installed through the root command, and
-/// what to say when that didn't happen.
-async fn rust_version_note(root: &str) -> Option<String> {
-    let project = std::path::Path::new(root);
-    let done = crate::toolchains::ensure(project).await;
-    if let Some((want, Err(why))) = done
-        .iter()
-        .find(|(want, outcome)| want.kind == crate::toolchains::Kind::Rust && outcome.is_err())
-    {
-        return Some(format!(
-            "\n({} isn't installed on this server, and it couldn't be installed: {why}\n\
-             Tell the user: an administrator can install it with `sudo {INSTALLED} admin \
-             toolchain add rust {version}`.)",
-            want.describe(),
-            INSTALLED = "/opt/rovik/bin/rovik-agentd",
-            version = want.version,
-        ));
-    }
-    let rust = crate::toolchains::wanted(project)
-        .into_iter()
-        .find(|want| want.kind == crate::toolchains::Kind::Rust)?;
-    if crate::toolchains::installed(&rust) {
-        return Some(format!(
-            "\n({} is installed for this project now. Run the command again.)",
-            rust.describe()
-        ));
-    }
-    Some(match crate::toolchains::can_install() {
-        true => format!(
-            "\n(The Rust version this command asked for isn't installed on this server. Tell \
-             the user: {} installs on its own when the project's rust-toolchain file names it.)",
-            rust.describe()
-        ),
-        false => format!(
-            "\n(The Rust version this command asked for isn't installed on this server, and its \
-             administrators don't let chats install toolchains. Tell the user to ask one of them \
-             to run `sudo {INSTALLED} admin toolchain add rust {}`.)",
-            rust.version,
-            INSTALLED = "/opt/rovik/bin/rovik-agentd",
-        ),
-    })
-}
-
-/// `missing_program_note` for a Rust or Node program, on a host that shares
-/// their versions: the project's versions installed where they're missing,
-/// and what to say when that doesn't give the command its program.
-async fn toolchain_note(root: &str, program: &str) -> Option<String> {
-    let project = std::path::Path::new(root);
-    let done = crate::toolchains::ensure(project).await;
-    if crate::toolchains::on_path(project, program) {
-        return Some(format!(
-            "\n(`{program}` is installed for this project now. Run the command again.)"
-        ));
-    }
-    if let Some((want, why)) = refusal_for(&done, program) {
-        let why = why.as_ref().err().map(String::as_str).unwrap_or_default();
-        return Some(format!(
-            "\n(`{program}` isn't installed on this server, and {} couldn't be installed: {why}\n\
-             Tell the user: an administrator can install it with `sudo {INSTALLED} admin \
-             toolchain add {kind} {version}`.)",
-            want.describe(),
-            INSTALLED = "/opt/rovik/bin/rovik-agentd",
-            kind = want.kind.name(),
-            version = want.version,
-        ));
-    }
-    let asked: Vec<String> = crate::toolchains::wanted(project)
-        .into_iter()
-        .map(|want| want.describe())
-        .collect();
-    let named = match asked.is_empty() {
-        true => "this project's Rust or Node version".to_string(),
-        false => asked.join(" and "),
+    command: &str,
+    timeout: Option<u64>,
+    stop: &Arc<StopSignal>,
+    ctx: &CallContext,
+) -> Result<CommandOutput, String> {
+    let note = ctx.note.clone();
+    let agent = crate::workload::JobKind::Agent {
+        owner: ctx.owner.clone(),
     };
-    Some(match crate::toolchains::can_install() {
-        true => format!(
-            "\n(`{program}` isn't installed on this server. Tell the user: {named} installs on \
-             its own when a chat needs it, and this project's manifest (Cargo.toml, \
-             package.json) names the version.)"
-        ),
-        false => format!(
-            "\n(`{program}` isn't installed on this server, and its administrators don't let \
-             chats install toolchains. Tell the user to ask one of them to install it, with \
-             `sudo {INSTALLED} admin toolchain add rust 1.82` for a Rust version or `… add node \
-             20` for Node.)",
-            INSTALLED = "/opt/rovik/bin/rovik-agentd",
-        ),
-    })
-}
-
-/// Of `done`'s installs, the refusal of the toolchain `program` comes
-/// with: a project with both may have had both refused.
-fn refusal_for<'a>(
-    done: &'a [(crate::toolchains::Want, Result<(), String>)],
-    program: &str,
-) -> Option<&'a (crate::toolchains::Want, Result<(), String>)> {
-    let kind = crate::toolchains::Kind::of_program(program)?;
-    done.iter()
-        .find(|(want, outcome)| outcome.is_err() && want.kind == kind)
+    let overlay = crate::overlay::chats::get(&ctx.owner);
+    let queued =
+        crate::command_tool::Queued::of(agent, overlay.as_deref()).noting(move |n| note(n));
+    let stop = stop.clone();
+    crate::command_tool::run_command(
+        root.to_string(),
+        command.into(),
+        timeout,
+        move || stop.is_set(),
+        Some(queued),
+    )
+    .await
 }
 
 /// The text the model sees for a finished command.
@@ -2634,134 +2531,4 @@ a.rs (3 matches)
         }
     }
 
-    /// A missing Rust or Node program on a cloud host installs the
-    /// project's version through the root command, and says so; on a host
-    /// that installs nothing for a chat, and on a computer, the setup
-    /// script's hint stands.
-    // A POSIX shell's "not found", and rustup's host triples: cloud hosts
-    // are Linux.
-    #[cfg(unix)]
-    #[tokio::test]
-    // The lock only keeps other tests' `Shared` out; this test's one
-    // thread holds it across its awaits.
-    #[allow(clippy::await_holding_lock)]
-    async fn a_missing_toolchain_program_is_installed_for_the_project() {
-        let dir = crate::testing::temp_dir();
-        let root = dir.0.to_string_lossy().into_owned();
-        std::fs::write(dir.0.join("Cargo.toml"), "[package]\n").unwrap();
-        // A program of the toolchains' that this machine's PATH lacks: one
-        // that is there would be found before any of this.
-        let Some(program) = ["npx", "npm", "rustup"].into_iter().find(|p| !crate::process::on_path(p))
-        else {
-            return;
-        };
-        let out = CommandOutput {
-            exit_code: Some(127),
-            stdout: String::new(),
-            stderr: format!("sh: 1: {program}: not found\n"),
-            timed_out: false,
-            stopped: false,
-            truncated: false,
-            duration_ms: 1,
-            whole: None,
-            waited: None,
-        };
-        let _lock = crate::toolchains::test_lock();
-        // Nothing shared: the server's setup script is what installs it.
-        crate::toolchains::unset();
-        let note = missing_program_note(true, &root, &out).await.unwrap();
-        assert!(note.contains("setup script"), "{note}");
-
-        // A host whose daemon can install it: the root command runs, and
-        // the program is in the toolchain environment afterwards.
-        let shared = dir.0.join("toolchains");
-        std::fs::create_dir_all(shared.join("rust/cargo/bin")).unwrap();
-        let installed = program.to_string();
-        crate::toolchains::set(crate::toolchains::Shared {
-            root: shared.clone(),
-            caches: None,
-            installer: Some(std::sync::Arc::new(move |want: crate::toolchains::Want| {
-                std::fs::write(shared.join("rust/cargo/bin").join(&installed), "").unwrap();
-                assert_eq!(want.version, "1.82");
-                Ok(())
-            })),
-        });
-        std::fs::write(
-            dir.0.join("rust-toolchain.toml"),
-            "[toolchain]\nchannel = \"1.82\"\n",
-        )
-        .unwrap();
-        let note = missing_program_note(true, &root, &out).await.unwrap();
-        assert!(note.contains("is installed for this project now"), "{note}");
-
-        // Refused by root: its words, and the administrator's command.
-        crate::toolchains::set(crate::toolchains::Shared {
-            root: dir.0.join("toolchains"),
-            caches: None,
-            installer: Some(std::sync::Arc::new(|_: crate::toolchains::Want| {
-                Err("sudo: a password is required".into())
-            })),
-        });
-        std::fs::remove_file(dir.0.join("toolchains/rust/cargo/bin").join(program)).unwrap();
-        let note = missing_program_note(true, &root, &out).await.unwrap();
-        assert!(note.contains("sudo: a password is required"), "{note}");
-        assert!(note.contains("admin toolchain add rust 1.82"), "{note}");
-
-        // rustup itself, told not to install: the version the project
-        // names goes in through the root command.
-        let triple = format!("{}-unknown-linux-gnu", std::env::consts::ARCH);
-        let toolchain = dir.0.join("toolchains/rust/rustup/toolchains").join(format!("1.82-{triple}"));
-        crate::toolchains::set(crate::toolchains::Shared {
-            root: dir.0.join("toolchains"),
-            caches: None,
-            installer: Some(std::sync::Arc::new(move |want: crate::toolchains::Want| {
-                assert_eq!(want.version, "1.82");
-                std::fs::create_dir_all(&toolchain).unwrap();
-                Ok(())
-            })),
-        });
-        let rustup = CommandOutput {
-            exit_code: Some(1),
-            stdout: String::new(),
-            stderr: format!("error: toolchain '1.82-{triple}' is not installed\n"),
-            timed_out: false,
-            stopped: false,
-            truncated: false,
-            duration_ms: 1,
-            whole: None,
-            waited: None,
-        };
-        let note = missing_program_note(true, &root, &rustup).await.unwrap();
-        assert!(note.contains("Rust 1.82 is installed for this project now"), "{note}");
-        crate::toolchains::unset();
-    }
-
-    /// A project that needs both Rust and Node, both refused: the note for
-    /// a missing program names its own toolchain's refusal.
-    #[test]
-    fn a_refusal_note_names_the_missing_programs_own_toolchain() {
-        use crate::toolchains::{Kind, Want};
-        let want = |kind, version: &str| Want {
-            kind,
-            version: version.into(),
-            components: Vec::new(),
-            targets: Vec::new(),
-        };
-        let done = vec![
-            (want(Kind::Rust, "1.82"), Err("Rust 1.82 isn't allowed".to_string())),
-            (want(Kind::Node, "20"), Err("Node 20 isn't allowed".to_string())),
-        ];
-        for (program, kind) in [("npm", Kind::Node), ("npx", Kind::Node), ("node", Kind::Node), ("cargo", Kind::Rust), ("rustc", Kind::Rust)] {
-            let (refused, _) = refusal_for(&done, program).unwrap();
-            assert_eq!(refused.kind, kind, "{program}");
-        }
-        // Rust installed, Node refused: `cargo` has no refusal of its own.
-        let done = vec![
-            (want(Kind::Rust, "1.82"), Ok(())),
-            (want(Kind::Node, "20"), Err("no".to_string())),
-        ];
-        assert!(refusal_for(&done, "cargo").is_none());
-        assert_eq!(refusal_for(&done, "npm").unwrap().0.version, "20");
-        assert!(refusal_for(&done, "make").is_none());
-    }
 }

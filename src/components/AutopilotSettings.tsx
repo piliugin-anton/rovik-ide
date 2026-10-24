@@ -244,8 +244,9 @@ export default function AutopilotSettings(props: AutopilotSettingsProps) {
             <span class="setting-checkbox-sub">
               Where a project’s dependencies aren’t installed (no <code>node_modules</code>, no
               virtual environment), their install runs before the code is written: its lockfile’s,
-              or npm’s for a <code>package.json</code> without one. It runs again once if a check
-              fails for want of a program or a package.
+              or its package manager’s for a <code>package.json</code> without one. It runs again
+              once if a check fails for want of a program or a package, and when one of the task’s
+              commands does.
             </span>
           </span>
         </label>
