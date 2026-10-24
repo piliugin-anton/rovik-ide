@@ -70,3 +70,29 @@ test('a chat on a host that works on its own: Autopilot until the user picks ano
   assert.equal(chatMode(), 'plan', 'what the user picked for it');
   setOwnModeChat(null);
 });
+
+test('mode selector: a mode the chat’s model can’t run says why and can’t be picked', () => {
+  setChatMode('agent');
+  const root = container();
+  render(
+    () => (
+      <ModeSelector
+        unavailable={(mode) => (mode === 'autopilot' ? 'Needs Rovik’s tools.' : null)}
+      />
+    ),
+    root
+  );
+  const autopilot = radios(root)[2];
+  assert.equal(autopilot.getAttribute('aria-disabled'), 'true');
+  assert.equal(autopilot.title, 'Needs Rovik’s tools.');
+  assert.ok(autopilot.classList.contains('unavailable'));
+  autopilot.click();
+  assert.equal(chatMode(), 'agent');
+  // The others switch as before, their own hint their tooltip.
+  const plan = radios(root)[1];
+  assert.equal(plan.getAttribute('aria-disabled'), 'false');
+  assert.match(plan.title, /^Plan: /);
+  plan.click();
+  assert.equal(chatMode(), 'plan');
+  setChatMode('agent');
+});

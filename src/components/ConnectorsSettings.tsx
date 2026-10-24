@@ -2,12 +2,13 @@
 //
 // Settings → Connectors: the coding harnesses chats can use in place of a
 // model provider (lib/connectors.ts), Claude Code first. Each connector is
-// a program on the computer the chat runs on; its page says how it's run
-// (the program, how it signs in, what it may do, its limits), tests it and
-// lists its models as the Model providers page does
+// a program on the computer the chat runs on. Its form is the same for
+// every kind: its name; Connection, how it signs in (the kind's own
+// fields) with its test and Set up; the kind's options (connectorFields.ts);
+// and its models, as the Model providers page lists them
 // (ProviderModelsTable.tsx). The models enabled here show in the chat's
 // model picker, marked as a connector's.
-import { createResource, createSignal, For, Show, type Component } from 'solid-js';
+import { createResource, createSignal, For, Show } from 'solid-js';
 import { Dynamic } from 'solid-js/web';
 import type { ConnectorKind, Provider } from '../types';
 import { mergeRemoteModels } from '../lib/aiSettings';
@@ -30,16 +31,11 @@ import {
   specOf,
   type ConnectorProbe,
 } from '../lib/connectors';
-import ClaudeCodeFields, { type ConnectorFieldsProps } from './ClaudeCodeFields';
+import { CONNECTOR_FIELDS } from './connectorFields';
 import { confirmDialog } from './ConfirmDialog';
 import ConnectorSetup from './ConnectorSetup';
 import ProviderModelsTable, { CONNECTOR_COLUMNS } from './ProviderModelsTable';
 import { listHosts } from '../lib/hosts';
-
-/** Each kind's settings fields, in its form: one entry per kind. */
-const CONNECTOR_FIELDS: Record<ConnectorKind, Component<ConnectorFieldsProps>> = {
-  'claude-code': ClaudeCodeFields,
-};
 
 /** Lets the settings modal show the open form's name and close it with Back. */
 export interface ConnectorsSettingsController {
@@ -217,12 +213,12 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
         <>
           <p class="settings-hint">
             A connector is a coding harness installed on the computer a chat runs on, used in place
-            of a model provider: the chat hands it the task and its system prompt, picks one of its
-            models, and shows what it did, its tokens and its cost with the reply. With its own
-            tools, the harness works in the project folder under the permission mode set here: by
+            of a model provider: the chat hands it the task, picks one of its models, and shows what
+            it did, its tokens and its cost with the reply. Run as itself, the harness works in the
+            project folder with its own tools and prompt, under the permission mode set here: by
             default, Rovik’s Permissions & approval decide each call it would ask about, and an
-            approval waits in the chat. With Rovik’s tools (via MCP), it’s the model behind Rovik’s
-            agent: Rovik runs each call, under Permissions & approval. On a cloud host, the host
+            approval waits in the chat. Run as Rovik’s agent, it gets Rovik’s prompt and tools (via
+            MCP), and Rovik runs each call under Permissions & approval. On a cloud host, the host
             needs its own installation.
           </p>
           <For
@@ -316,86 +312,103 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
             />
           </label>
 
+          <section class="settings-section">
+            <div class="settings-section-title">Connection</div>
+            <Show when={kindOfProvider(d())}>
+              {(kind) => (
+                <Dynamic
+                  component={CONNECTOR_FIELDS[kind()].Connection}
+                  connector={d()}
+                  update={update}
+                />
+              )}
+            </Show>
+
+            <div class="provider-test-row connector-test-row">
+              <button onClick={() => void runTest()} disabled={test().kind === 'testing'}>
+                {test().kind === 'testing'
+                  ? 'Testing…'
+                  : d().models.length > 0
+                    ? 'Test & refresh models'
+                    : 'Test connection'}
+              </button>
+              <label
+                class="checkbox-row connector-test-option"
+                title="Makes one small request too, to see that it's signed in (a few tokens)"
+              >
+                <input
+                  type="checkbox"
+                  checked={withRequest()}
+                  onChange={(e) => setWithRequest(e.currentTarget.checked)}
+                />
+                with a request
+              </label>
+              <Show when={hosts().length > 0}>
+                <select
+                  class="settings-select connector-test-host"
+                  value={testHost()}
+                  onChange={(e) => setTestHost(e.currentTarget.value)}
+                  aria-label="Where to test"
+                  title="A connector is a program on the computer the chat runs on: test it where the chats run"
+                >
+                  <option value="">on this computer</option>
+                  <For each={hosts()}>{(h) => <option value={h.id}>on {h.name}</option>}</For>
+                </select>
+              </Show>
+            </div>
+            <Show when={okState()}>
+              {(ok) => (
+                <div class="provider-test-status ok connector-test-status">
+                  {probeSummary(ok().probe)}, {ok().probe.models.length} models
+                  {!ok().first && ok().added > 0 ? ` (${ok().added} new, not enabled)` : ''}
+                  <Show when={ok().probe.auth && authLine(authStateOf({ auth: ok().probe.auth! }))}>
+                    {(line) => (
+                      <div class="connector-auth" classList={{ warning: line().warning }}>
+                        {line().text}
+                      </div>
+                    )}
+                  </Show>
+                  <Show when={ok().probe.update}>
+                    {(version) => (
+                      <div class="connector-test-note">
+                        Version {version()} is available: Update below.
+                      </div>
+                    )}
+                  </Show>
+                  <For each={ok().probe.notes ?? []}>
+                    {(note) => <div class="connector-test-note">{note}</div>}
+                  </For>
+                </div>
+              )}
+            </Show>
+            <Show when={errorState()}>
+              {(err) => (
+                <div class="provider-test-status error connector-test-status" title={err().message}>
+                  {err().message}
+                </div>
+              )}
+            </Show>
+            <ConnectorSetup
+              connector={d()}
+              title={connectorTitle(kindOfProvider(d()))}
+              host={testHost() || null}
+              where={testWhere()}
+              probe={testNow}
+              signedIn={okState()?.probe.auth?.loggedIn === true}
+              update={okState()?.probe.update}
+              autoStart={setUpOnOpen()}
+            />
+          </section>
+
           <Show when={kindOfProvider(d())}>
             {(kind) => (
-              <Dynamic component={CONNECTOR_FIELDS[kind()]} connector={d()} update={update} />
-            )}
-          </Show>
-
-          <div class="provider-test-row connector-test-row">
-            <button onClick={() => void runTest()} disabled={test().kind === 'testing'}>
-              {test().kind === 'testing'
-                ? 'Testing…'
-                : d().models.length > 0
-                  ? 'Test & refresh models'
-                  : 'Test connection'}
-            </button>
-            <label
-              class="checkbox-row connector-test-option"
-              title="Makes one small request too, to see that it's signed in (a few tokens)"
-            >
-              <input
-                type="checkbox"
-                checked={withRequest()}
-                onChange={(e) => setWithRequest(e.currentTarget.checked)}
+              <Dynamic
+                component={CONNECTOR_FIELDS[kind()].Options}
+                connector={d()}
+                update={update}
               />
-              with a request
-            </label>
-            <Show when={hosts().length > 0}>
-              <select
-                class="settings-select connector-test-host"
-                value={testHost()}
-                onChange={(e) => setTestHost(e.currentTarget.value)}
-                aria-label="Where to test"
-                title="A connector is a program on the computer the chat runs on: test it where the chats run"
-              >
-                <option value="">on this computer</option>
-                <For each={hosts()}>{(h) => <option value={h.id}>on {h.name}</option>}</For>
-              </select>
-            </Show>
-          </div>
-          <Show when={okState()}>
-            {(ok) => (
-              <div class="provider-test-status ok connector-test-status">
-                {probeSummary(ok().probe)}, {ok().probe.models.length} models
-                {!ok().first && ok().added > 0 ? ` (${ok().added} new, not enabled)` : ''}
-                <Show when={ok().probe.auth && authLine(authStateOf({ auth: ok().probe.auth! }))}>
-                  {(line) => (
-                    <div class="connector-auth" classList={{ warning: line().warning }}>
-                      {line().text}
-                    </div>
-                  )}
-                </Show>
-                <Show when={ok().probe.update}>
-                  {(version) => (
-                    <div class="connector-test-note">
-                      Version {version()} is available: Update below.
-                    </div>
-                  )}
-                </Show>
-                <For each={ok().probe.notes ?? []}>
-                  {(note) => <div class="connector-test-note">{note}</div>}
-                </For>
-              </div>
             )}
           </Show>
-          <Show when={errorState()}>
-            {(err) => (
-              <div class="provider-test-status error connector-test-status" title={err().message}>
-                {err().message}
-              </div>
-            )}
-          </Show>
-          <ConnectorSetup
-            connector={d()}
-            title={connectorTitle(kindOfProvider(d()))}
-            host={testHost() || null}
-            where={testWhere()}
-            probe={testNow}
-            signedIn={okState()?.probe.auth?.loggedIn === true}
-            update={okState()?.probe.update}
-            autoStart={setUpOnOpen()}
-          />
 
           <ProviderModelsTable
             providerName={d().name}

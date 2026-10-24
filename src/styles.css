@@ -6343,6 +6343,16 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   outline-offset: -1px;
 }
 
+/* A mode the chat's model can't run: its reason is its tooltip. */
+.mode-option.unavailable {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mode-option.unavailable:hover {
+  color: var(--fg-muted);
+}
+
 /* "Implement this plan" under a finished plan */
 
 .chat-plan-actions {
@@ -10084,6 +10094,12 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 11px;
 }
 
+/* A field labelled above it explains under itself, not under a row's control. */
+.connector-form .settings-section label > .setting-explain,
+.connector-form .connector-limits + .setting-explain {
+  margin-left: 0;
+}
+
 .connector-form .settings-textarea {
   width: 100%;
   box-sizing: border-box;
@@ -10110,7 +10126,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg-dim);
 }
 
-.connector-advanced > label {
+.connector-advanced > label,
+.connector-form .settings-section > label {
   margin-top: 8px;
 }
 

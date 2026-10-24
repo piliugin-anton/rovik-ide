@@ -1,6 +1,8 @@
 // ModeSelector.tsx: Agent / Plan / Autopilot, left of the model picker
 // under the chat input (lib/chatMode.ts). A switch rather than a menu:
-// every choice is always visible, and switching is one click.
+// every choice is always visible, and switching is one click. A mode the
+// chat's model can't run (`modeUnavailable`) is dimmed, its reason its
+// tooltip, and can't be picked.
 import { For } from 'solid-js';
 import { chatMode, setChatMode, type ChatMode } from '../lib/chatMode';
 
@@ -31,7 +33,11 @@ const MODES: { id: ChatMode; label: string; hint: string; icon: string }[] = [
 /** Drawn filled rather than stroked. */
 const FILLED: ChatMode[] = ['agent', 'autopilot'];
 
-export default function ModeSelector() {
+export default function ModeSelector(props: {
+  /** Why a mode can't run on the chat's model, if it can't. */
+  unavailable?: (mode: ChatMode) => string | null;
+}) {
+  const reason = (mode: ChatMode) => props.unavailable?.(mode) ?? null;
   return (
     <div class="mode-selector" role="radiogroup" aria-label="Chat mode">
       <For each={MODES}>
@@ -44,10 +50,15 @@ export default function ModeSelector() {
               active: chatMode() === mode.id,
               plan: mode.id === 'plan',
               autopilot: mode.id === 'autopilot',
+              unavailable: !!reason(mode.id),
             }}
             aria-checked={chatMode() === mode.id}
-            title={mode.hint}
-            onClick={() => setChatMode(mode.id)}
+            // Not `disabled`: a disabled button shows no tooltip in WebKit.
+            aria-disabled={!!reason(mode.id)}
+            title={reason(mode.id) ?? mode.hint}
+            onClick={() => {
+              if (!reason(mode.id)) setChatMode(mode.id);
+            }}
           >
             <svg
               width="12"

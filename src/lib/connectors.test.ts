@@ -14,8 +14,6 @@ import {
   resetStartCheck,
   type ConnectorAuth,
   usesRovikTools,
-  claudeCodeSettings,
-  CLAUDE_CODE_DEFAULTS,
   connectorHeadline,
   connectorKindOf,
   connectorsSummary,
@@ -28,12 +26,16 @@ import {
   splitSources,
   stepLabel,
   titleProfile,
-  AUTH_KINDS,
-  PERMISSION_MODES,
-  TOOLS_MODES,
   specOf,
-  CLAUDE_CODE_TITLE_MODEL,
 } from './connectors';
+import {
+  AUTH_KINDS,
+  claudeCodeSettings,
+  CLAUDE_CODE_DEFAULTS,
+  CLAUDE_CODE_TITLE_MODEL,
+  PERMISSION_MODES,
+  USE_MODES,
+} from './claudeCode';
 import { providersSummary, resolveProfile } from './aiSettings';
 import { EFFORTS } from './reasoning';
 import { dismiss, notifications } from './notifications';
@@ -121,7 +123,7 @@ test('a kind’s spec gives a new connector its settings and its row its summary
   assert.equal(spec.summary(claude.settings ?? {}), 'claude · Follow Rovik’s permissions');
   assert.equal(
     spec.summary({ tools: 'rovik', program: '/opt/claude' }),
-    '/opt/claude · Rovik’s tools'
+    '/opt/claude · Rovik’s agent'
   );
   assert.equal(specOf(openai), undefined);
 });
@@ -132,6 +134,12 @@ test('settings take the defaults for what isn’t set', () => {
   assert.equal(s.program, 'claude');
   assert.equal(s.permissionMode, 'plan');
   assert.equal(s.auth, 'login');
+});
+
+test('a system prompt choice saved before is dropped: the prompt is the tools’', () => {
+  const s = claudeCodeSettings({ settings: { tools: 'rovik', systemPrompt: 'replace' } });
+  assert.equal(s.tools, 'rovik');
+  assert.ok(!('systemPrompt' in s), 'nothing sends it to the core');
 });
 
 test('the menu lines count providers and connectors apart', () => {
@@ -348,7 +356,7 @@ test('with Rovik’s tools, a connector’s model is offered the run’s tools',
   assert.equal(claudeCodeSettings(claude).tools, 'own', 'its own tools by default');
   assert.equal(resolveProfile([claude], { providerId: 'c1', modelId: 'sonnet' })?.noTools, true);
   assert.ok(!usesRovikTools(claude));
-  claude.settings = { ...CLAUDE_CODE_DEFAULTS, tools: 'rovik', systemPrompt: 'replace' };
+  claude.settings = { ...CLAUDE_CODE_DEFAULTS, tools: 'rovik' };
   assert.ok(usesRovikTools(claude));
   const profile = resolveProfile([claude], { providerId: 'c1', modelId: 'sonnet' });
   assert.equal(profile?.noTools, false, 'the run offers its tools');
@@ -378,8 +386,9 @@ test('with Rovik’s tools, a reply’s record says what it used, its run’s co
 });
 
 test('the choices’ tooltips have no markup characters, which WebKitGTK can’t show', () => {
-  const hints = [...AUTH_KINDS, ...PERMISSION_MODES, ...TOOLS_MODES, ...EFFORTS].map((c) => c.hint);
-  for (const hint of hints) assert.doesNotMatch(hint, /[&<>]/, hint);
+  const choices = [...AUTH_KINDS, ...PERMISSION_MODES, ...USE_MODES];
+  const tips = [...choices.flatMap((c) => [c.hint, c.detail ?? '']), ...EFFORTS.map((c) => c.hint)];
+  for (const tip of tips) assert.doesNotMatch(tip, /[&<>]/, tip);
 });
 
 test('the context shown is the one the latest connector reply reported', () => {

@@ -1415,6 +1415,15 @@ impl Run {
     /// depth 1, D3). Read at each turn: settings changes apply at once.
     /// Plan mode changes nothing, so no kind that writes (step workers, the
     /// test writer) is offered there.
+    /// Plan mode with Rovik's plan tools (ask_user, submit_plan, search_code…):
+    /// their instructions, and the nudges to submit a plan written in the
+    /// reply. A model without them gets neither: a connector running its own
+    /// tools plans in its own plan mode (`ChatParams::plan_mode`), and its
+    /// plan is its reply.
+    fn plans_with_rovik_tools(&self) -> bool {
+        self.plan_mode && !self.profile.no_tools
+    }
+
     pub(super) fn subagent_kinds(&self) -> Vec<subagent::Kind> {
         if self.sub().is_some() || self.root.is_none() || self.profile.no_tools {
             return Vec::new();
@@ -1648,7 +1657,7 @@ impl Run {
                     });
                     return Ok("repetition".into());
                 }
-                let next = if self.plan_mode {
+                let next = if self.plans_with_rovik_tools() {
                     "If the plan is ready, submit it once with submit_plan and reply in a sentence or two."
                 } else {
                     "Continue with the task from where you were."
@@ -1724,11 +1733,11 @@ impl Run {
                     )
                     .await?;
                 }
-                if self.plan_mode {
+                if self.plans_with_rovik_tools() {
                     if self.finish_plan_reply(&turn.message_id, &turn.text).await? {
                         continue;
                     }
-                } else if self.check_checklist().await? {
+                } else if !self.plan_mode && self.check_checklist().await? {
                     continue;
                 }
                 // Conflicts handed to it: not done while their markers are left.
@@ -2124,7 +2133,7 @@ impl Run {
         };
         let group_rules = subagent::plan_group_rules(self.parallel_on());
         let plan_instructions = plan::plan_mode_instructions(self.autopilot);
-        let project_context = if self.plan_mode {
+        let project_context = if self.plans_with_rovik_tools() {
             [
                 self.project_context.as_str(),
                 plan_instructions.as_str(),
@@ -2231,6 +2240,7 @@ impl Run {
                     &self.overlay_owner(),
                     self.core.agents.on_server(),
                 ),
+                plan_mode: self.plan_mode,
                 tool_asks,
             };
 

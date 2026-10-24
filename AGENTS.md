@@ -15,7 +15,7 @@ second pass. Read the code you change, its callers and its tests before editing.
 ## How to write code here
 
 - **SOLID**: one job per module and function. Add behaviour by implementing an abstraction
-  (e.g. the `Connector` trait, a `ConnectorSpec` in `CONNECTOR_CATALOG`), not by adding
+  (e.g. a connector is its `Connector`, `ConnectorSpec` and `ConnectorFields`), not by adding
   kind-specific branches to generic code. Generic code depends on the trait, never on one kind.
 - **DRY**: search before you write. Reuse `process.rs`, `connectors/harness.rs`, `net::client()`,
   `lib/*` helpers; when you copy code, extract it instead.

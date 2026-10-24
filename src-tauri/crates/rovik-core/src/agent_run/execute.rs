@@ -669,15 +669,7 @@ impl Run {
                 return self.ask_user(tc, &args).await;
             }
             name if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&name) => {
-                // Autopilot's plan stage: the task implements its plan next.
-                let next = match self.autopilot {
-                    true => "Autopilot implements it next, once it's reviewed",
-                    false => "the user implements it in Agent mode",
-                };
-                let content = format!(
-                    "Error: {name} isn't available in Plan mode, which doesn't change anything. \
-                     Finish the plan; {next}."
-                );
+                let content = plan::blocked_in_plan_mode(name, self.autopilot);
                 return self
                     .add_tool_result(&tc.id, content, None, Vec::new())
                     .await;
@@ -1390,9 +1382,10 @@ impl Run {
     /// of the same kind is, by `authorize`: refused by the settings, run,
     /// or put to the user or the AI reviewer, an edit as its changes.
     ///
-    /// A shell command that can't run where the chat works (git that
-    /// changes the repository, in a chat's copy of the project) is refused
-    /// first, as Rovik's own `bash` refuses it.
+    /// Refused first, as Rovik's own calls are: in Plan mode, a tool that
+    /// would change something; and a shell command that can't run where the
+    /// chat works (git that changes the repository, in a chat's copy of the
+    /// project).
     pub(super) async fn answer_tool_ask(&self, ask: crate::connectors::ToolAsk) {
         let call = ToolCall {
             id: ask.call_id,
@@ -1400,6 +1393,16 @@ impl Run {
             arguments: ask.arguments,
             extra_content: None,
         };
+        // Plan mode changes nothing, whoever's tool would: the harness plans
+        // in a mode of its own, and what it asks to change is refused here,
+        // as Rovik's own call would be.
+        if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&call.name.as_str()) {
+            let reason = plan::blocked_in_plan_mode(&call.name, self.autopilot);
+            let _ = ask
+                .reply
+                .send(crate::connectors::ToolAnswer::Deny { reason });
+            return;
+        }
         if call.name == "bash" {
             let args = permissions::parse_args(&call.arguments);
             let command = args.get("command").and_then(Value::as_str).unwrap_or("");

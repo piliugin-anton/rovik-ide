@@ -22,6 +22,21 @@ pub const PLANS_DIR: &str = ".rovik/plans";
 /// Tools Plan mode doesn't offer (or allow, if a model calls them anyway).
 pub const PLAN_BLOCKED_TOOLS: &[&str] = &["write", "bash"];
 
+/// What a call of a tool Plan mode doesn't allow gets: why not, and what
+/// comes next. For Rovik's own calls, and for a connector's own tools it
+/// asks about.
+pub fn blocked_in_plan_mode(name: &str, autopilot: bool) -> String {
+    // Autopilot's plan stage: the task implements its plan next.
+    let next = match autopilot {
+        true => "Autopilot implements it next, once it's reviewed",
+        false => "the user implements it in Agent mode",
+    };
+    format!(
+        "Error: {name} isn't available in Plan mode, which doesn't change anything. \
+         Finish the plan; {next}."
+    )
+}
+
 /// Questions one run may ask; past that, the agent decides.
 pub const MAX_QUESTIONS_PER_RUN: u32 = 3;
 

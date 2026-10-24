@@ -1,37 +1,160 @@
-// Component test: Claude Code's system prompt setting. Its own prompt,
-// unchanged, is the default; with Rovik's tools it isn't offered, since
-// Claude Code then has no tools of its own for it to describe.
+// Component test: Claude Code's part of a connector's form, its
+// `ConnectorFields` (ClaudeCodeFields.tsx). How it signs in is in the
+// Connection section; how chats use it comes first among its options, and
+// what only one way of using it needs (its permission mode and rules, with
+// its own tools) shows only with that one.
 // Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createSignal, type Component } from 'solid-js';
 import { render } from 'solid-js/web';
-import ClaudeCodeFields from './ClaudeCodeFields';
+import { CONNECTOR_FIELDS, type ConnectorFieldsProps } from './connectorFields';
 import { newConnector } from '../lib/connectors';
+import { PERMISSION_MODES, USE_MODES } from '../lib/claudeCode';
 import type { Provider } from '../types';
 
-/** The system prompt selector's options and its value, for `connector`. */
-function promptSelect(connector: Provider): { options: string[]; value: string } {
+const { Connection, Options } = CONNECTOR_FIELDS['claude-code'];
+
+/**
+ * `Part` of the form for a new connector with `settings`, kept up to date
+ * as the form keeps its draft: the connector as it is now, and the root.
+ */
+function mount(Part: Component<ConnectorFieldsProps>, settings: Record<string, unknown> = {}) {
+  const fresh = newConnector('claude-code');
+  const [connector, setConnector] = createSignal<Provider>({
+    ...fresh,
+    settings: { ...fresh.settings, ...settings },
+  });
   const root = container();
-  const dispose = render(() => <ClaudeCodeFields connector={connector} update={() => {}} />, root);
-  const select = [...root.querySelectorAll('select')].find((s) =>
-    [...s.options].some((o) => o.value === 'replace')
-  )!;
-  const result = { options: [...select.options].map((o) => o.value), value: select.value };
-  dispose();
-  return result;
+  const dispose = render(
+    () => (
+      <Part
+        connector={connector()}
+        update={(changes) => setConnector({ ...connector(), ...changes })}
+      />
+    ),
+    root
+  );
+  return { root, connector, dispose };
 }
 
-test('Claude Code’s own prompt is the default, offered with its own tools', () => {
-  const connector = newConnector('claude-code');
-  assert.deepEqual(promptSelect(connector), {
-    options: ['own', 'append', 'replace'],
-    value: 'own',
-  });
+/** The select of the row labelled `label`, if it's shown. */
+function select(root: Element, label: string): HTMLSelectElement | undefined {
+  const row = [...root.querySelectorAll('.setting-row')].find(
+    (r) => r.querySelector('.setting-row-label')?.textContent === label
+  );
+  return (row?.querySelector('select') as HTMLSelectElement | null) ?? undefined;
+}
+
+function choose(el: HTMLSelectElement, value: string) {
+  el.value = value;
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/** The titles of the sections shown. */
+const sections = (root: Element) =>
+  [...root.querySelectorAll('.settings-section-title')].map((t) => t.textContent);
+
+/** The fields shown, by their labels' own text. */
+const fields = (root: Element) =>
+  [...root.querySelectorAll('label')].map((l) =>
+    [...l.childNodes]
+      .filter((n) => n.nodeType === 3)
+      .map((n) => n.textContent)
+      .join('')
+      .trim()
+  );
+
+test('chats use Claude Code itself by default, or run Rovik’s agent on it', () => {
+  const { root, dispose } = mount(Options);
+  const runsAs = select(root, 'Runs as')!;
+  assert.deepEqual(
+    [...runsAs.options].map((o) => o.value),
+    ['own', 'rovik']
+  );
+  assert.equal(runsAs.value, 'own');
+  assert.equal(sections(root)[0], 'How chats use it', 'the first of its options');
+  dispose();
 });
 
-test('with Rovik’s tools, Claude Code’s own prompt isn’t offered', () => {
-  const connector = newConnector('claude-code');
-  connector.settings = { ...connector.settings, tools: 'rovik', systemPrompt: 'replace' };
-  assert.deepEqual(promptSelect(connector), { options: ['append', 'replace'], value: 'replace' });
+test('its permission mode and rules show only when it runs its own tools', () => {
+  const { root, connector, dispose } = mount(Options);
+  assert.deepEqual(sections(root), ['How chats use it', 'Permissions', 'Limits']);
+  assert.deepEqual(
+    [...select(root, 'Mode')!.options].map((o) => o.value),
+    PERMISSION_MODES.map((m) => m.value)
+  );
+  choose(select(root, 'Runs as')!, 'rovik');
+  assert.equal(connector().settings?.tools, 'rovik');
+  assert.deepEqual(sections(root), ['How chats use it', 'Limits'], 'Rovik’s permissions decide');
+  assert.equal(select(root, 'Mode'), undefined);
+  dispose();
+});
+
+test('allowed-tools rules show only when Claude Code’s own permission mode decides', () => {
+  const { root, dispose } = mount(Options);
+  const permissions = () => root.querySelectorAll('.settings-section')[1];
+  assert.deepEqual(
+    fields(permissions()),
+    ['Denied tools'],
+    'Rovik’s permissions would pass them by'
+  );
+  choose(select(root, 'Mode')!, 'acceptEdits');
+  assert.deepEqual(fields(permissions()), ['Allowed tools', 'Denied tools']);
+  dispose();
+});
+
+test('the program is with the other advanced settings, closed until opened', () => {
+  const { root, dispose } = mount(Options);
+  const advanced = root.querySelector('details.connector-advanced')!;
+  assert.equal(advanced.querySelector('summary')?.textContent, 'Advanced');
+  assert.ok(!advanced.hasAttribute('open'));
+  assert.deepEqual(
+    fields(advanced).map((f) => f.split(':')[0]),
+    ['Program', 'Settings folder (CLAUDE_CONFIG_DIR)', 'Extra arguments', 'Bare mode']
+  );
+  dispose();
+});
+
+test('under a choice is its line, with all of it as the line’s tooltip', () => {
+  const { root, dispose } = mount(Options);
+  const runsAs = select(root, 'Runs as')!;
+  const line = runsAs.closest('.setting-row')!.nextElementSibling!;
+  assert.deepEqual(
+    [...runsAs.options].map((o) => o.title),
+    USE_MODES.map((m) => m.hint),
+    'each option’s line is its tooltip'
+  );
+  assert.equal(line.textContent, USE_MODES[0].hint);
+  assert.equal(line.getAttribute('title'), USE_MODES[0].detail);
+  choose(runsAs, 'rovik');
+  assert.equal(line.textContent, USE_MODES[1].hint);
+  assert.equal(line.getAttribute('title'), USE_MODES[1].detail);
+  dispose();
+});
+
+test('a change saves its settings without the system prompt choice it had', () => {
+  const { root, connector, dispose } = mount(Options, { systemPrompt: 'append' });
+  choose(select(root, 'Mode')!, 'acceptEdits');
+  const saved = connector().settings ?? {};
+  assert.equal(saved.permissionMode, 'acceptEdits');
+  assert.ok(!('systemPrompt' in saved), 'the prompt is the tools’ now');
+  dispose();
+});
+
+test('it asks for a token or a key only when it signs in with one, and keeps it as the key', () => {
+  const { root, connector, dispose } = mount(Connection);
+  const signIn = select(root, 'Signs in with')!;
+  assert.equal(signIn.value, 'login');
+  assert.deepEqual(fields(root), [], 'this computer’s login needs nothing more');
+  choose(signIn, 'token');
+  assert.deepEqual(fields(root), ['Token']);
+  const token = root.querySelector('input[type="password"]') as HTMLInputElement;
+  token.value = 'sk-ant-oat01-x';
+  token.dispatchEvent(new Event('input', { bubbles: true }));
+  assert.equal(connector().apiKey, 'sk-ant-oat01-x', 'the key goes to the keychain on save');
+  choose(signIn, 'apiKey');
+  assert.deepEqual(fields(root), ['API key']);
+  dispose();
 });

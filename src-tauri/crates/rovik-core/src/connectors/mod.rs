@@ -18,9 +18,13 @@
 //! cleared folder), the turn starts a new one with a recap of the chat.
 //!
 //! Every connector implements [`Connector`]: a probe for "Test & refresh
-//! models", its sign-in check, a turn, and what its "Set up" steps run
-//! (setup.rs runs them, the same for every connector). A new harness
-//! (Codex, say) is one more module here and one more `ConnectorKind`.
+//! models", its sign-in check, a turn, and, where it has them, what its
+//! "Set up" steps run (setup.rs runs them, the same for every connector),
+//! its commands, its newest version and its plan mode. A new harness
+//! (Codex, say) is one more module here implementing it, one more
+//! `ConnectorKind`, and its line in [`connector`]; nothing else here or in
+//! the run changes. The app's side is its `ConnectorSpec` and its
+//! `ConnectorFields` (src/lib/connectors.ts).
 
 mod claude_code;
 mod harness;
@@ -94,6 +98,9 @@ pub struct Turn {
     /// worktree): it changes the project by landing, so git that changes
     /// the repository is denied to the harness's own tools.
     pub isolated: bool,
+    /// The run is in Plan mode: a harness running its own tools plans in
+    /// its own plan mode, changing nothing (Claude Code's `plan`).
+    pub plan_mode: bool,
     /// The harness's conversation for this chat, to continue; none starts one.
     pub session: Option<String>,
     /// The prompt for a new session when the one to continue is gone: the
@@ -244,6 +251,14 @@ pub trait Connector: Send + Sync {
     fn latest_version(&self) -> BoxFuture<'_, Option<String>> {
         Box::pin(async { None })
     }
+
+    /// Whether, running its own tools, it plans in a mode of its own when
+    /// the run is in Plan mode (`Turn::plan_mode`): it reads, changes
+    /// nothing, and its plan is the reply. Without one (the default), Plan
+    /// mode refuses its own tools, which would carry the plan out.
+    fn plan_mode(&self) -> bool {
+        false
+    }
 }
 
 /// The connector of a kind.
@@ -391,6 +406,7 @@ pub async fn run_chat(
         prompt,
         cwd: params.cwd.clone(),
         isolated: params.isolated,
+        plan_mode: params.plan_mode,
         session,
         recap,
         one_shot: !has_history,
@@ -803,8 +819,7 @@ args = sys.argv[1:]
 open(os.path.join(here, 'args.txt'), 'w').write(' '.join(args))
 prompt = sys.stdin.read()
 open(os.path.join(here, 'prompt.txt'), 'w').write(prompt)
-flag = '--system-prompt-file' if '--system-prompt-file' in args else '--append-system-prompt-file'
-open(os.path.join(here, 'system.txt'), 'w').write(open(args[args.index(flag) + 1]).read())
+open(os.path.join(here, 'system.txt'), 'w').write(open(args[args.index('--system-prompt-file') + 1]).read())
 server = json.load(open(args[args.index('--mcp-config') + 1]))['mcpServers']['rovik']
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def post(body):
