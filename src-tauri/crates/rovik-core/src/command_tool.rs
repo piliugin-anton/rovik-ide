@@ -457,120 +457,135 @@ fn run_blocking(
     let confine = queued
         .and_then(|q| q.confine.clone())
         .or_else(|| crate::overlay::confine::hiding_if_available(root));
-    let mut cmd = shell_command(command, confine.as_ref());
-    crate::process::no_window(&mut cmd)
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // Tools that page or prompt should just print and exit.
-        .env("GIT_PAGER", "cat")
-        .env("PAGER", "cat")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("CI", "1")
-        // Plain text: color codes only cost context and break matching.
-        .env("NO_COLOR", "1")
-        .env("CARGO_TERM_COLOR", "never");
-    for (key, value) in job.as_ref().map(|j| j.cpu_split_env()).unwrap_or_default() {
-        cmd.env(key, value);
-    }
-    for (key, value) in queued.map(|q| q.env.as_slice()).unwrap_or_default() {
-        cmd.env(key, value);
-    }
-    // A cloud host's toolchains, where the daemon shares them (toolchains):
-    // the versions' folders in front of the PATH, and rustup's home. Set
-    // here, so a command gets them whether or not it runs confined.
-    for (key, value) in crate::toolchains::env_for(root) {
-        cmd.env(key, value);
-    }
-    // Its own process group, so a timeout can take down everything the
-    // shell started (a `node server.js`), not just the shell.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to start the command: {e}"))?;
-    let tree = ProcessTree::of(&child);
-    if let Some(job) = &job {
-        job.spawned(child.id());
-    }
-
-    let whole = queued.is_some_and(|q| q.whole_output);
-    let (stdout, out_read) = drain(child.stdout.take().ok_or("no stdout")?, whole);
-    let (stderr, err_read) = drain(child.stderr.take().ok_or("no stderr")?, whole);
-
-    // Done when the shell has exited and the pipes are closed: a server the
-    // command left running in the background still holds them, and its
-    // output would never end, so it counts as running until the timeout.
-    let mut timed_out = false;
-    let mut stopped = false;
-    let mut exited = false;
-    loop {
-        if !exited {
-            exited = shell_exited(&mut child)
-                .map_err(|e| format!("failed to wait for the command: {e}"))?;
+    // One run of the command, from its start to its end.
+    let attempt = || -> Result<CommandOutput, String> {
+        let mut cmd = shell_command(command, confine.as_ref());
+        crate::process::no_window(&mut cmd)
+            .current_dir(root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            // Tools that page or prompt should just print and exit.
+            .env("GIT_PAGER", "cat")
+            .env("PAGER", "cat")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("CI", "1")
+            // Plain text: color codes only cost context and break matching.
+            .env("NO_COLOR", "1")
+            .env("CARGO_TERM_COLOR", "never");
+        for (key, value) in job.as_ref().map(|j| j.cpu_split_env()).unwrap_or_default() {
+            cmd.env(key, value);
         }
-        if exited && stdout.is_finished() && stderr.is_finished() {
-            break;
+        for (key, value) in queued.map(|q| q.env.as_slice()).unwrap_or_default() {
+            cmd.env(key, value);
         }
-        stopped = stop();
-        // Time it spent paused for lack of memory doesn't count.
-        let paused = job.as_ref().map(|j| j.paused()).unwrap_or_default();
-        timed_out = !stopped && started.elapsed().saturating_sub(paused) >= timeout;
-        if stopped || timed_out {
-            tree.kill(&mut child);
-            break;
+        // A cloud host's toolchains, where the daemon shares them (toolchains):
+        // the versions' folders in front of the PATH, and rustup's home. Set
+        // here, so a command gets them whether or not it runs confined.
+        for (key, value) in crate::toolchains::env_for(root) {
+            cmd.env(key, value);
         }
-        thread::sleep(Duration::from_millis(25));
-    }
-    // Reaped only now, after any kill of its tree: see shell_exited.
-    let status = child.wait().ok();
+        // Its own process group, so a timeout can take down everything the
+        // shell started (a `node server.js`), not just the shell.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to start the command: {e}"))?;
+        let tree = ProcessTree::of(&child);
+        if let Some(job) = &job {
+            job.spawned(child.id());
+        }
 
-    // A process that left the group (setsid, a detached daemon) may still
-    // hold the pipes after the kill; don't wait on the readers forever
-    // then: what they read so far is the output, cut.
-    let killed = timed_out || stopped;
-    let join = |handle: thread::JoinHandle<()>, read: Arc<Mutex<Draining>>| -> Drained {
-        if killed {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while !handle.is_finished() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(20));
+        let whole = queued.is_some_and(|q| q.whole_output);
+        let (stdout, out_read) = drain(child.stdout.take().ok_or("no stdout")?, whole);
+        let (stderr, err_read) = drain(child.stderr.take().ok_or("no stderr")?, whole);
+
+        // Done when the shell has exited and the pipes are closed: a server the
+        // command left running in the background still holds them, and its
+        // output would never end, so it counts as running until the timeout.
+        let mut timed_out = false;
+        let mut stopped = false;
+        let mut exited = false;
+        loop {
+            if !exited {
+                exited = shell_exited(&mut child)
+                    .map_err(|e| format!("failed to wait for the command: {e}"))?;
+            }
+            if exited && stdout.is_finished() && stderr.is_finished() {
+                break;
+            }
+            stopped = stop();
+            // Time it spent paused for lack of memory doesn't count.
+            let paused = job.as_ref().map(|j| j.paused()).unwrap_or_default();
+            timed_out = !stopped && started.elapsed().saturating_sub(paused) >= timeout;
+            if stopped || timed_out {
+                tree.kill(&mut child);
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        // Reaped only now, after any kill of its tree: see shell_exited.
+        let status = child.wait().ok();
+
+        // A process that left the group (setsid, a detached daemon) may still
+        // hold the pipes after the kill; don't wait on the readers forever
+        // then: what they read so far is the output, cut.
+        let killed = timed_out || stopped;
+        let join = |handle: thread::JoinHandle<()>, read: Arc<Mutex<Draining>>| -> Drained {
+            if killed {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !handle.is_finished() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+            let ended = handle.is_finished() || !killed;
+            if ended {
+                let _ = handle.join();
+            }
+            let read = read.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            read.finish(!ended)
+        };
+        let ((out, out_cut), out_whole) = join(stdout, out_read);
+        let ((err, err_cut), err_whole) = join(stderr, err_read);
+        let text = |b: Vec<u8>| String::from_utf8_lossy(&b).into_owned();
+        let whole = match (out_whole, err_whole) {
+            (None, None) => None,
+            (o, e) => Some((text(o.unwrap_or_default()), text(e.unwrap_or_default()))),
+        };
+        if !killed {
+            if let Some(job) = &job {
+                job.completed();
             }
         }
-        let ended = handle.is_finished() || !killed;
-        if ended {
-            let _ = handle.join();
-        }
-        let read = read.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        read.finish(!ended)
-    };
-    let ((out, out_cut), out_whole) = join(stdout, out_read);
-    let ((err, err_cut), err_whole) = join(stderr, err_read);
-    let text = |b: Vec<u8>| String::from_utf8_lossy(&b).into_owned();
-    let whole = match (out_whole, err_whole) {
-        (None, None) => None,
-        (o, e) => Some((text(o.unwrap_or_default()), text(e.unwrap_or_default()))),
-    };
-    if !killed {
-        if let Some(job) = &job {
-            job.completed();
-        }
-    }
 
-    Ok(CommandOutput {
-        exit_code: status.and_then(|s| s.code()),
-        stdout: String::from_utf8_lossy(&out).into_owned(),
-        stderr: String::from_utf8_lossy(&err).into_owned(),
-        timed_out,
-        stopped,
-        truncated: out_cut || err_cut,
-        duration_ms: started.elapsed().as_millis() as u64,
-        waited,
-        whole,
-    })
+        Ok(CommandOutput {
+            exit_code: status.and_then(|s| s.code()),
+            stdout: String::from_utf8_lossy(&out).into_owned(),
+            stderr: String::from_utf8_lossy(&err).into_owned(),
+            timed_out,
+            stopped,
+            truncated: out_cut || err_cut,
+            duration_ms: started.elapsed().as_millis() as u64,
+            waited: None,
+            whole,
+        })
+    };
+    // A command whose sandbox couldn't be made never started: it starts
+    // again (overlay/confine.rs `until_made`).
+    let unmade = |out: &CommandOutput| {
+        !out.stopped
+            && !out.timed_out
+            && confine.as_ref().is_some_and(|c| {
+                crate::overlay::confine::never_started(c, out.exit_code, &out.stdout, &out.stderr)
+            })
+    };
+    let mut out = crate::overlay::confine::until_made(attempt, unmade)?;
+    out.waited = waited;
+    Ok(out)
 }
 
 /// Runs `command` through the user's shell with the project root as the
@@ -949,5 +964,37 @@ mod tests {
             );
         }
         crate::toolchains::unset();
+    }
+
+    /// A command whose sandbox bubblewrap can't make never ran: it starts
+    /// again a moment later, and once five tries couldn't make it, it ends
+    /// with bwrap's reason, as before.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_command_whose_sandbox_cant_be_made_starts_again_then_says_why() {
+        let dir = crate::testing::temp_dir();
+        let project = dir.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        // The chat's view is gone: bwrap can't show it at the project's path.
+        let c = crate::overlay::confine::Confine::redirecting(dir.0.join("gone"), project.clone());
+        if !crate::overlay::confine::available(&c) {
+            eprintln!("no sandbox here shows a view at the project's path: skipped");
+            return;
+        }
+        let mut queued = Queued::of(crate::workload::JobKind::Terminal, None);
+        queued.confine = Some(c);
+        let out = run_blocking(
+            project.to_str().unwrap(),
+            "echo ran",
+            Duration::from_secs(10),
+            &|| false,
+            Some(&queued),
+        )
+        .unwrap();
+        assert_eq!(out.exit_code, Some(1), "{}", out.stderr);
+        assert_eq!(out.stdout, "");
+        assert!(out.stderr.starts_with("bwrap: "), "{}", out.stderr);
+        // Five tries, 25, 50, 75 and 100 ms apart.
+        assert!(out.duration_ms >= 250, "{} ms", out.duration_ms);
     }
 }

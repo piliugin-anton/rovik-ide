@@ -480,6 +480,14 @@ trait Mechanism: Sync {
     /// Whether the command sees no other process, and what it leaves
     /// running ends with it (bubblewrap's pid namespace).
     fn hides_processes(&self) -> bool;
+
+    /// Whether a command it confined that ended so (`code`, `stdout`,
+    /// `stderr`) never started: the sandbox couldn't be made, so nothing
+    /// ran and it may be tried again ([`until_made`]). Only bubblewrap
+    /// fails so.
+    fn never_started(&self, _code: Option<i32>, _stdout: &str, _stderr: &str) -> bool {
+        false
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -516,14 +524,22 @@ fn candidates() -> Vec<&'static dyn Mechanism> {
 
 /// Whether `mechanism` confines a command here: one that does nothing, run
 /// under `c`. Kernels and security modules may forbid what it needs, or its
-/// program may not be installed.
+/// program may not be installed. A sandbox that couldn't be made this once
+/// (a mount went away meanwhile) is made again ([`until_made`]): the
+/// session isn't left on the fallback for it.
 fn works(mechanism: &dyn Mechanism, c: &Confine) -> bool {
     let (program, args) = os::PROBE;
-    let mut cmd = mechanism.command(c, program, args);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    cmd.status().is_ok_and(|s| s.success())
+    let probe = || {
+        let mut cmd = mechanism.command(c, program, args);
+        cmd.stdin(Stdio::null());
+        cmd.output().map_err(|e| e.to_string())
+    };
+    let unmade = |out: &std::process::Output| {
+        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+        !out.status.success()
+            && mechanism.never_started(out.status.code(), &text(&out.stdout), &text(&out.stderr))
+    };
+    until_made(probe, unmade).is_ok_and(|out| out.status.success())
 }
 
 /// What the probe runs under: the process's temporary folder as the root.
@@ -589,6 +605,46 @@ pub fn command(c: &Confine, program: &str, args: &[&str]) -> Command {
             cmd.args(args);
             cmd
         }
+    }
+}
+
+/// Whether a command confined by `c` that ended so (`code`, `stdout`,
+/// `stderr`) never started: its sandbox couldn't be made ([`until_made`]).
+pub fn never_started(c: &Confine, code: Option<i32>, stdout: &str, stderr: &str) -> bool {
+    chosen()
+        .filter(|_| available(c))
+        .is_some_and(|m| m.never_started(code, stdout, stderr))
+}
+
+/// The most times a command is started while its sandbox can't be made.
+const SANDBOX_TRIES: u32 = 5;
+
+/// The pause before a command starts again, times the tries so far.
+const SANDBOX_PAUSE: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// `attempt` (a confined command, built and run), tried again while what
+/// it ended with says its sandbox couldn't be made (`unmade`), at most
+/// [`SANDBOX_TRIES`] times in all: 25 ms later, then 50, 75 and 100 ms
+/// after the try before. bubblewrap copies the system's mounts and makes
+/// them read-only one by one; one that goes away meanwhile (another chat's
+/// view unmounted) makes it give up, and a try once it's gone works.
+/// Nothing ran in such a try, so nothing runs twice. The last try's result
+/// is the one returned.
+pub fn until_made<T>(
+    mut attempt: impl FnMut() -> Result<T, String>,
+    unmade: impl Fn(&T) -> bool,
+) -> Result<T, String> {
+    let mut tries = 1;
+    loop {
+        let ended = attempt()?;
+        if tries == SANDBOX_TRIES || !unmade(&ended) {
+            return Ok(ended);
+        }
+        log::info!(
+            "a command's sandbox couldn't be made: trying again ({tries} of {SANDBOX_TRIES} tried)"
+        );
+        std::thread::sleep(SANDBOX_PAUSE * tries);
+        tries += 1;
     }
 }
 
@@ -811,6 +867,22 @@ mod linux {
 
         fn hides_processes(&self) -> bool {
             true
+        }
+
+        /// bwrap that can't make the sandbox exits with 1 before the
+        /// command starts, with one line of its own on stderr that says
+        /// why: "bwrap: Can't bind mount /oldroot/ on /newroot/: Unable to
+        /// apply mount flags: remount …: Invalid argument" when a mount
+        /// went away while it made them read-only, "Can't find source
+        /// path" for a folder removed meanwhile. A command that ran and
+        /// failed has its own output; one that printed only such a line (a
+        /// bwrap of its own that couldn't make its sandbox) is tried again
+        /// too, as the user would.
+        fn never_started(&self, code: Option<i32>, stdout: &str, stderr: &str) -> bool {
+            code == Some(1)
+                && stdout.is_empty()
+                && stderr.starts_with("bwrap: ")
+                && stderr.trim_end().lines().count() == 1
         }
     }
 
@@ -1991,5 +2063,92 @@ mod tests {
         assert_eq!(hides_processes(), name == Some("bwrap"));
         // Anything but bubblewrap at work says what's missing.
         assert_eq!(status.detail.is_none(), name == Some("bwrap"));
+    }
+
+    /// A command bwrap couldn't make the sandbox for never started; one
+    /// that ran, failed or not, did.
+    #[test]
+    fn a_sandbox_bwrap_couldnt_make_is_told_from_a_command_that_failed() {
+        let (root, mut c) = fresh("confineunmade", &[]);
+        let never_started = |out: &std::process::Output| {
+            let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+            BWRAP.never_started(out.status.code(), &text(&out.stdout), &text(&out.stderr))
+        };
+        for script in [
+            "true",
+            "exit 1",
+            "echo failed >&2; exit 1",
+            "echo out; exit 1",
+        ] {
+            let Some(out) = run(&c, &root, script) else {
+                return;
+            };
+            assert!(!never_started(&out), "{script}");
+        }
+        // The view to show at the project's path is gone: bwrap can't bind
+        // it, and the command doesn't run.
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        c.view = root.join("gone");
+        c.project = project;
+        let out = BWRAP
+            .command(&c, "/bin/sh", &["-c", "echo ran"])
+            .output()
+            .unwrap();
+        assert!(
+            never_started(&out),
+            "{:?} {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod until_made_tests {
+    use super::*;
+
+    /// `until_made` over `ends`, one per try (`Ok(true)`: its sandbox
+    /// couldn't be made; `Ok(false)`: the command ran): what it returned,
+    /// and how many tries it took.
+    fn tried(ends: &[Result<bool, &str>]) -> (Result<bool, String>, usize) {
+        let mut tries = 0;
+        let ended = until_made(
+            || {
+                tries += 1;
+                ends[tries - 1].map_err(String::from)
+            },
+            |unmade: &bool| *unmade,
+        );
+        (ended, tries)
+    }
+
+    /// A command whose sandbox couldn't be made starts again, a moment
+    /// later, until it's made.
+    #[test]
+    fn a_command_whose_sandbox_couldnt_be_made_starts_again_until_it_is() {
+        assert_eq!(tried(&[Ok(true), Ok(false)]), (Ok(false), 2));
+        assert_eq!(tried(&[Ok(true), Ok(true), Ok(false)]), (Ok(false), 3));
+    }
+
+    /// A command that ran, failed or not, never runs again, nor one that
+    /// couldn't be started at all.
+    #[test]
+    fn a_command_that_ran_or_couldnt_be_started_isnt_tried_again() {
+        assert_eq!(tried(&[Ok(false), Ok(false)]), (Ok(false), 1));
+        assert_eq!(
+            tried(&[Err("no shell"), Ok(false)]),
+            (Err("no shell".into()), 1)
+        );
+    }
+
+    /// A sandbox that can't be made is tried a few times in all; the last
+    /// try's result is what the caller gets.
+    #[test]
+    fn a_sandbox_that_cant_be_made_is_tried_a_few_times_then_reported() {
+        let mut ends = vec![Ok(true); SANDBOX_TRIES as usize];
+        ends.push(Ok(false));
+        assert_eq!(tried(&ends), (Ok(true), SANDBOX_TRIES as usize));
     }
 }
