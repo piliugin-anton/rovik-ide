@@ -22,8 +22,16 @@
 // (components/connectorFields.ts).
 import { invoke } from '@tauri-apps/api/core';
 import { createSignal } from 'solid-js';
-import type { ConnectorKind, ModelProfile, Provider, ProviderModel } from '../types';
+import type {
+  ChatMessage,
+  ChatToolCall,
+  ConnectorKind,
+  ModelProfile,
+  Provider,
+  ProviderModel,
+} from '../types';
 import { plural } from './textUtils';
+import { isErrorResult } from './toolArgs';
 import type { RemoteModel } from './aiSettings';
 import { notify } from './notifications';
 import { CLAUDE_CODE } from './claudeCode';
@@ -60,6 +68,19 @@ export interface ConnectorSpec {
    * mode isn't offered with its own tools, which would carry the plan out.
    */
   planMode: boolean;
+  /**
+   * One of its own tool calls as the chat shows it: as the call of Rovik's
+   * tool of the same kind, its arguments as that one takes them, so its
+   * line and block read as Rovik's do (`connectorSegments`). None for a
+   * tool Rovik has none like: shown by its own name and input.
+   */
+  chatCall: (name: string, input: Record<string, unknown>) => ChatCall | undefined;
+}
+
+/** A call of one of Rovik's tools: its name and its arguments. */
+export interface ChatCall {
+  name: string;
+  arguments: Record<string, unknown>;
 }
 
 /** What can be connected: each kind, for the "Add connector" menu. */
@@ -452,6 +473,15 @@ export interface HarnessStep {
   ok?: boolean | null;
   /** A subagent's step: the call that started the subagent. */
   parent?: string | null;
+  /** A stretch of thinking rather than a tool call: its text so far (a summary). */
+  thinking?: string | null;
+  /** How long that thinking took, once it's over (ms). */
+  ms?: number | null;
+}
+
+/** A stretch of the harness's thinking, among its steps but not one it ran. */
+export function isThought(step: HarnessStep): boolean {
+  return typeof step.thinking === 'string';
 }
 
 export interface ConnectorUsage {
@@ -496,62 +526,80 @@ export interface ConnectorMeta {
   rovikTools?: boolean;
 }
 
-/** "Read src/a.rs", "Bash npm test", "Edit foo.ts": a step in a few words. */
-export function stepLabel(step: HarnessStep): string {
-  const input = (step.input ?? {}) as Record<string, unknown>;
-  const str = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '');
-  const what =
-    str('file_path') ||
-    str('path') ||
-    str('command') ||
-    str('pattern') ||
-    str('query') ||
-    str('url') ||
-    str('description') ||
-    str('prompt') ||
-    str('skill') ||
-    '';
-  const short = what.length > 80 ? `${what.slice(0, 77)}…` : what;
-  return short ? `${step.name} ${short}` : step.name;
+/** One of a connector's tool steps as the chat shows it: Rovik's call, and its result as a tool's. */
+export interface ChatStep {
+  call: ChatToolCall;
+  /** Once the step has one. */
+  result?: ChatMessage;
 }
 
-function compact(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
+/** What a reply's harness did, in order: a stretch of its thinking, or the tool calls between two. */
+export type ConnectorSegment = { thought: HarnessStep } | { calls: ChatStep[] };
+
+/** A step's chat form as last made, to give it back while the step doesn't change. */
+export interface KeptStep {
+  key: string;
+  call: ChatToolCall;
+  resultKey?: string;
+  result?: ChatMessage;
 }
 
 /**
- * "Claude Code · claude-sonnet-5 · 7 steps · 12.3k tokens (8.1k cached) · $0.04 · 3 turns";
- * while it runs, `state` (`Stopping…`, `waiting for your approval`), else "working…" until a step.
+ * A reply's steps as the chat shows them, in order: its thoughts apart,
+ * the tool calls between them as Rovik's calls of the same kind (the
+ * kind's `chatCall`), each with its result as a tool's. Its subagents'
+ * steps aren't the reply's: the call that started one has its report.
+ * With `kept`, a step that hasn't changed gives the same objects as
+ * before, so the chat's blocks keep their state while the reply goes on.
  */
-export function connectorHeadline(meta: ConnectorMeta, running: boolean, state?: string): string {
-  const parts: string[] = [];
-  const kind = meta.kind ? connectorTitle(meta.kind as ConnectorKind) : 'Connector';
-  parts.push(kind);
-  const model = meta.usage?.connector?.model ?? meta.model;
-  if (model) parts.push(model);
-  const steps = meta.steps?.length ?? 0;
-  if (steps) parts.push(plural(steps, 'step'));
-  if (running && state) parts.push(state);
-  else if (running && !steps && !meta.rovikTools) parts.push('working…');
-  const u = meta.usage;
-  if (u) {
-    const tokens = (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0);
-    const cached = u.prompt_tokens_details?.cached_tokens ?? 0;
-    if (tokens)
-      parts.push(`${compact(tokens)} tokens${cached ? ` (${compact(cached)} cached)` : ''}`);
-    // A command run without a request to the model (`/context`) cost nothing to say.
-    if (u.cost !== undefined && (u.cost > 0 || tokens > 0)) {
-      const cost = `$${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}`;
-      // With Rovik's tools, a run of Claude Code's spans several replies:
-      // its cost comes with the last.
-      parts.push(u.connector?.costCovers === 'harnessTurn' ? `${cost} for its run` : cost);
+export function connectorSegments(
+  meta: ConnectorMeta,
+  kept: Map<string, KeptStep> = new Map()
+): ConnectorSegment[] {
+  const spec = connectorSpec(meta.kind as ConnectorKind);
+  const segments: ConnectorSegment[] = [];
+  for (const step of meta.steps ?? []) {
+    if (step.parent) continue;
+    if (isThought(step)) {
+      segments.push({ thought: step });
+      continue;
     }
-    const turns = u.connector?.numTurns;
-    if (turns && turns > 1) parts.push(plural(turns, 'turn'));
+    const chat = chatStep(step, spec, kept);
+    const last = segments[segments.length - 1];
+    if (last && 'calls' in last) last.calls.push(chat);
+    else segments.push({ calls: [chat] });
   }
-  return parts.join(' · ');
+  return segments;
+}
+
+/** A tool step as Rovik's call, and its result once it has one ("Error: …" when it failed). */
+function chatStep(
+  step: HarnessStep,
+  spec: ConnectorSpec | undefined,
+  kept: Map<string, KeptStep>
+): ChatStep {
+  const input =
+    step.input && typeof step.input === 'object' ? (step.input as Record<string, unknown>) : {};
+  const like = spec?.chatCall(step.name, input);
+  const name = like?.name ?? step.name;
+  const args = JSON.stringify(like?.arguments ?? input);
+  const key = `${name}\n${args}`;
+  let entry = kept.get(step.id);
+  if (!entry || entry.key !== key) {
+    entry = { key, call: { id: step.id, name, arguments: args } };
+    kept.set(step.id, entry);
+  }
+  if (step.ok === undefined || step.ok === null) return { call: entry.call };
+  const text = step.result ?? '';
+  const content = step.ok || isErrorResult(text) ? text : `Error: ${text}`;
+  if (entry.resultKey !== content) {
+    entry.resultKey = content;
+    // The harness's own output, cut short: nothing in it is read as Rovik's
+    // tools' results are (an exit code, a count), which it doesn't say.
+    const meta = {};
+    entry.result = { id: `${step.id}:result`, role: 'tool', content, tool_call_id: step.id, meta };
+  }
+  return { call: entry.call, result: entry.result };
 }
 
 /** What the reply used, as the subagents' totals count it (subagents.ts). */

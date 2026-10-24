@@ -300,6 +300,137 @@ async fn claude_code_in_plan_mode_plans_in_its_own_and_changes_nothing() {
     assert_eq!(roles, ["user", "assistant"], "{messages:#?}");
 }
 
+/// The kinds of a reply's steps, in order: each thought's text, each
+/// tool's name.
+fn step_kinds(steps: &[Value]) -> Vec<String> {
+    steps
+        .iter()
+        .map(|s| match s["thinking"].as_str() {
+            Some(text) => format!("thought:{text}"),
+            None => format!("step:{}", s["name"].as_str().unwrap_or("")),
+        })
+        .collect()
+}
+
+/// With its own tools, Claude Code's thinking is asked for and shows in
+/// its place among its steps, each stretch timed: in the reply's record,
+/// not as a reasoning of the reply's own.
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_code_s_thinking_shows_in_its_place_among_its_steps() {
+    let h = harness(&[("src/a.txt", "one\n")]).await;
+    let event =
+        |e: Value| json!({"type":"stream_event","event":e,"parent_tool_use_id":null}).to_string();
+    let thought = |text: &str| {
+        [
+            event(
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
+            ),
+            event(
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":text}}),
+            ),
+            event(json!({"type":"content_block_stop","index":0})),
+        ]
+    };
+    let mut lines = vec![
+        json!({"type":"system","subtype":"init","session_id":"s-5","model":"claude-sonnet-5"})
+            .to_string(),
+        event(json!({"type":"message_start","message":{"id":"m1"}})),
+    ];
+    lines.extend(thought("Read a.txt first."));
+    lines.extend([
+        json!({"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/a.txt"}}]},"parent_tool_use_id":null}).to_string(),
+        json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"one"}]},"parent_tool_use_id":null}).to_string(),
+        event(json!({"type":"message_start","message":{"id":"m2"}})),
+    ]);
+    lines.extend(thought("It says one."));
+    lines.extend([
+        event(json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"It says one."}})),
+        json!({"type":"result","subtype":"success","is_error":false,"result":"It says one.","usage":{},"num_turns":2}).to_string(),
+    ]);
+    let script = format!(
+        "echo \"$@\" > \"$(dirname \"$0\")/args.txt\"\ncat > /dev/null\ncat <<'EOF'\n{}\nEOF\n",
+        lines.join("\n")
+    );
+    let program = crate::connectors::fake_claude(&h._dir.0, &script);
+    h.start(own_tools_send(
+        &h,
+        &program,
+        "agent",
+        "What does a.txt say?",
+    ))
+    .await
+    .unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    let messages = h.messages().await;
+    let reply = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .unwrap();
+    assert_eq!(reply.content, "It says one.");
+    let meta = reply.meta.clone().unwrap();
+    let steps = meta["connector"]["steps"].as_array().unwrap();
+    assert_eq!(
+        step_kinds(steps),
+        [
+            "thought:Read a.txt first.",
+            "step:Read",
+            "thought:It says one."
+        ]
+    );
+    assert!(
+        steps[0]["ms"].is_u64() && steps[2]["ms"].is_u64(),
+        "{steps:#?}"
+    );
+    assert!(meta.get("reasoning").is_none(), "{meta:#}");
+    let args = std::fs::read_to_string(h._dir.0.join("args.txt")).unwrap();
+    assert!(args.contains("--thinking-display summarized"), "{args}");
+}
+
+/// The real Claude Code with its own tools: its thinking comes back, as a
+/// summary, among the steps of its reply.
+///   ROVIK_REAL_CLAUDE=1 cargo test -p rovik-core real_claude -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "runs the real claude: set ROVIK_REAL_CLAUDE=1 and pass --ignored"]
+async fn real_claude_code_s_thinking_shows_among_its_steps() {
+    if std::env::var("ROVIK_REAL_CLAUDE").is_err() {
+        return;
+    }
+    let h = harness(&[("prices.txt", "bat and ball: 1.10 in total\n")]).await;
+    let send = Harness::send(
+        "Read prices.txt. The bat costs 1.00 more than the ball: what does the ball cost? Think it through, then answer in one line.",
+    );
+    let mut request = h.request("connector://claude-code", send, quiet_permissions());
+    request.profile.id = "cc::haiku".into();
+    request.profile.model = "haiku".into();
+    request.profile.no_tools = true;
+    request.profile.connector = Some(json!({ "permissionMode": "bypassPermissions" }));
+    request.options = Some(serde_json::from_value(json!({ "reasoning_effort": "high" })).unwrap());
+    h.start(request).await;
+    let end = h.run_end_within(Duration::from_secs(300)).await;
+    let messages = h.messages().await;
+    let reply = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .unwrap();
+    let meta = reply.meta.clone().unwrap_or_default();
+    let steps = meta["connector"]["steps"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    eprintln!("{end}: {:#?}\n{}", step_kinds(&steps), reply.content);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s["thinking"].as_str().is_some_and(|t| !t.trim().is_empty())),
+        "no thinking among its steps: {steps:#?}"
+    );
+    assert!(meta.get("reasoning").is_none(), "{meta:#}");
+}
+
 /// Autopilot needs Rovik's tools: a send on a connector running its own
 /// is refused with why, before anything is stored.
 #[cfg(unix)]
