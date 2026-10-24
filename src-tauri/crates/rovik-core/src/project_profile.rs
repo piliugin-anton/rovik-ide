@@ -467,6 +467,20 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
  * src-tauri/)
  * ------------------------------------------------------------------------- */
 
+/// `word` as one word of a check's command, which runs in `sh` here and in
+/// `cmd.exe` on Windows: as it is when it's plain, in double quotes (which
+/// both read alike) when it has spaces. None when it holds what either
+/// would expand or end a word at (`$`, `%`, quotes, `&`…): no command is
+/// suggested with it.
+fn command_word(word: &str) -> Option<String> {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "-_./".contains(c);
+    if word.chars().all(plain) {
+        return Some(word.to_string());
+    }
+    let quotable = |c: char| plain(c) || c == ' ' || (!c.is_ascii() && !c.is_control());
+    word.chars().all(quotable).then(|| format!("\"{word}\""))
+}
+
 fn detect_rust(root: &Path, profile: &mut ProjectProfile) {
     let mut manifests: Vec<String> = Vec::new();
     if root.join("Cargo.toml").is_file() {
@@ -514,8 +528,11 @@ fn detect_rust(root: &Path, profile: &mut ProjectProfile) {
         let (arg, mut source) = if dir.is_empty() {
             (String::new(), "Cargo.toml".to_string())
         } else {
+            let Some(path) = command_word(&format!("{dir}/Cargo.toml")) else {
+                continue;
+            };
             (
-                format!(" --manifest-path {dir}/Cargo.toml"),
+                format!(" --manifest-path {path}"),
                 format!("{dir}/Cargo.toml"),
             )
         };
@@ -848,6 +865,32 @@ mod tests {
             serde_json::from_str(&strip_jsonc("{ \"a\": \"//x,}\", /* c */ \"b\": [1, ], }"))
                 .unwrap();
         assert_eq!(v, serde_json::json!({"a": "//x,}", "b": [1]}));
+    }
+
+    /// A crate in a folder with a space gets its path quoted, as both `sh`
+    /// and `cmd.exe` read it; one whose name a shell would expand gets no
+    /// command at all.
+    #[test]
+    fn a_crates_folder_is_one_word_of_its_command() {
+        let p = detect(&project(&[("my app/Cargo.toml", "[package]")]));
+        assert!(
+            commands(&p).contains(
+                &"typecheck: cargo check --manifest-path \"my app/Cargo.toml\"".to_string()
+            ),
+            "{:?}",
+            commands(&p)
+        );
+        let p = detect(&project(&[("x$(id)/Cargo.toml", "[package]")]));
+        assert!(
+            !commands(&p).iter().any(|c| c.contains("cargo")),
+            "{:?}",
+            commands(&p)
+        );
+        assert_eq!(command_word("a;b"), None);
+        assert_eq!(
+            command_word("src-tauri/Cargo.toml").as_deref(),
+            Some("src-tauri/Cargo.toml")
+        );
     }
 
     #[test]

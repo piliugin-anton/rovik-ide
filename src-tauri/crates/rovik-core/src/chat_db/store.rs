@@ -734,26 +734,29 @@ fn attach_attachments(conn: &Connection, messages: &mut [MessageRow]) -> DbResul
     if messages.is_empty() {
         return Ok(());
     }
-    let placeholders = vec!["?"; messages.len()].join(",");
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT message_id, attachment_id FROM message_attachments
-             WHERE message_id IN ({placeholders}) ORDER BY message_id, position"
-        ))
-        .map_err(err)?;
     let mut by_message: HashMap<String, Vec<String>> = HashMap::new();
-    let rows = stmt
-        .query_map(
-            params_from_iter(messages.iter().map(|m| m.id.as_str())),
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .map_err(err)?;
-    for row in rows {
-        let (message_id, attachment_id) = row.map_err(err)?;
-        by_message
-            .entry(message_id)
-            .or_default()
-            .push(attachment_id);
+    // 500 at a time, as the other lookups by id: SQLite takes only so many
+    // parameters in one statement (32766, 999 before 3.32).
+    for chunk in messages.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT message_id, attachment_id FROM message_attachments
+                 WHERE message_id IN ({placeholders}) ORDER BY message_id, position"
+            ))
+            .map_err(err)?;
+        let rows = stmt
+            .query_map(params_from_iter(chunk.iter().map(|m| m.id.as_str())), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(err)?;
+        for row in rows {
+            let (message_id, attachment_id) = row.map_err(err)?;
+            by_message
+                .entry(message_id)
+                .or_default()
+                .push(attachment_id);
+        }
     }
     for m in messages.iter_mut() {
         if let Some(list) = by_message.remove(&m.id) {

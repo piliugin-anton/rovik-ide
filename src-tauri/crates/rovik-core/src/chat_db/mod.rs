@@ -302,7 +302,14 @@ impl Presence {
         };
         if self.alone {
             write_marker(file, RUNNING);
-            let _ = file.unlock();
+            // On Unix the lock turns shared in place (flock changes it in
+            // the kernel's one step): let go of first, another process
+            // starting that moment could take it whole and think itself
+            // alone. Windows takes no second lock on a handle that holds
+            // one.
+            if cfg!(windows) {
+                let _ = file.unlock();
+            }
             let _ = file.lock_shared();
         }
     }
@@ -314,11 +321,17 @@ impl Presence {
         let Some(mut file) = self.file.take() else {
             return;
         };
-        let _ = file.unlock();
-        if file.try_lock().is_ok() {
-            write_marker(&mut file, CLEAN);
+        // On Unix the shared lock turns whole in place (flock's one step),
+        // when no one else shares it: let go of first, a process starting
+        // that moment could take it and find it marked as left cleanly
+        // while it runs.
+        if cfg!(windows) {
             let _ = file.unlock();
         }
+        if file.try_lock().is_ok() {
+            write_marker(&mut file, CLEAN);
+        }
+        let _ = file.unlock();
     }
 }
 

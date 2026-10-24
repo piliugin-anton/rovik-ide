@@ -918,6 +918,18 @@ pub fn add_focus_note(messages: &mut [Msg], note: &str) {
 }
 
 /// The budget rules with the default token estimate (tests).
+/// The characters of a body kept outside the database, before it's read:
+/// its `bytes` at the rate its stored preview has characters per byte
+/// (one for ASCII, a third for CJK). Bytes alone made a non-ASCII body
+/// look up to four times its size until it was read.
+fn estimated_chars(bytes: usize, preview: &str) -> usize {
+    if preview.is_empty() {
+        return bytes;
+    }
+    let (chars, len) = (preview.chars().count(), preview.len());
+    bytes.saturating_mul(chars).div_ceil(len)
+}
+
 #[cfg(test)]
 pub fn fit(messages: Vec<Msg>, budget: usize, accepts: Accepts) -> (Vec<Msg>, FitInfo) {
     fit_with(
@@ -1313,7 +1325,11 @@ pub fn load_messages_in(
             let typed = sent_content(&m).map(|_| m.content.clone());
             let (text, full_chars, needs_body) = match sent_content(&m) {
                 Some(sent) => (sent.to_string(), sent.chars().count(), false),
-                None if m.body_external => (m.content.clone(), m.body_bytes as usize, true),
+                None if m.body_external => (
+                    m.content.clone(),
+                    estimated_chars(m.body_bytes as usize, &m.content),
+                    true,
+                ),
                 None => (m.content.clone(), m.content.chars().count(), false),
             };
             let attachments = attachments_of(&m);
@@ -1610,6 +1626,19 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, accepts: Accepts, gemini: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A body kept outside the database counts its characters, not its
+    /// bytes, before it's read: by the rate of its preview.
+    #[test]
+    fn an_external_bodys_size_is_estimated_in_characters() {
+        assert_eq!(estimated_chars(9000, "plain ascii"), 9000);
+        let cjk = "日本語のテキスト";
+        assert_eq!(
+            estimated_chars(cjk.len() * 100, cjk),
+            cjk.chars().count() * 100
+        );
+        assert_eq!(estimated_chars(42, ""), 42);
+    }
 
     /// A model that takes images (Vision), and one that takes text only.
     const IMAGES: Accepts = Accepts {

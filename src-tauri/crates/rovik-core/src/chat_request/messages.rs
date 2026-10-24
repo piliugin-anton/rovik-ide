@@ -66,7 +66,10 @@ fn normalized(raw: &Map<String, Value>) -> Value {
 }
 
 /// An `error` event (`{"type":"error","error":{"type":…,"message":…}}`),
-/// classified by its type as the HTTP status it stands for.
+/// classified by its type as the HTTP status it stands for. The type says
+/// whose fault it is, as a bare status in another API's stream doesn't: an
+/// `invalid_request_error` is the request's, which the caller can change
+/// and send again (anthropic.rs `adjust`), not one to wait out and retry.
 fn stream_error(value: &Value) -> ChatError {
     let error = value
         .get("error")
@@ -89,6 +92,13 @@ fn stream_error(value: &Value) -> ChatError {
         .get("message")
         .and_then(|m| m.as_str())
         .unwrap_or("The provider reported an error.");
+    if code == Some(400) {
+        return ChatError::new(
+            ErrorKind::BadRequest,
+            format!("The request was rejected: {message}"),
+        )
+        .with_details(value.to_string());
+    }
     let mut body = json!({ "error": { "message": message } });
     if let Some(code) = code {
         body["error"]["code"] = json!(code);
@@ -747,8 +757,11 @@ mod tests {
         assert!(overloaded.retryable);
         assert_eq!(error("rate_limit_error").kind, ErrorKind::RateLimited);
         assert_eq!(error("api_error").kind, ErrorKind::ServerError);
-        // A refused request reported in the stream: the upstream's fault.
-        assert_eq!(error("invalid_request_error").kind, ErrorKind::Provider);
+        // A refused request reported in the stream, by its type: the
+        // request's, to change and send again, not to retry as it was.
+        let refused = error("invalid_request_error");
+        assert_eq!(refused.kind, ErrorKind::BadRequest);
+        assert!(!refused.retryable);
         assert_eq!(error("something_new").kind, ErrorKind::Provider);
     }
 

@@ -89,22 +89,25 @@ impl Slots {
             return true;
         };
         let mine: Vec<usize> = self.held.values().map(|(n, _)| *n).collect();
-        for n in (1..=within.min(MOST)).filter(|n| !mine.contains(n)) {
-            match crate::os_lock::try_hold(&Self::path(&dir, n)) {
-                Ok(Some(lock)) => {
-                    self.held.insert(id, (n, lock));
-                    return true;
-                }
-                Ok(None) => {}
-                // A slot that can't be locked isn't counted anywhere: this
-                // process goes on as if alone.
-                Err(e) => {
-                    eprintln!("heavy slots: {e}");
-                    return true;
-                }
+        let free: Vec<usize> = (1..=within.min(MOST))
+            .filter(|n| !mine.contains(n))
+            .collect();
+        let paths: Vec<PathBuf> = free.iter().map(|n| Self::path(&dir, *n)).collect();
+        // All tried at once: this runs under the queue's lock, which every
+        // other job waits on meanwhile.
+        match crate::os_lock::try_hold_first(&paths) {
+            Ok(Some((i, lock))) => {
+                self.held.insert(id, (free[i], lock));
+                true
+            }
+            Ok(None) => false,
+            // A slot that can't be locked isn't counted anywhere: this
+            // process goes on as if alone.
+            Err(e) => {
+                eprintln!("heavy slots: {e}");
+                true
             }
         }
-        false
     }
 
     pub(super) fn release(&mut self, id: u64) {
