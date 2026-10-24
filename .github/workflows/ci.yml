@@ -40,8 +40,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `threads`: tests at once, three per core. Most of them wait (for
-          # a scripted model, a timer, a child process) rather than compute.
+          # `threads`: tests at once. Most of them wait (for a scripted
+          # model, a timer, a child process) rather than compute: three per
+          # core on Linux. Two on macOS and Windows, where starting a
+          # program costs more, and three made tests that time real tools
+          # (npx, PowerShell) miss their limits.
           - name: Linux
             runner: ubuntu-latest
             threads: 12
@@ -59,26 +62,17 @@ jobs:
           # on Windows it's a stub that says so.
           - name: macOS
             runner: macos-latest
-            threads: 9
+            threads: 6
             filter: 'not package(rovik-agentd)'
           - name: Windows
             runner: windows-latest
-            threads: 12
+            threads: 8
             args: --exclude rovik-agentd
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     # Each system's own shell (PowerShell on Windows), so the tests run in
     # the environment a developer's have.
     steps:
-      # The runner's own toolchains this build doesn't use: room for the
-      # test binaries. In the background, with nothing of the step's left
-      # open: nothing needs the room before the build, a minute later.
-      - name: Free disk space
-        if: runner.os == 'Linux'
-        run: |
-          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
-            < /dev/null > /dev/null 2>&1 &
       # Windows' git writes CRLF line ends on checkout; the tests read the
       # files as they're committed.
       - name: Keep line ends as committed
@@ -133,6 +127,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The runner's own toolchains this build doesn't use: room for the
+      # test binaries. In the background, with nothing of the step's left
+      # open, beside the build: the room is there before the build needs
+      # it, and the deletion doesn't slow the steps that write the disk
+      # (the packages, the cache).
+      - name: Free disk space
+        if: runner.os == 'Linux'
+        run: |
+          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            < /dev/null > /dev/null 2>&1 &
       # Every test runs, each in a process of its own
       # (src-tauri/.config/nextest.toml), so one run shows each that fails.
       - name: cargo nextest run
