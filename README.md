@@ -1055,9 +1055,14 @@ for an approval, with the reason and what to do instead
   print a line of one, which is looked for there, in the files it would
   pick (build output too, not dependencies): `grep -r useState .` runs,
   `grep -r API_KEY .` doesn't, nor one through more files than can be
-  checked. A program that only uses one runs
-  (`node --env-file=.env`), as does a script of the project's: commands
-  are judged by their words. What git itself prints isn't checked:
+  checked. Files a command's words don't name are judged by what lists
+  them (`for f in .env*; do cat "$f"; done`, `find … -exec cat {} +`,
+  `… | xargs cat`), and code given to an interpreter
+  (`python3 -c "open('.env')"`) by the files it names. Loading one into
+  the environment (`source .env`) is using it, unless the command prints
+  the variables (`echo $API_KEY`, `env`). A program that only uses one
+  runs (`node --env-file=.env`), as does a script of the project's:
+  commands are judged by their words. What git itself prints isn't checked:
   `git diff`, `git log -p` and `git grep` show a restricted file the
   repository tracks, so credentials belong in files git ignores
   (`.env.local`).

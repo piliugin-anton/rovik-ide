@@ -9,11 +9,17 @@
 //! too (`bash -c '…'`), from the folder `cd` left it in. A search (`grep`,
 //! `rg`) is refused only when it would print a line of one: in the files
 //! it's given and those it picks in its folders, as it picks them, a line
-//! its pattern matches (looked for here, never shown). A program that only
-//! uses such a file runs (`node --env-file=.env`, `docker compose up`), as
-//! does one whose reading can't be told from its words (a script of the
-//! project's): what runs at all is the allowed commands' and the
-//! approvals' to decide.
+//! its pattern matches (looked for here, never shown). Files a program's
+//! words don't name (`cat "$f"`, `xargs cat`, `find … -exec cat {} +`)
+//! are judged by what lists them: `find`'s or a search's files, or the
+//! command's words (`for f in .env*`). What a substitution runs (`$(cat
+//! .env)`) is a command of its own, but loading a file into variables
+//! (`source .env`, `export $(grep -v '^#' .env | xargs)`) uses it, unless
+//! the command prints them. A program that only uses such a file runs
+//! (`node --env-file=.env`, `docker compose up`), as does one whose reading
+//! can't be told from its words (a script of the project's; code given on
+//! an interpreter's command line, by the files it names in quotes): what
+//! runs at all is the allowed commands' and the approvals' to decide.
 
 use super::permissions::{self, ParsedCommand, Shell};
 use super::tools;
@@ -261,12 +267,43 @@ impl Check<'_> {
     /// `command`, read as `shell` reads it, run in `cwd`.
     fn command(&self, command: &str, shell: Shell, cwd: &Path, depth: usize) -> Option<String> {
         let parsed = permissions::parse_command_in(command, shell);
+        let inner = if depth < MAX_DEPTH {
+            substitutions(command)
+        } else {
+            Vec::new()
+        };
+        // The restricted files whose text it loads into variables
+        // (`source .env`, `export $(grep -v '^#' .env | xargs)`): used, as
+        // long as it doesn't print them.
+        let mut loaded: Vec<String> = inner
+            .iter()
+            .filter(|inner| inner.loads)
+            .flat_map(|inner| self.named(cwd, &inner.text, Op::Read))
+            .collect();
+        // What runs inside its words, first: the words around it aren't
+        // what the shell makes of them.
+        let run_inside = |cwd: &Path| {
+            inner
+                .iter()
+                .filter(|inner| !inner.loads)
+                .find_map(|inner| self.command(&inner.text, Shell::Posix, cwd, depth + 1))
+        };
+        if let Some(problem) = run_inside(cwd) {
+            return Some(problem);
+        }
         let mut place = Place::new(cwd);
         for (at, segment) in parsed.segments.iter().enumerate() {
             if let Some(problem) = self.redirects(&parsed, at, &place.cwd) {
                 return Some(problem);
             }
-            let words = past_keywords(segment);
+            if let Some(file) = loaded.first().filter(|_| prints_variables(segment)) {
+                return Some(format!(
+                    "Error: `{}` would print the values it loads from {file}, a restricted file: {}",
+                    self.whole,
+                    reason(Op::Read)
+                ));
+            }
+            let (words, from_input) = past_keywords(segment);
             if depth < MAX_DEPTH {
                 let inner = permissions::inner_scripts(words)
                     .iter()
@@ -284,9 +321,21 @@ impl Check<'_> {
             if place.moves(&program, args) {
                 continue;
             }
+            if matches!(program.as_str(), "source" | ".") {
+                let file = args.first();
+                loaded.extend(file.and_then(|file| self.blocked(&place.cwd, file, Op::Read)));
+                continue;
+            }
             // Its input is the one before's output: a search of it reads no file.
             let piped = at > 0 && parsed.piped[at - 1];
-            if let Some(problem) = self.program(&place.cwd, &program, args, piped) {
+            let run = Run {
+                cwd: &place.cwd,
+                program: &program,
+                args,
+                piped,
+                from_input,
+            };
+            if let Some(problem) = self.program(&run) {
                 return Some(problem);
             }
         }
@@ -294,81 +343,115 @@ impl Check<'_> {
         if let Some(problem) = self.redirects(&parsed, parsed.segments.len(), &place.cwd) {
             return Some(problem);
         }
-        if parsed.opaque {
-            return self.opaque(command, &place.cwd);
-        }
-        None
+        // What runs inside its words, from the other folders it went to.
+        place.visited[1..].iter().find_map(|cwd| run_inside(cwd))
     }
 
     /// Why the redirects of the segment `at` may not happen from `cwd`,
     /// where it runs: `< f` reads a restricted file, `> f` changes one.
     fn redirects(&self, parsed: &ParsedCommand, at: usize, cwd: &Path) -> Option<String> {
         let reads = of_segment(&parsed.reads_from, &parsed.reads_in, at);
-        if let Some(file) = reads.iter().find_map(|f| self.blocked(cwd, f, Op::Read)) {
-            return Some(refused(self.whole, Op::Read, &file));
-        }
         let writes = of_segment(&parsed.writes_to, &parsed.writes_in, at);
-        let file = writes
-            .iter()
-            .find_map(|f| self.blocked(cwd, f, Op::Write))?;
-        Some(refused(self.whole, Op::Write, &file))
-    }
-
-    /// One program's reading and writing, run in `cwd`, `piped` when its
-    /// input is another's output.
-    fn program(&self, cwd: &Path, program: &str, args: &[String], piped: bool) -> Option<String> {
-        let effects = effects(program, args, cwd, piped, &self.rg_config);
-        if let Some(file) = effects
-            .reads
-            .iter()
-            .find_map(|f| self.blocked(cwd, f, Op::Read))
-        {
-            return Some(refused(self.whole, Op::Read, &file));
-        }
-        if let Some(problem) = effects.search.as_ref().and_then(|s| self.searched(cwd, s)) {
-            return Some(problem);
-        }
-        let file = effects
-            .writes
-            .iter()
-            .find_map(|f| self.blocked(cwd, f, Op::Write))?;
-        Some(refused(self.whole, Op::Write, &file))
-    }
-
-    /// A command with substitutions or subshells, whose words aren't split
-    /// as they run: any of its words naming a restricted file, beside a
-    /// program that would read or change it, refuses it.
-    fn opaque(&self, command: &str, cwd: &Path) -> Option<String> {
-        let text = command.replace(
-            ['(', ')', '`', '$', ';', '&', '|', '<', '>', '"', '\''],
-            " ",
-        );
-        let words = permissions::split_words(&text);
-        let runs = |programs: &[&[&str]]| {
-            words.iter().any(|w| {
-                let name = permissions::program_name(w);
-                programs.iter().any(|list| list.contains(&name.as_str()))
-            })
-        };
-        let reads = runs(&[
-            PRINTERS,
-            FILTERS,
-            GREPS,
-            &["rg", "ag", "findstr"],
-            COPIERS,
-            MOVERS,
-        ]);
-        if reads {
-            if let Some(file) = words.iter().find_map(|w| self.blocked(cwd, w, Op::Read)) {
-                return Some(refused(self.whole, Op::Read, &file));
+        for (files, op) in [(reads, Op::Read), (writes, Op::Write)] {
+            if let Some(file) = files.iter().find_map(|f| self.blocked(cwd, f, op)) {
+                return Some(refused(self.whole, op, &file));
             }
-        }
-        if command.contains('>') || runs(&[COPIERS, MOVERS, DELETERS, &["tee", "sed", "dd"]]) {
-            if let Some(file) = words.iter().find_map(|w| self.blocked(cwd, w, Op::Write)) {
-                return Some(refused(self.whole, Op::Write, &file));
+            // `> "$f"`: what put the file there decides.
+            if files.iter().any(|f| unknown(f)) {
+                if let Some(problem) = self.vague(cwd, op) {
+                    return Some(problem);
+                }
             }
         }
         None
+    }
+
+    /// One program's reading and writing, as it runs.
+    fn program(&self, run: &Run) -> Option<String> {
+        let cwd = run.cwd;
+        let mut args = run.args.to_vec();
+        if run.from_input {
+            args.push(INPUT.to_string());
+        }
+        let effects = effects(run.program, &args, cwd, run.piped, &self.rg_config);
+        let named = |files: &[String], op: Op| {
+            files
+                .iter()
+                .filter(|f| !unknown(f))
+                .find_map(|f| self.blocked(cwd, f, op))
+        };
+        if let Some(file) = named(&effects.reads, Op::Read) {
+            return Some(refused(self.whole, Op::Read, &file));
+        }
+        if let Some(search) = &effects.search {
+            if let Some(problem) = self.searched(cwd, search, Op::Read) {
+                return Some(problem);
+            }
+        }
+        if let Some(file) = named(&effects.writes, Op::Write) {
+            return Some(refused(self.whole, Op::Write, &file));
+        }
+        if let Some(finder) = &effects.finds {
+            for (op, does) in [(Op::Read, finder.reads), (Op::Write, finder.writes)] {
+                if let Some(problem) = does.then(|| self.found(cwd, finder, op)).flatten() {
+                    return Some(problem);
+                }
+            }
+        }
+        // Files its words don't name: what lists them decides.
+        let searches = effects.search.iter().flat_map(|s| &s.paths);
+        if effects.reads.iter().chain(searches).any(|f| unknown(f)) {
+            if let Some(problem) = self.vague(cwd, Op::Read) {
+                return Some(problem);
+            }
+        }
+        if effects.writes.iter().any(|f| unknown(f)) {
+            return self.vague(cwd, Op::Write);
+        }
+        None
+    }
+
+    /// Why a program whose files its words don't name (`cat "$f"`, `xargs
+    /// cat`, `find … -exec cat {} \;`) may not do `op` with them: what
+    /// lists them in the command would list a restricted file (`find`'s
+    /// files, a search's), or one of its words names one (`for f in .env*`).
+    fn vague(&self, cwd: &Path, op: Op) -> Option<String> {
+        let segments = loose_segments(self.whole);
+        for words in &segments {
+            for (at, word) in words.iter().enumerate() {
+                let args = &words[at + 1..];
+                let problem = match bare_name(word).as_str() {
+                    "find" => self.found(cwd, &finder(args, cwd, &self.rg_config), op),
+                    "fd" | "fdfind" => self.found(cwd, &fd_finder(args, cwd, &self.rg_config), op),
+                    "git" if args.first().is_some_and(|a| a == "ls-files") => {
+                        self.searched(cwd, &tracked(&args[1..]), op)
+                    }
+                    name if GREPS.contains(&name) || matches!(name, "rg" | "ag") => {
+                        search_effects(name, args, false, &self.rg_config, true)
+                            .search
+                            .and_then(|search| self.searched(cwd, &search, op))
+                    }
+                    _ => None,
+                };
+                if problem.is_some() {
+                    return problem;
+                }
+            }
+        }
+        let file = segments
+            .iter()
+            .flatten()
+            .find_map(|w| self.blocked(cwd, w, op))?;
+        Some(refused(self.whole, op, &file))
+    }
+
+    /// The restricted files the words of `text` name for `op`, from `cwd`.
+    fn named(&self, cwd: &Path, text: &str, op: Op) -> Vec<String> {
+        loose_segments(text)
+            .iter()
+            .flatten()
+            .filter_map(|w| self.blocked(cwd, w, op))
+            .collect()
     }
 
     /// The restricted file `word` names for `op`, as the shell in `cwd`
@@ -386,71 +469,101 @@ impl Check<'_> {
             .collect()
     }
 
-    /// Why a search may not run: a restricted file it's given, or comes to
-    /// in its folders, has a line it would print.
-    fn searched(&self, cwd: &Path, search: &Search) -> Option<String> {
+    /// Why a search may not run, for `op` Read: a restricted file it's
+    /// given, or comes to in its folders, has a line it would print. For
+    /// Write, why the files a search lists may not be changed (`grep -rl x
+    /// . | xargs sed -i …`): one of them is kept from changes.
+    fn searched(&self, cwd: &Path, search: &Search, op: Op) -> Option<String> {
         let regexes = search.pattern.compiled();
         let prints = |file: &Path| prints_from(file, regexes.as_deref());
-        for word in &search.paths {
+        for word in search.paths.iter().filter(|p| !unknown(p)) {
             for path in named_paths(cwd, word) {
                 let at = Path::new(&path);
                 if at.is_dir() {
                     if !search.recursive {
                         continue;
                     }
-                    match self.walk(at, search, &prints) {
+                    let hit = |key: &str, file: &Path| {
+                        self.restricted.blocks_file(key, op) && prints(file)
+                    };
+                    match self.walk(at, &search.picks, &hit) {
                         Walked::Clean => continue,
-                        Walked::Found(file) => {
+                        Walked::Found(file) if op == Op::Read && !search.listing => {
                             return Some(format!(
                                 "Error: `{}` would search {file}, a restricted file: {} To search the project, use search_code, which leaves restricted files out, or leave them out of the command's search.",
                                 self.whole,
                                 reason(Op::Read)
                             ))
                         }
-                        Walked::TooLarge => {
-                            return Some(format!(
-                                "Error: `{}` would search more files than can be checked for restricted ones, which the agent may not read. Search the folders it needs, or use search_code, which leaves restricted files out.",
-                                self.whole
-                            ))
-                        }
+                        Walked::Found(file) => return Some(refused(self.whole, op, &file)),
+                        Walked::TooLarge => return Some(self.too_large()),
                     }
                 }
                 let file = self
                     .restricted
-                    .blocked(self.root, &path, Op::Read)
+                    .blocked(self.root, &path, op)
                     .filter(|file| prints(Path::new(&tools::to_absolute_path(file, self.root))));
                 if let Some(file) = file {
-                    return Some(refused(self.whole, Op::Read, &file));
+                    return Some(refused(self.whole, op, &file));
                 }
             }
         }
         None
     }
 
-    /// The first restricted file under `start` that a search going through
-    /// it, the way it picks files, would print a line of.
-    fn walk(&self, start: &Path, search: &Search, prints: &dyn Fn(&Path) -> bool) -> Walked {
+    /// Why what `find` (or `fd`) finds may not be read or changed (`op`):
+    /// it finds a restricted file.
+    fn found(&self, cwd: &Path, finder: &Finder, op: Op) -> Option<String> {
+        for word in &finder.folders {
+            for folder in named_paths(cwd, word) {
+                let start = Path::new(&folder);
+                let hit = |key: &str, file: &Path| {
+                    finder.finds(word, start, file) && self.restricted.blocks_file(key, op)
+                };
+                match self.walk(start, &finder.picks, &hit) {
+                    Walked::Clean => {}
+                    Walked::Found(file) => return Some(refused(self.whole, op, &file)),
+                    Walked::TooLarge => return Some(self.too_large()),
+                }
+            }
+        }
+        None
+    }
+
+    /// The refusal of a command that goes through more files than can be
+    /// looked at.
+    fn too_large(&self) -> String {
+        format!(
+            "Error: `{}` would go through more files than can be checked for restricted ones, which the agent may not read or change. Name the folders it needs, or search with search_code, which leaves restricted files out.",
+            self.whole
+        )
+    }
+
+    /// The first file under `start`, as a program picks them going through
+    /// it (`picks`), that `hit` says it looks for, by its key (relative to
+    /// the project, or absolute outside it) and path.
+    fn walk(&self, start: &Path, picks: &Picks, hit: &dyn Fn(&str, &Path) -> bool) -> Walked {
         let root = Path::new(self.root);
         let mut walk = WalkBuilder::new(start);
-        let ignores = search.ignore_files;
+        let ignores = picks.ignore_files;
         let (restricted, project) = (self.restricted.clone(), root.to_path_buf());
-        walk.hidden(!search.hidden)
+        walk.hidden(!picks.hidden)
             .parents(ignores)
             .ignore(ignores)
             .git_ignore(ignores)
             .git_global(ignores)
             .git_exclude(ignores)
-            .follow_links(search.follow)
-            .max_depth(search.depth)
+            .follow_links(picks.follow)
+            .max_depth(picks.depth)
             .filter_entry(move |e| {
                 let dir = e.file_type().is_some_and(|t| t.is_dir());
                 !(dir && restricted.skips(&project, e.path()))
             });
-        if ignores && search.rg {
+        if ignores && picks.rg {
             walk.add_custom_ignore_filename(".rgignore");
         }
         let mut globs = OverrideBuilder::new(start);
-        for glob in &search.globs {
+        for glob in &picks.globs {
             // A glob the program can't read either: it fails, reading nothing.
             if globs.add(glob).is_err() {
                 return Walked::Clean;
@@ -459,13 +572,13 @@ impl Check<'_> {
         if let Ok(globs) = globs.build() {
             walk.overrides(globs);
         }
-        if !search.types.is_empty() || !search.not_types.is_empty() {
+        if !picks.types.is_empty() || !picks.not_types.is_empty() {
             let mut types = TypesBuilder::new();
             types.add_defaults();
-            for name in &search.types {
+            for name in &picks.types {
                 types.select(name);
             }
-            for name in &search.not_types {
+            for name in &picks.not_types {
                 types.negate(name);
             }
             // A type it doesn't know: it fails, reading nothing.
@@ -489,12 +602,24 @@ impl Check<'_> {
                 Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
                 Err(_) => path.to_string_lossy().into_owned(),
             };
-            if self.restricted.blocks_file(&key, Op::Read) && prints(path) {
+            if hit(&key, path) {
                 return Walked::Found(key);
             }
         }
         Walked::Clean
     }
+}
+
+/// One program as a command runs it.
+struct Run<'a> {
+    /// Where it runs.
+    cwd: &'a Path,
+    program: &'a str,
+    args: &'a [String],
+    /// Its input is the program before's output.
+    piped: bool,
+    /// Its input's words are its arguments too (`xargs cat`).
+    from_input: bool,
 }
 
 /// What a walk for restricted files came to.
@@ -561,6 +686,8 @@ struct Effects {
     search: Option<Search>,
     /// Files it changes: writes, moves or deletes.
     writes: Vec<String>,
+    /// What it finds, and does with what it finds (`find`, `fd`).
+    finds: Option<Finder>,
 }
 
 /// What a search reads: the files it's given, and those it picks in the
@@ -571,6 +698,18 @@ struct Search {
     paths: Vec<String>,
     /// It goes through the folders it's given (grep only with `-r`).
     recursive: bool,
+    /// It lists the files another program reads or changes (`grep -rl
+    /// KEY . | xargs cat`), rather than printing their lines.
+    listing: bool,
+    /// How it picks the files in them.
+    picks: Picks,
+    /// The lines it prints.
+    pattern: Pattern,
+}
+
+/// How a program going through a folder picks its files.
+#[derive(Debug, Default, PartialEq)]
+struct Picks {
     /// It reads hidden files (grep does, ripgrep doesn't unless asked).
     hidden: bool,
     /// It leaves out what .gitignore and its kin do.
@@ -583,12 +722,68 @@ struct Search {
     /// ripgrep's file types read (`-t`), and left out (`-T`).
     types: Vec<String>,
     not_types: Vec<String>,
-    /// It follows links to folders (`grep -R`, `rg -L`, `ag -f`).
+    /// It follows links to folders (`grep -R`, `rg -L`, `find -L`).
     follow: bool,
     /// How far below its folders it goes (`rg --max-depth`), when it says.
     depth: Option<usize>,
-    /// The lines it prints.
-    pattern: Pattern,
+}
+
+/// What `find` (or `fd`) finds in its folders, and does with it.
+#[derive(Default)]
+struct Finder {
+    /// Its folders, as written; `.` when it names none.
+    folders: Vec<String>,
+    /// How it goes through them.
+    picks: Picks,
+    /// Shell patterns of names (`-name`) and paths (`-path`), and regexes
+    /// of names (fd's pattern) and paths (`-regex`): a file it finds
+    /// matches one. None of them: it finds every file.
+    names: Vec<String>,
+    paths: Vec<String>,
+    name_regexes: Vec<Regex>,
+    path_regexes: Vec<Regex>,
+    /// Its expression can't be read: it may find any file.
+    every: bool,
+    /// Patterns of names and paths it leaves out (`-not -name x`, fd's `-E`).
+    not_names: Vec<String>,
+    not_paths: Vec<String>,
+    /// It reads what it finds (`-exec cat {} \;`), and changes it
+    /// (`-delete`, `-exec rm {} +`).
+    reads: bool,
+    writes: bool,
+}
+
+impl Finder {
+    /// Whether it finds `file`, under `start`, the folder it was given as
+    /// `word`.
+    fn finds(&self, word: &str, start: &Path, file: &Path) -> bool {
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // Its path as `find` prints it: from the folder as it was given.
+        let rest = file
+            .strip_prefix(start)
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let path = match rest.as_str() {
+            "" => word.to_string(),
+            rest => format!("{}/{rest}", word.trim_end_matches('/')),
+        };
+        let any = self.names.is_empty()
+            && self.paths.is_empty()
+            && self.name_regexes.is_empty()
+            && self.path_regexes.is_empty();
+        let found = self.every
+            || any
+            || self.names.iter().any(|p| glob_matches(p, &name))
+            || self.paths.iter().any(|p| glob_matches(p, &path))
+            || self.name_regexes.iter().any(|r| r.is_match(&name))
+            || self.path_regexes.iter().any(|r| r.is_match(&path));
+        found
+            && !self.not_names.iter().any(|p| glob_matches(p, &name))
+            && !self.not_paths.iter().any(|p| glob_matches(p, &path))
+    }
 }
 
 /// The lines a search prints: those its patterns match, written as Rust's
@@ -685,7 +880,7 @@ fn effects(
         };
     }
     if GREPS.contains(&program) || matches!(program, "rg" | "ag") {
-        return search_effects(program, args, piped, rg_config);
+        return search_effects(program, args, piped, rg_config, false);
     }
     if COPIERS.contains(&program) || MOVERS.contains(&program) {
         return copy_effects(program, args, slash, cwd);
@@ -705,7 +900,18 @@ fn effects(
             writes: values_of(args, "of="),
             ..Effects::default()
         },
-        "perl" => perl_effects(args),
+        "perl" | "ruby" => script_effects(args),
+        "python" | "python3" | "py" | "node" | "nodejs" | "bun" | "deno" | "php" => {
+            inline_code_effects(program, args)
+        }
+        "find" => Effects {
+            finds: Some(finder(args, cwd, rg_config)),
+            ..Effects::default()
+        },
+        "fd" | "fdfind" => Effects {
+            finds: Some(fd_finder(args, cwd, rg_config)),
+            ..Effects::default()
+        },
         "curl" => curl_effects(args),
         "sort" => {
             let a = Args::split(
@@ -755,8 +961,16 @@ fn effects(
 /// patterns match. Given no file or folder, grep -r goes through `.`, and
 /// rg and ag through `.` unless their input is piped (`piped`), which they
 /// search instead. ripgrep takes its config file's options first
-/// (`rg_config`) unless told not to.
-fn search_effects(program: &str, args: &[String], piped: bool, rg_config: &[String]) -> Effects {
+/// (`rg_config`) unless told not to. With `listing`, for one whose output
+/// lists files another program reads (`grep -rl KEY . | xargs cat`): the
+/// files it would list, those with a matching line (`-l`) or any.
+fn search_effects(
+    program: &str,
+    args: &[String],
+    piped: bool,
+    rg_config: &[String],
+    listing: bool,
+) -> Effects {
     let grep = GREPS.contains(&program);
     let configured: Vec<String>;
     let args = if program == "rg" && !args.iter().any(|a| a == "--no-config") {
@@ -771,7 +985,10 @@ fn search_effects(program: &str, args: &[String], piped: bool, rg_config: &[Stri
         _ => (GREP_VALUES, GREP_NAMES_ONLY),
     };
     let a = Args::split(args, valued, false);
-    if a.has(names_only) || (program == "ag" && a.has(&["-g"])) {
+    // Files it lists whatever is in them: `rg --files`, `ag -g name`.
+    let names = (program == "rg" && a.has(&["--files"])) || (program == "ag" && a.has(&["-g"]));
+    let quiet = a.has(&["-q", "--quiet"]) || (grep && a.has(&["--silent"]));
+    if (!listing && (names || a.has(names_only))) || (listing && quiet) {
         return Effects::default();
     }
     // Patterns given by option, or read from a file (the silver searcher
@@ -784,18 +1001,24 @@ fn search_effects(program: &str, args: &[String], piped: bool, rg_config: &[Stri
         ),
     };
     // Without -e or -f, the first word is the pattern.
-    let words = &a.words[usize::from(given.is_empty() && !from_file).min(a.words.len())..];
+    let first_is_pattern = given.is_empty() && !from_file && !names;
+    let words = &a.words[usize::from(first_is_pattern).min(a.words.len())..];
     let patterns: Vec<&str> = match a.words.first() {
-        Some(first) if given.is_empty() && !from_file => vec![first],
+        Some(first) if first_is_pattern => vec![first],
         _ => given,
     };
+    // Listing files with no match, or with counts: any file.
+    let lists_any = listing && a.has(names_only) && !a.has(&["-l", "--files-with-matches"]);
     let fixed = program == "fgrep"
         || a.has(&["-F", "--fixed-strings"])
         || (program == "ag" && a.has(&["-Q", "--literal"]));
     let basic =
         grep && program != "egrep" && !a.has(&["-E", "--extended-regexp", "-P", "--perl-regexp"]);
     // What prints every line it reads, whatever the pattern.
-    let any_line = from_file || a.has(&["-v", "--invert-match", "--passthru", "--passthrough"]);
+    let any_line = from_file
+        || names
+        || lists_any
+        || a.has(&["-v", "--invert-match", "--passthru", "--passthrough"]);
     let regexes = (!any_line).then(|| {
         patterns
             .iter()
@@ -828,7 +1051,7 @@ fn search_effects(program: &str, args: &[String], piped: bool, rg_config: &[Stri
     .and_then(|depth| depth.parse().ok());
     let unrestricted = a.count("-u") + a.count("--unrestricted");
     let picks = if grep {
-        Search {
+        Picks {
             hidden: true,
             ignore_files: false,
             globs: a
@@ -844,10 +1067,11 @@ fn search_effects(program: &str, args: &[String], piped: bool, rg_config: &[Stri
                     }
                 })
                 .collect(),
-            ..Search::default()
+            follow,
+            ..Picks::default()
         }
     } else if program == "rg" {
-        Search {
+        Picks {
             hidden: a.has(&["--hidden", "-."]) || unrestricted >= 2,
             ignore_files: unrestricted == 0
                 && !a
@@ -858,14 +1082,17 @@ fn search_effects(program: &str, args: &[String], piped: bool, rg_config: &[Stri
             globs: owned(&a.values(&["-g", "--glob", "--iglob"]).collect::<Vec<_>>()),
             types: owned(&a.values(&["-t", "--type"]).collect::<Vec<_>>()),
             not_types: owned(&a.values(&["-T", "--type-not"]).collect::<Vec<_>>()),
-            ..Search::default()
+            follow,
+            depth,
         }
     } else {
-        Search {
+        Picks {
             hidden: a.has(&["--hidden"]) || unrestricted > 0,
             ignore_files: unrestricted == 0 && !a.has(&["-U", "--skip-vcs-ignores"]),
             globs: a.values(&["--ignore"]).map(|g| format!("!{g}")).collect(),
-            ..Search::default()
+            follow,
+            depth,
+            ..Picks::default()
         }
     };
     let paths = if !words.is_empty() {
@@ -879,14 +1106,13 @@ fn search_effects(program: &str, args: &[String], piped: bool, rg_config: &[Stri
         search: Some(Search {
             paths,
             recursive,
-            follow,
-            depth,
+            listing,
+            picks,
             pattern: Pattern {
                 regexes,
                 ignore_case,
                 dotall: program == "rg" && a.has(&["--multiline-dotall"]),
             },
-            ..picks
         }),
         ..Effects::default()
     }
@@ -935,8 +1161,11 @@ fn findstr_effects(args: &[String]) -> Effects {
         search: Some(Search {
             paths: vec![".".to_string()],
             recursive: true,
-            hidden: true,
-            globs: files,
+            picks: Picks {
+                hidden: true,
+                globs: files,
+                ..Picks::default()
+            },
             ..Search::default()
         }),
         ..Effects::default()
@@ -967,19 +1196,339 @@ fn git_reads(args: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// perl editing in place (`-i`): what it reads, it changes. Without `-e`,
-/// its first word is the script.
-fn perl_effects(args: &[String]) -> Effects {
-    let a = Args::split(args, &[], false);
-    if !a.has(&["-i"]) {
-        return Effects::default();
-    }
-    let skip = usize::from(!a.has(&["-e", "-E"]));
+/// perl and ruby: code given with `-e` (else the first word is the
+/// script) reads the files after it, as `-n` and `-p` do, and `-i` changes
+/// them in place; a file the code names in quotes is read too.
+fn script_effects(args: &[String]) -> Effects {
+    let a = Args::split(args, &["-e", "-E", "-M", "-I", "-r", "-F"], false);
+    let code: Vec<&str> = a.values(&["-e", "-E"]).collect();
+    let skip = usize::from(code.is_empty());
     let files: Vec<String> = owned(&a.words).into_iter().skip(skip).collect();
+    let reading = !code.is_empty() || a.has(&["-n", "-p", "-i"]);
+    let mut reads = if reading { files.clone() } else { Vec::new() };
+    reads.extend(code.iter().flat_map(|code| quoted_strings(code)));
     Effects {
-        reads: files.clone(),
-        writes: files,
+        reads,
+        writes: if a.has(&["-i"]) { files } else { Vec::new() },
         ..Effects::default()
+    }
+}
+
+/// Code given on an interpreter's command line (`python3 -c '…'`, `node -e
+/// '…'`, `deno eval '…'`, `php -r '…'`): what it reads can't be told, but
+/// a file it names in quotes, it reads (`open('.env')`).
+fn inline_code_effects(program: &str, args: &[String]) -> Effects {
+    let code: Vec<String> = match program {
+        "deno" if args.first().is_some_and(|a| a == "eval") => args[1..].to_vec(),
+        "deno" => Vec::new(),
+        _ => {
+            let (given, valued): (&[&str], &[&str]) = match program {
+                "php" => (&["-r"], &["-r", "-d", "-c", "-f"]),
+                "node" | "nodejs" | "bun" => (
+                    &["-e", "--eval", "-p", "--print"],
+                    &[
+                        "-e",
+                        "--eval",
+                        "-p",
+                        "--print",
+                        "-r",
+                        "--require",
+                        "--import",
+                    ],
+                ),
+                _ => (&["-c"], &["-c", "-m", "-W", "-X"]),
+            };
+            let a = Args::split(args, valued, false);
+            owned(&a.values(given).collect::<Vec<_>>())
+        }
+    };
+    Effects {
+        reads: code.iter().flat_map(|code| quoted_strings(code)).collect(),
+        ..Effects::default()
+    }
+}
+
+/// What's quoted in a piece of code: `'…'`, `"…"`, `` `…` ``.
+fn quoted_strings(code: &str) -> Vec<String> {
+    let mut strings = Vec::new();
+    let mut chars = code.chars();
+    while let Some(c) = chars.next() {
+        if matches!(c, '\'' | '"' | '`') {
+            strings.push(chars.by_ref().take_while(|&d| d != c).collect());
+        }
+    }
+    strings
+}
+
+/// `find`'s options before its folders, which take no value but `-D`'s.
+const FIND_LEADING: &[&str] = &["-H", "-L", "-P"];
+/// Its expression's tests and actions that take a value.
+const FIND_VALUES: &[&str] = &[
+    "-type",
+    "-xtype",
+    "-size",
+    "-mtime",
+    "-mmin",
+    "-atime",
+    "-amin",
+    "-ctime",
+    "-cmin",
+    "-newer",
+    "-anewer",
+    "-cnewer",
+    "-user",
+    "-group",
+    "-uid",
+    "-gid",
+    "-perm",
+    "-links",
+    "-inum",
+    "-mindepth",
+    "-printf",
+    "-fprint",
+    "-fprint0",
+    "-fls",
+    "-regextype",
+    "-samefile",
+    "-lname",
+    "-ilname",
+    "-used",
+    "-context",
+    "-fstype",
+];
+
+/// What `find` finds, and does with it: run a program on it (`-exec`,
+/// `-execdir`, `-ok`), or delete it.
+fn finder(args: &[String], cwd: &Path, rg_config: &[String]) -> Finder {
+    let mut finder = Finder {
+        picks: Picks {
+            hidden: true,
+            ..Picks::default()
+        },
+        ..Finder::default()
+    };
+    let mut i = 0;
+    while let Some(word) = args.get(i) {
+        match word.as_str() {
+            "-L" => finder.picks.follow = true,
+            "-D" => i += 1,
+            w if FIND_LEADING.contains(&w) || w.starts_with("-O") => {}
+            _ => break,
+        }
+        i += 1;
+    }
+    while let Some(word) = args
+        .get(i)
+        .filter(|w| !w.starts_with(['-', '(', '!', ')', ',']))
+    {
+        finder.folders.push(word.clone());
+        i += 1;
+    }
+    if finder.folders.is_empty() {
+        finder.folders.push(".".to_string());
+    }
+    // With `-o`, what `!` leaves out may be found by another branch.
+    let or = args[i..]
+        .iter()
+        .any(|w| matches!(w.as_str(), "-o" | "-or" | ","));
+    let mut not = false;
+    while let Some(word) = args.get(i) {
+        let value = args.get(i + 1).cloned().unwrap_or_default();
+        let mut step = 1;
+        match word.as_str() {
+            "!" | "-not" => {
+                not = true;
+                i += 1;
+                continue;
+            }
+            "-name" | "-iname" | "-path" | "-ipath" | "-wholename" | "-iwholename" => {
+                step = 2;
+                let name = matches!(word.as_str(), "-name" | "-iname");
+                match (not, name) {
+                    (false, true) => finder.names.push(value),
+                    (false, false) => finder.paths.push(value),
+                    (true, true) if !or => finder.not_names.push(value),
+                    (true, false) if !or => finder.not_paths.push(value),
+                    _ => {}
+                }
+            }
+            "-regex" | "-iregex" => {
+                step = 2;
+                if !not {
+                    match RegexBuilder::new(&value).case_insensitive(true).build() {
+                        Ok(regex) => finder.path_regexes.push(regex),
+                        Err(_) => finder.every = true,
+                    }
+                }
+            }
+            "-maxdepth" => {
+                step = 2;
+                finder.picks.depth = value.parse().ok();
+            }
+            "-follow" => finder.picks.follow = true,
+            "-delete" => finder.writes = true,
+            "-exec" | "-execdir" | "-ok" | "-okdir" => {
+                let rest = &args[i + 1..];
+                let end = rest
+                    .iter()
+                    .position(|w| w == ";" || w == "+")
+                    .unwrap_or(rest.len());
+                let (reads, writes) = exec_effects(&rest[..end], false, cwd, rg_config);
+                finder.reads |= reads;
+                finder.writes |= writes;
+                step = end + 2;
+            }
+            "-fprintf" => step = 3,
+            w if FIND_VALUES.contains(&w) => step = 2,
+            _ => {}
+        }
+        not = false;
+        i += step;
+    }
+    finder
+}
+
+/// fd's options that take a value.
+const FD_VALUES: &[&str] = &[
+    "-e",
+    "--extension",
+    "-E",
+    "--exclude",
+    "-d",
+    "--max-depth",
+    "--min-depth",
+    "--exact-depth",
+    "-t",
+    "--type",
+    "-c",
+    "--color",
+    "-j",
+    "--threads",
+    "-S",
+    "--size",
+    "--changed-within",
+    "--changed-before",
+    "-o",
+    "--owner",
+    "--base-directory",
+    "--path-separator",
+    "--search-path",
+    "--max-results",
+    "--ignore-file",
+    "--batch-size",
+];
+
+/// What fd finds: files whose names its pattern matches (a regex, or a
+/// glob with `-g`) or have its extensions (`-e`), hidden and ignored ones
+/// only when told; and what it runs on them (`-x cat`, `-X rm`).
+fn fd_finder(args: &[String], cwd: &Path, rg_config: &[String]) -> Finder {
+    // Its own words, then the command it runs on what it finds.
+    let exec = args
+        .iter()
+        .position(|a| matches!(a.as_str(), "-x" | "--exec" | "-X" | "--exec-batch"));
+    let (own, command) = match exec {
+        Some(at) => (&args[..at], &args[at + 1..]),
+        None => (args, &args[args.len()..]),
+    };
+    let a = Args::split(own, FD_VALUES, false);
+    let unrestricted = a.has(&["-u", "--unrestricted"]);
+    let mut words = a.words.iter();
+    let pattern = words.next();
+    let mut folders: Vec<String> = words.map(|w| w.to_string()).collect();
+    folders.extend(owned(&a.values(&["--search-path"]).collect::<Vec<_>>()));
+    if folders.is_empty() {
+        folders.push(".".to_string());
+    }
+    let mut finder = Finder {
+        folders,
+        picks: Picks {
+            hidden: unrestricted || a.has(&["-H", "--hidden"]),
+            ignore_files: !(unrestricted || a.has(&["-I", "--no-ignore"])),
+            follow: a.has(&["-L", "--follow"]),
+            depth: a
+                .values(&["-d", "--max-depth", "--exact-depth"])
+                .last()
+                .and_then(|d| d.parse().ok()),
+            ..Picks::default()
+        },
+        names: a
+            .values(&["-e", "--extension"])
+            .map(|e| format!("*.{}", e.trim_start_matches('.')))
+            .collect(),
+        not_names: owned(&a.values(&["-E", "--exclude"]).collect::<Vec<_>>()),
+        ..Finder::default()
+    };
+    match pattern {
+        Some(glob) if a.has(&["-g", "--glob"]) => finder.paths.push(glob.to_string()),
+        Some(pattern) => {
+            let pattern = if a.has(&["-F", "--fixed-strings"]) {
+                regex::escape(pattern)
+            } else {
+                pattern.to_string()
+            };
+            match RegexBuilder::new(&pattern).case_insensitive(true).build() {
+                Ok(regex) if a.has(&["-p", "--full-path"]) => finder.path_regexes.push(regex),
+                Ok(regex) => finder.name_regexes.push(regex),
+                Err(_) => finder.every = true,
+            }
+        }
+        None => {}
+    }
+    let (reads, writes) = exec_effects(command, true, cwd, rg_config);
+    finder.reads = reads;
+    finder.writes = writes;
+    finder
+}
+
+/// Whether the program `find` or `fd` runs on what it finds (`command`,
+/// given it as `{}`, or last when `appends` and it has no `{}`) reads it,
+/// and changes it. A shell running a script may do either.
+fn exec_effects(
+    command: &[String],
+    appends: bool,
+    cwd: &Path,
+    rg_config: &[String],
+) -> (bool, bool) {
+    let (words, _) = past_keywords(command);
+    let Some((first, args)) = words.split_first() else {
+        return (false, false);
+    };
+    let program = permissions::program_name(first);
+    if matches!(program.as_str(), "sh" | "bash" | "zsh" | "dash" | "fish") {
+        return (true, true);
+    }
+    let mut args = args.to_vec();
+    if appends && !args.iter().any(|a| a.contains("{}")) {
+        args.push("{}".to_string());
+    }
+    let effects = effects(&program, &args, cwd, false, rg_config);
+    let found = |word: &String| word.contains("{}");
+    let searched = effects.search.iter().flat_map(|s| &s.paths);
+    let reads = effects.reads.iter().chain(searched).any(found);
+    (reads, effects.writes.iter().any(found))
+}
+
+/// What `git ls-files` lists: the files the repository tracks, about the
+/// ones its ignore files don't leave out (all, with `-o`, `-i`), under its
+/// paths and patterns.
+fn tracked(args: &[String]) -> Search {
+    let a = Args::split(args, &["-x", "--exclude", "-X", "--exclude-from"], false);
+    let (globs, mut paths): (Vec<&str>, Vec<&str>) =
+        a.words.iter().copied().partition(|w| has_wildcard(w));
+    if paths.is_empty() {
+        paths.push(".");
+    }
+    Search {
+        paths: owned(&paths),
+        recursive: true,
+        listing: true,
+        picks: Picks {
+            hidden: true,
+            ignore_files: !a.has(&["-o", "--others", "-i", "--ignored"]),
+            globs: owned(&globs),
+            ..Picks::default()
+        },
+        pattern: Pattern::default(),
     }
 }
 
@@ -1191,8 +1740,9 @@ const KEYWORDS: &[&str] = &[
 ];
 
 /// A segment's words past its shell keywords and the wrappers that only
-/// run the rest: `then sudo cat .env` runs `cat .env`.
-fn past_keywords(segment: &[String]) -> &[String] {
+/// run the rest (`then sudo cat .env` runs `cat .env`), and whether one of
+/// those is `xargs`, which gives the rest its input's words too.
+fn past_keywords(segment: &[String]) -> (&[String], bool) {
     let mut rest = segment;
     loop {
         let before = rest.len();
@@ -1201,15 +1751,233 @@ fn past_keywords(segment: &[String]) -> &[String] {
         }
         rest = permissions::unwrap_wrappers(rest);
         if rest.len() == before {
-            return rest;
+            break;
         }
+    }
+    let skipped = &segment[..segment.len() - rest.len()];
+    let xargs = skipped
+        .iter()
+        .any(|w| permissions::program_name(w) == "xargs");
+    (rest, xargs)
+}
+
+/// The script `eval` runs: its words, joined as it joins them. Not the
+/// output of a substitution, which it loads ([`substitutions`]).
+fn eval_script(words: &[String]) -> Option<String> {
+    let (first, args) = words.split_first()?;
+    let substituted = args
+        .first()
+        .is_some_and(|a| a.starts_with("$(") || a.starts_with('`'));
+    (permissions::program_name(first) == "eval" && !args.is_empty() && !substituted)
+        .then(|| args.join(" "))
+}
+
+/// Whether a segment prints the shell's variables: `echo $KEY`, `printf
+/// '%s' "${KEY}"`, `env`, `printenv`, `set`, `export -p`.
+fn prints_variables(segment: &[String]) -> bool {
+    let (words, _) = past_keywords(segment);
+    let Some((first, args)) = words.split_first() else {
+        // Wrappers alone: a bare `env` prints the environment.
+        return segment
+            .iter()
+            .any(|w| permissions::program_name(w) == "env");
+    };
+    match permissions::program_name(first).as_str() {
+        "echo" | "printf" | "print" => args.iter().any(|a| has_variable(a)),
+        "printenv" => true,
+        "set" | "export" | "declare" | "typeset" => {
+            args.is_empty() || args.iter().any(|a| a == "-p")
+        }
+        _ => false,
     }
 }
 
-/// The script `eval` runs: its words, joined as it joins them.
-fn eval_script(words: &[String]) -> Option<String> {
-    let (first, args) = words.split_first()?;
-    (permissions::program_name(first) == "eval" && !args.is_empty()).then(|| args.join(" "))
+/// Whether a word has a variable the shell puts the value of: `$KEY`,
+/// `${KEY}`, but not `$(…)` nor `$1`.
+fn has_variable(word: &str) -> bool {
+    word.match_indices('$').any(|(at, _)| {
+        word[at + 1..].starts_with(|c: char| c == '_' || c == '{' || c.is_ascii_alphabetic())
+    })
+}
+
+/// What `xargs` adds to a program's words: its input's.
+const INPUT: &str = "\u{1}input";
+
+/// Whether a program's word is a file its words don't say: its input's
+/// (`xargs`), what `find` found (`{}`), what the shell puts there (`$f`,
+/// `$(…)`, `` `…` ``, cmd.exe's `%f%`), or part of a substitution
+/// (`<(cat`, `.env)`).
+fn unknown(word: &str) -> bool {
+    word == INPUT
+        || word.contains("{}")
+        || word.contains(['$', '`', '(', ')'])
+        || word.matches('%').count() >= 2
+}
+
+/// A command's words, by simple command, its quotes and the marks of its
+/// substitutions and redirects taken away: a coarse reading of the words
+/// it runs, for where the parsed one can't say (`for f in $(find …)`).
+fn loose_segments(command: &str) -> Vec<Vec<String>> {
+    command
+        .split(['|', ';', '&', '\n', '(', ')', '`'])
+        .map(|part| permissions::split_words(&part.replace(['"', '\'', '<', '>'], " ")))
+        .filter(|words| !words.is_empty())
+        .collect()
+}
+
+/// A word's program name, in any case only on Windows: elsewhere `HEAD`
+/// (a git revision) isn't `head`.
+fn bare_name(word: &str) -> String {
+    if cfg!(windows) {
+        permissions::program_name(word)
+    } else {
+        word.rsplit('/').next().unwrap_or(word).to_string()
+    }
+}
+
+/// Programs that set variables from their words, which a substitution's
+/// output becomes: what it reads is loaded, not printed (`export $(grep -v
+/// '^#' .env | xargs)`, `eval "$(cat .env)"`).
+const LOADERS: &[&str] = &[
+    "export", "declare", "typeset", "readonly", "local", "env", "eval", "set", "source", ".",
+];
+
+/// A command run inside another's words, and whether its output only
+/// loads variables (`X=$(…)`, `export $(…)`).
+struct Inner {
+    text: String,
+    loads: bool,
+}
+
+/// The commands `command` runs inside its words: `$(…)`, `` `…` ``, `<(…)`,
+/// `>(…)` and `( … )`; not in single quotes, where they're text, nor
+/// `$((…))`, which is arithmetic. One in an assignment, or in the words of
+/// a program that sets variables from them ([`LOADERS`]), loads.
+fn substitutions(command: &str) -> Vec<Inner> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut found = Vec::new();
+    let mut quote: Option<char> = None;
+    // The simple command being read: its first word, the word being read,
+    // and how many it has had.
+    let (mut first, mut word, mut words) = (String::new(), String::new(), 0);
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if quote == Some('\'') {
+            if c == '\'' {
+                quote = None;
+            } else {
+                word.push(c);
+            }
+            i += 1;
+            continue;
+        }
+        if c == '\\' {
+            word.extend(next);
+            i += 2;
+            continue;
+        }
+        let opens = match (c, next, quote) {
+            ('$', Some('('), _) => (chars.get(i + 2) != Some(&'(')).then_some(i + 2),
+            ('<' | '>', Some('('), None) => Some(i + 2),
+            ('`', _, _) => Some(i + 1),
+            ('(', _, None) if word.is_empty() && words == 0 => Some(i + 1),
+            _ => None,
+        };
+        if let Some(start) = opens {
+            let end = if c == '`' {
+                closing_backtick(&chars, start)
+            } else {
+                closing_paren(&chars, start)
+            };
+            let loads = c != '('
+                && if words == 0 {
+                    is_assignment(&word)
+                } else {
+                    LOADERS.contains(&first.as_str())
+                };
+            found.push(Inner {
+                text: chars[start..end].iter().collect(),
+                loads,
+            });
+            word.push('_');
+            i = end + 1;
+            continue;
+        }
+        match (c, quote) {
+            ('"', None) => quote = Some('"'),
+            ('"', Some(_)) => quote = None,
+            ('\'', None) => quote = Some('\''),
+            (';' | '&' | '|' | '\n', None) => {
+                first.clear();
+                word.clear();
+                words = 0;
+            }
+            (c, None) if c.is_whitespace() => {
+                if !word.is_empty() {
+                    if words == 0 {
+                        first = std::mem::take(&mut word);
+                    }
+                    word.clear();
+                    words += 1;
+                }
+            }
+            _ => word.push(c),
+        }
+        i += 1;
+    }
+    found
+}
+
+/// Whether a word starts with an assignment (`KEY=…`).
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.starts_with(|c: char| c == '_' || c.is_ascii_alphabetic())
+            && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+    })
+}
+
+/// Where the `)` closing what opens before `start` is: past nested ones and
+/// what's quoted, or the end.
+fn closing_paren(chars: &[char], start: usize) -> usize {
+    let mut depth = 1;
+    let mut quote: Option<char> = None;
+    let mut i = start;
+    while i < chars.len() {
+        let c = chars[i];
+        match (c, quote) {
+            ('\\', q) if q != Some('\'') => {
+                i += 2;
+                continue;
+            }
+            ('\'' | '"', None) => quote = Some(c),
+            (c, Some(q)) if c == q => quote = None,
+            ('(', None) => depth += 1,
+            (')', None) => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    chars.len()
+}
+
+/// Where the backtick closing one before `start` is, or the end.
+fn closing_backtick(chars: &[char], start: usize) -> usize {
+    let mut i = start;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 2,
+            '`' => return i,
+            _ => i += 1,
+        }
+    }
+    chars.len()
 }
 
 /// Where a command's parts run: the folder `cd`, `pushd` and `popd` leave
@@ -1220,6 +1988,8 @@ struct Place {
     previous: PathBuf,
     /// Where each `popd` goes back to.
     stack: Vec<PathBuf>,
+    /// Every folder it has been in.
+    visited: Vec<PathBuf>,
 }
 
 impl Place {
@@ -1228,6 +1998,7 @@ impl Place {
             cwd: cwd.to_path_buf(),
             previous: cwd.to_path_buf(),
             stack: Vec::new(),
+            visited: vec![cwd.to_path_buf()],
         }
     }
 
@@ -1255,6 +2026,9 @@ impl Place {
             _ => return false,
         };
         if let Some(to) = to {
+            if !self.visited.contains(&to) {
+                self.visited.push(to.clone());
+            }
             self.previous = std::mem::replace(&mut self.cwd, to);
         }
         true
@@ -1725,8 +2499,8 @@ mod tests {
         );
         let hidden = |args: &[&str]| {
             let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-            let effects = search_effects("rg", &args, false, &["--hidden".to_string()]);
-            effects.search.unwrap().hidden
+            let effects = search_effects("rg", &args, false, &["--hidden".to_string()], false);
+            effects.search.unwrap().picks.hidden
         };
         assert!(hidden(&["API_KEY"]));
         assert!(!hidden(&["--no-config", "API_KEY"]));
@@ -2060,6 +2834,162 @@ mod tests {
             "if [ -f .env ]; then echo found; fi",
             "echo then cat .env",
             "cat src/{app,missing}.ts",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn files_a_command_doesnt_name_are_judged_by_what_lists_them() {
+        let (dir, root) = project(&["apps/api/.env", "config/credentials.json"]);
+        std::fs::create_dir_all(dir.0.join(".git")).unwrap();
+        std::fs::write(dir.0.join(".gitignore"), ".env*\nconfig/\napps/\n").unwrap();
+        for (command, refusal) in [
+            (
+                "for f in .env*; do echo \"== $f\"; cat \"$f\"; done",
+                "would read .env,",
+            ),
+            ("find . -name '.env*' -exec cat {} \\;", "would read .env,"),
+            (
+                "find . -name '*.json' -exec cat {} +",
+                "would read config/credentials.json,",
+            ),
+            ("find . -name '.env*' | xargs cat", "would read .env,"),
+            (
+                "find . -name '.env*' -print0 | xargs -0 head -n 3",
+                "would read .env,",
+            ),
+            (
+                "cat $(find . -name '*.key')",
+                "would read config/master.key,",
+            ),
+            (
+                "for f in $(find apps -name .env); do cat $f; done",
+                "would read apps/api/.env,",
+            ),
+            (
+                "git ls-files -o -i --exclude-standard | xargs cat",
+                "would read ",
+            ),
+            ("grep -rl API_KEY . | xargs cat", "would read "),
+            ("fd -H -I '^\\.env$' | xargs cat", "would read "),
+            (
+                "find . -type f -exec sh -c 'cat \"$1\"' _ {} \\;",
+                "would read ",
+            ),
+            (
+                "for f in apps/*/.env; do truncate -s 0 \"$f\"; done",
+                "would change apps/api/.env,",
+            ),
+            (
+                "for f in apps/*/.env; do echo X=1 >> \"$f\"; done",
+                "would change apps/api/.env,",
+            ),
+            (
+                "while read f; do cat < \"$f\"; done < <(find . -name .env)",
+                "would read ",
+            ),
+            ("find . -name .env -delete", "would change "),
+            (
+                "grep -rl API_KEY . | xargs sed -i 's/API_KEY/KEY/'",
+                "would read .env,",
+            ),
+            ("grep -rl API_KEY . | xargs truncate -s 0", "would change "),
+            (
+                "find . -name '*.json' -exec rm {} +",
+                "would change config/credentials.json,",
+            ),
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains(refusal), "{command}: {refused}");
+            assert!(
+                refused.contains("a restricted file"),
+                "{command}: {refused}"
+            );
+        }
+        for command in [
+            "find . -name '.env*'",
+            "find src -name '*.ts' -exec cat {} +",
+            "find . -name '*.ts' -not -path './node_modules/*' -exec sed -i 's/a/b/' {} +",
+            "find . -path ./node_modules -prune -o -name '*.ts' -exec cat {} +",
+            "grep -rl useState . | xargs sed -i 's/useState/useSignal/g'",
+            "for f in src/*.ts; do cat \"$f\"; done",
+            "ls *.md | xargs wc -l",
+            "git ls-files | xargs cat",
+            "fd -e ts | xargs cat",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn substitutions_run_as_commands_and_loading_a_file_isnt_reading_it() {
+        let (_dir, root) = project(&[]);
+        for (command, refusal) in [
+            ("echo $(cat .env)", "would read .env,"),
+            ("echo \"$(head -1 .env)\"", "would read .env,"),
+            ("echo `cat .env`", "would read .env,"),
+            ("diff <(cat .env) <(cat .env.example)", "would read .env,"),
+            (
+                "(cd config && cat master.key)",
+                "would read config/master.key,",
+            ),
+            (
+                "source .env && echo $API_KEY",
+                "would print the values it loads from .env,",
+            ),
+            (
+                "set -a; . ./.env; set +a; env",
+                "would print the values it loads from .env,",
+            ),
+            (
+                "export $(grep -v '^#' .env | xargs) && printenv",
+                "would print the values it loads from .env,",
+            ),
+            (
+                "X=$(cat .env); echo \"${X}\"",
+                "would print the values it loads from .env,",
+            ),
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains(refusal), "{command}: {refused}");
+        }
+        for command in [
+            "export $(grep -v '^#' .env | xargs) && npm run migrate",
+            "set -a; . ./.env; set +a; npm start",
+            "source .env && echo \"deploying $(git rev-parse --short HEAD)\" | tee deploy.log",
+            "docker run --rm --env-file .env -v \"$(pwd)\":/app node:20 npm test 2>&1",
+            "docker run --rm --env-file .env -v $(pwd):/app node:20 sh -c 'npm test 2>&1 | tail -20'",
+            "eval \"$(cat .env)\" && npm start",
+            "echo $((1 + 2)) > count.txt",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn code_given_to_an_interpreter_may_not_open_a_restricted_file() {
+        let (_dir, root) = project(&[]);
+        for command in [
+            "python3 -c \"print(open('.env').read())\"",
+            "node -e \"console.log(require('fs').readFileSync('.env', 'utf8'))\"",
+            "ruby -e 'puts File.read(\".env\")'",
+            "perl -ne 'print' .env",
+            "ruby -pe '' .env",
+            "php -r 'echo file_get_contents(\".env\");'",
+            "deno eval \"console.log(Deno.readTextFileSync('.env'))\"",
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains("would read .env,"), "{command}: {refused}");
+        }
+        for command in [
+            "python3 -c \"import json; print(json.load(open('package.json'))['name'])\"",
+            "node -e \"console.log(process.version)\"",
+            "perl -e 'print 1'",
+            "python3 -m pytest",
         ] {
             assert_eq!(command_problem(command, &root, &none()), None, "{command}");
         }
