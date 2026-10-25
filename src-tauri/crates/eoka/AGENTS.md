@@ -349,4 +349,5 @@ pub use recording::{NativeRecording, NativeRecordingOptions, RecordingChunk, Rec
 pub use session::{BrowserSession, SessionCookie};
 pub use stealth::{Fingerprint, HumanSpeed};
 pub struct StealthConfig { ... }
+pub struct CommandHook  // StealthConfig::command_hook: prepares Chrome's command
 ```

@@ -96,6 +96,24 @@ async fn fill_select_and_navigation_verify_intrinsic_results() {
 }
 
 #[tokio::test]
+#[ignore = "requires Chrome; local closed port"]
+async fn a_navigation_chrome_cannot_complete_reports_chromes_reason() {
+    // A port nothing listens on, once this listener is gone.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", closed.local_addr().unwrap());
+    drop(closed);
+    let browser = support::browser().await;
+    let page = browser.new_blank_page().await.unwrap();
+    let err = page.goto(&url).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::Action { source, .. }
+            if matches!(&**source, Error::Navigation(reason) if reason == "net::ERR_CONNECTION_REFUSED")),
+        "{err}"
+    );
+    browser.close().await.unwrap();
+}
+
+#[tokio::test]
 #[ignore = "requires Chrome; local action fixture"]
 async fn action_deadline_reports_unknown_without_replaying() {
     let server=support::HttpFixture::start(|_|async {support::Response::html("<button id=go onclick='window.hits++'>Go</button><p id=result>pending</p><script>window.hits=0</script>")}).await;

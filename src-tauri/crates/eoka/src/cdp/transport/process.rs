@@ -1,6 +1,6 @@
 //! Chrome child ownership, launch and DevTools endpoint discovery.
 
-use crate::{Error, Result};
+use crate::{CommandHook, Error, Result};
 #[cfg(unix)]
 use std::{
     collections::VecDeque,
@@ -63,7 +63,7 @@ impl Drop for ChildCleanupGuard {
 
 /// Launch Chrome and get the WebSocket debugging URL
 pub fn launch_chrome(path: &std::path::Path, args: &[String]) -> Result<(Child, String)> {
-    launch_chrome_impl(path, args, None, false, None, None)
+    launch_chrome_impl(path, args, None, false, None, None, None)
 }
 
 pub(crate) fn launch_chrome_with_profile_dir(
@@ -73,6 +73,7 @@ pub(crate) fn launch_chrome_with_profile_dir(
     live_session: bool,
     runtime: &Path,
     cancelled: &AtomicBool,
+    hook: Option<&CommandHook>,
 ) -> Result<(Child, String)> {
     launch_chrome_impl(
         path,
@@ -81,6 +82,7 @@ pub(crate) fn launch_chrome_with_profile_dir(
         live_session,
         Some(runtime),
         Some(cancelled),
+        hook,
     )
 }
 
@@ -108,10 +110,14 @@ fn launch_chrome_impl(
     live_session: bool,
     runtime: Option<&Path>,
     cancelled: Option<&AtomicBool>,
+    hook: Option<&CommandHook>,
 ) -> Result<(Child, String)> {
     use std::process::Command;
 
     let mut cmd = Command::new(path);
+    if let Some(hook) = hook {
+        hook.prepare(&mut cmd);
+    }
     cmd.args(args);
     if let Some(runtime) = runtime {
         cmd.env("TMPDIR", runtime)
@@ -196,19 +202,23 @@ fn launch_chrome_impl(
 static PIPE_SPAWN: Mutex<()> = Mutex::new(());
 
 /// Starts Chrome with `--remote-debugging-pipe`, its fds 3 and 4 the
-/// pipes whose other ends are returned. Chrome opens no DevTools port
-/// unless `args` ask for one. It isn't waited for: the first command's
-/// reply on the pipe is its readiness.
+/// pipes whose other ends are returned, its command prepared by `hook`
+/// first. Chrome opens no DevTools port unless `args` ask for one. It isn't
+/// waited for: the first command's reply on the pipe is its readiness.
 #[cfg(unix)]
 pub(crate) fn launch_chrome_with_pipe(
     path: &Path,
     args: &[String],
     runtime: &Path,
     cancelled: &AtomicBool,
+    hook: Option<&CommandHook>,
 ) -> Result<(Child, super::DevToolsPipe, StderrTail)> {
     use std::process::Command;
 
     let mut cmd = Command::new(path);
+    if let Some(hook) = hook {
+        hook.prepare(&mut cmd);
+    }
     cmd.args(args);
     if !args
         .iter()

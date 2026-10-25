@@ -15,6 +15,9 @@
 //! - The browser is the Chrome for Testing Rovik pins (`pinned_browser`,
 //!   D19), as a cloud host or the app installed it, else Chromium, else
 //!   Chrome.
+//! - On a team server it starts in the user's private network (D20), as
+//!   their commands do: its localhost is theirs, where the dev servers the
+//!   agent left running listen, and no other user's servers are there.
 //! - `browse_url` / `web_search` / `browser_screenshot` are read-only:
 //!   navigate, read, screenshot. A prompt-injected page must never be
 //!   followed.
@@ -22,7 +25,8 @@
 //!   bypassing the project-root sandbox the file tools enforce.
 
 use crate::agent_run::StopSignal;
-use eoka::{Browser, Page, Result as EokaResult, StealthConfig};
+use crate::overlay::confine::network::Network;
+use eoka::{Browser, CommandHook, Page, Result as EokaResult, StealthConfig};
 use log::info;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -117,7 +121,8 @@ impl BrowserState {
                 }
             }
             if inner.live.is_none() {
-                inner.live = Some(launch(proxy).await?);
+                let network = crate::overlay::confine::network::current();
+                inner.live = Some(launch(proxy, network).await?);
                 self.spawn_idle_watcher();
             }
             inner.last_used = Some(Instant::now());
@@ -254,8 +259,13 @@ fn no_browser() -> String {
 /// a pipe, with no DevTools port (D18). Through `proxy` when Settings →
 /// Network gives the browser one (eoka signs in to it), or directly with
 /// `direct://`; without, Chrome's own settings, which follow the system's
-/// proxy.
-fn launch_config(chrome: &Path, proxy: Option<&crate::net::BrowserProxy>) -> StealthConfig {
+/// proxy. In `network`, the user's private network on a team server (D20):
+/// Chrome joins it as it starts, as the agent's commands do.
+fn launch_config(
+    chrome: &Path,
+    proxy: Option<&crate::net::BrowserProxy>,
+    network: Option<&Arc<Network>>,
+) -> StealthConfig {
     let mut config = StealthConfig {
         headless: true,
         viewport_width: VIEWPORT.0,
@@ -275,21 +285,34 @@ fn launch_config(chrome: &Path, proxy: Option<&crate::net::BrowserProxy>) -> Ste
         config.user_data_dir = Some(snap.profile.to_string_lossy().into_owned());
         config.runtime_dir = Some(snap.runtime.to_string_lossy().into_owned());
     }
+    // Its localhost is then the user's, where the servers the agent started
+    // listen; the server's own, every user's, isn't reached.
+    if let Some(network) = network.cloned() {
+        config.command_hook = Some(CommandHook::new(move |command| network.join(command)));
+    }
     config
 }
 
-async fn launch(proxy: Option<crate::net::BrowserProxy>) -> Result<Live, String> {
+/// Starts the browser, through `proxy` and in `network` ([`launch_config`]).
+async fn launch(
+    proxy: Option<crate::net::BrowserProxy>,
+    network: Option<Arc<Network>>,
+) -> Result<Live, String> {
     let chrome = chrome_path().ok_or_else(no_browser)?;
-    let config = launch_config(&chrome, proxy.as_ref());
+    let config = launch_config(&chrome, proxy.as_ref(), network.as_ref());
     // The snap's profile is wiped on every launch so each session starts
     // clean.
     if let Some(profile) = &config.user_data_dir {
         let _ = std::fs::remove_dir_all(profile);
     }
 
-    let browser = Browser::launch_with_config(config)
-        .await
-        .map_err(|e| format!("Failed to start Chrome ({}): {e}", chrome.display()))?;
+    let browser = Browser::launch_with_config(config).await.map_err(|e| {
+        let place = match network {
+            Some(_) => " in this user's private network",
+            None => "",
+        };
+        format!("Failed to start Chrome ({}){place}: {e}", chrome.display())
+    })?;
     let page = browser
         .new_blank_page()
         .await
@@ -325,10 +348,10 @@ async fn launch(proxy: Option<crate::net::BrowserProxy>) -> Result<Live, String>
 }
 
 /// The TCP ports process `pid` and those descended from it listen on, from
-/// /proc.
+/// /proc: in its own network, the user's private one when it joined it.
 #[cfg(target_os = "linux")]
 fn listening_ports(pid: u32) -> std::io::Result<Vec<u16>> {
-    let sockets = crate::listening::sockets(Path::new("/proc/net"))?;
+    let sockets = crate::listening::sockets(&PathBuf::from(format!("/proc/{pid}/net")))?;
     let tree = crate::listening::process_tree(pid)?;
     let mut ports: Vec<u16> = crate::listening::holders(&sockets, tree)
         .into_iter()
@@ -998,14 +1021,14 @@ mod tests {
             username: Some("alice".into()),
             password: Some(rovik_protocol::Secret("pw".into())),
         };
-        let config = launch_config(chrome, Some(&proxy));
+        let config = launch_config(chrome, Some(&proxy), None);
         assert_eq!(
             config.proxy.as_deref(),
             Some("http://proxy.example.com:3128")
         );
         assert_eq!(config.proxy_username.as_deref(), Some("alice"));
         assert_eq!(config.proxy_password.as_deref(), Some("pw"));
-        let config = launch_config(chrome, Some(&crate::net::BrowserProxy::direct()));
+        let config = launch_config(chrome, Some(&crate::net::BrowserProxy::direct()), None);
         assert_eq!(
             (
                 config.proxy.as_deref(),
@@ -1014,21 +1037,24 @@ mod tests {
             ),
             (Some("direct://"), None, None)
         );
-        let config = launch_config(chrome, None);
+        let config = launch_config(chrome, None, None);
         assert_eq!(
             (config.proxy, config.proxy_username, config.proxy_password),
             (None, None, None)
         );
     }
 
+    /// Off a team server's private network, Chrome starts as it is, its
+    /// command left alone.
     #[test]
     fn chrome_is_started_headless_over_a_pipe_with_no_port() {
         let chrome = Path::new("/opt/rovik/browser/155.0.8059.39/chrome");
-        let config = launch_config(chrome, None);
+        let config = launch_config(chrome, None, None);
         assert_eq!(config.chrome_path.as_deref(), chrome.to_str());
         assert!(config.headless);
         assert_eq!(config.pipe, cfg!(unix));
         assert!(!config.live_session);
+        assert!(config.command_hook.is_none());
         assert!(
             !config
                 .extra_args
@@ -1072,8 +1098,14 @@ mod tests {
 
         /// Serves `html` at `/` on 127.0.0.1, until the test ends.
         async fn serve(html: &'static str) -> String {
+            serve_on(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), html).await
+        }
+
+        /// Serves `html` at `/` on `listener`, until the test ends: its URL.
+        async fn serve_on(listener: std::net::TcpListener, html: &'static str) -> String {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
             let url = format!("http://{}/", listener.local_addr().unwrap());
             tokio::spawn(async move {
                 while let Ok((mut socket, _)) = listener.accept().await {
@@ -1181,8 +1213,18 @@ mod tests {
             });
         }
 
+        /// A private network for one test, where pasta is installed: as a
+        /// team server's daemon makes one for its user (D20).
+        #[cfg(target_os = "linux")]
+        fn private_network() -> Option<(crate::testing::TempDir, Arc<Network>)> {
+            crate::overlay::confine::network::for_test(Path::new("/bin/true"), &[], None)
+                .map(|(dir, network)| (dir, Arc::new(network)))
+        }
+
         /// A port Chrome opens from a flag Rovik didn't give, as a Chrome
-        /// flags file would add it, is found.
+        /// flags file would add it, is found: in the machine's network, and
+        /// in a team server user's private network, where Chrome starts
+        /// there.
         #[cfg(target_os = "linux")]
         #[test]
         fn a_port_from_a_flag_rovik_did_not_give_is_found() {
@@ -1202,28 +1244,76 @@ mod tests {
                 std::os::unix::fs::PermissionsExt::from_mode(0o755),
             )
             .unwrap();
-            let profile = dir.0.join("profile");
-            crate::rt::block_on(async {
-                let mut config = launch_config(&wrapper, None);
-                config.user_data_dir = Some(profile.to_string_lossy().into_owned());
-                let browser = Browser::launch_with_config(config).await.unwrap();
-                let pid = browser.process_id().unwrap();
-                // Chrome names the port it chose in the profile, soon after
-                // it answers on the pipe.
-                let mut found = (None, Vec::new());
-                for _ in 0..100 {
-                    let named = std::fs::read_to_string(profile.join("DevToolsActivePort"))
-                        .ok()
-                        .and_then(|text| text.lines().next()?.parse::<u16>().ok());
-                    found = (named, listening_ports(pid).unwrap());
-                    if found.0.is_some() && !found.1.is_empty() {
-                        break;
+            // The machine's network, then a private one where it's made.
+            let private = private_network();
+            let mut networks = vec![None];
+            networks.extend(private.as_ref().map(|(_, network)| Some(network)));
+            for (n, network) in networks.into_iter().enumerate() {
+                let profile = dir.0.join(format!("profile-{n}"));
+                crate::rt::block_on(async {
+                    let mut config = launch_config(&wrapper, None, network);
+                    config.user_data_dir = Some(profile.to_string_lossy().into_owned());
+                    let browser = Browser::launch_with_config(config).await.unwrap();
+                    let pid = browser.process_id().unwrap();
+                    // Chrome names the port it chose in the profile, soon
+                    // after it answers on the pipe.
+                    let mut found = (None, Vec::new());
+                    for _ in 0..100 {
+                        let named = std::fs::read_to_string(profile.join("DevToolsActivePort"))
+                            .ok()
+                            .and_then(|text| text.lines().next()?.parse::<u16>().ok());
+                        found = (named, listening_ports(pid).unwrap());
+                        if found.0.is_some() && !found.1.is_empty() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let (named, listening) = found;
+                    let named = named.expect("Chrome named its port");
+                    let private = network.is_some();
+                    assert_eq!(listening, vec![named], "in a private network: {private}");
+                    browser.close().await.unwrap();
+                });
+            }
+        }
+
+        /// On a team server, the agent's browser opens the page of a server
+        /// in the user's private network, as a dev server the agent left
+        /// running there serves it, and not the page another user's server
+        /// serves on the same port of the server's own loopback (D20).
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn the_browser_opens_the_users_own_server_in_their_private_network() {
+            if chrome_path().is_none() {
+                eprintln!("no Chrome or Chromium here, skipping");
+                return;
+            }
+            let Some((_dir, network)) = private_network() else {
+                return;
+            };
+            let theirs = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = theirs.local_addr().unwrap().port();
+            let ours = network
+                .listen_on(port)
+                .expect("the port is free in the network");
+            crate::rt::block_on(async {
+                serve_on(theirs, "<!doctype html><title>Another user's</title>").await;
+                for listener in ours {
+                    serve_on(
+                        listener,
+                        "<!doctype html><title>The user's own</title>\
+                         <main><p>Served in their network.</p></main>",
+                    )
+                    .await;
                 }
-                let (named, listening) = found;
-                assert_eq!(listening, vec![named.expect("Chrome named its port")]);
-                browser.close().await.unwrap();
+                let live = launch(None, Some(network.clone())).await.unwrap();
+                open(&live.page, &format!("http://localhost:{port}/"))
+                    .await
+                    .unwrap();
+                let page = readable(&live.page, 1_000).await.unwrap();
+                assert_eq!(page.title, "The user's own");
+                assert_eq!(page.text, "Served in their network.");
+                live.browser.close().await.unwrap();
             });
         }
 

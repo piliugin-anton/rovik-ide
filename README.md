@@ -654,7 +654,8 @@ starts as your ssh starts it.
 On a server several people share, the agent's commands run in a network of
 your own there: its dev servers can take any port without clashing with
 another user's, and nobody else can reach them, while the agent tests them
-with `curl localhost:3000` as it would on your computer. When a command
+with `curl localhost:3000`, or opens their pages in its own browser, which
+runs in that network too, as it would on your computer. When a command
 opens a page of one of them (`vite --open`, `xdg-open
 http://localhost:5173`), Rovik shows it in a browser tab of the editor,
 through a port of this computer forwarded to it: the same port when it's

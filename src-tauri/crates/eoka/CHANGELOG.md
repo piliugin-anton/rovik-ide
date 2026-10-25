@@ -16,9 +16,16 @@ All notable changes to this project will be documented in this file.
   with `--remote-debugging-port` in `extra_args` fails, as does one on a
   profile a running Chrome holds, rather than attach to it over its port.
 - `Browser::process_id` for the owned Chrome process.
+- `StealthConfig::command_hook`: prepares the command that starts Chrome, over
+  a pipe or a port, before it's spawned: to start Chrome in another network
+  namespace with a Unix `pre_exec`, say. Not called for the `--version` probe,
+  nor when a running Chrome is attached instead.
 
 ### Fixed
 
+- A navigation Chrome can't complete fails with Chrome's own reason
+  (`Navigation error: net::ERR_CONNECTION_REFUSED`), as
+  `navigate_for_download` reports it, not with "Navigation failed".
 - An explicit `/snap/bin/<app>` path is kept as given: it links to the `snap`
   binary, which starts the app only under the link's name.
 - macOS: the patched copy of Chrome is signed ad hoc without the original's
