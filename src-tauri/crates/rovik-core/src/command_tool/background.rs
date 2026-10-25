@@ -2,10 +2,12 @@
 //! watcher, anything that runs until it's stopped.
 //!
 //! A command run the usual way holds its call until it ends or times out,
-//! and what it starts ends with it: bubblewrap ends the rest of its sandbox
-//! when its shell exits, and a timeout kills its process group. So a server
-//! the agent starts with `&` is gone before the user's browser asks it for
-//! a page, and one run in the foreground holds the agent until it's killed.
+//! and what it starts ends with it: its process group once its shell exits
+//! (bubblewrap ends the rest of its sandbox then too), all of it at a
+//! timeout. So a server the agent starts with `&` is gone before the user's
+//! browser asks it for a page, and one run in the foreground holds the
+//! agent until it's killed. A background command's shell ends what it left
+//! running as it exits too: the server is what the shell runs.
 //!
 //! A background command starts as any of the chat's commands does, in its
 //! sandbox and network, with the same environment (`prepared`), and its
@@ -370,6 +372,7 @@ fn launch(
             tree,
             output: Output::default(),
             closed: false,
+            exited: false,
             stopping: false,
             end: None,
         }),
@@ -408,6 +411,8 @@ struct State {
     output: Output,
     /// Nothing holds its output's pipe any more.
     closed: bool,
+    /// Its shell has exited, and what it left running was ended with it.
+    exited: bool,
     /// It was killed, and is told as stopped once its shell is gone.
     stopping: bool,
     /// How it ended, and how long it had run.
@@ -459,16 +464,23 @@ impl Background {
         }
     }
 
-    /// Notes its end once it has come: its shell has exited and nothing
-    /// holds its output any more (a server it left running still does), or
-    /// its shell has exited after a kill (a process that left the group may
-    /// hold the pipe for good). Its shell is reaped then.
+    /// Notes its end once it has come: its shell has exited, ending what it
+    /// left running as a foreground command's does (`run_blocking`), and
+    /// nothing holds its output any more, or its shell has exited after a
+    /// kill (a process that left the group may hold the pipe for good). Its
+    /// shell is reaped then.
     fn look(&self, state: &mut State) {
         let Some(child) = state.child.as_mut() else {
             return;
         };
-        let exited = shell_exited(child).unwrap_or(false);
-        if !exited || !(state.closed || state.stopping) {
+        if !state.exited {
+            if !shell_exited(child).unwrap_or(false) {
+                return;
+            }
+            state.tree.end_leftovers(child);
+            state.exited = true;
+        }
+        if !(state.closed || state.stopping) {
             return;
         }
         // Reaped only now, after any kill of its group: see shell_exited.
@@ -673,6 +685,24 @@ mod tests {
         let first = started(chat, &root, "echo 'port 3000 is taken' >&2; exit 3");
         assert_eq!(first.status.end, Some(End::Exited(Some(3))));
         assert_eq!(first.output.trim(), "port 3000 is taken");
+        assert!(list(chat).is_empty());
+    }
+
+    /// A background command whose shell leaves something running with `&`
+    /// and exits has ended, and so has what it left, as with a foreground
+    /// command: the server is what its shell runs.
+    #[test]
+    fn what_a_background_commands_shell_left_running_ends_with_it() {
+        let (_dir, root) = folder();
+        let chat = "bg-shell-left";
+        let first = started(
+            chat,
+            &root,
+            "(while :; do echo . >> beat; sleep 0.05; done) > /dev/null 2>&1 & echo up",
+        );
+        assert_eq!(first.status.end, Some(End::Exited(Some(0))), "{first:?}");
+        assert_eq!(first.output.trim(), "up");
+        assert!(!beats(&root), "it was left behind");
         assert!(list(chat).is_empty());
     }
 

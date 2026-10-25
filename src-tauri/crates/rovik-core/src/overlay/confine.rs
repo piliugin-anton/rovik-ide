@@ -520,10 +520,6 @@ trait Mechanism: Sync {
     /// that only hides (macOS's Seatbelt, Landlock) says false.
     fn can_redirect(&self) -> bool;
 
-    /// Whether the command sees no other process, and what it leaves
-    /// running ends with it (bubblewrap's pid namespace).
-    fn hides_processes(&self) -> bool;
-
     /// Whether a command it confined that ended so (`code`, `stdout`,
     /// `stderr`) never started: the sandbox couldn't be made, so nothing
     /// ran and it may be tried again ([`until_made`]). Only bubblewrap
@@ -776,13 +772,6 @@ pub fn until_made<T>(
     }
 }
 
-/// Whether the commands here see no other process, and what one leaves
-/// running ends with it: under bubblewrap. Not under Seatbelt or Landlock,
-/// nor without a sandbox.
-pub fn hides_processes() -> bool {
-    chosen().is_some_and(|m| m.hides_processes())
-}
-
 /// Whether the kernel's Landlock confines commands here: Linux's fallback
 /// where bubblewrap can't (confine/landlock.rs). False off Linux.
 pub fn landlock_works() -> bool {
@@ -999,10 +988,6 @@ mod linux {
         }
 
         fn can_redirect(&self) -> bool {
-            true
-        }
-
-        fn hides_processes(&self) -> bool {
             true
         }
 
@@ -1311,10 +1296,6 @@ mod macos {
         }
 
         fn can_redirect(&self) -> bool {
-            false
-        }
-
-        fn hides_processes(&self) -> bool {
             false
         }
     }
@@ -2244,7 +2225,6 @@ mod tests {
         assert_eq!(refusal().is_none(), status.working || switched_off());
         let name = chosen().map(|m| m.name());
         assert_eq!(status.fallback.is_some(), name == Some("landlock"));
-        assert_eq!(hides_processes(), name == Some("bwrap"));
         // Anything but bubblewrap at work says what's missing.
         assert_eq!(status.detail.is_none(), name == Some("bwrap"));
     }

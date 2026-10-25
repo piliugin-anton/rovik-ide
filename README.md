@@ -108,9 +108,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   mode is run once.
 - **Dev servers keep running.** The agent starts a server or watcher it
   means to keep (`npm run dev`, `tsc --watch`) in the background, not with
-  `&`, which under bubblewrap ends with its command: it goes on as soon as
-  the command has started, with what it printed first, reads what it
-  prints later when it needs to, and stops it when it's done. The chat
+  `&`, which ends with its command: it goes on as soon as the command has
+  started, with what it printed first, reads what it prints later when it
+  needs to, and stops it when it's done. The chat
   shows **Background tasks: 2** under its title, which opens into each
   task, how long it has run, and a Stop for it; the agent hears it was
   stopped. A chat keeps at most 4 running, and they stop when the chat is
@@ -1119,8 +1119,9 @@ install it at start where it's missing (the AppImage can't carry it).
 Where bubblewrap can't run (not installed, or user namespaces forbidden,
 as in many containers), the commands run under the kernel's own sandbox,
 Landlock (Linux 6.2 and later, nothing to install), with the same policy
-but lighter: it doesn't hide the other processes or end what a command
-leaves running, can't close the agents' and the session's sockets (only the
+but lighter: it doesn't hide the other processes, ends only what a command
+leaves running in its own process group (a daemon that leaves the group
+goes on), can't close the agents' and the session's sockets (only the
 abstract ones, from Linux 6.12) or hide a login file inside a folder the
 commands may write to (cargo's token), and like Seatbelt below it can't redirect a path, and
 listing your home folder itself fails; the app then sets bubblewrap up by

@@ -293,7 +293,9 @@ fn drain<R: Read + Send + 'static>(
 
 /// A started shell (or tool) and everything it starts, which a timeout or
 /// a Stop kills together: `Child::kill` alone only ends the shell, leaving
-/// e.g. a dev server it ran alive and holding the output pipes.
+/// e.g. a dev server it ran alive and holding the output pipes. What the
+/// shell leaves running ends once it exits, as everything in bubblewrap's
+/// sandbox does.
 ///
 /// On Unix the shell leads its own process group (the caller spawned it
 /// with `process_group(0)`), which outlives it while any member is alive.
@@ -322,12 +324,8 @@ impl ProcessTree {
 
     /// Kills the shell and everything it started.
     pub fn kill(&self, child: &mut std::process::Child) {
-        // The group outlives the shell while any member is alive, so this
-        // works after it has exited too.
         #[cfg(unix)]
-        if let Ok(pid) = libc::pid_t::try_from(child.id()) {
-            unsafe { libc::kill(-pid, libc::SIGKILL) };
-        }
+        kill_group(child);
         #[cfg(windows)]
         if !self.job.as_ref().is_some_and(job_object::JobObject::kill) {
             let _ = crate::process::no_window(&mut Command::new("taskkill"))
@@ -338,6 +336,29 @@ impl ProcessTree {
                 .status();
         }
         let _ = child.kill();
+    }
+
+    /// Ends what the shell, which has exited, left running (a server
+    /// started with `&`): everything still in its process group on Unix,
+    /// where a process that left the group (setsid, a daemon) is out of
+    /// reach, and in its job on Windows.
+    pub fn end_leftovers(&self, child: &std::process::Child) {
+        #[cfg(unix)]
+        kill_group(child);
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.kill();
+        }
+    }
+}
+
+/// Kills the process group `child` leads. The group outlives its leader
+/// while any member is alive, so this works after the shell has exited
+/// too.
+#[cfg(unix)]
+fn kill_group(child: &std::process::Child) {
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
     }
 }
 
@@ -380,8 +401,8 @@ mod job_object {
 
     impl Drop for JobObject {
         fn drop(&mut self) {
-            // Closing it ends nothing: a command's background process that
-            // outlives a normal end goes on, as on Unix.
+            // Closing it ends nothing: what was left in it ended with the
+            // shell (`ProcessTree::end_leftovers`).
             // SAFETY: opened in `of`, closed only here.
             unsafe {
                 let _ = CloseHandle(self.0);
@@ -557,9 +578,10 @@ fn run_blocking(
         let (stdout, out_read) = drain(child.stdout.take().ok_or("no stdout")?, whole);
         let (stderr, err_read) = drain(child.stderr.take().ok_or("no stderr")?, whole);
 
-        // Done when the shell has exited and the pipes are closed: a server the
-        // command left running in the background still holds them, and its
-        // output would never end, so it counts as running until the timeout.
+        // Done when the shell has exited and the pipes are closed. What the
+        // shell left running ends with it, so only a process that left its
+        // group (setsid, a daemon) can still hold them: that counts as
+        // running until the timeout.
         let mut timed_out = false;
         let mut stopped = false;
         let mut exited = false;
@@ -567,6 +589,9 @@ fn run_blocking(
             if !exited {
                 exited = shell_exited(&mut child)
                     .map_err(|e| format!("failed to wait for the command: {e}"))?;
+                if exited {
+                    tree.end_leftovers(&child);
+                }
             }
             if exited && stdout.is_finished() && stderr.is_finished() {
                 break;
@@ -950,29 +975,49 @@ mod tests {
         drop(host);
     }
 
+    /// What a command left running ends with its shell, under any sandbox
+    /// as in bubblewrap's, whose pid namespace ends with the shell: it
+    /// holds the command's output no longer than that.
     #[cfg(not(windows))]
     #[test]
-    fn background_process_holding_the_output_times_out() {
+    fn what_a_command_left_running_ends_with_it_and_holds_no_output() {
         let dir = std::env::temp_dir();
-        // The shell exits at once, but its background child keeps stdout open.
-        // The timeout leaves a busy machine time to start the command and
-        // print before it.
+        let started = Instant::now();
+        // The shell exits at once; its background child would keep stdout
+        // open for 30 s.
         let out = run_blocking(
             dir.to_str().unwrap(),
             "sleep 30 & echo up",
-            Duration::from_secs(3),
+            Duration::from_secs(60),
             &|| false,
             None,
         )
         .unwrap();
-        // In bubblewrap's sandbox (Linux), the command's pid namespace ends
-        // with the shell: nothing it left behind outlives it to hold the
-        // output, so the command just ends. Seatbelt (macOS) and Landlock
-        // have no pid namespace, and without a sandbox there's nothing
-        // either: the child holds the output until the timeout.
-        assert_eq!(out.timed_out, !crate::overlay::confine::hides_processes());
+        assert!(!out.timed_out);
         assert_eq!(out.stdout.trim(), "up");
         assert_eq!(out.exit_code, Some(0));
+        assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    /// A server left running with `&` and its output sent elsewhere holds
+    /// nothing of the command's, and still ends with it, where no pid
+    /// namespace ends it (Landlock, Seatbelt, no sandbox) too.
+    #[cfg(unix)]
+    #[test]
+    fn a_server_left_running_with_its_output_elsewhere_ends_with_the_command() {
+        let dir = crate::testing::temp_dir();
+        let command = "(while :; do echo . >> beat; sleep 0.05; done) > /dev/null 2>&1 & echo up";
+        let out = run_blocking(
+            dir.0.to_str().unwrap(),
+            command,
+            Duration::from_secs(60),
+            &|| false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out.stdout.trim(), "up");
+        assert_eq!(out.exit_code, Some(0));
+        assert!(!crate::testing::beats(&dir.0), "it was left behind");
     }
 
     #[cfg(not(windows))]

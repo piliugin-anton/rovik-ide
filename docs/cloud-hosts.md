@@ -440,14 +440,14 @@ on the computer that leads to it (`localhost:5174` where 5173 was taken
 there), as its ▾ chooses; "Background tasks: 1, open ports: 5173" while
 the agent has commands running in the background there. A port stays
 forwarded until nothing listens on it in the network any more. What a
-command starts with `&` ends with it under bubblewrap, which ends its
-sandbox, so a dev server the agent keeps runs as a background command
-(bash's `background`): it serves its page after the agent's turn, until
-the agent stops it or the user does with its Stop in that row, the chat
-is deleted or moved, or the user's daemon stops. Only pages of the user's
-own servers open this way, http or https at localhost, 127.0.0.1 or ::1:
-any other address is refused, for the user's safety, and the agent is
-told why. A chat's commands open at most 5 pages a minute.
+command starts with `&` ends with it, so a dev server the agent keeps runs
+as a background command (bash's `background`): it serves its page after
+the agent's turn, until the agent stops it or the user does with its Stop
+in that row, the chat is deleted or moved, or the user's daemon stops.
+Only pages of the user's own servers open this way, http or https at
+localhost, 127.0.0.1 or ::1: any other address is refused, for the user's
+safety, and the agent is told why. A chat's commands open at most 5 pages
+a minute.
 
 ## Project services
 

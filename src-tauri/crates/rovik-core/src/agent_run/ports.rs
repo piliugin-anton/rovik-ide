@@ -38,16 +38,10 @@ pub(super) fn troubled(text: &str) -> bool {
 }
 
 /// The note for a command's output `text`, given what listens in the
-/// user's network now, and whether what a command leaves running ends with
-/// it (`ends_with_command`, bubblewrap's sandbox): None when it shows no
-/// trouble with a port. A refused port of `services`, the ports the
-/// project's services publish, is theirs to explain (environment.rs).
-pub(super) fn note(
-    text: &str,
-    listening: &[Listener],
-    ends_with_command: bool,
-    services: &[u16],
-) -> Option<String> {
+/// user's network now: None when it shows no trouble with a port. A
+/// refused port of `services`, the ports the project's services publish,
+/// is theirs to explain (environment.rs).
+pub(super) fn note(text: &str, listening: &[Listener], services: &[u16]) -> Option<String> {
     let mut notes = Vec::new();
     let (busy, busy_ports) = ports_on(text, &BUSY, &BUSY_PORT);
     if busy {
@@ -57,7 +51,7 @@ pub(super) fn note(
         if busy_ports.contains(&port) || services.contains(&port) {
             continue;
         }
-        notes.push(refused_note(port, listening, ends_with_command));
+        notes.push(refused_note(port, listening));
     }
     (!notes.is_empty()).then(|| {
         notes
@@ -122,28 +116,18 @@ fn busy_note(ports: &[u16], listening: &[Listener]) -> String {
     }
 }
 
-fn refused_note(port: u16, listening: &[Listener], ends_with_command: bool) -> String {
+fn refused_note(port: u16, listening: &[Listener]) -> String {
     match holders(port, listening).as_slice() {
-        [] => {
-            // Where what a command leaves running ends with it, a server
-            // started by an earlier command is gone.
-            let ended = if ends_with_command {
-                format!(
-                    " A server a command starts with `&` ends with that command: leave one \
-                     running with bash's background: true, or start it and test it in the same \
-                     command, for example `npm run dev > dev.log 2>&1 & sleep 5; curl -s \
-                     localhost:{port}`."
-                )
-            } else {
-                String::new()
-            };
-            format!(
-                "Nothing listens on port {port} in this user's private network on the server \
-                 now, so the connection was refused. If this command started the server, it may \
-                 have needed longer to come up: wait until it answers before testing it.{ended} \
-                 Other users' servers are never on this network's localhost."
-            )
-        }
+        // A server started by an earlier command is gone with it.
+        [] => format!(
+            "Nothing listens on port {port} in this user's private network on the server now, \
+             so the connection was refused. If this command started the server, it may have \
+             needed longer to come up: wait until it answers before testing it. A server a \
+             command starts with `&` ends with that command: leave one running with bash's \
+             background: true, or start it and test it in the same command, for example `npm \
+             run dev > dev.log 2>&1 & sleep 5; curl -s localhost:{port}`. Other users' servers \
+             are never on this network's localhost."
+        ),
         held => format!(
             "Port {port} listens now in this user's private network on the server ({}), but \
              refused the connection when the command made it: the server may have needed longer \
@@ -207,7 +191,6 @@ mod tests {
         let said = note(
             "Error: listen EADDRINUSE: address already in use :::3000",
             &listening,
-            true,
             &[],
         )
         .unwrap();
@@ -224,7 +207,7 @@ mod tests {
             "{said}"
         );
 
-        let gone = note("Error: Port 5173 is already in use", &[], true, &[]).unwrap();
+        let gone = note("Error: Port 5173 is already in use", &[], &[]).unwrap();
         assert!(gone.contains("nothing holds port 5173 now"), "{gone}");
     }
 
@@ -234,7 +217,6 @@ mod tests {
         let said = note(
             "OSError: [Errno 98] Address already in use",
             &listening,
-            true,
             &[],
         )
         .unwrap();
@@ -249,24 +231,15 @@ mod tests {
     #[test]
     fn a_refused_local_connection_says_nothing_listens_and_why() {
         let refused = "curl: (7) Failed to connect to localhost port 3000 after 0 ms: Couldn't connect to server";
-        let said = note(refused, &[], true, &[]).unwrap();
+        let said = note(refused, &[], &[]).unwrap();
         assert!(said.contains("Nothing listens on port 3000"), "{said}");
         assert!(said.contains("ends with that command"), "{said}");
         assert!(said.contains("background: true"), "{said}");
         assert!(said.contains("curl -s localhost:3000"), "{said}");
-        // Where what a command leaves running goes on (Landlock), it isn't
-        // said to end.
-        let lasting = note(refused, &[], false, &[]).unwrap();
-        assert!(
-            lasting.contains("Nothing listens on port 3000"),
-            "{lasting}"
-        );
-        assert!(!lasting.contains("ends with that command"), "{lasting}");
 
         let late = note(
             "Error: connect ECONNREFUSED 127.0.0.1:3000",
             &[listener(3000, 9, "next dev")],
-            true,
             &[],
         )
         .unwrap();
@@ -276,16 +249,11 @@ mod tests {
     #[test]
     fn a_port_a_service_publishes_is_left_to_the_service_to_explain() {
         let refused = "Error: connect ECONNREFUSED 127.0.0.1:5432\nError: connect ECONNREFUSED 127.0.0.1:3000";
-        let said = note(refused, &[], true, &[5432]).unwrap();
+        let said = note(refused, &[], &[5432]).unwrap();
         assert!(said.contains("Nothing listens on port 3000"), "{said}");
         assert!(!said.contains("5432"), "{said}");
         assert_eq!(
-            note(
-                "Error: connect ECONNREFUSED 127.0.0.1:5432",
-                &[],
-                true,
-                &[5432]
-            ),
+            note("Error: connect ECONNREFUSED 127.0.0.1:5432", &[], &[5432]),
             None
         );
     }
@@ -293,7 +261,7 @@ mod tests {
     #[test]
     fn output_without_port_trouble_gets_no_note() {
         assert!(!troubled("Compiled successfully in 1.2s"));
-        assert_eq!(note("Compiled successfully in 1.2s", &[], true, &[]), None);
+        assert_eq!(note("Compiled successfully in 1.2s", &[], &[]), None);
         assert!(troubled("connect ECONNREFUSED 127.0.0.1:1"));
     }
 }

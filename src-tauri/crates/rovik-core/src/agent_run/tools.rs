@@ -233,9 +233,8 @@ fn run_command_schema(permissions: &Permissions) -> Value {
 }
 
 /// What the lead's bash says of leaving a command running.
-const BASH_BACKGROUND: &str = " Don't leave a server or watcher running with `&`: depending on \
-     the sandbox, it ends with the command, holds the call until its timeout, or is left behind \
-     untracked. For one that runs until stopped (`npm run dev`, a file watcher), set background: \
+const BASH_BACKGROUND: &str = " A command ends with everything it started, `&` included. For a \
+     server or watcher that runs until stopped (`npm run dev`, a file watcher), set background: \
      true: the call returns once it has started, with its id and first output, and it keeps \
      running until you stop it with the background tool.";
 
@@ -1172,9 +1171,8 @@ async fn run(
                             _ => notes.extend(after.note()),
                         }
                     }
-                    let ends = crate::overlay::confine::hides_processes();
                     let lead = ctx.background_chat.is_some();
-                    notes.extend(ended_with_it(command, &out, ends, lead));
+                    notes.extend(ended_with_it(command, &out, lead));
                     (format_command_output(command, &out), out.text())
                 }
             };
@@ -1431,19 +1429,13 @@ async fn start_agent_command(
 }
 
 /// What the agent is told of a command that ended after it left something
-/// running with `&`: where what a command leaves running ends with it
-/// (`ends_with_command`: bubblewrap's sandbox), that ended too, however
+/// running with `&`: that ended too (`ProcessTree::end_leftovers`), however
 /// well the command's own test of it went. The `lead`, who can leave a
 /// command running, is told how.
-fn ended_with_it(
-    command: &str,
-    out: &CommandOutput,
-    ends_with_command: bool,
-    lead: bool,
-) -> Option<String> {
+fn ended_with_it(command: &str, out: &CommandOutput, lead: bool) -> Option<String> {
     let ended = !out.stopped && !out.timed_out;
     let backgrounds = super::permissions::parse_command(command).backgrounds;
-    if !(ended && backgrounds && ends_with_command) {
+    if !(ended && backgrounds) {
         return None;
     }
     let how = match lead {
@@ -1452,7 +1444,7 @@ fn ended_with_it(
     };
     Some(format!(
         "What it started in the background with `&` ended with it: nothing a command starts \
-         outlives it here.{how}"
+         outlives it.{how}"
     ))
 }
 
@@ -1469,14 +1461,13 @@ async fn port_note(printed: &str, root: &str) -> Option<String> {
         let listening = crate::rt::spawn_blocking(move || network.listening())
             .await
             .unwrap_or_default();
-        let ends = crate::overlay::confine::hides_processes();
         // A port one of the project's services publishes was explained
         // with the service, after the command failed.
         let root = std::path::PathBuf::from(root);
         let services = crate::rt::spawn_blocking(move || crate::services::published_ports(&root))
             .await
             .unwrap_or_default();
-        super::ports::note(printed, &listening, ends, &services)
+        super::ports::note(printed, &listening, &services)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -2819,7 +2810,7 @@ a.rs (3 matches)
             Some(&json!("boolean"))
         );
         let described = offered["function"]["description"].as_str().unwrap();
-        assert!(described.contains("running with `&`"), "{described}");
+        assert!(described.contains("`&` included"), "{described}");
         assert!(described.contains("set background: true"), "{described}");
         let background = agent.iter().filter(|t| tool_name(t) == "background");
         assert_eq!(background.count(), 1);
@@ -2910,9 +2901,9 @@ a.rs (3 matches)
         );
     }
 
-    /// Where what a command leaves running ends with it (bubblewrap), the
-    /// agent hears that what it started with `&` is gone, however well the
-    /// command's own test of it went; the lead hears how to leave it running.
+    /// The agent hears that what a command started with `&` ended with it,
+    /// however well the command's own test of it went; the lead hears how
+    /// to leave it running.
     #[test]
     fn a_command_that_left_something_running_with_an_ampersand_hears_it_ended() {
         let out = |exit_code: Option<i32>, timed_out: bool| CommandOutput {
@@ -2927,20 +2918,16 @@ a.rs (3 matches)
             whole: None,
         };
         let started = "npm run dev > dev.log 2>&1 & sleep 3 && curl -s localhost:5173";
-        let lead = ended_with_it(started, &out(Some(0), false), true, true).unwrap();
+        let ok = out(Some(0), false);
+        let lead = ended_with_it(started, &ok, true).unwrap();
         assert!(lead.contains("ended with it"), "{lead}");
         assert!(lead.contains("background: true"), "{lead}");
-        let sub = ended_with_it(started, &out(Some(0), false), true, false).unwrap();
+        let sub = ended_with_it(started, &ok, false).unwrap();
         assert!(sub.contains("ended with it") && !sub.contains("background: true"));
-        // It outlives the command there, or the command was killed with
-        // everything it started, or nothing went to the background.
-        let ok = out(Some(0), false);
-        assert_eq!(ended_with_it(started, &ok, false, true), None);
-        assert_eq!(ended_with_it(started, &out(None, true), true, true), None);
-        assert_eq!(
-            ended_with_it("npm test && npm run lint", &ok, true, true),
-            None
-        );
+        // The command was killed with everything it started, or nothing
+        // went to the background.
+        assert_eq!(ended_with_it(started, &out(None, true), true), None);
+        assert_eq!(ended_with_it("npm test && npm run lint", &ok, true), None);
     }
 
     /// A subagent's commands end with its work: none is left running, and
