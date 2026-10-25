@@ -506,9 +506,12 @@ its permission mode):
   to them. On a cloud host your daemon starts it under your own Podman, its
   ports in your private network there and its image fetched once for the
   whole server, and the command runs again
-  ([docs/cloud-hosts.md](docs/cloud-hosts.md#project-services)). A service
-  looked up by its name is reached at its published port on localhost
-  instead, and the agent is told so.
+  ([docs/cloud-hosts.md](docs/cloud-hosts.md#project-services)). The
+  agent's commands can't run containers there, not even with the server's
+  Podman: a `docker compose up` of theirs has your daemon start what it
+  names, and one that reaches for Docker or Podman otherwise is told so. A
+  service looked up by its name is reached at its published port on
+  localhost instead, and the agent is told so.
 - **Running it again.** A command that is one program (`npm test`) runs again
   by itself once what it lacked is there, and the agent sees both why and the
   second run. A longer one (`cd web && npm test`) is left to the agent, since

@@ -502,12 +502,20 @@ up by its name (`getaddrinfo ENOTFOUND db`). The user's daemon starts it,
 and what it depends on, under their own Podman, as it installs a missing
 toolchain: the call says "Starting the project's service: db…" meanwhile,
 and a command that is one program runs again once it's up. The agent's
-commands have no container engine of their own: a `docker compose up` of
-theirs (or `podman compose up`) fails, and the daemon starts the services
-it names instead and says so. Claude Code's commands get the same through
-Rovik's hooks. The agent's prompt names the project's services, and that
-they start this way. Plan mode starts nothing, and a start that failed
-isn't tried again for that chat for ten minutes.
+commands can't run a container engine, not even the server's `podman`,
+which is the daemon's: their sandbox gives them no user namespaces, and
+Podman's storage is read-only to them. A `docker compose up` of theirs (or
+`docker-compose`, `podman compose`, `podman-compose`) fails, and the daemon
+starts the services it names instead and says so; a service built from the
+project's code is the agent's to run with its own commands. Any other
+command of theirs that reaches for an engine and fails (`docker ps`,
+`podman run`, a look for `docker` or its socket, a script that runs
+`docker`) is told that they need none, which services the project declares
+and where its code reaches them, or why the server can't run them. Claude
+Code's commands get the same through Rovik's hooks. The agent's prompt
+names the project's services, and that they start this way. Plan mode
+starts nothing, and a start that failed isn't tried again for that chat
+for ten minutes.
 
 - **Its ports are the user's own.** Nothing is published on the server.
   Each port a service publishes listens in the user's private network

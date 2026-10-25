@@ -196,6 +196,10 @@ pub async fn after(cx: &Context, command: &str, exit_code: Option<i32>, output: 
         }
         return ready;
     }
+    if let Some(note) = engine_unreached(cx, command, missing.as_deref(), output).await {
+        ready.add(Outcome::Missing(note));
+        return ready;
+    }
     let services = services_needed(cx, output).await;
     if !services.is_empty() {
         for outcome in services {
@@ -554,15 +558,65 @@ async fn services_asked_for(cx: &Context, command: &str) -> Vec<Outcome> {
     }) else {
         return Vec::new();
     };
-    let outcomes = start_services(cx, model, needed).await;
-    outcomes
+    // What it asked for that's the project's own code, which isn't started.
+    let built = services::built_note(std::slice::from_ref(&model), &names);
+    let mut outcomes: Vec<Outcome> = start_services(cx, model, needed)
+        .await
         .into_iter()
         .map(|outcome| match outcome {
             // Said, not run again: the engine it asked for isn't there.
-            Outcome::Made(done) => Outcome::Missing(format!("{done}. {}", services::NO_ENGINE)),
+            Outcome::Made(done) => Outcome::Missing(services::up_answered(&done)),
             other => other,
         })
-        .collect()
+        .collect();
+    outcomes.extend(built.map(Outcome::Missing));
+    outcomes
+}
+
+/// After a failed command that ran a container engine (`docker ps`, `podman
+/// run`, a look for one, or a script whose `docker` the shell didn't find):
+/// what the agent is told in place of the engine it reached for. On a
+/// cloud host its commands can run none, not even the `podman` Rovik runs
+/// the project's services with; on the user's own computer, only where the
+/// output shows the engine wasn't there or couldn't be reached. None for
+/// another command.
+async fn engine_unreached(
+    cx: &Context,
+    command: &str,
+    missing: Option<&str>,
+    output: &str,
+) -> Option<String> {
+    let engine = |program: &str| services::ENGINES.contains(&program);
+    let ran = programs(command).iter().any(|program| engine(program))
+        || missing.is_some_and(engine)
+        || command.contains("docker.sock")
+        || command.contains("podman.sock");
+    if !ran {
+        return None;
+    }
+    let host = services::host();
+    if host.is_none() {
+        return super::unreached::engine_unreachable(output)
+            .then(|| services::engine_note(&[], &[], None));
+    }
+    let reads = match services::compose::program() {
+        Some(program) => {
+            let root = PathBuf::from(&cx.root);
+            crate::rt::spawn_blocking(move || services::compose::read_each(&program, &root))
+                .await
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    let mut models = Vec::new();
+    let mut unread = Vec::new();
+    for read in reads {
+        match read {
+            Ok(model) => models.push(model),
+            Err(why) => unread.push(why),
+        }
+    }
+    Some(services::engine_note(&models, &unread, host.as_ref()))
 }
 
 /// The services `command` asks Compose to start (`docker compose up -d
@@ -960,7 +1014,8 @@ mod tests {
         assert!(
             said.starts_with(
                 "Rovik started the `db` (postgres:16-alpine) service of compose.yaml, which the \
-                 command needed (at localhost:5432). Your commands have no container engine"
+                 command needed (at localhost:5432). Your commands can't run containers on this \
+                 server, not even with its `podman`, which is Rovik's"
             ),
             "{said}"
         );
@@ -972,6 +1027,14 @@ mod tests {
         )
         .await;
         assert!(all.missing[0].contains("the `cache`"), "{:?}", all.missing);
+        assert_eq!(
+            all.missing.last().map(String::as_str),
+            Some(
+                "`web` is built from the project's code: run that code with your commands, not \
+                 in a container."
+            ),
+            "what it asked for that isn't started"
+        );
         assert_eq!(
             *asked.lock().unwrap(),
             [
@@ -986,7 +1049,9 @@ mod tests {
     }
 
     /// On the user's own computer the command reached their engine, or the
-    /// sandbox kept it from it: Rovik starts nothing.
+    /// sandbox kept it from it: Rovik starts nothing, and where the engine
+    /// couldn't be reached the agent is told to ask the user. A failure of
+    /// the engine's own, such as a Dockerfile's, gets no such note.
     #[cfg(unix)]
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
@@ -1003,6 +1068,88 @@ mod tests {
         .await;
         let said = format!("{:?}", ready);
         assert!(!said.contains("Rovik started"), "{said}");
+        assert!(
+            said.contains("Ask the user to start the services"),
+            "{said}"
+        );
+        let built = after(
+            &cx,
+            "docker build .",
+            Some(1),
+            "ERROR: failed to solve: dockerfile parse error on line 3",
+        )
+        .await;
+        assert_eq!(built, Ready::default());
+    }
+
+    /// The agent's own look for Docker, on a cloud host whose commands
+    /// have none: told that Rovik runs the project's services, and where
+    /// the code reaches them; nothing starts for a look. A script whose
+    /// `docker` the shell didn't find is told the same.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_look_for_docker_on_a_host_is_told_rovik_runs_the_services() {
+        let _lock = services::test_lock();
+        let (_test, cx, asked) = shop_on_a_host(Ok("at localhost:5432".into()));
+        let look = "command -v docker docker-compose podman 2>&1; docker compose version 2>&1 | \
+                    head -2; id -nG; ls -la /var/run/docker.sock 2>&1";
+        let said = "bash: line 1: docker: command not found\ndev\nls: cannot access \
+                    '/var/run/docker.sock': No such file or directory";
+        let ready = after(&cx, look, Some(2), said).await;
+        assert!(ready.done.is_empty(), "{:?}", ready.done);
+        let note = ready.missing.join("\n");
+        assert!(
+            note.starts_with(
+                "Your commands can't run containers on this server, not even with its \
+                 `podman`, which is Rovik's"
+            ),
+            "{note}"
+        );
+        assert!(
+            note.contains("`web` is built from the project's code"),
+            "{note}"
+        );
+        assert!(
+            note.contains("`db` (postgres:16-alpine, localhost:5432)"),
+            "{note}"
+        );
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "nothing starts for a look"
+        );
+        let script = after(&cx, "npm test", Some(127), "sh: 1: docker: not found").await;
+        assert!(
+            script.missing[0].starts_with("Your commands can't run containers on this server"),
+            "{:?}",
+            script.missing
+        );
+    }
+
+    /// Where the server can't run the services, a look for Docker is told
+    /// why, for the user.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_look_for_docker_where_the_server_cant_run_services_says_why() {
+        let _lock = services::test_lock();
+        let (test, cx, _notes) = project(&[("compose.yaml", "services: {}\n")]);
+        services::compose::use_program(Some(fake_compose(&test.dir.0, SHOP)));
+        services::set_host(services::Host::Cannot("Podman isn't installed".into()));
+        let ready = after(
+            &cx,
+            "docker ps",
+            Some(127),
+            "bash: docker: command not found",
+        )
+        .await;
+        assert_eq!(ready.missing.len(), 1, "{:?}", ready.missing);
+        assert!(
+            ready.missing[0]
+                .contains("can't run the project's services either: Podman isn't installed"),
+            "{:?}",
+            ready.missing
+        );
     }
 
     /// A start that failed is said, and isn't tried again for that chat

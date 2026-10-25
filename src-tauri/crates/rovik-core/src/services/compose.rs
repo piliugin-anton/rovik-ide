@@ -429,15 +429,24 @@ pub fn read(program: &Program, root: &Path, folder: &str) -> Option<Result<Arc<M
 /// Every compose file of the project at `root` that `program` could read,
 /// its own folder's first.
 pub fn read_all(program: &Program, root: &Path) -> Vec<Arc<Model>> {
-    folders(root)
-        .iter()
-        .filter_map(|folder| match read(program, root, folder)? {
+    read_each(program, root)
+        .into_iter()
+        .filter_map(|read| match read {
             Ok(model) => Some(model),
             Err(why) => {
                 log::info!("services: {why}");
                 None
             }
         })
+        .collect()
+}
+
+/// Each compose file of the project at `root` as `program` read it, or why
+/// it couldn't, its own folder's first.
+pub fn read_each(program: &Program, root: &Path) -> Vec<Result<Arc<Model>, String>> {
+    folders(root)
+        .iter()
+        .filter_map(|folder| read(program, root, folder))
         .collect()
 }
 

@@ -63,6 +63,10 @@ fn the_prompt_says_what_this_machine_does_with_the_services() {
         line.contains("a `docker compose up` has Rovik start what it names instead"),
         "{line}"
     );
+    assert!(
+        line.contains("not even with the server's `podman`, which is Rovik's"),
+        "the `podman` the agent finds: {line}"
+    );
     assert!(line.contains("at localhost, not by their names"), "{line}");
     let cannot = Host::Cannot("Podman isn't installed".into());
     let line = prompt_line_for(&[shop("compose.yaml")], Some(&cannot)).unwrap();
@@ -207,5 +211,87 @@ fn a_compose_up_asks_for_the_services_that_run_from_their_own_image() {
     assert!(
         asked(&model, &["web".into()]).is_empty(),
         "the project's own code is the agent's to run"
+    );
+}
+
+#[test]
+fn a_command_that_reached_for_a_container_engine_is_told_what_runs_the_services() {
+    let runs = Host::Runs(Arc::new(Idle));
+    let listed = engine_note(&[shop("compose.yaml")], &[], Some(&runs));
+    assert!(
+        listed.starts_with(
+            "Your commands can't run containers on this server, not even with its `podman`, \
+             which is Rovik's: their sandbox keeps every engine from them."
+        ),
+        "{listed}"
+    );
+    assert!(
+        listed.contains("compose.yaml declares `cache` (redis:7-alpine, localhost:6379)"),
+        "{listed}"
+    );
+    assert!(
+        listed.ends_with(
+            "`web` is built from the project's code: run that code with your commands, not in \
+             a container."
+        ),
+        "{listed}"
+    );
+    assert!(
+        listed.contains("`docker compose up -d` with the service's name"),
+        "{listed}"
+    );
+    let why = "Compose couldn't read compose.yaml: yaml: line 3: mapping values are not allowed";
+    let unread = engine_note(&[], &[why.to_string()], Some(&runs));
+    assert!(
+        unread.contains(&format!("this project's: {why}")),
+        "{unread}"
+    );
+    let none = engine_note(&[], &[], Some(&runs));
+    assert!(none.contains("declare one in compose.yaml"), "{none}");
+    let only_app = r#"{"name": "a", "services": {"web": {"build": {"context": "/a"}}}}"#;
+    let app = Arc::new(Model::parse(Path::new("/a"), "docker-compose.yml", only_app).unwrap());
+    let app = engine_note(&[app], &[], Some(&runs));
+    assert!(
+        app.contains(
+            "from an image of their own (a database, cache or queue), and starts each when a \
+             command needs it: docker-compose.yml declares none. `web` is built from the \
+             project's code: run that code with your commands, not in a container."
+        ),
+        "{app}"
+    );
+    let cannot = Host::Cannot("Podman isn't installed".into());
+    let cannot = engine_note(&[shop("compose.yaml")], &[], Some(&cannot));
+    assert!(
+        cannot.ends_with("either: Podman isn't installed. Tell the user."),
+        "{cannot}"
+    );
+    let here = engine_note(&[], &[], None);
+    assert!(
+        here.contains("Ask the user to start the services"),
+        "{here}"
+    );
+}
+
+#[test]
+fn the_project_code_a_command_asked_for_is_the_agents_to_run() {
+    let models = [shop("compose.yaml")];
+    assert_eq!(
+        built_note(&models, &[]).as_deref(),
+        Some(
+            "`web` is built from the project's code: run that code with your commands, not in a \
+             container."
+        )
+    );
+    assert_eq!(built_note(&models, &["db".into()]), None, "none asked for");
+    let two = r#"{"name": "a", "services": {"web": {"build": {}}, "worker": {"build": {}}}}"#;
+    let two = [Arc::new(
+        Model::parse(Path::new("/a"), "compose.yaml", two).unwrap(),
+    )];
+    assert!(
+        built_note(&two, &[])
+            .unwrap()
+            .starts_with("`web` and `worker` are built"),
+        "{:?}",
+        built_note(&two, &[])
     );
 }
