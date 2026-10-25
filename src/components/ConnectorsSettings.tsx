@@ -34,6 +34,7 @@ import {
 import { CONNECTOR_FIELDS } from './connectorFields';
 import { confirmDialog } from './ConfirmDialog';
 import ConnectorSetup from './ConnectorSetup';
+import { SettingRow } from './SettingsControls';
 import ProviderModelsTable, { CONNECTOR_COLUMNS } from './ProviderModelsTable';
 import { listHosts } from '../lib/hosts';
 
@@ -92,12 +93,14 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
   };
 
   function openDraft(p: Provider, setUp = false) {
+    // The last form's test is forgotten first: a Set up that starts as the
+    // form opens tests at once, and its test is this form's.
+    testRun++;
+    setTest({ kind: 'idle' });
     setSetUpOnOpen(setUp);
     setDraft({ ...p, models: p.models.map((m) => ({ ...m })) });
-    setTest({ kind: 'idle' });
     setFormError(null);
     setAdding(false);
-    testRun++;
   }
 
   function closeDraft() {
@@ -112,9 +115,11 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
 
   /**
    * Tests the connector being edited where it's tested, shows what it found
-   * and keeps its models; throws what failed. "Set up" tests with it too.
+   * and keeps its models; throws what failed, and shows it as the test's
+   * result when `showFailure`. "Set up" tests with it too, without: what
+   * failed is its own to act on (a missing program, it installs) or to show.
    */
-  async function testNow(): Promise<ConnectorProbe> {
+  async function testNow(showFailure: boolean): Promise<ConnectorProbe> {
     const d = draft();
     if (!d) throw new Error('No connector is open.');
     const run = ++testRun;
@@ -134,12 +139,13 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
       setTest({ kind: 'ok', probe, added, first: firstFetch });
       return probe;
     } catch (err) {
-      if (run === testRun) setTest({ kind: 'error', message: errorText(err) });
+      if (run === testRun)
+        setTest(showFailure ? { kind: 'error', message: errorText(err) } : { kind: 'idle' });
       throw err;
     }
   }
 
-  const runTest = () => testNow().catch(() => {});
+  const runTest = () => testNow(true).catch(() => {});
   const testWhere = () =>
     testHost()
       ? `on ${hosts().find((h) => h.id === testHost())?.name ?? 'the host'}`
@@ -303,14 +309,17 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
     >
       {(d) => (
         <div class="profile-form connector-form">
-          <label>
-            Name
-            <input
-              value={d().name}
-              onInput={(e) => patch({ name: e.currentTarget.value })}
-              placeholder={connectorTitle(kindOfProvider(d()))}
-            />
-          </label>
+          <section class="settings-section connector-name">
+            <SettingRow label="Name">
+              <input
+                class="settings-input"
+                aria-label="Name"
+                value={d().name}
+                onInput={(e) => patch({ name: e.currentTarget.value })}
+                placeholder={connectorTitle(kindOfProvider(d()))}
+              />
+            </SettingRow>
+          </section>
 
           <section class="settings-section">
             <div class="settings-section-title">Connection</div>
@@ -323,81 +332,90 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
                 />
               )}
             </Show>
-
-            <div class="provider-test-row connector-test-row">
-              <button onClick={() => void runTest()} disabled={test().kind === 'testing'}>
-                {test().kind === 'testing'
-                  ? 'Testing…'
-                  : d().models.length > 0
-                    ? 'Test & refresh models'
-                    : 'Test connection'}
-              </button>
-              <label
-                class="checkbox-row connector-test-option"
-                title="Makes one small request too, to see that it's signed in (a few tokens)"
-              >
-                <input
-                  type="checkbox"
-                  checked={withRequest()}
-                  onChange={(e) => setWithRequest(e.currentTarget.checked)}
-                />
-                with a request
-              </label>
-              <Show when={hosts().length > 0}>
+            <Show when={hosts().length > 0}>
+              <SettingRow label="Computer">
                 <select
-                  class="settings-select connector-test-host"
+                  class="settings-select"
                   value={testHost()}
                   onChange={(e) => setTestHost(e.currentTarget.value)}
                   aria-label="Where to test"
-                  title="A connector is a program on the computer the chat runs on: test it where the chats run"
+                  title="A connector is a program on the computer the chat runs on: test it and set it up where the chats run"
                 >
-                  <option value="">on this computer</option>
-                  <For each={hosts()}>{(h) => <option value={h.id}>on {h.name}</option>}</For>
+                  <option value="">This computer</option>
+                  <For each={hosts()}>{(h) => <option value={h.id}>{h.name}</option>}</For>
                 </select>
+              </SettingRow>
+            </Show>
+
+            <div class="connector-checks">
+              <div class="provider-test-row connector-test-row">
+                <button onClick={() => void runTest()} disabled={test().kind === 'testing'}>
+                  {test().kind === 'testing'
+                    ? 'Testing…'
+                    : d().models.length > 0
+                      ? 'Test & refresh models'
+                      : 'Test connection'}
+                </button>
+                <label
+                  class="checkbox-row connector-test-option"
+                  title="Makes one small request too, to see that it's signed in (a few tokens)"
+                >
+                  <input
+                    type="checkbox"
+                    checked={withRequest()}
+                    onChange={(e) => setWithRequest(e.currentTarget.checked)}
+                  />
+                  with a request
+                </label>
+              </div>
+              <Show when={okState()}>
+                {(ok) => (
+                  <div class="provider-test-status ok connector-test-status">
+                    {probeSummary(ok().probe)}, {ok().probe.models.length} models
+                    {!ok().first && ok().added > 0 ? ` (${ok().added} new, not enabled)` : ''}
+                    <Show
+                      when={ok().probe.auth && authLine(authStateOf({ auth: ok().probe.auth! }))}
+                    >
+                      {(line) => (
+                        <div class="connector-auth" classList={{ warning: line().warning }}>
+                          {line().text}
+                        </div>
+                      )}
+                    </Show>
+                    <Show when={ok().probe.update}>
+                      {(version) => (
+                        <div class="connector-test-note">
+                          Version {version()} is available: Update below.
+                        </div>
+                      )}
+                    </Show>
+                    <For each={ok().probe.notes ?? []}>
+                      {(note) => <div class="connector-test-note">{note}</div>}
+                    </For>
+                  </div>
+                )}
               </Show>
+              <Show when={errorState()}>
+                {(err) => (
+                  <div
+                    class="provider-test-status error connector-test-status"
+                    title={err().message}
+                  >
+                    {err().message}
+                  </div>
+                )}
+              </Show>
+              <ConnectorSetup
+                connector={d()}
+                title={connectorTitle(kindOfProvider(d()))}
+                host={testHost() || null}
+                where={testWhere()}
+                probe={() => testNow(false)}
+                signedIn={okState()?.probe.auth?.loggedIn === true}
+                update={okState()?.probe.update}
+                autoStart={setUpOnOpen()}
+              />
             </div>
-            <Show when={okState()}>
-              {(ok) => (
-                <div class="provider-test-status ok connector-test-status">
-                  {probeSummary(ok().probe)}, {ok().probe.models.length} models
-                  {!ok().first && ok().added > 0 ? ` (${ok().added} new, not enabled)` : ''}
-                  <Show when={ok().probe.auth && authLine(authStateOf({ auth: ok().probe.auth! }))}>
-                    {(line) => (
-                      <div class="connector-auth" classList={{ warning: line().warning }}>
-                        {line().text}
-                      </div>
-                    )}
-                  </Show>
-                  <Show when={ok().probe.update}>
-                    {(version) => (
-                      <div class="connector-test-note">
-                        Version {version()} is available: Update below.
-                      </div>
-                    )}
-                  </Show>
-                  <For each={ok().probe.notes ?? []}>
-                    {(note) => <div class="connector-test-note">{note}</div>}
-                  </For>
-                </div>
-              )}
-            </Show>
-            <Show when={errorState()}>
-              {(err) => (
-                <div class="provider-test-status error connector-test-status" title={err().message}>
-                  {err().message}
-                </div>
-              )}
-            </Show>
-            <ConnectorSetup
-              connector={d()}
-              title={connectorTitle(kindOfProvider(d()))}
-              host={testHost() || null}
-              where={testWhere()}
-              probe={testNow}
-              signedIn={okState()?.probe.auth?.loggedIn === true}
-              update={okState()?.probe.update}
-              autoStart={setUpOnOpen()}
-            />
           </section>
 
           <Show when={kindOfProvider(d())}>

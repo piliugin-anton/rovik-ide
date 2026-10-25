@@ -56,9 +56,9 @@ function choose(el: HTMLSelectElement, value: string) {
 const sections = (root: Element) =>
   [...root.querySelectorAll('.settings-section-title')].map((t) => t.textContent);
 
-/** The fields shown, by their labels' own text. */
+/** The fields shown, by their labels: a row's, or a checkbox's first line. */
 const fields = (root: Element) =>
-  [...root.querySelectorAll('label')].map((l) =>
+  [...root.querySelectorAll('.setting-row-label, .setting-checkbox > span')].map((l) =>
     [...l.childNodes]
       .filter((n) => n.nodeType === 3)
       .map((n) => n.textContent)
@@ -80,14 +80,18 @@ test('chats use Claude Code itself by default, or run Rovik’s agent on it', ()
 
 test('its permission mode and rules show only when it runs its own tools', () => {
   const { root, connector, dispose } = mount(Options);
-  assert.deepEqual(sections(root), ['How chats use it', 'Permissions', 'Limits']);
+  assert.deepEqual(sections(root), ['How chats use it', 'Permissions', 'Limits', 'Advanced']);
   assert.deepEqual(
     [...select(root, 'Mode')!.options].map((o) => o.value),
     PERMISSION_MODES.map((m) => m.value)
   );
   choose(select(root, 'Runs as')!, 'rovik');
   assert.equal(connector().settings?.tools, 'rovik');
-  assert.deepEqual(sections(root), ['How chats use it', 'Limits'], 'Rovik’s permissions decide');
+  assert.deepEqual(
+    sections(root),
+    ['How chats use it', 'Limits', 'Advanced'],
+    'Rovik’s permissions decide'
+  );
   assert.equal(select(root, 'Mode'), undefined);
   dispose();
 });
@@ -97,23 +101,39 @@ test('allowed-tools rules show only when Claude Code’s own permission mode dec
   const permissions = () => root.querySelectorAll('.settings-section')[1];
   assert.deepEqual(
     fields(permissions()),
-    ['Denied tools'],
+    ['Mode', 'Denied tools'],
     'Rovik’s permissions would pass them by'
   );
   choose(select(root, 'Mode')!, 'acceptEdits');
-  assert.deepEqual(fields(permissions()), ['Allowed tools', 'Denied tools']);
+  assert.deepEqual(fields(permissions()), ['Mode', 'Allowed tools', 'Denied tools']);
   dispose();
 });
 
 test('the program is with the other advanced settings, closed until opened', () => {
   const { root, dispose } = mount(Options);
   const advanced = root.querySelector('details.connector-advanced')!;
-  assert.equal(advanced.querySelector('summary')?.textContent, 'Advanced');
+  assert.equal(advanced.querySelector('summary .settings-section-title')?.textContent, 'Advanced');
   assert.ok(!advanced.hasAttribute('open'));
-  assert.deepEqual(
-    fields(advanced).map((f) => f.split(':')[0]),
-    ['Program', 'Settings folder (CLAUDE_CONFIG_DIR)', 'Extra arguments', 'Bare mode']
-  );
+  assert.deepEqual(fields(advanced), ['Program', 'Config folder', 'Arguments', 'Bare mode']);
+  dispose();
+});
+
+test('its limits keep whole turns and a budget in dollars, and empty is no limit', () => {
+  const { root, connector, dispose } = mount(Options);
+  const [turns, budget] = [
+    ...root.querySelectorAll('.connector-limits input'),
+  ] as HTMLInputElement[];
+  const type = (el: HTMLInputElement, value: string) => {
+    el.value = value;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  type(turns, '12.6');
+  type(budget, '2.75');
+  assert.equal(connector().settings?.maxTurns, 13);
+  assert.equal(turns.value, '13', 'it shows what it keeps');
+  assert.equal(connector().settings?.maxBudgetUsd, 2.75);
+  type(turns, '');
+  assert.equal(connector().settings?.maxTurns, undefined);
   dispose();
 });
 
@@ -147,14 +167,14 @@ test('it asks for a token or a key only when it signs in with one, and keeps it 
   const { root, connector, dispose } = mount(Connection);
   const signIn = select(root, 'Signs in with')!;
   assert.equal(signIn.value, 'login');
-  assert.deepEqual(fields(root), [], 'this computer’s login needs nothing more');
+  assert.deepEqual(fields(root), ['Signs in with'], 'this computer’s login needs nothing more');
   choose(signIn, 'token');
-  assert.deepEqual(fields(root), ['Token']);
+  assert.deepEqual(fields(root), ['Signs in with', 'Token']);
   const token = root.querySelector('input[type="password"]') as HTMLInputElement;
   token.value = 'sk-ant-oat01-x';
   token.dispatchEvent(new Event('input', { bubbles: true }));
   assert.equal(connector().apiKey, 'sk-ant-oat01-x', 'the key goes to the keychain on save');
   choose(signIn, 'apiKey');
-  assert.deepEqual(fields(root), ['API key']);
+  assert.deepEqual(fields(root), ['Signs in with', 'API key']);
   dispose();
 });

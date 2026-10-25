@@ -6124,7 +6124,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   padding-bottom: 4px;
 }
 
-.workspace-summary {
+/* A section that opens on a click: its title, and a line of what's in it
+   (here, and a connector's Advanced: .settings-details). */
+.workspace-summary,
+.settings-details-summary {
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -6132,26 +6135,31 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   list-style: none;
 }
 
-.workspace-summary::-webkit-details-marker {
+.workspace-summary::-webkit-details-marker,
+.settings-details-summary::-webkit-details-marker {
   display: none;
 }
 
-.workspace-summary::before {
+.workspace-summary::before,
+.settings-details-summary::before {
   content: '▸';
   color: var(--fg-dim);
   font-size: 11px;
   flex: 0 0 auto;
 }
 
-.workspace-details[open] .workspace-summary::before {
+.workspace-details[open] .workspace-summary::before,
+.settings-details[open] .settings-details-summary::before {
   content: '▾';
 }
 
-.workspace-summary .settings-section-title {
+.workspace-summary .settings-section-title,
+.settings-details-summary .settings-section-title {
   margin-bottom: 0;
 }
 
-.workspace-summary .settings-hint {
+.workspace-summary .settings-hint,
+.settings-details-summary .settings-hint {
   margin: 0;
 }
 
@@ -9733,7 +9741,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   margin: 0;
 }
 
-.host-spinner {
+/* Also a connector's Set up step, while it runs (ConnectorSetup.tsx). */
+.host-spinner,
+.connector-setup-spinner {
   flex: 0 0 auto;
   width: 14px;
   height: 14px;
@@ -9750,7 +9760,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .host-spinner {
+  .host-spinner,
+  .connector-setup-spinner {
     animation: none;
   }
 }
@@ -9905,7 +9916,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 12px;
 }
 
-.host-form textarea {
+.host-form textarea,
+.connector-form .settings-textarea {
   background: var(--bg-editor);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -10253,50 +10265,55 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   line-height: 1.4;
 }
 
-.connector-form .setting-explain {
-  font-size: 11px;
-  color: var(--fg-dim);
+/* A connector's form: labelled rows, as the other Settings pages have them.
+   Its labels and inputs aren't the stacked ones of .profile-form. */
+.connector-name > .setting-row {
+  margin-top: 0;
 }
 
-.connector-form .setting-explain code {
-  font-size: 11px;
-}
-
-/* A field labelled above it explains under itself, not under a row's control. */
-.connector-form .settings-section label > .setting-explain,
-.connector-form .connector-limits + .setting-explain {
-  margin-left: 0;
-}
-
+/* As tall as the rows' selects. */
+.connector-form .setting-row-control > input,
 .connector-form .settings-textarea {
+  display: block;
   width: 100%;
   box-sizing: border-box;
-  resize: vertical;
-  font: inherit;
+  padding: 5px 6px;
+  font-size: 12px;
+  line-height: 15px;
+}
+
+.connector-form label.setting-number-field,
+.connector-form label.setting-checkbox {
+  flex-direction: row;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.connector-form label.setting-number-field {
+  align-items: center;
+  gap: 6px;
+}
+
+.connector-form label.setting-checkbox {
+  gap: 8px;
+}
+
+.connector-form .setting-number {
+  padding: 3px 6px;
   font-size: 12px;
 }
 
 .connector-limits {
+  margin-left: 92px;
+}
+
+/* The test, what it found, and Set up: under the rows, where their controls are. */
+.connector-checks {
   display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-
-.connector-advanced {
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 6px 10px;
-}
-
-.connector-advanced > summary {
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--fg-dim);
-}
-
-.connector-advanced > label,
-.connector-form .settings-section > label {
-  margin-top: 8px;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 10px 0 0 92px;
 }
 
 .connector-test-row {
@@ -10306,10 +10323,6 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .connector-test-option {
   font-size: 12px;
   color: var(--fg-dim);
-}
-
-.connector-test-host {
-  margin-left: auto;
 }
 
 .connector-test-status {
@@ -10330,6 +10343,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .connector-setup-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: var(--fg-dim);
 }

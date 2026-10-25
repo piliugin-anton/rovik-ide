@@ -325,7 +325,7 @@ Connectors → Add connector**. Its page groups its settings:
 - **Permissions**, with Claude Code's own tools: the permission mode its
   runs get, and the tools they may or may not use without asking.
 - **Limits**: the turns and the budget one message may take.
-- **Advanced**: the program, its settings folder (`CLAUDE_CONFIG_DIR`),
+- **Advanced**: the program, its config folder (`CLAUDE_CONFIG_DIR`),
   more arguments for every run, and bare mode.
 
 The models you enable show in the chat's model picker, marked as a
