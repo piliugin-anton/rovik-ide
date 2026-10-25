@@ -196,6 +196,10 @@ pub async fn after(cx: &Context, command: &str, exit_code: Option<i32>, output: 
         }
         return ready;
     }
+    if let Some(note) = engine_unreached(cx, command, missing.as_deref(), output).await {
+        ready.add(Outcome::Missing(note));
+        return ready;
+    }
     let services = services_needed(cx, output).await;
     if !services.is_empty() {
         for outcome in services {
@@ -535,7 +539,8 @@ async fn services_needed(cx: &Context, output: &str) -> Vec<Outcome> {
 /// reached the user's engine or the sandbox kept it from it (the agent's
 /// prompt says to ask the user there).
 async fn services_asked_for(cx: &Context, command: &str) -> Vec<Outcome> {
-    let Some(names) = compose_up(command) else {
+    let root = PathBuf::from(&cx.root);
+    let Some(up) = compose_up(command, &root) else {
         return Vec::new();
     };
     if services::host().is_none() {
@@ -544,61 +549,176 @@ async fn services_asked_for(cx: &Context, command: &str) -> Vec<Outcome> {
     let Some(program) = services::compose::program() else {
         return Vec::new();
     };
-    let root = PathBuf::from(&cx.root);
-    let models = crate::rt::spawn_blocking(move || services::compose::read_all(&program, &root))
-        .await
-        .unwrap_or_default();
+    let mut models =
+        crate::rt::spawn_blocking(move || services::compose::read_all(&program, &root))
+            .await
+            .unwrap_or_default();
+    // The compose file it has Compose read first: the one it names, and
+    // then no other, or the one in the folder it runs in.
+    models.sort_by_key(|model| !up.reads(model));
+    if !up.files.is_empty() {
+        models.retain(|model| up.reads(model));
+    }
     let Some((model, needed)) = models.into_iter().find_map(|model| {
-        let asked = services::asked(&model, &names);
+        let asked = services::asked(&model, &up.names);
         (!asked.is_empty()).then_some((model, asked))
     }) else {
         return Vec::new();
     };
-    let outcomes = start_services(cx, model, needed).await;
-    outcomes
+    // What it asked for that's the project's own code, which isn't started.
+    let built = services::built_note(std::slice::from_ref(&model), &up.names);
+    let mut outcomes: Vec<Outcome> = start_services(cx, model, needed)
+        .await
         .into_iter()
         .map(|outcome| match outcome {
             // Said, not run again: the engine it asked for isn't there.
-            Outcome::Made(done) => Outcome::Missing(format!("{done}. {}", services::NO_ENGINE)),
+            Outcome::Made(done) => Outcome::Missing(services::up_answered(&done)),
             other => other,
         })
-        .collect()
+        .collect();
+    outcomes.extend(built.map(Outcome::Missing));
+    outcomes
 }
 
-/// The services `command` asks Compose to start (`docker compose up -d
-/// db`, `docker-compose up`, `podman compose up`, `podman-compose up`):
-/// those it names, none for all of them. None for another command, or one
-/// that names a compose file or a project of its own before `up` (`-f`,
-/// `-p`), which may not be the file Rovik reads.
-fn compose_up(command: &str) -> Option<Vec<String>> {
+/// After a failed command that ran a container engine (`docker ps`, `podman
+/// run`, a look for one, or a script whose `docker` the shell didn't find):
+/// what the agent is told in place of the engine it reached for. On a
+/// cloud host its commands can run none, not even the `podman` Rovik runs
+/// the project's services with; on the user's own computer, only where the
+/// output shows the engine wasn't there or couldn't be reached. None for
+/// another command.
+async fn engine_unreached(
+    cx: &Context,
+    command: &str,
+    missing: Option<&str>,
+    output: &str,
+) -> Option<String> {
+    let engine = |program: &str| services::ENGINES.contains(&program);
+    let ran = programs(command).iter().any(|program| engine(program))
+        || missing.is_some_and(engine)
+        || command.contains("docker.sock")
+        || command.contains("podman.sock");
+    if !ran {
+        return None;
+    }
+    let host = services::host();
+    if host.is_none() {
+        return super::unreached::engine_unreachable(output)
+            .then(|| services::engine_note(&[], &[], None));
+    }
+    let reads = match services::compose::program() {
+        Some(program) => {
+            let root = PathBuf::from(&cx.root);
+            crate::rt::spawn_blocking(move || services::compose::read_each(&program, &root))
+                .await
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    let mut models = Vec::new();
+    let mut unread = Vec::new();
+    for read in reads {
+        match read {
+            Ok(model) => models.push(model),
+            Err(why) => unread.push(why),
+        }
+    }
+    Some(services::engine_note(&models, &unread, host.as_ref()))
+}
+
+/// What a command asked Compose to start: `cd api && docker compose -f
+/// compose.yaml up -d db`.
+#[derive(Debug, PartialEq, Eq)]
+struct Up {
+    /// The folder Compose runs in: the command's own, or where a `cd`
+    /// before it went.
+    dir: PathBuf,
+    /// The compose files it names (`-f`), as paths: none for the one
+    /// Compose finds in `dir`.
+    files: Vec<PathBuf>,
+    /// The services it names: none for all of them.
+    names: Vec<String>,
+}
+
+impl Up {
+    /// Whether it has Compose read `model`: the files it names are the
+    /// model's, or it names none and runs where the model was read.
+    fn reads(&self, model: &Model) -> bool {
+        match self.files.is_empty() {
+            true => model.dir == self.dir,
+            false => model.read_from(&self.files),
+        }
+    }
+}
+
+/// What `command`, run in `root`, asks Compose to start (`docker compose
+/// up -d db`, `docker-compose -f docker-compose.yml up`, `podman compose
+/// up`, `podman-compose up`). None for another command, or one with an
+/// option before `up` this doesn't know, which may take the word after it.
+fn compose_up(command: &str, root: &Path) -> Option<Up> {
     let parsed = permissions::parse_command(command);
-    parsed.segments.iter().find_map(|segment| {
+    let mut place = super::restricted::Place::new(root);
+    for segment in &parsed.segments {
         let set = segment.iter().take_while(|word| assignment(word)).count();
-        let (first, rest) = permissions::unwrap_wrappers(&segment[set..]).split_first()?;
+        let Some((first, rest)) = permissions::unwrap_wrappers(&segment[set..]).split_first()
+        else {
+            continue;
+        };
         let program = permissions::program_name(first);
+        if place.moves(&program, rest) {
+            continue;
+        }
         let rest = match (program.as_str(), rest.first().map(String::as_str)) {
             ("docker" | "podman", Some("compose")) => &rest[1..],
             ("docker-compose" | "podman-compose", _) => rest,
-            _ => return None,
+            _ => continue,
         };
-        let (up, args) = rest.split_first()?;
-        if up != "up" {
-            return None;
+        if let Some(up) = up_of(rest, &place) {
+            return Some(up);
         }
-        let mut names = Vec::new();
-        let mut words = args.iter();
-        while let Some(word) = words.next() {
-            match word.as_str() {
-                // `up`'s options that take a value as the next word.
-                "--scale" | "-t" | "--timeout" | "--wait-timeout" | "--exit-code-from"
-                | "--attach" | "--no-attach" | "--pull" => {
-                    words.next();
-                }
-                option if option.starts_with('-') => {}
-                name => names.push(name.to_string()),
+    }
+    None
+}
+
+/// The `up` that Compose's words `args` ask for, run in `place`: `-f
+/// docker-compose.yml up -d db`. None for another of its commands.
+fn up_of(args: &[String], place: &super::restricted::Place) -> Option<Up> {
+    let mut files = Vec::new();
+    let mut words = args.iter();
+    // Compose's own options, before its command: the files it reads, and
+    // those that change nothing Rovik starts, with their values.
+    loop {
+        let word = words.next()?;
+        match word.as_str() {
+            "up" => break,
+            "-f" | "--file" => files.push(place.path(words.next()?)),
+            "-p" | "--project-name" | "--profile" | "--env-file" | "--ansi" | "--progress"
+            | "--parallel" => {
+                words.next()?;
             }
+            option => match option.strip_prefix("--file=") {
+                Some(file) => files.push(place.path(file)),
+                None if option.starts_with('-') => {}
+                None => return None,
+            },
         }
-        Some(names)
+    }
+    let mut names = Vec::new();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            // `up`'s options that take a value as the next word.
+            "--scale" | "-t" | "--timeout" | "--wait-timeout" | "--exit-code-from" | "--attach"
+            | "--no-attach" | "--pull" => {
+                words.next();
+            }
+            option if option.starts_with('-') => {}
+            name => names.push(name.to_string()),
+        }
+    }
+    Some(Up {
+        dir: place.cwd.clone(),
+        files,
+        names,
     })
 }
 
@@ -800,7 +920,6 @@ mod tests {
 
     /// What a project's compose file says through Compose: a database and
     /// a cache with their ports, and the app built from its Dockerfile.
-    #[cfg(unix)]
     const SHOP: &str = r#"{"name": "shop", "services": {
       "web": {"build": {"context": "/p"}, "ports": [{"target": 3000, "published": "3000", "protocol": "tcp"}]},
       "db": {"image": "postgres:16-alpine", "ports": [{"target": 5432, "published": "5432", "protocol": "tcp"}]},
@@ -907,7 +1026,7 @@ mod tests {
 
     #[test]
     fn a_compose_up_names_the_services_it_starts() {
-        let named = |command: &str| compose_up(command);
+        let named = |command: &str| compose_up(command, Path::new("/p/shop")).map(|up| up.names);
         let some = |names: &[&str]| Some(names.iter().map(|n| n.to_string()).collect());
         assert_eq!(named("docker compose up -d db"), some(&["db"]));
         assert_eq!(named("docker-compose up"), some(&[]), "all of them");
@@ -928,15 +1047,65 @@ mod tests {
             named("COMPOSE_PROFILES=x docker compose up db"),
             some(&["db"])
         );
+        assert_eq!(
+            named("docker compose ps; docker compose up -d db"),
+            some(&["db"]),
+            "the `up` after another of its commands"
+        );
         for other in [
-            "docker compose -f dev.yaml up",
             "docker compose ps",
             "docker run -d postgres",
             "docker compose",
             "npm run dev",
+            // An option it doesn't know may take the word after it.
+            "docker compose --log-level debug up",
         ] {
             assert_eq!(named(other), None, "{other}");
         }
+    }
+
+    #[test]
+    fn a_compose_up_says_which_files_compose_reads_and_where() {
+        let root = Path::new("/p/shop");
+        let up = |command: &str| compose_up(command, root).unwrap();
+        let at = |path: &str| PathBuf::from(path);
+        assert_eq!(
+            up("podman compose -f docker-compose.yml up -d db"),
+            Up {
+                dir: at("/p/shop"),
+                files: vec![at("/p/shop/docker-compose.yml")],
+                names: vec!["db".to_string()],
+            }
+        );
+        assert_eq!(
+            up("docker compose -f compose.yaml --file ./compose.override.yaml up").files,
+            [
+                at("/p/shop/compose.yaml"),
+                at("/p/shop/compose.override.yaml")
+            ]
+        );
+        assert_eq!(
+            up("docker-compose --file=/p/shop/compose.yaml -p shop --profile dev up").files,
+            [at("/p/shop/compose.yaml")]
+        );
+        let below = up("cd api && podman-compose -f ./compose.yaml up -d");
+        assert_eq!(below.dir, at("/p/shop/api"));
+        assert_eq!(below.files, [at("/p/shop/api/compose.yaml")]);
+        assert_eq!(up("cd api && docker compose up -d").dir, at("/p/shop/api"));
+    }
+
+    #[test]
+    fn a_compose_up_reads_the_files_it_names_or_the_one_where_it_runs() {
+        let root = Path::new("/p/shop");
+        let own = Model::parse(root, "compose.yaml", SHOP).unwrap();
+        let api = Model::parse(&root.join("api"), "api/compose.yaml", SHOP).unwrap();
+        let up = |command: &str| compose_up(command, root).unwrap();
+        assert!(up("docker compose up -d").reads(&own));
+        assert!(!up("docker compose up -d").reads(&api));
+        assert!(up("cd api && docker compose up -d").reads(&api));
+        assert!(up("docker compose -f api/compose.yaml up").reads(&api));
+        assert!(!up("docker compose -f api/compose.yaml up").reads(&own));
+        assert!(!up("docker compose -f compose.prod.yaml up").reads(&own));
     }
 
     /// The agent's own `docker compose up`, on a cloud host whose commands
@@ -960,7 +1129,8 @@ mod tests {
         assert!(
             said.starts_with(
                 "Rovik started the `db` (postgres:16-alpine) service of compose.yaml, which the \
-                 command needed (at localhost:5432). Your commands have no container engine"
+                 command needed (at localhost:5432). Your commands can't run containers on this \
+                 server, not even with its `podman`, which is Rovik's"
             ),
             "{said}"
         );
@@ -972,6 +1142,14 @@ mod tests {
         )
         .await;
         assert!(all.missing[0].contains("the `cache`"), "{:?}", all.missing);
+        assert_eq!(
+            all.missing.last().map(String::as_str),
+            Some(
+                "`web` is built from the project's code: run that code with your commands, not \
+                 in a container."
+            ),
+            "what it asked for that isn't started"
+        );
         assert_eq!(
             *asked.lock().unwrap(),
             [
@@ -985,8 +1163,69 @@ mod tests {
         );
     }
 
+    /// The agent running the project's compose file by name with the
+    /// `podman` it finds on a cloud host, which its sandbox keeps from it:
+    /// Rovik starts the file's services instead. One that names a file
+    /// Rovik doesn't read starts nothing and is told what Rovik runs; one
+    /// run in a folder with no compose file starts the project's.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_compose_up_of_the_projects_file_by_name_has_rovik_start_its_services() {
+        let _lock = services::test_lock();
+        let (_test, cx, asked) = shop_on_a_host(Ok("at localhost:5432".into()));
+        let storage = "Error: creating runtime static files directory \
+                       \"/home/dev/.local/share/containers/storage/libpod\": mkdir \
+                       /home/dev/.local: read-only file system";
+        let named = "podman compose -f ./compose.yaml up -d db";
+        let ready = after(&cx, named, Some(125), storage).await;
+        assert!(ready.done.is_empty(), "not run again: {:?}", ready.done);
+        assert!(
+            ready.missing[0]
+                .starts_with("Rovik started the `db` (postgres:16-alpine) service of compose.yaml"),
+            "{:?}",
+            ready.missing
+        );
+        let missing = "bash: docker: command not found";
+        let other = after(
+            &cx,
+            "docker compose -f compose.prod.yaml up",
+            Some(127),
+            missing,
+        )
+        .await;
+        let note = other.missing.join("\n");
+        assert!(
+            note.contains("`docker compose up -d` with the service's name"),
+            "{note}"
+        );
+        let below = after(
+            &cx,
+            "cd web && docker compose up -d cache",
+            Some(127),
+            missing,
+        )
+        .await;
+        assert!(
+            below.missing[0].contains("the `cache`"),
+            "{:?}",
+            below.missing
+        );
+        let chat = cx.chat.clone();
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [
+                (chat.clone(), "shop".to_string(), vec!["db".to_string()]),
+                (chat, "shop".to_string(), vec!["cache".to_string()]),
+            ],
+            "nothing for a file Rovik doesn't read"
+        );
+    }
+
     /// On the user's own computer the command reached their engine, or the
-    /// sandbox kept it from it: Rovik starts nothing.
+    /// sandbox kept it from it: Rovik starts nothing, and where the engine
+    /// couldn't be reached the agent is told to ask the user. A failure of
+    /// the engine's own, such as a Dockerfile's, gets no such note.
     #[cfg(unix)]
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
@@ -1003,6 +1242,88 @@ mod tests {
         .await;
         let said = format!("{:?}", ready);
         assert!(!said.contains("Rovik started"), "{said}");
+        assert!(
+            said.contains("Ask the user to start the services"),
+            "{said}"
+        );
+        let built = after(
+            &cx,
+            "docker build .",
+            Some(1),
+            "ERROR: failed to solve: dockerfile parse error on line 3",
+        )
+        .await;
+        assert_eq!(built, Ready::default());
+    }
+
+    /// The agent's own look for Docker, on a cloud host whose commands
+    /// have none: told that Rovik runs the project's services, and where
+    /// the code reaches them; nothing starts for a look. A script whose
+    /// `docker` the shell didn't find is told the same.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_look_for_docker_on_a_host_is_told_rovik_runs_the_services() {
+        let _lock = services::test_lock();
+        let (_test, cx, asked) = shop_on_a_host(Ok("at localhost:5432".into()));
+        let look = "command -v docker docker-compose podman 2>&1; docker compose version 2>&1 | \
+                    head -2; id -nG; ls -la /var/run/docker.sock 2>&1";
+        let said = "bash: line 1: docker: command not found\ndev\nls: cannot access \
+                    '/var/run/docker.sock': No such file or directory";
+        let ready = after(&cx, look, Some(2), said).await;
+        assert!(ready.done.is_empty(), "{:?}", ready.done);
+        let note = ready.missing.join("\n");
+        assert!(
+            note.starts_with(
+                "Your commands can't run containers on this server, not even with its \
+                 `podman`, which is Rovik's"
+            ),
+            "{note}"
+        );
+        assert!(
+            note.contains("`web` is built from the project's code"),
+            "{note}"
+        );
+        assert!(
+            note.contains("`db` (postgres:16-alpine, localhost:5432)"),
+            "{note}"
+        );
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "nothing starts for a look"
+        );
+        let script = after(&cx, "npm test", Some(127), "sh: 1: docker: not found").await;
+        assert!(
+            script.missing[0].starts_with("Your commands can't run containers on this server"),
+            "{:?}",
+            script.missing
+        );
+    }
+
+    /// Where the server can't run the services, a look for Docker is told
+    /// why, for the user.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_look_for_docker_where_the_server_cant_run_services_says_why() {
+        let _lock = services::test_lock();
+        let (test, cx, _notes) = project(&[("compose.yaml", "services: {}\n")]);
+        services::compose::use_program(Some(fake_compose(&test.dir.0, SHOP)));
+        services::set_host(services::Host::Cannot("Podman isn't installed".into()));
+        let ready = after(
+            &cx,
+            "docker ps",
+            Some(127),
+            "bash: docker: command not found",
+        )
+        .await;
+        assert_eq!(ready.missing.len(), 1, "{:?}", ready.missing);
+        assert!(
+            ready.missing[0]
+                .contains("can't run the project's services either: Podman isn't installed"),
+            "{:?}",
+            ready.missing
+        );
     }
 
     /// A start that failed is said, and isn't tried again for that chat

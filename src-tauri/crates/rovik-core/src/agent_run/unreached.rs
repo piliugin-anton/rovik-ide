@@ -1,7 +1,7 @@
 //! What a command's output says it couldn't reach: the local ports a
-//! connection was refused at ([`refused_ports`]) and the host names it
-//! couldn't look up ([`unresolved_hosts`]), in the words each kind of
-//! client says them. On any machine they tell which of the project's
+//! connection was refused at ([`refused_ports`]), the host names it
+//! couldn't look up ([`unresolved_hosts`]) and a container engine
+//! ([`engine_unreachable`]), in the words each kind of client says them. On any machine they tell which of the project's
 //! services a command needed (services/, environment.rs); on a team
 //! server, what its user's private network has on such a port (ports.rs).
 
@@ -65,6 +65,25 @@ static UNRESOLVED: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
+
+/// A container engine that wasn't there or couldn't be reached, as its
+/// clients and the shell say it: `docker: command not found`, `Cannot
+/// connect to the Docker daemon`, its socket missing or refused, Podman's
+/// `Cannot connect to Podman`, or rootless Podman unable to map its users
+/// (`newuidmap`) or to write its storage (`…/containers/storage…: read-only
+/// file system`), as in the sandbox.
+static ENGINE_UNREACHABLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)cannot connect to the docker daemon|docker\.sock|podman\.sock|cannot connect to podman|\b(?:docker|podman|docker-compose|podman-compose):? (?:command )?not found|command not found: (?:docker|podman)|newuidmap|uid_map|(?:containers|libpod)[^\n]*read-only file system",
+    )
+    .unwrap()
+});
+
+/// Whether `text`, a command's output, says a container engine wasn't
+/// there or couldn't be reached.
+pub(crate) fn engine_unreachable(text: &str) -> bool {
+    ENGINE_UNREACHABLE.is_match(text)
+}
 
 /// The local ports `text`, a command's output, says a connection was
 /// refused at: the first few, once each.
@@ -185,5 +204,30 @@ mod tests {
             [] as [&str; 0]
         );
         assert_eq!(unresolved_hosts("all good"), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn an_engine_that_isnt_there_or_cant_be_reached_is_read_from_what_it_says() {
+        for said in [
+            "bash: line 1: docker: command not found",
+            "sh: 1: docker-compose: not found",
+            "zsh: command not found: podman",
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+            "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock",
+            "ls: cannot access '/var/run/docker.sock': No such file or directory",
+            "Cannot connect to Podman. Please verify your connection to the Linux system",
+            "newuidmap: write to uid_map failed: Operation not permitted",
+            "Error: creating runtime static files directory \"/home/dev/.local/share/containers/storage/libpod\": mkdir /home/dev/.local: read-only file system",
+        ] {
+            assert!(engine_unreachable(said), "{said}");
+        }
+        for said in [
+            "ERROR: failed to solve: dockerfile parse error on line 3",
+            "Error response from daemon: No such container: web",
+            "npm ERR! missing script: docker",
+            "touch: cannot touch 'dist/app.js': Read-only file system",
+        ] {
+            assert!(!engine_unreachable(said), "{said}");
+        }
     }
 }

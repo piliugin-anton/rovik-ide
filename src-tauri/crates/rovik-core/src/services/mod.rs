@@ -101,6 +101,32 @@ pub fn prompt_line(root: &Path) -> Option<String> {
 /// [`prompt_line`] for the compose files `models`, on a machine that does
 /// `host` with them.
 pub fn prompt_line_for(models: &[Arc<Model>], host: Option<&Host>) -> Option<String> {
+    let (list, files) = listed(models)?;
+    let what = match host {
+        Some(Host::Runs(_)) => {
+            "They don't run until a command needs one: when a command can't connect to a \
+             service's port, Rovik starts that service for this user's chats, as it installs \
+             a missing toolchain, and runs the command again. Your commands can't run \
+             containers here, not even with the server's `podman`, which is Rovik's: a `docker \
+             compose up` has Rovik start what it names instead. Connect to them at localhost, \
+             not by their names."
+        }
+        Some(Host::Cannot(_)) => {
+            "This server can't run them: a command that needs one fails to connect, and the \
+             message then says what its administrators can do. Tell the user."
+        }
+        None => {
+            "Your commands can't start containers here: if the code needs a service that \
+             isn't running, ask the user to start it (`docker compose up -d`)."
+        }
+    };
+    Some(format!("Services ({files}): {list}. {what}"))
+}
+
+/// The backing services of `models` as the agent reads them, a few by name
+/// (`` `db` (postgres:16-alpine, localhost:5432) ``), and the files that
+/// declare them: None when there are none.
+fn listed(models: &[Arc<Model>]) -> Option<(String, String)> {
     let mut named = Vec::new();
     for model in models {
         for service in model.backing() {
@@ -116,25 +142,100 @@ pub fn prompt_line_for(models: &[Arc<Model>], host: Option<&Host>) -> Option<Str
     if more > 0 {
         list.push_str(&format!(" and {more} more"));
     }
+    Some((list, files(models)))
+}
+
+/// The compose files `models` were read from, as the agent reads them:
+/// `compose.yaml, api/compose.yaml`.
+fn files(models: &[Arc<Model>]) -> String {
     let files: Vec<&str> = models.iter().map(|m| m.file.as_str()).collect();
-    let what = match host {
-        Some(Host::Runs(_)) => {
-            "They don't run until a command needs one: when a command can't connect to a \
-             service's port, Rovik starts that service for this user's chats, as it installs \
-             a missing toolchain, and runs the command again. Your commands have no container \
-             engine here: a `docker compose up` has Rovik start what it names instead. Connect \
-             to them at localhost, not by their names."
-        }
-        Some(Host::Cannot(_)) => {
-            "This server can't run them: a command that needs one fails to connect, and the \
-             message then says what its administrators can do. Tell the user."
+    files.join(", ")
+}
+
+/// The programs that are a container engine's, or Compose run with one: what
+/// the agent's commands can't run in their sandbox, a cloud host's `podman`
+/// (Rovik's own) among them, nor reach the user's of.
+pub const ENGINES: &[&str] = &["docker", "docker-compose", "podman", "podman-compose"];
+
+/// How a cloud host's agent is told it can't run containers, though it may
+/// find the `podman` Rovik runs the services with: its sandbox gives its
+/// commands no user namespaces (`newuidmap` fails) and Podman's storage
+/// read-only, and keeps any Docker's socket from them.
+const KEPT_FROM_ENGINES: &str = "Your commands can't run containers on this server, not even \
+                                 with its `podman`, which is Rovik's: their sandbox keeps every \
+                                 engine from them.";
+
+/// What the agent is told after a command of its that ran a container
+/// engine (`docker ps`, `podman run`, or a script that did) failed, on a
+/// machine that does `host` with a project's services: `models` are the
+/// project's compose files Compose read, `unread` why it couldn't read the
+/// others.
+pub fn engine_note(models: &[Arc<Model>], unread: &[String], host: Option<&Host>) -> String {
+    match host {
+        Some(Host::Runs(_)) => {}
+        Some(Host::Cannot(why)) => {
+            return format!(
+                "Your commands can't run containers on this server, and the server can't run \
+                 the project's services either: {why}. Tell the user."
+            )
         }
         None => {
-            "Your commands can't start containers here: if the code needs a service that \
-             isn't running, ask the user to start it (`docker compose up -d`)."
+            return "Your commands can't use a container engine here: none is installed, or the \
+                    sandbox keeps it from them. Ask the user to start the services the project \
+                    needs (`docker compose up -d`), then run the command again."
+                .to_string()
         }
+    }
+    let services = match (listed(models), unread.first()) {
+        (Some((list, files)), _) => format!(
+            "They need none: Rovik runs the project's services for this user, and starts each \
+             when a command needs it, as it installs a missing toolchain. {files} declares \
+             {list}: run what uses them (the dev server, the tests), or `docker compose up -d` \
+             with the service's name, which Rovik answers by starting it."
+        ),
+        (None, Some(why)) => format!(
+            "Rovik runs the services a project's compose file declares, but couldn't read this \
+             project's: {why}. Fix the file, then run what uses the service."
+        ),
+        (None, None) if !models.is_empty() => format!(
+            "Rovik runs the services a project's compose file declares that run from an image \
+             of their own (a database, cache or queue), and starts each when a command needs \
+             it: {} declares none.",
+            files(models)
+        ),
+        (None, None) => "Rovik runs the services a project's compose file declares, each from \
+                         an image of its own, and starts each when a command needs it. This \
+                         project declares none: to give it a database, cache or queue, declare \
+                         one in compose.yaml with the port it publishes, then run what uses it."
+            .to_string(),
     };
-    Some(format!("Services ({}): {list}. {what}", files.join(", ")))
+    match built_note(models, &[]) {
+        Some(built) => format!("{KEPT_FROM_ENGINES} {services} {built}"),
+        None => format!("{KEPT_FROM_ENGINES} {services}"),
+    }
+}
+
+/// What the agent is told of the services of `models` built from the
+/// project's code, those of `names` (all for none): that the code is its
+/// to run, as Rovik runs the others. None when there are none.
+pub fn built_note(models: &[Arc<Model>], names: &[String]) -> Option<String> {
+    let mut built: Vec<String> = Vec::new();
+    for service in models.iter().flat_map(|model| &model.services) {
+        let named = format!("`{}`", service.name);
+        let asked = names.is_empty() || names.contains(&service.name);
+        if service.built && asked && !built.contains(&named) {
+            built.push(named);
+        }
+    }
+    let (them, are) = match built.as_slice() {
+        [] => return None,
+        [one] => (one.clone(), "is"),
+        [first @ .., last] => (format!("{} and {last}", first.join(", ")), "are"),
+    };
+    Some(format!(
+        "{them} {are} built from the project's code: run that code with your commands, not in \
+         a container."
+    ))
 }
 
 /// A service as the agent reads it: its image, and where it's reached.
@@ -215,12 +316,16 @@ pub fn asked(model: &Model, names: &[String]) -> Vec<Needed> {
         .collect()
 }
 
-/// What the agent is told, with the services Rovik started, after a
-/// command of its asked a container engine to start them on a cloud host.
-pub const NO_ENGINE: &str = "Your commands have no container engine on this server: Rovik \
-                             runs the project's services itself and starts one whenever a \
-                             command needs it, so they needn't be started with `docker` or \
-                             `podman`.";
+/// What the agent is told after a command of its asked a container
+/// engine's Compose to start services on a cloud host, and Rovik started
+/// them: `done`, what Rovik did, without its full stop, and that its
+/// commands needn't.
+pub fn up_answered(done: &str) -> String {
+    format!(
+        "{done}. {KEPT_FROM_ENGINES} They need none: Rovik starts each of the project's \
+         services whenever a command needs it."
+    )
+}
 
 /// The services in `needed`, as the agent reads them: "the `db` service
 /// (postgres:16-alpine) of compose.yaml".
