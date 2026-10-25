@@ -488,10 +488,13 @@ connect to a port the compose file publishes (`connect ECONNREFUSED
 up by its name (`getaddrinfo ENOTFOUND db`). The user's daemon starts it,
 and what it depends on, under their own Podman, as it installs a missing
 toolchain: the call says "Starting the project's service: db…" meanwhile,
-and a command that is one program runs again once it's up. Claude Code's
-commands get the same through Rovik's hooks. The agent's prompt names the
-project's services, and that they start this way. Plan mode starts nothing,
-and a start that failed isn't tried again for that chat for ten minutes.
+and a command that is one program runs again once it's up. The agent's
+commands have no container engine of their own: a `docker compose up` of
+theirs (or `podman compose up`) fails, and the daemon starts the services
+it names instead and says so. Claude Code's commands get the same through
+Rovik's hooks. The agent's prompt names the project's services, and that
+they start this way. Plan mode starts nothing, and a start that failed
+isn't tried again for that chat for ten minutes.
 
 - **Its ports are the user's own.** Nothing is published on the server.
   Each port a service publishes listens in the user's private network

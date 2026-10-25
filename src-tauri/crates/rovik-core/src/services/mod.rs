@@ -121,8 +121,9 @@ pub fn prompt_line_for(models: &[Arc<Model>], host: Option<&Host>) -> Option<Str
         Some(Host::Runs(_)) => {
             "They don't run until a command needs one: when a command can't connect to a \
              service's port, Rovik starts that service for this user's chats, as it installs \
-             a missing toolchain, and runs the command again. Connect to them at localhost, \
-             not by their names."
+             a missing toolchain, and runs the command again. Your commands have no container \
+             engine here: a `docker compose up` has Rovik start what it names instead. Connect \
+             to them at localhost, not by their names."
         }
         Some(Host::Cannot(_)) => {
             "This server can't run them: a command that needs one fails to connect, and the \
@@ -197,6 +198,29 @@ pub fn needed(model: &Model, refused: &[u16], unresolved: &[String]) -> Vec<Need
     }
     needed
 }
+
+/// The services of `model` a command asked Compose to start by `names`
+/// (`docker compose up -d db`): those of them that run from an image of
+/// their own, or all such for no names. A service built from the project's
+/// code is the agent's to run with its commands.
+pub fn asked(model: &Model, names: &[String]) -> Vec<Needed> {
+    model
+        .backing()
+        .filter(|service| names.is_empty() || names.contains(&service.name))
+        .map(|service| Needed {
+            name: service.name.clone(),
+            ports: Vec::new(),
+            by_name: false,
+        })
+        .collect()
+}
+
+/// What the agent is told, with the services Rovik started, after a
+/// command of its asked a container engine to start them on a cloud host.
+pub const NO_ENGINE: &str = "Your commands have no container engine on this server: Rovik \
+                             runs the project's services itself and starts one whenever a \
+                             command needs it, so they needn't be started with `docker` or \
+                             `podman`.";
 
 /// The services in `needed`, as the agent reads them: "the `db` service
 /// (postgres:16-alpine) of compose.yaml".

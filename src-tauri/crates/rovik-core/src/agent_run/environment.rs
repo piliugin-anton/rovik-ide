@@ -189,6 +189,13 @@ pub async fn after(cx: &Context, command: &str, exit_code: Option<i32>, output: 
         ready.add(provide(cx, program, Look::Everywhere).await);
         return ready;
     }
+    let asked = services_asked_for(cx, command).await;
+    if !asked.is_empty() {
+        for outcome in asked {
+            ready.add(outcome);
+        }
+        return ready;
+    }
     let services = services_needed(cx, output).await;
     if !services.is_empty() {
         for outcome in services {
@@ -520,6 +527,81 @@ async fn services_needed(cx: &Context, output: &str) -> Vec<Outcome> {
     outcomes
 }
 
+/// After a command that asked a container engine's Compose to start the
+/// project's services, which a cloud host gives the agent's commands no
+/// engine for: Rovik starts them itself, as for a command that needed one,
+/// or says why it can't, and the command isn't run again. Nothing for
+/// another command, or on the user's own computer, where the command
+/// reached the user's engine or the sandbox kept it from it (the agent's
+/// prompt says to ask the user there).
+async fn services_asked_for(cx: &Context, command: &str) -> Vec<Outcome> {
+    let Some(names) = compose_up(command) else {
+        return Vec::new();
+    };
+    if services::host().is_none() {
+        return Vec::new();
+    }
+    let Some(program) = services::compose::program() else {
+        return Vec::new();
+    };
+    let root = PathBuf::from(&cx.root);
+    let models = crate::rt::spawn_blocking(move || services::compose::read_all(&program, &root))
+        .await
+        .unwrap_or_default();
+    let Some((model, needed)) = models.into_iter().find_map(|model| {
+        let asked = services::asked(&model, &names);
+        (!asked.is_empty()).then_some((model, asked))
+    }) else {
+        return Vec::new();
+    };
+    let outcomes = start_services(cx, model, needed).await;
+    outcomes
+        .into_iter()
+        .map(|outcome| match outcome {
+            // Said, not run again: the engine it asked for isn't there.
+            Outcome::Made(done) => Outcome::Missing(format!("{done}. {}", services::NO_ENGINE)),
+            other => other,
+        })
+        .collect()
+}
+
+/// The services `command` asks Compose to start (`docker compose up -d
+/// db`, `docker-compose up`, `podman compose up`, `podman-compose up`):
+/// those it names, none for all of them. None for another command, or one
+/// that names a compose file or a project of its own before `up` (`-f`,
+/// `-p`), which may not be the file Rovik reads.
+fn compose_up(command: &str) -> Option<Vec<String>> {
+    let parsed = permissions::parse_command(command);
+    parsed.segments.iter().find_map(|segment| {
+        let set = segment.iter().take_while(|word| assignment(word)).count();
+        let (first, rest) = permissions::unwrap_wrappers(&segment[set..]).split_first()?;
+        let program = permissions::program_name(first);
+        let rest = match (program.as_str(), rest.first().map(String::as_str)) {
+            ("docker" | "podman", Some("compose")) => &rest[1..],
+            ("docker-compose" | "podman-compose", _) => rest,
+            _ => return None,
+        };
+        let (up, args) = rest.split_first()?;
+        if up != "up" {
+            return None;
+        }
+        let mut names = Vec::new();
+        let mut words = args.iter();
+        while let Some(word) = words.next() {
+            match word.as_str() {
+                // `up`'s options that take a value as the next word.
+                "--scale" | "-t" | "--timeout" | "--wait-timeout" | "--exit-code-from"
+                | "--attach" | "--no-attach" | "--pull" => {
+                    words.next();
+                }
+                option if option.starts_with('-') => {}
+                name => names.push(name.to_string()),
+            }
+        }
+        Some(names)
+    })
+}
+
 /// `needed` of `model` started, where this machine runs the projects'
 /// services and the run isn't in Plan mode; else what the model is told.
 /// A start that failed isn't tried again for that chat for a while: it
@@ -817,6 +899,106 @@ mod tests {
                 None
             ]
         );
+    }
+
+    #[test]
+    fn a_compose_up_names_the_services_it_starts() {
+        let named = |command: &str| compose_up(command);
+        let some = |names: &[&str]| Some(names.iter().map(|n| n.to_string()).collect());
+        assert_eq!(named("docker compose up -d db"), some(&["db"]));
+        assert_eq!(named("docker-compose up"), some(&[]), "all of them");
+        assert_eq!(
+            named("podman compose up --wait --scale db=2 -t 30 cache"),
+            some(&["cache"])
+        );
+        assert_eq!(
+            named("podman-compose up -d db cache"),
+            some(&["db", "cache"])
+        );
+        assert_eq!(named("cd api && docker compose up -d"), some(&[]));
+        assert_eq!(
+            named("env COMPOSE_PROFILES=x docker compose up db"),
+            some(&["db"])
+        );
+        assert_eq!(
+            named("COMPOSE_PROFILES=x docker compose up db"),
+            some(&["db"])
+        );
+        for other in [
+            "docker compose -f dev.yaml up",
+            "docker compose ps",
+            "docker run -d postgres",
+            "docker compose",
+            "npm run dev",
+        ] {
+            assert_eq!(named(other), None, "{other}");
+        }
+    }
+
+    /// The agent's own `docker compose up`, on a cloud host whose commands
+    /// have no container engine: Rovik starts what it names instead, says
+    /// so, and doesn't run the command again, which would fail the same.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_compose_up_on_a_host_has_rovik_start_its_services() {
+        let _lock = services::test_lock();
+        let (_test, cx, asked) = shop_on_a_host(Ok("at localhost:5432".into()));
+        let ready = after(
+            &cx,
+            "docker compose up -d db",
+            Some(127),
+            "sh: 1: docker: not found",
+        )
+        .await;
+        assert!(ready.done.is_empty(), "not run again: {:?}", ready.done);
+        let said = ready.missing.join("\n");
+        assert!(
+            said.starts_with(
+                "Rovik started the `db` (postgres:16-alpine) service of compose.yaml, which the \
+                 command needed (at localhost:5432). Your commands have no container engine"
+            ),
+            "{said}"
+        );
+        let all = after(
+            &cx,
+            "docker-compose up",
+            Some(127),
+            "docker-compose: not found",
+        )
+        .await;
+        assert!(all.missing[0].contains("the `cache`"), "{:?}", all.missing);
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [
+                (cx.chat.clone(), "shop".to_string(), vec!["db".to_string()]),
+                (
+                    cx.chat.clone(),
+                    "shop".to_string(),
+                    vec!["cache".to_string(), "db".to_string()]
+                ),
+            ]
+        );
+    }
+
+    /// On the user's own computer the command reached their engine, or the
+    /// sandbox kept it from it: Rovik starts nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_compose_up_on_the_users_computer_is_left_to_them() {
+        let _lock = services::test_lock();
+        let (test, cx, _notes) = project(&[("compose.yaml", "services: {}\n")]);
+        services::compose::use_program(Some(fake_compose(&test.dir.0, SHOP)));
+        let ready = after(
+            &cx,
+            "docker compose up -d db",
+            Some(1),
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
+        )
+        .await;
+        let said = format!("{:?}", ready);
+        assert!(!said.contains("Rovik started"), "{said}");
     }
 
     /// A start that failed is said, and isn't tried again for that chat

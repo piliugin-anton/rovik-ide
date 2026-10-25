@@ -59,6 +59,10 @@ fn the_prompt_says_what_this_machine_does_with_the_services() {
     let runs = Host::Runs(Arc::new(Idle));
     let line = prompt_line_for(&[shop("compose.yaml")], Some(&runs)).unwrap();
     assert!(line.contains("Rovik starts that service"), "{line}");
+    assert!(
+        line.contains("a `docker compose up` has Rovik start what it names instead"),
+        "{line}"
+    );
     assert!(line.contains("at localhost, not by their names"), "{line}");
     let cannot = Host::Cannot("Podman isn't installed".into());
     let line = prompt_line_for(&[shop("compose.yaml")], Some(&cannot)).unwrap();
@@ -186,5 +190,22 @@ fn a_service_looked_up_by_its_name_is_pointed_at_localhost() {
         not_started_because(&model, &wanted, "the image couldn't be pulled").ends_with(
             "which isn't running, and Rovik couldn't start it: the image couldn't be pulled"
         ),
+    );
+}
+
+#[test]
+fn a_compose_up_asks_for_the_services_that_run_from_their_own_image() {
+    let model = shop("compose.yaml");
+    let names =
+        |needed: Vec<Needed>| -> Vec<String> { needed.into_iter().map(|n| n.name).collect() };
+    assert_eq!(names(asked(&model, &["db".into()])), ["db"]);
+    assert_eq!(
+        names(asked(&model, &[])),
+        ["cache", "db", "mail"],
+        "all of them"
+    );
+    assert!(
+        asked(&model, &["web".into()]).is_empty(),
+        "the project's own code is the agent's to run"
     );
 }
