@@ -60,13 +60,11 @@ const PRINTERS: &[&str] = &[
     "rev", "iconv", "zcat", "bzcat", "xzcat", "zstdcat", "zless", "zmore", "type",
 ];
 /// Programs whose first word that isn't an option is their script or
-/// pattern, unless an option gives it ([`SCRIPT_OPTIONS`]); the others are
+/// pattern, unless an option gives it ([`filter_effects`]); the others are
 /// files they print from.
 const FILTERS: &[&str] = &[
     "awk", "gawk", "mawk", "nawk", "sed", "gsed", "jq", "yq", "gojq", "look",
 ];
-/// The options that give a filter its script.
-const SCRIPT_OPTIONS: &[&str] = &["-e", "-f", "--expression", "--file", "--from-file"];
 /// grep and its kind: a search through folders with `-r`.
 const GREPS: &[&str] = &["grep", "egrep", "fgrep", "zgrep"];
 /// Their options that take a value, as the next word or attached.
@@ -1538,16 +1536,7 @@ fn effects(
         };
     }
     if FILTERS.contains(&program) {
-        let a = Args::split(args, &[], false);
-        let skip = usize::from(!a.has(SCRIPT_OPTIONS));
-        let files: Vec<String> = owned(&a.words).into_iter().skip(skip).collect();
-        // sed -i, in place: what it reads, it changes.
-        let in_place = matches!(program, "sed" | "gsed") && a.has(&["-i", "--in-place"]);
-        return Effects {
-            writes: if in_place { files.clone() } else { Vec::new() },
-            reads: files,
-            ..Effects::default()
-        };
+        return filter_effects(program, args);
     }
     if GREPS.contains(&program) || matches!(program, "rg" | "ag") {
         return search_effects(program, args, piped, rg_config, false);
@@ -1631,6 +1620,76 @@ fn effects(
     }
 }
 
+/// A filter ([`FILTERS`]): its script or pattern is the first word that
+/// isn't an option, unless an option gives it (`sed -e`, `awk -f`, `jq
+/// -f`); the files after it it reads, and `sed -i` changes. jq's own
+/// files (`--slurpfile name f`, `--rawfile name f`) it reads too.
+fn filter_effects(program: &str, args: &[String]) -> Effects {
+    let sed = matches!(program, "sed" | "gsed");
+    let jq = matches!(program, "jq" | "gojq" | "yq");
+    let mut args: Vec<String> = args.to_vec();
+    let mut reads = Vec::new();
+    if sed {
+        // BSD sed's `-i ''`: no suffix for its backups, not a word.
+        if let Some(at) = args.iter().position(|a| a == "-i") {
+            if args.get(at + 1).is_some_and(|a| a.is_empty()) {
+                args.remove(at + 1);
+            }
+        }
+    }
+    if jq {
+        // `--arg name value` takes two words; `--rawfile name file` reads one.
+        let mut at = 0;
+        while at < args.len() {
+            match args[at].as_str() {
+                "--arg" | "--argjson" | "--slurpfile" | "--rawfile" => {
+                    let taken: Vec<String> = args.drain(at..(at + 3).min(args.len())).collect();
+                    if matches!(taken[0].as_str(), "--slurpfile" | "--rawfile") {
+                        reads.extend(taken.get(2).cloned());
+                    }
+                }
+                _ => at += 1,
+            }
+        }
+    }
+    let (valued, script): (&[&str], &[&str]) = match program {
+        "sed" | "gsed" => (
+            &["-e", "--expression", "-f", "--file", "-l", "--line-length"],
+            &["-e", "--expression", "-f", "--file"],
+        ),
+        "awk" | "gawk" | "mawk" | "nawk" => (
+            &[
+                "-f",
+                "--file",
+                "-v",
+                "--assign",
+                "-F",
+                "--field-separator",
+                "-e",
+                "--source",
+                "-i",
+                "--include",
+                "-l",
+                "--load",
+            ],
+            &["-f", "--file", "-e", "--source"],
+        ),
+        "jq" | "gojq" | "yq" => (&["-f", "--from-file", "--indent"], &["-f", "--from-file"]),
+        _ => (&[], &[]),
+    };
+    let a = Args::split(&args, valued, false);
+    let skip = usize::from(!a.has(script));
+    let files: Vec<String> = owned(&a.words).into_iter().skip(skip).collect();
+    // sed -i, in place: what it reads, it changes.
+    let in_place = sed && a.has(&["-i", "--in-place"]);
+    reads.extend(files.iter().cloned());
+    Effects {
+        writes: if in_place { files } else { Vec::new() },
+        reads,
+        ..Effects::default()
+    }
+}
+
 /// grep, ripgrep and the silver searcher: the files they're given, and
 /// the folders when they go through them (grep with `-r`); the lines their
 /// patterns match. Given no file or folder, grep -r goes through `.`, and
@@ -1694,6 +1753,9 @@ fn search_effects(
         || names
         || lists_any
         || a.has(&["-v", "--invert-match", "--passthru", "--passthrough"]);
+    // Whole words (`-w`), or whole lines (`-x`; not the silver searcher's).
+    let whole_words = a.has(&["-w", "--word-regexp"]);
+    let whole_lines = program != "ag" && a.has(&["-x", "--line-regexp"]);
     let regexes = (!any_line).then(|| {
         patterns
             .iter()
@@ -1703,6 +1765,11 @@ fn search_effects(
                 (true, _) => regex::escape(p),
                 (false, true) => from_basic(p),
                 (false, false) => p.to_string(),
+            })
+            .map(|r| match (whole_lines, whole_words) {
+                (true, _) => format!("^(?:{r})$"),
+                (false, true) => format!("(?:^|\\W)(?:{r})(?:\\W|$)"),
+                _ => r,
             })
             .collect()
     });
@@ -2261,6 +2328,19 @@ fn ln_effects(args: &[String], cwd: &Path) -> Effects {
 fn compose_effects(args: &[String], cwd: &Path) -> Effects {
     let a = Args::split(args, COMPOSE_VALUES, false);
     if !a.words.iter().any(|w| matches!(*w, "config" | "convert")) {
+        return Effects::default();
+    }
+    // It checks the configuration, or lists names in it: no values.
+    let names = [
+        "-q",
+        "--quiet",
+        "--services",
+        "--volumes",
+        "--profiles",
+        "--networks",
+        "--hash",
+    ];
+    if a.has(&names) {
         return Effects::default();
     }
     Effects {
@@ -3913,6 +3993,9 @@ mod tests {
             "grep -r 'TOKEN=1$' .",
             // The silver searcher's --silent only quiets its errors.
             "ag --hidden --silent API_KEY",
+            // A whole word, and a whole line, of `API_KEY=x`.
+            "grep -rnw API_KEY .",
+            "grep -rx 'API_KEY=x' .",
         ] {
             assert!(
                 command_problem(command, &root, &none()).is_some(),
@@ -3925,6 +4008,10 @@ mod tests {
             "rg -l --hidden API_KEY",
             // Not as deep as the file.
             "rg --hidden --max-depth 1 API_KEY apps",
+            // `KEY` is no word of `API_KEY=x`, nor its whole line.
+            "grep -rnw KEY .",
+            "rg --hidden -w KEY",
+            "grep -rx API_KEY .",
         ] {
             assert_eq!(command_problem(command, &root, &none()), None, "{command}");
         }
@@ -4158,6 +4245,39 @@ mod tests {
         let a = Args::split(&words, &[], true);
         assert!(a.has(&["/s"]) && a.has(&["/c"]));
         assert_eq!(a.words, ["*.env", "/etc/x"]);
+    }
+
+    #[test]
+    fn a_filters_script_and_options_are_read_as_its_program_reads_them() {
+        let (_dir, root) = project(&[]);
+        for command in [
+            "sed -i -e 's/\\.env/.env.local/' src/app.ts",
+            "sed -e 's/.env.local/.env/' -e 's/a/b/' src/app.ts",
+            // BSD sed's in place, with no backup suffix.
+            "sed -i '' 's/x/.env/' src/app.ts",
+            "awk -F= -v name=.env '{print $1}' src/app.ts",
+            "jq --arg file .env '.[$file]' package.json",
+            "jq -r .name package.json",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+        for (command, refusal) in [
+            ("sed -n p .env", "would read .env,"),
+            ("sed -i -e 's/a/b/' .env", "would read .env,"),
+            (
+                "sed -i '' 's/a/b/' config/master.key",
+                "would read config/master.key,",
+            ),
+            ("awk -F= '{print $2}' .env", "would read .env,"),
+            (
+                "jq -n --rawfile key config/master.key '$key'",
+                "would read config/master.key,",
+            ),
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains(refusal), "{command}: {refused}");
+        }
     }
 
     #[test]
@@ -4923,6 +5043,10 @@ mod tests {
         for command in [
             "docker compose up -d",
             "cd src && docker compose config",
+            // Checked, or names listed: no values printed.
+            "docker compose config -q",
+            "docker compose config --quiet && echo valid",
+            "docker compose config --services",
             "terraform plan",
             "terraform -chdir=src output",
         ] {
