@@ -412,7 +412,7 @@ fn an_upgrade_reads_the_build_as_its_administrator() {
 }
 
 /// `--no-browser` leaves the browser tools' browser out, as the app does
-/// for a WSL distribution; bubblewrap still goes in.
+/// for a WSL distribution; bubblewrap and the container engine still go in.
 #[test]
 fn the_browser_can_be_left_out() {
     let server = Server::new();
@@ -430,8 +430,63 @@ fn the_browser_can_be_left_out() {
     );
     let out = said(&installed);
     assert!(installed.status.success(), "{out}");
-    assert!(!out.contains("would download"), "{out}");
+    let browser =
+        rovik_core::pinned_browser::Build::for_system("linux", std::env::consts::ARCH).unwrap();
+    assert!(!out.contains(&browser.url()), "{out}");
+    assert!(!out.contains("<deb.deps>"), "{out}");
     assert!(out.contains("install bubblewrap"), "{out}");
+    assert!(out.contains(&compose_download()), "{out}");
+}
+
+/// What a dry run says it would download for the projects' services: the
+/// pinned Docker Compose for this CPU, checked against its SHA-256.
+fn compose_download() -> String {
+    use rovik_core::pinned_compose::{Build, VERSION};
+    let build = Build::for_cpu(std::env::consts::ARCH).unwrap();
+    format!(
+        "would download {} (SHA-256 {}) to /opt/rovik/compose/{VERSION}/docker-compose",
+        build.url(),
+        build.sha256
+    )
+}
+
+/// D21: install puts in place what runs the projects' services: Podman,
+/// with what runs it rootless, the pinned Docker Compose, and subordinate
+/// ids for the administrator's containers. `admin containers` tries again
+/// for an administrator, and `admin bubblewrap`, which every upgrade runs
+/// with the new build, brings it too; ids already given are kept.
+#[test]
+fn the_container_engine_comes_with_every_install_and_upgrade() {
+    let server = Server::new();
+    let build = server.build.to_string_lossy().into_owned();
+    let installed = server.run(&["install", "--admin", "nobody", "--binary", &build], None);
+    let out = said(&installed);
+    assert!(installed.status.success(), "{out}");
+    assert!(
+        out.contains(
+            "would run: env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 \
+             -q -y --no-install-recommends install podman uidmap netavark aardvark-dns passt \
+             slirp4netns iptables nftables catatonit"
+        ),
+        "{out}"
+    );
+    assert!(out.contains(&compose_download()), "{out}");
+    let ids = "nobody:100000:65536\n";
+    assert_eq!(server.text("/etc/subuid"), ids);
+    assert_eq!(server.text("/etc/subgid"), ids);
+
+    let (_, uid) = someone_else();
+    let refused = server.run(&["admin", "containers"], Some(uid));
+    assert_eq!(refused.status.code(), Some(1), "{}", said(&refused));
+    for command in ["containers", "bubblewrap"] {
+        let again = server.run(&["admin", command], Some(NOBODY));
+        let out = said(&again);
+        assert!(again.status.success(), "{out}");
+        assert!(out.contains("install podman"), "{out}");
+        assert!(out.contains(&compose_download()), "{out}");
+    }
+    assert_eq!(server.text("/etc/subuid"), ids);
+    assert_eq!(server.text("/etc/subgid"), ids);
 }
 
 /// D19: install puts the Chrome for Testing Rovik pins in place for the
