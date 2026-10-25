@@ -1073,8 +1073,10 @@ for an approval, with the reason and what to do instead
   lines are text (a commit message, a file written whole), but not the
   `$(…)` the shell runs in them, nor lines a shell (`bash <<'EOF'`) or
   an interpreter (`python3 - <<'PY'`) runs. Loading one into
-  the environment (`source .env`) is using it, unless the command prints
-  the variables (`echo $API_KEY`, `env`). A program that only uses one
+  the environment (`source .env`, `--env-file`, `dotenv`, `X=$(grep -r KEY .)`)
+  is using it, unless the command prints the variables (`echo $API_KEY`,
+  `printenv`, `node -e "console.log(process.env.KEY)"`) or copies them into a
+  file. A program that only uses one
   runs (`node --env-file=.env`), as does a script of the project's:
   commands are judged by their words, which keeps credentials from being
   read by mistake, not from an agent set on guessing them (a search

@@ -316,6 +316,7 @@ fn judged_by(
         rg_config: ripgrep_config(),
         deadline,
         vague_found: RefCell::default(),
+        loading: RefCell::default(),
     };
     readings
         .iter()
@@ -336,6 +337,18 @@ struct Check<'a> {
     /// search prints: the same for every program in the command that runs
     /// there and does that.
     vague_found: RefCell<Vec<(Vague, Option<String>)>>,
+    /// While a substitution whose output only loads variables is checked
+    /// (`X=$(…)`), what it loads and writes ([`Check::loaded_by`]).
+    loading: RefCell<Option<Loading>>,
+}
+
+/// What a substitution whose output only loads variables does.
+#[derive(Default)]
+struct Loading {
+    /// The restricted files it reads: what it loads.
+    files: Vec<String>,
+    /// It writes a file, where what it loads may be copied.
+    writes: bool,
 }
 
 /// What [`Check::vague`] is asked: from where, to do what, and, for a
@@ -354,11 +367,13 @@ impl Check<'_> {
         // The restricted files whose text it loads into variables
         // (`source .env`, `export $(grep -v '^#' .env | xargs)`): used, as
         // long as it doesn't print them.
-        let mut loaded: Vec<String> = inner
-            .iter()
-            .filter(|inner| inner.loads)
-            .flat_map(|inner| self.named(cwd, &inner.text, Op::Read))
-            .collect();
+        let mut loaded = Vec::new();
+        for inner in inner.iter().filter(|inner| inner.loads) {
+            match self.loaded_by(&inner.text, cwd, depth) {
+                Ok(files) => loaded.extend(files),
+                Err(problem) => return Some(problem),
+            }
+        }
         // What runs inside its words, first: the words around it aren't
         // what the shell makes of them.
         let run_inside = |cwd: &Path| {
@@ -378,7 +393,9 @@ impl Check<'_> {
             if let Some(problem) = self.redirects(&parsed, at, &place.cwd) {
                 return Some(problem);
             }
-            if let Some(file) = loaded.first().filter(|_| prints_variables(segment)) {
+            let input = input_of(&parsed, at);
+            loaded.extend(self.loads_of(segment, input, &place.cwd));
+            if let Some(file) = loaded.first().filter(|_| prints_variables(segment, input)) {
                 return Some(format!(
                     "Error: `{}` would print the values it loads from {file}, a restricted file: {}",
                     self.whole,
@@ -389,12 +406,12 @@ impl Check<'_> {
             if depth < MAX_DEPTH {
                 // A shell's input is its script too (`bash <<< "…"`).
                 let shell = words.first().map(|w| permissions::program_name(w));
-                let input = input_of(&parsed, at)
+                let script = input
                     .filter(|_| shell.is_some_and(|s| permissions::SHELLS.contains(&s.as_str())));
                 let inner = permissions::inner_scripts(words)
                     .into_iter()
                     .chain(eval_script(words))
-                    .chain(input.map(str::to_string))
+                    .chain(script.map(str::to_string))
                     .find_map(|script| self.command(&script, Shell::Posix, &place.cwd, depth + 1));
                 if inner.is_some() {
                     return inner;
@@ -421,7 +438,7 @@ impl Check<'_> {
                 args,
                 piped,
                 from_input,
-                input: input_of(&parsed, at),
+                input,
             };
             if let Some(problem) = self.program(&run) {
                 return Some(problem);
@@ -440,6 +457,9 @@ impl Check<'_> {
     fn redirects(&self, parsed: &ParsedCommand, at: usize, cwd: &Path) -> Option<String> {
         let reads = of_segment(&parsed.reads_from, &parsed.reads_in, at);
         let writes = of_segment(&parsed.writes_to, &parsed.writes_in, at);
+        if !writes.is_empty() {
+            self.note_write();
+        }
         for (files, op) in [(reads, Op::Read), (writes, Op::Write)] {
             if let Some(file) = files.iter().find_map(|f| self.blocked(cwd, f, op)) {
                 return Some(refused(self.whole, op, &file));
@@ -469,6 +489,11 @@ impl Check<'_> {
             &self.rg_config,
             run.input,
         );
+        let changes = effects.trees.iter().any(|(_, op)| *op == Op::Write)
+            || effects.finds.as_ref().is_some_and(|f| f.writes);
+        if !effects.writes.is_empty() || changes || effects.git.is_some() {
+            self.note_write();
+        }
         let named = |files: &[String], op: Op| {
             files
                 .iter()
@@ -530,6 +555,10 @@ impl Check<'_> {
     /// one ([`sources`]: `for f in .env*`, `f=.env`, `echo .env | xargs
     /// cat`). For a search of them, one with a line its `lines` match.
     fn vague(&self, cwd: &Path, op: Op, lines: Option<&Pattern>) -> Option<String> {
+        // What a loading substitution reads it loads, not refuses.
+        if self.loading.borrow().is_some() {
+            return self.vague_in(cwd, op, lines);
+        }
         let asked: Vague = (cwd.to_path_buf(), op, lines.cloned());
         let seen = self.vague_found.borrow();
         if let Some((_, found)) = seen.iter().find(|(done, _)| *done == asked) {
@@ -588,10 +617,10 @@ impl Check<'_> {
                 let Some(file) = self.restricted.blocked(self.root, &path, op) else {
                     continue;
                 };
-                if regexes
+                let prints = regexes
                     .as_ref()
-                    .is_none_or(|r| prints_from(at, r.as_deref()))
-                {
+                    .is_none_or(|r| prints_from(at, r.as_deref()));
+                if let Some(file) = self.reached(file, op).filter(|_| prints) {
                     return Some(self.refusal(op, &file, lines.is_some()));
                 }
             }
@@ -636,14 +665,16 @@ impl Check<'_> {
                     };
                     match self.walk(at, &picks, op, &hit) {
                         Walked::Clean => continue,
-                        Walked::Found(file) => {
-                            return Some(self.refusal(op, &file, lines.is_some()))
-                        }
+                        Walked::Found(file) => match self.reached(file, op) {
+                            Some(file) => return Some(self.refusal(op, &file, lines.is_some())),
+                            None => continue,
+                        },
                         Walked::TooLarge => return Some(self.too_large()),
                     }
                 }
                 let file = self.restricted.blocked(self.root, &path, op);
-                if let Some(file) = file.filter(|_| at.exists() && prints(at)) {
+                let file = file.filter(|_| at.exists() && prints(at));
+                if let Some(file) = file.and_then(|file| self.reached(file, op)) {
                     return Some(self.refusal(op, &file, lines.is_some()));
                 }
             }
@@ -664,15 +695,6 @@ impl Check<'_> {
         )
     }
 
-    /// The restricted files the words of `text` name for `op`, from `cwd`.
-    fn named(&self, cwd: &Path, text: &str, op: Op) -> Vec<String> {
-        loose_segments(text)
-            .iter()
-            .flatten()
-            .filter_map(|w| self.blocked(cwd, w, op))
-            .collect()
-    }
-
     /// The restricted file `word` names for `op`, as the shell in `cwd`
     /// reads it: the first of [`Check::all_blocked`].
     fn blocked(&self, cwd: &Path, word: &str, op: Op) -> Option<String> {
@@ -685,6 +707,125 @@ impl Check<'_> {
         named_paths(cwd, word)
             .iter()
             .filter_map(|file| self.restricted.blocked(self.root, file, op))
+            .filter_map(|file| self.reached(file, op))
+            .collect()
+    }
+
+    /// A restricted file the command would do `op` with, as the check takes
+    /// it: while a substitution that only loads variables is checked, one
+    /// it reads is what it loads, kept for [`Check::loaded_by`] rather
+    /// than refused.
+    fn reached(&self, file: String, op: Op) -> Option<String> {
+        if op == Op::Read {
+            if let Some(loading) = self.loading.borrow_mut().as_mut() {
+                loading.files.push(file);
+                return None;
+            }
+        }
+        Some(file)
+    }
+
+    /// Notes that the command writes a file, for a substitution that loads
+    /// variables ([`Loading::writes`]).
+    fn note_write(&self) {
+        if let Some(loading) = self.loading.borrow_mut().as_mut() {
+            loading.writes = true;
+        }
+    }
+
+    /// The restricted files a substitution whose output only loads
+    /// variables reads (`X=$(grep -rh KEY .)`, `export $(cat .env |
+    /// xargs)`): what it loads. Err: why it may not run, a change it makes,
+    /// or what it loads it would copy into a file (`$(cat .env | tee x)`).
+    fn loaded_by(&self, text: &str, cwd: &Path, depth: usize) -> Result<Vec<String>, String> {
+        let outer = self.loading.replace(Some(Loading::default()));
+        let problem = self.command(text, Shell::Posix, cwd, depth + 1);
+        let loading = self.loading.replace(outer).unwrap_or_default();
+        if let Some(problem) = problem {
+            return Err(problem);
+        }
+        if let Some(file) = loading.files.first().filter(|_| loading.writes) {
+            return Err(format!(
+                "Error: `{}` would copy the values it loads from {file}, a restricted file, into another file: {}",
+                self.whole,
+                reason(Op::Read)
+            ));
+        }
+        Ok(loading.files)
+    }
+
+    /// The restricted files a segment's program loads into its environment
+    /// (using them, not printing them): what `--env-file` names (node,
+    /// bun, deno, docker), dotenv's command line tools (`dotenv -e .env`,
+    /// `.env` unless told), Node's `-r dotenv/config`, Compose's `.env`,
+    /// and code that loads `.env` (`load_dotenv()`, `require('dotenv')`).
+    fn loads_of(&self, segment: &[String], input: Option<&str>, cwd: &Path) -> Vec<String> {
+        let mut files: Vec<String> = Vec::new();
+        for (at, word) in segment.iter().enumerate() {
+            let next = segment.get(at + 1);
+            let dotenv_config = |module: &str| module.starts_with("dotenv/config");
+            if let Some(file) = ["--env-file=", "--env-file-if-exists="]
+                .iter()
+                .find_map(|o| word.strip_prefix(o))
+            {
+                files.push(file.to_string());
+            } else if matches!(word.as_str(), "--env-file" | "--env-file-if-exists") {
+                files.extend(next.cloned());
+            } else if matches!(word.as_str(), "-r" | "--require" | "--import")
+                && next.is_some_and(|m| dotenv_config(m))
+                || ["--require=", "--import="]
+                    .iter()
+                    .any(|o| word.strip_prefix(o).is_some_and(dotenv_config))
+            {
+                files.push(".env".to_string());
+            }
+        }
+        let (words, _) = past_keywords(segment);
+        // Past what runs a package's program (`npx dotenv-cli …`).
+        let at = words
+            .iter()
+            .position(|w| {
+                let name = permissions::program_name(w);
+                !(matches!(
+                    name.as_str(),
+                    "npx" | "bunx" | "pnpx" | "pnpm" | "yarn" | "exec" | "dlx"
+                ) || w.starts_with('-'))
+            })
+            .unwrap_or(words.len());
+        if let Some((first, args)) = words[at..].split_first() {
+            let program = permissions::program_name(first);
+            match program.as_str() {
+                "dotenv" | "dotenv-cli" | "dotenvx" | "env-cmd" => {
+                    let a = Args::split(args, &["-e", "-f", "-c", "--file", "--env-file"], false);
+                    let given = owned(
+                        &a.values(&["-e", "-f", "--file", "--env-file"])
+                            .collect::<Vec<_>>(),
+                    );
+                    files.extend(if given.is_empty() {
+                        vec![".env".to_string()]
+                    } else {
+                        given
+                    });
+                }
+                "docker" | "docker-compose"
+                    if program == "docker-compose"
+                        || args.first().is_some_and(|a| a == "compose") =>
+                {
+                    let args = &args[usize::from(program == "docker")..];
+                    files.extend(compose_env(args, cwd));
+                }
+                _ => {
+                    let code = interpreter_code(&program, args, input);
+                    if code.iter().any(|code| loads_dotenv(code)) {
+                        files.push(".env".to_string());
+                    }
+                }
+            }
+        }
+        files
+            .iter()
+            .flat_map(|file| named_paths(cwd, file))
+            .filter_map(|path| self.restricted.blocked(self.root, &path, Op::Read))
             .collect()
     }
 
@@ -722,7 +863,10 @@ impl Check<'_> {
                     };
                     match self.walk(at, &search.picks, op, &hit) {
                         Walked::Clean => continue,
-                        Walked::Found(file) => return Some(self.refusal(op, &file, searching)),
+                        Walked::Found(file) => match self.reached(file, op) {
+                            Some(file) => return Some(self.refusal(op, &file, searching)),
+                            None => continue,
+                        },
                         Walked::TooLarge => return Some(self.too_large()),
                     }
                 }
@@ -730,7 +874,7 @@ impl Check<'_> {
                     .restricted
                     .blocked(self.root, &path, op)
                     .filter(|file| prints(Path::new(&tools::to_absolute_path(file, self.root))));
-                if let Some(file) = file {
+                if let Some(file) = file.and_then(|file| self.reached(file, op)) {
                     return Some(self.refusal(op, &file, lines.is_some()));
                 }
             }
@@ -764,7 +908,11 @@ impl Check<'_> {
                 };
                 match self.walk(start, &finder.picks, op, &hit) {
                     Walked::Clean => {}
-                    Walked::Found(file) => return Some(self.refusal(op, &file, lines.is_some())),
+                    Walked::Found(file) => {
+                        if let Some(file) = self.reached(file, op) {
+                            return Some(self.refusal(op, &file, lines.is_some()));
+                        }
+                    }
                     Walked::TooLarge => return Some(self.too_large()),
                 }
             }
@@ -797,16 +945,21 @@ impl Check<'_> {
                     .filter_map(Result::ok)
                     .map(|entry| entry.path())
                     .find(|path| path.is_dir() && logins(path));
-                match held.or_else(|| logins(folder).then(|| folder.to_path_buf())) {
-                    Some(logins) => {
-                        return Some(refused(self.whole, op, &logins.to_string_lossy()))
-                    }
+                let held = held.or_else(|| logins(folder).then(|| folder.to_path_buf()));
+                let held =
+                    held.and_then(|logins| self.reached(logins.to_string_lossy().into(), op));
+                match held {
+                    Some(logins) => return Some(refused(self.whole, op, &logins)),
                     None => continue,
                 }
             }
             match self.walk(folder, &picks, op, &hit) {
                 Walked::Clean => {}
-                Walked::Found(file) => return Some(refused(self.whole, op, &file)),
+                Walked::Found(file) => {
+                    if let Some(file) = self.reached(file, op) {
+                        return Some(refused(self.whole, op, &file));
+                    }
+                }
                 Walked::TooLarge => return Some(self.too_large()),
             }
         }
@@ -2106,32 +2259,41 @@ fn ln_effects(args: &[String], cwd: &Path) -> Effects {
 /// (`--project-directory`, else the first `-f`'s, else here), when there's
 /// one.
 fn compose_effects(args: &[String], cwd: &Path) -> Effects {
-    let a = Args::split(
-        args,
-        &[
-            "-f",
-            "--file",
-            "--project-directory",
-            "--env-file",
-            "-p",
-            "--project-name",
-            "--profile",
-            "--ansi",
-            "--progress",
-            "--parallel",
-            "--context",
-            "-c",
-            "-H",
-            "--host",
-            "--config",
-            "-l",
-            "--log-level",
-        ],
-        false,
-    );
+    let a = Args::split(args, COMPOSE_VALUES, false);
     if !a.words.iter().any(|w| matches!(*w, "config" | "convert")) {
         return Effects::default();
     }
+    Effects {
+        reads: compose_env(args, cwd),
+        ..Effects::default()
+    }
+}
+
+/// Compose's options that take a value.
+const COMPOSE_VALUES: &[&str] = &[
+    "-f",
+    "--file",
+    "--project-directory",
+    "--env-file",
+    "-p",
+    "--project-name",
+    "--profile",
+    "--ansi",
+    "--progress",
+    "--parallel",
+    "--context",
+    "-c",
+    "-H",
+    "--host",
+    "--config",
+    "-l",
+    "--log-level",
+];
+
+/// The env files Compose loads: what `--env-file` names, and the project's
+/// `.env`, in its folder (`--project-directory`, or its first file's).
+fn compose_env(args: &[String], cwd: &Path) -> Vec<String> {
+    let a = Args::split(args, COMPOSE_VALUES, false);
     let folder = a
         .values(&["--project-directory"])
         .last()
@@ -2146,15 +2308,12 @@ fn compose_effects(args: &[String], cwd: &Path) -> Effects {
             )
         })
         .unwrap_or_else(|| ".".to_string());
-    let mut reads = owned(&a.values(&["--env-file"]).collect::<Vec<_>>());
+    let mut files = owned(&a.values(&["--env-file"]).collect::<Vec<_>>());
     let env = in_folder(&folder, ".env");
     if Path::new(&resolve(cwd, &env)).is_file() {
-        reads.push(env);
+        files.push(env);
     }
-    Effects {
-        reads,
-        ..Effects::default()
-    }
+    files
 }
 
 /// terraform's commands that print what its state holds (`show`,
@@ -2183,17 +2342,17 @@ fn terraform_effects(args: &[String], cwd: &Path) -> Effects {
     }
 }
 
+/// perl's and ruby's options that take a value.
+const PERL_VALUES: &[&str] = &["-e", "-E", "-M", "-I", "-r", "-F"];
+
 /// perl and ruby: code given with `-e` (else the first word is the
 /// script; none, or `-`, and the code is their `input`) reads the files
 /// after it, as `-n` and `-p` do, and `-i` changes them in place; a file
 /// the code names in quotes is read too.
 fn script_effects(args: &[String], input: Option<&str>) -> Effects {
-    let a = Args::split(args, &["-e", "-E", "-M", "-I", "-r", "-F"], false);
-    let mut code: Vec<&str> = a.values(&["-e", "-E"]).collect();
-    let skip = usize::from(code.is_empty());
-    if code.is_empty() && a.words.first().is_none_or(|w| *w == "-") {
-        code.extend(input);
-    }
+    let a = Args::split(args, PERL_VALUES, false);
+    let code = interpreter_code("perl", args, input);
+    let skip = usize::from(!a.has(&["-e", "-E"]));
     let files: Vec<String> = owned(&a.words).into_iter().skip(skip).collect();
     let reading = !code.is_empty() || a.has(&["-n", "-p", "-i"]);
     let mut reads = if reading { files.clone() } else { Vec::new() };
@@ -2210,10 +2369,31 @@ fn script_effects(args: &[String], input: Option<&str>) -> Effects {
 /// no code, module nor script (`python3 - <<'PY'`): what it reads can't be
 /// told, but a file it names in quotes, it reads (`open('.env')`).
 fn inline_code_effects(program: &str, args: &[String], input: Option<&str>) -> Effects {
-    let code: Vec<String> = match program {
+    let code = interpreter_code(program, args, input);
+    Effects {
+        reads: code.iter().flat_map(|code| quoted_strings(code)).collect(),
+        ..Effects::default()
+    }
+}
+
+/// The code an interpreter runs from its command line (`python3 -c '…'`,
+/// `node -e '…'`, `perl -e '…'`, `deno eval '…'`, `php -r '…'`), or its
+/// `input` when it's given no code, module nor script (`python3 - <<'PY'`).
+fn interpreter_code(program: &str, args: &[String], input: Option<&str>) -> Vec<String> {
+    let given_input = |code: &mut Vec<String>, script: bool| {
+        if code.is_empty() && !script {
+            code.extend(input.map(str::to_string));
+        }
+    };
+    match program {
+        "perl" | "ruby" => {
+            let a = Args::split(args, PERL_VALUES, false);
+            let mut code = owned(&a.values(&["-e", "-E"]).collect::<Vec<_>>());
+            given_input(&mut code, a.words.first().is_some_and(|w| *w != "-"));
+            code
+        }
         "deno" if args.first().is_some_and(|a| a == "eval") => args[1..].to_vec(),
-        "deno" => Vec::new(),
-        _ => {
+        "python" | "python3" | "py" | "node" | "nodejs" | "bun" | "php" => {
             let (given, valued): (&[&str], &[&str]) = match program {
                 "php" => (&["-r"], &["-r", "-d", "-c", "-f"]),
                 "node" | "nodejs" | "bun" => (
@@ -2233,15 +2413,10 @@ fn inline_code_effects(program: &str, args: &[String], input: Option<&str>) -> E
             let a = Args::split(args, valued, false);
             let mut code = owned(&a.values(given).collect::<Vec<_>>());
             let script = a.has(&["-m", "-f"]) || a.words.first().is_some_and(|w| *w != "-");
-            if code.is_empty() && !script {
-                code.extend(input.map(str::to_string));
-            }
+            given_input(&mut code, script);
             code
         }
-    };
-    Effects {
-        reads: code.iter().flat_map(|code| quoted_strings(code)).collect(),
-        ..Effects::default()
+        _ => Vec::new(),
     }
 }
 
@@ -2833,24 +3008,82 @@ fn eval_script(words: &[String]) -> Option<String> {
         .then(|| args.join(" "))
 }
 
-/// Whether a segment prints the shell's variables: `echo $KEY`, `printf
-/// '%s' "${KEY}"`, `env`, `printenv`, `set`, `export -p`.
-fn prints_variables(segment: &[String]) -> bool {
+/// Whether a segment prints the shell's variables or its program's
+/// environment: `echo $KEY`, `printf '%s' "${KEY}"`, `env`, `printenv`,
+/// `set`, `export -p`, `cat /proc/self/environ`; as what a loader runs too
+/// (`dotenv -e .env -- printenv`, `docker run --env-file .env img env`);
+/// and code that prints what it reads of its environment (`node -e
+/// "console.log(process.env.KEY)"`, given as its `input` too).
+fn prints_variables(segment: &[String], input: Option<&str>) -> bool {
+    let named = |word: &String, name: &str| permissions::program_name(word) == name;
+    let environ = |word: &String| word.starts_with("/proc/") && word.ends_with("/environ");
+    if segment.iter().any(|w| environ(w) || named(w, "printenv"))
+        || segment.last().is_some_and(|w| named(w, "env"))
+    {
+        return true;
+    }
     let (words, _) = past_keywords(segment);
     let Some((first, args)) = words.split_first() else {
         // Wrappers alone: a bare `env` prints the environment.
-        return segment
-            .iter()
-            .any(|w| permissions::program_name(w) == "env");
+        return segment.iter().any(|w| named(w, "env"));
     };
-    match permissions::program_name(first).as_str() {
+    let program = permissions::program_name(first);
+    match program.as_str() {
         "echo" | "printf" | "print" => args.iter().any(|a| has_variable(a)),
-        "printenv" => true,
         "set" | "export" | "declare" | "typeset" => {
             args.is_empty() || args.iter().any(|a| a == "-p")
         }
-        _ => false,
+        _ => {
+            // `node -p` prints what its code comes to.
+            let printed = matches!(program.as_str(), "node" | "nodejs" | "bun")
+                && args.iter().any(|a| a == "-p" || a == "--print");
+            interpreter_code(&program, args, input).iter().any(|code| {
+                reads_environment(code) && (printed || PRINTS.iter().any(|p| code.contains(p)))
+            })
+        }
     }
+}
+
+/// How code reads its environment.
+const ENVIRONMENT: &[&str] = &[
+    "process.env",
+    "os.environ",
+    "getenv",
+    "ENV[",
+    "ENV.fetch",
+    "ENV.to_h",
+    "$ENV{",
+    "%ENV",
+    "Deno.env",
+    "Bun.env",
+    "import.meta.env",
+    "$_ENV",
+    "$_SERVER",
+    "dotenv_values",
+];
+
+/// How code prints.
+const PRINTS: &[&str] = &[
+    "console.",
+    "stdout",
+    "print",
+    "puts",
+    "echo",
+    "say ",
+    "var_dump",
+    "var_export",
+    "warn",
+];
+
+/// Whether code reads its environment ([`ENVIRONMENT`]).
+fn reads_environment(code: &str) -> bool {
+    ENVIRONMENT.iter().any(|e| code.contains(e))
+}
+
+/// Whether code loads `.env` into its environment, with dotenv's
+/// libraries (`require('dotenv').config()`, `load_dotenv()`, `Dotenv.load`).
+fn loads_dotenv(code: &str) -> bool {
+    code.to_lowercase().contains("dotenv")
 }
 
 /// Whether a word has a variable the shell puts the value of: `$KEY`,
@@ -2875,15 +3108,10 @@ fn unknown(word: &str) -> bool {
         || word.matches('%').count() >= 2
 }
 
-/// A command's words, by simple command, its quotes and the marks of its
-/// substitutions and redirects taken away: a coarse reading of the words
-/// it runs, for where the parsed one can't say (`for f in $(find …)`).
-/// Not its here-documents' text, which no shell reads.
-fn loose_segments(command: &str) -> Vec<Vec<String>> {
-    loose_words(&permissions::split_here_text(command).0)
-}
-
-/// [`loose_segments`] of text with no here-documents in it.
+/// The words of text with no here-documents in it, by simple command, its
+/// quotes and the marks of its substitutions and redirects taken away: a
+/// coarse reading of the words it runs, for where the parsed one can't say
+/// (`for f in $(find …)`).
 fn loose_words(text: &str) -> Vec<Vec<String>> {
     text.split(['|', ';', '&', '\n', '(', ')', '`'])
         .map(|part| {
@@ -4263,6 +4491,59 @@ mod tests {
             "docker run --rm --env-file .env -v $(pwd):/app node:20 sh -c 'npm test 2>&1 | tail -20'",
             "eval \"$(cat .env)\" && npm start",
             "echo $((1 + 2)) > count.txt",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn printing_what_a_command_loads_from_a_restricted_file_is_refused() {
+        let (_dir, root) = project(&[]);
+        for command in [
+            // Code that prints what it reads of its environment.
+            "source .env && node -e \"console.log(process.env.API_KEY)\"",
+            "node --env-file=.env -e \"console.log(process.env.DATABASE_URL)\"",
+            "source .env && python3 -c \"import os; print(os.environ['API_KEY'])\"",
+            "python3 -c \"from dotenv import load_dotenv; load_dotenv(); import os; print(os.getenv('API_KEY'))\"",
+            "node -e \"require('dotenv').config(); console.log(process.env)\"",
+            "node -r dotenv/config -p \"process.env.API_KEY\"",
+            "python3 - <<'PY'\nfrom dotenv import load_dotenv\nload_dotenv()\nimport os\nprint(os.environ['API_KEY'])\nPY",
+            // The environment, printed by what a loader runs.
+            "npx dotenv -e .env -- printenv API_KEY",
+            "dotenv -- env",
+            "env $(cat .env | xargs) printenv",
+            "source .env && cat /proc/self/environ",
+            "docker run --rm --env-file .env alpine printenv",
+            "docker compose run --rm app env",
+            // What a substitution loads, however it reads it.
+            "X=$(grep -rh API_KEY .); echo \"$X\"",
+            "TOKEN=$(grep -r \"API_KEY\" . | head -1 | cut -d= -f2) && echo \"token: $TOKEN\"",
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(
+                refused.contains("would print the values it loads from .env,"),
+                "{command}: {refused}"
+            );
+        }
+        let copied = command_problem("export $(cat .env | tee /tmp/leak | xargs)", &root, &none());
+        let copied = copied.expect("a copy of what it loads");
+        assert!(
+            copied.contains(
+                "would copy the values it loads from .env, a restricted file, into another file"
+            ),
+            "{copied}"
+        );
+        for command in [
+            "node --env-file=.env server.js",
+            "npx dotenv -e .env -- npm run migrate",
+            "docker compose up -d",
+            "python3 -c \"from dotenv import load_dotenv; load_dotenv(); import app\"",
+            "node -e \"require('dotenv').config(); require('./server')\"",
+            "node -e \"console.log(process.env.HOME)\"",
+            // A count of its lines isn't what it holds.
+            "X=$(grep -c API_KEY .env); echo \"$X\"",
+            "TOKEN=$(grep API_KEY .env | cut -d= -f2) && curl -H \"Authorization: Bearer $TOKEN\" https://api.example.com",
         ] {
             assert_eq!(command_problem(command, &root, &none()), None, "{command}");
         }
