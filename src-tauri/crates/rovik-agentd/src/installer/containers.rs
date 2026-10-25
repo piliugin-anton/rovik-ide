@@ -69,7 +69,13 @@ fn packages_for(manager: PackageManager) -> &'static [&'static str] {
             "nftables",
             "catatonit",
         ],
-        PackageManager::Dnf => &["podman", "netavark", "aardvark-dns", "passt", "shadow-utils"],
+        PackageManager::Dnf => &[
+            "podman",
+            "netavark",
+            "aardvark-dns",
+            "passt",
+            "shadow-utils",
+        ],
         PackageManager::Zypper => &[
             "podman",
             "shadow",
@@ -87,7 +93,11 @@ fn packages_for(manager: PackageManager) -> &'static [&'static str] {
 /// all is. Podman 4 (`version`) carries a project's network out with
 /// slirp4netns; 5 and later with pasta, which Rovik installs anyway.
 fn lacking(sys: &System, version: Option<(u32, u32)>) -> Vec<&'static str> {
-    let helper = |name: &str| HELPER_DIRS.iter().any(|dir| Path::new(dir).join(name).is_file());
+    let helper = |name: &str| {
+        HELPER_DIRS
+            .iter()
+            .any(|dir| Path::new(dir).join(name).is_file())
+    };
     let mut lacking = Vec::new();
     for program in [PODMAN, "newuidmap", "newgidmap"] {
         if !sys.has(program) {
@@ -327,7 +337,10 @@ mod tests {
         // netavark's firewall and Podman 4's slirp4netns: without them a
         // project's network can't start.
         for wanted in ["uidmap", "netavark", "slirp4netns", "iptables", "nftables"] {
-            assert!(packages_for(PackageManager::Apt).contains(&wanted), "{wanted}");
+            assert!(
+                packages_for(PackageManager::Apt).contains(&wanted),
+                "{wanted}"
+            );
         }
     }
 
