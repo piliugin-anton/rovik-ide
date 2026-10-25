@@ -6,10 +6,14 @@
 //! wrong port. `docker compose config --format json` prints what it read,
 //! and that is the [`Model`].
 //!
-//! It's read with `--no-env-resolution`, which leaves each service's
-//! `env_file` named, not read: the model never holds what's in those files,
-//! the secrets a project keeps there among them, and a service's env files
-//! can be checked before it starts (services/policy.rs).
+//! It's read with `--no-env-resolution`, with which Compose 5.0 and later
+//! leave each service's `env_file` named, not read: the model never holds
+//! what's in those files, the secrets a project keeps there among them,
+//! and a service's env files can be checked before it starts
+//! (services/policy.rs). Compose 2 reads them into the service's
+//! `environment` whatever it's told, so what it read keeps no service's
+//! environment: only a start needs one, and a cloud host starts services
+//! with the Compose it pins.
 //!
 //! Compose is the program a cloud host pins (`rovik_core::pinned_compose`),
 //! else the user's own (`docker compose`, `docker-compose`); without one, a
@@ -168,6 +172,19 @@ impl Model {
         })
     }
 
+    /// The model with no service's environment, where Compose put what the
+    /// service's env files hold.
+    fn forget_environments(&mut self) {
+        let services = self.raw.get_mut("services").and_then(Value::as_object_mut);
+        for service in services
+            .into_iter()
+            .flat_map(|services| services.values_mut())
+            .filter_map(Value::as_object_mut)
+        {
+            service.remove("environment");
+        }
+    }
+
     /// The compose file's folder in the project: "" for the project's own.
     pub fn folder(&self) -> &str {
         self.file.rsplit_once('/').map_or("", |(folder, _)| folder)
@@ -271,6 +288,13 @@ pub enum Program {
 }
 
 impl Program {
+    /// Its file: Compose's, or Docker's CLI's.
+    fn path(&self) -> &Path {
+        match self {
+            Program::Standalone(path) | Program::Plugin(path) => path,
+        }
+    }
+
     /// A command running it, with Compose's own arguments to come.
     pub fn command(&self) -> std::process::Command {
         match self {
@@ -440,7 +464,58 @@ fn run_config(program: &Program, dir: &Path, file: &str) -> Result<Model, String
         let said = String::from_utf8_lossy(&out.stderr);
         return Err(format!("Compose couldn't read {file}: {}", said.trim()));
     }
-    Model::parse(dir, file, &String::from_utf8_lossy(&out.stdout))
+    let mut model = Model::parse(dir, file, &String::from_utf8_lossy(&out.stdout))?;
+    if !keeps_env_files(program) {
+        model.forget_environments();
+    }
+    Ok(model)
+}
+
+/// Whether `program` leaves each service's env files named with
+/// `--no-env-resolution`, as Compose 5.0 and later do: Compose 2 reads
+/// them into the service's environment whatever it's told (2.40.3, its
+/// last, too). Asked once for each program; one that doesn't say its
+/// version is taken for one that reads them.
+fn keeps_env_files(program: &Program) -> bool {
+    static ASKED: LazyLock<Mutex<HashMap<PathBuf, bool>>> = LazyLock::new(Default::default);
+    let key = program.path().to_path_buf();
+    if let Some(&keeps) = ASKED.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return keeps;
+    }
+    let mut cmd = program.command();
+    cmd.args(["version", "--short"])
+        .env_clear()
+        .envs(environment(crate::process::child_var))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    crate::process::no_window(&mut cmd);
+    let said = cmd
+        .spawn()
+        .and_then(|child| wait_within(child, READ_WITHIN))
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
+    let keeps = said
+        .as_deref()
+        .and_then(major_version)
+        .is_some_and(|major| major >= 5);
+    ASKED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, keeps);
+    keeps
+}
+
+/// The major version Compose's `version --short` says: 5 of `5.6.1`, or of
+/// `v5.6.1`.
+fn major_version(said: &str) -> Option<u32> {
+    said.trim()
+        .trim_start_matches('v')
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// What Compose is given of the environment `var` reads: where programs
@@ -626,6 +701,63 @@ mod tests {
         assert_eq!(folders(root), ["", "api"]);
     }
 
+    /// A Compose that answers `version --short` with `version` and prints
+    /// `json` for anything else, in `dir`.
+    #[cfg(unix)]
+    fn fake_compose(dir: &Path, version: &str, json: &str) -> Program {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(format!("compose-{version}"));
+        let script = format!(
+            "#!/bin/sh\ncase \"$1\" in version) echo {version} ;; *) cat <<'JSON'\n{json}\nJSON\n;; esac\n"
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Program::Standalone(path)
+    }
+
+    /// Compose 2 puts what a service's env files hold in its environment
+    /// however it's asked, and 5 leaves the files named: what Compose 2
+    /// read keeps no environment, so the model never holds an env file's
+    /// values.
+    #[cfg(unix)]
+    #[test]
+    fn what_a_compose_that_reads_env_files_anyway_read_keeps_no_environment() {
+        let dir = crate::testing::temp_dir();
+        let project = dir.0.join("shop");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("compose.yaml"), "services: {}\n").unwrap();
+        let two = fake_compose(
+            &dir.0,
+            "2.38.2",
+            r#"{"name": "shop", "services": {"db": {"image": "postgres",
+                "environment": {"POSTGRES_PASSWORD": "hunter2"}}}}"#,
+        );
+        let model = run_config(&two, &project, "compose.yaml").unwrap();
+        assert!(!model.raw.to_string().contains("hunter2"), "{}", model.raw);
+        assert_eq!(
+            model.service("db").unwrap().image.as_deref(),
+            Some("postgres")
+        );
+        let five = fake_compose(
+            &dir.0,
+            "5.6.1",
+            r#"{"name": "shop", "services": {"db": {"image": "postgres",
+                "env_file": [{"path": "db.env"}], "environment": {"PGDATA": "/data"}}}}"#,
+        );
+        let model = run_config(&five, &project, "compose.yaml").unwrap();
+        assert_eq!(
+            model.raw["services"]["db"]["environment"]["PGDATA"],
+            "/data"
+        );
+    }
+
+    #[test]
+    fn composes_major_version_is_read_from_what_it_says() {
+        assert_eq!(major_version("2.38.2\n"), Some(2));
+        assert_eq!(major_version("v5.6.1"), Some(5));
+        assert_eq!(major_version("unknown flag: --short"), None);
+    }
+
     /// Docker finds its `compose` plugin and settings through these, on
     /// Windows too; a token in the app's environment stays out.
     #[test]
@@ -644,7 +776,8 @@ mod tests {
     }
 
     /// With the pinned Compose (or the user's), a real project is read as
-    /// Compose reads it: `.env` in the ports, the env file named, not read.
+    /// Compose reads it: `.env` in the ports, and nothing of the env file in
+    /// the model, whichever Compose read it.
     #[test]
     fn compose_itself_reads_the_project() {
         let _lock = crate::services::test_lock();

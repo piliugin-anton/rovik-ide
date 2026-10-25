@@ -3052,7 +3052,10 @@ bundle` named a `.deb` with that version, `Cargo.toml`'s and not
     `config --format json --no-env-resolution`, so the model names each env
     file without its values, and with an environment of its own: on
     Windows that keeps `USERPROFILE` and `ProgramFiles`, by which Docker
-    finds Docker Desktop's `compose` plugin.
+    finds Docker Desktop's `compose` plugin. Only Compose 5.0 and later
+    honour that flag: 2.38.2, the GitHub runners', and 2.40.3, the last 2.x,
+    put each env file's values in the service's `environment` all the same,
+    so what a Compose before 5 read keeps no service's environment.
   - Podman's Docker API makes each container a cgroup of its own, and
     where the unit delegates none to its user that fails, even for the
     unlimited pids limit Compose sends. `cgroups = "disabled"` keeps the
