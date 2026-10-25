@@ -666,6 +666,12 @@ println!("{}", browser.version().await?); // actual CDP browser product
 browser.close().await?;
 ```
 
+`command_hook` (a `CommandHook`) prepares the command that starts Chrome, before
+Eoka's own steps and the spawn: to start Chrome in another network namespace
+with a Unix `pre_exec`, say. It's called for each Chrome Eoka starts, over a
+pipe or a port, and not for the `--version` probe, nor when a running Chrome is
+attached instead.
+
 `sandbox: false` retains existing callers' unsandboxed launch behavior.
 Set `sandbox: true` to enable Chrome's sandbox; an unsupported environment
 returns the launch error without retrying unsandboxed. Sandbox-control switches

@@ -370,8 +370,13 @@ pub(super) fn prepare_browser_launch(
     tracing::info!("Launching Chrome from {:?}", chrome_path);
     #[cfg(unix)]
     if config.pipe {
-        let (child, pipe, stderr) =
-            launch_chrome_with_pipe(&chrome_path, &args, runtime.path(), &cancelled)?;
+        let (child, pipe, stderr) = launch_chrome_with_pipe(
+            &chrome_path,
+            &args,
+            runtime.path(),
+            &cancelled,
+            config.command_hook.as_ref(),
+        )?;
         return Ok(PreparedBrowserLaunch {
             child: Some(child),
             endpoint: Some(Endpoint::Pipe { pipe, stderr }),
@@ -386,6 +391,7 @@ pub(super) fn prepare_browser_launch(
         config.live_session,
         runtime.path(),
         &cancelled,
+        config.command_hook.as_ref(),
     )?;
     Ok(PreparedBrowserLaunch {
         child: Some(child),

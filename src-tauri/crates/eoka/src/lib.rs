@@ -150,6 +150,12 @@ pub struct StealthConfig {
     /// `Browser::connect*`, nor a later launch on the same `user_data_dir`.
     /// Unix only: a launch with it fails elsewhere. Defaults to false.
     pub pipe: bool,
+    /// Prepares the command that starts Chrome, before Eoka's own steps and
+    /// the spawn: to start Chrome in other namespaces with a Unix `pre_exec`,
+    /// say. Called for each Chrome this crate starts, over a pipe or a port;
+    /// not for the `--version` probe, nor when attaching to a running Chrome.
+    /// Defaults to none.
+    pub command_hook: Option<CommandHook>,
     /// Patch Chrome binary to bypass detection
     pub patch_binary: bool,
     /// Viewport width in CSS pixels.
@@ -242,6 +248,7 @@ impl Default for StealthConfig {
             runtime_dir: None,
             sandbox: false,
             pipe: false,
+            command_hook: None,
             patch_binary: true,
             viewport_width: 1920,
             viewport_height: 1080,
@@ -317,6 +324,28 @@ impl StealthConfig {
             human_typing: true,
             ..Default::default()
         }
+    }
+}
+
+/// Prepares the command that starts Chrome ([`StealthConfig::command_hook`]).
+#[derive(Clone)]
+pub struct CommandHook(std::sync::Arc<dyn Fn(&mut std::process::Command) + Send + Sync>);
+
+impl CommandHook {
+    /// A hook that calls `prepare` with the command that starts Chrome.
+    pub fn new(prepare: impl Fn(&mut std::process::Command) + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(prepare))
+    }
+
+    /// Prepares `command`.
+    pub(crate) fn prepare(&self, command: &mut std::process::Command) {
+        (self.0)(command)
+    }
+}
+
+impl std::fmt::Debug for CommandHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CommandHook")
     }
 }
 

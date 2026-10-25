@@ -387,12 +387,14 @@ freed.
 ## Each user's own network
 
 Each user's commands run in a network of their own, as on their own
-computer: every command the agent runs, and every run of a connector's
-program (Claude Code), starts in it. A server there can listen on any port,
-on 127.0.0.1 or 0.0.0.0, without clashing with another user's server on
-the same port, and no one else's process can reach it: nothing comes into
-the network from outside. The agent tests its servers there as it would on
-the user's computer, with `curl localhost:3000` or a test suite. The ports
+computer: every command the agent runs, every run of a connector's program
+(Claude Code) and the agent's browser start in it. A server there can
+listen on any port, on 127.0.0.1 or 0.0.0.0, without clashing with another
+user's server on the same port, and no one else's process can reach it:
+nothing comes into the network from outside. The agent tests its servers
+there as it would on the user's computer, with `curl localhost:3000`, a test
+suite, or its browser tools (`browse_url` on `http://localhost:5173`), which
+open the user's own server and never another user's. The ports
 are the user's to share among their own servers, from all their chats: one
 that a server holds is busy for the others, and the agent is told which of
 the user's processes holds it (`port 3000 is held by "node server.js" (pid

@@ -6,7 +6,7 @@
 
 #![cfg(unix)]
 
-use eoka::{Browser, StealthConfig};
+use eoka::{Browser, CommandHook, StealthConfig};
 use std::{
     collections::HashMap,
     os::unix::fs::PermissionsExt,
@@ -32,9 +32,14 @@ impl Drop for Directory {
 
 /// A stand-in for Chrome: `body` runs for a launch, after the version probe.
 fn fixture_chrome(root: &Path, body: &str) -> PathBuf {
+    fixture_chrome_probed(root, "", body)
+}
+
+/// `fixture_chrome`, which runs `probe` too as it's asked for its version.
+fn fixture_chrome_probed(root: &Path, probe: &str, body: &str) -> PathBuf {
     let path = root.join("chrome-fixture");
     let script = format!(
-        "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'Chrome 155.0.8059.39\\n'; exit 0; fi\n{body}\n"
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then {probe}\nprintf 'Chrome 155.0.8059.39\\n'; exit 0; fi\n{body}\n"
     );
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -97,6 +102,36 @@ async fn chrome_gets_the_pipe_as_fds_3_and_4_and_no_port() {
         !root.0.join("runtime").read_dir().unwrap().any(|_| true),
         "close must remove the owned runtime"
     );
+}
+
+/// The hook prepares the command each launch starts Chrome with, over a pipe
+/// or a port, and not the version probe's.
+#[tokio::test]
+async fn the_command_hook_prepares_the_command_that_starts_chrome_but_not_the_probe() {
+    for pipe in [true, false] {
+        let root = Directory::new();
+        let (probed, launched) = (root.0.join("probed.txt"), root.0.join("launched.txt"));
+        // Each records what the hook gave it; the launch then exits, unanswered.
+        let chrome = fixture_chrome_probed(
+            &root.0,
+            &format!("printf '%s' \"$HOOKED\" > '{}'", probed.display()),
+            &format!("printf '%s' \"$HOOKED\" > '{}'", launched.display()),
+        );
+        let config = StealthConfig {
+            pipe,
+            command_hook: Some(CommandHook::new(|command| {
+                command.env("HOOKED", "prepared");
+            })),
+            ..fixture_config(&root.0, &chrome)
+        };
+        Browser::launch_with_config(config)
+            .await
+            .err()
+            .expect("the fixture exits unanswered");
+        let read = |path: &Path| std::fs::read_to_string(path).unwrap();
+        assert_eq!(read(&launched), "prepared", "pipe: {pipe}");
+        assert_eq!(read(&probed), "", "pipe: {pipe}");
+    }
 }
 
 #[tokio::test]
