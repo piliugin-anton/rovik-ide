@@ -9,7 +9,12 @@ import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import ConnectorsSettings from './ConnectorsSettings';
 import { ConfirmDialogHost } from './ConfirmDialog';
-import { newConnector, setConnectorAuthState, type ConnectorProbe } from '../lib/connectors';
+import {
+  connectorAuthState,
+  newConnector,
+  setConnectorAuthState,
+  type ConnectorProbe,
+} from '../lib/connectors';
 
 // The cloud hosts to test on (none, unless a test names some); the
 // connector's program, as each test has it answer (a failure as the app's
@@ -212,6 +217,55 @@ test('the list’s Set up runs on this computer, even after a form tested on a h
     assert.equal(computer()?.value, '');
     assert.deepEqual(testedOn, ['h1', null]);
     assert.match(root.textContent ?? '', /Claude Code is ready on this computer\./);
+  } finally {
+    hosts = [];
+    dispose();
+  }
+});
+
+test('picking another computer forgets the last one’s test, and a test still running there', async () => {
+  // Signed in on the host, where a newer version is out: each test there
+  // answers when this test says.
+  let answerHost = () => {};
+  answer = (cmd) =>
+    cmd === 'connector_probe'
+      ? new Promise((resolve) => (answerHost = () => resolve({ ...READY, update: '2.2.0' })))
+      : null;
+  hosts = [{ id: 'h1', name: 'Build server' }];
+  const claude = { ...newConnector('claude-code'), id: 'c6' };
+  const { root, dispose } = page(claude);
+  const computer = () =>
+    root.querySelector<HTMLSelectElement>('select[aria-label="Where to test"]');
+  const pick = (host: string) => {
+    computer()!.value = host;
+    computer()!.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const setUpButtons = () =>
+    [...root.querySelectorAll('.connector-setup button')].map((b) => b.textContent);
+  try {
+    button(root, 'Edit').click();
+    await until(() => computer()?.options.length === 2);
+
+    // A test on the host shows what it found there, and offers its Update and Sign out.
+    pick('h1');
+    button(root, 'Test connection').click();
+    answerHost();
+    await until(() => /Connected/.test(root.textContent ?? ''));
+    assert.deepEqual(setUpButtons(), ['Set up', 'Update to 2.2.0', 'Sign out']);
+
+    // Back on this computer, none of that is shown or offered here.
+    pick('');
+    assert.doesNotMatch(root.textContent ?? '', /Connected/);
+    assert.deepEqual(setUpButtons(), ['Set up']);
+
+    // A test on the host that ends after the pick isn't this computer's sign-in.
+    pick('h1');
+    button(root, 'Test connection').click();
+    pick('');
+    answerHost();
+    await settle(20);
+    assert.doesNotMatch(root.textContent ?? '', /Connected/);
+    assert.equal(connectorAuthState(claude.id), undefined);
   } finally {
     hosts = [];
     dispose();

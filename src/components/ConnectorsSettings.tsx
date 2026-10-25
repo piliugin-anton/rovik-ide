@@ -80,8 +80,15 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
   const [hostsList] = createResource(() => listHosts().catch(() => null));
   const hosts = () => hostsList()?.hosts ?? [];
 
-  // Ignore results from a test that was started before the settings changed.
+  // Ignore results from a test that was started before the settings or the
+  // computer changed.
   let testRun = 0;
+
+  /** The last test no longer says: it's forgotten, and one still running is ignored. */
+  function forgetTest() {
+    testRun++;
+    setTest({ kind: 'idle' });
+  }
 
   const patch = (changes: Partial<Provider>) => {
     const d = draft();
@@ -90,15 +97,19 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
   /** A change to what its runs use (settings, key): the last test no longer says. */
   const update = (changes: Partial<Provider>) => {
     patch(changes);
-    testRun++;
-    setTest({ kind: 'idle' });
+    forgetTest();
   };
+
+  /** Another computer to test and set up on: the last test was the other one's. */
+  function pickComputer(host: string) {
+    forgetTest();
+    setTestHost(host);
+  }
 
   function openDraft(p: Provider, setUp = false) {
     // The last form's test is forgotten first: a Set up that starts as the
     // form opens tests at once, and its test is this form's.
-    testRun++;
-    setTest({ kind: 'idle' });
+    forgetTest();
     // Each form starts on this computer: the list's rows, and the Set up
     // they open, are this computer's, whatever host the last form picked.
     setTestHost('');
@@ -128,9 +139,11 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
     const d = draft();
     if (!d) throw new Error('No connector is open.');
     const run = ++testRun;
+    // The computer it runs on: what it finds is that computer's.
+    const host = testHost() || null;
     setTest({ kind: 'testing' });
     try {
-      const probe = await probeConnector(d, withRequest(), testHost() || null);
+      const probe = await probeConnector(d, withRequest(), host);
       const current = draft();
       if (run !== testRun || !current) return probe;
       // Existing choices are kept; only the very first fetch enables everything.
@@ -139,8 +152,7 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
       setDraft({ ...current, models });
       // What it found about the sign-in is this computer's: the rows and
       // the menu show it (a host's is the host's own).
-      if (probe.auth && !testHost())
-        setConnectorAuthState(current.id, authStateOf({ auth: probe.auth }));
+      if (probe.auth && !host) setConnectorAuthState(current.id, authStateOf({ auth: probe.auth }));
       setTest({ kind: 'ok', probe, added, first: firstFetch });
       return probe;
     } catch (err) {
@@ -342,7 +354,7 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
                 <select
                   class="settings-select"
                   value={testHost()}
-                  onChange={(e) => setTestHost(e.currentTarget.value)}
+                  onChange={(e) => pickComputer(e.currentTarget.value)}
                   aria-label="Where to test"
                   title="A connector is a program on the computer the chat runs on: test it and set it up where the chats run"
                 >
