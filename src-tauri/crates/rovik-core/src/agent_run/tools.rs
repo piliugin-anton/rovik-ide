@@ -1207,7 +1207,9 @@ async fn run(
             // Nor does the agent see what's in the files it may not read:
             // only that they matched.
             let (restricted_out, restricted_files) = leave_out(&mut result, |path| {
-                ctx.restricted.blocks_file(path, Op::Read)
+                let abs = to_absolute_path(path, &root_owned);
+                ctx.restricted
+                    .blocks_file(path, std::path::Path::new(&abs), Op::Read)
             });
             // The declaration each line is in: the files' outlines, briefly.
             let root = root_owned;
@@ -1680,13 +1682,19 @@ mod tests {
         let s = submit_plan_schema();
         let p = &s["function"]["parameters"];
         assert_eq!(p["required"], json!([]));
-        assert_eq!(p["properties"]["edits"]["items"]["required"], json!(["old_text", "new_text"]));
+        assert_eq!(
+            p["properties"]["edits"]["items"]["required"],
+            json!(["old_text", "new_text"])
+        );
         assert_eq!(
             p["properties"]["responses"]["items"]["required"],
             json!(["finding", "action", "note"])
         );
         let d = s["function"]["description"].as_str().unwrap();
-        assert!(d.contains("send `edits`") && !d.contains("a revision passes the complete revised plan"));
+        assert!(
+            d.contains("send `edits`")
+                && !d.contains("a revision passes the complete revised plan")
+        );
     }
 
     #[test]
@@ -2571,5 +2579,4 @@ a.rs (3 matches)
             assert_eq!(command_end(other), None, "{other}");
         }
     }
-
 }

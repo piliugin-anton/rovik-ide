@@ -897,10 +897,11 @@ impl Run {
         };
         let mut out = Vec::new();
         for key in self.touched_keys() {
-            if self
-                .restricted
-                .blocks_file(&key, crate::restricted_files::Op::Read)
-            {
+            if self.restricted.blocks_file(
+                &key,
+                std::path::Path::new(&tools::to_absolute_path(&key, &root)),
+                crate::restricted_files::Op::Read,
+            ) {
                 continue;
             }
             let Some(before) = self.original_of(&key) else {
@@ -1180,10 +1181,7 @@ impl Run {
             },
             false => Rounds::Count,
         };
-        let mut note = new_message(
-            "user",
-            &findings_note_in(&serious, round, last, rounds),
-        );
+        let mut note = new_message("user", &findings_note_in(&serious, round, last, rounds));
         note.meta = Some(json!({ "harness": "review" }));
         self.review_note_id = Some(note.id.clone());
         // Findings asked about again were kept when first found.

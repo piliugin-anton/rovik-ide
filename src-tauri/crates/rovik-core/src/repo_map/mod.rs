@@ -191,7 +191,7 @@ fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
                     .to_string_lossy()
                     .replace('\\', "/");
                 // Not what the agent may not read: its names would show.
-                if options.restricted.blocks_file(&rel, Op::Read) {
+                if options.restricted.blocks_file(&rel, path, Op::Read) {
                     return WalkState::Continue;
                 }
                 // Cheap first: a file no grammar knows isn't read, nor data

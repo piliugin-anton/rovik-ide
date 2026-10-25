@@ -380,17 +380,22 @@ fn round_failures(results: &[CheckResult]) -> RoundFailures {
 }
 
 /// What the agent hears when its fix broke something and was rolled back.
-/// What the project changed in `files` (each with its diff) while the chat
-/// worked, for the chat's report: not a restricted file's lines, which
-/// the agent may not read.
+/// What the project changed in `files` (each with its diff, in the chat's
+/// view at `root`) while the chat worked, for the chat's report: not a
+/// restricted file's lines, which the agent may not read.
 fn project_changes(
     files: &[(String, String)],
+    root: &str,
     restricted: &crate::restricted_files::RestrictedFiles,
 ) -> String {
     let read = crate::restricted_files::Op::Read;
+    let restricted = |path: &str| {
+        let abs = super::tools::to_absolute_path(path, root);
+        restricted.blocks_file(path, std::path::Path::new(&abs), read)
+    };
     files
         .iter()
-        .filter(|(path, diff)| !diff.is_empty() && !restricted.blocks_file(path, read))
+        .filter(|(path, diff)| !diff.is_empty() && !restricted(path))
         .map(|(path, diff)| {
             format!("\nWhat the project changed in `{path}`:\n```diff\n{diff}\n```\n")
         })
@@ -1346,7 +1351,8 @@ impl Run {
         let mut report = failure_report(&sent, &changed, round, self.round_limit(), &notes);
         if let Some(files) = &self.merged_from_project {
             let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-            let diffs = project_changes(files, &self.restricted);
+            let root = self.root.clone().unwrap_or_default();
+            let diffs = project_changes(files, &root, &self.restricted);
             report = report.replacen(
                 "\n",
                 &format!(
@@ -1881,7 +1887,7 @@ mod tests {
             ),
             ("b.txt".to_string(), String::new()),
         ];
-        let shown = project_changes(&files, &restricted);
+        let shown = project_changes(&files, "/p", &restricted);
         assert!(
             shown.contains("What the project changed in `a.txt`"),
             "{shown}"

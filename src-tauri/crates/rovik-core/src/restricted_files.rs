@@ -47,7 +47,6 @@ const ENV_FILES: &[&str] = &[".env", ".dev.vars"];
 /// Functions' local settings, SSH's private keys.
 const SECRET_NAMES: &[&str] = &[
     ".envrc",
-    ".npmrc",
     ".pypirc",
     ".netrc",
     "_netrc",
@@ -64,6 +63,7 @@ const SECRET_NAMES: &[&str] = &[
     "kubeconfig",
     ".secrets",
     "local.settings.json",
+    "wp-config.php",
     "id_rsa",
     "id_dsa",
     "id_ecdsa",
@@ -72,17 +72,56 @@ const SECRET_NAMES: &[&str] = &[
     "id_ed25519_sk",
 ];
 
-/// Extensions of private keys, certificate stores and keystores, and of
-/// kubectl's configurations.
+/// Extensions of private keys (Apple's `.p8` too), certificate stores and
+/// keystores, and of kubectl's configurations.
 const SECRET_EXTENSIONS: &[&str] = &[
     "pem",
     "key",
+    "p8",
     "pfx",
     "p12",
     "jks",
     "keystore",
     "ppk",
     "kubeconfig",
+];
+
+/// Logins kept at a known place in a home folder: Docker's, GitHub CLI's,
+/// gcloud's (a folder's ends with `/`).
+const SECRET_PATHS: &[&str] = &[
+    ".docker/config.json",
+    ".config/gh/hosts.yml",
+    ".config/gcloud/",
+];
+
+/// Tools' settings that hold a login only sometimes: secret when they do
+/// ([`holds_login`]), not when they only set options
+/// (`legacy-peer-deps=true`).
+const LOGIN_SETTINGS: &[&str] = &[
+    ".npmrc",
+    ".yarnrc",
+    ".yarnrc.yml",
+    "gradle.properties",
+    "pip.conf",
+    "pip.ini",
+];
+
+/// Extensions of code: `.env.ts` is a module about the environment, not
+/// one of its files.
+const CODE_EXTENSIONS: &[&str] = &[
+    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "rb", "go", "rs", "java", "kt",
+    "php", "cs", "swift", "dart", "vue", "svelte",
+];
+
+/// Folders of templates (a Helm chart's `templates/secrets.yaml`): what's
+/// named a secret there is one to fill in.
+const TEMPLATE_FOLDERS: &[&str] = &[
+    "templates",
+    "template",
+    "examples",
+    "example",
+    "samples",
+    "sample",
 ];
 
 /// Terraform's variables (`prod.tfvars`, `x.tfvars.json`) and its state,
@@ -121,10 +160,14 @@ const SECRET_JSON_PARTS: &[&str] = &[
 const TEMPLATE_WORDS: &[&str] = &[
     "example", "sample", "template", "tpl", "tmpl", "dist", "defaults", "schema",
 ];
+/// Those of them that make a template within a word too
+/// (`secrets-example.yaml`, `credentials_template.json`).
+const TEMPLATE_PARTS: &[&str] = &["example", "sample", "template", "tpl", "tmpl"];
 
 /// Whether `path`'s name says the file holds credentials: one of the files
 /// above, or anything in a folder of logins (`.ssh/`). By name alone, in
-/// any case: whether it exists is the caller's to know.
+/// any case: whether it exists, or holds a login ([`secret_file`]), is the
+/// caller's to know.
 pub fn looks_secret(path: &str) -> bool {
     let path = path.replace('\\', "/");
     let mut parts: Vec<String> = path
@@ -135,16 +178,33 @@ pub fn looks_secret(path: &str) -> bool {
     let Some(name) = parts.pop() else {
         return false;
     };
+    // Windows' stream of a file is the file (`.env::$DATA`).
+    let name = match name.split_once(':') {
+        Some((file, _)) if !file.is_empty() => file.to_string(),
+        _ => name,
+    };
+    let template = parts.iter().any(|f| TEMPLATE_FOLDERS.contains(&f.as_str()));
+    let full = format!("/{}/{name}", parts.join("/"));
     parts
         .iter()
         .any(|folder| SECRET_FOLDERS.contains(&folder.as_str()))
-        || secret_name(&name)
+        || SECRET_PATHS
+            .iter()
+            .any(|known| match known.strip_suffix('/') {
+                Some(folder) => full.contains(&format!("/{folder}/")),
+                None => full.ends_with(&format!("/{known}")),
+            })
+        || secret_name(&name, template)
 }
 
-/// [`looks_secret`] for a file's name, in lower case.
-fn secret_name(name: &str) -> bool {
+/// [`looks_secret`] for a file's name, in lower case; `template` when it's
+/// in a folder of templates.
+fn secret_name(name: &str, template: bool) -> bool {
     let words: Vec<&str> = name.split('.').collect();
-    if words.iter().any(|w| TEMPLATE_WORDS.contains(w)) {
+    let parts = || name.split(['.', '-', '_']);
+    if words.iter().any(|w| TEMPLATE_WORDS.contains(w))
+        || parts().any(|p| TEMPLATE_PARTS.contains(&p))
+    {
         return false;
     }
     let stem = words[0];
@@ -153,16 +213,89 @@ fn secret_name(name: &str) -> bool {
     } else {
         ""
     };
-    ENV_FILES
-        .iter()
-        .any(|env| name == *env || name.starts_with(&format!("{env}.")))
-        || name.ends_with(".env")
+    // `secrets.yaml`, `values.secret.yaml`, `db_credentials.yml`.
+    let data = words.len() == 1 || DATA_EXTENSIONS.contains(&extension);
+    let secret_data = data
+        && !template
+        && name
+            .strip_suffix(&format!(".{extension}"))
+            .unwrap_or(name)
+            .split(['.', '-', '_'])
+            .any(|w| SECRET_STEMS.contains(&w));
+    ENV_FILES.iter().any(|env| {
+        name == *env
+            || (name.starts_with(&format!("{env}.")) && !CODE_EXTENSIONS.contains(&extension))
+    }) || name.ends_with(".env")
         || SECRET_NAMES.contains(&name)
         || SECRET_EXTENSIONS.contains(&extension)
         || TERRAFORM_PARTS.iter().any(|part| name.contains(part))
-        || (SECRET_STEMS.contains(&stem)
-            && (words.len() == 1 || DATA_EXTENSIONS.contains(&extension)))
+        || secret_data
         || (extension == "json" && SECRET_JSON_PARTS.iter().any(|part| stem.contains(part)))
+}
+
+/// Whether the file `key` (project-relative, or absolute outside the
+/// project), at `abs`, holds credentials: its name says so
+/// ([`looks_secret`]), or it's a tool's settings that hold a login
+/// ([`LOGIN_SETTINGS`]).
+pub fn secret_file(key: &str, abs: &Path) -> bool {
+    looks_secret(key) || {
+        let name = key.rsplit(['/', '\\']).next().unwrap_or(key).to_lowercase();
+        LOGIN_SETTINGS.contains(&name.as_str()) && file_holds_login(abs)
+    }
+}
+
+/// Words in a setting's name that make its value a login.
+const LOGIN_KEYS: &[&str] = &[
+    "token",
+    "password",
+    "secret",
+    "_auth",
+    "authident",
+    "credential",
+];
+
+/// Bytes of a tool's settings looked at, at most, for a login.
+const SETTINGS_MAX_BYTES: u64 = 64 * 1024;
+
+/// Whether the settings file at `path` holds a login ([`holds_login`]);
+/// one too large to look through may.
+fn file_holds_login(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > SETTINGS_MAX_BYTES => true,
+        Ok(_) => {
+            std::fs::read(path).is_ok_and(|bytes| holds_login(&String::from_utf8_lossy(&bytes)))
+        }
+        Err(_) => false,
+    }
+}
+
+/// Whether a tool's settings text holds a login: a token, password, secret
+/// or auth setting with a value of its own, not a variable's
+/// (`//registry.npmjs.org/:_authToken=${NPM_TOKEN}` names one kept
+/// elsewhere), or a URL with a password (`https://me:pw@host`).
+fn holds_login(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim();
+        if line.starts_with(['#', ';', '!']) {
+            return false;
+        }
+        let in_url = line.split("://").skip(1).any(|rest| {
+            let host = rest.split(['/', ' ', '"', '\'']).next().unwrap_or("");
+            host.split_once('@')
+                .is_some_and(|(login, _)| login.contains(':'))
+        });
+        // `key=value` (npm's `//host/:_authToken=…`, `.properties`), else
+        // YAML's `key: value`.
+        let pair = line.split_once('=').or_else(|| line.split_once(": "));
+        let setting = pair.is_some_and(|(key, value)| {
+            let key = key.to_lowercase();
+            let value = value.trim().trim_matches(['"', '\'']);
+            LOGIN_KEYS.iter().any(|word| key.contains(word))
+                && !value.is_empty()
+                && !value.starts_with('$')
+        });
+        in_url || setting
+    })
 }
 
 /// What the agent would do with a file.
@@ -253,7 +386,7 @@ impl RestrictedFiles {
         match self.entry_for(key) {
             Some(entry) => entry.blocks(op),
             None => {
-                looks_secret(key)
+                secret_file(key, abs)
                     && match op {
                         Op::Read => !abs.is_dir(),
                         Op::Write => abs.is_file(),
@@ -262,12 +395,12 @@ impl RestrictedFiles {
         }
     }
 
-    /// Whether `rel`, a file a walk of the project found, is kept from the
-    /// agent for `op`.
-    pub fn blocks_file(&self, rel: &str, op: Op) -> bool {
+    /// Whether `rel`, a file at `abs` that a walk of the project found (or
+    /// a change to the project names), is kept from the agent for `op`.
+    pub fn blocks_file(&self, rel: &str, abs: &Path, op: Op) -> bool {
         match self.entry_for(rel) {
             Some(entry) => entry.blocks(op),
-            None => looks_secret(rel),
+            None => secret_file(rel, abs),
         }
     }
 
@@ -320,9 +453,10 @@ impl RestrictedFiles {
             }
         };
         for path in scan(root) {
+            let abs = root.join(&path);
             let (read, write) = (
-                self.blocks_file(&path, Op::Read),
-                self.blocks_file(&path, Op::Write),
+                self.blocks_file(&path, &abs, Op::Read),
+                self.blocks_file(&path, &abs, Op::Write),
             );
             add(path, read, write);
         }
@@ -405,7 +539,7 @@ pub fn scan(root: &Path) -> Vec<String> {
             let rel = e.path().strip_prefix(root).ok()?;
             Some(rel.to_string_lossy().replace('\\', "/"))
         })
-        .filter(|rel| looks_secret(rel))
+        .filter(|rel| secret_file(rel, &root.join(rel)))
         .collect();
     found.sort();
     found
@@ -527,7 +661,6 @@ mod tests {
             ".envrc",
             ".dev.vars",
             ".dev.vars.staging",
-            ".npmrc",
             ".pypirc",
             ".netrc",
             ".git-credentials",
@@ -553,6 +686,19 @@ mod tests {
             "terraform.tfstate.backup",
             "local.settings.json",
             "C:\\Users\\me\\.aws\\config",
+            // A secret's word in a data file's name.
+            "values.secret.yaml",
+            "config/app-secrets.json",
+            "db_credentials.yml",
+            "application_default_credentials.json",
+            // Apple's keys, WordPress's logins, home folders' logins.
+            "AuthKey_ABC123.p8",
+            "wp-config.php",
+            "/home/me/.docker/config.json",
+            "/home/me/.config/gh/hosts.yml",
+            "/home/me/.config/gcloud/credentials.db",
+            // A Windows stream of the file is the file.
+            ".env::$DATA",
         ] {
             assert!(looks_secret(path), "{path}");
         }
@@ -584,9 +730,74 @@ mod tests {
             "package.json",
             "README.md",
             "",
+            // Code about the environment, not one of its files.
+            ".env.ts",
+            "src/.env.d.ts",
+            "config/.env.mjs",
+            // A Helm chart's templates, and templates by any word.
+            "charts/app/templates/secrets.yaml",
+            "templates/secret.yaml",
+            "config/secrets-example.yaml",
+            "credentials_template.json",
+            // Settings whose names alone don't say (`secret_file` reads them).
+            ".npmrc",
+            ".yarnrc.yml",
+            "docker/config.json",
+            "/home/me/.docker/daemon.json",
         ] {
             assert!(!looks_secret(path), "{path}");
         }
+    }
+
+    #[test]
+    fn a_tools_settings_are_secret_only_when_they_hold_a_login() {
+        for text in [
+            "//registry.npmjs.org/:_authToken=npm_abc123\n",
+            "_auth=dXNlcjpwYXNz\n",
+            "npmScopes:\n  me:\n    npmAuthToken: \"npm_abc\"\n",
+            "npmAuthIdent: \"me:pw\"\n",
+            "signing.password=hunter2\n",
+            "ossrhPassword=hunter2\n",
+            "[global]\nindex-url = https://me:pw@pypi.example.com/simple\n",
+        ] {
+            assert!(holds_login(text), "{text}");
+        }
+        for text in [
+            "legacy-peer-deps=true\nregistry=https://registry.npmjs.org/\n",
+            "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n",
+            "always-auth=true\n",
+            "nodeLinker: node-modules\nnpmAlwaysAuth: true\n",
+            "# _authToken=old\n",
+            "password=\n",
+            "[global]\nindex-url = https://pypi.example.com/simple\n",
+            "org.gradle.jvmargs=-Xmx2g\n",
+        ] {
+            assert!(!holds_login(text), "{text}");
+        }
+        let dir = project(&[]);
+        let write = |name: &str, text: &str| {
+            let path = dir.0.join(name);
+            fs::write(&path, text).unwrap();
+            path
+        };
+        let npmrc = write(".npmrc", "legacy-peer-deps=true\n");
+        assert!(!secret_file(".npmrc", &npmrc));
+        write(".npmrc", "//registry.npmjs.org/:_authToken=npm_abc\n");
+        assert!(secret_file(".npmrc", &npmrc));
+        // Not there: nothing to read, and a new one may be made.
+        assert!(!secret_file("a/.npmrc", &dir.0.join("a/.npmrc")));
+        // The scan, and what's kept from the agent, go by what it holds.
+        let restricted = RestrictedFiles::default();
+        assert_eq!(scan(&dir.0), [".npmrc"]);
+        assert_eq!(
+            restricted
+                .blocked(&root(&dir), ".npmrc", Op::Read)
+                .as_deref(),
+            Some(".npmrc")
+        );
+        write(".npmrc", "legacy-peer-deps=true\n");
+        assert!(scan(&dir.0).is_empty());
+        assert_eq!(restricted.blocked(&root(&dir), ".npmrc", Op::Write), None);
     }
 
     #[test]
@@ -668,9 +879,10 @@ mod tests {
             blocked("config/prod.json", Op::Write).as_deref(),
             Some("config/prod.json")
         );
-        assert!(!restricted.blocks_file(".env", Op::Read));
-        assert!(restricted.blocks_file(".env.local", Op::Read));
-        assert!(restricted.blocks_file("private/a.txt", Op::Write));
+        let at = |path: &str| Path::new("/p").join(path);
+        assert!(!restricted.blocks_file(".env", &at(".env"), Op::Read));
+        assert!(restricted.blocks_file(".env.local", &at(".env.local"), Op::Read));
+        assert!(restricted.blocks_file("private/a.txt", &at("private/a.txt"), Op::Write));
     }
 
     #[test]

@@ -1035,11 +1035,14 @@ What the agent reads goes to its model's provider and stays in the chat's
 history, so the files that hold credentials are kept from it
 (`src-tauri/crates/rovik-core/src/restricted_files.rs`): by default the
 ones whose names say so (`.env` and `.env.*` but templates such as
-`.env.example`, `.envrc`, private keys and keystores, `.npmrc`, `.netrc`,
-`.git-credentials`, `credentials` and `secrets` data files, Google Cloud
-keys, Terraform variables and state, anything in `.ssh`, `.aws`, `.gnupg`
-or `.kube`), and the user's own entries, saved with the project's settings
-from Settings → Restricted files, which win. Reading one is refused whether
+`.env.example` and code such as `.env.ts`, `.envrc`, private keys and
+keystores, `.netrc`, `.git-credentials`, `credentials` and `secrets` data
+files but a Helm chart's templates, Google Cloud keys, Terraform variables
+and state, `wp-config.php`, anything in `.ssh`, `.aws`, `.gnupg` or
+`.kube`), package managers' settings that hold a token or a password
+(`.npmrc`, `.yarnrc.yml`, `gradle.properties`, `pip.conf`; not one that
+only sets options), and the user's own entries, saved with the project's
+settings from Settings → Restricted files, which win. Reading one is refused whether
 it exists or not (git may hold a deleted one); changing one, once it
 exists, so the agent may still create a new `.env`.
 

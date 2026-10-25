@@ -517,7 +517,7 @@ impl Check<'_> {
                         continue;
                     }
                     let hit = |key: &str, file: &Path| {
-                        self.restricted.blocks_file(key, op) && prints(file)
+                        self.restricted.blocks_file(key, file, op) && prints(file)
                     };
                     match self.walk(at, &search.picks, op, &hit) {
                         Walked::Clean => continue,
@@ -551,7 +551,7 @@ impl Check<'_> {
             for folder in named_paths(cwd, word) {
                 let start = Path::new(&folder);
                 let hit = |key: &str, file: &Path| {
-                    finder.finds(word, start, file) && self.restricted.blocks_file(key, op)
+                    finder.finds(word, start, file) && self.restricted.blocks_file(key, file, op)
                 };
                 match self.walk(start, &finder.picks, op, &hit) {
                     Walked::Clean => {}
@@ -572,7 +572,7 @@ impl Check<'_> {
             globs: excludes.iter().map(|e| format!("!{e}")).collect(),
             ..Picks::default()
         };
-        let hit = |key: &str, _: &Path| self.restricted.blocks_file(key, op);
+        let hit = |key: &str, file: &Path| self.restricted.blocks_file(key, file, op);
         for folder in named_paths(cwd, word) {
             let folder = Path::new(&folder);
             if !folder.is_dir() {
@@ -651,7 +651,7 @@ impl Check<'_> {
             ..Picks::default()
         };
         let hit = |key: &str, file: &Path| {
-            if !self.restricted.blocks_file(key, Op::Write) {
+            if !self.restricted.blocks_file(key, file, Op::Write) {
                 return false;
             }
             let real = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
