@@ -5,18 +5,23 @@
 //! that one, each connection through the daemon (`Client::forward`): the
 //! page's own port where it's free here, else one the system picks. It
 //! tells the host which (`PageOpened`) and, once the host says the command
-//! still waits for the page, opens it in the default browser at that port.
-//! The port stays forwarded, shown above the chat (`CloudEvent::Ports`),
-//! until nothing listens on it there any more (`PageClosed`), the chat
-//! leaves the host, or the host goes or comes back having missed events.
+//! still waits for the page, opens it at that port (`OpenPage`): in a
+//! browser tab of the app, through a second port of its own that lifts
+//! what keeps a page out of a frame (tab_port.rs), when the page is http,
+//! else in the default browser. The ports stay forwarded, shown above the
+//! chat (`CloudEvent::Ports`), until nothing listens on the page's there
+//! any more (`PageClosed`), the chat leaves the host, or the host goes or
+//! comes back having missed events.
 
-use super::{CloudEvent, Remote};
+use super::{tab_port, CloudEvent, Remote};
+use crate::connector::Stream;
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::overlay::confine::page_url::local_page;
 use rovik_protocol::Request;
 use serde::Serialize;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
+use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -42,10 +47,26 @@ pub struct ForwardedPort {
     pub port: u16,
     /// The port here that leads to it: the same one where it was free.
     pub local_port: u16,
+    /// The port here a browser tab of the app shows the server's pages
+    /// through (tab_port.rs). None for an https server, whose pages the
+    /// tab can't show.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tab_port: Option<u16>,
 }
 
-/// Opens a page in this computer's default browser; why not, when it can't.
-pub type OpenPage = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+/// A page to open on this computer, its server's port forwarded here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageToOpen<'a> {
+    /// Its address at the port forwarded here, for the default browser.
+    pub address: &'a str,
+    /// A browser tab of the app can show it: an http page, whose forward
+    /// has a tab port (`ForwardedPort::tab_port`).
+    pub in_tab: bool,
+}
+
+/// Opens a page on this computer, in a browser tab of the app or the
+/// default browser; why not, when it can't.
+pub type OpenPage = Arc<dyn Fn(PageToOpen<'_>) -> Result<(), String> + Send + Sync>;
 
 /// The ports this computer forwards to its hosts, and what opens their
 /// pages.
@@ -69,13 +90,17 @@ impl Pages {
 /// A port of this computer forwarded to one of a host's.
 struct Forward {
     local: u16,
+    /// The port a browser tab shows the server's pages through, for an
+    /// http server.
+    tab: Option<u16>,
     /// The chats whose pages it was opened for, as their host confirmed.
     chats: BTreeSet<String>,
     /// The pages on their way through it that their host hasn't confirmed
     /// yet: it stays while there are any.
     pending: usize,
-    /// Its listeners, and the connections they carry: ended when it goes.
-    serving: JoinHandle<()>,
+    /// Its listeners, the tab port's too, and the connections they carry:
+    /// ended when it goes.
+    serving: Vec<JoinHandle<()>>,
 }
 
 impl Forward {
@@ -87,13 +112,15 @@ impl Forward {
 
 impl Drop for Forward {
     fn drop(&mut self) {
-        self.serving.abort();
+        for serving in &self.serving {
+            serving.abort();
+        }
     }
 }
 
 impl Remote {
-    /// How a page opens in this computer's default browser (the app's):
-    /// until it's set, pages are refused.
+    /// How a page opens on this computer (the app's: in a browser tab, or
+    /// the default browser): until it's set, pages are refused.
     pub fn on_open_page(&self, open: OpenPage) {
         *self.pages.open.lock().unwrap_or_else(|e| e.into_inner()) = Some(open);
     }
@@ -107,6 +134,7 @@ impl Remote {
             .map(|((_, port), forward)| ForwardedPort {
                 port: *port,
                 local_port: forward.local,
+                tab_port: forward.tab,
             })
             .collect();
         ports.sort();
@@ -162,7 +190,7 @@ impl Remote {
         }
         let forwarded = self.forward_page(host, url, port).await;
         let answer = match &forwarded {
-            Ok((local, _)) => Request::PageOpened {
+            Ok((local, _, _)) => Request::PageOpened {
                 id,
                 local_port: Some(*local),
                 error: None,
@@ -180,13 +208,20 @@ impl Remote {
             }),
             Err(_) => false,
         };
-        let Ok((_, address)) = forwarded else { return };
+        let Ok((_, address, in_tab)) = forwarded else {
+            return;
+        };
         if !self.settle_page(host, port, dialog_id, wanted) {
             return;
         }
+        // Before the page opens: a tab finds its tab port among them.
         self.tell_ports(dialog_id);
+        let page = PageToOpen {
+            address: &address,
+            in_tab,
+        };
         let opened = match self.pages.opener() {
-            Some(open) => open(&address),
+            Some(open) => open(page),
             None => Err("this app opens no pages".to_string()),
         };
         if let Err(why) = opened {
@@ -206,7 +241,8 @@ impl Remote {
     /// A port here that leads to `port` on `host`, for the page at `url`
     /// there: the one already forwarded to it, else a new one, held for
     /// the page until its host answers (`settle_page`). With the page's
-    /// address at that port, to open. Why not, in words for the agent,
+    /// address at that port, to open, and whether a browser tab can show
+    /// it (its forward has a tab port). Why not, in words for the agent,
     /// when the page isn't one of the user's own servers or no port here
     /// can be had.
     async fn forward_page(
@@ -214,7 +250,7 @@ impl Remote {
         host: &str,
         url: &str,
         port: u16,
-    ) -> Result<(u16, String), String> {
+    ) -> Result<(u16, String, bool), String> {
         if self.pages.opener().is_none() {
             return Err(format!(
                 "Rovik couldn't open {url}: the app on the user's computer opens no pages. Tell \
@@ -227,43 +263,80 @@ impl Remote {
         let key = (host.to_string(), port);
         let held = self.pages.forwards().get_mut(&key).map(|forward| {
             forward.pending += 1;
-            forward.local
+            (forward.local, forward.tab)
         });
-        let local = match held {
-            Some(local) => local,
+        let (local, tab) = match held {
+            Some(held) => held,
             None => {
-                let listeners = listen(port).await.map_err(|e| {
-                    format!(
-                        "Rovik couldn't open {url} on the user's computer: no port of its \
-                         loopback could be forwarded to it ({e})."
-                    )
-                })?;
-                let local = listeners
-                    .first()
-                    .and_then(|l| l.local_addr().ok())
-                    .map(|a| a.port())
-                    .ok_or_else(|| format!("Rovik couldn't open {url}: its port here is gone."))?;
-                let serving = tokio::spawn(serve(listeners, self.me.clone(), port, host.into()));
-                let fresh = Forward {
-                    local,
-                    chats: BTreeSet::new(),
-                    pending: 1,
-                    serving,
-                };
+                let fresh = self
+                    .new_forward(host, url, port, page.scheme() == "http")
+                    .await?;
                 match self.pages.forwards().entry(key) {
                     // Another page of the port forwarded it meanwhile: that
                     // forward serves both, and this one goes.
                     Entry::Occupied(mut made) => {
                         made.get_mut().pending += 1;
-                        made.get().local
+                        (made.get().local, made.get().tab)
                     }
-                    Entry::Vacant(place) => place.insert(fresh).local,
+                    Entry::Vacant(place) => {
+                        let made = place.insert(fresh);
+                        (made.local, made.tab)
+                    }
                 }
             }
         };
         // It took a port in `page_at`: it takes this one too.
         let _ = page.set_port(Some(local));
-        Ok((local, page.to_string()))
+        Ok((local, page.to_string(), tab.is_some()))
+    }
+
+    /// A new forward to `port` on `host`, for the page at `url`, held for
+    /// it: a port here that carries its bytes, and, for an http server
+    /// (`tab`), a tab port that a browser tab shows its pages through. A
+    /// tab port that can't be had leaves the page to the default browser.
+    async fn new_forward(
+        &self,
+        host: &str,
+        url: &str,
+        port: u16,
+        tab: bool,
+    ) -> Result<Forward, String> {
+        let listeners = listen(port).await.map_err(|e| {
+            format!(
+                "Rovik couldn't open {url} on the user's computer: no port of its loopback could \
+                 be forwarded to it ({e})."
+            )
+        })?;
+        let local = first_port(&listeners)
+            .ok_or_else(|| format!("Rovik couldn't open {url}: its port here is gone."))?;
+        let (remote, at) = (self.me.clone(), host.to_string());
+        let mut serving = vec![tokio::spawn(serve(listeners, host.into(), move |local| {
+            carry(local, remote.clone(), port, at.clone())
+        }))];
+        let tab_listeners = match tab {
+            true => listen(0)
+                .await
+                .map_err(|e| log::warn!("no tab port for {url}: {e}"))
+                .ok(),
+            false => None,
+        };
+        let tab = tab_listeners.and_then(|listeners| {
+            let tab = first_port(&listeners)?;
+            let (remote, at) = (self.me.clone(), host.to_string());
+            serving.push(tokio::spawn(serve(listeners, host.into(), move |local| {
+                let (remote, at) = (remote.clone(), at.clone());
+                let connect = move || forwarded(remote.clone(), at.clone(), port);
+                tab_port::carry(local, connect, tab_port::FRAME_COOKIES)
+            })));
+            Some(tab)
+        });
+        Ok(Forward {
+            local,
+            tab,
+            chats: BTreeSet::new(),
+            pending: 1,
+            serving,
+        })
     }
 
     /// The host answered for a page held on the forward of `port`: the
@@ -365,9 +438,11 @@ fn page_at(url: &str, port: u16) -> Result<reqwest::Url, String> {
 /// the browser tries first, and never to a server of this computer's own
 /// that listens on the other; ::1 only where this computer has IPv6.
 async fn listen(wanted: u16) -> io::Result<Vec<TcpListener>> {
-    match listen_on(wanted).await {
-        Ok(listeners) => return Ok(listeners),
-        Err(e) => log::info!("port {wanted} is taken here ({e}): forwarding another"),
+    if wanted != 0 {
+        match listen_on(wanted).await {
+            Ok(listeners) => return Ok(listeners),
+            Err(e) => log::info!("port {wanted} is taken here ({e}): forwarding another"),
+        }
     }
     let mut failed = io::Error::from(io::ErrorKind::AddrInUse);
     for _ in 0..PICKS {
@@ -420,9 +495,18 @@ async fn answers_at(ip: IpAddr, port: u16) -> bool {
     )
 }
 
-/// Carries each connection to `listeners` to `port` on `host`, until the
-/// task is aborted: the connections it carries end with it.
-async fn serve(listeners: Vec<TcpListener>, remote: Weak<Remote>, port: u16, host: String) {
+/// The port `listeners` listen on: one port, on each address.
+fn first_port(listeners: &[TcpListener]) -> Option<u16> {
+    listeners.first()?.local_addr().ok().map(|a| a.port())
+}
+
+/// Carries each connection to `listeners`, forwarded to `host`, with
+/// `carry`, until the task is aborted: the connections it carries end with
+/// it.
+async fn serve<F>(listeners: Vec<TcpListener>, host: String, carry: impl Fn(TcpStream) -> F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     let mut carrying = JoinSet::new();
     loop {
         let accepted = tokio::select! {
@@ -431,7 +515,7 @@ async fn serve(listeners: Vec<TcpListener>, remote: Weak<Remote>, port: u16, hos
         };
         match accepted {
             Ok(local) => {
-                carrying.spawn(carry(local, remote.clone(), port, host.clone()));
+                carrying.spawn(carry(local));
             }
             Err(e) => {
                 log::warn!("a forwarded port to {host}: {e}");
@@ -448,16 +532,22 @@ async fn accept_any(listeners: &[TcpListener]) -> io::Result<TcpStream> {
     accepted.map(|(stream, _)| stream)
 }
 
-/// Carries `local`, a connection here, to `port` on `host`, through the
-/// host's connection as it is now.
+/// Carries `local`, a connection here, to `port` on `host`, byte for byte.
 async fn carry(mut local: TcpStream, remote: Weak<Remote>, port: u16, host: String) {
-    let Some(client) = remote.upgrade().and_then(|r| r.client(&host).ok()) else {
-        return;
-    };
-    match client.forward(port).await {
+    match forwarded(remote, host.clone(), port).await {
         Ok(mut there) => {
             let _ = tokio::io::copy_bidirectional(&mut local, &mut there).await;
         }
-        Err(fail) => log::info!("{host}: port {port} there: {}", fail.message),
+        Err(why) => log::info!("{host}: port {port} there: {why}"),
     }
+}
+
+/// A stream to `port` on `host`, through the host's connection as it is
+/// now; why not.
+async fn forwarded(remote: Weak<Remote>, host: String, port: u16) -> Result<Stream, String> {
+    let client = remote
+        .upgrade()
+        .and_then(|remote| remote.client(&host).ok())
+        .ok_or_else(|| format!("{host} isn't connected"))?;
+    client.forward(port).await.map_err(|fail| fail.message)
 }

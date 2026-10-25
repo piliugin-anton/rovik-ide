@@ -56,5 +56,5 @@ pub use connector::{Connecting, Connector, Io, Stream};
 pub use hosts::Hosts;
 pub use remote::{
     ApprovalPolicy, CloudEvent, CloudSink, ForwardedPort, HandedSync, MovePreflight, OpenPage,
-    Remote, LOCAL_ONLY,
+    PageToOpen, Remote, LOCAL_ONLY,
 };

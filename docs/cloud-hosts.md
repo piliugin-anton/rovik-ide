@@ -350,15 +350,24 @@ person's computer, keeps its own network.
 ### Pages
 
 A command that opens a page of one of its servers, as `vite --open` does,
-or `xdg-open http://localhost:5173`, or a tool that runs `$BROWSER`, opens it in
-the browser on the user's computer that the chat belongs to: Rovik forwards
-a port of that computer's loopback to the server's port in the user's
-network, the same port where it's free there and another where it isn't,
-and opens the page at it. The chat shows the forwarded ports under its
-title, "Opened ports: 5173", each with the server's own port and a button
-that copies the address on the computer that leads to it (`localhost:5174`
-where 5173 was taken there). A port stays forwarded until nothing listens
-on it in the network any more. Only pages of the user's own servers open
+or `xdg-open http://localhost:5173`, or a tool that runs `$BROWSER`, opens it on
+the user's computer that the chat belongs to: Rovik forwards a port of that
+computer's loopback to the server's port in the user's network, the same
+port where it's free there and another where it isn't, and opens the page
+at it. An http page opens in a browser tab of the editor. Its frame loads
+the page through a second port of that computer's, which carries it
+through the same daemon but speaks HTTP: it drops `X-Frame-Options` and
+CSP's `frame-ancestors` from the server's answers, which would keep the
+page out of a frame, passes WebSocket upgrades (hot reload) through as
+they are, and on Windows rewrites the page's cookies to
+`SameSite=None; Secure; Partitioned`, which WebView2 keeps in a frame of
+another site. The page's own forwarded port carries its bytes unchanged,
+for the default browser, where an https page opens. The chat shows the
+forwarded ports under its title, "Opened ports: 5173", each the server's
+own port on a button that opens its page in a tab, or copies the address
+on the computer that leads to it (`localhost:5174` where 5173 was taken
+there), as its ▾ chooses. A port stays forwarded until nothing listens on
+it in the network any more. Only pages of the user's own servers open
 this way, http or https at localhost, 127.0.0.1 or ::1: any other address
 is refused, for the user's safety, and the agent is told why. A chat's
 commands open at most 5 pages a minute.

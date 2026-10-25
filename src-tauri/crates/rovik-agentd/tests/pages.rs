@@ -1,9 +1,10 @@
 //! The pages a command opens on a team server (D20), against the real
 //! daemon and the app's remote: a command in the user's private network
 //! starts a server there and opens its page; the app forwards the same port
-//! of this computer to it and opens the page in its browser, and what the
-//! browser asks reaches the server there. The command hears that it
-//! opened, and once its server is gone the port here closes. Skipped where
+//! of this computer to it and opens the page, and what the browser asks
+//! reaches the server there, through that port and through the port a
+//! browser tab of the app shows it through. The command hears that it
+//! opened, and once its server is gone the ports here close. Skipped where
 //! the daemon can't make a private network.
 
 mod common;
@@ -38,7 +39,8 @@ async fn get(port: u16, path: &str) -> String {
             stream.write_all(request.as_bytes()).await.ok()?;
             let mut answer = String::new();
             stream.read_to_string(&mut answer).await.ok()?;
-            answer.starts_with("HTTP/1.0 200").then_some(answer)
+            let ok = ["HTTP/1.0 200", "HTTP/1.1 200"];
+            ok.iter().any(|s| answer.starts_with(s)).then_some(answer)
         };
         if let Ok(Some(answer)) = tokio::time::timeout(Duration::from_secs(5), asked).await {
             return answer;
@@ -114,8 +116,8 @@ async fn a_page_a_command_opens_opens_in_the_users_browser_through_a_forwarded_p
     let remote = Remote::new(app.core.clone());
     let opened = Arc::new(Mutex::new(Vec::<String>::new()));
     let browser = opened.clone();
-    remote.on_open_page(Arc::new(move |url| {
-        browser.lock().unwrap().push(url.to_string());
+    remote.on_open_page(Arc::new(move |page| {
+        browser.lock().unwrap().push(page.address.to_string());
         Ok(())
     }));
     let identity = Identity {
@@ -164,23 +166,29 @@ async fn a_page_a_command_opens_opens_in_the_users_browser_through_a_forwarded_p
         format!("http://localhost:{port}/hello.txt"),
         "its own port, free here"
     );
-    assert_eq!(
-        remote.forwarded_ports(CHAT),
-        vec![ForwardedPort {
-            port,
-            local_port: port
-        }]
-    );
-    // What the browser asks reaches the server in the user's network there.
-    let answer = get(port, "/hello.txt").await;
-    assert!(answer.ends_with("hello from the server\n"), "{answer}");
+    let forwarded = remote.forwarded_ports(CHAT);
+    let [ForwardedPort {
+        port: there,
+        local_port,
+        tab_port: Some(tab_port),
+    }] = forwarded[..]
+    else {
+        panic!("one port forwarded, with a tab port: {forwarded:?}");
+    };
+    assert_eq!((there, local_port), (port, port));
+    // What the browser asks reaches the server in the user's network there,
+    // and so does what a browser tab of the app asks through its own port.
+    for at in [port, tab_port] {
+        let answer = get(at, "/hello.txt").await;
+        assert!(answer.ends_with("hello from the server\n"), "{answer}");
+    }
 
     // The command goes on, and hears its page opened.
     std::fs::write(project.join("done"), "").unwrap();
     let result = until("the command's result", || command_result(&seen)).await;
     assert!(
         result.contains(&format!(
-            "Rovik opened http://localhost:{port}/hello.txt in the user's browser"
+            "Rovik opened http://localhost:{port}/hello.txt on the user's computer"
         )),
         "{result}\n{}",
         daemon.output()
@@ -190,10 +198,12 @@ async fn a_page_a_command_opens_opens_in_the_users_browser_through_a_forwarded_p
         remote.forwarded_ports(CHAT).is_empty().then_some(())
     })
     .await;
-    until("nothing listens here", || {
-        std::net::TcpStream::connect(("127.0.0.1", port))
-            .is_err()
-            .then_some(())
-    })
-    .await;
+    for at in [port, tab_port] {
+        until("nothing listens here", || {
+            std::net::TcpStream::connect(("127.0.0.1", at))
+                .is_err()
+                .then_some(())
+        })
+        .await;
+    }
 }

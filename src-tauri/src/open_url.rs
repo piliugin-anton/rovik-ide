@@ -2,8 +2,10 @@
 //
 // Opens a link from the chat in the system's default browser. The webview
 // ignores target="_blank", and navigating it away would replace the IDE.
-// A page a remote chat's command opens on its team server opens the same
-// way, once its port is forwarded here (rovik-client's remote/pages.rs).
+// A page a remote chat's command opens on its team server that a browser
+// tab can't show (an https one) opens the same way, once its port is
+// forwarded here (rovik-client's remote/pages.rs), and so does a window a
+// page in a browser tab opens (lib.rs).
 
 use std::process::{Command, Stdio};
 
