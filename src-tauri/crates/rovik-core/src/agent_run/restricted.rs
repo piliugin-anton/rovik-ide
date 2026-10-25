@@ -332,10 +332,15 @@ struct Check<'a> {
     rg_config: Vec<String>,
     /// Past it, the check stops, refusing the command ([`CHECK_TIME`]).
     deadline: Instant,
-    /// What [`Check::vague`] came to, by folder and operation: the same for
-    /// every program in the command that runs there.
-    vague_found: RefCell<Vec<(PathBuf, Op, Option<String>)>>,
+    /// What [`Check::vague`] came to, by folder, operation and the lines a
+    /// search prints: the same for every program in the command that runs
+    /// there and does that.
+    vague_found: RefCell<Vec<(Vague, Option<String>)>>,
 }
+
+/// What [`Check::vague`] is asked: from where, to do what, and, for a
+/// search, the lines it prints.
+type Vague = (PathBuf, Op, Option<Pattern>);
 
 impl Check<'_> {
     /// `command`, read as `shell` reads it, run in `cwd`.
@@ -441,7 +446,7 @@ impl Check<'_> {
             }
             // `> "$f"`: what put the file there decides.
             if files.iter().any(|f| unknown(f)) {
-                if let Some(problem) = self.vague(cwd, op) {
+                if let Some(problem) = self.vague(cwd, op, None) {
                     return Some(problem);
                 }
             }
@@ -474,7 +479,7 @@ impl Check<'_> {
             return Some(refused(self.whole, Op::Read, &file));
         }
         if let Some(search) = &effects.search {
-            if let Some(problem) = self.searched(cwd, search, Op::Read) {
+            if let Some(problem) = self.searched(cwd, search, Op::Read, None) {
                 return Some(problem);
             }
         }
@@ -482,8 +487,9 @@ impl Check<'_> {
             return Some(refused(self.whole, Op::Write, &file));
         }
         if let Some(finder) = &effects.finds {
-            for (op, does) in [(Op::Read, finder.reads), (Op::Write, finder.writes)] {
-                if let Some(problem) = does.then(|| self.found(cwd, finder, op)).flatten() {
+            let reads = (Op::Read, finder.reads, finder.lines.as_ref());
+            for (op, does, lines) in [reads, (Op::Write, finder.writes, None)] {
+                if let Some(problem) = does.then(|| self.found(cwd, finder, op, lines)).flatten() {
                     return Some(problem);
                 }
             }
@@ -498,15 +504,21 @@ impl Check<'_> {
                 return Some(problem);
             }
         }
-        // Files its words don't name: what lists them decides.
-        let searches = effects.search.iter().flat_map(|s| &s.paths);
-        if effects.reads.iter().chain(searches).any(|f| unknown(f)) {
-            if let Some(problem) = self.vague(cwd, Op::Read) {
+        // Files its words don't name: what lists them decides, and for a
+        // search of them, what lines it prints.
+        if effects.reads.iter().any(|f| unknown(f)) {
+            if let Some(problem) = self.vague(cwd, Op::Read, None) {
+                return Some(problem);
+            }
+        }
+        let searched = effects.search.as_ref();
+        if let Some(search) = searched.filter(|s| s.paths.iter().any(|f| unknown(f))) {
+            if let Some(problem) = self.vague(cwd, Op::Read, Some(&search.pattern)) {
                 return Some(problem);
             }
         }
         if effects.writes.iter().any(|f| unknown(f)) {
-            return self.vague(cwd, Op::Write);
+            return self.vague(cwd, Op::Write, None);
         }
         None
     }
@@ -514,35 +526,41 @@ impl Check<'_> {
     /// Why a program whose files its words don't name (`cat "$f"`, `xargs
     /// cat`, `find … -exec cat {} \;`) may not do `op` with them: what
     /// lists them in the command would list a restricted file (`find`'s
-    /// files, a search's), or one of its words names one (`for f in .env*`).
-    fn vague(&self, cwd: &Path, op: Op) -> Option<String> {
-        let seen = |(at, done, _): &&(PathBuf, Op, Option<String>)| at == cwd && *done == op;
-        if let Some((_, _, found)) = self.vague_found.borrow().iter().find(seen) {
+    /// files, a search's, `ls`'s), or a word that may be one of them names
+    /// one ([`sources`]: `for f in .env*`, `f=.env`, `echo .env | xargs
+    /// cat`). For a search of them, one with a line its `lines` match.
+    fn vague(&self, cwd: &Path, op: Op, lines: Option<&Pattern>) -> Option<String> {
+        let asked: Vague = (cwd.to_path_buf(), op, lines.cloned());
+        let seen = self.vague_found.borrow();
+        if let Some((_, found)) = seen.iter().find(|(done, _)| *done == asked) {
             return found.clone();
         }
-        let found = self.vague_in(cwd, op);
-        let entry = (cwd.to_path_buf(), op, found.clone());
-        self.vague_found.borrow_mut().push(entry);
+        drop(seen);
+        let found = self.vague_in(cwd, op, lines);
+        self.vague_found.borrow_mut().push((asked, found.clone()));
         found
     }
 
     /// [`Check::vague`], worked out.
-    fn vague_in(&self, cwd: &Path, op: Op) -> Option<String> {
+    fn vague_in(&self, cwd: &Path, op: Op, lines: Option<&Pattern>) -> Option<String> {
         let (code, texts) = permissions::split_here_text(self.whole);
         let segments = loose_words(&code);
         for words in &segments {
             for (at, word) in words.iter().enumerate() {
                 let args = &words[at + 1..];
                 let problem = match bare_name(word).as_str() {
-                    "find" => self.found(cwd, &finder(args, cwd, &self.rg_config), op),
-                    "fd" | "fdfind" => self.found(cwd, &fd_finder(args, cwd, &self.rg_config), op),
-                    "git" if args.first().is_some_and(|a| a == "ls-files") => {
-                        self.searched(cwd, &tracked(&args[1..]), op)
+                    "find" => self.found(cwd, &finder(args, cwd, &self.rg_config), op, lines),
+                    "fd" | "fdfind" => {
+                        self.found(cwd, &fd_finder(args, cwd, &self.rg_config), op, lines)
                     }
+                    "git" if args.first().is_some_and(|a| a == "ls-files") => {
+                        self.searched(cwd, &tracked(&args[1..]), op, lines)
+                    }
+                    "ls" => self.listed(cwd, args, op, lines),
                     name if GREPS.contains(&name) || matches!(name, "rg" | "ag") => {
                         search_effects(name, args, false, &self.rg_config, true)
                             .search
-                            .and_then(|search| self.searched(cwd, &search, op))
+                            .and_then(|search| self.searched(cwd, &search, op, lines))
                     }
                     _ => None,
                 };
@@ -551,17 +569,99 @@ impl Check<'_> {
                 }
             }
         }
-        // What a here-document gives `xargs` or `read` (`xargs cat <<'EOF'`).
-        let given = texts.iter().flat_map(|text| permissions::split_words(text));
-        for word in segments.iter().flatten().cloned().chain(given) {
+        // The words that may be them, and what the command gives programs
+        // as their input (`xargs cat <<< .env`, `read` from a here-document).
+        let inputs = permissions::parse_command(self.whole).inputs;
+        let given = texts.iter().chain(inputs.iter().map(|input| &input.text));
+        let given = given.flat_map(|text| permissions::split_words(text));
+        let regexes = lines.map(Pattern::compiled);
+        for word in sources(&segments).into_iter().chain(given) {
             if self.out_of_time() {
                 return Some(self.too_slow());
             }
-            if let Some(file) = self.blocked(cwd, &word, op) {
-                return Some(refused(self.whole, op, &file));
+            for path in named_paths(cwd, &word) {
+                // What isn't there can't be read.
+                let at = Path::new(&path);
+                if op == Op::Read && at.symlink_metadata().is_err() {
+                    continue;
+                }
+                let Some(file) = self.restricted.blocked(self.root, &path, op) else {
+                    continue;
+                };
+                if regexes
+                    .as_ref()
+                    .is_none_or(|r| prints_from(at, r.as_deref()))
+                {
+                    return Some(self.refusal(op, &file, lines.is_some()));
+                }
             }
         }
         None
+    }
+
+    /// Why what `ls` lists may not be done `op` with (`ls -A | xargs cat`):
+    /// it lists a restricted file (with a line `lines` match, for a search
+    /// of them). Its folders' files, all below with `-R`, the hidden too
+    /// with `-a`/`-A`; with `-d`, the folders themselves.
+    fn listed(
+        &self,
+        cwd: &Path,
+        args: &[String],
+        op: Op,
+        lines: Option<&Pattern>,
+    ) -> Option<String> {
+        let a = Args::split(args, LS_VALUES, false);
+        let picks = Picks {
+            hidden: a.has(&["-a", "-A", "-f", "--all", "--almost-all"]),
+            depth: (!a.has(&["-R", "--recursive"])).then_some(1),
+            ..Picks::default()
+        };
+        let regexes = lines.map(Pattern::compiled);
+        let prints = |file: &Path| {
+            regexes
+                .as_ref()
+                .is_none_or(|r| prints_from(file, r.as_deref()))
+        };
+        let words = if a.words.is_empty() {
+            vec!["."]
+        } else {
+            a.words.clone()
+        };
+        for word in words {
+            for path in named_paths(cwd, word) {
+                let at = Path::new(&path);
+                if at.is_dir() && !a.has(&["-d", "--directory"]) {
+                    let hit = |key: &str, file: &Path| {
+                        self.restricted.blocks_file(key, file, op) && prints(file)
+                    };
+                    match self.walk(at, &picks, op, &hit) {
+                        Walked::Clean => continue,
+                        Walked::Found(file) => {
+                            return Some(self.refusal(op, &file, lines.is_some()))
+                        }
+                        Walked::TooLarge => return Some(self.too_large()),
+                    }
+                }
+                let file = self.restricted.blocked(self.root, &path, op);
+                if let Some(file) = file.filter(|_| at.exists() && prints(at)) {
+                    return Some(self.refusal(op, &file, lines.is_some()));
+                }
+            }
+        }
+        None
+    }
+
+    /// The refusal of `op` on `file`, a restricted file; of searching it,
+    /// for a search (`searching`).
+    fn refusal(&self, op: Op, file: &str, searching: bool) -> String {
+        if !(searching && op == Op::Read) {
+            return refused(self.whole, op, file);
+        }
+        format!(
+            "Error: `{}` would search {file}, a restricted file: {} To search the project, use search_code, which leaves restricted files out, or leave them out of the command's search.",
+            self.whole,
+            reason(Op::Read)
+        )
     }
 
     /// The restricted files the words of `text` name for `op`, from `cwd`.
@@ -589,12 +689,27 @@ impl Check<'_> {
     }
 
     /// Why a search may not run, for `op` Read: a restricted file it's
-    /// given, or comes to in its folders, has a line it would print. For
-    /// Write, why the files a search lists may not be changed (`grep -rl x
-    /// . | xargs sed -i …`): one of them is kept from changes.
-    fn searched(&self, cwd: &Path, search: &Search, op: Op) -> Option<String> {
-        let regexes = search.pattern.compiled();
-        let prints = |file: &Path| prints_from(file, regexes.as_deref());
+    /// given, or comes to in its folders, has a line it would print (and,
+    /// for one that lists files another search goes through, a line its
+    /// `lines` match). For Write, why the files a search lists may not be
+    /// changed (`grep -rl x . | xargs sed -i …`): one of them is kept from
+    /// changes.
+    fn searched(
+        &self,
+        cwd: &Path,
+        search: &Search,
+        op: Op,
+        lines: Option<&Pattern>,
+    ) -> Option<String> {
+        let own = search.pattern.compiled();
+        let theirs = lines.map(Pattern::compiled);
+        let prints = |file: &Path| {
+            prints_from(file, own.as_deref())
+                && theirs
+                    .as_ref()
+                    .is_none_or(|r| prints_from(file, r.as_deref()))
+        };
+        let searching = !search.listing || lines.is_some();
         for word in search.paths.iter().filter(|p| !unknown(p)) {
             for path in named_paths(cwd, word) {
                 let at = Path::new(&path);
@@ -607,14 +722,7 @@ impl Check<'_> {
                     };
                     match self.walk(at, &search.picks, op, &hit) {
                         Walked::Clean => continue,
-                        Walked::Found(file) if op == Op::Read && !search.listing => {
-                            return Some(format!(
-                                "Error: `{}` would search {file}, a restricted file: {} To search the project, use search_code, which leaves restricted files out, or leave them out of the command's search.",
-                                self.whole,
-                                reason(Op::Read)
-                            ))
-                        }
-                        Walked::Found(file) => return Some(refused(self.whole, op, &file)),
+                        Walked::Found(file) => return Some(self.refusal(op, &file, searching)),
                         Walked::TooLarge => return Some(self.too_large()),
                     }
                 }
@@ -623,7 +731,7 @@ impl Check<'_> {
                     .blocked(self.root, &path, op)
                     .filter(|file| prints(Path::new(&tools::to_absolute_path(file, self.root))));
                 if let Some(file) = file {
-                    return Some(refused(self.whole, op, &file));
+                    return Some(self.refusal(op, &file, lines.is_some()));
                 }
             }
         }
@@ -631,17 +739,32 @@ impl Check<'_> {
     }
 
     /// Why what `find` (or `fd`) finds may not be read or changed (`op`):
-    /// it finds a restricted file.
-    fn found(&self, cwd: &Path, finder: &Finder, op: Op) -> Option<String> {
+    /// it finds a restricted file; for a search of what it finds, one with
+    /// a line its `lines` match.
+    fn found(
+        &self,
+        cwd: &Path,
+        finder: &Finder,
+        op: Op,
+        lines: Option<&Pattern>,
+    ) -> Option<String> {
+        let regexes = lines.map(Pattern::compiled);
+        let prints = |file: &Path| {
+            regexes
+                .as_ref()
+                .is_none_or(|r| prints_from(file, r.as_deref()))
+        };
         for word in &finder.folders {
             for folder in named_paths(cwd, word) {
                 let start = Path::new(&folder);
                 let hit = |key: &str, file: &Path| {
-                    finder.finds(word, start, file) && self.restricted.blocks_file(key, file, op)
+                    finder.finds(word, start, file)
+                        && self.restricted.blocks_file(key, file, op)
+                        && prints(file)
                 };
                 match self.walk(start, &finder.picks, op, &hit) {
                     Walked::Clean => {}
-                    Walked::Found(file) => return Some(refused(self.whole, op, &file)),
+                    Walked::Found(file) => return Some(self.refusal(op, &file, lines.is_some())),
                     Walked::TooLarge => return Some(self.too_large()),
                 }
             }
@@ -1080,6 +1203,9 @@ struct Finder {
     /// (`-delete`, `-exec rm {} +`).
     reads: bool,
     writes: bool,
+    /// It reads what it finds only searching it (`-exec grep -n x {} +`),
+    /// printing the lines this matches.
+    lines: Option<Pattern>,
 }
 
 impl Finder {
@@ -1118,7 +1244,7 @@ impl Finder {
 /// The lines a search prints: those its patterns match, written as Rust's
 /// regex reads them. None: it may print any line (`-v`, `--passthru`,
 /// patterns read from a file, Windows' findstr).
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct Pattern {
     regexes: Option<Vec<String>>,
     ignore_case: bool,
@@ -2036,9 +2162,13 @@ fn finder(args: &[String], cwd: &Path, rg_config: &[String]) -> Finder {
                     .iter()
                     .position(|w| w == ";" || w == "+")
                     .unwrap_or(rest.len());
-                let (reads, writes) = exec_effects(&rest[..end], false, cwd, rg_config);
-                finder.reads |= reads;
-                finder.writes |= writes;
+                let exec = exec_effects(&rest[..end], false, cwd, rg_config);
+                if exec.reads {
+                    // Searched by one, read whole by more (as by one `cat`).
+                    finder.lines = if finder.reads { None } else { exec.lines };
+                }
+                finder.reads |= exec.reads;
+                finder.writes |= exec.writes;
                 step = end + 2;
             }
             "-fprintf" => step = 3,
@@ -2137,28 +2267,37 @@ fn fd_finder(args: &[String], cwd: &Path, rg_config: &[String]) -> Finder {
         }
         None => {}
     }
-    let (reads, writes) = exec_effects(command, true, cwd, rg_config);
-    finder.reads = reads;
-    finder.writes = writes;
+    let exec = exec_effects(command, true, cwd, rg_config);
+    finder.reads = exec.reads;
+    finder.writes = exec.writes;
+    finder.lines = exec.lines;
     finder
 }
 
-/// Whether the program `find` or `fd` runs on what it finds (`command`,
-/// given it as `{}`, or last when `appends` and it has no `{}`) reads it,
-/// and changes it. A shell running a script may do either.
-fn exec_effects(
-    command: &[String],
-    appends: bool,
-    cwd: &Path,
-    rg_config: &[String],
-) -> (bool, bool) {
+/// What the program `find` or `fd` runs on what it finds does with it.
+#[derive(Default)]
+struct Exec {
+    reads: bool,
+    writes: bool,
+    /// It reads it only searching it, printing the lines this matches.
+    lines: Option<Pattern>,
+}
+
+/// What the program `find` or `fd` runs on what it finds (`command`,
+/// given it as `{}`, or last when `appends` and it has no `{}`) does with
+/// it. A shell running a script may read it or change it.
+fn exec_effects(command: &[String], appends: bool, cwd: &Path, rg_config: &[String]) -> Exec {
     let (words, _) = past_keywords(command);
     let Some((first, args)) = words.split_first() else {
-        return (false, false);
+        return Exec::default();
     };
     let program = permissions::program_name(first);
-    if matches!(program.as_str(), "sh" | "bash" | "zsh" | "dash" | "fish") {
-        return (true, true);
+    if permissions::SHELLS.contains(&program.as_str()) {
+        return Exec {
+            reads: true,
+            writes: true,
+            lines: None,
+        };
     }
     let mut args = args.to_vec();
     if appends && !args.iter().any(|a| a.contains("{}")) {
@@ -2166,9 +2305,13 @@ fn exec_effects(
     }
     let effects = effects(&program, &args, cwd, false, rg_config, None);
     let found = |word: &String| word.contains("{}");
-    let searched = effects.search.iter().flat_map(|s| &s.paths);
-    let reads = effects.reads.iter().chain(searched).any(found);
-    (reads, effects.writes.iter().any(found))
+    let whole = effects.reads.iter().any(found);
+    let search = effects.search.filter(|s| s.paths.iter().any(found));
+    Exec {
+        reads: whole || search.is_some(),
+        writes: effects.writes.iter().any(found),
+        lines: search.filter(|_| !whole).map(|s| s.pattern),
+    }
 }
 
 /// What `git ls-files` lists: the files the repository tracks, about the
@@ -2532,7 +2675,9 @@ fn loose_segments(command: &str) -> Vec<Vec<String>> {
 /// [`loose_segments`] of text with no here-documents in it.
 fn loose_words(text: &str) -> Vec<Vec<String>> {
     text.split(['|', ';', '&', '\n', '(', ')', '`'])
-        .map(|part| permissions::split_words(&part.replace(['"', '\'', '<', '>'], " ")))
+        .map(|part| {
+            permissions::split_words(&part.replace(['"', '\''], "").replace(['<', '>'], " "))
+        })
         .filter(|words| !words.is_empty())
         .collect()
 }
@@ -2546,6 +2691,66 @@ fn bare_name(word: &str) -> String {
         word.rsplit('/').next().unwrap_or(word).to_string()
     }
 }
+
+/// The words of a command that may be the files its other words don't
+/// name: what a loop goes through (`for f in .env*`), what a variable is
+/// set to (`f=.env`, `files=(.env .env.local)`), and what a program prints
+/// for another to read (`echo .env | xargs cat`, `printf`, `set --`).
+fn sources(segments: &[Vec<String>]) -> Vec<String> {
+    let mut out = Vec::new();
+    // `files=(…)`: its words are the next segment ([`loose_words`]).
+    let mut array = false;
+    for words in segments {
+        if std::mem::take(&mut array) {
+            out.extend(words.iter().cloned());
+            continue;
+        }
+        for word in words.iter().filter(|w| is_assignment(w)) {
+            match word.split_once('=') {
+                Some((_, "")) => array = Some(word) == words.last(),
+                Some((_, value)) => out.push(value.to_string()),
+                None => {}
+            }
+        }
+        let start = words
+            .iter()
+            .position(|w| !KEYWORDS.contains(&w.as_str()))
+            .unwrap_or(words.len());
+        let Some((first, rest)) = words[start..].split_first() else {
+            continue;
+        };
+        match bare_name(first).as_str() {
+            "for" | "select" => {
+                let listed = rest.iter().skip_while(|w| *w != "in").skip(1);
+                out.extend(listed.cloned());
+            }
+            "echo" | "printf" | "print" | "set" => {
+                out.extend(rest.iter().filter(|w| !w.starts_with('-')).cloned());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `ls`'s options that take a value.
+const LS_VALUES: &[&str] = &[
+    "-I",
+    "-w",
+    "-T",
+    "--ignore",
+    "--hide",
+    "--width",
+    "--tabsize",
+    "--format",
+    "--sort",
+    "--time",
+    "--time-style",
+    "--color",
+    "--block-size",
+    "--indicator-style",
+    "--quoting-style",
+];
 
 /// Programs that set variables from their words, which a substitution's
 /// output becomes: what it reads is loaded, not printed (`export $(grep -v
@@ -3739,6 +3944,37 @@ mod tests {
                 "find . -name '*.json' -exec rm {} +",
                 "would change config/credentials.json,",
             ),
+            // What `ls` lists, a variable holds, a program prints or the
+            // command gives as input.
+            ("ls -A | xargs cat", "would read .env,"),
+            ("cat $(ls -a | grep '^.env$')", "would read .env,"),
+            (
+                "ls config | xargs -I{} cat config/{}",
+                "would read config/credentials.json,",
+            ),
+            (
+                "f=config/master.key; cat \"$f\"",
+                "would read config/master.key,",
+            ),
+            (
+                "files=(.env README.md); for f in \"${files[@]}\"; do cat \"$f\"; done",
+                "would read .env,",
+            ),
+            ("echo .env | xargs cat", "would read .env,"),
+            (
+                "printf '%s\\n' config/master.key | xargs head",
+                "would read config/master.key,",
+            ),
+            ("xargs cat <<< .env", "would read .env,"),
+            // A search of them: a restricted file with a line it prints.
+            (
+                "find . -type f -exec grep -n API_KEY {} +",
+                "would search .env,",
+            ),
+            (
+                "find . -type f | xargs grep -n API_KEY",
+                "would search .env,",
+            ),
         ] {
             let refused = command_problem(command, &root, &none())
                 .unwrap_or_else(|| panic!("{command} should be refused"));
@@ -3758,6 +3994,18 @@ mod tests {
             "ls *.md | xargs wc -l",
             "git ls-files | xargs cat",
             "fd -e ts | xargs cat",
+            "ls | xargs cat",
+            // Patterns, scripts and messages that name a restricted file
+            // aren't files.
+            "grep -rl \"\\.env\" src | xargs grep -n \"dotenv\"",
+            "grep -l dotenv -r src | xargs sed -i \"s|config()|config({ path: '.env.local' })|\"",
+            "rg -l \"\\.env\" src | xargs sed -i 's/\\.env/.env.local/g'",
+            "for f in $(rg -l dotenv src); do sed -i \"s/'.env'/'.env.local'/\" \"$f\"; done",
+            "for f in src/*.ts; do echo \"$f\"; grep -n \"process.env\" \"$f\"; done",
+            "echo \"Moved the process.env reads\" && for f in src/*.ts; do cat \"$f\"; done",
+            // A search of them that prints no line of a restricted file.
+            "find . -type f -not -path './node_modules/*' -exec grep -Hn \"TODO\" {} +",
+            "find . -type f | xargs grep -n \"TODO\"",
         ] {
             assert_eq!(command_problem(command, &root, &none()), None, "{command}");
         }
