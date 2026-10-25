@@ -14,7 +14,7 @@ use rovik_core::agent_run::{
 use rovik_core::chat_request::ChatRequests;
 use rovik_core::Core;
 use rovik_protocol::connectors::{
-    ConnectorAuth, ConnectorCommand, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp,
+    ConnectorCommand, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp,
 };
 use rovik_protocol::Request;
 use std::sync::Arc;
@@ -269,25 +269,6 @@ pub async fn connector_probe(
     match host.filter(|h| !h.is_empty()) {
         Some(host) => answer(remote.host_call(&host, Request::ConnectorProbe(args)).await),
         None => call(&core, Request::ConnectorProbe(args)).await,
-    }
-}
-
-/// Whether a connector's program is signed in, here or on `host`, without
-/// a request: the app's start checks each connector a chat can pick.
-#[tauri::command]
-pub async fn connector_auth_status(
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
-    args: ProbeRequestArgs,
-    host: Option<String>,
-) -> Result<ConnectorAuth, String> {
-    match host.filter(|h| !h.is_empty()) {
-        Some(host) => answer(
-            remote
-                .host_call(&host, Request::ConnectorAuthStatus(args))
-                .await,
-        ),
-        None => call(&core, Request::ConnectorAuthStatus(args)).await,
     }
 }
 

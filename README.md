@@ -331,11 +331,16 @@ Connectors → Add connector**. Its page groups its settings:
 The models you enable show in the chat's model picker, marked as a
 connector's.
 
-When Rovik starts, it asks each connector a chat can pick whether it's
-signed in (`claude auth status`, which costs nothing), and warns about any
-that isn't, or whose program isn't installed, with a way to its settings.
-The connector rows show what the last check found, and **Check sign-in**
-asks again. The check trusts a token Claude Code has; one that expired or
+When Rovik starts, it checks each connector on this computer with a test
+that makes no request, so it costs no tokens: whether its program is
+installed (its version), whether it's signed in (`claude auth status`), and
+whether a newer version is published. It warns about any connector a chat
+can pick that isn't signed in, or whose program isn't installed, with a way
+to its settings. The connector rows show what the last check found as
+Settings → Connectors opens, and the page checks each again meanwhile;
+**Check status** asks again. A connector's page shows the same at once and
+tests again, also with no request, as it opens and when you pick another
+**Computer**. The check trusts a token Claude Code has; one that expired or
 was revoked shows as the chat's error at its first message.
 
 **Set up** (on a connector's page, or on its row when it can't run) does
@@ -348,6 +353,9 @@ Rovik opens the sign-in page in your browser and you paste the code it
 shows. **Sign out** signs the program out. A test also finds out whether
 a newer version is published (Anthropic's release channel, `latest`), and
 **Update to …** then runs the program's own updater (`claude update`).
+When the check as Rovik starts finds a newer version on this computer, a
+notification offers it too, once per version: **Update** runs the same
+updater, checks the program again and says how it went.
 
 A chat on a connector's model hands the harness the task: the model, the
 effort and the message, in the project folder. The harness keeps its own

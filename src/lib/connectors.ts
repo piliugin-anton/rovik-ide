@@ -189,7 +189,7 @@ export function connectorArgs(p: Provider, request = false): ConnectorArgs {
 
 /**
  * Calls one of the core's connector commands on the connector `p`, here or
- * on `host` (a cloud host's id): `connector_probe`, `connector_auth_status`.
+ * on `host` (a cloud host's id): `connector_probe`.
  */
 export async function connectorCall<T>(
   command: string,
@@ -239,7 +239,7 @@ export function probeSummary(probe: ConnectorProbe): string {
 /**
  * One line for the Settings menu: how many connectors and models there
  * are, and how many of them can't run now (signed out, not installed), as
- * their last sign-in check found.
+ * their last check found.
  */
 export function connectorsSummary(
   providers: Provider[],
@@ -254,14 +254,16 @@ export function connectorsSummary(
 }
 
 /*
- * Sign-in: whether each connector's program is signed in on this computer
- * (`claude auth status`, which costs nothing), checked once as a window
- * starts for the connectors a chat can pick, again when one is saved or
- * tested, and on demand. The program's own check: a token it has counts
- * until a request says it expired, which the chat then shows as its error.
+ * Status: whether each connector's program is installed on this computer
+ * (its version), signed in (`claude auth status`) and the newest version
+ * its makers publish, as a test that makes no request finds them, so for
+ * no tokens. Checked once as a window starts, again as Settings →
+ * Connectors opens, when one is saved or tested here, and on demand. The
+ * program's own sign-in check: a token it has counts until a request says
+ * it expired, which the chat then shows as its error.
  */
 
-/** What `connector_auth_status` answers (rovik_protocol::connectors). */
+/** Whether the program is signed in, as it says (rovik_protocol::connectors). */
 export interface ConnectorAuth {
   loggedIn: boolean;
   method?: string | null;
@@ -269,16 +271,23 @@ export interface ConnectorAuth {
   detail?: string | null;
 }
 
-export type AuthState =
-  | { state: 'checking' }
+/** What a check found: signed in or out, or that it couldn't say (and why). */
+export type CheckedState = (
   | { state: 'signedIn'; auth: ConnectorAuth }
   | { state: 'signedOut'; auth: ConnectorAuth }
   /** It couldn't say: the program is missing, or too old, or didn't answer. */
-  | { state: 'unknown'; message: string; missing: boolean };
+  | { state: 'unknown'; message: string; missing: boolean }
+) & {
+  /** The test that found it, when the program answered: its version, and a newer one published. */
+  probe?: ConnectorProbe;
+};
+
+/** What the last check found, or that one runs (what the last found stays shown meanwhile). */
+export type AuthState = { state: 'checking'; last?: CheckedState } | CheckedState;
 
 const [authStates, setAuthStates] = createSignal<Record<string, AuthState>>({});
 
-/** The last sign-in check of a connector, by its id; none before one. */
+/** The last check of a connector on this computer, by its id; none before one. */
 export function connectorAuthState(id: string): AuthState | undefined {
   return authStates()[id];
 }
@@ -287,22 +296,36 @@ export function setConnectorAuthState(id: string, state: AuthState): void {
   setAuthStates((all) => ({ ...all, [id]: state }));
 }
 
+/** What the last check found, also while another runs; none before one has. */
+export function lastFound(state: AuthState | undefined): CheckedState | undefined {
+  return state?.state === 'checking' ? state.last : state;
+}
+
 /** A state a chat on the connector would fail in. */
 export function cantRun(state: AuthState | undefined): boolean {
-  return state?.state === 'signedOut' || (state?.state === 'unknown' && state.missing);
+  const found = lastFound(state);
+  return found?.state === 'signedOut' || (found?.state === 'unknown' && found.missing);
 }
 
-/** Asks the program whether it's signed in, here or on `host`. */
-export function connectorAuthStatus(p: Provider, host?: string | null): Promise<ConnectorAuth> {
-  return connectorCall<ConnectorAuth>('connector_auth_status', p, host);
-}
+/** The test that makes no request, so costs no tokens, on this computer. */
+export const probeHere = (p: Provider): Promise<ConnectorProbe> => probeConnector(p, false);
 
-/** An answer, or a failure to get one, as a state. */
-export function authStateOf(result: { auth: ConnectorAuth } | { error: unknown }): AuthState {
-  if ('auth' in result) {
-    return result.auth.loggedIn
-      ? { state: 'signedIn', auth: result.auth }
-      : { state: 'signedOut', auth: result.auth };
+/** A test's answer, or a failure to get one, as a state. */
+export function authStateOf(result: { probe: ConnectorProbe } | { error: unknown }): CheckedState {
+  if ('probe' in result) {
+    // The state is what's installed and signed in: a request the test made
+    // isn't part of it.
+    const probe = { ...result.probe, request: null };
+    const { auth } = probe;
+    if (!auth) {
+      return {
+        state: 'unknown',
+        message: "it didn't say whether it's signed in.",
+        missing: false,
+        probe,
+      };
+    }
+    return auth.loggedIn ? { state: 'signedIn', auth, probe } : { state: 'signedOut', auth, probe };
   }
   const message = errorText(result.error);
   return { state: 'unknown', message, missing: isMissingProgram(message) };
@@ -318,14 +341,17 @@ export function isMissingProgram(message: string): boolean {
   return /isn't installed|no such program/i.test(message);
 }
 
-/** Checks one connector on this computer, and keeps what it found. */
-export async function checkConnectorAuth(
+/**
+ * Checks one connector on this computer with a test that makes no
+ * request, and keeps what it found; the last check's stays shown meanwhile.
+ */
+export async function checkConnector(
   p: Provider,
-  check: (p: Provider) => Promise<ConnectorAuth> = connectorAuthStatus
-): Promise<AuthState> {
-  setConnectorAuthState(p.id, { state: 'checking' });
-  const state = await check(p).then(
-    (auth) => authStateOf({ auth }),
+  probe: (p: Provider) => Promise<ConnectorProbe> = probeHere
+): Promise<CheckedState> {
+  setConnectorAuthState(p.id, { state: 'checking', last: lastFound(connectorAuthState(p.id)) });
+  const state = await probe(p).then(
+    (probe) => authStateOf({ probe }),
     (error) => authStateOf({ error })
   );
   setConnectorAuthState(p.id, state);
@@ -342,23 +368,30 @@ const METHODS: Record<string, string> = {
 
 /** "Signed in (claude.ai login)", "Not signed in: …", for a row or a form. */
 export function authLine(state: AuthState | undefined): { text: string; warning: boolean } | null {
-  if (!state) return null;
-  switch (state.state) {
-    case 'checking':
-      return { text: 'Checking sign-in…', warning: false };
+  const found = lastFound(state);
+  if (!found) return state ? { text: 'Checking sign-in…', warning: false } : null;
+  switch (found.state) {
     case 'signedIn': {
-      const how = state.auth.method ? (METHODS[state.auth.method] ?? state.auth.method) : '';
-      const text = `Signed in${how ? ` (${how})` : ''}${state.auth.detail ? `. ${state.auth.detail}` : ''}`;
+      const how = found.auth.method ? (METHODS[found.auth.method] ?? found.auth.method) : '';
+      const text = `Signed in${how ? ` (${how})` : ''}${found.auth.detail ? `. ${found.auth.detail}` : ''}`;
       return { text, warning: false };
     }
     case 'signedOut':
-      return { text: state.auth.detail || 'Not signed in.', warning: true };
+      return { text: found.auth.detail || 'Not signed in.', warning: true };
     case 'unknown':
       return {
-        text: state.missing ? state.message : `Sign-in unknown: ${state.message}`,
-        warning: state.missing,
+        text: found.missing ? found.message : `Sign-in unknown: ${found.message}`,
+        warning: found.missing,
       };
   }
+}
+
+/** "Installed: 2.1.310 (Claude Code) · 2.2.0 is available", for a row; none before a test answered. */
+export function versionLine(state: AuthState | undefined): string | null {
+  const probe = lastFound(state)?.probe;
+  if (!probe) return null;
+  const installed = `Installed: ${probe.version || probe.program}`;
+  return probe.update ? `${installed} · ${probe.update} is available` : installed;
 }
 
 /** The connectors a chat can pick: those with an enabled model. */
@@ -378,28 +411,29 @@ export function resetStartCheck(): void {
 export const CONNECTOR_AUTH_NOTE = 'connector-auth';
 
 /**
- * As a window starts: checks each connector a chat can pick, once, and
- * says which can't run (signed out, or the program missing), with a way
- * to Settings → Connectors. Checks that can't say (an old version) are
- * left for the settings page. Chats on a cloud host run its own
- * installation: the page checks a host when asked.
+ * As a window starts: checks each connector, once, so Settings shows what
+ * it found as it opens, and says which a chat can pick can't run (signed
+ * out, or the program missing), with a way to Settings → Connectors.
+ * Checks that can't say (an old version) are left for the settings page.
+ * Chats on a cloud host run its own installation: the page checks a host
+ * when asked.
  */
 export async function checkConnectorsOnStart(
   providers: Provider[],
   openConnectors: () => void,
-  check: (p: Provider) => Promise<ConnectorAuth> = connectorAuthStatus
-): Promise<Record<string, AuthState>> {
+  probe: (p: Provider) => Promise<ConnectorProbe> = probeHere
+): Promise<Record<string, CheckedState>> {
   if (checkedAtStart) return {};
-  const connectors = usableConnectors(providers);
+  const connectors = splitSources(providers).connectors;
   if (connectors.length === 0) return {};
   checkedAtStart = true;
-  const found: Record<string, AuthState> = {};
+  const found: Record<string, CheckedState> = {};
   await Promise.all(
     connectors.map(async (c) => {
-      found[c.id] = await checkConnectorAuth(c, check);
+      found[c.id] = await checkConnector(c, probe);
     })
   );
-  const bad = connectors.filter((c) => cantRun(found[c.id]));
+  const bad = usableConnectors(providers).filter((c) => cantRun(found[c.id]));
   if (bad.length > 0) {
     const reason = (c: Provider) => {
       const state = found[c.id];
