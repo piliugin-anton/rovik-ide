@@ -3062,17 +3062,20 @@ fn is_slash_option(word: &str) -> bool {
         && matches!(chars.next(), None | Some(':'))
 }
 
-/// Words that open or go on with a shell's compound commands, before the
-/// command they run: `if`, `then`, `do`, `{`, `!`…
-/// A segment's words past its shell keywords and the wrappers that only
-/// run the rest (`then sudo cat .env` runs `cat .env`), and whether one of
-/// those is `xargs`, which gives the rest its input's words too.
+/// A segment's words past the shell's own words before its command (its
+/// keywords, a function's head, a `case`'s: [`syntax`]) and the wrappers
+/// that only run the rest (`then sudo cat .env` runs `cat .env`), and
+/// whether one of those is `xargs`, which gives the rest its input's words
+/// too.
 fn past_keywords(segment: &[String]) -> (&[String], bool) {
     let mut rest = segment;
     loop {
         let before = rest.len();
-        while rest.first().is_some_and(|w| KEYWORDS.contains(&w.as_str())) {
-            rest = &rest[1..];
+        loop {
+            match syntax(rest) {
+                0 => break,
+                n => rest = &rest[n.min(rest.len())..],
+            }
         }
         rest = permissions::unwrap_wrappers(rest);
         if rest.len() == before {
@@ -3084,6 +3087,26 @@ fn past_keywords(segment: &[String]) -> (&[String], bool) {
         .iter()
         .any(|w| permissions::program_name(w) == "xargs");
     (rest, xargs)
+}
+
+/// How many of `words` are the shell's own before a command: a keyword
+/// (`then`, `do`, `{`), a function's head (`f()`, `function f`), a
+/// `case`'s (`case $x in`) or a branch's pattern (`*.ts)`).
+fn syntax(words: &[String]) -> usize {
+    let Some(first) = words.first() else {
+        return 0;
+    };
+    match first.as_str() {
+        word if KEYWORDS.contains(&word) || word.ends_with("()") => 1,
+        "function" if words.get(2).is_some_and(|w| w == "()") => 3,
+        "function" => 2,
+        "case" => words
+            .iter()
+            .position(|w| w == "in")
+            .map_or(words.len(), |at| at + 1),
+        word if word.ends_with(')') && !word.starts_with(['(', '$']) => 1,
+        _ => 0,
+    }
 }
 
 /// The script `eval` runs: its words, joined as it joins them. Not the
@@ -3309,6 +3332,8 @@ fn substitutions(command: &str) -> Vec<Inner> {
     // The simple command being read: its first word, the word being read,
     // and how many it has had.
     let (mut first, mut word, mut words) = (String::new(), String::new(), 0);
+    // Every word of the simple command so far is a keyword (`if`, `!`).
+    let mut keywords = true;
     let mut i = 0;
     while i < chars.len() {
         if let Some(doc) = docs.iter().find(|d| d.body.start == i && !d.script) {
@@ -3343,7 +3368,7 @@ fn substitutions(command: &str) -> Vec<Inner> {
             ('$', Some('('), _) => (chars.get(i + 2) != Some(&'(')).then_some(i + 2),
             ('<' | '>', Some('('), None) => Some(i + 2),
             ('`', _, _) => Some(i + 1),
-            ('(', _, None) if word.is_empty() && words == 0 => Some(i + 1),
+            ('(', _, None) if word.is_empty() && keywords => Some(i + 1),
             _ => None,
         };
         if let Some(start) = opens {
@@ -3380,9 +3405,11 @@ fn substitutions(command: &str) -> Vec<Inner> {
                 first.clear();
                 word.clear();
                 words = 0;
+                keywords = true;
             }
             (c, None) if c.is_whitespace() => {
                 if !word.is_empty() {
+                    keywords &= KEYWORDS.contains(&word.as_str());
                     if words == 0 {
                         first = std::mem::take(&mut word);
                     }
@@ -4254,6 +4281,32 @@ mod tests {
         let a = Args::split(&words, &[], true);
         assert!(a.has(&["/s"]) && a.has(&["/c"]));
         assert_eq!(a.words, ["*.env", "/etc/x"]);
+    }
+
+    #[test]
+    fn a_command_in_a_function_a_case_or_a_subshell_after_a_keyword_is_judged() {
+        let (_dir, root) = project(&[]);
+        for command in [
+            "f() { cat .env; }; f",
+            "function show { cat .env; }; show",
+            "function show() { cat .env; }",
+            "case x in x) cat .env;; esac",
+            "case \"$1\" in *.ts) echo ts;; *) cat .env;; esac",
+            "if (cat .env); then :; fi",
+            "! (cat .env)",
+            "while (cat .env); do break; done",
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains("would read .env,"), "{command}: {refused}");
+        }
+        for command in [
+            "f() { cat README.md; }; f",
+            "case x in x) cat README.md;; esac",
+            "if (cd src && ls); then echo ok; fi",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
     }
 
     #[test]
