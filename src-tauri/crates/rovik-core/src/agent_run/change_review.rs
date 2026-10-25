@@ -1181,7 +1181,10 @@ impl Run {
             },
             false => Rounds::Count,
         };
-        let mut note = new_message("user", &findings_note_in(&serious, round, last, rounds));
+        let mut note = new_message(
+            "user",
+            &findings_note_in(&serious, round, last, rounds),
+        );
         note.meta = Some(json!({ "harness": "review" }));
         self.review_note_id = Some(note.id.clone());
         // Findings asked about again were kept when first found.

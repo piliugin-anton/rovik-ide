@@ -1682,19 +1682,13 @@ mod tests {
         let s = submit_plan_schema();
         let p = &s["function"]["parameters"];
         assert_eq!(p["required"], json!([]));
-        assert_eq!(
-            p["properties"]["edits"]["items"]["required"],
-            json!(["old_text", "new_text"])
-        );
+        assert_eq!(p["properties"]["edits"]["items"]["required"], json!(["old_text", "new_text"]));
         assert_eq!(
             p["properties"]["responses"]["items"]["required"],
             json!(["finding", "action", "note"])
         );
         let d = s["function"]["description"].as_str().unwrap();
-        assert!(
-            d.contains("send `edits`")
-                && !d.contains("a revision passes the complete revised plan")
-        );
+        assert!(d.contains("send `edits`") && !d.contains("a revision passes the complete revised plan"));
     }
 
     #[test]
@@ -2579,4 +2573,5 @@ a.rs (3 matches)
             assert_eq!(command_end(other), None, "{other}");
         }
     }
+
 }

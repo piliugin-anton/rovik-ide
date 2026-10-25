@@ -1343,7 +1343,7 @@ impl Run {
                     turn_meta(turn.reasoning, turn.connector),
                     &error,
                 )
-                .await?;
+                    .await?;
                 if !turn.text.trim().is_empty() {
                     last_text = turn.text.clone();
                 }
@@ -1621,7 +1621,7 @@ impl Run {
                 turn_meta(turn.reasoning.clone(), turn.connector.clone()),
                 error,
             )
-            .await?;
+                .await?;
             return Ok(turn.text);
         }
         let text = text_before_cut(&turn.text, turn.repetition_cut).to_string();
