@@ -579,7 +579,9 @@ impl Remote {
     }
 
     /// The flip (step 6), here and in the database, and the chat's overlay
-    /// here gone: its changes are its worktree's on the host.
+    /// here gone: its changes are its worktree's on the host. What its
+    /// agent left running here (a dev server) stops: the chat runs there
+    /// from now on, isolated or not.
     async fn flip(&self, dialog_id: &str, host: &str, rev: i64) -> Result<(), Fail> {
         let (chat, on) = (dialog_id.to_string(), host.to_string());
         let flipped = self.core.db.write(move |c| {
@@ -597,6 +599,7 @@ impl Remote {
         }
         let chat = dialog_id.to_string();
         let discarded = rt::spawn_blocking(move || {
+            rovik_core::command_tool::background::stop_chat(&chat);
             if chats::exists(&chat) {
                 chats::discard(&chat)
             } else {

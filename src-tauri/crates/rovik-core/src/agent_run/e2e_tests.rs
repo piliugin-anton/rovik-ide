@@ -36,6 +36,11 @@ mod steer_tests;
 #[path = "connector_e2e_tests.rs"]
 mod connector_tests;
 
+// Their server is a shell loop.
+#[cfg(all(test, unix))]
+#[path = "background_e2e_tests.rs"]
+mod background_tests;
+
 /*
  * The operations, as the app and the daemon call them: through `dispatch`.
  * These stand in for agent_run's functions of the same names, so every

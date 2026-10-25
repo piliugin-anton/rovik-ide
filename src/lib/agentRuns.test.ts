@@ -18,6 +18,7 @@ import {
 import { agentChangesFor, recordAgentEdit } from './agentChanges';
 import { onFileDeleted, onFileWritten, pendingApproval } from './approvals';
 import { chatStore } from './chatStore';
+import { backgroundTasksOf } from './backgroundTasks';
 import { liveChecklist } from './checklist';
 import { liveClmStatus } from './contextMode';
 import { notifications } from './notifications';
@@ -284,6 +285,7 @@ test("the backend's events, as the shared fixtures have them, reach their stores
       ),
     questionsSettled: (e) => assert.equal(pendingQuestions(e.dialogId, e.toolCallId), undefined),
     checklist: (e) => assert.deepEqual(liveChecklist(e.dialogId), e.items),
+    backgroundTasks: (e) => assert.deepEqual(backgroundTasksOf(e.dialogId), e.tasks),
     contextUpdated: (e) => assert.deepEqual(liveClmStatus(e.dialogId), e.status),
     subagentStarted: (e) =>
       assert.equal(liveSubagent(e.dialogId, e.toolCallId)?.childDialogId, e.childDialogId),

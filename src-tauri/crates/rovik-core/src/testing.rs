@@ -392,6 +392,31 @@ pub fn temp_dir() -> TempDir {
     TempDir(dir)
 }
 
+/*
+ * A command that runs until it's stopped
+ */
+
+/// A POSIX shell command that prints `first`, then leaves a loop running in
+/// the background of its shell that adds a line to `beat` in its folder
+/// every 50 ms until it's killed: a server, say, whose life shows from
+/// outside any sandbox (a pid in bubblewrap's namespace isn't the test's).
+pub fn beating(first: &str) -> String {
+    format!("echo {first}; while :; do echo . >> beat; sleep 0.05; done & wait")
+}
+
+/// Whether the loop of [`beating`] in `dir` still runs: its file grows
+/// within 400 ms, which this waits out.
+pub fn beats(dir: &std::path::Path) -> bool {
+    let size = || {
+        std::fs::metadata(dir.join("beat"))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    };
+    let before = size();
+    std::thread::sleep(Duration::from_millis(400));
+    size() > before
+}
+
 /// Keeps every event, as the JSON the frontend gets.
 pub struct Recorder(pub Arc<Mutex<Vec<Value>>>);
 

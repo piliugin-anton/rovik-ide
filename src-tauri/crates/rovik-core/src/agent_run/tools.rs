@@ -232,6 +232,54 @@ fn run_command_schema(permissions: &Permissions) -> Value {
     })
 }
 
+/// What the lead's bash says of leaving a command running.
+const BASH_BACKGROUND: &str = " Don't leave a server or watcher running with `&`: depending on \
+     the sandbox, it ends with the command, holds the call until its timeout, or is left behind \
+     untracked. For one that runs until stopped (`npm run dev`, a file watcher), set background: \
+     true: the call returns once it has started, with its id and first output, and it keeps \
+     running until you stop it with the background tool.";
+
+/// Offers the lead what leaves a command running: bash's `background`, and
+/// the tool that lists, reads and stops such commands. Only with bash, and
+/// never to a subagent, whose commands end with its work.
+pub(super) fn offer_background(tools: &mut Vec<Value>) {
+    let Some(bash) = tools.iter_mut().find(|t| tool_name(t) == "bash") else {
+        return;
+    };
+    if let Some(Value::String(description)) = bash.pointer_mut("/function/description") {
+        description.push_str(BASH_BACKGROUND);
+    }
+    if let Some(Value::Object(properties)) = bash.pointer_mut("/function/parameters/properties") {
+        properties.insert(
+            "background".into(),
+            json!({
+                "type": "boolean",
+                "description": "Leave it running, and return once it has started: for a dev server or a watcher. timeout_seconds doesn't apply."
+            }),
+        );
+    }
+    tools.push(background_schema());
+}
+
+/// The commands bash left running (command_tool/background.rs).
+fn background_schema() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "background",
+            "description": "The commands you started with bash's background: true (dev servers, watchers). \"list\": each one, running or ended; \"output\": what one printed since you last read it, and whether it still runs; \"stop\": stop one, with everything it started. They run on after your turn (a server the user is looking at should) until stopped, the chat is deleted or moved, or the app exits; an isolated chat's changes don't land while one runs. Stop those no longer needed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["list", "output", "stop"] },
+                    "id": { "type": "string", "description": "The command's id, from bash's answer or the list, e.g. \"bg1\" (output, stop)." }
+                },
+                "required": ["action"]
+            }
+        }
+    })
+}
+
 /// Plan mode's question tool.
 fn ask_user_schema() -> Value {
     json!({
@@ -806,6 +854,10 @@ pub struct CallContext {
     /// A note on the call while it runs ("Waiting for a CPU slot: …");
     /// `None` clears it.
     pub note: Arc<dyn Fn(Option<String>) + Send + Sync>,
+    /// The chat whose commands the call may leave running in the
+    /// background (bash's `background`, the background tool): the lead's
+    /// own. None for a subagent, whose commands end with its work.
+    pub background_chat: Option<String>,
 }
 
 /// Runs one tool call. Never fails: problems come back as an "Error: ..."
@@ -1050,6 +1102,12 @@ async fn run(
             let timeout = num(args, "timeout_seconds")
                 .filter(|s| *s > 0.0)
                 .map(|s| (s * 1000.0) as u64);
+            // Left running for the lead's chat; a subagent isn't offered it.
+            let background = match (flag(args, "background"), &ctx.background_chat) {
+                (false, _) => None,
+                (true, Some(chat)) => Some(chat.clone()),
+                (true, None) => return Ok(ToolResult::text(SUBAGENT_BACKGROUND)),
+            };
             let stop = stop.clone();
             if let Some(problem) =
                 copy_command_problem(&ctx.owner, core.agents.on_server(), command)
@@ -1088,48 +1146,73 @@ async fn run(
                 .map(|done| format!("Before it ran: {done}"))
                 .into_iter()
                 .collect();
-            let mut out = run_agent_command(&root_owned, command, timeout, &stop, ctx).await?;
-            if !out.stopped && !out.timed_out && out.exit_code != Some(0) {
-                let after =
-                    super::environment::after(&ready, command, out.exit_code, &out.text()).await;
-                match after.done_sentence() {
-                    Some(done) if super::environment::runs_one_program(command) => {
-                        out = run_agent_command(&root_owned, command, timeout, &stop, ctx).await?;
-                        notes.push(format!(
-                            "Its first run failed: {done} It ran again, as above."
-                        ));
-                        notes.extend(after.missing);
-                    }
-                    _ => notes.extend(after.note()),
+            let (mut content, printed) = match background {
+                Some(chat) => {
+                    let started =
+                        start_agent_command(core, &chat, &root_owned, command, &stop, ctx).await?;
+                    let printed = started.output.clone();
+                    (format_background(&started), printed)
                 }
-            }
-            let mut content = format_command_output(command, &out);
+                None => {
+                    let mut out =
+                        run_agent_command(&root_owned, command, timeout, &stop, ctx).await?;
+                    if !out.stopped && !out.timed_out && out.exit_code != Some(0) {
+                        let after =
+                            super::environment::after(&ready, command, out.exit_code, &out.text())
+                                .await;
+                        match after.done_sentence() {
+                            Some(done) if super::environment::runs_one_program(command) => {
+                                out = run_agent_command(&root_owned, command, timeout, &stop, ctx)
+                                    .await?;
+                                notes.push(format!(
+                                    "Its first run failed: {done} It ran again, as above."
+                                ));
+                                notes.extend(after.missing);
+                            }
+                            _ => notes.extend(after.note()),
+                        }
+                    }
+                    let ends = crate::overlay::confine::hides_processes();
+                    let lead = ctx.background_chat.is_some();
+                    notes.extend(ended_with_it(command, &out, ends, lead));
+                    (format_command_output(command, &out), out.text())
+                }
+            };
             for note in notes {
                 content.push_str(&format!("\n({note})"));
             }
-            // On a team server, a port the command had trouble with in the
-            // user's private network: who holds it, or why nothing answers.
-            #[cfg(target_os = "linux")]
-            if let Some(network) = crate::overlay::confine::network::current() {
-                let text = out.text();
-                if super::ports::troubled(&text) {
-                    let listening = crate::rt::spawn_blocking(move || network.listening())
-                        .await
-                        .unwrap_or_default();
-                    let ends = crate::overlay::confine::hides_processes();
-                    // A port one of the project's services publishes was
-                    // explained with the service, after the command failed.
-                    let root = std::path::PathBuf::from(&root_owned);
-                    let services =
-                        crate::rt::spawn_blocking(move || crate::services::published_ports(&root))
-                            .await
-                            .unwrap_or_default();
-                    if let Some(note) = super::ports::note(&text, &listening, ends, &services) {
-                        content.push_str(&note);
-                    }
-                }
+            if let Some(note) = port_note(&printed, &root_owned).await {
+                content.push_str(&note);
             }
             content
+        }
+        "background" => {
+            use crate::command_tool::background;
+            let Some(chat) = ctx.background_chat.clone() else {
+                return Ok(ToolResult::text(SUBAGENT_BACKGROUND));
+            };
+            let action = text(args, "action").unwrap_or_default();
+            let id = text(args, "id").unwrap_or_default().to_string();
+            match action {
+                "list" => format_background_list(&background::list(&chat)),
+                "output" | "stop" if id.trim().is_empty() => {
+                    return Ok(ToolResult::text(format!(
+                        "Error: \"id\" is required to {action} a command."
+                    )))
+                }
+                "output" => format_background(&background::output(&chat, &id)?),
+                // It waits until what it killed is gone.
+                "stop" => format_background(
+                    &crate::rt::spawn_blocking(move || background::stop(&chat, &id))
+                        .await
+                        .map_err(|e| e.to_string())??,
+                ),
+                _ => {
+                    return Ok(ToolResult::text(
+                        "Error: \"action\" is list, output or stop.",
+                    ))
+                }
+            }
         }
         "list_dir" => {
             let path = text(args, "path").map(str::to_string);
@@ -1274,9 +1357,20 @@ async fn run(
     Ok(ToolResult::text(content))
 }
 
+/// The agent's command for the chat of `ctx`, as the queue for heavy work
+/// takes it (src/workload): in the chat's view when it's isolated, its
+/// wait for a CPU slot noted on the call.
+fn agent_queued(ctx: &CallContext) -> crate::command_tool::Queued {
+    let note = ctx.note.clone();
+    let agent = crate::workload::JobKind::Agent {
+        owner: ctx.owner.clone(),
+    };
+    let overlay = crate::overlay::chats::get(&ctx.owner);
+    crate::command_tool::Queued::of(agent, overlay.as_deref()).noting(move |n| note(n))
+}
+
 /// One run of the agent's `command` in `root`, for the chat of `ctx`: as
-/// the agent's heavy work (src/workload), its wait for a CPU slot noted on
-/// the call, killed by Stop.
+/// the agent's heavy work, killed by Stop.
 async fn run_agent_command(
     root: &str,
     command: &str,
@@ -1284,22 +1378,175 @@ async fn run_agent_command(
     stop: &Arc<StopSignal>,
     ctx: &CallContext,
 ) -> Result<CommandOutput, String> {
-    let note = ctx.note.clone();
-    let agent = crate::workload::JobKind::Agent {
-        owner: ctx.owner.clone(),
-    };
-    let overlay = crate::overlay::chats::get(&ctx.owner);
-    let queued =
-        crate::command_tool::Queued::of(agent, overlay.as_deref()).noting(move |n| note(n));
     let stop = stop.clone();
     crate::command_tool::run_command(
         root.to_string(),
         command.into(),
         timeout,
         move || stop.is_set(),
-        Some(queued),
+        Some(agent_queued(ctx)),
     )
     .await
+}
+
+/// What a subagent hears when it asks to leave a command running.
+const SUBAGENT_BACKGROUND: &str = "Error: a subagent's commands end with its work, so none is \
+     left running in the background. Run it the usual way, and say in your report what should \
+     run on.";
+
+/// Starts the agent's `command` in `root` and leaves it running for `chat`
+/// (command_tool/background.rs), as `run_agent_command` runs one: how it
+/// started. Stop ends its wait for a CPU slot, not the command. The chat's
+/// windows hear what it has running as that changes.
+async fn start_agent_command(
+    core: &Core,
+    chat: &str,
+    root: &str,
+    command: &str,
+    stop: &Arc<StopSignal>,
+    ctx: &CallContext,
+) -> Result<crate::command_tool::background::Report, String> {
+    use crate::command_tool::background;
+    let queued = agent_queued(ctx);
+    let told: background::Told = {
+        let (core, chat) = (core.clone(), chat.to_string());
+        Arc::new(move || {
+            core.emit(super::events::AgentEvent::BackgroundTasks {
+                dialog_id: chat.clone(),
+                tasks: background::tasks(&chat),
+            })
+        })
+    };
+    let (chat, root, command, stop) = (
+        chat.to_string(),
+        root.to_string(),
+        command.to_string(),
+        stop.clone(),
+    );
+    crate::rt::spawn_blocking(move || {
+        background::start(&chat, &root, &command, &|| stop.is_set(), queued, told)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// What the agent is told of a command that ended after it left something
+/// running with `&`: where what a command leaves running ends with it
+/// (`ends_with_command`: bubblewrap's sandbox), that ended too, however
+/// well the command's own test of it went. The `lead`, who can leave a
+/// command running, is told how.
+fn ended_with_it(
+    command: &str,
+    out: &CommandOutput,
+    ends_with_command: bool,
+    lead: bool,
+) -> Option<String> {
+    let ended = !out.stopped && !out.timed_out;
+    let backgrounds = super::permissions::parse_command(command).backgrounds;
+    if !(ended && backgrounds && ends_with_command) {
+        return None;
+    }
+    let how = match lead {
+        true => " To leave a server or watcher running, run it with background: true.",
+        false => "",
+    };
+    Some(format!(
+        "What it started in the background with `&` ended with it: nothing a command starts \
+         outlives it here.{how}"
+    ))
+}
+
+/// On a team server, what's in the user's private network of a port that
+/// the command's output (`printed`) shows trouble with: who holds it, or
+/// why nothing answers.
+async fn port_note(printed: &str, root: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let network = crate::overlay::confine::network::current()?;
+        if !super::ports::troubled(printed) {
+            return None;
+        }
+        let listening = crate::rt::spawn_blocking(move || network.listening())
+            .await
+            .unwrap_or_default();
+        let ends = crate::overlay::confine::hides_processes();
+        // A port one of the project's services publishes was explained
+        // with the service, after the command failed.
+        let root = std::path::PathBuf::from(root);
+        let services = crate::rt::spawn_blocking(move || crate::services::published_ports(&root))
+            .await
+            .unwrap_or_default();
+        super::ports::note(printed, &listening, ends, &services)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (printed, root);
+        None
+    }
+}
+
+/// How a command left running starts its status line, before its id.
+const RUNNING_AS: &str = "running in the background as ";
+
+/// The text the model sees for a command left running: as a finished
+/// command's (`format_command_output`), its status on the second line (still
+/// running, or how it ended), then what it printed since the agent last
+/// read it, and how to go on with it while it runs.
+pub fn format_background(report: &crate::command_tool::background::Report) -> String {
+    use crate::command_tool::background::End;
+    let status = &report.status;
+    let ran = status.ran.as_secs_f64();
+    let state = match status.end {
+        None => format!("{RUNNING_AS}{}, {ran:.1} s", status.id),
+        Some(End::Exited(Some(code))) => format!("exit code {code}, {ran:.1} s"),
+        Some(End::Exited(None)) => format!("ended by a signal, {ran:.1} s"),
+        Some(End::Stopped) => format!("stopped (killed), {ran:.1} s"),
+    };
+    let mut parts = vec![format!("$ {}", status.command), state];
+    if report.dropped > 0 {
+        parts.push(format!(
+            "[… {} bytes of its output weren't kept …]",
+            report.dropped
+        ));
+    }
+    let printed = clean_output(&report.output).trim_end().to_string();
+    parts.push(match printed.is_empty() {
+        true => "(no new output)".to_string(),
+        false => cap_output(&printed, 200, 200, 24_000),
+    });
+    if status.end.is_none() {
+        let id = &status.id;
+        parts.push(format!(
+            "(It keeps running. Read what it prints with background {{\"action\": \"output\", \
+             \"id\": \"{id}\"}}; stop it with {{\"action\": \"stop\", \"id\": \"{id}\"}}.)"
+        ));
+    }
+    parts.join("\n")
+}
+
+/// The background tool's list: each of the chat's commands left running,
+/// with its id and how long it has run, or how it ended.
+fn format_background_list(listed: &[crate::command_tool::background::Status]) -> String {
+    use crate::command_tool::background::End;
+    if listed.is_empty() {
+        return "No command runs in the background.".into();
+    }
+    listed
+        .iter()
+        .map(|s| {
+            let ran = s.ran.as_secs();
+            let state = match s.end {
+                None => format!("running for {ran} s"),
+                Some(End::Exited(Some(code))) => {
+                    format!("ended with exit code {code} after {ran} s")
+                }
+                Some(End::Exited(None)) => format!("ended by a signal after {ran} s"),
+                Some(End::Stopped) => format!("stopped after {ran} s"),
+            };
+            format!("{}: `{}`, {state}", s.id, s.command)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The text the model sees for a finished command.
@@ -1581,22 +1828,9 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
                 .filter(|l| NUMBERED_HIT.is_match(l))
                 .count()),
         ),
-        "bash" => {
-            let line = result.split('\n').nth(1).unwrap_or("");
-            let code = EXIT_CODE
-                .captures(line)
-                .and_then(|c| c[1].parse::<i64>().ok());
-            let mut meta = Map::new();
-            meta.insert("exitCode".into(), json!(code));
-            if let Some(waited) = result
-                .split('\n')
-                .nth(2)
-                .filter(|l| l.starts_with("Waited "))
-            {
-                meta.insert("waited".into(), json!(waited.trim_end_matches('.')));
-            }
-            Some(meta)
-        }
+        "bash" => Some(command_meta(result)),
+        // A command it read or stopped; its list has no meta.
+        "background" if result.starts_with("$ ") => Some(command_meta(result)),
         // A whole-file write: the lines it added and removed (agent_tools::write_file).
         "write" => WRITE_CHANGES.captures(result).map(|c| {
             let mut meta = Map::new();
@@ -1616,6 +1850,31 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
         }
         _ => None,
     }
+}
+
+/// A command's result (`format_command_output`, `format_background`), as
+/// its tool block reads it: its exit code (null when it didn't exit on its
+/// own, or still runs), its id while it runs in the background, and a long
+/// wait for a CPU slot.
+fn command_meta(result: &str) -> Map<String, Value> {
+    let line = result.split('\n').nth(1).unwrap_or("");
+    let code = EXIT_CODE
+        .captures(line)
+        .and_then(|c| c[1].parse::<i64>().ok());
+    let mut meta = Map::new();
+    meta.insert("exitCode".into(), json!(code));
+    if let Some(running) = line.strip_prefix(RUNNING_AS) {
+        let id = running.split(',').next().unwrap_or_default();
+        meta.insert("background".into(), json!(id));
+    }
+    if let Some(waited) = result
+        .split('\n')
+        .nth(2)
+        .filter(|l| l.starts_with("Waited "))
+    {
+        meta.insert("waited".into(), json!(waited.trim_end_matches('.')));
+    }
+    meta
 }
 
 /// Why `command` can't run where the chat works, if it can't: an isolated
@@ -1722,6 +1981,7 @@ mod tests {
             checks_owner: "syntax-test".into(),
             hidden: Vec::new(),
             note: Arc::new(|_| {}),
+            background_chat: None,
         };
         let stop = Arc::new(StopSignal::new());
         let write =
@@ -2538,4 +2798,181 @@ a.rs (3 matches)
         }
     }
 
+    /// The lead's bash may leave a command running, and says when to; the
+    /// background tool comes with it, and only with bash.
+    #[test]
+    fn the_lead_is_offered_background_with_bash_only() {
+        let p = Permissions::default();
+        let mut agent = tools_for(true, false, false, &p, false, false, false);
+        let bash = |tools: &[Value]| tools.iter().find(|t| tool_name(t) == "bash").cloned();
+        let plain = bash(&agent).unwrap();
+        assert!(
+            plain
+                .pointer("/function/parameters/properties/background")
+                .is_none(),
+            "a subagent's bash, as tools_for makes it"
+        );
+        offer_background(&mut agent);
+        let offered = bash(&agent).unwrap();
+        assert_eq!(
+            offered.pointer("/function/parameters/properties/background/type"),
+            Some(&json!("boolean"))
+        );
+        let described = offered["function"]["description"].as_str().unwrap();
+        assert!(described.contains("running with `&`"), "{described}");
+        assert!(described.contains("set background: true"), "{described}");
+        let background = agent.iter().filter(|t| tool_name(t) == "background");
+        assert_eq!(background.count(), 1);
+        // Plan mode has no bash, and so nothing left running.
+        let mut plan = tools_for(true, false, false, &p, true, false, false);
+        offer_background(&mut plan);
+        assert!(!plan.iter().any(|t| tool_name(t) == "background"));
+        assert!(PLAN_BLOCKED_TOOLS.contains(&"background"));
+    }
+
+    /// A command left running reads as a command's result does: running,
+    /// with its id, its output and how to go on with it; or how it ended.
+    #[test]
+    fn a_background_commands_result_says_whether_it_still_runs() {
+        use crate::command_tool::background::{End, Report, Status};
+        let report = |end: Option<End>, output: &str, dropped: u64| Report {
+            status: Status {
+                id: "bg3".into(),
+                command: "npm run dev".into(),
+                ran: std::time::Duration::from_millis(3_100),
+                end,
+            },
+            output: output.into(),
+            dropped,
+        };
+        let running = format_background(&report(
+            None,
+            "\u{1b}[32mVITE\u{1b}[0m ready\n  Local: http://localhost:5173/\n",
+            0,
+        ));
+        assert!(
+            running.starts_with(
+                "$ npm run dev\nrunning in the background as bg3, 3.1 s\nVITE ready\n  Local: \
+                 http://localhost:5173/\n(It keeps running."
+            ),
+            "{running}"
+        );
+        assert!(
+            running.contains(r#"{"action": "stop", "id": "bg3"}"#),
+            "{running}"
+        );
+        let meta = result_meta("bash", &running).unwrap();
+        assert_eq!(meta["background"], json!("bg3"));
+        assert_eq!(meta["exitCode"], Value::Null);
+        assert_eq!(command_end(&running), None, "no command ended");
+
+        let crashed = format_background(&report(Some(End::Exited(Some(1))), "", 2048));
+        assert_eq!(
+            crashed,
+            "$ npm run dev\nexit code 1, 3.1 s\n[… 2048 bytes of its output weren't kept …]\n\
+             (no new output)"
+        );
+        let meta = result_meta("background", &crashed).unwrap();
+        assert_eq!(meta["exitCode"], json!(1));
+        assert!(meta.get("background").is_none());
+        assert_eq!(command_end(&crashed), Some((Some(1), false)));
+
+        let stopped = format_background(&report(Some(End::Stopped), "bye\n", 0));
+        assert_eq!(stopped, "$ npm run dev\nstopped (killed), 3.1 s\nbye");
+        assert_eq!(
+            result_meta("background", "No command runs in the background."),
+            None
+        );
+    }
+
+    #[test]
+    fn the_background_list_names_each_command_and_how_it_is() {
+        use crate::command_tool::background::{End, Status};
+        let status = |id: &str, end| Status {
+            id: id.into(),
+            command: "npm run dev".into(),
+            ran: std::time::Duration::from_secs(65),
+            end,
+        };
+        assert_eq!(
+            format_background_list(&[]),
+            "No command runs in the background."
+        );
+        assert_eq!(
+            format_background_list(&[
+                status("bg1", None),
+                status("bg2", Some(End::Exited(Some(1)))),
+                status("bg3", Some(End::Stopped)),
+            ]),
+            "bg1: `npm run dev`, running for 65 s\n\
+             bg2: `npm run dev`, ended with exit code 1 after 65 s\n\
+             bg3: `npm run dev`, stopped after 65 s"
+        );
+    }
+
+    /// Where what a command leaves running ends with it (bubblewrap), the
+    /// agent hears that what it started with `&` is gone, however well the
+    /// command's own test of it went; the lead hears how to leave it running.
+    #[test]
+    fn a_command_that_left_something_running_with_an_ampersand_hears_it_ended() {
+        let out = |exit_code: Option<i32>, timed_out: bool| CommandOutput {
+            exit_code,
+            stdout: "<!doctype html>".into(),
+            stderr: String::new(),
+            timed_out,
+            stopped: false,
+            truncated: false,
+            duration_ms: 3_000,
+            waited: None,
+            whole: None,
+        };
+        let started = "npm run dev > dev.log 2>&1 & sleep 3 && curl -s localhost:5173";
+        let lead = ended_with_it(started, &out(Some(0), false), true, true).unwrap();
+        assert!(lead.contains("ended with it"), "{lead}");
+        assert!(lead.contains("background: true"), "{lead}");
+        let sub = ended_with_it(started, &out(Some(0), false), true, false).unwrap();
+        assert!(sub.contains("ended with it") && !sub.contains("background: true"));
+        // It outlives the command there, or the command was killed with
+        // everything it started, or nothing went to the background.
+        let ok = out(Some(0), false);
+        assert_eq!(ended_with_it(started, &ok, false, true), None);
+        assert_eq!(ended_with_it(started, &out(None, true), true, true), None);
+        assert_eq!(
+            ended_with_it("npm test && npm run lint", &ok, true, true),
+            None
+        );
+    }
+
+    /// A subagent's commands end with its work: none is left running, and
+    /// it reaches no command the lead left running.
+    #[tokio::test]
+    async fn a_subagent_leaves_no_command_running() {
+        let t = crate::testing::TestCore::new();
+        let root = t.dir.0.to_string_lossy().into_owned();
+        let ctx = CallContext {
+            seen: Seen::new("sub-test"),
+            owner: "sub-test".into(),
+            checks_owner: "lead-test".into(),
+            hidden: Vec::new(),
+            note: Arc::new(|_| {}),
+            background_chat: None,
+        };
+        let stop = Arc::new(StopSignal::new());
+        let call = |name: &'static str, args: &'static str| {
+            let (core, root, stop, ctx) = (&t.core, root.clone(), stop.clone(), &ctx);
+            async move { execute(core, Some(&root), name, args, &stop, ctx).await }
+        };
+        let started = call("bash", r#"{"command": "sleep 30", "background": true}"#).await;
+        assert!(
+            started.content.starts_with(SUBAGENT_BACKGROUND),
+            "{}",
+            started.content
+        );
+        let listed = call("background", r#"{"action": "list"}"#).await;
+        assert!(
+            listed.content.starts_with(SUBAGENT_BACKGROUND),
+            "{}",
+            listed.content
+        );
+    }
 }

@@ -12,6 +12,7 @@ use crate::clm::{ClmStatus, RevisionRow};
 use crate::connectors::{
     ConnectorAuth, ConnectorCommand, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp,
 };
+use crate::events::BackgroundTask;
 use crate::host::{HostInfo, KeyInfo, Storage};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
@@ -91,6 +92,18 @@ pub enum Request {
     ChatDismissChecklist {
         dialog_id: String,
         message_id: String,
+    },
+    /// The commands the chat's agent left running now (bash's
+    /// `background`), oldest first. → `BackgroundTasks`.
+    BackgroundTasks {
+        dialog_id: String,
+    },
+    /// Stops the chat's background task `id`, with everything it started:
+    /// the user's Stop in the chat's row of them. The agent hears it was
+    /// stopped when it next reads it. → `Bool`: whether it was running.
+    BackgroundStop {
+        dialog_id: String,
+        id: String,
     },
     WorkloadFocus {
         dialog_id: Option<String>,
@@ -363,8 +376,10 @@ impl Request {
             | Request::AgentResolveApproval { dialog_id, .. }
             | Request::AgentAnswerQuestions { dialog_id, .. }
             | Request::AgentSteer { dialog_id, .. }
-            | Request::AgentUnsteer { dialog_id, .. } => chat(dialog_id, Run),
+            | Request::AgentUnsteer { dialog_id, .. }
+            | Request::BackgroundStop { dialog_id, .. } => chat(dialog_id, Run),
             Request::ChatChecklist { dialog_id }
+            | Request::BackgroundTasks { dialog_id }
             | Request::ChatChangesSince { dialog_id, .. }
             | Request::ChatOwner { dialog_id }
             | Request::ClmStatus { dialog_id }
@@ -431,6 +446,8 @@ pub enum Response {
     /// `AgentSteer`: what became of the message.
     Steer(SteerReply),
     Checklist(Option<CurrentChecklist>),
+    /// `BackgroundTasks`.
+    BackgroundTasks(Vec<BackgroundTask>),
     ClmStatus(ClmStatus),
     Revisions(Vec<RevisionRow>),
     Text(String),
@@ -509,6 +526,7 @@ replies! {
     AgentStatus => AgentStatus,
     Steer => SteerReply,
     Checklist => Option<CurrentChecklist>,
+    BackgroundTasks => Vec<BackgroundTask>,
     ClmStatus => ClmStatus,
     Revisions => Vec<RevisionRow>,
     Text => String,

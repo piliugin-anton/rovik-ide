@@ -16,6 +16,7 @@ use rovik_core::Core;
 use rovik_protocol::connectors::{
     ConnectorCommand, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp,
 };
+use rovik_protocol::events::BackgroundTask;
 use rovik_protocol::Request;
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -137,6 +138,34 @@ pub async fn chat_checklist(
     dialog_id: String,
 ) -> Result<Option<CurrentChecklist>, String> {
     call(&core, Request::ChatChecklist { dialog_id }).await
+}
+
+/// What the chat's agent left running (bash's `background`), oldest first,
+/// where the chat runs: its row of background tasks, as it opens.
+#[tauri::command]
+pub async fn background_tasks(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+) -> Result<Vec<BackgroundTask>, String> {
+    let request = Request::BackgroundTasks {
+        dialog_id: dialog_id.clone(),
+    };
+    route(&remote, &dialog_id, request).await
+}
+
+/// A task's Stop in that row: it stops with everything it started, and the
+/// agent hears so. Whether it was running.
+#[tauri::command]
+pub async fn background_stop(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+    id: String,
+) -> Result<bool, String> {
+    let request = Request::BackgroundStop {
+        dialog_id: dialog_id.clone(),
+        id,
+    };
+    route(&remote, &dialog_id, request).await
 }
 
 /// The checklist panel's dismiss ✕. Returns the chat's checklist after it.
