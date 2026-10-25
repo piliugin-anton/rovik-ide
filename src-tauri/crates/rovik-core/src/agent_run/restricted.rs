@@ -4801,8 +4801,9 @@ mod tests {
         for command in [
             "tar czf /tmp/src.tgz src",
             "tar -C src -czf /tmp/src.tgz .",
-            "tar --exclude='.env*' --exclude=config -czf /tmp/proj.tgz .",
-            "zip -r /tmp/proj.zip . -x '.env*' 'config/*'",
+            // Double quotes, which cmd.exe reads as quotes too.
+            "tar --exclude=\".env*\" --exclude=config -czf /tmp/proj.tgz .",
+            "zip -r /tmp/proj.zip . -x \".env*\" \"config/*\"",
             "zip /tmp/proj.zip README.md",
             "7z a /tmp/proj.7z . -xr!.env* -xr!config",
             "find src | cpio -o > /tmp/src.cpio",
@@ -4920,7 +4921,8 @@ mod tests {
             "sed -e 's/.env.local/.env/' -e 's/a/b/' src/app.ts",
             // BSD sed's in place, with no backup suffix.
             "sed -i '' 's/x/.env/' src/app.ts",
-            "awk -F= -v name=.env '{print $1}' src/app.ts",
+            // Double quotes, which cmd.exe reads as quotes too.
+            "awk -F= -v name=.env \"{print $1}\" src/app.ts",
             "jq --arg file .env '.[$file]' package.json",
             "jq -r .name package.json",
         ] {
