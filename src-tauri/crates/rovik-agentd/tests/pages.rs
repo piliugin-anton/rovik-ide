@@ -258,7 +258,19 @@ async fn a_server_left_running_stays_forwarded_after_the_run_until_the_user_stop
     let project = daemon.dir.0.join("project");
     write(&project.join("hello.txt"), "hello from the server\n");
     let port = free_port();
-    let server = format!("python3 -u -m http.server {port} --bind 127.0.0.1");
+    // What it prints first, its start's result tells: a line the shell
+    // prints at once. Python's own comes once http.server has loaded, which
+    // on a busy machine can be after a start stops waiting for it.
+    let server = format!(
+        "printf 'serving on %s\\n' {port}; python3 -u -m http.server {port} --bind 127.0.0.1"
+    );
+    // The page opens once the server answers, as an agent's would: one
+    // opened before is watched as a server still starting, and its port
+    // would outlast a Stop that comes before the server was seen.
+    let open = format!(
+        "until python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", {port}))' \
+         2>/dev/null; do sleep 0.1; done; xdg-open http://localhost:{port}/hello.txt"
+    );
     let (url, seen) = model(vec![
         Reply::Call {
             id: "c1",
@@ -268,7 +280,7 @@ async fn a_server_left_running_stays_forwarded_after_the_run_until_the_user_stop
         Reply::Call {
             id: "c2",
             name: "bash",
-            args: json!({ "command": format!("xdg-open http://localhost:{port}/hello.txt") }),
+            args: json!({ "command": open }),
         },
         Reply::Text("Done."),
     ])
@@ -293,7 +305,7 @@ async fn a_server_left_running_stays_forwarded_after_the_run_until_the_user_stop
         "{started}"
     );
     assert!(
-        started.contains(&format!("Serving HTTP on 127.0.0.1 port {port}")),
+        started.contains(&format!("\nserving on {port}\n")),
         "{started}"
     );
     let forwarded = remote.forwarded_ports(CHAT);
