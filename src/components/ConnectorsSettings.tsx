@@ -68,12 +68,14 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
   const [draft, setDraft] = createSignal<Provider | null>(null);
   const [test, setTest] = createSignal<TestState>({ kind: 'idle' });
   const [withRequest, setWithRequest] = createSignal(false);
+  // The computer the open form tests and sets up on (its Computer row): a
+  // cloud host's id, or '' for this computer.
   const [testHost, setTestHost] = createSignal('');
   const [formError, setFormError] = createSignal<string | null>(null);
   const [adding, setAdding] = createSignal(false);
   // The list's "Set up": the form opens and sets the connector up at once.
   const [setUpOnOpen, setSetUpOnOpen] = createSignal(false);
-  // The cloud hosts, for "Test on": a connector is a program on the
+  // The cloud hosts, for "Computer": a connector is a program on the
   // computer the chat runs on, so a host has its own installation.
   const [hostsList] = createResource(() => listHosts().catch(() => null));
   const hosts = () => hostsList()?.hosts ?? [];
@@ -97,6 +99,9 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
     // form opens tests at once, and its test is this form's.
     testRun++;
     setTest({ kind: 'idle' });
+    // Each form starts on this computer: the list's rows, and the Set up
+    // they open, are this computer's, whatever host the last form picked.
+    setTestHost('');
     setSetUpOnOpen(setUp);
     setDraft({ ...p, models: p.models.map((m) => ({ ...m })) });
     setFormError(null);

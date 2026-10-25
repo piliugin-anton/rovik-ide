@@ -11,12 +11,13 @@ import ConnectorsSettings from './ConnectorsSettings';
 import { ConfirmDialogHost } from './ConfirmDialog';
 import { newConnector, setConnectorAuthState, type ConnectorProbe } from '../lib/connectors';
 
-// No cloud hosts to test on; the connector's program, as each test has it
-// answer (a failure as the app's commands give one: its text).
+// The cloud hosts to test on (none, unless a test names some); the
+// connector's program, as each test has it answer (a failure as the app's
+// commands give one: its text).
+let hosts: { id: string; name: string }[] = [];
 let answer: (cmd: string, args: any) => unknown = () => null;
 (window as any).__TAURI_INTERNALS__ = {
-  invoke: async (cmd: string, args: any) =>
-    cmd === 'hosts_list' ? { hosts: [] } : answer(cmd, args),
+  invoke: async (cmd: string, args: any) => (cmd === 'hosts_list' ? { hosts } : answer(cmd, args)),
 };
 
 const MISSING =
@@ -177,4 +178,42 @@ test('the list’s Set up shows what its first test found', async () => {
   await until(() => /Claude Code is ready on this computer\./.test(root.textContent ?? ''));
   assert.match(root.textContent ?? '', /Connected: 2\.1\.310 \(Claude Code\)/);
   dispose();
+});
+
+test('the list’s Set up runs on this computer, even after a form tested on a host', async () => {
+  // Where each test ran: a host's id, or null for this computer.
+  const testedOn: (string | null)[] = [];
+  answer = (cmd, args) => {
+    if (cmd !== 'connector_probe') return null;
+    testedOn.push(args.host);
+    return READY;
+  };
+  hosts = [{ id: 'h1', name: 'Build server' }];
+  const claude = { ...newConnector('claude-code'), id: 'c5' };
+  // Found signed out on this computer: its row offers Set up.
+  setConnectorAuthState(claude.id, { state: 'signedOut', auth: { loggedIn: false } });
+  const { root, dispose } = page(claude);
+  const computer = () =>
+    root.querySelector<HTMLSelectElement>('select[aria-label="Where to test"]');
+  try {
+    // A form tests on the host its Computer picks, then closes.
+    button(root, 'Edit').click();
+    await until(() => computer()?.options.length === 2);
+    computer()!.value = 'h1';
+    computer()!.dispatchEvent(new Event('change', { bubbles: true }));
+    button(root, 'Test connection').click();
+    await until(() => /Connected/.test(root.textContent ?? ''));
+    assert.deepEqual(testedOn, ['h1']);
+    button(root, 'Cancel').click();
+
+    // The row's Set up opens a form on this computer and sets it up here.
+    button(root, 'Set up').click();
+    await until(() => /is ready/.test(root.textContent ?? ''));
+    assert.equal(computer()?.value, '');
+    assert.deepEqual(testedOn, ['h1', null]);
+    assert.match(root.textContent ?? '', /Claude Code is ready on this computer\./);
+  } finally {
+    hosts = [];
+    dispose();
+  }
 });
