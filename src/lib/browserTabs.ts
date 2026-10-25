@@ -9,9 +9,13 @@
 // remote/tab_port.rs), while its address bar shows it at the port
 // forwarded here, where the default browser opens it. The tab port's
 // script in the page tells the tab where the page is as it navigates, for
-// the address bar to follow it (`reportedAddress`, `pageAddress`).
+// the address bar to follow it (`reportedAddress`, `pageAddress`). The tab
+// closes once its port isn't forwarded any more: nothing serves its page
+// then (`closeTabsOfClosedPorts`).
+import { createEffect, on } from 'solid-js';
 import { listen } from '@tauri-apps/api/event';
 import type { ForwardedPort } from './cloud';
+import type { BrowserTab } from './editorTabs';
 
 /** A scheme at the start of an address (`https:`). */
 const SCHEME = /^([a-z][a-z0-9+.-]*):/i;
@@ -43,22 +47,59 @@ export function addressFrom(text: string, appOrigin: string): string | null {
 }
 
 /**
- * Where a browser tab's frame loads `address`: through the tab port of the
- * forward whose port here it names (lib/cloud.ts), else at the address.
+ * `address` read as an http page at this computer's loopback, with the
+ * port it's at there: a port forwarded here, if one is. Null for any other
+ * address.
  */
-export function frameUrl(address: string, ports: readonly ForwardedPort[]): string {
+function loopbackPage(address: string): { url: URL; port: number } | null {
   let url: URL;
   try {
     url = new URL(address);
   } catch {
-    return address;
+    return null;
   }
-  if (url.protocol !== 'http:' || !LOOPBACK.has(url.hostname)) return address;
-  const port = Number(url.port || 80);
-  const tabPort = ports.find((p) => p.localPort === port && p.tabPort)?.tabPort;
-  if (!tabPort) return address;
-  url.port = String(tabPort);
-  return url.href;
+  if (url.protocol !== 'http:' || !LOOPBACK.has(url.hostname)) return null;
+  return { url, port: Number(url.port || 80) };
+}
+
+/**
+ * Where a browser tab's frame loads `address`: through the tab port of the
+ * forward whose port here it names (lib/cloud.ts), else at the address.
+ */
+export function frameUrl(address: string, ports: readonly ForwardedPort[]): string {
+  const page = loopbackPage(address);
+  const tabPort = page && ports.find((p) => p.localPort === page.port && p.tabPort)?.tabPort;
+  if (!page || !tabPort) return address;
+  page.url.port = String(tabPort);
+  return page.url.href;
+}
+
+/**
+ * Closes each browser tab (`close`) whose page is at a port forwarded here
+ * once that port isn't forwarded any more (`ports`: every chat's). Nothing
+ * serves the page then: its server stopped listening on the host (its
+ * command ended, timed out or was stopped), its chat left the host, or the
+ * host went. A port another chat still has keeps its tabs. Call once,
+ * within a component.
+ */
+export function closeTabsOfClosedPorts(
+  tabs: () => readonly BrowserTab[],
+  ports: () => readonly ForwardedPort[],
+  close: (path: string) => void
+): void {
+  createEffect(
+    on(
+      () => new Set(ports().map((p) => p.localPort)),
+      (now, before) => {
+        // The ports as it starts: none of them has closed.
+        if (!before) return;
+        for (const tab of tabs()) {
+          const port = loopbackPage(tab.address)?.port;
+          if (port !== undefined && before.has(port) && !now.has(port)) close(tab.path);
+        }
+      }
+    )
+  );
 }
 
 /**

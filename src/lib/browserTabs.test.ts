@@ -1,14 +1,17 @@
 // What a browser tab shows (lib/browserTabs.ts): the address its address
 // bar takes, where its frame loads a forwarded page (through the forward's
 // tab port), where the page says it is as it moves (the tab port's script,
-// run here as the page runs it), its name in the tab strip, and the pages
-// the app and "Opened ports" ask it to open. Run with: npm test
+// run here as the page runs it), its name in the tab strip, the pages the
+// app and "Opened ports" ask it to open, and how a forwarded page's tab
+// closes with its port. Run with: npm test
 import '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createRoot, createSignal } from 'solid-js';
 import {
   addressFrom,
+  closeTabsOfClosedPorts,
   frameUrl,
   onPageWanted,
   openPage,
@@ -17,6 +20,8 @@ import {
   reportedAddress,
   setPageOpener,
 } from './browserTabs';
+import type { ForwardedPort } from './cloud';
+import type { BrowserTab } from './editorTabs';
 
 const APP = 'http://tauri.localhost';
 
@@ -72,6 +77,86 @@ test('any other page loads at its own address', () => {
     assert.equal(frameUrl(address, PORTS), address, address);
   }
   assert.equal(frameUrl('http://localhost:5174/', []), 'http://localhost:5174/');
+});
+
+/** A browser tab showing `address`. */
+const tab = (path: string, address: string): BrowserTab => ({
+  kind: 'browser',
+  path,
+  address,
+  loads: 0,
+});
+
+/**
+ * closeTabsOfClosedPorts on `tabs`, with `ports` forwarded as it starts: a
+ * tab it closes goes, as App's closeTab takes it out. The tabs left, by
+ * key, and how to change the forwarded ports.
+ */
+function watching(tabs: BrowserTab[], ports: ForwardedPort[]) {
+  const [open, setOpen] = createSignal(tabs);
+  const [forwarded, setForwarded] = createSignal(ports);
+  const dispose = createRoot((dispose) => {
+    closeTabsOfClosedPorts(open, forwarded, (path) =>
+      setOpen((all) => all.filter((t) => t.path !== path))
+    );
+    return dispose;
+  });
+  return { left: () => open().map((t) => t.path), forward: setForwarded, dispose };
+}
+
+const VITE: ForwardedPort = { port: 5173, localPort: 5174, tabPort: 40001 };
+const API: ForwardedPort = { port: 3000, localPort: 3000, tabPort: 40002 };
+
+test('a forwarded page’s tabs close once its port does, and the other tabs stay', () => {
+  const tabs = watching(
+    [
+      tab('browser:1', 'http://localhost:5174/'),
+      tab('browser:2', 'http://127.0.0.1:5174/admin?x=1'),
+      tab('browser:3', 'http://localhost:3000/'),
+      // A server of this computer's own, and another site at the same port.
+      tab('browser:4', 'http://localhost:4000/'),
+      tab('browser:5', 'http://example.com:5174/'),
+    ],
+    [VITE, API]
+  );
+  try {
+    // Its server stopped there (its command timed out, say).
+    tabs.forward([API]);
+    assert.deepEqual(tabs.left(), ['browser:3', 'browser:4', 'browser:5']);
+    tabs.forward([]);
+    assert.deepEqual(tabs.left(), ['browser:4', 'browser:5']);
+  } finally {
+    tabs.dispose();
+  }
+});
+
+test('a port another chat still has keeps its tabs open', () => {
+  const tabs = watching([tab('browser:1', 'http://localhost:5174/')], [VITE, { ...VITE }]);
+  try {
+    tabs.forward([VITE]);
+    assert.deepEqual(tabs.left(), ['browser:1']);
+    tabs.forward([]);
+    assert.deepEqual(tabs.left(), []);
+  } finally {
+    tabs.dispose();
+  }
+});
+
+test('ports forwarded as it starts, or later, close no tab', () => {
+  const tabs = watching(
+    [tab('browser:1', 'http://localhost:5174/'), tab('browser:2', 'http://localhost:3000/')],
+    [VITE]
+  );
+  try {
+    assert.deepEqual(tabs.left(), ['browser:1', 'browser:2']);
+    tabs.forward([VITE, API]);
+    assert.deepEqual(tabs.left(), ['browser:1', 'browser:2']);
+    // The port forwarded later closes its tabs as it closes.
+    tabs.forward([VITE]);
+    assert.deepEqual(tabs.left(), ['browser:1']);
+  } finally {
+    tabs.dispose();
+  }
 });
 
 test('a browser tab is named after its page’s host and port', () => {

@@ -103,7 +103,7 @@ import {
   withPage,
   type EditorTab,
 } from './lib/editorTabs';
-import { frameUrl, onPageWanted, setPageOpener } from './lib/browserTabs';
+import { closeTabsOfClosedPorts, frameUrl, onPageWanted, setPageOpener } from './lib/browserTabs';
 import { isMarkdownLanguage } from './lib/markdownView';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
 import { diffLines, splitLines, type DiffHunk } from './lib/lineDiff';
@@ -1313,6 +1313,9 @@ export default function App() {
   });
   /** Each forwarded port of the remote chats': browser tabs load through them. */
   const forwardedNow = () => Object.values(cloud.ports).flat();
+  // A tab of a forwarded page closes with its port: its server stopped, as
+  // when its command timed out, and nothing serves the page any more.
+  closeTabsOfClosedPorts(browserTabs, forwardedNow, closeTab);
 
   function findRowAtPoint(x: number, y: number): TreeRow | null {
     const el = document.elementFromPoint(x, y) as HTMLElement | null;
