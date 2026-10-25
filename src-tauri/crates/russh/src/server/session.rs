@@ -414,7 +414,10 @@ impl Handle {
                             max_packet_size,
                             window_size: window_size_ref,
                         },
-                        read_half: ChannelReadHalf { receiver },
+                        read_half: ChannelReadHalf {
+                            receiver,
+                            taken: None,
+                        },
                     });
                 }
                 Some(ChannelMsg::OpenFailure(reason)) => {

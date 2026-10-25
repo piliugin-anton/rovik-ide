@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
 use tokio::sync::{Mutex, Notify};
 
 use crate::{ChannelId, ChannelOpenFailure, Error, Pty, Sig};
@@ -133,9 +133,41 @@ impl WindowSizeRef {
         self.notifier.notify_one();
     }
 
+    /// The peer opened the window by `amount`, and `left` is what the
+    /// session has left of it to send in: writers may take `amount` more,
+    /// but never more than `left`. Setting it to `left`, as upstream did,
+    /// handed out again what writers took and the session hasn't sent yet:
+    /// what they then wrote went past the window and waited, and while it
+    /// waited the session took nothing more to send on any channel
+    /// (Eugeny/russh#789; Rovik's fork, FORK.md).
+    pub(crate) async fn open(&self, amount: u32, left: u32) {
+        let mut value = self.value.lock().await;
+        *value = value.saturating_add(amount).min(left);
+        self.notifier.notify_one();
+    }
+
     pub(crate) fn subscribe(&self) -> Arc<Notify> {
         Arc::clone(&self.notifier)
     }
+}
+
+/// The bytes of `msg` that its sender's window counts: its data.
+pub(crate) fn data_len(msg: &ChannelMsg) -> u32 {
+    match msg {
+        ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+            u32::try_from(data.len()).unwrap_or(u32::MAX)
+        }
+        _ => 0,
+    }
+}
+
+/// Where a channel's reader tells the session what it took from the
+/// channel (Rovik's fork, FORK.md): the session lets more of the channel's
+/// data in as what came is read, rather than as it comes.
+#[derive(Debug, Clone)]
+pub(crate) struct TakenBy {
+    pub(crate) channel: ChannelId,
+    pub(crate) session: UnboundedSender<(ChannelId, u32)>,
 }
 
 /// A handle to the reading part of a session channel.
@@ -143,6 +175,24 @@ impl WindowSizeRef {
 /// Allows you to read from a channel without borrowing the session
 pub struct ChannelReadHalf {
     pub(crate) receiver: Receiver<ChannelMsg>,
+    /// Told what this reader takes from the channel; None where the
+    /// session lets data in as it comes (a server's channels).
+    pub(crate) taken: Option<TakenBy>,
+}
+
+/// What the channel's queue still holds when its reader lets go is never
+/// read: it counts as read, so the session opens the channel's window by
+/// it rather than leaving its sender stopped (Rovik's fork, FORK.md).
+impl Drop for ChannelReadHalf {
+    fn drop(&mut self) {
+        if self.taken.is_none() {
+            return;
+        }
+        self.receiver.close();
+        while let Ok(msg) = self.receiver.try_recv() {
+            self.took(&msg);
+        }
+    }
 }
 
 impl std::fmt::Debug for ChannelReadHalf {
@@ -154,7 +204,19 @@ impl std::fmt::Debug for ChannelReadHalf {
 impl ChannelReadHalf {
     /// Awaits an incoming [`ChannelMsg`], this method returns [`None`] if the channel has been closed.
     pub async fn wait(&mut self) -> Option<ChannelMsg> {
-        self.receiver.recv().await
+        let msg = self.receiver.recv().await;
+        if let Some(msg) = &msg {
+            self.took(msg);
+        }
+        msg
+    }
+
+    /// Tells the session this reader took `msg` from the channel: its data
+    /// bytes, and room in the channel's queue.
+    pub(crate) fn took(&self, msg: &ChannelMsg) {
+        if let Some(taken) = &self.taken {
+            let _ = taken.session.send((taken.channel, data_len(msg)));
+        }
     }
 
     /// Make a reader for the [`Channel`] to receive [`ChannelMsg::Data`]
@@ -468,7 +530,10 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
     ) -> (Self, ChannelRef) {
         let (tx, rx) = tokio::sync::mpsc::channel(channel_buffer_size);
         let window_size = WindowSizeRef::new(window_size);
-        let read_half = ChannelReadHalf { receiver: rx };
+        let read_half = ChannelReadHalf {
+            receiver: rx,
+            taken: None,
+        };
         let write_half = ChannelWriteHalf {
             id,
             sender,
@@ -484,6 +549,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
             ChannelRef {
                 sender: tx,
                 window_size,
+                waiting: Default::default(),
             },
         )
     }
@@ -702,6 +768,103 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+
+    /// A reader of channel 3 whose session hears what it takes.
+    fn reported_reader(
+        capacity: usize,
+    ) -> (
+        ChannelReadHalf,
+        Sender<ChannelMsg>,
+        mpsc::UnboundedReceiver<(ChannelId, u32)>,
+    ) {
+        let (sender, receiver) = mpsc::channel(capacity);
+        let (session, reports) = mpsc::unbounded_channel();
+        let reader = ChannelReadHalf {
+            receiver,
+            taken: Some(TakenBy {
+                channel: ChannelId(3),
+                session,
+            }),
+        };
+        (reader, sender, reports)
+    }
+
+    /// What the session heard so far.
+    fn heard(reports: &mut mpsc::UnboundedReceiver<(ChannelId, u32)>) -> Vec<(ChannelId, u32)> {
+        std::iter::from_fn(|| reports.try_recv().ok()).collect()
+    }
+
+    // Rovik's fork (FORK.md): what the peer opens is handed out once.
+
+    #[tokio::test]
+    async fn a_window_the_peer_opens_is_handed_out_once_while_writes_are_on_their_way() {
+        let window = WindowSizeRef::new(100);
+        let (write_half, _session) = test_write_half(window.clone(), 1024);
+        write_half.data_bytes(vec![0; 60]).await.unwrap();
+        assert_eq!(*window.value.lock().await, 40);
+
+        // The 60 bytes still wait to be sent: of the 150 the session has
+        // left to send in, writers may take 90.
+        window.open(50, 150).await;
+        assert_eq!(*window.value.lock().await, 90);
+        // Never more than the session has left.
+        window.open(500, 120).await;
+        assert_eq!(*window.value.lock().await, 120);
+    }
+
+    // Rovik's fork (FORK.md): a reader tells its session what it took.
+
+    #[tokio::test]
+    async fn a_reader_tells_its_session_each_message_it_takes_and_its_data_bytes() {
+        let (mut reader, sender, mut reports) = reported_reader(4);
+        sender
+            .try_send(ChannelMsg::Data {
+                data: Bytes::from_static(b"abc"),
+            })
+            .unwrap();
+        sender
+            .try_send(ChannelMsg::ExtendedData {
+                ext: 1,
+                data: Bytes::from_static(b"de"),
+            })
+            .unwrap();
+        sender.try_send(ChannelMsg::Eof).unwrap();
+        for _ in 0..3 {
+            reader.wait().await.unwrap();
+        }
+        assert_eq!(
+            heard(&mut reports),
+            [(ChannelId(3), 3), (ChannelId(3), 2), (ChannelId(3), 0)]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_channel_read_as_a_stream_tells_its_session_what_it_takes() {
+        use tokio::io::AsyncReadExt;
+        let (mut reader, sender, mut reports) = reported_reader(4);
+        sender
+            .try_send(ChannelMsg::Data {
+                data: Bytes::from_static(b"abcdef"),
+            })
+            .unwrap();
+        let mut buf = [0u8; 4];
+        reader.make_reader().read_exact(&mut buf).await.unwrap();
+        assert_eq!(heard(&mut reports), [(ChannelId(3), 6)]);
+    }
+
+    #[test]
+    fn a_reader_let_go_counts_what_its_queue_held_as_read() {
+        let (reader, sender, mut reports) = reported_reader(4);
+        sender
+            .try_send(ChannelMsg::Data {
+                data: Bytes::from_static(b"abc"),
+            })
+            .unwrap();
+        sender.try_send(ChannelMsg::Eof).unwrap();
+        drop(reader);
+        assert!(sender.is_closed(), "nothing more goes in");
+        assert_eq!(heard(&mut reports), [(ChannelId(3), 3), (ChannelId(3), 0)]);
+    }
 
     fn test_write_half(
         window_size: WindowSizeRef,

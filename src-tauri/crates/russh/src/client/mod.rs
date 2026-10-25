@@ -59,7 +59,8 @@ use tokio::sync::oneshot;
 pub use crate::auth::AuthResult;
 use crate::cert::PublicKeyOrCertificate;
 use crate::channels::{
-    Channel, ChannelMsg, ChannelReadHalf, ChannelRef, ChannelWriteHalf, WindowSizeRef,
+    Channel, ChannelMsg, ChannelReadHalf, ChannelRef, ChannelWriteHalf, TakenBy, WindowSizeRef,
+    data_len,
 };
 use crate::cipher::{self, OpeningKey, clear};
 use crate::kex::{KexAlgorithmImplementor, KexCause, KexProgress, SessionKexState};
@@ -99,6 +100,9 @@ pub struct Session {
     priority_receiver: UnboundedReceiver<Msg>,
     inbound_channel_sender: Sender<Msg>,
     inbound_channel_receiver: Receiver<Msg>,
+    /// What channels' readers took (Rovik's fork, FORK.md: `taken`).
+    taken_sender: UnboundedSender<(ChannelId, u32)>,
+    taken_receiver: UnboundedReceiver<(ChannelId, u32)>,
     open_global_requests: VecDeque<GlobalRequestResponse>,
     server_sig_algs: Option<Vec<Algorithm>>,
 }
@@ -311,6 +315,9 @@ pub struct Handle<H: Handler> {
     receiver: UnboundedReceiver<Reply>,
     join: russh_util::runtime::JoinHandle<Result<(), H::Error>>,
     channel_buffer_size: usize,
+    /// Where the readers of the channels it opens tell the session what
+    /// they took (Rovik's fork, FORK.md).
+    taken: UnboundedSender<(ChannelId, u32)>,
 }
 
 impl<H: Handler> Drop for Handle<H> {
@@ -717,7 +724,13 @@ impl<H: Handler> Handle<H> {
                             max_packet_size,
                             window_size: window_size_ref,
                         },
-                        read_half: ChannelReadHalf { receiver },
+                        read_half: ChannelReadHalf {
+                            receiver,
+                            taken: Some(TakenBy {
+                                channel: id,
+                                session: self.taken.clone(),
+                            }),
+                        },
                     });
                 }
                 Some(ChannelMsg::OpenFailure(reason)) => {
@@ -1215,6 +1228,7 @@ where
         session_sender,
     );
     session.begin_rekey()?;
+    let taken = session.taken_sender.clone();
     let (kex_done_signal, kex_done_signal_rx) = oneshot::channel();
     let join = russh_util::runtime::spawn(session.run(stream, handler, Some(kex_done_signal)));
 
@@ -1231,6 +1245,7 @@ where
         receiver: handle_receiver,
         join,
         channel_buffer_size,
+        taken,
     })
 }
 
@@ -1273,6 +1288,7 @@ impl Session {
     ) -> Self {
         let (priority_sender, priority_receiver) = unbounded_channel();
         let (inbound_channel_sender, inbound_channel_receiver) = channel(10);
+        let (taken_sender, taken_receiver) = unbounded_channel();
         Self {
             common,
             receiver,
@@ -1283,12 +1299,75 @@ impl Session {
             priority_receiver,
             inbound_channel_sender,
             inbound_channel_receiver,
+            taken_sender,
+            taken_receiver,
             channels: HashMap::new(),
             pending_reads: Vec::new(),
             pending_len: 0,
             open_global_requests: VecDeque::new(),
             server_sig_algs: None,
         }
+    }
+
+    /// `msg` came on `channel`: it goes to the channel's reader, after what
+    /// waits for room in the reader's queue, and the channel's window is
+    /// smaller by its data until the reader takes it. Data whose reader is
+    /// gone is dropped, and opens the window as if read (Rovik's fork,
+    /// FORK.md).
+    fn received<H: Handler>(
+        &mut self,
+        handler: &mut H,
+        channel: ChannelId,
+        msg: ChannelMsg,
+    ) -> Result<(), crate::Error> {
+        let len = data_len(&msg);
+        let dropped = match self.channels.get_mut(&channel) {
+            Some(chan) => chan.deliver(msg),
+            None => len,
+        };
+        if let Some(enc) = self.common.encrypted.as_mut() {
+            enc.received(channel, len);
+        }
+        self.read(handler, channel, dropped)
+    }
+
+    /// `channel`'s reader took `len` bytes of its data, and made room in
+    /// its queue: what waited for room goes in, and the channel's window
+    /// opens by what was read (Rovik's fork, FORK.md).
+    fn taken<H: Handler>(
+        &mut self,
+        handler: &mut H,
+        channel: ChannelId,
+        len: u32,
+    ) -> Result<(), crate::Error> {
+        let dropped = match self.channels.get_mut(&channel) {
+            Some(chan) => chan.flush(),
+            None => 0,
+        };
+        self.read(handler, channel, len.saturating_add(dropped))
+    }
+
+    /// `len` more bytes of `channel`'s data were read, or dropped as its
+    /// reader is gone: the window opens by them when it's due
+    /// ([`crate::session::Encrypted::taken`]), and `handler` is told it
+    /// opened, as upstream tells it (Rovik's fork, FORK.md).
+    fn read<H: Handler>(
+        &mut self,
+        handler: &mut H,
+        channel: ChannelId,
+        len: u32,
+    ) -> Result<(), crate::Error> {
+        let target = self.common.config.window_size;
+        let Some(enc) = self.common.encrypted.as_mut() else {
+            return Ok(());
+        };
+        if enc.taken(channel, len, target)? {
+            let next_window = handler.adjust_window(channel, self.target_window_size);
+            if next_window > 0 {
+                self.target_window_size = next_window
+            }
+        }
+        Ok(())
     }
 
     async fn run<H: Handler + Send, R: AsyncRead + AsyncWrite + Unpin + Send>(
@@ -1310,6 +1389,11 @@ impl Session {
         self.receiver.close();
         self.priority_receiver.close();
         self.inbound_channel_receiver.close();
+        // What came for a channel and still waits for room goes to its
+        // reader as it reads (Rovik's fork, FORK.md).
+        for (_, chan) in self.channels.drain() {
+            chan.hand_over();
+        }
         map_err!(stream_write.shutdown().await)?;
         match result {
             Ok(v) => {
@@ -1467,6 +1551,17 @@ impl Session {
 
                     // eagerly take all outgoing messages so writes are batched
                     self.drain_priority_msgs()?;
+                }
+                // What channels' readers took lets more of their data in
+                // (Rovik's fork, FORK.md). The session holds a sender too:
+                // this never ends.
+                taken = self.taken_receiver.recv(), if !self.kex.active() => {
+                    if let Some((channel, len)) = taken {
+                        self.taken(handler, channel, len)?;
+                    }
+                    while let Ok((channel, len)) = self.taken_receiver.try_recv() {
+                        self.taken(handler, channel, len)?;
+                    }
                 }
                 msg = self.inbound_channel_receiver.recv(), if can_receive_outbound => {
                     self.drain_priority_msgs()?;

@@ -423,6 +423,97 @@ async fn over_ssh_the_websocket_and_an_upload_go_at_once_on_channels_of_their_ow
     assert!(missing.is_empty(), "the daemon has the file");
 }
 
+/// A socket in `dir` that sends whoever connects `bytes`, then closes.
+fn flooding(dir: &std::path::Path, bytes: usize) -> PathBuf {
+    use tokio::io::AsyncWriteExt;
+    let path = dir.join("flood.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let chunk = vec![b'x'; 64 << 10];
+                for _ in 0..bytes / chunk.len() {
+                    if stream.write_all(&chunk).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    path
+}
+
+/// A socket in `dir` that sends back what it gets.
+fn echoing(dir: &std::path::Path) -> PathBuf {
+    let path = dir.join("echo.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let (mut read, mut write) = stream.split();
+                let _ = tokio::io::copy(&mut read, &mut write).await;
+            });
+        }
+    });
+    path
+}
+
+/// A channel the app stops reading (a page the browser doesn't read on)
+/// holds up none of the others on its SSH connection: one opened before
+/// still answers, and a new one opens, while its data waits on the host.
+/// Then it all comes, once read. Both of crates/russh/FORK.md's fixes keep
+/// it so: flow control by what's read, and, for the russh server here, a
+/// window counted once.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ssh_channel_the_app_doesnt_read_holds_up_none_of_the_others() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let dir = rovik_core::testing::temp_dir();
+    // More than a channel's queue and its window hold.
+    const FLOOD: usize = 16 << 20;
+    let flood = flooding(&dir.0, FLOOD);
+    let echo = echoing(&dir.0);
+    let echo = echo.to_str().unwrap();
+    let server = SshServer::start().await;
+    let ssh = Ssh::connect(&target(&server, password(PASSWORD)))
+        .await
+        .unwrap();
+    let mut before = ssh.stream_to(echo).await.unwrap();
+    let mut unread = ssh.stream_to(flood.to_str().unwrap()).await.unwrap();
+    let mut first = [0u8; 1];
+    unread.read_exact(&mut first).await.unwrap();
+    // Time for what the host sends to fill all there is to fill.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let within = Duration::from_secs(10);
+    let mut back = [0u8; 4];
+    before.write_all(b"ping").await.unwrap();
+    let echoed = tokio::time::timeout(within, before.read_exact(&mut back)).await;
+    echoed.expect("an echo on a channel opened before").unwrap();
+    assert_eq!(&back, b"ping");
+    let opened = tokio::time::timeout(within, ssh.stream_to(echo)).await;
+    let mut after = opened.expect("a new channel opened").unwrap();
+    after.write_all(b"pong").await.unwrap();
+    let echoed = tokio::time::timeout(within, after.read_exact(&mut back)).await;
+    echoed.expect("an echo on the new channel").unwrap();
+    assert_eq!(&back, b"pong");
+
+    let reading = async {
+        let (mut total, mut buf) = (first.len(), vec![0u8; 1 << 20]);
+        loop {
+            match unread.read(&mut buf).await.unwrap() {
+                0 => return total,
+                n => total += n,
+            }
+        }
+    };
+    let read = tokio::time::timeout(Duration::from_secs(120), reading).await;
+    assert_eq!(
+        read.expect("the rest in time"),
+        FLOOD,
+        "every byte, once read"
+    );
+}
+
 /// H03: a host that refuses streamlocal forwarding is reached through
 /// `rovik-agentd attach --stdio` on exec channels, a stream each, and the
 /// daemon's socket there comes from `$HOME`.

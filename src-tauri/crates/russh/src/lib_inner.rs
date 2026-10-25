@@ -512,6 +512,9 @@ pub(crate) struct ChannelParams {
     pending_data: std::collections::VecDeque<(bytes::Bytes, Option<u32>, usize)>,
     pending_eof: bool,
     pending_close: bool,
+    /// Data bytes the channel's reader took since the window was last
+    /// opened by them (Rovik's fork, FORK.md: `Encrypted::taken`).
+    taken: u32,
 }
 
 impl ChannelParams {

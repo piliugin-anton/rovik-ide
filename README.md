@@ -874,6 +874,7 @@ src-tauri/               backend (Rust), a Cargo workspace
   crates/rovik-agentd/   the daemon: the agent on a cloud host or in WSL
   crates/rovik-headless/ the agent without a window, for evaluations
   crates/eoka/           headless Chrome automation (for the browser tools)
+  crates/russh/          SSH: russh with fixes, outside the workspace (FORK.md)
 
 docs/                    team servers (cloud-hosts.md), the WSL checklist,
                          the backend review

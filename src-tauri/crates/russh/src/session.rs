@@ -335,6 +335,56 @@ impl Encrypted {
         Ok(false)
     }
 
+    /// `len` bytes of `channel`'s data came: its sender's window is that
+    /// much smaller until the channel's reader takes them
+    /// ([`Encrypted::taken`]). Rovik's fork (FORK.md): the client's window
+    /// opens as its data is read, not as it comes.
+    pub fn received(&mut self, channel: ChannelId, len: u32) {
+        if let Some(channel) = self.channels.get_mut(&channel) {
+            // Ignore extra data, as adjust_window_size does.
+            // https://tools.ietf.org/html/rfc4254#section-5.2
+            if len <= channel.sender_window_size {
+                channel.sender_window_size -= len;
+            }
+        }
+    }
+
+    /// `channel`'s reader took `len` bytes of its data: once its sender
+    /// has less than half of `target` left, the window opens again by what
+    /// was taken, as OpenSSH does. So no more of a channel's data waits to
+    /// be read than its window, and a channel nobody reads stops its sender
+    /// alone. True when the window opened. Rovik's fork (FORK.md).
+    pub fn taken(
+        &mut self,
+        channel: ChannelId,
+        len: u32,
+        target: u32,
+    ) -> Result<bool, crate::Error> {
+        let Some(channel) = self.channels.get_mut(&channel) else {
+            return Ok(false);
+        };
+        channel.taken = channel.taken.saturating_add(len);
+        if channel.taken == 0 || channel.sender_window_size >= target / 2 {
+            return Ok(false);
+        }
+        // Never beyond the window it started with: data that came beyond
+        // its window (ignored by `received`) is read too.
+        let opened = channel
+            .taken
+            .min(target.saturating_sub(channel.sender_window_size));
+        channel.taken = 0;
+        if opened == 0 {
+            return Ok(false);
+        }
+        push_packet!(self.write, {
+            self.write.push(msg::CHANNEL_WINDOW_ADJUST);
+            channel.recipient_channel.encode(&mut self.write)?;
+            opened.encode(&mut self.write)?;
+        });
+        channel.sender_window_size += opened;
+        Ok(true)
+    }
+
     fn flush_channel(
         write: &mut Vec<u8>,
         channel: &mut ChannelParams,
@@ -783,6 +833,7 @@ impl Encrypted {
                     pending_data: std::collections::VecDeque::new(),
                     pending_eof: false,
                     pending_close: false,
+                    taken: 0,
                 });
                 return ChannelId(self.last_channel_id.0);
             }
@@ -912,6 +963,7 @@ mod tests {
             pending_data: VecDeque::from([(Bytes::from_static(b"hello"), None, 0)]),
             pending_eof,
             pending_close,
+            taken: 0,
         }
     }
 
@@ -966,6 +1018,7 @@ mod tests {
             pending_data: VecDeque::from([(Bytes::from_static(b"hello"), None, 0)]),
             pending_eof,
             pending_close,
+            taken: 0,
         }
     }
 
@@ -1558,5 +1611,82 @@ mod tests {
         assert_eq!(channel.pending_data.back().unwrap().0.as_ref(), b"new");
         assert!(encrypted.write.is_empty());
         assert!(writer.buffer().buffer.is_empty());
+    }
+
+    // Rovik's fork (FORK.md): a client's window opens as its data is read.
+
+    /// The recipient and amount of each CHANNEL_WINDOW_ADJUST in `buf`.
+    fn window_adjusts(buf: &[u8]) -> Vec<(u32, u32)> {
+        let mut adjusts = Vec::new();
+        let mut cursor = 0;
+        while cursor < buf.len() {
+            let packet_len = BigEndian::read_u32(&buf[cursor..cursor + 4]) as usize;
+            let packet = &buf[cursor + 4..cursor + 4 + packet_len];
+            if packet[0] == msg::CHANNEL_WINDOW_ADJUST {
+                adjusts.push((
+                    BigEndian::read_u32(&packet[1..5]),
+                    BigEndian::read_u32(&packet[5..9]),
+                ));
+            }
+            cursor += 4 + packet_len;
+        }
+        adjusts
+    }
+
+    #[test]
+    fn a_channel_window_stays_shut_on_data_nobody_read() {
+        let channel_id = ChannelId(30);
+        let mut encrypted = test_encrypted();
+        encrypted
+            .channels
+            .insert(channel_id, test_ready_channel(channel_id, 50));
+
+        encrypted.received(channel_id, 1024);
+
+        assert_eq!(encrypted.channels[&channel_id].sender_window_size, 0);
+        assert!(encrypted.write.is_empty());
+    }
+
+    #[test]
+    fn a_channel_window_opens_by_what_was_read_once_less_than_half_is_left() {
+        let channel_id = ChannelId(31);
+        let mut encrypted = test_encrypted();
+        encrypted
+            .channels
+            .insert(channel_id, test_ready_channel(channel_id, 51));
+
+        encrypted.received(channel_id, 300);
+        assert!(
+            !encrypted.taken(channel_id, 300, 1024).unwrap(),
+            "more than half left"
+        );
+        encrypted.received(channel_id, 400);
+        assert!(encrypted.write.is_empty());
+
+        assert!(encrypted.taken(channel_id, 100, 1024).unwrap());
+        assert_eq!(window_adjusts(&encrypted.write), [(51, 400)]);
+        assert_eq!(
+            encrypted.channels[&channel_id].sender_window_size,
+            1024 - 300,
+            "less what's still to read"
+        );
+    }
+
+    #[test]
+    fn a_channel_window_never_opens_past_where_it_started() {
+        let channel_id = ChannelId(32);
+        let mut encrypted = test_encrypted();
+        encrypted
+            .channels
+            .insert(channel_id, test_ready_channel(channel_id, 52));
+
+        encrypted.received(channel_id, 1000);
+        // Beyond what the window has left: not counted, as upstream does.
+        encrypted.received(channel_id, 500);
+        assert_eq!(encrypted.channels[&channel_id].sender_window_size, 24);
+
+        assert!(encrypted.taken(channel_id, 1500, 1024).unwrap());
+        assert_eq!(window_adjusts(&encrypted.write), [(52, 1000)]);
+        assert_eq!(encrypted.channels[&channel_id].sender_window_size, 1024);
     }
 }

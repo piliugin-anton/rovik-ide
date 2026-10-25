@@ -12,9 +12,9 @@ members = [
     "crates/rovik-headless",
     "crates/eoka",
 ]
-# A dependency kept here as published, but for a fix (its FORK.md): built
-# as one, not as a member, so its own tests and examples, and what they
-# need, stay out of the workspace's.
+# A dependency kept here as published, but for its fixes (its FORK.md):
+# built as one, not as a member, so its own tests and examples, and what
+# they need, stay out of the workspace's.
 exclude = ["crates/russh"]
 resolver = "2"
 
@@ -58,9 +58,10 @@ windows = "0.62"
 # crates/eoka/FORK.md says what differs and how to drop the fork.
 [patch.crates-io]
 eoka = { path = "crates/eoka" }
-# One SSH channel the app doesn't read mustn't hold up the others: russh
-# with flow control by what's read, until a release of russh has it.
-# crates/russh/FORK.md says what differs and how to drop the fork.
+# One SSH channel that isn't read mustn't hold up the others: russh with
+# flow control by what's read, and a window counted once, until a release
+# of russh has both. crates/russh/FORK.md says what differs and how to
+# drop the fork.
 russh = { path = "crates/russh" }
 
 [package]
