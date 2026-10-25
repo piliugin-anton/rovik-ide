@@ -1050,8 +1050,12 @@ for an approval, with the reason and what to do instead
 - `read`, `outline`, `diagnostics` and `neighbours` of one, `write` to one
   the agent may not change, and an edit of part of one it may not read;
 - a command whose words say it would: `cat .env`, `cp .env /tmp`,
-  `echo X >> .env`, `rm .env`, in a `bash -c` script too, from the folder a
-  `cd` left it in. A search (`grep`, `rg`) is refused only when it would
+  `echo X >> .env`, `rm .env`, `rm -r` or `cp -r` of a folder holding
+  one, `git checkout -- .env`, `git clean -fdx` (which deletes ignored
+  `.env`s), `git reset --hard` over changes to one the repository
+  tracks, and what prints the values of one (`docker compose config`,
+  `terraform output`); in a `bash -c` script too, from the folder a `cd`
+  left it in. A search (`grep`, `rg`) is refused only when it would
   print a line of one, which is looked for there, in the files it would
   pick (build output too, not dependencies): `grep -r useState .` runs,
   `grep -r API_KEY .` doesn't, nor one through more files than can be

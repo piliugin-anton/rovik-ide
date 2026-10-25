@@ -1083,11 +1083,6 @@ impl Run {
     /// Permission first (refused calls never reach approval), then approval
     /// when the settings require it: by the user, or by the AI reviewer.
     async fn authorize(&self, tc: &ToolCall, resume_note: Option<&str>) -> Authorized {
-        // The files the user keeps from the agent: refused, never asked about.
-        let args = permissions::parse_args(&tc.arguments);
-        if let Some(problem) = self.restricted_problem(&tc.name, args).await {
-            return rejected(problem);
-        }
         let config = self.config();
         let p = &config.permissions;
         let daemon_folder = self.names_daemon_folder(tc);
@@ -1097,23 +1092,29 @@ impl Run {
         if daemon_folder && unattended {
             return rejected(super::autopilot::DAEMON_FOLDER_REFUSED);
         }
-        let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
+        let approval = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
             ToolVerdict::Refused(reason) => {
                 return rejected(format!(
                     "Error: blocked by the user's permission settings. {reason}"
                 ))
             }
-            // An interrupted call is always confirmed by the user, and so
-            // is a command that names a server's own folder. In Autopilot
-            // a resumed call goes by its rule, as a new one does.
-            ToolVerdict::Permitted { approval } => match resume_note {
-                Some(_) if !unattended => Approver::User,
-                _ if daemon_folder => Approver::User,
-                _ => match approval {
-                    Some(_) if unattended => Approver::Ai,
-                    Some(a) => a,
-                    None => return Authorized::default(),
-                },
+            ToolVerdict::Permitted { approval } => approval,
+        };
+        // The files the user keeps from the agent: refused, never asked about.
+        let args = permissions::parse_args(&tc.arguments);
+        if let Some(problem) = self.restricted_problem(&tc.name, args).await {
+            return rejected(problem);
+        }
+        // An interrupted call is always confirmed by the user, and so is a
+        // command that names a server's own folder. In Autopilot a resumed
+        // call goes by its rule, as a new one does.
+        let approver = match resume_note {
+            Some(_) if !unattended => Approver::User,
+            _ if daemon_folder => Approver::User,
+            _ => match approval {
+                Some(_) if unattended => Approver::Ai,
+                Some(a) => a,
+                None => return Authorized::default(),
             },
         };
 

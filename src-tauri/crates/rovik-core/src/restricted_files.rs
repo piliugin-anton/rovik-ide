@@ -431,6 +431,22 @@ const SKIPPED_FOLDERS: &[&str] = &[
     ".cache",
 ];
 
+/// Folders of build output: copies of what's elsewhere, an `.env` among
+/// them, which a walk for files to change leaves out too (`rm -rf .next`
+/// deletes no credentials of the user's).
+const BUILD_FOLDERS: &[&str] = &[
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".nuxt",
+    ".output",
+    ".svelte-kit",
+    "coverage",
+    ".turbo",
+    ".parcel-cache",
+];
+
 /// Whether a walk for restricted files leaves out a folder, by its name
 /// ([`SKIPPED_FOLDERS`]).
 pub(crate) fn skipped_folder(name: &str) -> bool {
@@ -438,12 +454,16 @@ pub(crate) fn skipped_folder(name: &str) -> bool {
 }
 
 impl RestrictedFiles {
-    /// Whether a walk for restricted files leaves out `folder`, of the
-    /// project in `root`: a [`skipped_folder`], unless the user's list
-    /// names it or something in it.
-    pub(crate) fn skips(&self, root: &Path, folder: &Path) -> bool {
+    /// Whether a walk for restricted files to `op` leaves out `folder`, of
+    /// the project in `root`: a [`skipped_folder`], or build output for
+    /// changes ([`BUILD_FOLDERS`]); unless the user's list names it or
+    /// something in it.
+    pub(crate) fn skips(&self, root: &Path, folder: &Path, op: Op) -> bool {
         let name = folder.file_name().map(|n| n.to_string_lossy());
-        if !name.is_some_and(|name| skipped_folder(&name)) {
+        let skipped = name.is_some_and(|name| {
+            skipped_folder(&name) || (op == Op::Write && BUILD_FOLDERS.contains(&&*name))
+        });
+        if !skipped {
             return false;
         }
         let Ok(rel) = folder.strip_prefix(root) else {

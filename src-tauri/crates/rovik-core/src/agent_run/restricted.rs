@@ -24,7 +24,7 @@
 use super::permissions::{self, ParsedCommand, Shell};
 use super::tools;
 use crate::restricted_files::{
-    reason, refusal, skipped_folder, Op, RestrictedFiles, SETTINGS_PAGE,
+    looks_secret, reason, refusal, skipped_folder, Op, RestrictedFiles, SETTINGS_PAGE,
 };
 use ignore::{overrides::OverrideBuilder, types::TypesBuilder, WalkBuilder};
 use regex::{Regex, RegexBuilder};
@@ -398,6 +398,16 @@ impl Check<'_> {
                 }
             }
         }
+        for (word, op) in effects.trees.iter().filter(|(w, _)| !unknown(w)) {
+            if let Some(problem) = self.held(cwd, word, *op, &effects.excludes) {
+                return Some(problem);
+            }
+        }
+        if let Some(change) = &effects.git {
+            if let Some(problem) = self.git_changed(cwd, change) {
+                return Some(problem);
+            }
+        }
         // Files its words don't name: what lists them decides.
         let searches = effects.search.iter().flat_map(|s| &s.paths);
         if effects.reads.iter().chain(searches).any(|f| unknown(f)) {
@@ -486,7 +496,7 @@ impl Check<'_> {
                     let hit = |key: &str, file: &Path| {
                         self.restricted.blocks_file(key, op) && prints(file)
                     };
-                    match self.walk(at, &search.picks, &hit) {
+                    match self.walk(at, &search.picks, op, &hit) {
                         Walked::Clean => continue,
                         Walked::Found(file) if op == Op::Read && !search.listing => {
                             return Some(format!(
@@ -520,11 +530,135 @@ impl Check<'_> {
                 let hit = |key: &str, file: &Path| {
                     finder.finds(word, start, file) && self.restricted.blocks_file(key, op)
                 };
-                match self.walk(start, &finder.picks, &hit) {
+                match self.walk(start, &finder.picks, op, &hit) {
                     Walked::Clean => {}
                     Walked::Found(file) => return Some(refused(self.whole, op, &file)),
                     Walked::TooLarge => return Some(self.too_large()),
                 }
+            }
+        }
+        None
+    }
+
+    /// Why a program may not do `op` with every file in the folders `word`
+    /// names (`cp -r dir …`, `rm -r dir`), but those matching `excludes`: a
+    /// restricted one is among them.
+    fn held(&self, cwd: &Path, word: &str, op: Op, excludes: &[String]) -> Option<String> {
+        let picks = Picks {
+            hidden: true,
+            globs: excludes.iter().map(|e| format!("!{e}")).collect(),
+            ..Picks::default()
+        };
+        let hit = |key: &str, _: &Path| self.restricted.blocks_file(key, op);
+        for folder in named_paths(cwd, word) {
+            let folder = Path::new(&folder);
+            if !folder.is_dir() {
+                continue;
+            }
+            // Outside the project, only folders of logins are known: one
+            // (`~/.ssh`), or one in it (`~`).
+            if !folder.starts_with(self.root) {
+                let logins = |dir: &Path| looks_secret(&dir.join("x").to_string_lossy());
+                let held = std::fs::read_dir(folder)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .find(|path| path.is_dir() && logins(path));
+                match held.or_else(|| logins(folder).then(|| folder.to_path_buf())) {
+                    Some(logins) => {
+                        return Some(refused(self.whole, op, &logins.to_string_lossy()))
+                    }
+                    None => continue,
+                }
+            }
+            match self.walk(folder, &picks, op, &hit) {
+                Walked::Clean => {}
+                Walked::Found(file) => return Some(refused(self.whole, op, &file)),
+                Walked::TooLarge => return Some(self.too_large()),
+            }
+        }
+        None
+    }
+
+    /// Why what git would change that its words don't name may not be
+    /// changed: a restricted file among the tracked ones whose changes it
+    /// throws away, or the untracked ones it deletes or stashes.
+    fn git_changed(&self, cwd: &Path, change: &GitChange) -> Option<String> {
+        let folder = PathBuf::from(resolve(cwd, &expand_home(&change.folder)));
+        let repo = git2::Repository::discover(&folder).ok()?;
+        // git's paths are from its own folder, as the file system has it.
+        let workdir = repo.workdir()?.canonicalize().ok()?;
+        let under: Vec<String> = change
+            .under
+            .iter()
+            .flat_map(|word| named_paths(cwd, word))
+            .collect();
+        if change.modified {
+            let real_under: Vec<PathBuf> = under
+                .iter()
+                .filter_map(|path| Path::new(path).canonicalize().ok())
+                .collect();
+            let mut options = git2::StatusOptions::new();
+            options.include_untracked(false).include_ignored(false);
+            let statuses = repo.statuses(Some(&mut options)).ok()?;
+            for entry in statuses.iter() {
+                let Ok(path) = entry.path() else {
+                    continue;
+                };
+                let file = workdir.join(path);
+                if !real_under.iter().any(|u| file.starts_with(u)) {
+                    continue;
+                }
+                let key = self
+                    .restricted
+                    .blocked(self.root, &file.to_string_lossy(), Op::Write);
+                if let Some(key) = key {
+                    return Some(refused(self.whole, Op::Write, &key));
+                }
+            }
+        }
+        if !(change.untracked || change.ignored) {
+            return None;
+        }
+        // The restricted files there git doesn't track: those it takes.
+        let index = repo.index().ok()?;
+        let picks = Picks {
+            hidden: true,
+            ..Picks::default()
+        };
+        let hit = |key: &str, file: &Path| {
+            if !self.restricted.blocks_file(key, Op::Write) {
+                return false;
+            }
+            let real = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+            let Ok(rel) = real.strip_prefix(&workdir) else {
+                return false;
+            };
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            // `-e config` keeps what's in `config/` too.
+            let parts: Vec<&str> = rel.split('/').collect();
+            let kept = (1..=parts.len()).any(|n| {
+                let folder = parts[..n].join("/");
+                change
+                    .kept
+                    .iter()
+                    .any(|p| glob_matches(p, parts[n - 1]) || glob_matches(p, &folder))
+            });
+            if kept || index.get_path(Path::new(&rel), 0).is_some() {
+                return false;
+            }
+            if repo.is_path_ignored(Path::new(&rel)).unwrap_or(false) {
+                change.ignored
+            } else {
+                change.untracked
+            }
+        };
+        for folder in under.iter().filter(|f| Path::new(f).starts_with(self.root)) {
+            match self.walk(Path::new(folder), &picks, Op::Write, &hit) {
+                Walked::Clean => {}
+                Walked::Found(file) => return Some(refused(self.whole, Op::Write, &file)),
+                Walked::TooLarge => return Some(self.too_large()),
             }
         }
         None
@@ -542,8 +676,19 @@ impl Check<'_> {
     /// The first file under `start`, as a program picks them going through
     /// it (`picks`), that `hit` says it looks for, by its key (relative to
     /// the project, or absolute outside it) and path.
-    fn walk(&self, start: &Path, picks: &Picks, hit: &dyn Fn(&str, &Path) -> bool) -> Walked {
+    fn walk(
+        &self,
+        start: &Path,
+        picks: &Picks,
+        op: Op,
+        hit: &dyn Fn(&str, &Path) -> bool,
+    ) -> Walked {
         let root = Path::new(self.root);
+        // A dependency's folder (or build output, for changes) holds none of
+        // the user's credentials.
+        if self.restricted.skips(root, start, op) {
+            return Walked::Clean;
+        }
         let mut walk = WalkBuilder::new(start);
         let ignores = picks.ignore_files;
         let (restricted, project) = (self.restricted.clone(), root.to_path_buf());
@@ -557,7 +702,7 @@ impl Check<'_> {
             .max_depth(picks.depth)
             .filter_entry(move |e| {
                 let dir = e.file_type().is_some_and(|t| t.is_dir());
-                !(dir && restricted.skips(&project, e.path()))
+                !(dir && restricted.skips(&project, e.path(), op))
             });
         if ignores && picks.rg {
             walk.add_custom_ignore_filename(".rgignore");
@@ -688,6 +833,12 @@ struct Effects {
     writes: Vec<String>,
     /// What it finds, and does with what it finds (`find`, `fd`).
     finds: Option<Finder>,
+    /// Folders whose every file it reads (`cp -r dir …`) or changes
+    /// (`rm -r dir`), but those matching `excludes` (`rsync --exclude`).
+    trees: Vec<(String, Op)>,
+    excludes: Vec<String>,
+    /// What git changes that its words don't name (`clean`, `reset --hard`).
+    git: Option<GitChange>,
 }
 
 /// What a search reads: the files it's given, and those it picks in the
@@ -887,10 +1038,11 @@ fn effects(
     }
     match program {
         "findstr" => findstr_effects(args),
-        "git" => Effects {
-            reads: git_reads(args),
-            ..Effects::default()
-        },
+        "git" => git_effects(args),
+        "ln" => ln_effects(args, cwd),
+        "docker" if args.iter().any(|a| a == "compose") => compose_effects(args, cwd),
+        "docker-compose" => compose_effects(args, cwd),
+        "terraform" | "tofu" => terraform_effects(args, cwd),
         "tee" => Effects {
             writes: words(&[]),
             ..Effects::default()
@@ -948,10 +1100,14 @@ fn effects(
             writes: words(&["-n", "--iterations", "-s", "--size"]),
             ..Effects::default()
         },
-        _ if DELETERS.contains(&program) => Effects {
-            writes: words(&[]),
-            ..Effects::default()
-        },
+        _ if DELETERS.contains(&program) => {
+            let files = words(&[]);
+            Effects {
+                trees: files.iter().map(|f| (f.clone(), Op::Write)).collect(),
+                writes: files,
+                ..Effects::default()
+            }
+        }
         _ => Effects::default(),
     }
 }
@@ -1172,28 +1328,343 @@ fn findstr_effects(args: &[String]) -> Effects {
     }
 }
 
-/// The files git prints from: `git show REV:path`, `git diff path`,
-/// `git log -p path`, `git blame path`, `git cat-file -p REV:path`.
-fn git_reads(args: &[String]) -> Vec<String> {
-    let Some(at) = args.iter().position(|a| !a.starts_with('-')) else {
-        return Vec::new();
-    };
-    if !matches!(
-        args[at].as_str(),
-        "show" | "diff" | "log" | "blame" | "annotate" | "cat-file" | "whatchanged"
-    ) {
-        return Vec::new();
+/// git's options before its command that take a value.
+const GIT_VALUES: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--exec-path",
+    "--super-prefix",
+    "--config-env",
+    "--list-cmds",
+];
+
+/// What git does with files, from the folder `-C` takes it to: those its
+/// words name that it prints (`git show REV:path`, `git diff path`, `git
+/// log -p path`, `git blame path`) or changes (`git checkout -- path`,
+/// `git rm path`, `git mv`), and those it changes that they don't name
+/// (`clean`, `reset --hard`, `stash`, `checkout .`).
+fn git_effects(args: &[String]) -> Effects {
+    let mut at = 0;
+    let mut folder = String::new();
+    while let Some(word) = args.get(at) {
+        if word == "-C" {
+            let to = args.get(at + 1).map(String::as_str).unwrap_or_default();
+            folder = in_folder(&folder, to);
+            at += 2;
+        } else if GIT_VALUES.contains(&word.as_str()) {
+            at += 2;
+        } else if word.starts_with('-') {
+            at += 1;
+        } else {
+            break;
+        }
     }
-    Args::split(&args[at + 1..], &[], false)
-        .words
-        .into_iter()
-        .map(|w| match w.split_once(':') {
-            // `HEAD:.env`, `main:config/.env`: the path after the revision.
-            Some((rev, path)) if !rev.is_empty() && !rev.contains(['/', '\\']) => path,
-            _ => w,
-        })
+    let Some(command) = args.get(at) else {
+        return Effects::default();
+    };
+    let rest = &args[at + 1..];
+    let here =
+        |words: &[&str]| -> Vec<String> { words.iter().map(|w| in_folder(&folder, w)).collect() };
+    // What it changes that its words don't name, under its paths (or all).
+    let change = |under: &[&str], change: GitChange| GitChange {
+        folder: folder.clone(),
+        under: if under.is_empty() {
+            vec![folder_or_here(&folder)]
+        } else {
+            here(under)
+        },
+        ..change
+    };
+    match command.as_str() {
+        "show" | "diff" | "log" | "blame" | "annotate" | "cat-file" | "whatchanged" => {
+            let words = Args::split(rest, &[], false).words;
+            let paths: Vec<&str> = words
+                .iter()
+                .map(|w| match w.split_once(':') {
+                    // `HEAD:.env`, `main:config/.env`: the path after the revision.
+                    Some((rev, path)) if !rev.is_empty() && !rev.contains(['/', '\\']) => path,
+                    _ => w,
+                })
+                .collect();
+            Effects {
+                reads: here(&paths),
+                ..Effects::default()
+            }
+        }
+        "checkout" | "switch" | "restore" => {
+            let a = Args::split(
+                rest,
+                &[
+                    "-b",
+                    "-B",
+                    "-c",
+                    "-C",
+                    "--orphan",
+                    "-s",
+                    "--source",
+                    "--conflict",
+                ],
+                false,
+            );
+            // Only the index: the files stay as they are.
+            if a.has(&["-S", "--staged"]) && !a.has(&["-W", "--worktree"]) {
+                return Effects::default();
+            }
+            let force = a.has(&["-f", "--force", "--discard-changes"]);
+            // A folder it's given has its tracked files' changes thrown away.
+            let folders: Vec<&str> = a
+                .words
+                .iter()
+                .copied()
+                .filter(|w| w.ends_with(['/', '\\']) || *w == ".")
+                .collect();
+            let git = (force || !folders.is_empty()).then(|| {
+                change(
+                    &folders,
+                    GitChange {
+                        modified: true,
+                        ..GitChange::default()
+                    },
+                )
+            });
+            Effects {
+                writes: here(&a.words),
+                git,
+                ..Effects::default()
+            }
+        }
+        "rm" | "mv" => {
+            let a = Args::split(rest, &[], false);
+            if a.has(&["--cached"]) {
+                return Effects::default();
+            }
+            let words = here(&a.words);
+            Effects {
+                trees: words.iter().map(|w| (w.clone(), Op::Write)).collect(),
+                writes: words,
+                ..Effects::default()
+            }
+        }
+        "reset" => {
+            let a = Args::split(rest, &[], false);
+            let git = a.has(&["--hard", "--merge", "--keep"]).then(|| {
+                change(
+                    &[],
+                    GitChange {
+                        modified: true,
+                        ..GitChange::default()
+                    },
+                )
+            });
+            Effects {
+                git,
+                ..Effects::default()
+            }
+        }
+        "stash" => {
+            // `git stash`, `push` and `save` put the changes away; the others
+            // read or drop what's stashed.
+            let sub = rest.first().filter(|w| !w.starts_with('-'));
+            if sub.is_some_and(|sub| !matches!(sub.as_str(), "push" | "save")) {
+                return Effects::default();
+            }
+            let a = Args::split(
+                &rest[usize::from(sub.is_some())..],
+                &["-m", "--message"],
+                false,
+            );
+            let all = a.has(&["-a", "--all"]);
+            let git = change(
+                &a.words,
+                GitChange {
+                    modified: true,
+                    untracked: all || a.has(&["-u", "--include-untracked"]),
+                    ignored: all,
+                    ..GitChange::default()
+                },
+            );
+            Effects {
+                git: Some(git),
+                ..Effects::default()
+            }
+        }
+        "clean" => {
+            let a = Args::split(rest, &["-e", "--exclude"], false);
+            if a.has(&["-n", "--dry-run"]) {
+                return Effects::default();
+            }
+            let git = change(
+                &a.words,
+                GitChange {
+                    untracked: !a.has(&["-X"]),
+                    ignored: a.has(&["-x", "-X"]),
+                    kept: owned(&a.values(&["-e", "--exclude"]).collect::<Vec<_>>()),
+                    ..GitChange::default()
+                },
+            );
+            Effects {
+                git: Some(git),
+                ..Effects::default()
+            }
+        }
+        _ => Effects::default(),
+    }
+}
+
+/// `word` from `folder` (a relative one, as git's `-C` takes it).
+fn in_folder(folder: &str, word: &str) -> String {
+    if folder.is_empty() || Path::new(word).is_absolute() {
+        word.to_string()
+    } else {
+        format!("{}/{word}", folder.trim_end_matches(['/', '\\']))
+    }
+}
+
+/// `folder`, or the one the command runs in when it's none.
+fn folder_or_here(folder: &str) -> String {
+    if folder.is_empty() {
+        ".".to_string()
+    } else {
+        folder.to_string()
+    }
+}
+
+/// Files git changes that its words don't name.
+#[derive(Debug, Default, PartialEq)]
+struct GitChange {
+    /// Where it works (`git -C`), and the files and folders it's limited to.
+    folder: String,
+    under: Vec<String>,
+    /// It throws away the changes to tracked files (`reset --hard`,
+    /// `stash`, `checkout .`).
+    modified: bool,
+    /// It takes the untracked files its ignore files don't leave out
+    /// (`clean`, `stash -u`), and the ignored ones (`clean -x`, `stash -a`);
+    /// `clean -X` takes only those.
+    untracked: bool,
+    ignored: bool,
+    /// Patterns of files it leaves alone (`clean -e`).
+    kept: Vec<String>,
+}
+
+/// `ln`: the link it makes replaces the file of its name (`ln -sf`), in
+/// the folder it's given (`-t`, or a last word that's a folder).
+fn ln_effects(args: &[String], cwd: &Path) -> Effects {
+    let a = Args::split(args, &["-t", "--target-directory", "-S", "--suffix"], false);
+    let into = a.values(&["-t", "--target-directory"]).next();
+    let mut targets: Vec<&str> = a.words.clone();
+    let name = match into {
+        Some(folder) => folder,
+        None if targets.len() > 1 => targets.pop().unwrap_or_default(),
+        // `ln -s target`: a link of its name, here.
+        None => targets
+            .first()
+            .map(|t| t.rsplit(['/', '\\']).next().unwrap_or(t))
+            .unwrap_or_default(),
+    };
+    let folder = into.is_some() || Path::new(&resolve(cwd, &expand_home(name))).is_dir();
+    let writes = if folder {
+        targets
+            .iter()
+            .map(|t| {
+                let t = t.trim_end_matches(['/', '\\']);
+                let base = t.rsplit(['/', '\\']).next().unwrap_or(t);
+                format!("{}/{base}", name.trim_end_matches(['/', '\\']))
+            })
+            .collect()
+    } else {
+        vec![name.to_string()]
+    };
+    Effects {
+        writes,
+        ..Effects::default()
+    }
+}
+
+/// `docker compose config` (and `convert`, and `docker-compose`'s): it
+/// prints the compose file with the values of its `.env` and of the
+/// `--env-file`s put in. Its `.env` is the project folder's
+/// (`--project-directory`, else the first `-f`'s, else here), when there's
+/// one.
+fn compose_effects(args: &[String], cwd: &Path) -> Effects {
+    let a = Args::split(
+        args,
+        &[
+            "-f",
+            "--file",
+            "--project-directory",
+            "--env-file",
+            "-p",
+            "--project-name",
+            "--profile",
+            "--ansi",
+            "--progress",
+            "--parallel",
+            "--context",
+            "-c",
+            "-H",
+            "--host",
+            "--config",
+            "-l",
+            "--log-level",
+        ],
+        false,
+    );
+    if !a.words.iter().any(|w| matches!(*w, "config" | "convert")) {
+        return Effects::default();
+    }
+    let folder = a
+        .values(&["--project-directory"])
+        .last()
         .map(str::to_string)
-        .collect()
+        .or_else(|| {
+            let file = a.values(&["-f", "--file"]).next()?;
+            Some(
+                file.rsplit_once(['/', '\\'])
+                    .map(|(dir, _)| dir)
+                    .unwrap_or(".")
+                    .to_string(),
+            )
+        })
+        .unwrap_or_else(|| ".".to_string());
+    let mut reads = owned(&a.values(&["--env-file"]).collect::<Vec<_>>());
+    let env = in_folder(&folder, ".env");
+    if Path::new(&resolve(cwd, &env)).is_file() {
+        reads.push(env);
+    }
+    Effects {
+        reads,
+        ..Effects::default()
+    }
+}
+
+/// terraform's commands that print what its state holds (`show`,
+/// `output`, `console`, `state pull`, `state show`): they read the state
+/// in its folder (`-chdir=`), when it's kept there.
+fn terraform_effects(args: &[String], cwd: &Path) -> Effects {
+    let folder = args
+        .iter()
+        .find_map(|a| a.strip_prefix("-chdir="))
+        .unwrap_or(".");
+    let words: Vec<&str> = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(String::as_str)
+        .take(2)
+        .collect();
+    let prints = matches!(
+        words.as_slice(),
+        ["show" | "output" | "console", ..] | ["state", "pull" | "show"]
+    );
+    let state = in_folder(folder, "terraform.tfstate");
+    let kept = Path::new(&resolve(cwd, &state)).is_file();
+    Effects {
+        reads: (prints && kept).then_some(state).into_iter().collect(),
+        ..Effects::default()
+    }
 }
 
 /// perl and ruby: code given with `-e` (else the first word is the
@@ -1589,22 +2060,12 @@ fn curl_effects(args: &[String]) -> Effects {
 /// moved, changed), the destination written, or each source's name in the
 /// destination folder.
 fn copy_effects(program: &str, args: &[String], slash: bool, cwd: &Path) -> Effects {
-    let a = Args::split(
-        args,
-        &[
-            "-t",
-            "--target-directory",
-            "-S",
-            "--suffix",
-            "-m",
-            "--mode",
-            "-o",
-            "--owner",
-            "-g",
-            "--group",
-        ],
-        slash,
-    );
+    let valued = match program {
+        "rsync" => RSYNC_VALUES,
+        "scp" => SCP_VALUES,
+        _ => COPY_VALUES,
+    };
+    let a = Args::split(args, valued, slash);
     let into = a.values(&["-t", "--target-directory"]).next();
     let mut sources: Vec<&str> = a.words.clone();
     let destination = match into {
@@ -1630,15 +2091,73 @@ fn copy_effects(program: &str, args: &[String], slash: bool, cwd: &Path) -> Effe
     } else {
         vec![destination.to_string()]
     };
+    // A folder's files are read (and moved, changed) with it.
+    let mut trees: Vec<(String, Op)> = sources.iter().map(|s| (s.to_string(), Op::Read)).collect();
     if MOVERS.contains(&program) {
         writes.extend(owned(&sources));
+        trees.extend(sources.iter().map(|s| (s.to_string(), Op::Write)));
     }
     Effects {
         reads: owned(&sources),
         writes,
+        trees,
+        excludes: owned(&a.values(&["--exclude"]).collect::<Vec<_>>()),
         ..Effects::default()
     }
 }
+
+/// cp's, install's and mv's options that take a value.
+const COPY_VALUES: &[&str] = &[
+    "-t",
+    "--target-directory",
+    "-S",
+    "--suffix",
+    "-m",
+    "--mode",
+    "-o",
+    "--owner",
+    "-g",
+    "--group",
+];
+/// rsync's: `--exclude .env` leaves a file out, `-e 'ssh -i key'` logs in.
+const RSYNC_VALUES: &[&str] = &[
+    "--exclude",
+    "--include",
+    "--exclude-from",
+    "--include-from",
+    "--files-from",
+    "-f",
+    "--filter",
+    "-e",
+    "--rsh",
+    "--rsync-path",
+    "--chmod",
+    "--chown",
+    "--log-file",
+    "--log-file-format",
+    "--out-format",
+    "--password-file",
+    "--port",
+    "--timeout",
+    "--bwlimit",
+    "--compare-dest",
+    "--copy-dest",
+    "--link-dest",
+    "--backup-dir",
+    "--suffix",
+    "--partial-dir",
+    "-T",
+    "--temp-dir",
+    "--max-size",
+    "--min-size",
+    "-B",
+    "--block-size",
+    "--usermap",
+    "--groupmap",
+    "--iconv",
+];
+/// scp's: `-i ~/.ssh/key` is the key it logs in with, not a file it copies.
+const SCP_VALUES: &[&str] = &["-P", "-i", "-o", "-F", "-l", "-c", "-S", "-J", "-D", "-X"];
 
 /// The values of `key=value` words (`dd if=… of=…`).
 fn values_of(args: &[String], key: &str) -> Vec<String> {
@@ -2990,6 +3509,164 @@ mod tests {
             "node -e \"console.log(process.version)\"",
             "perl -e 'print 1'",
             "python3 -m pytest",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn copying_moving_or_deleting_a_folder_reaches_the_files_in_it() {
+        let (dir, root) = project(&[
+            "apps/api/.env",
+            "node_modules/pkg/test/key.pem",
+            ".next/standalone/.env",
+        ]);
+        for (command, refusal) in [
+            ("rm -rf apps", "would change apps/api/.env,"),
+            ("rm -r config", "would change config/master.key,"),
+            ("mv apps /tmp/apps", "would read apps/api/.env,"),
+            ("cp -r config /tmp/backup", "would read config/master.key,"),
+            ("cp -r . /tmp/backup", "would read "),
+            ("scp -r config host:", "would read config/master.key,"),
+            ("rsync -a . /backup/", "would read "),
+            ("ln -sf .env.example .env", "would change .env,"),
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains(refusal), "{command}: {refused}");
+        }
+        for command in [
+            // Dependencies and build output: no credentials of the user's.
+            "rm -rf node_modules",
+            "rm -rf .next",
+            "cp -r src /tmp/src",
+            "rsync -a --exclude .env --exclude config --exclude apps . /backup/",
+            "rsync -a -e 'ssh -i ~/.ssh/id_rsa' src host:",
+            "scp -i ~/.ssh/id_rsa README.md host:",
+            "ln -s .env.example .env.local",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+        // Outside the project, a folder of logins, or one holding one.
+        let home = temp_dir();
+        std::fs::create_dir_all(home.0.join(".ssh")).unwrap();
+        std::fs::write(home.0.join(".ssh/id_ed25519"), "key\n").unwrap();
+        std::fs::create_dir_all(home.0.join("tmp")).unwrap();
+        let home = home.0.to_string_lossy().replace('\\', "/");
+        for command in [format!("rm -rf {home}"), format!("rm -rf {home}/.ssh")] {
+            let refused = command_problem(&command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains("/.ssh, a restricted file"), "{refused}");
+        }
+        for command in [format!("rm -rf {home}/tmp"), "rm -rf /".to_string()] {
+            assert_eq!(command_problem(&command, &root, &none()), None, "{command}");
+        }
+        drop(dir);
+    }
+
+    /// A repository in `dir` that tracks `files`, committed.
+    fn repository(dir: &Path, files: &[&str]) {
+        let repo = git2::Repository::init(dir).unwrap();
+        let mut index = repo.index().unwrap();
+        for file in files {
+            index.add_path(Path::new(file)).unwrap();
+        }
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let me = git2::Signature::now("me", "me@example.com").unwrap();
+        repo.commit(Some("HEAD"), &me, &me, "first", &tree, &[])
+            .unwrap();
+    }
+
+    #[test]
+    fn git_may_not_print_change_or_clean_away_a_restricted_file() {
+        let (dir, root) = project(&["apps/api/.env", "keys/deploy.pem"]);
+        std::fs::write(dir.0.join(".gitignore"), ".env*\nconfig/\n").unwrap();
+        repository(&dir.0, &["src/app.ts", "keys/deploy.pem", ".gitignore"]);
+        for (command, refusal) in [
+            // Its own options come before its command.
+            (
+                "git -C apps/api show HEAD:.env",
+                "would read apps/api/.env,",
+            ),
+            ("git -c core.pager=cat show HEAD:.env", "would read .env,"),
+            ("git checkout -- .env", "would change .env,"),
+            ("git restore .env", "would change .env,"),
+            ("git rm .env", "would change .env,"),
+            ("git mv .env .env.old", "would change .env,"),
+            // Cleaning ignored files deletes `.env`s.
+            ("git clean -fdx", "would change "),
+            ("git clean -fX", "would change "),
+            ("git stash --all", "would change "),
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains(refusal), "{command}: {refused}");
+        }
+        for command in [
+            "git restore --staged .env",
+            "git rm --cached .env",
+            "git clean -fd",
+            "git clean -n -fdx",
+            "git clean -fdx -e .env -e config -e apps",
+            "git reset --hard",
+            "git stash",
+            "git checkout .",
+            "git checkout -b feature",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+        // A tracked key with changes that would be thrown away.
+        std::fs::write(dir.0.join("keys/deploy.pem"), "changed\n").unwrap();
+        for command in [
+            "git reset --hard",
+            "git stash",
+            "git checkout .",
+            "git checkout -f main",
+            "git -C keys checkout -- .",
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(
+                refused.contains("would change keys/deploy.pem,"),
+                "{command}: {refused}"
+            );
+        }
+        assert_eq!(
+            command_problem("git checkout -- src/", &root, &none()),
+            None
+        );
+    }
+
+    #[test]
+    fn tools_that_print_what_a_restricted_file_holds_are_refused() {
+        let (dir, root) = project(&["deploy/.env", "infra/terraform.tfstate"]);
+        std::fs::write(dir.0.join("terraform.tfstate"), "{}\n").unwrap();
+        for (command, refusal) in [
+            // Compose puts its `.env`'s values in what it prints.
+            ("docker compose config", "would read .env,"),
+            (
+                "docker compose -f deploy/compose.yml config",
+                "would read deploy/.env,",
+            ),
+            ("docker-compose convert", "would read .env,"),
+            // terraform prints what its state holds.
+            ("terraform output -json", "would read terraform.tfstate,"),
+            (
+                "terraform -chdir=infra show",
+                "would read infra/terraform.tfstate,",
+            ),
+            ("terraform state pull", "would read terraform.tfstate,"),
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains(refusal), "{command}: {refused}");
+        }
+        for command in [
+            "docker compose up -d",
+            "cd src && docker compose config",
+            "terraform plan",
+            "terraform -chdir=src output",
         ] {
             assert_eq!(command_problem(command, &root, &none()), None, "{command}");
         }
