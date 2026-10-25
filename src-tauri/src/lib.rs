@@ -383,7 +383,6 @@ pub fn run() {
             commands::agent::chat_dismiss_checklist,
             commands::agent::list_models,
             commands::agent::connector_probe,
-            commands::agent::connector_auth_status,
             commands::agent::connector_setup,
             commands::agent::connector_commands,
             commands::browser::web_search,

@@ -1,7 +1,8 @@
 // Component test: Settings → Connectors' form, laid out the same for every
 // kind (ConnectorsSettings.tsx): its name; the Connection section, with
 // the kind's sign-in fields before the test and Set up; the kind's own
-// options (connectorFields.ts); its models.
+// options (connectorFields.ts); its models. And the status each
+// connector's last check found, checked again as the page and a form open.
 // Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
@@ -10,6 +11,8 @@ import { render } from 'solid-js/web';
 import ConnectorsSettings from './ConnectorsSettings';
 import { ConfirmDialogHost } from './ConfirmDialog';
 import {
+  authStateOf,
+  cantRun,
   connectorAuthState,
   newConnector,
   setConnectorAuthState,
@@ -18,9 +21,10 @@ import {
 
 // The cloud hosts to test on (none, unless a test names some); the
 // connector's program, as each test has it answer (a failure as the app's
-// commands give one: its text).
+// commands give one: its text): installed and signed in, unless it says.
 let hosts: { id: string; name: string }[] = [];
-let answer: (cmd: string, args: any) => unknown = () => null;
+let answer: (cmd: string, args: any) => unknown = (cmd) =>
+  cmd === 'connector_probe' ? READY : null;
 (window as any).__TAURI_INTERNALS__ = {
   invoke: async (cmd: string, args: any) => (cmd === 'hosts_list' ? { hosts } : answer(cmd, args)),
 };
@@ -64,6 +68,25 @@ function page(connector: ReturnType<typeof newConnector>) {
   );
   return { root, dispose };
 }
+
+/** The form's Computer: where it tests and sets up. */
+const computer = (root: ParentNode) =>
+  root.querySelector<HTMLSelectElement>('select[aria-label="Where to test"]');
+
+/** Picks `host` in the form's Computer ('' for this computer), as the user does. */
+function pick(root: ParentNode, host: string) {
+  const select = computer(root)!;
+  select.value = host;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/** What the form's test found, as it shows it. */
+const testStatus = (root: ParentNode) =>
+  root.querySelector('.connector-test-status.ok')?.textContent ?? '';
+
+/** The buttons of the form's Set up row. */
+const setUpButtons = (root: ParentNode) =>
+  [...root.querySelectorAll('.connector-setup button')].map((b) => b.textContent);
 
 /**
  * What one of the form's parts is: a section by its title (one without, by
@@ -186,36 +209,40 @@ test('the list’s Set up shows what its first test found', async () => {
 });
 
 test('the list’s Set up runs on this computer, even after a form tested on a host', async () => {
-  // Where each test ran: a host's id, or null for this computer.
-  const testedOn: (string | null)[] = [];
+  // Signed in on the host; signed out here until Set up signs it in.
+  let signedInHere = false;
+  const calls: { cmd: string; host: string | null }[] = [];
   answer = (cmd, args) => {
-    if (cmd !== 'connector_probe') return null;
-    testedOn.push(args.host);
-    return READY;
+    calls.push({ cmd, host: args.host });
+    if (cmd === 'connector_probe') {
+      return { ...READY, auth: { loggedIn: !!args.host || signedInHere } };
+    }
+    if (cmd !== 'connector_setup') return null;
+    if (!args.host) signedInHere = true;
+    return { id: 'j1', action: 'login', command: 'claude auth login', output: '', done: true };
   };
   hosts = [{ id: 'h1', name: 'Build server' }];
-  const claude = { ...newConnector('claude-code'), id: 'c5' };
-  // Found signed out on this computer: its row offers Set up.
-  setConnectorAuthState(claude.id, { state: 'signedOut', auth: { loggedIn: false } });
-  const { root, dispose } = page(claude);
-  const computer = () =>
-    root.querySelector<HTMLSelectElement>('select[aria-label="Where to test"]');
+  const { root, dispose } = page({ ...newConnector('claude-code'), id: 'c5' });
   try {
     // A form tests on the host its Computer picks, then closes.
     button(root, 'Edit').click();
-    await until(() => computer()?.options.length === 2);
-    computer()!.value = 'h1';
-    computer()!.dispatchEvent(new Event('change', { bubbles: true }));
-    button(root, 'Test connection').click();
-    await until(() => /Connected/.test(root.textContent ?? ''));
-    assert.deepEqual(testedOn, ['h1']);
+    await until(() => computer(root)?.options.length === 2);
+    pick(root, 'h1');
+    await until(() => /Signed in/.test(testStatus(root)));
+    assert.equal(calls[calls.length - 1].host, 'h1');
     button(root, 'Cancel').click();
 
-    // The row's Set up opens a form on this computer and sets it up here.
+    // Signed out here, so its row offers Set up: it opens a form on this
+    // computer and sets it up here.
+    calls.length = 0;
     button(root, 'Set up').click();
     await until(() => /is ready/.test(root.textContent ?? ''));
-    assert.equal(computer()?.value, '');
-    assert.deepEqual(testedOn, ['h1', null]);
+    assert.equal(computer(root)?.value, '');
+    assert.deepEqual(calls, [
+      { cmd: 'connector_probe', host: null },
+      { cmd: 'connector_setup', host: null },
+      { cmd: 'connector_probe', host: null },
+    ]);
     assert.match(root.textContent ?? '', /Claude Code is ready on this computer\./);
   } finally {
     hosts = [];
@@ -223,51 +250,154 @@ test('the list’s Set up runs on this computer, even after a form tested on a h
   }
 });
 
-test('picking another computer forgets the last one’s test, and a test still running there', async () => {
-  // Signed in on the host, where a newer version is out: each test there
-  // answers when this test says.
+test('picking another computer tests there; the last one’s test, or one still running, isn’t kept', async () => {
+  // Signed out here; signed in on the host, where a newer version is out.
+  // A test on the host answers at once, unless this test holds it.
+  let hold = false;
   let answerHost = () => {};
-  answer = (cmd) =>
-    cmd === 'connector_probe'
-      ? new Promise((resolve) => (answerHost = () => resolve({ ...READY, update: '2.2.0' })))
-      : null;
+  answer = (cmd, args) => {
+    if (cmd !== 'connector_probe') return null;
+    if (!args.host) return { ...READY, auth: { loggedIn: false } };
+    const there = { ...READY, update: '2.2.0' };
+    return hold ? new Promise((resolve) => (answerHost = () => resolve(there))) : there;
+  };
   hosts = [{ id: 'h1', name: 'Build server' }];
   const claude = { ...newConnector('claude-code'), id: 'c6' };
   const { root, dispose } = page(claude);
-  const computer = () =>
-    root.querySelector<HTMLSelectElement>('select[aria-label="Where to test"]');
-  const pick = (host: string) => {
-    computer()!.value = host;
-    computer()!.dispatchEvent(new Event('change', { bubbles: true }));
-  };
-  const setUpButtons = () =>
-    [...root.querySelectorAll('.connector-setup button')].map((b) => b.textContent);
   try {
     button(root, 'Edit').click();
-    await until(() => computer()?.options.length === 2);
+    await until(
+      () => computer(root)?.options.length === 2 && /Not signed in/.test(testStatus(root))
+    );
+    assert.deepEqual(setUpButtons(root), ['Set up']);
 
-    // A test on the host shows what it found there, and offers its Update and Sign out.
-    pick('h1');
-    button(root, 'Test connection').click();
-    answerHost();
-    await until(() => /Connected/.test(root.textContent ?? ''));
-    assert.deepEqual(setUpButtons(), ['Set up', 'Update to 2.2.0', 'Sign out']);
+    // On the host: what's there, with its Update and Sign out.
+    pick(root, 'h1');
+    await until(() => /Signed in/.test(testStatus(root)));
+    assert.deepEqual(setUpButtons(root), ['Set up', 'Update to 2.2.0', 'Sign out']);
 
-    // Back on this computer, none of that is shown or offered here.
-    pick('');
-    assert.doesNotMatch(root.textContent ?? '', /Connected/);
-    assert.deepEqual(setUpButtons(), ['Set up']);
+    // Back here: this computer's, none of the host's.
+    pick(root, '');
+    await until(() => /Not signed in/.test(testStatus(root)));
+    assert.deepEqual(setUpButtons(root), ['Set up']);
+    assert.doesNotMatch(testStatus(root), /2\.2\.0/);
 
-    // A test on the host that ends after the pick isn't this computer's sign-in.
-    pick('h1');
-    button(root, 'Test connection').click();
-    pick('');
+    // A test on the host that answers after the pick isn't shown, nor kept
+    // as this computer's.
+    hold = true;
+    pick(root, 'h1');
+    pick(root, '');
+    await until(() => /Not signed in/.test(testStatus(root)));
     answerHost();
     await settle(20);
-    assert.doesNotMatch(root.textContent ?? '', /Connected/);
-    assert.equal(connectorAuthState(claude.id), undefined);
+    assert.match(testStatus(root), /Not signed in/);
+    assert.equal(connectorAuthState(claude.id)?.state, 'signedOut');
   } finally {
     hosts = [];
     dispose();
   }
+});
+
+test('the list shows what the last check found at once, and checks each connector again, for no tokens', async () => {
+  const asked: { request: boolean; host: string | null }[] = [];
+  let answerCheck = (_: ConnectorProbe) => {};
+  answer = (cmd, args) => {
+    if (cmd !== 'connector_probe') return null;
+    asked.push({ request: args.args.request, host: args.host });
+    return new Promise((resolve) => (answerCheck = resolve));
+  };
+  const claude = { ...newConnector('claude-code'), id: 'c7' };
+  // What the check as the app started found: signed in, an older version.
+  setConnectorAuthState(
+    claude.id,
+    authStateOf({ probe: { ...READY, version: '2.1.300 (Claude Code)' } })
+  );
+  const { root, dispose } = page(claude);
+  const row = () => root.querySelector('.connector-row')?.textContent ?? '';
+
+  // Shown at once, while it's checked again here, with no request.
+  assert.match(row(), /Installed: 2\.1\.300 \(Claude Code\)/);
+  assert.match(row(), /Signed in/);
+  assert.deepEqual(asked, [{ request: false, host: null }]);
+  assert.ok(button(root, 'Check status').disabled);
+
+  // What the check finds replaces it.
+  answerCheck({ ...READY, auth: { loggedIn: false }, update: '2.2.0' });
+  await until(() => /Not signed in/.test(row()));
+  assert.match(row(), /Installed: 2\.1\.310 \(Claude Code\) · 2\.2\.0 is available/);
+  assert.ok(button(root, 'Set up'), 'signed out: its row offers Set up');
+  assert.ok(!button(root, 'Check status').disabled);
+  dispose();
+});
+
+test('a connector’s form shows what the last check found at once, and tests it again', async () => {
+  let probes = 0;
+  let release = () => {};
+  answer = (cmd) => {
+    if (cmd !== 'connector_probe') return null;
+    const found = { ...READY, update: '2.2.0' };
+    // The list's check answers at once; the form's own test when this test says.
+    if (++probes === 1) return found;
+    return new Promise(
+      (resolve) => (release = () => resolve({ ...found, version: '2.1.320 (Claude Code)' }))
+    );
+  };
+  const { root, dispose } = page({ ...newConnector('claude-code'), id: 'c8' });
+  await until(() => /2\.2\.0 is available/.test(root.textContent ?? ''));
+  button(root, 'Edit').click();
+
+  // At once: what the list's check found here, with its Update and Sign out.
+  assert.match(testStatus(root), /Connected: 2\.1\.310 \(Claude Code\)/);
+  assert.match(testStatus(root), /Signed in/);
+  assert.deepEqual(setUpButtons(root), ['Set up', 'Update to 2.2.0', 'Sign out']);
+
+  // Tested again meanwhile; what that finds replaces it.
+  assert.ok(button(root, 'Testing…').disabled);
+  release();
+  await until(() => /2\.1\.320/.test(testStatus(root)));
+  assert.ok(button(root, 'Test connection'));
+  dispose();
+});
+
+test('a form’s own test makes no request, even with “with a request” picked; the Test button’s does', async () => {
+  const requests: boolean[] = [];
+  answer = (cmd, args) => {
+    if (cmd !== 'connector_probe') return null;
+    requests.push(args.args.request);
+    return READY;
+  };
+  const { root, dispose } = page({ ...newConnector('claude-code'), id: 'c9' });
+  button(root, 'Edit').click();
+  await until(() => requests.length === 2 && !!button(root, 'Test connection'));
+
+  const withRequest = root.querySelector<HTMLInputElement>('.connector-test-option input')!;
+  withRequest.checked = true;
+  withRequest.dispatchEvent(new Event('change', { bubbles: true }));
+  button(root, 'Test connection').click();
+  await until(() => requests.length === 3);
+
+  // The next form opens with it still picked: its own test makes none.
+  button(root, 'Cancel').click();
+  button(root, 'Edit').click();
+  await until(() => requests.length === 4);
+  // The list's check and the first form's, the Test button's, the next form's.
+  assert.deepEqual(requests, [false, false, true, false]);
+  dispose();
+});
+
+test('a test that fails on this computer is this computer’s status too', async () => {
+  // Installed as the page opens; gone by the time the form tests it.
+  let probes = 0;
+  answer = (cmd) =>
+    cmd !== 'connector_probe' ? null : ++probes === 1 ? READY : Promise.reject(MISSING);
+  const claude = { ...newConnector('claude-code'), id: 'c10' };
+  const { root, dispose } = page(claude);
+  await until(() => connectorAuthState(claude.id)?.state === 'signedIn');
+  button(root, 'Edit').click();
+  await until(() => errors(root).length > 0);
+  assert.deepEqual(errors(root), [MISSING]);
+  assert.ok(cantRun(connectorAuthState(claude.id)));
+  button(root, 'Cancel').click();
+  assert.ok(button(root, 'Set up'), 'its row offers Set up');
+  dispose();
 });

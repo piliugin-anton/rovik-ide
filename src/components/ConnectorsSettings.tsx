@@ -7,8 +7,11 @@
 // fields) with its test and Set up; the kind's options (connectorFields.ts);
 // and its models, as the Model providers page lists them
 // (ProviderModelsTable.tsx). The models enabled here show in the chat's
-// model picker, marked as a connector's.
-import { createResource, createSignal, For, Show } from 'solid-js';
+// model picker, marked as a connector's. What each connector's last check
+// found (lib/connectors.ts: installed, signed in, a newer version) shows at
+// once: the list checks each again as it opens, and a connector's form
+// tests it again, with no request, as it opens and on another computer.
+import { createResource, createSignal, For, onMount, Show } from 'solid-js';
 import { Dynamic } from 'solid-js/web';
 import type { ConnectorKind, Provider } from '../types';
 import { mergeRemoteModels } from '../lib/aiSettings';
@@ -16,19 +19,21 @@ import {
   authLine,
   authStateOf,
   cantRun,
-  checkConnectorAuth,
+  checkConnector,
   connectorAuthState,
   setConnectorAuthState,
   CONNECTOR_CATALOG,
   connectorTitle,
   isConnector,
   kindOfProvider,
+  lastFound,
   newConnector,
   probeConnector,
   probeModels,
   probeSummary,
   errorText,
   specOf,
+  versionLine,
   type ConnectorProbe,
 } from '../lib/connectors';
 import { CONNECTOR_FIELDS } from './connectorFields';
@@ -53,10 +58,14 @@ interface ConnectorsSettingsProps {
   controller?: (api: ConnectorsSettingsController) => void;
 }
 
+/** What a test found: the form shows it, and offers Update and Sign out by it. */
+type Tested = { kind: 'ok'; probe: ConnectorProbe; added: number; first: boolean };
+
 type TestState =
   | { kind: 'idle' }
-  | { kind: 'testing' }
-  | { kind: 'ok'; probe: ConnectorProbe; added: number; first: boolean }
+  /** A test runs: what the last one found stays shown meanwhile. */
+  | { kind: 'testing'; last?: Tested }
+  | Tested
   | { kind: 'error'; message: string };
 
 export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
@@ -80,6 +89,12 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
   const [hostsList] = createResource(() => listHosts().catch(() => null));
   const hosts = () => hostsList()?.hosts ?? [];
 
+  // As the page opens, each connector is checked again on this computer,
+  // with no request: its row shows what the last check found meanwhile.
+  onMount(() => {
+    for (const c of connectors()) void checkConnector(c);
+  });
+
   // Ignore results from a test that was started before the settings or the
   // computer changed.
   let testRun = 0;
@@ -100,10 +115,11 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
     forgetTest();
   };
 
-  /** Another computer to test and set up on: the last test was the other one's. */
+  /** Another computer to test and set up on: the last test was the other one's, so it tests there. */
   function pickComputer(host: string) {
     forgetTest();
     setTestHost(host);
+    void checkNow();
   }
 
   function openDraft(p: Provider, setUp = false) {
@@ -113,10 +129,15 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
     // Each form starts on this computer: the list's rows, and the Set up
     // they open, are this computer's, whatever host the last form picked.
     setTestHost('');
+    // What the last check here found shows at once, while the form tests
+    // again (Set up tests as it starts).
+    const known = lastFound(connectorAuthState(p.id))?.probe;
+    if (known) setTest({ kind: 'ok', probe: known, added: 0, first: false });
     setSetUpOnOpen(setUp);
     setDraft({ ...p, models: p.models.map((m) => ({ ...m })) });
     setFormError(null);
     setAdding(false);
+    if (!setUp) void checkNow();
   }
 
   function closeDraft() {
@@ -134,43 +155,55 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
    * and keeps its models; throws what failed, and shows it as the test's
    * result when `showFailure`. "Set up" tests with it too, without: what
    * failed is its own to act on (a missing program, it installs) or to show.
+   * With `request`, it makes one small request too (a few tokens).
    */
-  async function testNow(showFailure: boolean): Promise<ConnectorProbe> {
+  async function testNow(showFailure: boolean, request = withRequest()): Promise<ConnectorProbe> {
     const d = draft();
     if (!d) throw new Error('No connector is open.');
     const run = ++testRun;
     // The computer it runs on: what it finds is that computer's.
     const host = testHost() || null;
-    setTest({ kind: 'testing' });
+    setTest((t) => ({
+      kind: 'testing',
+      last: t.kind === 'ok' ? t : t.kind === 'testing' ? t.last : undefined,
+    }));
     try {
-      const probe = await probeConnector(d, withRequest(), host);
+      const probe = await probeConnector(d, request, host);
       const current = draft();
       if (run !== testRun || !current) return probe;
       // Existing choices are kept; only the very first fetch enables everything.
       const firstFetch = current.models.length === 0;
       const { models, added } = mergeRemoteModels(current.models, probeModels(probe));
       setDraft({ ...current, models });
-      // What it found about the sign-in is this computer's: the rows and
-      // the menu show it (a host's is the host's own).
-      if (probe.auth && !host) setConnectorAuthState(current.id, authStateOf({ auth: probe.auth }));
+      // What it found here is this computer's status: the rows and the menu
+      // show it (a host's is the host's own).
+      if (!host) setConnectorAuthState(current.id, authStateOf({ probe }));
       setTest({ kind: 'ok', probe, added, first: firstFetch });
       return probe;
     } catch (err) {
-      if (run === testRun)
+      if (run === testRun) {
+        if (!host) setConnectorAuthState(d.id, authStateOf({ error: err }));
         setTest(showFailure ? { kind: 'error', message: errorText(err) } : { kind: 'idle' });
+      }
       throw err;
     }
   }
 
   const runTest = () => testNow(true).catch(() => {});
+  /**
+   * The form's own test, as it opens and on another computer: what's
+   * installed there and whether it's signed in. No request, so no tokens.
+   */
+  const checkNow = () => testNow(true, false).catch(() => {});
   const testWhere = () =>
     testHost()
       ? `on ${hosts().find((h) => h.id === testHost())?.name ?? 'the host'}`
       : 'on this computer';
 
+  /** What the last test found, also while another runs. */
   const okState = () => {
     const t = test();
-    return t.kind === 'ok' ? t : null;
+    return t.kind === 'ok' ? t : t.kind === 'testing' ? (t.last ?? null) : null;
   };
   const errorState = () => {
     const t = test();
@@ -195,8 +228,8 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
         : [...prev, clean]
     );
     closeDraft();
-    // Its sign-in may have changed with its settings (a token, a folder).
-    void checkConnectorAuth(clean);
+    // Its status may have changed with its settings (a token, a folder, the program).
+    void checkConnector(clean);
   }
 
   async function remove(connector: Provider) {
@@ -262,6 +295,9 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
                   <span class="profile-row-sub">
                     {c.models.filter((m) => m.enabled).length} of {c.models.length} models enabled
                   </span>
+                  <Show when={versionLine(connectorAuthState(c.id))}>
+                    {(line) => <span class="profile-row-sub">{line()}</span>}
+                  </Show>
                   <Show when={authLine(connectorAuthState(c.id))}>
                     {(line) => (
                       <span
@@ -276,11 +312,11 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
                 </div>
                 <div class="profile-row-actions">
                   <button
-                    onClick={() => void checkConnectorAuth(c)}
+                    onClick={() => void checkConnector(c)}
                     disabled={connectorAuthState(c.id)?.state === 'checking'}
-                    title="Whether it's signed in on this computer (asks the program; no request is made)"
+                    title="Whether it's installed and signed in on this computer, and whether a newer version is out (asks the program; no request is made)"
                   >
-                    Check sign-in
+                    Check status
                   </button>
                   <Show when={cantRun(connectorAuthState(c.id))}>
                     <button
@@ -390,9 +426,7 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
                   <div class="provider-test-status ok connector-test-status">
                     {probeSummary(ok().probe)}, {ok().probe.models.length} models
                     {!ok().first && ok().added > 0 ? ` (${ok().added} new, not enabled)` : ''}
-                    <Show
-                      when={ok().probe.auth && authLine(authStateOf({ auth: ok().probe.auth! }))}
-                    >
+                    <Show when={authLine(authStateOf({ probe: ok().probe }))}>
                       {(line) => (
                         <div class="connector-auth" classList={{ warning: line().warning }}>
                           {line().text}

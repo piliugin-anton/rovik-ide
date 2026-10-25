@@ -8,11 +8,14 @@ import {
   authLine,
   authStateOf,
   cantRun,
+  checkConnector,
   checkConnectorsOnStart,
   CONNECTOR_AUTH_NOTE,
   connectorAuthState,
   resetStartCheck,
+  setConnectorAuthState,
   type ConnectorAuth,
+  type ConnectorProbe,
   usesRovikTools,
   connectorSegments,
   type ConnectorMeta,
@@ -28,6 +31,7 @@ import {
   splitSources,
   titleProfile,
   specOf,
+  versionLine,
 } from './connectors';
 import {
   AUTH_KINDS,
@@ -253,7 +257,7 @@ test('a step that hasn’t changed is the same call, so its block keeps its stat
 });
 
 /*
- * Sign-in at start (checkConnectorsOnStart)
+ * Status at start (checkConnectorsOnStart), and as the pages check again
  */
 
 const withModel = (id: string, name: string): Provider => ({
@@ -263,7 +267,16 @@ const withModel = (id: string, name: string): Provider => ({
   models: [{ id: 'sonnet', enabled: true }],
 });
 
-test('at start, each connector a chat can pick is checked once, and one signed out is said', async () => {
+/** What a test that makes no request answers: the program, signed in or not as `auth` says. */
+const probeOf = (auth?: ConnectorAuth, more: Partial<ConnectorProbe> = {}): ConnectorProbe => ({
+  program: '/home/me/.local/bin/claude',
+  version: '2.1.310 (Claude Code)',
+  models: [],
+  auth,
+  ...more,
+});
+
+test('at start, each connector is checked once, and one a chat can pick that’s signed out is said', async () => {
   resetStartCheck();
   dismiss(CONNECTOR_AUTH_NOTE);
   const asked: string[] = [];
@@ -271,21 +284,25 @@ test('at start, each connector a chat can pick is checked once, and one signed o
   const signedIn = withModel('c1', 'Claude Code');
   const signedOut = withModel('c2', 'Claude Code (work)');
   const unused = { ...withModel('c3', 'Spare'), models: [{ id: 'opus', enabled: false }] };
-  const check = async (p: Provider): Promise<ConnectorAuth> => {
+  const check = async (p: Provider): Promise<ConnectorProbe> => {
     asked.push(p.id);
     return p.id === 'c1'
-      ? { loggedIn: true, method: 'claude.ai' }
-      : { loggedIn: false, method: 'none', detail: 'Not signed in: run `claude` once.' };
+      ? probeOf({ loggedIn: true, method: 'claude.ai' })
+      : probeOf({ loggedIn: false, method: 'none', detail: 'Not signed in: run `claude` once.' });
   };
   const found = await checkConnectorsOnStart(
     [openai, signedIn, signedOut, unused],
     () => opened++,
     check
   );
-  assert.deepEqual(asked.sort(), ['c1', 'c2'], 'only connectors with an enabled model');
+  // Every connector, so its row shows what was found as Settings opens.
+  assert.deepEqual(asked.sort(), ['c1', 'c2', 'c3']);
   assert.equal(found.c1.state, 'signedIn');
   assert.equal(found.c2.state, 'signedOut');
+  assert.equal(found.c3.state, 'signedOut');
   assert.equal(connectorAuthState('c2')?.state, 'signedOut', 'kept for the pages');
+  assert.equal(versionLine(connectorAuthState('c3')), 'Installed: 2.1.310 (Claude Code)');
+  // Only one a chat can pick is said: the spare one has no enabled model.
   const note = notifications().find((n) => n.id === CONNECTOR_AUTH_NOTE);
   assert.ok(note);
   assert.equal(note.kind, 'warning');
@@ -295,7 +312,7 @@ test('at start, each connector a chat can pick is checked once, and one signed o
   assert.equal(opened, 1);
   // Once per window: a second call checks nothing.
   assert.deepEqual(await checkConnectorsOnStart([signedOut], () => opened++, check), {});
-  assert.equal(asked.length, 2);
+  assert.equal(asked.length, 3);
   // The menu line says how many can't run.
   assert.equal(
     connectorsSummary([openai, signedIn, signedOut]),
@@ -304,17 +321,14 @@ test('at start, each connector a chat can pick is checked once, and one signed o
   dismiss(CONNECTOR_AUTH_NOTE);
 });
 
-test('at start, a missing program is said; a check that can’t say is left alone', async () => {
+test('at start, a missing program is said; a program that can’t say it’s signed in is left alone', async () => {
   resetStartCheck();
   dismiss(CONNECTOR_AUTH_NOTE);
   const missing = withModel('m1', 'Claude Code');
   const old = withModel('m2', 'Old Claude');
-  const check = async (p: Provider): Promise<ConnectorAuth> => {
-    throw new Error(
-      p.id === 'm1'
-        ? "claude isn't installed, or isn't on the PATH."
-        : "This Claude Code can't report its sign-in: update it."
-    );
+  const check = async (p: Provider): Promise<ConnectorProbe> => {
+    if (p.id === 'm1') throw new Error("claude isn't installed, or isn't on the PATH.");
+    return probeOf(undefined, { version: '2.0.1 (Claude Code)' });
   };
   const found = await checkConnectorsOnStart([missing, old], () => {}, check);
   assert.deepEqual(found.m1, {
@@ -324,10 +338,14 @@ test('at start, a missing program is said; a check that can’t say is left alon
   });
   assert.equal(found.m2.state, 'unknown');
   assert.ok(!cantRun(found.m2));
+  assert.deepEqual(authLine(found.m2), {
+    text: "Sign-in unknown: it didn't say whether it's signed in.",
+    warning: false,
+  });
   const note = notifications().find((n) => n.id === CONNECTOR_AUTH_NOTE);
   assert.equal(note?.title, 'Claude Code isn’t installed');
   dismiss(CONNECTOR_AUTH_NOTE);
-  // No connector a chat can pick: nothing is checked, nothing said.
+  // No connector: nothing is checked, nothing said.
   resetStartCheck();
   assert.deepEqual(await checkConnectorsOnStart([openai], () => {}, check), {});
   assert.equal(
@@ -339,7 +357,7 @@ test('at start, a missing program is said; a check that can’t say is left alon
 test('several connectors that can’t run share one notification', async () => {
   resetStartCheck();
   dismiss(CONNECTOR_AUTH_NOTE);
-  const out = async (): Promise<ConnectorAuth> => ({ loggedIn: false, detail: 'Not signed in.' });
+  const out = async () => probeOf({ loggedIn: false, detail: 'Not signed in.' });
   await checkConnectorsOnStart([withModel('a', 'A'), withModel('b', 'B')], () => {}, out);
   const notes = notifications().filter((n) => n.id === CONNECTOR_AUTH_NOTE);
   assert.equal(notes.length, 1);
@@ -349,7 +367,41 @@ test('several connectors that can’t run share one notification', async () => {
   resetStartCheck();
 });
 
-test('sign-in lines for the rows', () => {
+test('a check shows what the last one found until it answers', async () => {
+  resetStartCheck();
+  const claude = withModel('k1', 'Claude Code');
+  setConnectorAuthState('k1', authStateOf({ probe: probeOf({ loggedIn: false }) }));
+  let answer = (_: ConnectorProbe) => {};
+  const checking = checkConnector(claude, () => new Promise((resolve) => (answer = resolve)));
+  // Checking again: the last check's lines stay, and so does what can't run.
+  assert.equal(connectorAuthState('k1')?.state, 'checking');
+  assert.deepEqual(authLine(connectorAuthState('k1')), { text: 'Not signed in.', warning: true });
+  assert.ok(cantRun(connectorAuthState('k1')));
+  assert.equal(versionLine(connectorAuthState('k1')), 'Installed: 2.1.310 (Claude Code)');
+
+  answer(probeOf({ loggedIn: true }, { version: '2.1.320 (Claude Code)', update: '2.2.0' }));
+  assert.equal((await checking).state, 'signedIn');
+  assert.ok(!cantRun(connectorAuthState('k1')));
+  assert.equal(
+    versionLine(connectorAuthState('k1')),
+    'Installed: 2.1.320 (Claude Code) · 2.2.0 is available'
+  );
+  resetStartCheck();
+});
+
+test('a test’s state is what’s installed and signed in, not the request it made', () => {
+  const state = authStateOf({
+    probe: probeOf(
+      { loggedIn: true, method: 'claude.ai' },
+      { request: { model: 'haiku', inputTokens: 9, outputTokens: 1, ms: 900 } }
+    ),
+  });
+  assert.equal(state.state, 'signedIn');
+  assert.equal(state.probe?.request, null);
+  assert.equal(state.probe?.version, '2.1.310 (Claude Code)');
+});
+
+test('status lines for the rows', () => {
   assert.equal(authLine(undefined), null);
   assert.deepEqual(authLine({ state: 'checking' }), { text: 'Checking sign-in…', warning: false });
   assert.deepEqual(authLine({ state: 'signedIn', auth: { loggedIn: true, method: 'claude.ai' } }), {
@@ -371,6 +423,14 @@ test('sign-in lines for the rows', () => {
     text: 'Sign-in unknown: timed out',
     warning: false,
   });
+  // The version: none before a test answered.
+  assert.equal(versionLine(undefined), null);
+  assert.equal(versionLine({ state: 'checking' }), null);
+  assert.equal(versionLine(authStateOf({ error: new Error('timed out') })), null);
+  assert.equal(
+    versionLine(authStateOf({ probe: probeOf({ loggedIn: true }, { version: '' }) })),
+    'Installed: /home/me/.local/bin/claude'
+  );
 });
 
 test('with Rovik’s tools, a connector’s model is offered the run’s tools', () => {
