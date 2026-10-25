@@ -1055,7 +1055,10 @@ for an approval, with the reason and what to do instead
   print a line of one, which is looked for there: `grep -r useState .`
   runs, `grep -r API_KEY .` doesn't. A program that only uses one runs
   (`node --env-file=.env`), as does a script of the project's: commands
-  are judged by their words.
+  are judged by their words. What git itself prints isn't checked:
+  `git diff`, `git log -p` and `git grep` show a restricted file the
+  repository tracks, so credentials belong in files git ignores
+  (`.env.local`).
 
 `search_code` leaves their lines out, saying how many matched where; the
 repository map leaves out their declarations, and the reviewers' diffs
