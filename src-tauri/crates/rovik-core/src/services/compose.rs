@@ -20,6 +20,7 @@
 
 use serde_json::Value;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -408,22 +409,18 @@ pub fn read_all(program: &Program, root: &Path) -> Vec<Arc<Model>> {
 }
 
 /// `config --format json --no-env-resolution` in `dir`: Compose with an
-/// environment of its own (the PATH and the home folder), so a variable
-/// the file names comes from the project's `.env`, not from the app's or
-/// the daemon's environment, where a token may be.
+/// environment of its own ([`environment`]), so a variable the file names
+/// comes from the project's `.env`, not from the app's or the daemon's
+/// environment, where a token may be.
 fn run_config(program: &Program, dir: &Path, file: &str) -> Result<Model, String> {
     let mut cmd = program.command();
     cmd.args(["config", "--format", "json", "--no-env-resolution"])
         .current_dir(dir)
         .env_clear()
+        .envs(environment(crate::process::child_var))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for key in ["PATH", "HOME", "SYSTEMROOT"] {
-        if let Some(value) = crate::process::child_var(key) {
-            cmd.env(key, value);
-        }
-    }
     crate::process::no_window(&mut cmd);
     let child = cmd
         .spawn()
@@ -435,6 +432,26 @@ fn run_config(program: &Program, dir: &Path, file: &str) -> Result<Model, String
         return Err(format!("Compose couldn't read {file}: {}", said.trim()));
     }
     Model::parse(dir, file, &String::from_utf8_lossy(&out.stdout))
+}
+
+/// What Compose is given of the environment `var` reads: where programs
+/// are (the PATH), and where Docker keeps its settings and the `compose`
+/// plugin (the home folder, or `DOCKER_CONFIG`; on Windows `USERPROFILE`,
+/// and `ProgramFiles`, where Docker Desktop puts the plugin), with
+/// `SYSTEMROOT`, which Windows' programs need. Nothing else of it, where a
+/// token may be.
+fn environment(var: impl Fn(&str) -> Option<OsString>) -> Vec<(&'static str, OsString)> {
+    [
+        "PATH",
+        "HOME",
+        "DOCKER_CONFIG",
+        "USERPROFILE",
+        "ProgramFiles",
+        "SYSTEMROOT",
+    ]
+    .into_iter()
+    .filter_map(|key| Some((key, var(key)?)))
+    .collect()
 }
 
 /// `child`'s output, once it has ended, or an error once `limit` passed,
@@ -587,6 +604,23 @@ mod tests {
         std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
         std::fs::write(root.join("node_modules/compose.yaml"), "services: {}\n").unwrap();
         assert_eq!(folders(root), ["", "api"]);
+    }
+
+    /// Docker finds its `compose` plugin and settings through these, on
+    /// Windows too; a token in the app's environment stays out.
+    #[test]
+    fn compose_is_given_where_dockers_files_are_and_no_tokens() {
+        let app = |key: &str| match key {
+            "PATH" | "DOCKER_CONFIG" | "USERPROFILE" | "ProgramFiles" | "ANTHROPIC_API_KEY" => {
+                Some(OsString::from(format!("{key}'s value")))
+            }
+            _ => None,
+        };
+        let given: Vec<&str> = environment(app).into_iter().map(|(key, _)| key).collect();
+        assert_eq!(
+            given,
+            ["PATH", "DOCKER_CONFIG", "USERPROFILE", "ProgramFiles"]
+        );
     }
 
     /// With the pinned Compose (or the user's), a real project is read as
