@@ -3933,7 +3933,8 @@ mod tests {
         for command in [format!("rm -rf {home}"), format!("rm -rf {home}/.ssh")] {
             let refused = command_problem(&command, &root, &none())
                 .unwrap_or_else(|| panic!("{command} should be refused"));
-            assert!(refused.contains("/.ssh, a restricted file"), "{refused}");
+            // `/` or Windows' `\` before it.
+            assert!(refused.contains(".ssh, a restricted file"), "{refused}");
         }
         for command in [format!("rm -rf {home}/tmp"), "rm -rf /".to_string()] {
             assert_eq!(command_problem(&command, &root, &none()), None, "{command}");
