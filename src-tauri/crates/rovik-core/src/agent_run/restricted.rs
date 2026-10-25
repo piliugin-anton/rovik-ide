@@ -29,7 +29,9 @@ use crate::restricted_files::{
 use ignore::{overrides::OverrideBuilder, types::TypesBuilder, WalkBuilder};
 use regex::{Regex, RegexBuilder};
 use serde_json::{Map, Value};
+use std::cell::RefCell;
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Entries one search's walk looks at, at most, to find a restricted file
 /// it would read: past it, the search is refused as too large to check.
@@ -45,6 +47,10 @@ const MAX_DEPTH: usize = 3;
 /// A restricted file larger than this isn't looked through for the lines
 /// a search would print of it: it may print any.
 const MATCH_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// How long one command's check may take: past it, the command is refused
+/// as one that couldn't be checked. The check runs on a thread of its own,
+/// which nothing else can stop.
+const CHECK_TIME: Duration = Duration::from_secs(10);
 
 /// Programs that print the files they're given.
 const PRINTERS: &[&str] = &[
@@ -265,11 +271,24 @@ pub fn command_problem_in(
     cwd: &str,
     restricted: &RestrictedFiles,
 ) -> Option<String> {
+    judged_by(command, root, cwd, restricted, Instant::now() + CHECK_TIME)
+}
+
+/// [`command_problem_in`], refused as too slow to check past `deadline`.
+fn judged_by(
+    command: &str,
+    root: &str,
+    cwd: &str,
+    restricted: &RestrictedFiles,
+    deadline: Instant,
+) -> Option<String> {
     let check = Check {
         whole: command,
         root,
         restricted,
         rg_config: ripgrep_config(),
+        deadline,
+        vague_found: RefCell::default(),
     };
     Shell::readings()
         .iter()
@@ -284,6 +303,11 @@ struct Check<'a> {
     restricted: &'a RestrictedFiles,
     /// ripgrep's options from its config file ([`ripgrep_config`]).
     rg_config: Vec<String>,
+    /// Past it, the check stops, refusing the command ([`CHECK_TIME`]).
+    deadline: Instant,
+    /// What [`Check::vague`] came to, by folder and operation: the same for
+    /// every program in the command that runs there.
+    vague_found: RefCell<Vec<(PathBuf, Op, Option<String>)>>,
 }
 
 impl Check<'_> {
@@ -316,6 +340,9 @@ impl Check<'_> {
         }
         let mut place = Place::new(cwd);
         for (at, segment) in parsed.segments.iter().enumerate() {
+            if self.out_of_time() {
+                return Some(self.too_slow());
+            }
             if let Some(problem) = self.redirects(&parsed, at, &place.cwd) {
                 return Some(problem);
             }
@@ -462,6 +489,18 @@ impl Check<'_> {
     /// lists them in the command would list a restricted file (`find`'s
     /// files, a search's), or one of its words names one (`for f in .env*`).
     fn vague(&self, cwd: &Path, op: Op) -> Option<String> {
+        let seen = |(at, done, _): &&(PathBuf, Op, Option<String>)| at == cwd && *done == op;
+        if let Some((_, _, found)) = self.vague_found.borrow().iter().find(seen) {
+            return found.clone();
+        }
+        let found = self.vague_in(cwd, op);
+        let entry = (cwd.to_path_buf(), op, found.clone());
+        self.vague_found.borrow_mut().push(entry);
+        found
+    }
+
+    /// [`Check::vague`], worked out.
+    fn vague_in(&self, cwd: &Path, op: Op) -> Option<String> {
         let (code, texts) = permissions::split_here_text(self.whole);
         let segments = loose_words(&code);
         for words in &segments {
@@ -487,13 +526,15 @@ impl Check<'_> {
         }
         // What a here-document gives `xargs` or `read` (`xargs cat <<'EOF'`).
         let given = texts.iter().flat_map(|text| permissions::split_words(text));
-        let file = segments
-            .iter()
-            .flatten()
-            .cloned()
-            .chain(given)
-            .find_map(|w| self.blocked(cwd, &w, op))?;
-        Some(refused(self.whole, op, &file))
+        for word in segments.iter().flatten().cloned().chain(given) {
+            if self.out_of_time() {
+                return Some(self.too_slow());
+            }
+            if let Some(file) = self.blocked(cwd, &word, op) {
+                return Some(refused(self.whole, op, &file));
+            }
+        }
+        None
     }
 
     /// The restricted files the words of `text` name for `op`, from `cwd`.
@@ -723,6 +764,19 @@ impl Check<'_> {
         repair::real_key(self.root, &path).unwrap_or(key)
     }
 
+    /// Whether the check is past its deadline.
+    fn out_of_time(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
+    /// The refusal of a command that takes longer to check than one may.
+    fn too_slow(&self) -> String {
+        format!(
+            "Error: checking `{}` for restricted files, which the agent may not read or change, took too long, so it didn't run. Run its parts as separate, shorter commands.",
+            self.whole
+        )
+    }
+
     /// The refusal of a command that goes through more files than can be
     /// looked at.
     fn too_large(&self) -> String {
@@ -808,7 +862,7 @@ impl Check<'_> {
             walk.types(types);
         }
         for (seen, entry) in walk.build().enumerate() {
-            if seen >= SEARCH_MAX_ENTRIES {
+            if seen >= SEARCH_MAX_ENTRIES || self.out_of_time() {
                 return Walked::TooLarge;
             }
             let Ok(entry) = entry else {
@@ -2742,8 +2796,19 @@ const BRACES_MAX: usize = 256;
 
 /// The words the shell's braces make of `word`: `.env{,.local}` is `.env`
 /// and `.env.local`, `a{b,c{d,e}}` is `ab`, `acd` and `ace`. A range
-/// (`{1..3}`) stays as it's written.
+/// (`{1..3}`) stays as it's written. The first [`BRACES_MAX`].
 fn braces(word: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    add_braces(word, &mut words);
+    words
+}
+
+/// Adds the words the braces make of `word` to `words`, until it holds
+/// [`BRACES_MAX`]: never more are made.
+fn add_braces(word: &str, words: &mut Vec<String>) {
+    if words.len() >= BRACES_MAX {
+        return;
+    }
     let chars: Vec<char> = word.chars().collect();
     for open in (0..chars.len()).filter(|&i| chars[i] == '{') {
         // Its closing brace, and the commas between at its own level.
@@ -2770,15 +2835,13 @@ fn braces(word: &str) -> Vec<String> {
         bounds.push(close);
         let prefix: String = chars[..open].iter().collect();
         let suffix: String = chars[close + 1..].iter().collect();
-        let mut words = Vec::new();
         for pair in bounds.windows(2) {
             let choice: String = chars[pair[0] + 1..pair[1]].iter().collect();
-            words.extend(braces(&format!("{prefix}{choice}{suffix}")));
+            add_braces(&format!("{prefix}{choice}{suffix}"), words);
         }
-        words.truncate(BRACES_MAX);
-        return words;
+        return;
     }
-    vec![word.to_string()]
+    words.push(word.to_string());
 }
 
 /// The files and folders `word` names, absolute, as the shell in `cwd`
@@ -3989,6 +4052,43 @@ mod tests {
         assert_eq!(braces("plain"), ["plain"]);
         assert_eq!(braces("{a,b").len(), 1);
         assert!(braces(&"{a,b}".repeat(12)).len() <= BRACES_MAX);
+        // 2^64 words: only the first are made.
+        let many = braces(&format!("x{}", "{a,b}".repeat(64)));
+        assert_eq!(many.len(), BRACES_MAX);
+        assert_eq!(many[0], format!("x{}", "a".repeat(64)));
+    }
+
+    #[test]
+    fn a_long_command_is_judged_before_its_deadline() {
+        let (_dir, root) = project(&[]);
+        // A script run as one command: each line's `"$LOG"` is a file its
+        // words don't name, which the whole command decides, once.
+        let lines: String = (0..400)
+            .map(|i| format!("echo \"step {i}\" >> \"$LOG\"\nnpm run build:{i} > \"$LOG_DIR/{i}.log\" 2>&1\n"))
+            .collect();
+        let script = format!("LOG=build.log; LOG_DIR=logs\n{lines}");
+        assert_eq!(command_problem(&script, &root, &none()), None);
+        let loops: String = (0..300)
+            .map(|i| format!("for f in src/{i}*; do cat \"$f\"; done; "))
+            .collect();
+        assert_eq!(command_problem(&loops, &root, &none()), None);
+        let cat = format!("cat x{}", "{a,b}".repeat(64));
+        assert_eq!(command_problem(&cat, &root, &none()), None);
+    }
+
+    #[test]
+    fn a_command_not_judged_by_its_deadline_is_refused() {
+        let (_dir, root) = project(&[]);
+        for command in ["cat README.md", "grep -r useState ."] {
+            let refused = judged_by(command, &root, &root, &none(), Instant::now())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(
+                refused.contains(
+                    "for restricted files, which the agent may not read or change, took too long"
+                ),
+                "{refused}"
+            );
+        }
     }
 
     #[test]

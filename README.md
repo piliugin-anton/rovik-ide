@@ -1062,7 +1062,8 @@ for an approval, with the reason and what to do instead
   print a line of one, which is looked for there, in the files it would
   pick (build output too, not dependencies): `grep -r useState .` runs,
   `grep -r API_KEY .` doesn't, nor one through more files than can be
-  checked. Files a command's words don't name are judged by what lists
+  checked (nor a command whose check takes over 10 seconds). Files a
+  command's words don't name are judged by what lists
   them (`for f in .env*; do cat "$f"; done`, `find … -exec cat {} +`,
   `… | xargs cat`), and code given to an interpreter
   (`python3 -c "open('.env')"`) by the files it names. A here-document's
