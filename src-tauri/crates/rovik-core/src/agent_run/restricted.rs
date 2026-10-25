@@ -4032,6 +4032,8 @@ mod tests {
             // A whole word, and a whole line, of `API_KEY=x`.
             "grep -rnw API_KEY .",
             "grep -rx 'API_KEY=x' .",
+            // `.` across lines, as Claude Code's multiline Grep runs it.
+            "rg --hidden -U --multiline-dotall 'TOKEN.*NEXT' .",
         ] {
             assert!(
                 command_problem(command, &root, &none()).is_some(),
@@ -4048,6 +4050,8 @@ mod tests {
             "grep -rnw KEY .",
             "rg --hidden -w KEY",
             "grep -rx API_KEY .",
+            // Without it, `.` stops at a line's end.
+            "rg --hidden -U 'TOKEN.*NEXT' .",
         ] {
             assert_eq!(command_problem(command, &root, &none()), None, "{command}");
         }

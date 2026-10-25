@@ -1959,8 +1959,9 @@ fn harness_call(tool: &str, input: &Value) -> Option<HarnessCall> {
             if flag("-i") {
                 args.push("-i".into());
             }
+            // Claude Code's multiline: `.` takes a line's end too.
             if flag("multiline") {
-                args.push("-U".into());
+                args.extend(["-U".into(), "--multiline-dotall".into()]);
             }
             for (option, key) in [("--glob", "glob"), ("--type", "type")] {
                 if !text(key).is_empty() {
@@ -4724,6 +4725,24 @@ fi
         assert_eq!(
             crate::agent_run::permissions::parse_command(command).segments,
             [["rg", "--hidden", "-i", "--glob", "*.ts", "-e", "it's KEY", "/p/src"]]
+        );
+        // Multiline, as Claude Code runs it: `.` across lines too.
+        let across = json!({ "pattern": "A.*B", "output_mode": "content", "multiline": true });
+        let Some(HarnessCall::Tool { args, .. }) = harness_call("Grep", &across) else {
+            panic!("a multiline search is checked");
+        };
+        let command = args["command"].as_str().unwrap();
+        assert_eq!(
+            crate::agent_run::permissions::parse_command(command).segments,
+            [[
+                "rg",
+                "--hidden",
+                "-U",
+                "--multiline-dotall",
+                "-e",
+                "A.*B",
+                "."
+            ]]
         );
         // Names or counts, and finding files, read no file's text.
         assert_eq!(harness_call("Grep", &json!({ "pattern": "KEY" })), None);
