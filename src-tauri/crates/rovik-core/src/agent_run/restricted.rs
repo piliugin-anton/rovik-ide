@@ -619,7 +619,7 @@ impl Check<'_> {
                     .as_ref()
                     .is_none_or(|r| prints_from(at, r.as_deref()));
                 if let Some(file) = self.reached(file, op).filter(|_| prints) {
-                    return Some(self.refusal(op, &file, lines.is_some()));
+                    return Some(self.refusal(op, &file, Reading::of(lines.is_some())));
                 }
             }
         }
@@ -661,36 +661,54 @@ impl Check<'_> {
                     let hit = |key: &str, file: &Path| {
                         self.restricted.blocks_file(key, file, op) && prints(file)
                     };
-                    match self.walk(at, &picks, op, &hit) {
-                        Walked::Clean => continue,
-                        Walked::Found(file) => match self.reached(file, op) {
-                            Some(file) => return Some(self.refusal(op, &file, lines.is_some())),
-                            None => continue,
-                        },
-                        Walked::TooLarge => return Some(self.too_large()),
+                    let walked = self.walk(at, &picks, op, &hit);
+                    match self.walked(walked, op, Reading::of(lines.is_some())) {
+                        Some(problem) => return Some(problem),
+                        None => continue,
                     }
                 }
                 let file = self.restricted.blocked(self.root, &path, op);
                 let file = file.filter(|_| at.exists() && prints(at));
                 if let Some(file) = file.and_then(|file| self.reached(file, op)) {
-                    return Some(self.refusal(op, &file, lines.is_some()));
+                    return Some(self.refusal(op, &file, Reading::of(lines.is_some())));
                 }
             }
         }
         None
     }
 
-    /// The refusal of `op` on `file`, a restricted file; of searching it,
-    /// for a search (`searching`).
-    fn refusal(&self, op: Op, file: &str, searching: bool) -> String {
-        if !(searching && op == Op::Read) {
-            return refused(self.whole, op, file);
+    /// The refusal of `op` on `file`, a restricted file, read as `how`.
+    fn refusal(&self, op: Op, file: &str, how: Reading) -> String {
+        match (op, how) {
+            (Op::Read, Reading::Search) => format!(
+                "Error: `{}` would search {file}, a restricted file: {} To search the project, use search_code, which leaves restricted files out, or leave them out of the command's search.",
+                self.whole,
+                reason(Op::Read)
+            ),
+            (Op::Read, Reading::Copy) => {
+                let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
+                format!(
+                    "Error: `{}` would copy or move {file}, a restricted file, with its folder: {} To copy the rest, leave it out (`rsync -a --exclude='{name}' …`, tar's `--exclude`).",
+                    self.whole,
+                    reason(Op::Read)
+                )
+            }
+            _ => refused(self.whole, op, file),
         }
-        format!(
-            "Error: `{}` would search {file}, a restricted file: {} To search the project, use search_code, which leaves restricted files out, or leave them out of the command's search.",
-            self.whole,
-            reason(Op::Read)
-        )
+    }
+
+    /// What a walk came to, as the check takes it: the refusal of `op` on
+    /// the restricted file it found, read as `how`, or of a walk too large
+    /// to finish. None: it found none the check counts.
+    fn walked(&self, walked: Walked, op: Op, how: Reading) -> Option<String> {
+        match walked {
+            Walked::Clean => None,
+            Walked::Found(file) => {
+                let file = self.reached(file, op)?;
+                Some(self.refusal(op, &file, how))
+            }
+            Walked::TooLarge => Some(self.too_large()),
+        }
     }
 
     /// The restricted file `word` names for `op`, as the shell in `cwd`
@@ -859,13 +877,10 @@ impl Check<'_> {
                     let hit = |key: &str, file: &Path| {
                         self.restricted.blocks_file(key, file, op) && prints(file)
                     };
-                    match self.walk(at, &search.picks, op, &hit) {
-                        Walked::Clean => continue,
-                        Walked::Found(file) => match self.reached(file, op) {
-                            Some(file) => return Some(self.refusal(op, &file, searching)),
-                            None => continue,
-                        },
-                        Walked::TooLarge => return Some(self.too_large()),
+                    let walked = self.walk(at, &search.picks, op, &hit);
+                    match self.walked(walked, op, Reading::of(searching)) {
+                        Some(problem) => return Some(problem),
+                        None => continue,
                     }
                 }
                 let file = self
@@ -873,7 +888,7 @@ impl Check<'_> {
                     .blocked(self.root, &path, op)
                     .filter(|file| prints(Path::new(&tools::to_absolute_path(file, self.root))));
                 if let Some(file) = file.and_then(|file| self.reached(file, op)) {
-                    return Some(self.refusal(op, &file, lines.is_some()));
+                    return Some(self.refusal(op, &file, Reading::of(lines.is_some())));
                 }
             }
         }
@@ -904,14 +919,9 @@ impl Check<'_> {
                         && self.restricted.blocks_file(key, file, op)
                         && prints(file)
                 };
-                match self.walk(start, &finder.picks, op, &hit) {
-                    Walked::Clean => {}
-                    Walked::Found(file) => {
-                        if let Some(file) = self.reached(file, op) {
-                            return Some(self.refusal(op, &file, lines.is_some()));
-                        }
-                    }
-                    Walked::TooLarge => return Some(self.too_large()),
+                let walked = self.walk(start, &finder.picks, op, &hit);
+                if let Some(problem) = self.walked(walked, op, Reading::of(lines.is_some())) {
+                    return Some(problem);
                 }
             }
         }
@@ -951,14 +961,9 @@ impl Check<'_> {
                     None => continue,
                 }
             }
-            match self.walk(folder, &picks, op, &hit) {
-                Walked::Clean => {}
-                Walked::Found(file) => {
-                    if let Some(file) = self.reached(file, op) {
-                        return Some(refused(self.whole, op, &file));
-                    }
-                }
-                Walked::TooLarge => return Some(self.too_large()),
+            let walked = self.walk(folder, &picks, op, &hit);
+            if let Some(problem) = self.walked(walked, op, Reading::Copy) {
+                return Some(problem);
             }
         }
         None
@@ -1105,10 +1110,9 @@ impl Check<'_> {
             vec![top.clone()]
         };
         for root in roots.iter().filter(|r| r.exists()) {
-            match self.walk(root, &picks, Op::Write, &hit) {
-                Walked::Clean => {}
-                Walked::Found(file) => return Ok(Some(refused(self.whole, Op::Write, &file))),
-                Walked::TooLarge => return Ok(Some(self.too_large())),
+            let walked = self.walk(root, &picks, Op::Write, &hit);
+            if let Some(problem) = self.walked(walked, Op::Write, Reading::Whole) {
+                return Ok(Some(problem));
             }
         }
         Ok(None)
@@ -1255,6 +1259,27 @@ struct Run<'a> {
     from_input: bool,
     /// What the command gives it as its input (a here-document's lines).
     input: Option<&'a str>,
+}
+
+/// How a program reads a restricted file, for its refusal.
+#[derive(Clone, Copy, PartialEq)]
+enum Reading {
+    Whole,
+    /// Its lines a search prints.
+    Search,
+    /// With the folder it's in (`cp -r`, `tar`).
+    Copy,
+}
+
+impl Reading {
+    /// A search's reading, or a whole file's.
+    fn of(searching: bool) -> Reading {
+        if searching {
+            Reading::Search
+        } else {
+            Reading::Whole
+        }
+    }
 }
 
 /// What a walk for restricted files came to.
@@ -4845,11 +4870,18 @@ mod tests {
         for (command, refusal) in [
             ("rm -rf apps", "would change apps/api/.env,"),
             ("rm -r config", "would change config/master.key,"),
-            ("mv apps /tmp/apps", "would read apps/api/.env,"),
-            ("cp -r config /tmp/backup", "would read config/master.key,"),
-            ("cp -r . /tmp/backup", "would read "),
-            ("scp -r config host:", "would read config/master.key,"),
-            ("rsync -a . /backup/", "would read "),
+            // A copy, or a move, carries its folder's files.
+            ("mv apps /tmp/apps", "would copy or move apps/api/.env,"),
+            (
+                "cp -r config /tmp/backup",
+                "would copy or move config/master.key,",
+            ),
+            ("cp -r . /tmp/backup", "would copy or move "),
+            (
+                "scp -r config host:",
+                "would copy or move config/master.key,",
+            ),
+            ("rsync -a . /backup/", "would copy or move "),
             ("ln -sf .env.example .env", "would change .env,"),
         ] {
             let refused = command_problem(command, &root, &none())
@@ -5088,7 +5120,8 @@ mod tests {
             };
             assert!(problem("cat .env").contains("`cat .env` would read .env, a restricted"));
             assert!(problem("rm -rf apps").contains("would change apps/web/.env.local,"));
-            assert!(problem("cp -r config /tmp/x").contains("would read config/master.key,"));
+            let copied = problem("cp -r config /tmp/x");
+            assert!(copied.contains("would copy or move config/master.key,"));
             assert!(problem("grep -r API_KEY .").contains("would search .env,"));
             assert!(problem("git clean -fdx").contains("would change .env,"));
         }
