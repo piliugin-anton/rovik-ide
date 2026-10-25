@@ -7,22 +7,28 @@
 //! each response comes back as the server sent it, but for those headers.
 //! On Windows its cookies are made ones a frame keeps (`frame_cookie`).
 //! WebSocket upgrades (a dev server's hot reload) go through untouched.
-//! The page's own port stays as it was, for the default browser.
+//! And each page the tab loads gets the tag of a script of Rovik's after it
+//! (`TAB_SCRIPT`, tab.js), which tells the tab where the page is as it
+//! navigates. The page's own port stays as it was, for the default
+//! browser.
 
 use crate::connector::Stream;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
-use hyper::body::{Bytes, Incoming};
+use hyper::body::{Bytes, Frame, Incoming};
 use hyper::client::conn::http1::SendRequest;
 use hyper::header::{
-    HeaderMap, HeaderValue, CONTENT_SECURITY_POLICY, CONTENT_TYPE, SET_COOKIE, UPGRADE,
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_DISPOSITION,
+    CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE, SET_COOKIE, UPGRADE,
     X_FRAME_OPTIONS,
 };
 use hyper::upgrade::OnUpgrade;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{ready, Context, Poll};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -36,6 +42,11 @@ use tokio::sync::Mutex;
 pub(super) const FRAME_COOKIES: bool = cfg!(windows);
 
 type Body = BoxBody<Bytes, hyper::Error>;
+
+/// Where a page in a tab gets Rovik's script (tab.js), which tells the tab
+/// where the page is as it navigates (src/components/BrowserView.tsx).
+/// This port answers it: the page's server never sees the path.
+const TAB_SCRIPT: &str = "/__rovik/tab.js";
 
 /// Carries `local`, a connection of a browser tab's, to the page's server
 /// on its host: its requests, one at a time, over a stream `connect`
@@ -83,12 +94,23 @@ where
     /// The server's answer to `request`, framable (`frameable`); "502 Bad
     /// Gateway" with why when no stream to the server can be had. An
     /// upgrade (a WebSocket) the server takes joins the tab's connection to
-    /// its stream. An error closes the tab's connection unanswered.
+    /// its stream. A page the tab loads comes with Rovik's script's tag
+    /// after it; the script is this port's own. An error closes the tab's
+    /// connection unanswered.
     async fn relay(
         &self,
         mut request: Request<B>,
         frame_cookies: bool,
     ) -> Result<Response<Body>, Dropped> {
+        if request.uri().path() == TAB_SCRIPT {
+            return Ok(tab_script());
+        }
+        // Asked for as it is, not compressed, for the tag to go after it.
+        let page = loads_page(&request);
+        if page {
+            let identity = HeaderValue::from_static("identity");
+            request.headers_mut().insert(ACCEPT_ENCODING, identity);
+        }
         let tab_side = request
             .headers()
             .contains_key(UPGRADE)
@@ -109,6 +131,9 @@ where
         frameable(response.headers_mut());
         if frame_cookies {
             frame_cookies_in(response.headers_mut());
+        }
+        if page && takes_script(&response) {
+            return Ok(with_script(response));
         }
         Ok(response.map(BodyExt::boxed))
     }
@@ -202,14 +227,170 @@ async fn join(tab_side: OnUpgrade, server_side: OnUpgrade) {
 
 /// What the tab shows when the page's server can't be reached.
 fn bad_gateway(why: String) -> Response<Body> {
-    let body = Full::new(Bytes::from(format!("Rovik couldn't show this page: {why}")));
-    let mut response = Response::new(body.map_err(|never| match never {}).boxed());
+    let mut response = whole(format!("Rovik couldn't show this page: {why}"));
     *response.status_mut() = StatusCode::BAD_GATEWAY;
     response.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_static("text/plain; charset=utf-8"),
     );
     response
+}
+
+/// A response of this port's own, with `body`.
+fn whole(body: impl Into<Bytes>) -> Response<Body> {
+    let body = Full::new(body.into());
+    Response::new(body.map_err(|never| match never {}).boxed())
+}
+
+/// Rovik's script for a page in a tab (`TAB_SCRIPT`).
+fn tab_script() -> Response<Body> {
+    let mut response = whole(include_str!("tab.js"));
+    let headers = response.headers_mut();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript; charset=utf-8"),
+    );
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response
+}
+
+/// Whether `request` loads a page into the tab: a GET for a document or a
+/// frame, as the browser says (`Sec-Fetch-Dest`), or, where it doesn't
+/// say, one that takes HTML first. Not a script's fetch: a script may run
+/// the HTML it fetches (htmx).
+fn loads_page<B>(request: &Request<B>) -> bool {
+    let header = |name| request.headers().get(name).and_then(|v| v.to_str().ok());
+    if request.method() != Method::GET {
+        return false;
+    }
+    match header("sec-fetch-dest") {
+        Some(dest) => ["document", "iframe"]
+            .iter()
+            .any(|page| dest.trim().eq_ignore_ascii_case(page)),
+        None => header(ACCEPT.as_str()).is_some_and(|accept| {
+            let first = accept.split(',').next().unwrap_or_default();
+            first.trim().eq_ignore_ascii_case("text/html")
+        }),
+    }
+}
+
+/// Whether `response`, to a page load, is HTML the script's tag can follow
+/// as it is: not one without a body, a compressed one (the request asked
+/// for none, but a server may compress all the same), a download, or one
+/// in UTF-16, where the tag's bytes would be garbage.
+fn takes_script(response: &Response<Incoming>) -> bool {
+    let status = response.status();
+    let bodiless = status.is_informational()
+        || [
+            StatusCode::NO_CONTENT,
+            StatusCode::RESET_CONTENT,
+            StatusCode::PARTIAL_CONTENT,
+            StatusCode::NOT_MODIFIED,
+        ]
+        .contains(&status);
+    let headers = response.headers();
+    let text = |name| {
+        let value = headers.get(name).and_then(|v| v.to_str().ok());
+        value.unwrap_or_default().trim().to_ascii_lowercase()
+    };
+    let kind = text(CONTENT_TYPE);
+    let html = kind.split(';').next().unwrap_or_default().trim() == "text/html";
+    let encoding = text(CONTENT_ENCODING);
+    let plain = encoding.is_empty() || encoding == "identity";
+    let download = text(CONTENT_DISPOSITION).starts_with("attachment");
+    !bodiless && html && !kind.contains("utf-16") && plain && !download
+}
+
+/// `response`, a page, with the tag of Rovik's script after it, carrying
+/// the nonce its CSP lets scripts run with, if it asks for one. Longer by
+/// the tag, it goes without its length (chunked).
+fn with_script(mut response: Response<Incoming>) -> Response<Body> {
+    let nonce = script_nonce(response.headers())
+        .map(|nonce| format!(" nonce=\"{nonce}\""))
+        .unwrap_or_default();
+    let tag = Bytes::from(format!("<script src=\"{TAB_SCRIPT}\"{nonce}></script>"));
+    response.headers_mut().remove(CONTENT_LENGTH);
+    response.map(|page| {
+        let body = WithScript {
+            page,
+            tag: Some(tag),
+            trailers: None,
+        };
+        body.boxed()
+    })
+}
+
+/// The nonce the response's CSP lets a `<script src>` run with, if it asks
+/// for one: the first `'nonce-…'` of the directive of a policy that
+/// governs it, `script-src-elem`, else `script-src`, else `default-src`.
+/// A policy that lets the page's own scripts run (`'self'`) lets the tag's
+/// run with no nonce.
+fn script_nonce(headers: &HeaderMap) -> Option<String> {
+    let mut policies = headers
+        .get_all(CONTENT_SECURITY_POLICY)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|text| text.split(','));
+    policies.find_map(|policy| {
+        let directives: Vec<Vec<&str>> = policy
+            .split(';')
+            .map(|directive| directive.split_ascii_whitespace().collect())
+            .collect();
+        let named = |name: &str| {
+            directives
+                .iter()
+                .find(|d| d.first().is_some_and(|n| n.eq_ignore_ascii_case(name)))
+        };
+        let governing = ["script-src-elem", "script-src", "default-src"]
+            .into_iter()
+            .find_map(named)?;
+        governing.iter().skip(1).find_map(|source| nonce_in(source))
+    })
+}
+
+/// The value of a CSP source `'nonce-…'`, when it's one an attribute can
+/// carry (base64).
+fn nonce_in(source: &str) -> Option<String> {
+    let quoted = source.strip_prefix('\'')?.strip_suffix('\'')?;
+    let (kind, value) = quoted.split_once('-')?;
+    let base64 = |c: char| c.is_ascii_alphanumeric() || "+/=_-".contains(c);
+    (kind.eq_ignore_ascii_case("nonce") && !value.is_empty() && value.chars().all(base64))
+        .then(|| value.to_string())
+}
+
+/// A page's body, then the tag of Rovik's script, before any trailers.
+struct WithScript {
+    page: Incoming,
+    /// To come once the page's body has: None once it has gone.
+    tag: Option<Bytes>,
+    /// The page's trailers, held until the tag has gone.
+    trailers: Option<Frame<Bytes>>,
+}
+
+impl hyper::body::Body for WithScript {
+    type Data = Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, hyper::Error>>> {
+        let this = self.get_mut();
+        if this.tag.is_none() {
+            if let Some(trailers) = this.trailers.take() {
+                return Poll::Ready(Some(Ok(trailers)));
+            }
+            return Pin::new(&mut this.page).poll_frame(cx);
+        }
+        match ready!(Pin::new(&mut this.page).poll_frame(cx)) {
+            Some(Ok(frame)) if !frame.is_data() => {
+                this.trailers = Some(frame);
+                Poll::Ready(this.tag.take().map(|tag| Ok(Frame::data(tag))))
+            }
+            None => Poll::Ready(this.tag.take().map(|tag| Ok(Frame::data(tag)))),
+            frame => Poll::Ready(frame),
+        }
+    }
 }
 
 /// Lifts what keeps a page out of a frame: `X-Frame-Options`, and the
@@ -516,6 +697,200 @@ mod tests {
             let body = relayed.into_body().collect().await.unwrap().to_bytes();
             assert_eq!(body, "hi");
         }
+    }
+
+    /// A request for `path` with `headers`, as a browser's.
+    fn request(path: &str, headers: &[(&str, &str)]) -> Request<Empty<Bytes>> {
+        let mut request = get(path);
+        for (name, value) in headers {
+            let name = hyper::header::HeaderName::from_bytes(name.as_bytes()).unwrap();
+            request
+                .headers_mut()
+                .append(name, HeaderValue::from_str(value).unwrap());
+        }
+        request
+    }
+
+    /// A page the tab's frame loads, as WebKit and WebView2 ask for one.
+    fn page_load(path: &str) -> Request<Empty<Bytes>> {
+        request(
+            path,
+            &[
+                ("sec-fetch-dest", "iframe"),
+                ("accept", "text/html,application/xhtml+xml,*/*;q=0.8"),
+                ("accept-encoding", "gzip, deflate, br"),
+            ],
+        )
+    }
+
+    /// An HTTP/1.1 answer with `headers` and `body`, its length said.
+    fn answered(headers: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\n{headers}content-length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// `request` relayed to a played server that answers `answer`: the head
+    /// of the request it got, and the response the tab gets.
+    async fn relayed(request: Request<Empty<Bytes>>, answer: &str) -> (String, Response<Body>) {
+        let (upstream, mut servers) = played();
+        let relaying = {
+            let upstream = upstream.clone();
+            tokio::spawn(async move { upstream.relay(request, false).await })
+        };
+        let mut server = next_stream(&mut servers).await;
+        let head = request_head(&mut server).await;
+        server.write_all(answer.as_bytes()).await.unwrap();
+        let response = relaying.await.unwrap().unwrap();
+        (head, response)
+    }
+
+    async fn body_of(response: Response<Body>) -> String {
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    const TAG: &str = "<script src=\"/__rovik/tab.js\"></script>";
+
+    #[tokio::test]
+    async fn a_page_the_tab_loads_comes_uncompressed_with_rovik_s_script_after_it() {
+        let html = "text/html; charset=utf-8";
+        let answer = answered(&format!("content-type: {html}\r\n"), "<p>hi</p>");
+        let (asked, response) = relayed(page_load("/about"), &answer).await;
+        assert!(asked.contains("accept-encoding: identity\r\n"), "{asked}");
+        assert!(!asked.contains("gzip"), "{asked}");
+        assert!(
+            response.headers().get(CONTENT_LENGTH).is_none(),
+            "longer now"
+        );
+        assert_eq!(response.headers()[CONTENT_TYPE], html);
+        assert_eq!(body_of(response).await, format!("<p>hi</p>{TAG}"));
+    }
+
+    /// WebKit before Sec-Fetch-Dest: a page load is one that takes HTML
+    /// first.
+    #[tokio::test]
+    async fn without_sec_fetch_dest_a_page_load_is_one_that_takes_html_first() {
+        let answer = answered("content-type: text/html\r\n", "<p>hi</p>");
+        let navigation = request("/", &[("accept", "text/html,*/*;q=0.8")]);
+        let (_, response) = relayed(navigation, &answer).await;
+        assert_eq!(body_of(response).await, format!("<p>hi</p>{TAG}"));
+        let fetch = request("/", &[("accept", "*/*")]);
+        let (_, response) = relayed(fetch, &answer).await;
+        assert_eq!(body_of(response).await, "<p>hi</p>");
+    }
+
+    #[tokio::test]
+    async fn what_isnt_a_page_load_of_plain_html_goes_as_it_came() {
+        let fetch = || {
+            request(
+                "/",
+                &[
+                    ("sec-fetch-dest", "empty"),
+                    ("accept", "text/html"),
+                    ("accept-encoding", "gzip"),
+                ],
+            )
+        };
+        let html = "content-type: text/html\r\n";
+        let cases = [
+            // A script's fetch of HTML (htmx): asked for as the script asked.
+            (fetch(), answered(html, "<p>x</p>"), "<p>x</p>"),
+            (
+                page_load("/"),
+                answered("content-type: application/json\r\n", "{}"),
+                "{}",
+            ),
+            (
+                page_load("/"),
+                answered(
+                    "content-type: text/html\r\ncontent-encoding: gzip\r\n",
+                    "zz",
+                ),
+                "zz",
+            ),
+            (
+                page_load("/"),
+                answered(
+                    "content-type: text/html\r\ncontent-disposition: attachment\r\n",
+                    "<p>x</p>",
+                ),
+                "<p>x</p>",
+            ),
+            (
+                page_load("/"),
+                answered("content-type: text/html; charset=UTF-16\r\n", "xx"),
+                "xx",
+            ),
+            (
+                page_load("/"),
+                "HTTP/1.1 304 Not Modified\r\ncontent-type: text/html\r\n\r\n".to_string(),
+                "",
+            ),
+        ];
+        for (request, answer, body) in cases {
+            let fetched = request.headers().get("sec-fetch-dest").unwrap() == "empty";
+            let (asked, response) = relayed(request, &answer).await;
+            assert_eq!(asked.contains("accept-encoding: gzip"), fetched, "{asked}");
+            assert_eq!(body_of(response).await, body, "{answer}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rovik_s_script_is_this_port_s_own_and_never_reaches_the_server() {
+        let (upstream, mut servers) = played();
+        let response = upstream.relay(get("/__rovik/tab.js"), false).await.unwrap();
+        assert_eq!(
+            response.headers()[CONTENT_TYPE],
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(body_of(response).await, include_str!("tab.js"));
+        assert!(servers.try_recv().is_err(), "no stream to the server");
+    }
+
+    #[tokio::test]
+    async fn the_script_s_tag_carries_the_nonce_the_page_s_csp_asks_scripts_for() {
+        let csp = "content-security-policy: default-src 'self'; script-src 'nonce-r4nd0m+/=' \
+                   'strict-dynamic'\r\ncontent-type: text/html\r\n";
+        let (_, response) = relayed(page_load("/"), &answered(csp, "<p>x</p>")).await;
+        assert_eq!(
+            body_of(response).await,
+            "<p>x</p><script src=\"/__rovik/tab.js\" nonce=\"r4nd0m+/=\"></script>"
+        );
+    }
+
+    #[test]
+    fn the_nonce_is_the_one_of_the_directive_that_governs_a_script_tag() {
+        let nonce = |csp: &str| script_nonce(&headers(&[("content-security-policy", csp)]));
+        assert_eq!(nonce("script-src 'nonce-abc'").as_deref(), Some("abc"));
+        assert_eq!(nonce("default-src 'NONCE-d1'").as_deref(), Some("d1"));
+        assert_eq!(
+            nonce("default-src 'nonce-d'; script-src-elem 'nonce-e' 'self'").as_deref(),
+            Some("e")
+        );
+        // script-src-elem governs a script tag: its 'self' lets the tag in.
+        assert_eq!(nonce("script-src-elem 'self'; script-src 'nonce-s'"), None);
+        assert_eq!(nonce("img-src 'nonce-i'"), None);
+        assert_eq!(
+            nonce("script-src 'nonce-a\"b'"),
+            None,
+            "no attribute could carry it"
+        );
+        assert_eq!(nonce("script-src 'self'"), None);
+        assert_eq!(script_nonce(&HeaderMap::new()), None);
+    }
+
+    /// The tag follows the page's body and goes before its trailers.
+    #[tokio::test]
+    async fn the_tag_goes_before_the_page_s_trailers() {
+        let answer = "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ntransfer-encoding: chunked\r\n\
+                      trailer: x-done\r\n\r\n5\r\nhello\r\n0\r\nx-done: 1\r\n\r\n";
+        let (_, response) = relayed(page_load("/"), answer).await;
+        let collected = response.into_body().collect().await.unwrap();
+        let trailers = collected.trailers().cloned();
+        assert_eq!(collected.to_bytes(), format!("hello{TAG}"));
+        assert_eq!(trailers.expect("the page's trailers")["x-done"], "1");
     }
 
     fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {

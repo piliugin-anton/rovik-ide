@@ -5,13 +5,16 @@
 // sandboxed: the page runs its scripts in its own origin (its cookies and
 // storage), submits forms, shows dialogs and opens windows (which open in
 // the default browser: src-tauri/src/lib.rs), but can't navigate the app
-// away, as a page that breaks out of frames would. A tab keeps its frame
-// while another one is shown (it's only hidden), so its page keeps its
-// state; navigating or reloading gives the tab a new object, and App a
-// new frame for it.
-import { createMemo, createSignal, Show } from 'solid-js';
+// away, as a page that breaks out of frames would. A page framed through
+// a tab port says where it is as it navigates (its script, rovik-client's
+// remote/tab.js): the address bar follows it, unless the user is typing
+// there, and Reload and "Open in your browser" take it where it is. A tab
+// keeps its frame while another one is shown (it's only hidden), so its
+// page keeps its state; navigating or reloading gives the tab a new
+// object, and App a new frame for it.
+import { createMemo, createSignal, onCleanup, onMount, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
-import { addressFrom } from '../lib/browserTabs';
+import { addressFrom, pageAddress, reportedAddress } from '../lib/browserTabs';
 import type { BrowserTab } from '../lib/editorTabs';
 
 /** A web page's globe: a browser tab's, in the tab strip and elsewhere. */
@@ -42,12 +45,32 @@ export default function BrowserView(props: {
   frame: string;
   /** The address bar asks for `address` (a valid one). */
   onNavigate: (address: string) => void;
-  onReload: () => void;
+  /** Reload asks for the page again, at `address`, where it is now. */
+  onReload: (address: string) => void;
 }) {
   // Setting the frame's src again, even to the same address, reloads it.
   const frame = createMemo(() => props.frame);
+  let frameEl: HTMLIFrameElement | undefined;
+  // Where the page is, as it last said; where it loaded until it says.
+  const [current, setCurrent] = createSignal(props.tab.address);
   const [typed, setTyped] = createSignal(props.tab.address);
   const [refused, setRefused] = createSignal(false);
+
+  // Only this tab's frame is heard, and only of its own origin's pages.
+  onMount(() => {
+    const heard = (e: MessageEvent) => {
+      if (!frameEl || e.source !== frameEl.contentWindow) return;
+      const href = reportedAddress(e.data);
+      const address = href ? pageAddress(href, frame(), props.tab.address) : null;
+      // pageAddress has read href: a URL at the frame's origin.
+      if (!href || !address || new URL(href).origin !== e.origin) return;
+      // What the user is typing stays.
+      if (typed() === current()) setTyped(address);
+      setCurrent(address);
+    };
+    window.addEventListener('message', heard);
+    onCleanup(() => window.removeEventListener('message', heard));
+  });
 
   function go(e: SubmitEvent) {
     e.preventDefault();
@@ -57,7 +80,7 @@ export default function BrowserView(props: {
   }
 
   function openOutside() {
-    invoke('open_url', { url: props.tab.address }).catch((err) =>
+    invoke('open_url', { url: current() }).catch((err) =>
       console.error('Open in the browser:', err)
     );
   }
@@ -68,7 +91,7 @@ export default function BrowserView(props: {
         <button
           type="button"
           class="browser-bar-button"
-          onClick={() => props.onReload()}
+          onClick={() => props.onReload(current())}
           title="Reload"
           aria-label="Reload"
         >
@@ -93,7 +116,7 @@ export default function BrowserView(props: {
           }}
           onKeyDown={(e) => {
             if (e.key !== 'Escape') return;
-            setTyped(props.tab.address);
+            setTyped(current());
             setRefused(false);
           }}
           spellcheck={false}
@@ -126,9 +149,10 @@ export default function BrowserView(props: {
         </button>
       </form>
       <iframe
+        ref={frameEl}
         class="browser-frame"
         src={frame()}
-        title={props.tab.address}
+        title={current()}
         sandbox={FRAME_SANDBOX}
         allow="clipboard-write"
       />

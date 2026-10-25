@@ -653,11 +653,13 @@ port of Rovik's, which drops what keeps a page out of a frame
 (`X-Frame-Options` and CSP `frame-ancestors`, as Django, Rails or helmet
 send them) and passes WebSockets through, so the dev server's hot reload
 works in the tab. On Windows it also makes the page's cookies ones a frame
-keeps, so signing in to it works there. The tab has an address bar, Reload
-and **Open in your browser**. An https page opens in your browser instead,
-and so does a window the page opens. A page of another site that refuses
-to be framed, as most sign-in pages do, shows nothing in a tab: open it in
-your browser. The chat shows **Opened ports:** under its title, each port
+keeps, so signing in to it works there. It adds a small script of Rovik's
+to each page it loads, which tells the tab where the page is: the tab's
+address bar follows the page as you click through it, and Reload and
+**Open in your browser** take it there. An https page opens in your browser
+instead, and so does a window the page opens. A page of another site that
+refuses to be framed, as most sign-in pages do, shows nothing in a tab: open
+it in your browser. The chat shows **Opened ports:** under its title, each port
 on a button that opens its page in a tab, or, as its ▾ chooses for every
 port, copies the address here that leads to it; **Background tasks: 1,
 open ports:** while the agent has a server running there. A dev server

@@ -7,7 +7,9 @@
 // (lib/editorTabs.ts). Such a page is framed through its forward's tab
 // port, which lifts what keeps a page out of a frame (rovik-client's
 // remote/tab_port.rs), while its address bar shows it at the port
-// forwarded here, where the default browser opens it.
+// forwarded here, where the default browser opens it. The tab port's
+// script in the page tells the tab where the page is as it navigates, for
+// the address bar to follow it (`reportedAddress`, `pageAddress`).
 import { listen } from '@tauri-apps/api/event';
 import type { ForwardedPort } from './cloud';
 
@@ -57,6 +59,33 @@ export function frameUrl(address: string, ports: readonly ForwardedPort[]): stri
   if (!tabPort) return address;
   url.port = String(tabPort);
   return url.href;
+}
+
+/**
+ * The address a page a browser tab frames says it's at (`data`, the
+ * message the tab port's script posts as the page navigates: rovik-client's
+ * remote/tab.js). Null for any other message.
+ */
+export function reportedAddress(data: unknown): string | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const { type, href } = data as { type?: unknown; href?: unknown };
+  return type === 'rovik-tab-location' && typeof href === 'string' ? href : null;
+}
+
+/**
+ * Where a browser tab's page is, for its address bar, when its frame
+ * (loaded from `frame`) is at `href`: the same path at `address`'s
+ * origin, the port forwarded here rather than the tab port. Null when
+ * `href` is at another origin than the frame's.
+ */
+export function pageAddress(href: string, frame: string, address: string): string | null {
+  try {
+    const at = new URL(href);
+    if (at.origin !== new URL(frame).origin) return null;
+    return new URL(at.pathname + at.search + at.hash, new URL(address).origin).href;
+  } catch {
+    return null;
+  }
 }
 
 /** A browser tab's name in the tab strip: its page's host and port. */
