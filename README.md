@@ -471,6 +471,22 @@ its permission mode):
   approval would let that install run without asking (in an Autopilot task,
   where its Prepare setting is on too), and never in Plan mode. Otherwise
   the agent is told which install to run.
+- **Services.** A project whose compose file (`compose.yaml`,
+  `docker-compose.yml`) declares the databases, caches and queues its code
+  needs gets them named in the agent's prompt, read with Docker Compose
+  itself where it's installed. When a command fails to connect to a port
+  one of them publishes (`connect ECONNREFUSED 127.0.0.1:5432`, Prisma's
+  "Can't reach database server", libpq's, MySQL's, Kafka's, JDBC's), or
+  looks one up by its name (`getaddrinfo ENOTFOUND db`), the agent is told
+  which service it needed and that it isn't running. On your own computer
+  it asks you to start it (`docker compose up -d db`): its commands can't
+  start containers, since the sandbox closes Docker's and Podman's sockets
+  to them. On a cloud host your daemon starts it under your own Podman, its
+  ports in your private network there and its image fetched once for the
+  whole server, and the command runs again
+  ([docs/cloud-hosts.md](docs/cloud-hosts.md#project-services)). A service
+  looked up by its name is reached at its published port on localhost
+  instead, and the agent is told so.
 - **Running it again.** A command that is one program (`npm test`) runs again
   by itself once what it lacked is there, and the agent sees both why and the
   second run. A longer one (`cd web && npm test`) is left to the agent, since

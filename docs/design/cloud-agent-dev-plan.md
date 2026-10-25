@@ -56,6 +56,7 @@ decisions in the form this plan builds them, or follow from them.
 | D18 | **The agent's Chrome is driven over a pipe, not a port** _(new)_. Rovik carries a fork of `eoka` with a pipe transport (`--remote-debugging-pipe`), offered upstream, and uses it on Linux and macOS.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | eoka opens Chrome's DevTools on a `127.0.0.1` port with no password, which every user of a shared server can reach, and the browser runs as you (K52). The pipe leaves eoka's stealth as it is. The pipe switch turns on the same "automation controlled" flag that headless mode and eoka's port 0 already turn on, and eoka's `--disable-blink-features=AutomationControlled` turns it off after them (Chromium's `content/child/runtime_features.cc`). The rest of its stealth (patched strings in Chrome, injected scripts, the CDP methods it avoids) doesn't depend on the transport, and pages lose a local port to probe. |
 | D19 | **The browser tools' browser is pinned: Chrome for Testing 155.0.8059.39** _(new)_. The version eoka's own CI pins, from Google's builds for Linux (x86_64, aarch64), macOS and Windows, each checked against a SHA-256 in `rovik_core::pinned_browser`. A cloud host's installer puts it in `/opt/rovik/browser/<version>` with the packages its archive lists, and `admin upgrade` installs a new build's when it's missing. The app downloads its own into its data folder when it starts, with a progress notification. The tools use it first, then Chromium, then Chrome.                                                                                                                    | eoka's stealth and tests are checked against one Chrome version, and Chrome and a distribution's Chromium move on their own (Ubuntu's Chromium is a snap). Chrome for Testing is the one build that can be held at a version on every CPU and system Rovik runs on. A browser that can't be installed stops nothing: the tools say what's missing when they're used.                                                                                                                                                                                                                                                              |
 | D20 | **On a team server, each user's commands run in a network of their own** _(new)_. The daemon makes a user and network namespace for its user, connected out by pasta (the distro's `passt` package), and every command and connector program starts in it, inside its sandbox. Nothing comes in from outside. A page a command opens at localhost opens in the browser on the computer its chat belongs to, through a port of that computer forwarded to it (`PageWanted`, `/forward/{port}`); any other address is refused. `install` and `admin upgrade` require pasta.                                                                                                                          | On a shared server, two users' dev servers clash on 3000, and one user's agent can reach and test another's server by mistake. A namespace gives each user every port, as on their own computer, with no root and no process of Rovik's running as root: pasta needs neither, and Ubuntu's AppArmor still lets a program map a user namespace to itself. Forwarding through the daemon's socket keeps a page as reachable as its chat, by the user's own computer alone. WSL and desktops keep the host's network.                                                                                                                |
+| D21 | **On a team server, a project's services run under each user's own rootless Podman** _(new)_. `install` and every upgrade put Podman, the Docker Compose Rovik pins and subordinate ids in place. Compose reads a project's compose file: the agent's prompt names its services, and a command that fails for want of one is told which. The user's daemon then starts it, once it's checked: only the project's own files, as copies, and none of the server's devices or namespaces. Each port it publishes is a port of the user's private network (D20), carried into the container's own namespaces: nothing is published on the server.                                                      | Most projects that need a database or a cache name it in a compose file, and a dev server or a test suite without it fails in ways the agent misreads. Docker's daemon gives whoever can use its socket root on the server; rootless Podman runs each user's containers as that user, and Compose talks to it through Docker's API. The server's own ports would clash between users and let one user's code reach another's database. The agent writes the compose file, so it mustn't become a way out of the sandbox.                                                                                                          |
 
 ---
 
@@ -524,6 +525,11 @@ were pending are asked again by `Resume`.
   user's on a port, and no other user can reach it. Where the network
   can't be made, the commands share the server's network and its ports.
   Chrome's DevTools opens none (D18).
+- **So are a project's services (D21).** The databases and caches a
+  project's compose file declares run under the user's own rootless
+  Podman, started by their daemon when a command needs one, each port they
+  publish a port of the user's network. Where the server can't run them,
+  the agent is told why.
 
 ---
 
@@ -3032,3 +3038,46 @@ bundle` named a `.deb` with that version, `Cargo.toml`'s and not
   its settings isn't sent a configuration nobody set (the frontend's
   reaches it, ready by then). Tests: a host connecting after the settings
   were applied gets them first; one connecting before gets none.
+- **D21, project services.**
+  - The container engine (`installer/containers.rs`) is the distro's
+    Podman with what it needs rootless, which Debian's and Ubuntu's Podman
+    only recommends. With `--no-install-recommends`, Ubuntu 24.04's Podman
+    4.9 can't start a project's network without slirp4netns, and 26.04's
+    netavark can't without nftables' `nft`: both are in the list, with
+    iptables for netavark 1.4. Checked in Ubuntu 22.04, 24.04 and 26.04
+    containers: a container found another by its name.
+  - Compose is Docker's own release, pinned (`rovik_core::pinned_compose`),
+    rather than a distro's `docker-compose`, which most lack at a recent
+    version. It reads a compose file with
+    `config --format json --no-env-resolution`, so the model names each env
+    file without its values, and with an environment of its own: on
+    Windows that keeps `USERPROFILE` and `ProgramFiles`, by which Docker
+    finds Docker Desktop's `compose` plugin. Only Compose 5.0 and later
+    honour that flag: 2.38.2, the GitHub runners', and 2.40.3, the last 2.x,
+    put each env file's values in the service's `environment` all the same,
+    so what a Compose before 5 read keeps no service's environment.
+  - Podman's Docker API makes each container a cgroup of its own, and
+    where the unit delegates none to its user that fails, even for the
+    unlimited pids limit Compose sends. `cgroups = "disabled"` keeps the
+    containers in the cgroup of the API service, the daemon's unit, whose
+    caps then cover them; a service's own limits aren't applied.
+  - The relay reaches a container through namespaces it holds open
+    (`network::Namespaces`), not through its pid, which another process
+    could have by the next connection; a process in the daemon's own
+    network is refused, since a connection made there would reach the
+    server's loopback.
+  - Checked live here, as an ordinary user, with Ubuntu 24.04's Podman
+    4.9.3 and Compose 5.6.1 on a 6.18 kernel: a project's Redis started
+    from its compose file with its config a copy, answered at
+    localhost:6379 in the user's network and not on the server's, and a
+    second start found it running.
+  - The images (`installer/images.rs`, `services/images.rs`) are an OCI
+    layout that root fills with skopeo and each user's Podman copies from
+    (`podman pull oci:…`, which names the copy by its reference). A store
+    root unpacks once, shared through a read-only idmapped mount per user,
+    would keep one copy rather than one per user, but it needs overlayfs
+    over idmapped layers (Linux 5.19; RHEL 9 from 9.6), has root unpack
+    every image, and a prune could take a layer from under a running
+    container; the layout keeps root to fetching and each user to
+    unpacking. Docker Hub refused one of the anonymous fetches made here
+    for its limit ("toomanyrequests"), which skopeo's retry rode out.

@@ -313,27 +313,9 @@ fn last_used(root: &Path, kind: Kind, version: &str, used: SystemTime) -> System
 
 /// One install at a time: an exclusive `flock` on `TOOLCHAINS/.lock`.
 fn lock(sys: &System) -> Result<std::fs::File, String> {
-    use std::os::unix::io::AsRawFd;
     // `remove` and `prune` on a server whose folder isn't made yet.
     folder(sys, TOOLCHAINS, 0o755, None)?;
-    let path = sys.path(&format!("{TOOLCHAINS}/.lock"));
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o644)
-        .open(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    // SAFETY: flock on a descriptor this function owns, held until the
-    // file is closed.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(format!(
-            "{}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(file)
+    super::flock_file(&sys.path(&format!("{TOOLCHAINS}/.lock")))
 }
 
 /// The timestamp `prune` reads, now.
@@ -564,7 +546,7 @@ fn fetch_text(url: &str) -> Result<String, String> {
 /// `url` downloaded into the new file `to`, refused unless its SHA-256 is
 /// the one `expected` names: the first hex word of a checksum list's line,
 /// or of `rustup-init.sha256`.
-fn download(url: &str, to: &Path, expected: &str) -> Result<(), String> {
+pub(super) fn download(url: &str, to: &Path, expected: &str) -> Result<(), String> {
     use futures_util::StreamExt;
     use std::io::Write;
     let wanted = expected
@@ -748,7 +730,7 @@ pub(crate) fn installed_here(root: &Path) -> (Vec<String>, Vec<String>) {
 }
 
 /// How long ago `time` was, in words.
-fn age(time: SystemTime) -> String {
+pub(super) fn age(time: SystemTime) -> String {
     let seconds = SystemTime::now()
         .duration_since(time)
         .map(|d| d.as_secs())
@@ -924,6 +906,8 @@ pub(super) fn setup(sys: &System) -> Result<(), String> {
     for cache in ["npm", "crates"] {
         folder(sys, &format!("{CACHES}/{cache}"), 0o2770, Some(SHARE_GROUP))?;
     }
+    // The images, root's to write (`user image`) and the daemons' to read.
+    folder(sys, super::images::IMAGES, 0o755, None)?;
     if sys.systemd() {
         // The unit, for whoever installed before it named the group.
         let path = sys.path(UNIT);
@@ -948,13 +932,9 @@ fn running(sys: &System) -> Vec<String> {
     if !sys.live() {
         return Vec::new();
     }
-    let Ok(entries) = std::fs::read_dir(sys.path(super::WANTS)) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with("rovik-agentd@") && name.ends_with(".service"))
+    super::daemon_users(sys)
+        .iter()
+        .map(|user| super::instance(user))
         .collect()
 }
 

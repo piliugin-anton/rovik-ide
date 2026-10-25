@@ -52,10 +52,15 @@ usage: rovik-agentd <command>
       once for everyone on the server (rust: stable, beta, nightly,
       nightly-YYYY-MM-DD, 1.N or 1.N.P; node: lts, a major version or
       X.Y.Z). An administrator can turn this off in agentd.toml.
+  user image REFERENCE [--root DIR]
+      Through sudo: an image of a public registry that a project's service
+      runs, fetched once into the server's image cache, from which each
+      daemon's Podman copies it. Off where the shared caches are.
   admin [limits [NAME=VALUE ...] | add USER | remove USER | browser |
-         bubblewrap | pasta | claude-code | toolchain list | toolchain add KIND VERSION |
-         toolchain remove KIND VERSION | toolchain prune DAYS |
-         toolchains user-install|shared-caches on|off | toolchains setup |
+         bubblewrap | pasta | containers | claude-code | toolchain list |
+         toolchain add KIND VERSION | toolchain remove KIND VERSION |
+         toolchain prune DAYS | toolchains user-install|shared-caches on|off |
+         toolchains setup | images list | images prune DAYS |
          upgrade FILE [--allow-downgrade] | uninstall] [--root DIR]
       Through sudo, for Rovik's administrators: the limits on each user's
       daemon (none takes one away), the administrators, the browser for
@@ -64,11 +69,15 @@ usage: rovik-agentd <command>
       commands (install and upgrade put it in place too, from the distro's
       package, with pasta), pasta, which gives each user's commands a network
       of their own (install and upgrade require it, from the passt package),
-      Claude Code for the connector of that name (Anthropic's
+      the container engine that runs each user's project services (Podman,
+      the Docker Compose Rovik pins and the users' subordinate ids, which
+      install and upgrade put in place too), Claude Code for the connector
+      of that name (Anthropic's
       package, installed once for every user's chats, or updated), the
       shared Rust and Node versions and the package caches
       the daemons share (toolchain add works whether or not users may
-      install them; prune takes the versions no chat used for DAYS),
+      install them; prune takes the versions no chat used for DAYS), the
+      image cache (prune takes the images no daemon asked for in DAYS),
       an upgrade for everyone (a release's
       build, signed in FILE.sig, or a build of one's own where agentd.toml
       allows unsigned ones; an older build only with --allow-downgrade), or

@@ -33,7 +33,9 @@
 //!   /etc/resolv.conf in a mount namespace of its own.
 //! - **Reaching in.** The daemon stays outside. It reaches a server in the
 //!   network with a socket a short-lived process makes inside and hands
-//!   back ([`Network::connect`], [`Network::listen`]).
+//!   back ([`Network::connect`], [`Network::listen`]); a service's port
+//!   listens inside the same way ([`Network::listen_on`]), and a container
+//!   of this user's is reached in its own namespaces ([`Namespaces`]).
 //! - **Kept going.** A watcher starts the holder (in the same namespaces)
 //!   or pasta again if either ends, until the network is dropped.
 //!
@@ -311,6 +313,28 @@ impl Network {
         .map(std::net::TcpListener::from)
     }
 
+    /// Sockets listening on `port` of the network's loopback, where a
+    /// program in it reaches a project's service (D21): on 127.0.0.1, and
+    /// on ::1 as well where the network has IPv6, since a client may look
+    /// `localhost` up as either. An error when 127.0.0.1's can't be made,
+    /// the port busy in the network among them.
+    pub fn listen_on(&self, port: u16) -> io::Result<Vec<std::net::TcpListener>> {
+        let v4 = self.socket_inside(Inside::Listen(raw_address(SocketAddr::from((
+            Ipv4Addr::LOCALHOST,
+            port,
+        )))))?;
+        let mut listening = vec![std::net::TcpListener::from(v4)];
+        let v6 = self.socket_inside(Inside::Listen(raw_address(SocketAddr::from((
+            Ipv6Addr::LOCALHOST,
+            port,
+        )))));
+        match v6 {
+            Ok(v6) => listening.push(std::net::TcpListener::from(v6)),
+            Err(e) => log::debug!("no IPv6 listener on port {port} of the network: {e}"),
+        }
+        Ok(listening)
+    }
+
     /// The processes listening on `port` in the network, each with its
     /// command line where it can be read: what keeps the port busy.
     pub fn listening_on(&self, port: u16) -> Vec<(u32, Option<String>)> {
@@ -353,36 +377,101 @@ impl Network {
     /// The socket `inside` makes, made by a short-lived process that joins
     /// the network and hands it back: the daemon itself stays outside.
     fn socket_inside(&self, inside: Inside) -> io::Result<OwnedFd> {
-        let (ours, theirs) = UnixStream::pair()?;
-        let (user, net) = (self.user.as_raw_fd(), self.net.as_raw_fd());
-        let back = theirs.as_raw_fd();
-        // Any program will do: the work is done as it starts.
-        let mut cmd = crate::process::command("true");
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        // SAFETY: between fork and exec it makes only system calls (setns,
-        // socket, setsockopt, connect, bind, listen, sendmsg, close) with
-        // descriptors and addresses made before the fork.
-        unsafe {
-            cmd.pre_exec(move || {
-                enter(user, net, None)?;
-                let socket = inside.make()?;
-                let sent = send_descriptor(back, socket);
-                libc::close(socket);
-                sent
-            });
-        }
-        // An error of the steps above is the spawn's.
-        let status = cmd.status()?;
-        drop(theirs);
-        if !status.success() {
+        socket_in(Some(self.user.as_raw_fd()), self.net.as_raw_fd(), inside)
+    }
+}
+
+/// The namespaces of a process in one of this user's rootless containers,
+/// held open: how the daemon reaches a service in it (D21), whose
+/// namespaces the user owns. Held, they stay that container's even once
+/// its process is gone and its pid another's.
+pub struct Namespaces {
+    /// Its user namespace; None when it's this process's own (a root
+    /// test's container), which can't be entered again.
+    user: Option<OwnedFd>,
+    net: OwnedFd,
+}
+
+impl Namespaces {
+    /// Process `pid`'s; an error when its network is this process's own,
+    /// which no container's is: a connection made there would reach the
+    /// server's loopback, every user's.
+    pub fn of(pid: u32) -> io::Result<Namespaces> {
+        let open =
+            |kind: &str| std::fs::File::open(format!("/proc/{pid}/ns/{kind}")).map(OwnedFd::from);
+        let (user, net) = (open("user")?, open("net")?);
+        if same_namespace(&net, "net")? {
             return Err(io::Error::other(format!(
-                "the process that joins the network ended with {status}"
+                "process {pid} is in the daemon's own network, not a container's"
             )));
         }
-        receive_descriptor(&ours)
+        let user = (!same_namespace(&user, "user")?).then_some(user);
+        Ok(Namespaces { user, net })
     }
+
+    /// A connection to `port` on its network's loopback, made inside it
+    /// (its user namespace joined first): to 127.0.0.1, then ::1.
+    pub fn connect(&self, port: u16) -> io::Result<std::net::TcpStream> {
+        let to = [
+            SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+        ];
+        socket_in(
+            self.user.as_ref().map(|fd| fd.as_raw_fd()),
+            self.net.as_raw_fd(),
+            Inside::Connect(to.map(raw_address)),
+        )
+        .map(std::net::TcpStream::from)
+    }
+}
+
+/// Whether the namespace open as `fd` is this process's own of `kind`.
+fn same_namespace(fd: &OwnedFd, kind: &str) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let own = std::fs::metadata(format!("/proc/self/ns/{kind}"))?;
+    let theirs = std::fs::File::from(fd.try_clone()?).metadata()?;
+    Ok(own.ino() == theirs.ino() && own.dev() == theirs.dev())
+}
+
+/// The socket `inside` makes, made by a short-lived process that joins the
+/// user namespace `user` (where given) and the network namespace `net` and
+/// hands it back: the caller itself stays outside.
+fn socket_in(user: Option<RawFd>, net: RawFd, inside: Inside) -> io::Result<OwnedFd> {
+    let (ours, theirs) = UnixStream::pair()?;
+    let back = theirs.as_raw_fd();
+    // Any program will do: the work is done as it starts.
+    let mut cmd = crate::process::command("true");
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: between fork and exec it makes only system calls (setns,
+    // socket, setsockopt, connect, bind, listen, sendmsg, close) with
+    // descriptors and addresses made before the fork.
+    unsafe {
+        cmd.pre_exec(move || {
+            if let Some(user) = user {
+                if libc::setns(user, libc::CLONE_NEWUSER) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            if libc::setns(net, libc::CLONE_NEWNET) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let socket = inside.make()?;
+            let sent = send_descriptor(back, socket);
+            libc::close(socket);
+            sent
+        });
+    }
+    // An error of the steps above is the spawn's.
+    let status = cmd.status()?;
+    drop(theirs);
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "the process that joins the network ended with {status}"
+        )));
+    }
+    receive_descriptor(&ours)
 }
 
 impl Drop for Network {
@@ -919,6 +1008,27 @@ impl Inside {
                     );
                     if socket < 0 {
                         return Err(io::Error::last_os_error());
+                    }
+                    // A port listened on again soon after (a service's,
+                    // started again) isn't held up by the connections
+                    // the last listener's clients left closing.
+                    let on: libc::c_int = 1;
+                    libc::setsockopt(
+                        socket,
+                        libc::SOL_SOCKET,
+                        libc::SO_REUSEADDR,
+                        (&on as *const libc::c_int).cast(),
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    );
+                    if address.ss_family as libc::c_int == libc::AF_INET6 {
+                        // ::1 alone, not 127.0.0.1's port too.
+                        libc::setsockopt(
+                            socket,
+                            libc::IPPROTO_IPV6,
+                            libc::IPV6_V6ONLY,
+                            (&on as *const libc::c_int).cast(),
+                            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                        );
                     }
                     let address = (address as *const libc::sockaddr_storage).cast();
                     if libc::bind(socket, address, *length) != 0 || libc::listen(socket, 128) != 0 {

@@ -72,6 +72,7 @@ mod subagent_run;
 pub mod test_writer;
 pub mod tools;
 pub mod triage;
+mod unreached;
 mod verify;
 pub mod worker;
 

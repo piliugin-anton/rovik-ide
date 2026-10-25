@@ -1117,7 +1117,14 @@ async fn run(
                         .await
                         .unwrap_or_default();
                     let ends = crate::overlay::confine::hides_processes();
-                    if let Some(note) = super::ports::note(&text, &listening, ends) {
+                    // A port one of the project's services publishes was
+                    // explained with the service, after the command failed.
+                    let root = std::path::PathBuf::from(&root_owned);
+                    let services =
+                        crate::rt::spawn_blocking(move || crate::services::published_ports(&root))
+                            .await
+                            .unwrap_or_default();
+                    if let Some(note) = super::ports::note(&text, &listening, ends, &services) {
                         content.push_str(&note);
                     }
                 }

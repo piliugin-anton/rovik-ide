@@ -33,6 +33,7 @@
 //!   logfile.rs  logs/agentd.log
 //!   network.rs  this user's private network on a team server (D20)
 //!   pages.rs    the pages its commands open, on this user's computer (D20)
+//!   services.rs this user's project services, under their Podman (D21)
 
 #[cfg(unix)]
 mod attach;
@@ -88,6 +89,8 @@ mod results;
 mod serve;
 #[cfg(unix)]
 mod server;
+#[cfg(unix)]
+mod services;
 #[cfg(unix)]
 mod session;
 #[cfg(unix)]

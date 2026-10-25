@@ -25,6 +25,13 @@
 //! `installer/pasta.rs`), is required: `install` and `upgrade` install it
 //! before they change anything, and stop where it can't be installed.
 //!
+//! The container engine that runs each user's project services (D21,
+//! `installer/containers.rs`: Podman, the pinned Docker Compose, the users'
+//! subordinate ids) goes in with every install and upgrade, and stops
+//! neither where it can't: `admin containers` tries again. Their images
+//! come through the server's image cache (`installer/images.rs`), which
+//! `user image` fills.
+//!
 //! Without systemd, as in a container, the binary and the settings are
 //! installed, and the app starts the daemon when it connects. `--root DIR`
 //! puts `/` at DIR, and prints each command that would change the system
@@ -42,8 +49,15 @@ use toolchains::Kind;
 mod browser;
 mod bubblewrap;
 mod claude_code;
+/// Podman, the pinned Docker Compose and the users' subordinate ids.
+pub(crate) mod containers;
+/// `user image <reference>` and `admin images …`: the projects' services'
+/// images, fetched once for the whole server.
+pub(crate) mod images;
 mod packages;
 mod pasta;
+/// Each user's subordinate ids, which their containers' users map to.
+pub(crate) mod subids;
 /// `user toolchain <kind> <version>` and `admin toolchain …`: the shared
 /// Rust and Node versions, and the caches their packages download into.
 pub(crate) mod toolchains;
@@ -373,6 +387,10 @@ pub fn install(
         browser::ensure_or_say(sys);
     }
     bubblewrap::ensure_or_say(sys);
+    // The administrator's ids first: without systemd their daemon isn't
+    // one of those `containers` gives ids to.
+    containers::ids_or_say(sys, &account);
+    containers::ensure_or_say(sys);
     Ok(())
 }
 
@@ -386,10 +404,15 @@ pub fn user(sys: &System, args: &[String]) -> Result<(), String> {
     if let ["toolchain", kind, version, rest @ ..] = words.as_slice() {
         return user_toolchain(sys, Kind::parse(kind)?, kind, version, rest);
     }
+    // An image is fetched whether systemd runs here or not, as a toolchain
+    // is installed.
+    if let ["image", reference] = words.as_slice() {
+        return images::fetch(sys, reference);
+    }
     let [action] = words.as_slice() else {
         return Err(
-            "user takes one of start, stop, restart or status, or toolchain KIND VERSION \
-             [-c COMPONENT] [-t TARGET]"
+            "user takes one of start, stop, restart or status, toolchain KIND VERSION \
+             [-c COMPONENT] [-t TARGET], or image REFERENCE"
                 .into(),
         );
     };
@@ -398,7 +421,12 @@ pub fn user(sys: &System, args: &[String]) -> Result<(), String> {
     }
     let unit = instance(&caller.name);
     let done = match *action {
-        "start" => sys.run("systemctl", &["enable", "--now", &unit]),
+        "start" => {
+            // A user new to the server may have no subordinate ids yet, which
+            // their project services' containers need.
+            containers::ids_or_say(sys, &caller);
+            sys.run("systemctl", &["enable", "--now", &unit])
+        }
         "stop" => sys.run("systemctl", &["disable", "--now", &unit]),
         "restart" => sys.run("systemctl", &["restart", &unit]),
         "status" => {
@@ -513,12 +541,22 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
         // `rovik` group and no folder for them yet, and the daemons that
         // restart after an upgrade must find both. So does pasta: an
         // upgrade from a build before it runs this new build's `admin
-        // bubblewrap`, not `admin pasta`.
-        ["bubblewrap"] => both(
-            all_of([bubblewrap::ensure(sys), pasta::ensure(sys)]),
-            toolchains::setup(sys),
-        ),
+        // bubblewrap`, not `admin pasta`. And so do the containers' parts,
+        // for the same reason: what can't be set up of them is said here,
+        // and doesn't fail bubblewrap's outcome, which an older build's
+        // upgrade reports as bubblewrap's.
+        ["bubblewrap"] => {
+            let outcome = both(
+                all_of([bubblewrap::ensure(sys), pasta::ensure(sys)]),
+                toolchains::setup(sys),
+            );
+            containers::ensure_or_say(sys);
+            outcome
+        }
         ["pasta"] => pasta::ensure(sys),
+        // Podman, the pinned Docker Compose and the users' subordinate ids
+        // (installer/containers.rs).
+        ["containers"] => containers::ensure(sys),
         ["toolchain", "list"] => toolchains::list(sys),
         ["toolchain", "add", kind, version, rest @ ..] => {
             let (components, targets) = toolchains::flags(rest)?;
@@ -552,13 +590,21 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
             Ok(())
         }
         ["toolchains", "setup"] => toolchains::setup(sys),
+        ["images", "list"] => images::list(sys),
+        ["images", "prune", days] => {
+            let days = days
+                .parse::<u64>()
+                .map_err(|_| format!("prune takes a number of days, not {days}"))?;
+            images::prune(sys, days)
+        }
         ["upgrade", from] => upgrade(sys, &file, Path::new(from), &caller, allow_downgrade),
         ["uninstall"] => uninstall(sys),
         _ => Err(
             "admin takes: limits [name=value ...], add USER, remove USER, browser, \
-             bubblewrap, pasta, claude-code, toolchain list | add KIND VERSION | remove KIND VERSION | prune DAYS, \
-             toolchains user-install|shared-caches on|off, toolchains setup, upgrade FILE \
-             [--allow-downgrade], uninstall"
+             bubblewrap, pasta, containers, claude-code, toolchain list | add KIND VERSION | \
+             remove KIND VERSION | prune DAYS, toolchains user-install|shared-caches on|off, \
+             toolchains setup, images list | prune DAYS, upgrade FILE [--allow-downgrade], \
+             uninstall"
                 .into(),
         ),
     }
@@ -641,7 +687,8 @@ fn upgrade(
         Err(why) => println!("{}", browser::not_installed(&why)),
     }
     // And bubblewrap, which confines the chats' commands, for a server
-    // installed before Rovik asked for it. Same: it stops nothing else.
+    // installed before Rovik asked for it, with the container engine that
+    // runs the projects' services. Same: they stop nothing else.
     match sys.run(INSTALLED, &["admin", "bubblewrap"]) {
         Ok(said) => print!("{said}"),
         Err(why) => println!("{}", bubblewrap::not_installed(&why)),
@@ -750,15 +797,8 @@ fn release_number(version: &str) -> Option<(u64, u64, u64, u64)> {
 /// user's folders stay: their chats are in them.
 fn uninstall(sys: &System) -> Result<(), String> {
     if sys.systemd() {
-        let wants = std::fs::read_dir(sys.path(WANTS))
-            .into_iter()
-            .flatten()
-            .flatten();
-        for entry in wants {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("rovik-agentd@") && name.ends_with(".service") {
-                sys.run("systemctl", &["disable", "--now", &name])?;
-            }
+        for user in daemon_users(sys) {
+            sys.run("systemctl", &["disable", "--now", &instance(&user)])?;
         }
     }
     for path in [SUDOERS, UNIT, DROP_IN, SLICE, BIN_DIR, ADMIN_FILE] {
@@ -1160,6 +1200,58 @@ pub fn runs_installed() -> bool {
         (Ok(this), Ok(installed)) => this == installed,
         _ => false,
     }
+}
+
+/// An exclusive `flock` on the file at `path`, made when it's missing (and
+/// its folder), held until the file returned is closed: one run at a time
+/// does what it guards.
+fn flock_file(path: &Path) -> Result<std::fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    if let Some(dir) = path.parent() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o755)
+            .create(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o644)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    // SAFETY: flock on a descriptor this function owns, held until the
+    // file is closed.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(format!(
+            "{}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(file)
+}
+
+/// The users whose daemons start with the server: their units' instances
+/// in systemd's wants folder, by name.
+fn daemon_users(sys: &System) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(sys.path(WANTS)) else {
+        return Vec::new();
+    };
+    let mut users: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let user = name
+                .strip_prefix("rovik-agentd@")?
+                .strip_suffix(".service")?;
+            (!user.is_empty()).then(|| user.to_string())
+        })
+        .collect();
+    users.sort();
+    users
 }
 
 fn on_path(program: &str) -> bool {

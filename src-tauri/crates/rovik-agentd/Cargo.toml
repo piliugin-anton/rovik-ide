@@ -30,6 +30,9 @@ rusqlite.workspace = true
 # unpacked with these rather than with the system's tar and xz.
 flate2 = "1"
 tar = "0.4"
+# What a project's file a service reads is now, for when its copy is made
+# again (services/copy.rs).
+walkdir.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

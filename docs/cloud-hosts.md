@@ -22,14 +22,62 @@ Rovik is installed once per server, by root:
 | `/opt/rovik/toolchains/rust/`, `/opt/rovik/toolchains/node/` | The Rust and Node versions every user's chats run (below), owned by root.  |
 | The distro's `claude-code` package, on request               | Claude Code for the connector of that name (below), once for everyone.     |
 | `/var/cache/rovik/npm`, `/var/cache/rovik/crates`            | The package caches the daemons share, owned by root and the `rovik` group. |
+| `/var/cache/rovik/images`                                    | The projects' services' images, fetched once for everyone (below).         |
 | The distro's `bubblewrap` package                            | Confines the chats' commands (see What can read what).                     |
 | The distro's `passt` package                                 | Its `pasta` gives each user's commands a network of their own (below).     |
+| The distro's `podman` and the packages it needs rootless     | Run each user's project services, as that user (below).                    |
+| The distro's `skopeo` package                                | Fetches the projects' images into the image cache (below).                 |
+| `/opt/rovik/compose/<version>/docker-compose`                | The Docker Compose Rovik pins, owned by root (below).                      |
+| Subordinate ids in `/etc/subuid` and `/etc/subgid`           | What the users in each user's containers map to (below).                   |
 | The `rovik-admin` group                                      | The administrators.                                                        |
 | The `rovik` group                                            | Every daemon, which writes the shared caches (below).                      |
 
 Each user's daemon keeps its files in `~/.rovik` and works in
 `~/.local/share/rovik`. Both folders are the user's own, with mode 0700,
 and the daemon refuses to start if either is open to anyone else.
+
+## Supported distributions
+
+The server needs:
+
+- **A kernel that lets an ordinary user make user namespaces and mount
+  overlayfs in them**: Linux 5.11 or later. bubblewrap's sandbox, each
+  user's own network and rootless Podman all make user namespaces, and
+  Podman keeps a container's files in overlayfs. Every release below has
+  it, the 5.14 of RHEL 9 included; Landlock, which confines the commands
+  only where bubblewrap can't run, needs 6.2.
+- **The distro's `passt`**, for each user's own network: the installer
+  stops without it.
+- **Podman 4.0 or later** from the distro, for the projects' services
+  ([Project services](#project-services)). Without it the rest of Rovik
+  works, and the agent is told that the server can't start the services.
+
+So the kernel rules no current release out: passt and Podman do. As of
+October 2026:
+
+| Distribution                    | Kernel         | Podman     | Rovik                                         |
+| ------------------------------- | -------------- | ---------- | --------------------------------------------- |
+| Ubuntu 26.04 LTS                | 7.0            | 5.7        | Yes                                           |
+| Ubuntu 24.04 LTS                | 6.8 (HWE 7.0)  | 4.9        | Yes                                           |
+| Debian 13                       | 6.12           | 5.4        | Yes                                           |
+| Debian 12                       | 6.1            | 4.3        | Yes                                           |
+| RHEL, AlmaLinux, Rocky Linux 10 | 6.12           | 5.8        | Yes                                           |
+| RHEL, AlmaLinux, Rocky Linux 9  | 5.14           | 5.8        | Yes                                           |
+| Fedora 43, 44                   | 6.17 and later | 5.8        | Yes                                           |
+| openSUSE Leap 16.0              | 6.12           | 5.4        | Yes                                           |
+| Alpine 3.21 to 3.24             | 6.12, 6.18     | 5.3 to 5.8 | Yes, without systemd (OpenRC): see Installing |
+| Arch Linux                      | 7.2            | 6.1        | Yes                                           |
+| Ubuntu 22.04 LTS                | 5.15 (HWE 6.8) | 3.4        | No: no passt, and Podman before 4.0           |
+| RHEL, AlmaLinux, Rocky Linux 8  | 4.18           | 4.9        | No: no passt                                  |
+| SLES 15                         | 6.4            | 4.9        | No: no passt                                  |
+| openSUSE Leap 15.6              | 6.4            | 4.9        | No: its support ended in April 2026           |
+| Amazon Linux 2023               | 6.1 to 6.18    | none       | No: its repositories have no Podman           |
+
+The projects' services were run end to end on Ubuntu 24.04, and Podman's
+network for them was checked in Ubuntu 22.04, 24.04 and 26.04 containers;
+the other rows come from each release's packages. Podman 6 (Arch, and
+Fedora 45 when it's out) dropped slirp4netns and the iptables backend,
+which Rovik doesn't need with it, but hasn't been run with Rovik yet.
 
 ## Installing
 
@@ -55,12 +103,13 @@ administrator and with limits sized to the machine, writes the units, adds
 USER to `rovik-admin`, installs the sudoers rule once `visudo` accepts it,
 starts USER's daemon, installs the browser for the browser tools
 ([The browser](#the-browser)) and the distro's `bubblewrap` package, which
-confines the chats' commands ([What can read what](#what-can-read-what)).
-Neither stops the install when it can't be installed, and `--no-browser`
-leaves the browser out, as the app does for a WSL distribution. To see
-what it would do without changing
-anything, add `--root /tmp/somewhere`. It then writes the files under that
-folder and prints each command it would run.
+confines the chats' commands ([What can read what](#what-can-read-what)),
+and the container engine that runs the projects' services
+([Project services](#project-services)). None of these stops the install
+when it can't be installed, and `--no-browser` leaves the browser out, as
+the app does for a WSL distribution. To see what it would do without
+changing anything, add `--root /tmp/somewhere`. It then writes the files
+under that folder and prints each command it would run.
 
 The daemon never runs as root. A deploy over a root login stops and asks
 for a regular account. Root can still install Rovik by naming a regular
@@ -113,6 +162,7 @@ sudo /opt/rovik/bin/rovik-agentd admin remove USER
 sudo /opt/rovik/bin/rovik-agentd admin browser                   # install it if it's missing
 sudo /opt/rovik/bin/rovik-agentd admin bubblewrap                # install it if it's missing
 sudo /opt/rovik/bin/rovik-agentd admin pasta                     # install it if it's missing
+sudo /opt/rovik/bin/rovik-agentd admin containers                # Podman, Docker Compose, users' subordinate ids
 sudo /opt/rovik/bin/rovik-agentd admin claude-code               # Claude Code for everyone, or its update
 sudo /opt/rovik/bin/rovik-agentd admin toolchain list            # the versions installed
 sudo /opt/rovik/bin/rovik-agentd admin toolchain add rust 1.82   # for everyone
@@ -210,7 +260,7 @@ An administrator can turn it off, and name what a chat may install:
 ```toml
 [toolchains]
 user_install = false          # only `admin toolchain add` installs
-shared_caches = false         # each daemon keeps its own package caches
+shared_caches = false         # each daemon keeps its own caches and images
 allowed_rust = ["1.82", "nightly"]   # empty: any version Rovik takes
 ```
 
@@ -233,6 +283,8 @@ the result is checked:
   and after a `cargo fetch` the user's checked crates go into the store.
   A file another user left there that doesn't match is skipped, never
   used.
+- **Images.** The projects' services' images, which root alone writes
+  ([Images](#images)).
 
 The daemons find the caches because their unit names the `rovik` group
 (`SupplementaryGroups=rovik`). Without systemd, a daemon isn't in the
@@ -258,7 +310,9 @@ nothing of one user's work lands in a shared `/tmp`.
 
 `rovik-agentd doctor`, run by a user, says what their account and the
 server lack for their daemon (pasta, and a network of their own that their
-commands can't get without it, among them), then the versions, the free space where
+commands can't get without it, among them; Podman, the pinned Docker
+Compose and their subordinate ids, without which their projects' services
+don't run), then the versions, the free space where
 Rovik's folders are, the install and its limits, the shared Rust and
 Node versions (and whether chats may install one and the caches are
 shared), the connectors installed for them
@@ -388,6 +442,128 @@ it in the network any more. Only pages of the user's own servers open
 this way, http or https at localhost, 127.0.0.1 or ::1: any other address
 is refused, for the user's safety, and the agent is told why. A chat's
 commands open at most 5 pages a minute.
+
+## Project services
+
+Most projects that need a database, a cache or a queue to run or to be
+tested name them in a compose file (`compose.yaml`, `docker-compose.yml`).
+On a team server each user's daemon runs those services for their chats,
+under that user's own account: there's no Docker daemon of root's, whose
+socket would give anyone who can use it root on the server.
+
+`install` and every upgrade put the container engine in place, and `admin
+containers` does it again:
+
+- **Podman**, from the distro's own packages (4.0 or later), with what it
+  needs rootless, which Debian's and Ubuntu's Podman only recommends: the
+  subordinate id helpers `newuidmap` and `newgidmap` (`uidmap`), and the
+  network a project's services share and find each other on by name
+  (netavark, `aardvark-dns`, the firewall netavark drives, and Podman 4's
+  `slirp4netns`). Each user's containers run as that user, rootless.
+- **Docker Compose**, the release Rovik pins (5.6.1), downloaded from
+  Docker's GitHub releases into `/opt/rovik/compose/<version>` and checked
+  against the SHA-256 Rovik pins before anything runs it. It's the same
+  program on every server, whatever the distro packages.
+- **Subordinate ids**: a range of 65536 uids and gids in `/etc/subuid` and
+  `/etc/subgid` for each user with a daemon here, where they have none
+  (`useradd` gives most new local accounts one; an LDAP account or a cloud
+  image's first user may lack it). The users inside a container map to
+  them, so what runs in a container owns no file of the user's or anyone
+  else's. `user start` adds them for a user new to the server. A range is
+  never moved: files a container wrote are owned by it.
+- **skopeo**, from the distro's packages, with which root fetches the
+  services' images into the server's image cache ([Images](#images)).
+
+None of it stops an install or an upgrade: where something is missing, the
+projects' services don't run, the agent is told so when a command needs one,
+and `rovik-agentd doctor` says what's missing and how to add it. A WSL
+distribution, one person's computer, gets none of this: its user runs their
+services with their own container engine, such as Docker Desktop's.
+
+### How a service starts
+
+A service starts when a command of the agent's needs it: one that fails to
+connect to a port the compose file publishes (`connect ECONNREFUSED
+127.0.0.1:5432`, or a database client's own words), or that looks a service
+up by its name (`getaddrinfo ENOTFOUND db`). The user's daemon starts it,
+and what it depends on, under their own Podman, as it installs a missing
+toolchain: the call says "Starting the project's service: db…" meanwhile,
+and a command that is one program runs again once it's up. The agent's
+commands have no container engine of their own: a `docker compose up` of
+theirs (or `podman compose up`) fails, and the daemon starts the services
+it names instead and says so. Claude Code's commands get the same through
+Rovik's hooks. The agent's prompt names the project's services, and that
+they start this way. Plan mode starts nothing, and a start that failed
+isn't tried again for that chat for ten minutes.
+
+- **Its ports are the user's own.** Nothing is published on the server.
+  Each port a service publishes listens in the user's private network
+  ([Each user's own network](#each-users-own-network)) instead, and each
+  connection to it is carried into the service's container, in the
+  container's own namespaces. So `localhost:5432` is that user's database
+  for all of their commands, two users' databases can both be on 5432, and
+  no one else's process can reach either. A port another process of the
+  user's holds in their network is said, and the service runs all the same.
+  TCP ports only.
+- **One per project, for all of the user's chats.** A project's services are
+  one Compose project, `rovik-<project id>`, as one computer's checkout
+  shares its database between branches: the first chat that needs one
+  starts it from its own copy of the project, and the others find it
+  running. Its images, containers and volumes are in the user's
+  `~/.rovik/containers`, where the agent's commands can't see them.
+- **Only what's the project's own.** The compose file is the agent's to
+  write, so it mustn't become a way out of the sandbox. A service starts
+  only when every file it reads (bind mounts, env files, secrets' and
+  configs' files) is in the chat's copy of the project, and it asks for
+  none of the server's devices (`privileged`, `devices`, GPUs) or
+  namespaces (`network_mode: host`, `pid: host` and the like), nor a user
+  namespace, cgroup or `security_opt` of its own; a volume with a driver
+  or its options is refused too. What it reads is a copy, made in the
+  daemon's folder before it starts, so a link put in a file's place
+  meanwhile reaches nothing, and what it writes stays in the copy, never in
+  the chat's files. A copy is made again when its files changed and its
+  service isn't running. A service built from the project's own Dockerfile
+  is the project's code, which the agent runs with its commands: it isn't
+  started.
+- **Its life.** A service runs until the user's daemon stops (a restart, an
+  upgrade, a reboot), which stops it cleanly first; its volumes stay. Its
+  containers make no cgroups of their own and stay under the daemon's
+  unit, so the user's memory, CPU and task caps cover them; a service's own
+  limits (`mem_limit`, `pids_limit`) aren't applied.
+
+### Images
+
+A service's image comes from its registry once for the whole server, not
+once for each user: the users of a server all fetch from its address, and
+a registry limits how often one address may fetch without a login. Where
+a user's Podman lacks an image, their daemon has root fetch it into
+`/var/cache/rovik/images`, through the same sudo rule as `user start`, and
+then copies it from there into the user's own storage, as a pull would:
+
+```sh
+sudo /opt/rovik/bin/rovik-agentd user image postgres:16-alpine
+```
+
+- **Only public images, as their registry serves them.** Root takes
+  nothing but an image's reference, checked as Docker reads one, and
+  fetches only from the public registries (Docker Hub, `ghcr.io`,
+  `quay.io`, `gcr.io`, `registry.k8s.io`, `mcr.microsoft.com`,
+  `public.ecr.aws`, `registry.gitlab.com`), without a login: an image that
+  needs one is the user's to pull, with theirs, and never lands in the
+  shared cache. skopeo keeps each image as the registry serves it, every
+  file checked against its digest, so root never unpacks one: each user's
+  Podman unpacks its own copy, rootless.
+- **Followed as its tag moves.** An image fetched a week ago or more is
+  fetched again when a daemon next needs it. What a user's Podman already
+  has stays as it is, as `docker compose up` leaves it.
+- **Never in the way.** An image the cache doesn't take, or couldn't
+  fetch, Compose pulls itself, as it would without the cache.
+
+`admin images list` says what the cache holds, how big each image is and
+when a daemon last asked for it, and `admin images prune DAYS` removes what
+no daemon asked for in that time. With `shared_caches = false` each daemon
+pulls its own images, and so does a daemon outside the `rovik` group, as
+one without systemd is.
 
 ## WSL on Windows
 
@@ -527,7 +703,9 @@ upgrade installs `passt`, and stops where it can't
 the browser it pins and bubblewrap, whichever is missing, and the browser's
 other versions go. It also puts the `rovik` group, the shared caches and
 the unit that names the group in place, so the daemons that restart run
-in it. An upgrade
+in it, and the container engine: Podman, the Docker Compose it pins (another
+version goes) and each user's subordinate ids, whichever is missing; what
+can't be is said, and stops nothing else. An upgrade
 from the app does the same for a server whose installed build is older
 than that.
 
@@ -542,8 +720,10 @@ administrators to ask.
 
 `admin uninstall` stops every daemon and removes everything listed above,
 `/var/cache/rovik` with the shared caches among them, and the `rovik` and
-`rovik-admin` groups. `/opt/rovik/toolchains` goes with `/opt/rovik`. The
-libraries the browser needed stay installed.
+`rovik-admin` groups. `/opt/rovik/toolchains` and `/opt/rovik/compose` go
+with `/opt/rovik`. The libraries the browser needed stay installed, and so
+do Podman's packages and the users' subordinate ids: files their containers
+wrote are owned by those ids.
 Each user's `~/.rovik` and `~/.local/share/rovik` stay, because their
 chats are there. A user who no longer wants Rovik runs `user stop` and
 deletes those two folders. The app does this with "Remove Rovik from this

@@ -15,6 +15,7 @@ use crate::home::{self, Home};
 use crate::host;
 use crate::limits::{size_of, AdminFile, ADMIN_FILE};
 use crate::network;
+use crate::services::Containers;
 use rovik_protocol::connectors::ConnectorKind;
 use rovik_protocol::host::{Disk, Doctor, Finding, InstallLimits, Level, Storage};
 use rovik_protocol::PROTOCOL;
@@ -71,6 +72,9 @@ pub struct Server {
     /// (network.rs): None where none is wanted (no install for everyone,
     /// WSL).
     pub private_network: Option<Result<(), String>>,
+    /// What runs this user's project services (installer/containers.rs):
+    /// None where Rovik isn't installed for everyone, or in WSL.
+    pub containers: Option<Containers>,
     /// The shared Rust and Node versions (installer/toolchains.rs).
     pub toolchains: PathBuf,
     /// The connectors whose program is installed here
@@ -87,6 +91,9 @@ impl Server {
         let fuse = rovik_core::vfs::driver::status();
         let installed = Path::new(ADMIN_FILE).is_file();
         let private_network = network::wanted(installed).then(|| network::check(&home));
+        let user = home::passwd().map(|p| p.name).unwrap_or_default();
+        let containers =
+            (installed && !network::in_wsl()).then(|| Containers::here(&user, home::uid()));
         Ok(Server {
             socket: options.socket.unwrap_or_else(|| home.socket()),
             home,
@@ -95,7 +102,7 @@ impl Server {
             sys: PathBuf::from("/proc/sys"),
             cgroups: PathBuf::from("/sys/fs/cgroup"),
             uid: home::uid(),
-            user: home::passwd().map(|p| p.name).unwrap_or_default(),
+            user,
             virtual_files: match fuse.detail {
                 None => Ok(
                     format!("{} {}", fuse.driver, fuse.version.unwrap_or_default())
@@ -108,6 +115,7 @@ impl Server {
             bwrap: crate::installer::find_on_path("bwrap"),
             landlock: rovik_core::overlay::confine::landlock_works(),
             private_network,
+            containers,
             toolchains: PathBuf::from(crate::installer::TOOLCHAINS),
             connectors: rovik_core::connectors::installed(),
             git: git_version(),
@@ -198,6 +206,9 @@ pub fn gather(server: &Server) -> Doctor {
              users' ({why}); sudo {} admin pasta installs pasta",
             crate::installer::INSTALLED
         )),
+    }
+    if let Some(containers) = &server.containers {
+        findings.containers(containers, &server.user);
     }
     if server.git.is_none() {
         findings.warning("no git: the projects' repositories aren't garbage-collected".into());
@@ -397,6 +408,24 @@ impl Findings {
         self.0.push(Finding { level, text });
     }
 
+    /// What runs this user's project services, `user`'s: Podman new enough,
+    /// the pinned Docker Compose, and subordinate ids for their containers.
+    /// A warning names everything missing and how it's fixed.
+    fn containers(&mut self, containers: &Containers, user: &str) {
+        use rovik_core::pinned_compose::{NAME, VERSION};
+        let missing = containers.missing(user);
+        match (missing.is_empty(), containers.version()) {
+            (true, Some((major, minor))) => self.ok(format!(
+                "containers: Podman {major}.{minor} and {NAME} {VERSION} run this user's \
+                 project services"
+            )),
+            _ => self.warning(format!(
+                "the projects' services (their compose files) don't run for this user here: {}",
+                missing.join("; ")
+            )),
+        }
+    }
+
     /// The shared Rust and Node versions every user's chats run, and
     /// whether a chat may install one and the daemons share the caches
     /// (installer/toolchains.rs). `installed`: Rovik is installed for
@@ -563,6 +592,11 @@ mod tests {
             bwrap: Some("/usr/bin/bwrap".into()),
             landlock: true,
             private_network: Some(Ok(())),
+            containers: Some(Containers {
+                podman: Some("podman version 4.9.3".into()),
+                compose: true,
+                ids: (65536, 65536),
+            }),
             toolchains: dir.0.join("toolchains"),
             connectors: vec![ConnectorKind::ClaudeCode],
             git: Some("2.43.0".into()),
@@ -584,6 +618,7 @@ rovik-agentd {VERSION} (protocol {PROTOCOL}, serves apps from protocol {MIN_PROT
   ok       unprivileged user namespaces are allowed
   ok       bubblewrap: /usr/bin/bwrap sandboxes the agent's commands
   ok       a private network for this user's commands: their servers' ports are theirs alone
+  ok       containers: Podman 4.9 and Docker Compose 5.6.1 run this user's project services
   ok       shared toolchains in /home/ann/toolchains: installed: Rust 1.82.0, Node 20.11.0; chats may install a version, the package caches are shared
   ok       connectors installed: Claude Code
   git      2.43.0
@@ -622,6 +657,39 @@ rovik-agentd {VERSION} (protocol {PROTOCOL}, serves apps from protocol {MIN_PROT
         // And where none is wanted (WSL, a daemon in development), nothing.
         server.private_network = None;
         assert!(!render(&gather(&server)).contains("private network"));
+
+        // Without Podman, the pinned Compose or subordinate ids, a user's
+        // project services don't run: one warning names all of it.
+        server.containers = Some(Containers {
+            podman: None,
+            compose: false,
+            ids: (0, 65536),
+        });
+        let shown = render(&gather(&server));
+        assert!(
+            shown.contains(
+                "warning  the projects' services (their compose files) don't run for this user \
+                 here: Podman isn't installed (sudo /opt/rovik/bin/rovik-agentd admin containers \
+                 installs it); Docker Compose 5.6.1 isn't installed (sudo \
+                 /opt/rovik/bin/rovik-agentd admin containers installs it); ann has 0 \
+                 subordinate uids and 65536 gids, not the 65536 of each their containers' users \
+                 map to (sudo /opt/rovik/bin/rovik-agentd user start adds them)\n"
+            ),
+            "{shown}"
+        );
+        server.containers = Some(Containers {
+            podman: Some("podman version 3.4.4".into()),
+            compose: true,
+            ids: (65536, 65536),
+        });
+        let shown = render(&gather(&server));
+        assert!(
+            shown.contains("Podman 3.4 is older than the 4.0 Rovik needs"),
+            "{shown}"
+        );
+        // And where Rovik isn't installed for everyone, nothing.
+        server.containers = None;
+        assert!(!render(&gather(&server)).contains("compose"));
 
         // A server without any connector's program says so.
         server.connectors = Vec::new();
