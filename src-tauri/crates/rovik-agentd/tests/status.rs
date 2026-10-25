@@ -7,7 +7,7 @@ mod common;
 
 use common::project::CHAT;
 use common::task::*;
-use common::{Daemon, BINARY, COMPUTER};
+use common::{until, Daemon, BINARY, COMPUTER};
 use rovik_core::testing::Reply;
 use rovik_protocol::autopilot::ChatTask;
 use rovik_protocol::{Request, Response};
@@ -47,13 +47,22 @@ async fn status_lists_each_chat_with_its_task() {
     assert!(format!("{reply:?}").contains("RunId(Some("), "{reply:?}");
     assert_eq!(until_delivered(&daemon).await, delivered_whole());
 
-    let report: Value = serde_json::from_str(&status(&daemon, true)).unwrap();
-    let chats: Vec<ChatTask> = serde_json::from_value(report["chats"].clone()).unwrap();
+    // Delivering is the work of the task's last run, which ends just after
+    // it: the daemon notes that end in state.json then, after the stage's
+    // row says it's done. Nothing runs once that's noted.
+    let (report, chats) = until("the delivering run's end", || {
+        let report: Value = serde_json::from_str(&status(&daemon, true)).unwrap();
+        let chats: Vec<ChatTask> = serde_json::from_value(report["chats"].clone()).unwrap();
+        chats
+            .iter()
+            .all(|chat| chat.running.is_none())
+            .then_some((report, chats))
+    })
+    .await;
     assert_eq!(chats.len(), 1, "{report}");
     let chat = &chats[0];
     assert_eq!(chat.chat, CHAT);
     assert_eq!(chat.computer, COMPUTER);
-    assert_eq!(chat.running, None, "nothing runs once it's delivered");
     let task = chat.task.as_ref().expect("its task");
     assert_eq!(task.id, "u1");
     assert_eq!(
