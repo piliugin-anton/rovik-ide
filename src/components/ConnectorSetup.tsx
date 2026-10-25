@@ -177,7 +177,10 @@ export default function ConnectorSetup(props: ConnectorSetupProps) {
         >
           {(text) => (
             <>
-              <span class="connector-setup-stage">{text()}</span>
+              <span class="connector-setup-stage" role="status">
+                <span class="connector-setup-spinner" aria-hidden="true" />
+                {text()}
+              </span>
               <button onClick={() => abort?.abort()}>Cancel</button>
             </>
           )}

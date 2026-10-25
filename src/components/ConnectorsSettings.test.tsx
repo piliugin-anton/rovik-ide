@@ -59,11 +59,17 @@ function page(connector: ReturnType<typeof newConnector>) {
   return { root, dispose };
 }
 
-/** What one of the form's parts is: a section by its title, a field by its label. */
+/**
+ * What one of the form's parts is: a section by its title (one without, by
+ * its first row), a row by its label, anything else by its class.
+ */
 function partName(el: Element): string {
-  if (el.tagName === 'SECTION')
-    return el.querySelector('.settings-section-title, summary')?.textContent ?? 'section';
-  if (el.tagName === 'LABEL') return el.firstChild?.textContent?.trim() ?? 'label';
+  if (el.classList.contains('settings-section'))
+    return (
+      el.querySelector('.settings-section-title, .setting-row-label')?.textContent ?? 'section'
+    );
+  if (el.classList.contains('setting-row'))
+    return el.querySelector('.setting-row-label')?.textContent ?? 'setting-row';
   return el.classList[0] ?? el.tagName;
 }
 
@@ -88,15 +94,16 @@ test('a connector’s form: its name, how it connects, its kind’s options, its
     'provider-models',
     'profile-form-actions',
   ]);
-  // How it signs in comes first in Connection, then the test of it.
-  const connection = form.querySelector('section')!;
-  assert.deepEqual([...connection.children].slice(0, 4).map(partName), [
+  // How it signs in comes first in Connection, then the test of it and Set up.
+  const connection = [...form.children].find((el) => partName(el) === 'Connection')!;
+  assert.deepEqual([...connection.children].map(partName), [
     'settings-section-title',
-    'setting-row',
+    'Signs in with',
     'settings-hint',
-    'provider-test-row',
+    'connector-checks',
   ]);
-  assert.equal(connection.querySelector('.setting-row-label')?.textContent, 'Signs in with');
+  const checks = connection.querySelector('.connector-checks')!;
+  assert.deepEqual([...checks.children].map(partName), ['provider-test-row', 'connector-setup']);
   dispose();
 });
 

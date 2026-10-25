@@ -3,8 +3,9 @@
 // Claude Code's part of a connector's form (ConnectorsSettings.tsx), its
 // `ConnectorFields`: how it signs in, in the Connection section; then how
 // chats use it, its permissions (with its own tools), its limits, and the
-// advanced ones (the program, its settings folder, more arguments, bare
-// mode). The same fields as claude_code.rs `Settings` (lib/claudeCode.ts).
+// advanced ones (the program, its config folder, more arguments, bare
+// mode), each a labelled row as on the other Settings pages. The same
+// fields as claude_code.rs `Settings` (lib/claudeCode.ts).
 import { For, Show } from 'solid-js';
 import {
   AUTH_KINDS,
@@ -15,7 +16,7 @@ import {
   type Choice,
   type ClaudeCodeSettings,
 } from '../lib/claudeCode';
-import { SettingRow } from './SettingsControls';
+import { NumberField, SettingRow } from './SettingsControls';
 import type { ConnectorFields, ConnectorFieldsProps } from './connectorFields';
 
 /** Its settings, as read with the defaults, and a change to some of them. */
@@ -39,6 +40,7 @@ function ChoiceSelect<T extends string>(props: {
       <SettingRow label={props.label}>
         <select
           class="settings-select"
+          aria-label={props.label}
           value={props.value}
           onChange={(e) => props.onChange(e.currentTarget.value as T)}
         >
@@ -62,6 +64,66 @@ function ChoiceSelect<T extends string>(props: {
   );
 }
 
+/** A text field on its own row, with its line under it when it has one. */
+function TextRow(props: {
+  label: string;
+  value: string;
+  placeholder: string;
+  onInput: (value: string) => void;
+  /** Its line, under it, and that line's tooltip. */
+  explain?: string;
+  title?: string;
+  type?: 'text' | 'password';
+}) {
+  return (
+    <>
+      <SettingRow label={props.label}>
+        <input
+          type={props.type ?? 'text'}
+          class="settings-input"
+          aria-label={props.label}
+          value={props.value}
+          onInput={(e) => props.onInput(e.currentTarget.value)}
+          placeholder={props.placeholder}
+          spellcheck={false}
+        />
+      </SettingRow>
+      <Show when={props.explain}>
+        <p class="settings-hint setting-explain" title={props.title}>
+          {props.explain}
+        </p>
+      </Show>
+    </>
+  );
+}
+
+/** Tool rules, one per line, on their own row, with what they do under them. */
+function RulesRow(props: {
+  label: string;
+  value: string;
+  placeholder: string;
+  rows: number;
+  explain: string;
+  onInput: (value: string) => void;
+}) {
+  return (
+    <>
+      <SettingRow label={props.label}>
+        <textarea
+          class="settings-textarea"
+          aria-label={props.label}
+          rows={props.rows}
+          value={props.value}
+          onInput={(e) => props.onInput(e.currentTarget.value)}
+          placeholder={props.placeholder}
+          spellcheck={false}
+        />
+      </SettingRow>
+      <p class="settings-hint setting-explain">{props.explain}</p>
+    </>
+  );
+}
+
 /** In the Connection section: how it signs in, and its token or key. */
 function Connection(props: ConnectorFieldsProps) {
   const { settings, patch } = useSettings(props);
@@ -74,16 +136,13 @@ function Connection(props: ConnectorFieldsProps) {
         onChange={(auth) => patch({ auth })}
       />
       <Show when={settings().auth !== 'login'}>
-        <label>
-          {settings().auth === 'token' ? 'Token' : 'API key'}
-          <input
-            type="password"
-            value={props.connector.apiKey}
-            onInput={(e) => props.update({ apiKey: e.currentTarget.value })}
-            placeholder={settings().auth === 'token' ? 'from `claude setup-token`' : 'sk-ant-…'}
-            spellcheck={false}
-          />
-        </label>
+        <TextRow
+          type="password"
+          label={settings().auth === 'token' ? 'Token' : 'API key'}
+          value={props.connector.apiKey}
+          onInput={(apiKey) => props.update({ apiKey })}
+          placeholder={settings().auth === 'token' ? 'from `claude setup-token`' : 'sk-ant-…'}
+        />
       </Show>
     </>
   );
@@ -94,11 +153,6 @@ function Options(props: ConnectorFieldsProps) {
   const { settings, patch } = useSettings(props);
   /** Rovik's permissions decide: Claude Code's allowed-tools rules would pass them by. */
   const followsRovik = () => settings().permissionMode === 'rovik';
-  const numberValue = (raw: string, min: number, max: number): number | undefined => {
-    const n = Number(raw.replace(/[^\d.]/g, ''));
-    if (!raw.trim() || !Number.isFinite(n)) return undefined;
-    return Math.min(max, Math.max(min, n));
-  };
 
   return (
     <>
@@ -122,71 +176,46 @@ function Options(props: ConnectorFieldsProps) {
             onChange={(permissionMode) => patch({ permissionMode })}
           />
           <Show when={!followsRovik()}>
-            <label>
-              Allowed tools
-              <textarea
-                class="settings-textarea"
-                rows={2}
-                value={settings().allowedTools}
-                onInput={(e) => patch({ allowedTools: e.currentTarget.value })}
-                placeholder={'Bash(npm test *)\nBash(git diff *)'}
-                spellcheck={false}
-              />
-              <span class="setting-explain">
-                Rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`).
-              </span>
-            </label>
-          </Show>
-          <label>
-            Denied tools
-            <textarea
-              class="settings-textarea"
-              rows={1}
-              value={settings().disallowedTools}
-              onInput={(e) => patch({ disallowedTools: e.currentTarget.value })}
-              placeholder="Bash(rm *)"
-              spellcheck={false}
+            <RulesRow
+              label="Allowed tools"
+              rows={2}
+              value={settings().allowedTools}
+              onInput={(allowedTools) => patch({ allowedTools })}
+              placeholder={'Bash(npm test *)\nBash(git diff *)'}
+              explain="Rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`)."
             />
-          </label>
+          </Show>
+          <RulesRow
+            label="Denied tools"
+            rows={1}
+            value={settings().disallowedTools}
+            onInput={(disallowedTools) => patch({ disallowedTools })}
+            placeholder="Bash(rm *)"
+            explain="Rules that never run, one per line (`Bash(rm *)`, `WebFetch`)."
+          />
         </section>
       </Show>
 
       <section class="settings-section">
         <div class="settings-section-title">Limits</div>
-        <div class="connector-limits">
-          <label class="setting-number-field">
-            <span>Turns per message</span>
-            <input
-              type="number"
-              class="settings-input setting-number"
-              min={1}
-              max={1000}
-              value={settings().maxTurns ?? ''}
-              placeholder="no limit"
-              onChange={(e) => {
-                const value = numberValue(e.currentTarget.value, 1, 1000);
-                e.currentTarget.value = value === undefined ? '' : String(Math.round(value));
-                patch({ maxTurns: value === undefined ? undefined : Math.round(value) });
-              }}
-            />
-          </label>
-          <label class="setting-number-field">
-            <span>Budget per message, $</span>
-            <input
-              type="number"
-              class="settings-input setting-number"
-              min={0.01}
-              max={1000}
-              step={0.5}
-              value={settings().maxBudgetUsd ?? ''}
-              placeholder="no limit"
-              onChange={(e) => {
-                const value = numberValue(e.currentTarget.value, 0.01, 1000);
-                e.currentTarget.value = value === undefined ? '' : String(value);
-                patch({ maxBudgetUsd: value });
-              }}
-            />
-          </label>
+        <div class="setting-fields connector-limits">
+          <NumberField
+            label="Turns per message"
+            value={settings().maxTurns}
+            placeholder="no limit"
+            min={1}
+            max={1000}
+            onChange={(maxTurns) => patch({ maxTurns })}
+          />
+          <NumberField
+            label="Budget per message, $"
+            value={settings().maxBudgetUsd}
+            placeholder="no limit"
+            min={0.01}
+            max={1000}
+            step={0.5}
+            onChange={(maxBudgetUsd) => patch({ maxBudgetUsd })}
+          />
         </div>
         <p
           class="settings-hint setting-explain"
@@ -196,54 +225,47 @@ function Options(props: ConnectorFieldsProps) {
         </p>
       </section>
 
-      <section class="settings-section">
-        <details class="connector-advanced">
-          <summary>Advanced</summary>
-          <label>
-            Program
-            <input
-              value={settings().program}
-              onInput={(e) => patch({ program: e.currentTarget.value })}
-              placeholder="claude"
-              spellcheck={false}
-            />
-            <span class="setting-explain" title={`Or install it with: ${CLAUDE_CODE_INSTALL}`}>
-              `claude` as the shell finds it, or the path to it. Set up installs it if it’s missing.
+      <details class="settings-section settings-details connector-advanced">
+        <summary class="settings-details-summary">
+          <span class="settings-section-title">Advanced</span>
+          <span class="settings-hint">The program, its config folder, arguments, bare mode</span>
+        </summary>
+        <TextRow
+          label="Program"
+          value={settings().program}
+          onInput={(program) => patch({ program })}
+          placeholder="claude"
+          explain="`claude` as the shell finds it, or the path to it. Set up installs it if it’s missing."
+          title={`Or install it with: ${CLAUDE_CODE_INSTALL}`}
+        />
+        <TextRow
+          label="Config folder"
+          value={settings().configDir}
+          onInput={(configDir) => patch({ configDir })}
+          placeholder="~/.claude (its own)"
+          explain="Its login and settings (CLAUDE_CONFIG_DIR) in another folder: a work account, or one shared on a server."
+        />
+        <TextRow
+          label="Arguments"
+          value={settings().extraArgs}
+          onInput={(extraArgs) => patch({ extraArgs })}
+          placeholder="--add-dir ../lib --mcp-config ./mcp.json"
+          explain="Passed to every run, as typed on a command line."
+        />
+        <label class="setting-checkbox">
+          <input
+            type="checkbox"
+            checked={settings().bare}
+            onChange={(e) => patch({ bare: e.currentTarget.checked })}
+          />
+          <span>
+            Bare mode
+            <span class="setting-checkbox-sub">
+              None of the user’s hooks, skills, plugins, MCP servers or CLAUDE.md. Needs an API key.
             </span>
-          </label>
-          <label>
-            Settings folder (CLAUDE_CONFIG_DIR)
-            <input
-              value={settings().configDir}
-              onInput={(e) => patch({ configDir: e.currentTarget.value })}
-              placeholder="~/.claude (its own)"
-              spellcheck={false}
-            />
-            <span class="setting-explain">
-              Another login and settings folder: a work account, or one shared on a server.
-            </span>
-          </label>
-          <label>
-            Extra arguments
-            <input
-              value={settings().extraArgs}
-              onInput={(e) => patch({ extraArgs: e.currentTarget.value })}
-              placeholder="--add-dir ../lib --mcp-config ./mcp.json"
-              spellcheck={false}
-            />
-            <span class="setting-explain">Passed to every run, as typed on a command line.</span>
-          </label>
-          <label class="checkbox-row">
-            <input
-              type="checkbox"
-              checked={settings().bare}
-              onChange={(e) => patch({ bare: e.currentTarget.checked })}
-            />
-            Bare mode: none of the user’s hooks, skills, plugins, MCP servers or CLAUDE.md (needs an
-            API key)
-          </label>
-        </details>
-      </section>
+          </span>
+        </label>
+      </details>
     </>
   );
 }
