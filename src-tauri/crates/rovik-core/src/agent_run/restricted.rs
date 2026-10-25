@@ -765,6 +765,8 @@ impl Check<'_> {
         let mut walk = WalkBuilder::new(start);
         let ignores = picks.ignore_files;
         let (restricted, key_of) = (self.restricted.clone(), key_at.clone());
+        // In name order: the same file is the one found everywhere.
+        walk.sort_by_file_name(|a, b| a.cmp(b));
         walk.hidden(!picks.hidden)
             .parents(ignores)
             .ignore(ignores)
