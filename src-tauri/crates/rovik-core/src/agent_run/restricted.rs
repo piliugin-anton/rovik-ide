@@ -1821,8 +1821,11 @@ fn finder(args: &[String], cwd: &Path, rg_config: &[String]) -> Finder {
     if finder.folders.is_empty() {
         finder.folders.push(".".to_string());
     }
-    // With `-o`, what `!` leaves out may be found by another branch.
-    let or = args[i..]
+    // With `-o`, what `!` leaves out may be found by another branch. (A
+    // `-D` without its value leaves `i` past the end.)
+    let or = args
+        .get(i..)
+        .unwrap_or_default()
         .iter()
         .any(|w| matches!(w.as_str(), "-o" | "-or" | ","));
     let mut not = false;
@@ -3264,6 +3267,48 @@ mod tests {
         let a = Args::split(&words, &[], true);
         assert!(a.has(&["/s"]) && a.has(&["/c"]));
         assert_eq!(a.words, ["*.env", "/etc/x"]);
+    }
+
+    #[test]
+    fn a_command_cut_short_anywhere_is_judged_without_failing() {
+        let (_dir, root) = project(&[]);
+        // Every command made of the first words of one: an option that
+        // takes a value, last (`find -D`), is where reading options can go
+        // past the words.
+        let commands = [
+            "find -L -D tree -O3 . -name *.ts -not -path ./x/* -o -regex .* -maxdepth 2 -exec cat {} + -execdir rm {} ; -fprintf out %p -delete",
+            "fd -H -I -e ts -E node_modules -x cat {} ; -X rm",
+            "git -C apps -c core.x=1 --git-dir .git stash push -m msg -- src",
+            "git clean -fdx -e config -- .",
+            "git checkout -b new HEAD -- src",
+            "git show HEAD:.env.example",
+            "grep -rn -e KEY -f patterns --include *.ts --exclude-dir node_modules -A 3 src",
+            "rg -uu -g !x -t ts -T js --type-add x:*.x -e KEY -f pats -m 1 src",
+            "ag -G ts --ignore-dir x -C 2 KEY src",
+            "cp -r -t dest --no-clobber src/a src/b",
+            "rsync -av -e ssh --exclude node_modules --exclude-from list src/ dest/",
+            "scp -i key -P 22 -o x=y src host:dest",
+            "ln -s -t dest src/a",
+            "mv -t dest src/a",
+            "xargs -I {} -n 1 -P 2 -a list -d , cat {}",
+            "sed -i -e s/a/b/ -f script src/app.ts",
+            "awk -F = -v x=1 -f prog src/app.ts",
+            "curl -o out -T src/app.ts -F file=@src/app.ts http://x",
+            "docker compose -f a.yml --env-file x config --services",
+            "terraform -chdir=infra plan -var-file x.tfvars",
+            "python3 -c open(1) -m x",
+            "env -i -u X -C src -S cat cat src/app.ts",
+            "cd src && pushd .. && popd && cd -",
+            "for f in src/*; do cat $f; done",
+            "findstr /s /i /c:KEY *.ts",
+        ];
+        for command in commands {
+            let words = permissions::split_words(command);
+            for n in 0..=words.len() {
+                // Refused or not: that it's judged at all is what's checked.
+                let _ = command_problem(&words[..n].join(" "), &root, &none());
+            }
+        }
     }
 
     #[test]
