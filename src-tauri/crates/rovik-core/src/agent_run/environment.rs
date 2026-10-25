@@ -505,8 +505,8 @@ fn first_lately(cx: &Context, install: &Install) -> bool {
 /// file's started where this machine runs them, or the model told what to
 /// do. Empty when the output names none: Compose isn't even asked then.
 async fn services_needed(cx: &Context, output: &str) -> Vec<Outcome> {
-    let refused = super::ports::refused_ports(output);
-    let unresolved = super::ports::unresolved_hosts(output);
+    let refused = super::unreached::refused_ports(output);
+    let unresolved = super::unreached::unresolved_hosts(output);
     if refused.is_empty() && unresolved.is_empty() {
         return Vec::new();
     }
@@ -800,6 +800,7 @@ mod tests {
 
     /// What a project's compose file says through Compose: a database and
     /// a cache with their ports, and the app built from its Dockerfile.
+    #[cfg(unix)]
     const SHOP: &str = r#"{"name": "shop", "services": {
       "web": {"build": {"context": "/p"}, "ports": [{"target": 3000, "published": "3000", "protocol": "tcp"}]},
       "db": {"image": "postgres:16-alpine", "ports": [{"target": 5432, "published": "5432", "protocol": "tcp"}]},
@@ -818,15 +819,18 @@ mod tests {
 
     /// Each start a daemon was asked for: its chat, compose project and
     /// services.
+    #[cfg(unix)]
     type Asked = Arc<Mutex<Vec<(String, String, Vec<String>)>>>;
 
     /// What a cloud host's daemon would be asked to start, answered with
     /// `answer`.
+    #[cfg(unix)]
     struct Recording {
         asked: Asked,
         answer: Result<String, String>,
     }
 
+    #[cfg(unix)]
     impl services::Runner for Recording {
         fn start(
             &self,
