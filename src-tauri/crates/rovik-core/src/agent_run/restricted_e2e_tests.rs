@@ -579,3 +579,84 @@ async fn claude_codes_own_file_tools_and_its_shells_folder_are_checked_too() {
     );
     assert_eq!(answer("toolu_8"), json!({}));
 }
+
+/// The diffs a run shows its models besides its own calls' (a step's
+/// brief, a rolled-back attempt, a merge conflict's two versions) leave
+/// out a file the agent may not read, though it may change it.
+#[tokio::test]
+async fn the_diffs_a_run_shows_leave_out_what_the_agent_may_not_read() {
+    use crate::agent_run::subagent::{Original, Source};
+    let h = harness(&[(".env.local", "OLD=1\n"), ("src/app.ts", "const x = 1;\n")]).await;
+    restrict(
+        &h,
+        json!([{ "path": ".env.local", "blockRead": true, "blockWrite": false }]),
+    );
+    let (url, _) = model(vec![Reply::Text("Not asked.")]).await;
+    let core = h.core.clone();
+    let request = h.request(&url, Harness::send("Go"), quiet_permissions());
+    core.agents.set_config(request.config.clone().unwrap());
+    let controls = core.agents.register(&h.dialog_id, "p::m", None).unwrap();
+    let _registered = core.agents.registered(&h.dialog_id, &controls.run_id);
+    let (mut run, _entry) = crate::agent_run::run::Run::prepare(&core, request, controls)
+        .await
+        .unwrap()
+        .unwrap();
+    let write = |path: &str, text: &str| std::fs::write(h.project.join(path), text).unwrap();
+
+    // A step's brief: what its files' changes are so far.
+    for (key, before) in [(".env.local", "OLD=1\n"), ("src/app.ts", "const x = 1;\n")] {
+        let original = Original::new(Some(before.as_bytes().to_vec()), Source::ViewAtRunStart);
+        run.baseline.insert(key.to_string(), original);
+    }
+    write(".env.local", &format!("KEY={SECRET}\n"));
+    write("src/app.ts", "const x = 2;\n");
+    let file = |path: &str| crate::agent_run::plan::PlanFile {
+        path: path.into(),
+        new: false,
+        read_only: false,
+    };
+    let step = crate::agent_run::plan::PlanStep {
+        number: 1,
+        written: None,
+        title: "Change them".into(),
+        files: vec![file(".env.local"), file("src/app.ts")],
+        body: String::new(),
+        group: None,
+    };
+    let diff = run.step_diff(&step);
+    assert!(diff.contains("const x = 2"), "{diff}");
+    assert!(
+        !diff.contains(SECRET) && !diff.contains(".env.local"),
+        "{diff}"
+    );
+
+    // A rolled-back attempt, as the record the agent reads has it.
+    run.changed_files = vec![".env.local".into(), "src/app.ts".into()];
+    run.take_checkpoint();
+    for (path, text) in [
+        (".env.local", format!("NEW={SECRET}\n")),
+        ("src/app.ts", "const x = 3;\n".into()),
+    ] {
+        write(path, &text);
+        run.seen.record(&h.project.join(path), text.as_bytes());
+    }
+    let rolled = run.roll_back(Vec::new(), None).await.unwrap();
+    assert!(rolled.diff.contains("const x = 3"), "{}", rolled.diff);
+    assert!(!rolled.diff.contains(SECRET), "{}", rolled.diff);
+
+    // A merge conflict: neither version saved where the agent could read it.
+    let said = run.save_conflict(
+        "w2",
+        None,
+        &[crate::overlay::land::Conflict {
+            path: ".env.local".into(),
+            reason: "both changed line 1".into(),
+        }],
+    );
+    assert!(said.contains("a restricted file"), "{said}");
+    assert!(
+        !said.contains("@checks/") && !said.contains(SECRET),
+        "{said}"
+    );
+    crate::agent_run::check_output::clean(&h.dialog_id);
+}

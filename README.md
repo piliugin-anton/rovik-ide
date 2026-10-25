@@ -1072,8 +1072,10 @@ for an approval, with the reason and what to do instead
   (`.env.local`).
 
 `search_code` leaves their lines out, saying how many matched where; the
-repository map leaves out their declarations, and the reviewers' diffs
-their changes; an edit of one never goes to the AI reviewer. Claude Code
+repository map leaves out their declarations, and the diffs models are
+shown their changes (the reviewers', a step's brief, a rolled-back
+attempt, what the project changed meanwhile, a merge conflict's two
+versions); an edit of one never goes to the AI reviewer. Claude Code
 with its own tools gets them as deny rules of its own (`Read(./.env)`,
 `Edit(./.env)`), and its `PreToolUse` hook checks its calls as Rovik's
 own are checked: its shell's commands, from the folder its shell is in,

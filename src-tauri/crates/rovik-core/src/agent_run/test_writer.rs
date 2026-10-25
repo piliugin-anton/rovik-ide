@@ -475,12 +475,19 @@ enum Ended {
 const NO_TEST_FILE: &str = "The test writer wrote no test file";
 
 /// The outlines of `hidden`, the files the writer can't read (E02): what
-/// it's told of them.
-fn outlines_of(root: &str, hidden: &[String]) -> Vec<(String, Option<String>)> {
+/// it's told of them. None of a restricted file, which the agent may not
+/// read at all.
+fn outlines_of(
+    root: &str,
+    hidden: &[String],
+    restricted: &crate::restricted_files::RestrictedFiles,
+) -> Vec<(String, Option<String>)> {
     hidden
         .iter()
         .map(|k| {
-            let exists = std::path::Path::new(&super::tools::to_absolute_path(k, root)).is_file();
+            let read = crate::restricted_files::Op::Read;
+            let exists = std::path::Path::new(&super::tools::to_absolute_path(k, root)).is_file()
+                && restricted.blocked(root, k, read).is_none();
             let outline = exists
                 .then(|| crate::agent_tools::tool_outline(root.to_string(), k.clone()).ok())
                 .flatten();
@@ -627,7 +634,7 @@ impl super::run::Run {
                 }
             }
         }
-        let outlines = outlines_of(&root, &hidden);
+        let outlines = outlines_of(&root, &hidden, &self.restricted);
         let request = self.latest_user_request().await;
         let test_check = self.test_check();
         let message = brief(&BriefParts {
@@ -750,7 +757,7 @@ impl super::run::Run {
         };
         let plan = self.implementing_plan().await;
         let hidden = self.test_writer_hidden().await;
-        let outlines = outlines_of(&root, &hidden);
+        let outlines = outlines_of(&root, &hidden, &self.restricted);
         let request = self.latest_user_request().await;
         let test_check = self.test_check();
         let message = brief(&BriefParts {
@@ -818,6 +825,21 @@ impl super::run::Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The test writer is told the outline of a file it may not read, but
+    /// not of a restricted one, which the agent may not read at all.
+    #[test]
+    fn a_hidden_restricted_file_has_no_outline_for_the_test_writer() {
+        let dir = crate::testing::temp_dir();
+        std::fs::create_dir_all(dir.0.join("src")).unwrap();
+        std::fs::write(dir.0.join("src/a.ts"), "export function a() {}\n").unwrap();
+        std::fs::write(dir.0.join("credentials.json"), "{\"key\": \"sk-live\"}\n").unwrap();
+        let root = dir.0.to_string_lossy().into_owned();
+        let hidden = vec!["src/a.ts".to_string(), "credentials.json".to_string()];
+        let outlines = outlines_of(&root, &hidden, &Default::default());
+        assert!(outlines[0].1.is_some(), "{outlines:?}");
+        assert_eq!(outlines[1], ("credentials.json".to_string(), None));
+    }
 
     /// Round 2 (section 4.2): lines naming the hidden files go, and only
     /// those: as a path, in any separator, not part of a longer name.

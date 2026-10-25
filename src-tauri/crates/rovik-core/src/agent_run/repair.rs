@@ -1045,7 +1045,11 @@ impl Run {
                 &super::diff::split_lines(&was),
                 &super::diff::split_lines(&now),
             );
-            if !hunks.is_empty() {
+            // A restricted file's lines stay out of what the agent reads.
+            let restricted = self
+                .restricted
+                .blocks_file(key, crate::restricted_files::Op::Read);
+            if !hunks.is_empty() && !restricted {
                 diffs.push(format!("--- {key}\n{}", super::diff::compact_diff(&hunks)));
             }
             let done = {

@@ -380,6 +380,23 @@ fn round_failures(results: &[CheckResult]) -> RoundFailures {
 }
 
 /// What the agent hears when its fix broke something and was rolled back.
+/// What the project changed in `files` (each with its diff) while the chat
+/// worked, for the chat's report: not a restricted file's lines, which
+/// the agent may not read.
+fn project_changes(
+    files: &[(String, String)],
+    restricted: &crate::restricted_files::RestrictedFiles,
+) -> String {
+    let read = crate::restricted_files::Op::Read;
+    files
+        .iter()
+        .filter(|(path, diff)| !diff.is_empty() && !restricted.blocks_file(path, read))
+        .map(|(path, diff)| {
+            format!("\nWhat the project changed in `{path}`:\n```diff\n{diff}\n```\n")
+        })
+        .collect()
+}
+
 fn rollback_note(rb: &repair::Rollback) -> String {
     let broke = repair::key_list(&rb.broke, 8);
     let mut note = format!(
@@ -1329,11 +1346,7 @@ impl Run {
         let mut report = failure_report(&sent, &changed, round, self.round_limit(), &notes);
         if let Some(files) = &self.merged_from_project {
             let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-            let diffs: String = files
-                .iter()
-                .filter(|(_, d)| !d.is_empty())
-                .map(|(p, d)| format!("\nWhat the project changed in `{p}`:\n```diff\n{d}\n```\n"))
-                .collect();
+            let diffs = project_changes(files, &self.restricted);
             report = report.replacen(
                 "\n",
                 &format!(
@@ -1854,6 +1867,32 @@ fn scoped_tests(root: &str, changed: &[String], suite: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the project changed meanwhile is shown the chat, but not a
+    /// restricted file's lines.
+    #[test]
+    fn the_projects_changes_shown_leave_out_a_restricted_files_lines() {
+        let restricted = crate::restricted_files::RestrictedFiles::default();
+        let files = vec![
+            ("a.txt".to_string(), "-1\n+2".to_string()),
+            (
+                ".env.local".to_string(),
+                "-KEY=old\n+KEY=sk-live".to_string(),
+            ),
+            ("b.txt".to_string(), String::new()),
+        ];
+        let shown = project_changes(&files, &restricted);
+        assert!(
+            shown.contains("What the project changed in `a.txt`"),
+            "{shown}"
+        );
+        assert!(shown.contains("+2"), "{shown}");
+        assert!(
+            !shown.contains(".env.local") && !shown.contains("sk-live"),
+            "{shown}"
+        );
+        assert!(!shown.contains("b.txt"), "{shown}");
+    }
 
     /// P1.8: a carry keeps at most CARRY_MEMORY_BYTES of file contents in
     /// memory; the largest go to disk, come back intact, and their files go
