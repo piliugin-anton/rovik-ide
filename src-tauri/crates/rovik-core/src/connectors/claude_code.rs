@@ -35,10 +35,10 @@ use super::harness::{
 };
 use super::mcp::{McpCall, McpReply, McpServer, HOOK, SERVER_NAME, TOOL_PREFIX};
 use super::{
-    harness_error, trimmed_text, trimmed_value, usage_value, Answers, CommandCheck, CommandChecks,
-    Connector, ConnectorAuth, ConnectorCommand, ConnectorKind, ConnectorModel, ConnectorProbe,
-    HarnessStep, ProbeRequest, ProbeRequestArgs, SetupAction, SetupCommand, ToolAnswer, ToolAsk,
-    ToolAsks, Turn,
+    harness_error, trimmed_text, trimmed_value, usage_value, Answers, CommandAnswer, CommandCheck,
+    CommandChecks, Connector, ConnectorAuth, ConnectorCommand, ConnectorKind, ConnectorModel,
+    ConnectorProbe, HarnessCall, HarnessStep, ProbeRequest, ProbeRequestArgs, SetupAction,
+    SetupCommand, ToolAnswer, ToolAsk, ToolAsks, Turn,
 };
 use crate::agent::{ChatStreamEvent, ReasoningEffort};
 use crate::chat_request::{ChatError, ErrorKind};
@@ -319,10 +319,38 @@ fn push_disallowed(args: &mut Vec<String>, settings: &Settings, turn: &Turn) {
     if turn.isolated {
         disallowed.extend(git_deny_rules());
     }
+    disallowed.extend(restricted_rules(&turn.denied));
     if !disallowed.is_empty() {
         args.push("--disallowedTools".into());
         args.extend(disallowed);
     }
+}
+
+/// Claude Code's deny rules for the project's restricted files
+/// (restricted_files.rs), relative to its folder: `Read(./.env)`, which its
+/// searches follow too, and `Edit(./.env)`, which every tool that changes
+/// files does; a folder's for all in it (`Read(./secrets/**)`). Its shell
+/// is Rovik's to check, when it asks.
+fn restricted_rules(denied: &crate::restricted_files::Denied) -> Vec<String> {
+    let rule = |tool: &str, path: &String| {
+        // A rule's path is a gitignore pattern: its wildcards as characters.
+        let (path, all) = match path.strip_suffix('/') {
+            Some(folder) => (folder, "/**"),
+            None => (path.as_str(), ""),
+        };
+        let mut escaped = String::new();
+        for c in path.chars() {
+            if matches!(c, '*' | '?' | '[' | ']' | '\\') {
+                escaped.push('\\');
+            }
+            escaped.push(c);
+        }
+        format!("{tool}(./{escaped}{all})")
+    };
+    let reads = denied.read.iter().map(|path| rule("Read", path));
+    reads
+        .chain(denied.write.iter().map(|path| rule("Edit", path)))
+        .collect()
 }
 
 /// Claude Code's deny rules for the git commands a chat's copy of the
@@ -1864,29 +1892,107 @@ async fn run_turn(
 /// version and the project's dependencies to install.
 const HOOK_TIMEOUT_SECS: u64 = 3600;
 
-/// Claude Code's settings with Rovik's hooks around its own shell's
-/// commands: before each (`PreToolUse`) and after one fails
-/// (`PostToolUseFailure`), the event is posted to Rovik's server for this
-/// turn with its token (the settings are a private file, as the MCP
-/// configuration is), and Claude Code waits for the answer. The hooks
-/// decide nothing: the command runs as Claude Code's permission mode, or
-/// Rovik's permissions, have it.
+/// Why a call before which Rovik couldn't be asked doesn't run.
+const UNCHECKED: &str = "Error: Rovik IDE couldn't check this call against the project's restricted files, so it didn't run. Try it again.";
+
+/// Claude Code's own tools Rovik's hook sees before they run: its shell,
+/// and those that read, change or search files, which a restricted file
+/// is kept from (restricted_files.rs).
+const CHECKED_TOOLS: &str = "Bash|Read|Edit|MultiEdit|Write|NotebookEdit|Grep";
+
+/// Claude Code's settings with Rovik's hooks around its own tools: before
+/// each (`PreToolUse`) and after a command fails (`PostToolUseFailure`),
+/// the event is posted to Rovik's server for this turn with its token (the
+/// settings are a private file, as the MCP configuration is), and Claude
+/// Code waits for the answer. The hooks refuse only what would read or
+/// change a restricted file: anything else runs as Claude Code's
+/// permission mode, or Rovik's permissions, have it.
 fn hook_settings(server: &McpServer) -> String {
-    let hook = json!([{
-        "matcher": "Bash",
-        "hooks": [{
-            "type": "http",
-            "url": server.hooks_url(),
-            "timeout": HOOK_TIMEOUT_SECS,
-            "headers": { "Authorization": server.authorization() },
-        }],
-    }]);
-    json!({ "hooks": { "PreToolUse": hook, "PostToolUseFailure": hook } }).to_string()
+    let hook = |matcher: &str| {
+        json!([{
+            "matcher": matcher,
+            "hooks": [{
+                "type": "http",
+                "url": server.hooks_url(),
+                "timeout": HOOK_TIMEOUT_SECS,
+                "headers": { "Authorization": server.authorization() },
+            }],
+        }])
+    };
+    json!({
+        "hooks": { "PreToolUse": hook(CHECKED_TOOLS), "PostToolUseFailure": hook("Bash") },
+    })
+    .to_string()
 }
 
-/// Answers one of Rovik's hooks: the `Bash` command it's for goes to the
-/// run, before it runs or after it failed (`CommandCheck`), and what the
-/// run says of it reaches the model beside the call's result
+/// One of Claude Code's own tool calls as the Rovik call that does the
+/// same with files, for the restricted files' check: its shell's command,
+/// `Read` a `read`, `Write` a whole `write`, `Edit` (and the notebook's) a
+/// partial one, and `Grep` that prints lines the `rg` it runs. None: one
+/// that reads no file's text (`Glob`, a `Grep` for names or counts).
+fn harness_call(tool: &str, input: &Value) -> Option<HarnessCall> {
+    let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or_default();
+    let call = |name: &str, args: Value| HarnessCall::Tool {
+        name: name.to_string(),
+        args: args.as_object().cloned().unwrap_or_default(),
+    };
+    match tool {
+        "Bash" => (!text("command").trim().is_empty())
+            .then(|| HarnessCall::Command(text("command").to_string())),
+        "Read" => Some(call("read", json!({ "path": text("file_path") }))),
+        "Write" => Some(call(
+            "write",
+            json!({ "path": text("file_path"), "content": text("content") }),
+        )),
+        // Changing part of a file: a partial write, which takes its text.
+        "Edit" | "MultiEdit" => Some(call(
+            "write",
+            json!({ "path": text("file_path"), "old_text": "" }),
+        )),
+        "NotebookEdit" => Some(call(
+            "write",
+            json!({ "path": text("notebook_path"), "old_text": "" }),
+        )),
+        "Grep" if text("output_mode") == "content" => {
+            let mut args = vec!["rg".to_string(), "--hidden".to_string()];
+            let flag = |key: &str| input.get(key).and_then(Value::as_bool) == Some(true);
+            if flag("-i") {
+                args.push("-i".into());
+            }
+            // Claude Code's multiline: `.` takes a line's end too.
+            if flag("multiline") {
+                args.extend(["-U".into(), "--multiline-dotall".into()]);
+            }
+            for (option, key) in [("--glob", "glob"), ("--type", "type")] {
+                if !text(key).is_empty() {
+                    args.extend([option.to_string(), text(key).to_string()]);
+                }
+            }
+            args.extend(["-e".to_string(), text("pattern").to_string()]);
+            args.push(
+                Some(text("path"))
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or(".")
+                    .to_string(),
+            );
+            let command: Vec<String> = args.iter().map(|a| shell_quoted(a)).collect();
+            Some(call("bash", json!({ "command": command.join(" ") })))
+        }
+        _ => None,
+    }
+}
+
+/// `word` quoted for a POSIX shell, which reads it back as it is.
+fn shell_quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
+/// Answers one of Rovik's hooks: the tool call it's for goes to the run
+/// (`CommandCheck`), from the folder its shell is in: a command before it
+/// runs or after it failed, a call of its file tools before it runs. One
+/// the run refuses doesn't run, whatever Claude Code's permission mode,
+/// nor does one before which the run can't be asked; what the run says of
+/// a command reaches the model beside the call's result
 /// (`additionalContext`). Its shell's environment file (`env_file`) is
 /// written again first, so its next command finds what was installed.
 /// Any other event, or an interrupted command, is answered with nothing.
@@ -1897,15 +2003,15 @@ fn answer_hook(call: McpCall, checks: &CommandChecks, env_file: Option<PathBuf>,
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let command = event
-        .pointer("/tool_input/command")
+    let tool = event
+        .get("tool_name")
         .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
+        .unwrap_or("Bash");
+    let input = event.get("tool_input").cloned().unwrap_or_default();
     let interrupted = event.get("is_interrupt").and_then(Value::as_bool) == Some(true);
     let failed = match name.as_str() {
         "PreToolUse" => None,
-        "PostToolUseFailure" if !interrupted => {
+        "PostToolUseFailure" if !interrupted && tool == "Bash" => {
             let error = event.get("error").and_then(Value::as_str).unwrap_or("");
             Some(exit_and_output(error))
         }
@@ -1914,21 +2020,33 @@ fn answer_hook(call: McpCall, checks: &CommandChecks, env_file: Option<PathBuf>,
             return;
         }
     };
-    if command.trim().is_empty() {
+    let Some(checked) = harness_call(tool, &input) else {
         let _ = call.reply.send(McpReply::text("{}"));
         return;
-    }
+    };
+    let before = failed.is_none();
     let (reply, said) = oneshot::channel();
-    let sent = checks.send(CommandCheck {
-        call_id: call.tool_use_id.clone().unwrap_or_default(),
-        command,
-        failed,
-        reply,
-    });
+    // A check that can't be sent is dropped here, its reply with it: the
+    // answer below is then an error, not a wait for one that never comes.
+    let sent = checks
+        .send(CommandCheck {
+            call_id: call.tool_use_id.clone().unwrap_or_default(),
+            call: checked,
+            cwd: event
+                .get("cwd")
+                .and_then(Value::as_str)
+                .filter(|cwd| !cwd.is_empty())
+                .map(str::to_string),
+            failed,
+            reply,
+        })
+        .is_ok();
     tokio::spawn(async move {
         let said = match (sent, said.await) {
-            (Ok(()), Ok(said)) => said,
-            _ => None,
+            (true, Ok(said)) => said,
+            // Not checked against the restricted files: it doesn't run.
+            _ if before => CommandAnswer::Deny(UNCHECKED.to_string()),
+            _ => CommandAnswer::Note(None),
         };
         // The file is the turn's, gone with it: never made again here.
         if let Some(file) = env_file.filter(|file| file.exists()) {
@@ -1938,10 +2056,19 @@ fn answer_hook(call: McpCall, checks: &CommandChecks, env_file: Option<PathBuf>,
             }
         }
         let answer = match said {
-            Some(text) => json!({
+            // Refused before it runs, whatever Claude Code's permission
+            // mode: the reason is the model's.
+            CommandAnswer::Deny(reason) => json!({
+                "hookSpecificOutput": {
+                    "hookEventName": name,
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                },
+            }),
+            CommandAnswer::Note(Some(text)) => json!({
                 "hookSpecificOutput": { "hookEventName": name, "additionalContext": text },
             }),
-            None => json!({}),
+            CommandAnswer::Note(None) => json!({}),
         };
         let _ = call.reply.send(McpReply::text(answer.to_string()));
     });
@@ -2638,6 +2765,7 @@ mod tests {
             continue_reply: false,
             asks: None,
             commands: None,
+            denied: Default::default(),
         }
     }
 
@@ -2816,6 +2944,43 @@ mod tests {
         let settings = Settings::from_value(&json!({ "permissionMode": "bypassPermissions" }));
         let args = args_for(&settings, &t, &session, None, None, None);
         assert!(disallowed(&args).is_empty(), "{args:?}");
+    }
+
+    #[test]
+    fn its_own_tools_are_denied_the_projects_restricted_files() {
+        let session = Session::New("s-1".into());
+        let mut t = turn("Fix it");
+        t.denied = crate::restricted_files::Denied {
+            read: vec![".env".into(), "secrets/".into(), "odd[1]*.key".into()],
+            write: vec![".env".into()],
+        };
+        for mode in ["bypassPermissions", "rovik"] {
+            let settings = Settings::from_value(&json!({ "permissionMode": mode }));
+            let config = (mode == "rovik").then(|| Path::new("/tmp/mcp.json"));
+            let args = args_for(&settings, &t, &session, None, config, None);
+            let at = args.iter().position(|a| a == "--disallowedTools").unwrap();
+            assert_eq!(
+                args[at + 1..at + 5],
+                [
+                    "Read(./.env)",
+                    "Read(./secrets/**)",
+                    "Read(./odd\\[1\\]\\*.key)",
+                    "Edit(./.env)",
+                ],
+                "{mode}"
+            );
+        }
+        // With Rovik's tools, none of its own: nothing to deny.
+        let settings = Settings::from_value(&json!({ "tools": "rovik" }));
+        let args = args_for(
+            &settings,
+            &t,
+            &session,
+            None,
+            Some(Path::new("/tmp/mcp.json")),
+            None,
+        );
+        assert!(!args.iter().any(|a| a == "--disallowedTools"), "{args:?}");
     }
 
     #[test]
@@ -4477,17 +4642,21 @@ fi
             .all(|m| m.description.is_some() && m.context_length.is_some()));
     }
 
-    /// Rovik's hooks, around its own shell's commands: before each and
-    /// after one fails, posted to this turn's server with its token, an
-    /// hour to wait; and the settings file they're in goes before the
+    /// Rovik's hooks, around its own tools: before each call of its shell
+    /// and of its tools that read, change or search files, and after a
+    /// command fails, posted to this turn's server with its token, an hour
+    /// to wait; and the settings file they're in goes before the
     /// connector's own arguments, so a `--settings` of theirs wins.
     #[tokio::test]
-    async fn rovik_hooks_wrap_claude_codes_own_shell_commands() {
+    async fn rovik_hooks_wrap_claude_codes_own_tools() {
         let (server, _calls) = McpServer::start(&[], "test", None).await.unwrap();
         let hooks: Value = serde_json::from_str(&hook_settings(&server)).unwrap();
-        for event in ["PreToolUse", "PostToolUseFailure"] {
+        for (event, matcher) in [
+            ("PreToolUse", CHECKED_TOOLS),
+            ("PostToolUseFailure", "Bash"),
+        ] {
             let entry = &hooks["hooks"][event][0];
-            assert_eq!(entry["matcher"], "Bash", "{event}");
+            assert_eq!(entry["matcher"], matcher, "{event}");
             let hook = &entry["hooks"][0];
             assert_eq!(hook["type"], "http");
             assert_eq!(hook["url"], server.hooks_url());
@@ -4509,6 +4678,116 @@ fi
             joined.ends_with("--settings /tmp/hooks.json --settings mine.json"),
             "{joined}"
         );
+    }
+
+    /// Its own file tools are checked as the Rovik calls that do the same
+    /// with files: `Read` a read, `Edit` a partial write, `Grep` for lines
+    /// the `rg` it runs, quoted as a shell reads it back.
+    #[test]
+    fn claude_codes_file_tools_are_checked_as_the_rovik_calls_that_do_the_same() {
+        let tool = |name: &str, args: Value| {
+            Some(HarnessCall::Tool {
+                name: name.into(),
+                args: args.as_object().cloned().unwrap(),
+            })
+        };
+        assert_eq!(
+            harness_call("Bash", &json!({ "command": "cat .env" })),
+            Some(HarnessCall::Command("cat .env".into()))
+        );
+        assert_eq!(harness_call("Bash", &json!({ "command": " " })), None);
+        assert_eq!(
+            harness_call("Read", &json!({ "file_path": "/p/.env", "limit": 5 })),
+            tool("read", json!({ "path": "/p/.env" }))
+        );
+        assert_eq!(
+            harness_call("Write", &json!({ "file_path": "/p/a", "content": "x" })),
+            tool("write", json!({ "path": "/p/a", "content": "x" }))
+        );
+        let edit = json!({ "file_path": "/p/a", "old_string": "x", "new_string": "y" });
+        assert_eq!(
+            harness_call("Edit", &edit),
+            tool("write", json!({ "path": "/p/a", "old_text": "" }))
+        );
+        assert_eq!(
+            harness_call("NotebookEdit", &json!({ "notebook_path": "/p/n.ipynb" })),
+            tool("write", json!({ "path": "/p/n.ipynb", "old_text": "" }))
+        );
+        let grep = json!({
+            "pattern": "it's KEY", "path": "/p/src", "glob": "*.ts",
+            "output_mode": "content", "-i": true,
+        });
+        let Some(HarnessCall::Tool { name, args }) = harness_call("Grep", &grep) else {
+            panic!("a search for lines is checked");
+        };
+        assert_eq!(name, "bash");
+        let command = args["command"].as_str().unwrap();
+        assert_eq!(
+            crate::agent_run::permissions::parse_command(command).segments,
+            [["rg", "--hidden", "-i", "--glob", "*.ts", "-e", "it's KEY", "/p/src"]]
+        );
+        // Multiline, as Claude Code runs it: `.` across lines too.
+        let across = json!({ "pattern": "A.*B", "output_mode": "content", "multiline": true });
+        let Some(HarnessCall::Tool { args, .. }) = harness_call("Grep", &across) else {
+            panic!("a multiline search is checked");
+        };
+        let command = args["command"].as_str().unwrap();
+        assert_eq!(
+            crate::agent_run::permissions::parse_command(command).segments,
+            [[
+                "rg",
+                "--hidden",
+                "-U",
+                "--multiline-dotall",
+                "-e",
+                "A.*B",
+                "."
+            ]]
+        );
+        // Names or counts, and finding files, read no file's text.
+        assert_eq!(harness_call("Grep", &json!({ "pattern": "KEY" })), None);
+        assert_eq!(harness_call("Glob", &json!({ "pattern": "**/*" })), None);
+    }
+
+    /// A call before which Rovik can't be asked doesn't run: what it'd do
+    /// with the restricted files is unknown. After a command failed,
+    /// there's nothing to refuse.
+    #[tokio::test]
+    async fn a_call_the_run_cant_check_doesnt_run() {
+        let ask = |event: &str, checks: &CommandChecks| {
+            let (reply, answer) = oneshot::channel();
+            let call = McpCall {
+                tool_use_id: Some("toolu_1".into()),
+                name: HOOK.into(),
+                arguments: json!({
+                    "hook_event_name": event,
+                    "tool_name": "Bash",
+                    "tool_input": { "command": "cat notes.txt" },
+                    "error": "Exit code 1",
+                }),
+                reply,
+            };
+            answer_hook(call, checks, None, PathBuf::from("."));
+            answer
+        };
+        // The run isn't there to ask.
+        let (checks, gone) = tokio::sync::mpsc::unbounded_channel();
+        drop(gone);
+        let denied: Value =
+            serde_json::from_str(&ask("PreToolUse", &checks).await.unwrap().text).unwrap();
+        assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            denied["hookSpecificOutput"]["permissionDecisionReason"],
+            UNCHECKED
+        );
+        let after = ask("PostToolUseFailure", &checks).await.unwrap();
+        assert_eq!(after.text, "{}");
+        // The run drops the question unanswered.
+        let (checks, mut asked) = tokio::sync::mpsc::unbounded_channel::<CommandCheck>();
+        let answer = ask("PreToolUse", &checks);
+        drop(asked.recv().await.unwrap());
+        let denied: Value = serde_json::from_str(&answer.await.unwrap().text).unwrap();
+        assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
     }
 
     /// Claude Code's `error` for a failed command: the exit code on its

@@ -889,12 +889,21 @@ pub fn review_brief(p: &BriefParts) -> String {
 
 impl Run {
     /// The run's change: each file the run changed, as it was and as it is.
+    /// Not the files the agent may not read: what was in them stays out of
+    /// the reviewers' diffs too.
     pub(super) fn change_set(&self) -> Vec<FileChange> {
         let Some(root) = self.root.clone() else {
             return Vec::new();
         };
         let mut out = Vec::new();
         for key in self.touched_keys() {
+            if self.restricted.blocks_file(
+                &key,
+                std::path::Path::new(&tools::to_absolute_path(&key, &root)),
+                crate::restricted_files::Op::Read,
+            ) {
+                continue;
+            }
             let Some(before) = self.original_of(&key) else {
                 continue;
             };

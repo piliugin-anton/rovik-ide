@@ -42,6 +42,7 @@ mod read_symbol;
 mod reasoning_echo;
 pub mod release_assets;
 mod repo_map;
+pub mod restricted_files;
 pub mod rt;
 pub mod services;
 pub mod staging;

@@ -11,6 +11,7 @@ use crate::code_search::SearchResult;
 use crate::command_tool::CommandOutput;
 use crate::file_guard::Seen;
 use crate::outline::Symbol;
+use crate::restricted_files::{Op, RestrictedFiles};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -633,11 +634,13 @@ const ERROR_CLASSES: &[(&str, &[&str])] = &[
             "needs an open project folder",
         ],
     ),
-    // The user's permissions and approvals, or an AI reviewer's.
+    // The user's permissions, restricted files and approvals, or an AI
+    // reviewer's.
     (
         "denied",
         &[
             "blocked by the user's permission settings",
+            "a restricted file",
             "rejected by the user's ai reviewer",
             "the user denied",
             "the user rejected",
@@ -843,6 +846,9 @@ pub fn syntax_note(path: &str, before: &Before, after: &str) -> Option<String> {
 pub struct CallContext {
     /// The run's record of the files it has read and written (file_guard.rs).
     pub seen: Arc<Seen>,
+    /// The files the agent may not read or change (restricted_files.rs):
+    /// left out of searches and maps.
+    pub restricted: Arc<RestrictedFiles>,
     /// The chat (dialog id) the call is for.
     pub owner: String,
     /// The chat whose saved check output `@checks/…` reads: the lead's,
@@ -1082,10 +1088,18 @@ async fn run(
                 content.to_string(),
                 ctx.seen.clone(),
             );
+            let restricted = ctx.restricted.clone();
             crate::rt::spawn_blocking(move || {
                 let before = text_before(&root_s, &path);
-                let wrote =
-                    crate::agent_tools::write_file(&root_s, &path, &content, Some(&seen_arc))?;
+                // What the agent may not read, a refused write doesn't show.
+                let hidden = restricted.blocked(&root_s, &path, Op::Read).is_some();
+                let wrote = crate::agent_tools::write_file(
+                    &root_s,
+                    &path,
+                    &content,
+                    Some(&seen_arc),
+                    hidden,
+                )?;
                 Ok::<String, String>(match syntax_note(&path, &before, &content) {
                     Some(note) => format!("{wrote}\n\n{note}"),
                     None => wrote,
@@ -1275,23 +1289,16 @@ async fn run(
                 }
             }
             // The test writer doesn't see the files the change touches.
-            let mut left_out = 0usize;
-            if !ctx.hidden.is_empty() {
-                let before = result.lines.iter().filter(|l| l.is_match).count();
-                result
-                    .lines
-                    .retain(|l| !super::test_writer::is_hidden(&ctx.hidden, &l.path));
-                let after = result.lines.iter().filter(|l| l.is_match).count();
-                left_out = before - after;
-                if left_out > 0 {
-                    let mut files: Vec<&str> =
-                        result.lines.iter().map(|l| l.path.as_str()).collect();
-                    files.dedup();
-                    result.match_count = after;
-                    result.file_count = files.len();
-                    result.total_matches = result.total_matches.saturating_sub(left_out);
-                }
-            }
+            let (left_out, _) = leave_out(&mut result, |path| {
+                super::test_writer::is_hidden(&ctx.hidden, path)
+            });
+            // Nor does the agent see what's in the files it may not read:
+            // only that they matched.
+            let (restricted_out, restricted_files) = leave_out(&mut result, |path| {
+                let abs = to_absolute_path(path, &root_owned);
+                ctx.restricted
+                    .blocks_file(path, std::path::Path::new(&abs), Op::Read)
+            });
             // The declaration each line is in: the files' outlines, briefly.
             let root = root_owned;
             let outlines = crate::rt::spawn_blocking(move || {
@@ -1310,10 +1317,19 @@ async fn run(
                 Some(false) => format!("{shown}\n[No matches as a regular expression either.]"),
                 None => shown,
             };
-            if left_out > 0 {
+            let shown = if left_out > 0 {
                 format!(
                     "{shown}\n[{left_out} match{} in the files the change touches left out: you write tests from the specification. Use outline on those files.]",
                     if left_out == 1 { "" } else { "es" }
+                )
+            } else {
+                shown
+            };
+            if restricted_out > 0 {
+                format!(
+                    "{shown}\n[{restricted_out} match{} in restricted files left out ({}): the agent may not read them.]",
+                    if restricted_out == 1 { "" } else { "es" },
+                    restricted_files.join(", ")
                 )
             } else {
                 shown
@@ -1323,13 +1339,15 @@ async fn run(
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"path\" is required."));
             };
-            crate::agent_tools::tool_neighbours(root_owned, path.into()).await?
+            crate::agent_tools::tool_neighbours(root_owned, path.into(), ctx.restricted.clone())
+                .await?
         }
         "callers" => {
             let Some(symbol) = text(args, "symbol").filter(|s| !s.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"symbol\" is required."));
             };
-            crate::agent_tools::tool_callers(root_owned, symbol.into()).await?
+            crate::agent_tools::tool_callers(root_owned, symbol.into(), ctx.restricted.clone())
+                .await?
         }
         "outline" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
@@ -1353,6 +1371,30 @@ async fn run(
             content
         };
     Ok(ToolResult::text(content))
+}
+
+/// Leaves out of a search's result the lines of the files `out` says,
+/// counting the matches it had there: how many, and in which files.
+fn leave_out(result: &mut SearchResult, out: impl Fn(&str) -> bool) -> (usize, Vec<String>) {
+    let before = result.lines.iter().filter(|l| l.is_match).count();
+    let mut files: Vec<String> = Vec::new();
+    result.lines.retain(|l| {
+        let left = out(&l.path);
+        if left && l.is_match && !files.contains(&l.path) {
+            files.push(l.path.clone());
+        }
+        !left
+    });
+    let after = result.lines.iter().filter(|l| l.is_match).count();
+    let left_out = before - after;
+    if left_out > 0 {
+        let mut kept: Vec<&str> = result.lines.iter().map(|l| l.path.as_str()).collect();
+        kept.dedup();
+        result.match_count = after;
+        result.file_count = kept.len();
+        result.total_matches = result.total_matches.saturating_sub(left_out);
+    }
+    (left_out, files)
 }
 
 /// The agent's command for the chat of `ctx`, as the queue for heavy work
@@ -1968,6 +2010,7 @@ mod tests {
         let root = root.to_string_lossy().into_owned();
         let ctx = CallContext {
             seen: Seen::new("syntax-test"),
+            restricted: Arc::default(),
             owner: "syntax-test".into(),
             checks_owner: "syntax-test".into(),
             hidden: Vec::new(),
@@ -2938,6 +2981,7 @@ a.rs (3 matches)
         let root = t.dir.0.to_string_lossy().into_owned();
         let ctx = CallContext {
             seen: Seen::new("sub-test"),
+            restricted: Arc::default(),
             owner: "sub-test".into(),
             checks_owner: "lead-test".into(),
             hidden: Vec::new(),

@@ -1,7 +1,9 @@
 //! A project as the agent sees it (project_profile.rs): its tools and
-//! checks, and the user's saved settings for it.
+//! checks, the files it may not read or change (restricted_files.rs), and
+//! the user's saved settings for it.
 
 use rovik_core::project_profile::{self, ProjectProfile};
+use rovik_core::restricted_files::{rows, RestrictedFiles, Row};
 use rovik_core::Core;
 use tauri::State;
 
@@ -32,4 +34,19 @@ pub fn save_project_settings(
     settings: serde_json::Value,
 ) -> Result<(), String> {
     project_profile::save_project_settings(&core.paths.config_dir, root, settings)
+}
+
+/// Settings → Restricted files' table for one project: the files found
+/// whose names look like they hold credentials, and the user's list, each
+/// with what applies to it.
+#[tauri::command]
+pub async fn restricted_files(core: State<'_, Core>, root: String) -> Result<Vec<Row>, String> {
+    let config_dir = core.paths.config_dir.clone();
+    let settings_root = root.clone();
+    // Off the main thread: it walks the project.
+    crate::util::blocking_in(root, move |folder| {
+        let restricted = RestrictedFiles::load(&config_dir, &settings_root);
+        rows(folder, &restricted)
+    })
+    .await
 }

@@ -895,6 +895,10 @@ pub struct ChatParams {
     // reports each of its commands, before it runs and after it failed (the
     // run makes ready what it needs, `agent_run` `answer_command_check`).
     pub command_checks: Option<crate::connectors::CommandChecks>,
+    // A connector's model whose harness runs its own tools: the project's
+    // files they may not read or change (restricted_files.rs), which it's
+    // told as rules of its own.
+    pub restricted: Option<std::sync::Arc<crate::restricted_files::RestrictedFiles>>,
 }
 
 /// A request the frontend makes itself, outside any run (a chat's title):
@@ -968,6 +972,7 @@ pub async fn run_chat(
         plan_mode: _,
         tool_asks: _,
         command_checks: _,
+        restricted: _,
     } = params;
     let chat_id = chat_id.or_else(|| dialog_id.clone());
 

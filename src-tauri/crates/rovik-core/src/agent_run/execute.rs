@@ -69,6 +69,18 @@ fn rejected(text: impl Into<String>) -> Authorized {
     }
 }
 
+/// A restricted-file check, off the async threads: a command's may go
+/// through the folders it searches. A check that fails refuses the call.
+async fn checked_off_thread(
+    check: impl FnOnce() -> Option<String> + Send + 'static,
+) -> Option<String> {
+    crate::rt::spawn_blocking(check).await.unwrap_or_else(|e| {
+        Some(format!(
+            "Error: this call couldn't be checked against the restricted files ({e}), so it didn't run."
+        ))
+    })
+}
+
 /// How a call ran: as which tool, with which arguments (an approval may
 /// have changed both), and the file it writes.
 struct Ran {
@@ -295,10 +307,41 @@ impl Run {
             return false;
         }
         let config = self.config();
+        // A read of a restricted file goes through `authorize`, refused.
+        let restricted = |root: &str| {
+            super::restricted::problem(&tc.name, &args, root, &self.restricted).is_some()
+        };
         matches!(
             permissions::check_tool_call(&tc.name, &tc.arguments, &config.permissions),
             ToolVerdict::Permitted { approval: None }
         ) && !self.names_daemon_folder(tc)
+            && !self.root.as_deref().is_some_and(restricted)
+    }
+
+    /// Why a call may not run, when it would read or change one of the
+    /// project's restricted files (restricted.rs).
+    async fn restricted_problem(&self, name: &str, args: Map<String, Value>) -> Option<String> {
+        let root = self.root.clone()?;
+        let (name, restricted) = (name.to_string(), self.restricted.clone());
+        checked_off_thread(move || super::restricted::problem(&name, &args, &root, &restricted))
+            .await
+    }
+
+    /// [`Self::restricted_problem`] for a harness's call, whose command its
+    /// bash runs in `cwd` (its shell's folder), or in the project's.
+    async fn harness_restricted_problem(
+        &self,
+        name: &str,
+        args: Map<String, Value>,
+        cwd: Option<String>,
+    ) -> Option<String> {
+        let root = self.root.clone()?;
+        let cwd = cwd.unwrap_or_else(|| root.clone());
+        let (name, restricted) = (name.to_string(), self.restricted.clone());
+        checked_off_thread(move || {
+            super::restricted::harness_problem_in(&name, &args, &root, &cwd, &restricted)
+        })
+        .await
     }
 
     /// A command that names a server's own folder: it waits for the user,
@@ -1069,23 +1112,29 @@ impl Run {
         if daemon_folder && unattended {
             return rejected(super::autopilot::DAEMON_FOLDER_REFUSED);
         }
-        let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
+        let approval = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
             ToolVerdict::Refused(reason) => {
                 return rejected(format!(
                     "Error: blocked by the user's permission settings. {reason}"
                 ))
             }
-            // An interrupted call is always confirmed by the user, and so
-            // is a command that names a server's own folder. In Autopilot
-            // a resumed call goes by its rule, as a new one does.
-            ToolVerdict::Permitted { approval } => match resume_note {
-                Some(_) if !unattended => Approver::User,
-                _ if daemon_folder => Approver::User,
-                _ => match approval {
-                    Some(_) if unattended => Approver::Ai,
-                    Some(a) => a,
-                    None => return Authorized::default(),
-                },
+            ToolVerdict::Permitted { approval } => approval,
+        };
+        // The files the user keeps from the agent: refused, never asked about.
+        let args = permissions::parse_args(&tc.arguments);
+        if let Some(problem) = self.restricted_problem(&tc.name, args).await {
+            return rejected(problem);
+        }
+        // An interrupted call is always confirmed by the user, and so is a
+        // command that names a server's own folder. In Autopilot a resumed
+        // call goes by its rule, as a new one does.
+        let approver = match resume_note {
+            Some(_) if !unattended => Approver::User,
+            _ if daemon_folder => Approver::User,
+            _ => match approval {
+                Some(_) if unattended => Approver::Ai,
+                Some(a) => a,
+                None => return Authorized::default(),
             },
         };
 
@@ -1149,14 +1198,19 @@ impl Run {
                     "Commands that push, delete, deploy, escalate privileges, run inline scripts or touch secrets need a person's approval, and nobody is there to give it in Autopilot."
                         .into(),
                 );
-            } else if edit_path
-                .as_deref()
-                .is_some_and(permissions::is_secret_path)
-            {
-                manual_reason =
-                    Some("Edits to credential or secret files always need your approval.".into());
+            } else if edit_path.as_deref().is_some_and(|path| {
+                // Its diff would show the reviewer what's in it.
+                let root = self.root.as_deref().unwrap_or_default();
+                self.restricted
+                    .blocked(root, path, crate::restricted_files::Op::Read)
+                    .is_some()
+            }) {
+                manual_reason = Some(
+                    "Edits to restricted files, which the agent may not read, always need your approval."
+                        .into(),
+                );
                 unattended_why = Some(
-                    "Edits to credential or secret files need a person's approval, and nobody is there to give it in Autopilot."
+                    "Edits to restricted files need a person's approval, and nobody is there to give it in Autopilot."
                         .into(),
                 );
             } else if models.is_empty() {
@@ -1432,11 +1486,39 @@ impl Run {
     /// (environment.rs), noted on its call's line while something
     /// installs. The model is told what was done, and, after a failure,
     /// that the command can run again.
+    /// Before it runs, one that would read or change a restricted file is
+    /// refused, whatever the harness's own permissions.
     pub(super) async fn answer_command_check(&self, check: crate::connectors::CommandCheck) {
+        use crate::connectors::{CommandAnswer, HarnessCall};
         let Some(root) = self.root.clone() else {
-            let _ = check.reply.send(None);
+            let _ = check.reply.send(CommandAnswer::Note(None));
             return;
         };
+        let command = match check.call {
+            // Its own file tools: only what they may do with files.
+            HarnessCall::Tool { name, args } => {
+                let refused = self
+                    .harness_restricted_problem(&name, args, check.cwd)
+                    .await;
+                let _ = check.reply.send(match refused {
+                    Some(reason) => CommandAnswer::Deny(reason),
+                    None => CommandAnswer::Note(None),
+                });
+                return;
+            }
+            HarnessCall::Command(command) => command,
+        };
+        if check.failed.is_none() {
+            let args = json!({ "command": command });
+            let args = args.as_object().cloned().unwrap_or_default();
+            if let Some(reason) = self
+                .harness_restricted_problem("bash", args, check.cwd)
+                .await
+            {
+                let _ = check.reply.send(CommandAnswer::Deny(reason));
+                return;
+            }
+        }
         let (core, dialog_id, call) = (
             self.core.clone(),
             self.dialog_id.clone(),
@@ -1457,16 +1539,16 @@ impl Run {
             plan_mode: self.plan_mode,
         };
         let said = match &check.failed {
-            None => super::environment::before_harness_command(&cx, &check.command)
+            None => super::environment::before_harness_command(&cx, &command)
                 .await
                 .done_sentence()
                 .map(|done| format!("Rovik IDE, before this command ran: {done}")),
-            Some((code, output)) => super::environment::after(&cx, &check.command, *code, output)
+            Some((code, output)) => super::environment::after(&cx, &command, *code, output)
                 .await
                 .note()
                 .map(|note| format!("Rovik IDE: {note}")),
         };
-        let _ = check.reply.send(said);
+        let _ = check.reply.send(CommandAnswer::Note(said));
     }
 
     /// An approved edit whose file changed while the approval waited (another
@@ -1634,6 +1716,7 @@ impl Run {
         );
         tools::CallContext {
             seen: self.seen.clone(),
+            restricted: self.restricted.clone(),
             owner: self.overlay_owner(),
             checks_owner: self
                 .sub()

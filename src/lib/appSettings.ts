@@ -21,6 +21,7 @@ export type SettingsPage =
   | 'subagents'
   | 'autopilot'
   | 'project'
+  | 'files'
   | 'workload'
   | 'vfs'
   | 'network'
@@ -38,6 +39,7 @@ export const PAGE_TITLE: Record<SettingsPage, string> = {
   subagents: 'Subagents',
   autopilot: 'Autopilot',
   project: 'Project checks',
+  files: 'Restricted files',
   workload: 'Heavy commands',
   vfs: 'Virtual files',
   network: 'Network',

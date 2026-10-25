@@ -138,6 +138,10 @@ pub struct Turn {
     /// (agent_run/environment.rs): the run answers. None (a one-off
     /// request, a request outside a run): nothing is made ready.
     pub commands: Option<CommandChecks>,
+    /// The project's files its own tools may not read or change
+    /// (restricted_files.rs), relative to `cwd`: a harness that can deny its
+    /// tools files does.
+    pub denied: crate::restricted_files::Denied,
 }
 
 /// A harness's request to run one of its own tools, put to the run's
@@ -167,21 +171,48 @@ pub enum ToolAnswer {
 /// Where a harness's `ToolAsk`s go.
 pub type ToolAsks = mpsc::UnboundedSender<ToolAsk>;
 
-/// A command the harness's own shell runs, put to the run before it runs
-/// and after it failed: the run makes ready what it needs (a cloud host's
-/// Node, Yarn through Corepack, the project's dependencies) and answers
-/// with what the model should know of it, if anything.
+/// A call of the harness's own tools, put to the run before it runs (and
+/// a command, after it failed): the run refuses one that would read or
+/// change a restricted file, makes ready what a command needs (a cloud
+/// host's Node, Yarn through Corepack, the project's dependencies) and
+/// answers with what the model should know of it, if anything.
 #[derive(Debug)]
 pub struct CommandCheck {
     /// The harness's tool use: the id of its step in the reply.
     pub call_id: String,
-    /// The command line, as its shell runs it.
-    pub command: String,
+    /// What it runs.
+    pub call: HarnessCall,
+    /// The folder its shell is in, which a command runs in: one `cd`
+    /// takes it to stays for the next. None: the project's.
+    pub cwd: Option<String>,
     /// None: it's about to run. Some: it failed, with its exit code (None
     /// when its harness doesn't say) and its output.
     pub failed: Option<(Option<i32>, String)>,
-    /// What the model should be told of it; None for nothing.
-    pub reply: oneshot::Sender<Option<String>>,
+    /// The run's answer.
+    pub reply: oneshot::Sender<CommandAnswer>,
+}
+
+/// What a harness's own tool call does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HarnessCall {
+    /// A command line, as its shell runs it.
+    Command(String),
+    /// A call of its own file tools, as the Rovik tool call that does the
+    /// same (`read` for Claude Code's `Read`, a `bash` `rg` for its
+    /// `Grep`): only checked against the restricted files.
+    Tool {
+        name: String,
+        args: serde_json::Map<String, Value>,
+    },
+}
+
+/// The run's answer to a `CommandCheck`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandAnswer {
+    /// It runs, or ran: what the model should be told of it, if anything.
+    Note(Option<String>),
+    /// It may not run (asked before it does): why, for the model.
+    Deny(String),
 }
 
 /// Where a harness's `CommandCheck`s go.
@@ -446,6 +477,17 @@ pub async fn run_chat(
     if prompt.trim().is_empty() {
         return Err("Nothing to send: the chat has no message for the harness.".into());
     }
+    // What its own tools may not touch, found in the project (a walk: off
+    // the async threads).
+    let denied = match (&params.cwd, &params.restricted) {
+        (Some(cwd), Some(restricted)) if has_history => {
+            let (cwd, restricted) = (cwd.clone(), restricted.clone());
+            crate::rt::spawn_blocking(move || restricted.denied(&cwd))
+                .await
+                .unwrap_or_default()
+        }
+        _ => Default::default(),
+    };
     let turn = Turn {
         settings,
         api_key: params.api_key.clone(),
@@ -467,6 +509,7 @@ pub async fn run_chat(
         continue_reply: continuing,
         asks: params.tool_asks.clone(),
         commands: params.command_checks.clone(),
+        denied,
     };
     // The session the harness opens or continues is kept for the chat's
     // next turn, as the events say it.
@@ -987,14 +1030,16 @@ out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': reply,
     Some(path.to_string_lossy().into_owned())
 }
 
-/// A stand-in for `claude` running its own shell under Rovik's hooks
+/// A stand-in for `claude` running its own tools under Rovik's hooks
 /// (tests): for each of `commands` (the command, the `error` Claude Code
-/// reports when it fails or null, and the tool use's id) it shows the
-/// `Bash` tool use, posts its `PreToolUse` event to the hooks its
-/// `--settings` name, and, for one that fails, its `PostToolUseFailure`
-/// event, as Claude Code does. The answers, with each event's name and
-/// tool use, go to `hooks.json`, and what its `CLAUDE_ENV_FILE` holds to
-/// `env.txt`. None without python3.
+/// reports when it fails or null, the tool use's id, and the folder its
+/// shell is in, from the project's, if not that; or an object of a call
+/// of its other tools: `tool`, `input`, `use`) it shows the tool use,
+/// posts its `PreToolUse` event to the hooks its `--settings` name for that
+/// tool, and, for a command that fails, its `PostToolUseFailure` event, as
+/// Claude Code does. The answers, with each event's name and tool use (null
+/// for a tool no hook is for), go to `hooks.json`, and what its
+/// `CLAUDE_ENV_FILE` holds to `env.txt`. None without python3.
 #[cfg(all(test, unix))]
 pub(crate) fn fake_claude_with_hooks(dir: &std::path::Path, commands: &Value) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
@@ -1002,7 +1047,7 @@ pub(crate) fn fake_claude_with_hooks(dir: &std::path::Path, commands: &Value) ->
         return None;
     }
     let script = r#"#!/usr/bin/env python3
-import json, os, sys, urllib.request
+import json, os, re, sys, urllib.request
 here = os.path.dirname(os.path.abspath(__file__))
 args = sys.argv[1:]
 open(os.path.join(here, 'args.txt'), 'w').write(' '.join(args))
@@ -1012,9 +1057,10 @@ sys.stdin.read()
 settings = json.load(open(args[args.index('--settings') + 1]))
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def hook(event):
-    entry = settings['hooks'][event['hook_event_name']][0]
-    assert entry['matcher'] == 'Bash'
-    target = entry['hooks'][0]
+    entries = [e for e in settings['hooks'][event['hook_event_name']] if re.fullmatch(e['matcher'], event['tool_name'])]
+    if not entries:
+        return None
+    target = entries[0]['hooks'][0]
     headers = dict(target['headers'])
     headers['Content-Type'] = 'application/json'
     request = urllib.request.Request(target['url'], data=json.dumps(event).encode(), headers=headers)
@@ -1027,15 +1073,21 @@ def event(e):
 out({'type': 'system', 'subtype': 'init', 'session_id': 's-8', 'model': 'claude-sonnet-5', 'tools': ['Bash']})
 answers = []
 commands = json.loads(r'''COMMANDS''')
-for n, (command, error, use) in enumerate(commands):
-    given = {'command': command, 'description': 'run it'}
+for n, step in enumerate(commands):
+    if isinstance(step, dict):
+        tool, given, error, use, folder = step['tool'], step['input'], None, step['use'], None
+    else:
+        command, error, use = step[:3]
+        folder = step[3] if len(step) > 3 else None
+        tool, given = 'Bash', {'command': command, 'description': 'run it'}
     event({'type': 'message_start', 'message': {'id': 'm%d' % n, 'usage': {'input_tokens': 4}}})
-    event({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'tool_use', 'id': use, 'name': 'Bash', 'input': {}}})
+    event({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'tool_use', 'id': use, 'name': tool, 'input': {}}})
     event({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(given)}})
     event({'type': 'content_block_stop', 'index': 0})
     event({'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}, 'usage': {'output_tokens': 3}})
     event({'type': 'message_stop'})
-    common = {'session_id': 's-8', 'cwd': os.getcwd(), 'tool_name': 'Bash', 'tool_input': given, 'tool_use_id': use}
+    cwd = os.path.join(os.getcwd(), folder) if folder else os.getcwd()
+    common = {'session_id': 's-8', 'cwd': cwd, 'tool_name': tool, 'tool_input': given, 'tool_use_id': use}
     answers.append({'event': 'PreToolUse', 'use': use, 'answer': hook(dict(common, hook_event_name='PreToolUse'))})
     if error is not None:
         failed = dict(common, hook_event_name='PostToolUseFailure', error=error, is_interrupt=False)

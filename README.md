@@ -94,6 +94,12 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   which actions need your approval. Proposed file edits show as a diff in
   the editor, and you can accept or reject each change separately. You can
   also let a second "reviewer" AI model approve routine actions.
+- **Credentials stay yours.** The agent can't read or change the files that
+  hold credentials (`.env` files, private keys, cloud and package registry
+  logins, Terraform state), with its tools or its commands, and it's told
+  why, so it asks you for what it needs. **Settings → Restricted files**
+  lists them, each with a Read and a Write box you can untick, and takes
+  any other file or folder you add. See [Restricted files](#restricted-files).
 - **Automatic checks.** When the agent finishes, the IDE runs the project
   checks you turned on: its type check, lint, tests or build. They're found
   in the project's files, and each is off until you tick it in Settings →
@@ -308,6 +314,7 @@ computer right now. The pages:
 | Subagents              | The helpers the agent can send, their models and limits                                                                     |
 | Autopilot              | Chats that carry out a whole task without asking: effort, budget, the commands they never run                               |
 | Project checks         | The type-check / lint / test / build commands of the open project, as detected (each off until you tick it) or fixed        |
+| Restricted files       | The open project's files the agent may not read or change: `.env` files, keys and logins found by name, and any you add     |
 | Heavy commands         | How many builds and tests run at once on this computer, so it stays responsive                                              |
 | Virtual files          | Linux and macOS: the driver that isolates chats and lets the agent manage its own context, and its troubleshooting          |
 | WSL                    | Windows: the WSL distribution the agent's commands run in, sandboxed (Rovik's Linux side on this computer)                  |
@@ -385,7 +392,10 @@ it** picks how it works:
   on its call's line. Reads in the project and its read-only commands
   run without asking, as Claude Code's manual mode has them. With one of
   Claude Code's own modes (Accept edits, Everything, Auto, Manual, Plan)
-  and its tool rules, Rovik's approval settings don't apply. Its reply
+  and its tool rules, Rovik's approval settings don't apply. In every mode,
+  the project's [restricted files](#restricted-files) stay out of its reach:
+  its Read and Edit tools are denied them by its own rules, and a command
+  of its shell that would read or change one is refused before it runs. Its reply
   shows its work as Rovik's agent's shows, in the order it went: each
   stretch of its thinking ("Thought for 3 s", open to the text), and its
   tool calls as the lines of Rovik's tools of the same kind ("Read
@@ -863,6 +873,7 @@ src-tauri/               backend (Rust), a Cargo workspace
     merge.rs             three-way merge (no git program needed)
     code_search.rs       project search
     file_guard.rs        stops a write from overwriting changes it hasn't seen
+    restricted_files.rs  the files the agent may not read or change (.env, keys…)
     outline/, repo_map/  tree-sitter outlines and the repo map
     project_profile.rs   detects the stack, checks and agent instruction files
     browser_tools.rs     web search / browsing for the agent
@@ -1051,6 +1062,78 @@ those that fail there too are set apart: a check that fails only as it did
 before is `preexisting` in its record and doesn't hold the change back.
 React Native apps, whose bundler never type-checks, often have such
 failures.
+
+### Restricted files
+
+What the agent reads goes to its model's provider and stays in the chat's
+history, so the files that hold credentials are kept from it
+(`src-tauri/crates/rovik-core/src/restricted_files.rs`): by default the
+ones whose names say so (`.env` and `.env.*` but templates such as
+`.env.example` and code such as `.env.ts`, `.envrc`, private keys and
+keystores, `.netrc`, `.git-credentials`, `credentials` and `secrets` data
+files but a Helm chart's templates, Google Cloud keys, Terraform variables
+and state, `wp-config.php`, anything in `.ssh`, `.aws`, `.gnupg` or
+`.kube`), package managers' settings that hold a token or a password
+(`.npmrc`, `.yarnrc.yml`, `gradle.properties`, `pip.conf`; not one that
+only sets options), and the user's own entries, saved with the project's
+settings from Settings → Restricted files, which win. Reading one is refused whether
+it exists or not (git may hold a deleted one); changing one, once it
+exists, so the agent may still create a new `.env`.
+
+A call that would read or change one is refused before it runs or waits
+for an approval, with the reason and what to do instead
+(`agent_run/restricted.rs`):
+
+- `read`, `outline`, `diagnostics` and `neighbours` of one, `write` to one
+  the agent may not change, and an edit of part of one it may not read;
+- a command whose words say it would: `cat .env`, `cp .env /tmp`,
+  `xargs -a .env` or `tar -T .env` (a list of names, which their errors
+  print), `echo X >> .env`, `rm .env`, `rm -r`, `cp -r` or an archive
+  (`tar czf x.tgz .`, `zip -r`) of a folder holding one that its excludes
+  don't leave out, `git checkout -- .env`, `git clean -fdx` (which deletes ignored
+  `.env`s), `git reset --hard` or `git stash` over changes to one the
+  repository tracks anywhere in it (git's paths read as git reads them:
+  `git checkout -- config`, `'*.pem'`), `git log -p .env` but not
+  `git log --oneline .env`, and what prints the values of one (`docker compose config`,
+  `terraform output`); in a `bash -c` script too, from the folder a `cd`
+  left it in. A search (`grep`, `rg`) is refused only when it would
+  print a line of one, which is looked for there, in the files it would
+  pick (build output too, not dependencies): `grep -r useState .` runs,
+  `grep -r API_KEY .` doesn't, nor one through more files than can be
+  checked (nor a command whose check takes over 10 seconds). Files a
+  command's words don't name are judged by what lists
+  them (`for f in .env*; do cat "$f"; done`, `f=.env`,
+  `find … -exec cat {} +`, `ls -A | xargs cat`, `echo .env | xargs cat`),
+  a folder among them that a program takes whole by all it holds
+  (`find . -name config -exec rm -rf {} +`, `ls | xargs rm -rf`),
+  a search of them by the lines it would print, and code given to an interpreter
+  (`python3 -c "open('.env')"`) by the files it names. A here-document's
+  lines are text (a commit message, a file written whole), but not the
+  `$(…)` the shell runs in them, nor lines a shell (`bash <<'EOF'`) or
+  an interpreter (`python3 - <<'PY'`) runs. Loading one into
+  the environment (`source .env`, `--env-file`, `dotenv`, `X=$(grep -r KEY .)`)
+  is using it, unless the command prints the variables (`echo $API_KEY`,
+  `printenv`, `node -e "console.log(process.env.KEY)"`) or copies them into a
+  file. A program that only uses one
+  runs (`node --env-file=.env`), as does a script of the project's:
+  commands are judged by their words, which keeps credentials from being
+  read by mistake, not from an agent set on guessing them (a search
+  refused says a line matched). What git itself prints isn't checked:
+  `git diff`, `git log -p` and `git grep` show a restricted file the
+  repository tracks, so credentials belong in files git ignores
+  (`.env.local`).
+
+`search_code` leaves their lines out, saying how many matched where; the
+repository map leaves out their declarations, and the diffs models are
+shown their changes (the reviewers', a step's brief, a rolled-back
+attempt, what the project changed meanwhile, a merge conflict's two
+versions); an edit of one never goes to the AI reviewer. Claude Code
+with its own tools gets them as deny rules of its own (`Read(./.env)`,
+`Edit(./.env)`), and its `PreToolUse` hook checks its calls as Rovik's
+own are checked: its shell's commands, from the folder its shell is in,
+and its `Read`, `Edit`, `Write` and `Grep`. A call the hook can't put to
+Rovik doesn't run. To teach it another name, add it to `SECRET_NAMES` or
+its kin in `restricted_files.rs`.
 
 ### Steering
 

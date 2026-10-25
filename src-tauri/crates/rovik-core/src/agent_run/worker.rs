@@ -735,7 +735,7 @@ fn writer_command_problem_in(
             "Error: subshells and command substitution can't be checked. {why}. Run the parts as separate commands."
         ));
     }
-    if parsed.writes_via_redirect {
+    if parsed.writes_via_redirect() {
         return Some(format!(
             "Error: `{command}` writes a file with a redirect. {why}."
         ));

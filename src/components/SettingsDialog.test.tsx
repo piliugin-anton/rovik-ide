@@ -121,6 +121,9 @@ const COMPUTER: typeof backend = {
   }),
   project_profile: () => ({ stack: [], checks: [], instructions: null }),
   load_project_settings: () => null,
+  restricted_files: () => [
+    { path: '.env', blockRead: true, blockWrite: true, detected: true, listed: false },
+  ],
 };
 
 let dispose = () => {};
@@ -190,6 +193,7 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
       warning: false,
     },
     { label: 'Project checks', state: 'Not run: checking is off in Agent runs', warning: true },
+    { label: 'Restricted files', state: '1 file kept from the agent', warning: false },
     { label: 'Heavy commands', state: 'Auto: 1 slot on this machine', warning: false },
     {
       label: 'Virtual files',
@@ -222,6 +226,7 @@ test('settings menu: without a project there is no project group; what can’t b
     ['Editor', 'AI chats', 'This computer']
   );
   assert.equal(item(root, 'Project checks'), undefined);
+  assert.equal(item(root, 'Restricted files'), undefined);
   const heavy = items(root).find((i) => i.label === 'Heavy commands')!;
   assert.equal(heavy.state, null);
 });
@@ -315,6 +320,47 @@ test('settings menu: Project checks counts the checks that run, none until the u
     state: '1 check runs when the agent finishes a change',
     warning: false,
   });
+});
+
+test('settings dialog: Restricted files opens on the project’s table, and a change shows in the menu', async () => {
+  let projectSettings: any = null;
+  const { root } = await dialog({
+    answers: {
+      load_project_settings: () => projectSettings,
+      save_project_settings: ({ settings }: { settings: unknown }) => {
+        projectSettings = settings;
+      },
+      restricted_files: () => [
+        {
+          path: '.env',
+          blockRead: projectSettings?.restrictedFiles?.[0]?.blockRead ?? true,
+          blockWrite: projectSettings?.restrictedFiles?.[0]?.blockWrite ?? true,
+          detected: true,
+          listed: !!projectSettings,
+        },
+      ],
+    },
+  });
+  item(root, 'Restricted files').click();
+  await flush();
+  assert.equal(title(root), 'Restricted files');
+  const boxes = [...root.querySelectorAll('tbody input[type="checkbox"]')] as HTMLInputElement[];
+  assert.deepEqual(
+    boxes.map((b) => b.checked),
+    [true, true]
+  );
+  boxes[0].click();
+  boxes[1].click();
+  await flush();
+  assert.deepEqual(projectSettings, {
+    restrictedFiles: [{ path: '.env', blockRead: false, blockWrite: false }],
+  });
+  (root.querySelector('.modal-back-button') as HTMLButtonElement).click();
+  await flush();
+  assert.equal(
+    items(root).find((i) => i.label === 'Restricted files')!.state,
+    'Every file listed is open to the agent'
+  );
 });
 
 test('settings dialog: the pages open on the saved settings, cross-links between them work', async () => {

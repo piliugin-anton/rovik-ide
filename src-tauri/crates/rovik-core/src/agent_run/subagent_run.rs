@@ -837,6 +837,7 @@ impl Run {
         let focus = crate::repo_map::focus_from(root_path, "", &touched);
         let options = crate::repo_map::Options {
             max_chars: chars,
+            restricted: self.restricted.clone(),
             ..Default::default()
         };
         Some((
@@ -1969,13 +1970,18 @@ impl Run {
         sub.light_bash = true;
     }
 
-    /// The step's files as they changed in this run so far, for its brief.
+    /// The step's files as they changed in this run so far, for its brief:
+    /// not the restricted ones, which the agent may not read.
     pub(super) fn step_diff(&self, step: &super::plan::PlanStep) -> String {
         let root = self.root.clone().unwrap_or_default();
         let changes: Vec<(String, Option<String>, Option<String>)> = step
             .files
             .iter()
             .filter(|f| !f.path.ends_with('/'))
+            .filter(|f| {
+                let read = crate::restricted_files::Op::Read;
+                self.restricted.blocked(&root, &f.path, read).is_none()
+            })
             .filter_map(|f| {
                 let key = super::repair::rel_key(&root, &f.path);
                 let before = self.original_of(&key)?;

@@ -929,6 +929,16 @@ impl Run {
         let root = self.root.clone().unwrap_or_default();
         let mut lines = Vec::new();
         for c in conflicts {
+            // Neither version of a restricted file is shown, nor saved
+            // where the agent could read it.
+            let read = crate::restricted_files::Op::Read;
+            if self.restricted.blocked(&root, &c.path, read).is_some() {
+                lines.push(format!(
+                    "- `{}` ({}): a restricted file, which the agent may not read, so neither version is shown. Tell the user what to settle in it.",
+                    c.path, c.reason
+                ));
+                continue;
+            }
             let ours = std::fs::read(tools::to_absolute_path(&c.path, &root))
                 .map(|b| String::from_utf8_lossy(&b).into_owned())
                 .unwrap_or_default();
