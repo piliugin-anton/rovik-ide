@@ -401,6 +401,12 @@ impl Check<'_> {
                 ));
             }
             let (words, from_input) = past_keywords(segment);
+            // xargs reads the words it gives from its list (`xargs -a
+            // list`), whatever it runs (`echo`, given nothing).
+            let wrappers = &segment[..segment.len() - words.len()];
+            if let Some(problem) = self.files_problem(&place.cwd, &arg_files(wrappers), Op::Read) {
+                return Some(problem);
+            }
             if depth < MAX_DEPTH {
                 // A shell's input is its script too (`bash <<< "…"`).
                 let shell = words.first().map(|w| permissions::program_name(w));
@@ -459,15 +465,23 @@ impl Check<'_> {
             self.note_write();
         }
         for (files, op) in [(reads, Op::Read), (writes, Op::Write)] {
-            if let Some(file) = files.iter().find_map(|f| self.blocked(cwd, f, op)) {
-                return Some(refused(self.whole, op, &file));
+            if let Some(problem) = self.files_problem(cwd, &files, op) {
+                return Some(problem);
             }
-            // `> "$f"`: what put the file there decides.
-            if files.iter().any(|f| unknown(f)) {
-                if let Some(problem) = self.vague(cwd, op, None, false) {
-                    return Some(problem);
-                }
-            }
+        }
+        None
+    }
+
+    /// Why `op` may not be done with `files` from `cwd` (a redirect's, the
+    /// list `xargs -a` reads): one is a restricted file, or, for one its
+    /// words don't say (`> "$f"`), what put it there names one.
+    fn files_problem<S: AsRef<str>>(&self, cwd: &Path, files: &[S], op: Op) -> Option<String> {
+        let files = files.iter().map(AsRef::as_ref);
+        if let Some(file) = files.clone().find_map(|f| self.blocked(cwd, f, op)) {
+            return Some(refused(self.whole, op, &file));
+        }
+        if files.clone().any(unknown) {
+            return self.vague(cwd, op, None, false);
         }
         None
     }
@@ -2130,66 +2144,93 @@ const TAR_VALUES: &[&str] = &[
     "--mtime",
 ];
 
+/// What an archiver packs: the files and folders it's given, the lists of
+/// names it reads, the patterns it leaves out, and whether it takes a
+/// folder with all it holds.
+#[derive(Default)]
+struct Packed {
+    inputs: Vec<String>,
+    lists: Vec<String>,
+    excludes: Vec<String>,
+    whole: bool,
+}
+
 /// What tar, zip, 7z and cpio put in an archive they make: the files and
 /// folders they're given, a folder with all it holds but what their
 /// excludes leave out (`--exclude='.env*'`, zip's `-x`), or those named on
 /// their input or in a list (`-T -`, `zip -@`, `cpio -o`), which the
 /// command's other words decide. They read them, as `cp -r` does, into a
-/// file the agent may read. What an archive holds can't be told, so
+/// file the agent may read, and a list they're given (`-T list`), whose
+/// names their errors print. What an archive holds can't be told, so
 /// extracting or listing one isn't judged.
 fn archive_effects(program: &str, args: &[String], cwd: &Path) -> Effects {
-    let (inputs, excludes, whole) = match program {
-        "zip" => zip_inputs(args, cwd),
-        "7z" | "7za" | "7zz" => {
-            if !args.first().is_some_and(|a| a == "a" || a == "u") {
-                return Effects::default();
-            }
-            let words = args[1..].iter().filter(|a| !a.starts_with('-')).skip(1);
-            // `@list` names files in a list.
-            let inputs = words
-                .map(|w| match w.starts_with('@') {
-                    true => INPUT.to_string(),
-                    false => w.clone(),
-                })
-                .collect();
-            // `-xr!name` leaves out what has that name, anywhere; others
-            // (`-x!` is only where it's run) are left out of the judging.
-            let excludes = args
-                .iter()
-                .filter_map(|a| a.strip_prefix("-xr!"))
-                .filter(|p| !p.contains(['/', '\\']))
-                .map(str::to_string)
-                .collect();
-            (inputs, excludes, true)
-        }
-        "cpio" => {
-            let a = Args::split(args, &["-H", "--format", "-F", "--file", "-O", "-I"], false);
-            if !a.has(&["-o", "--create", "-p", "--pass-through"]) {
-                return Effects::default();
-            }
-            // It takes the names on its input, and no folder's files.
-            (vec![INPUT.to_string()], Vec::new(), false)
-        }
-        _ => match tar_inputs(args) {
-            Some((inputs, excludes)) => (inputs, excludes, true),
-            None => return Effects::default(),
-        },
+    let packed = match program {
+        "zip" => Some(zip_packs(args, cwd)),
+        "7z" | "7za" | "7zz" => seven_zip_packs(args),
+        "cpio" => cpio_packs(args),
+        _ => tar_packs(args),
+    };
+    let Some(packed) = packed else {
+        return Effects::default();
+    };
+    let trees = match packed.whole {
+        true => packed
+            .inputs
+            .iter()
+            .map(|i| (i.clone(), Op::Read))
+            .collect(),
+        false => Vec::new(),
     };
     Effects {
-        trees: if whole {
-            inputs.iter().map(|i| (i.clone(), Op::Read)).collect()
-        } else {
-            Vec::new()
-        },
-        reads: inputs,
-        excludes,
+        reads: packed.inputs.into_iter().chain(packed.lists).collect(),
+        trees,
+        excludes: packed.excludes,
         ..Effects::default()
     }
 }
 
-/// What tar makes an archive of, and the patterns it leaves out; None when
-/// it makes none. Each name is from the folder the `-C`s before it lead to.
-fn tar_inputs(args: &[String]) -> Option<(Vec<String>, Vec<String>)> {
+/// What 7z adds to an archive (`a`, `u`): the words after the archive, an
+/// `@list` naming them in a list. `-xr!name` leaves out what has that name
+/// anywhere; others (`-x!` is only where it runs) are left out of the
+/// judging.
+fn seven_zip_packs(args: &[String]) -> Option<Packed> {
+    if !args.first().is_some_and(|a| a == "a" || a == "u") {
+        return None;
+    }
+    let words = args[1..].iter().filter(|a| !a.starts_with('-')).skip(1);
+    let (lists, mut inputs): (Vec<String>, Vec<String>) =
+        words.cloned().partition(|w| w.starts_with('@'));
+    if !lists.is_empty() {
+        inputs.push(INPUT.to_string());
+    }
+    let excludes = args
+        .iter()
+        .filter_map(|a| a.strip_prefix("-xr!"))
+        .filter(|p| !p.contains(['/', '\\']))
+        .map(str::to_string)
+        .collect();
+    Some(Packed {
+        inputs,
+        lists: lists.iter().map(|l| l[1..].to_string()).collect(),
+        excludes,
+        whole: true,
+    })
+}
+
+/// What cpio copies out (`-o`) or through (`-p`): the names on its input,
+/// each alone.
+fn cpio_packs(args: &[String]) -> Option<Packed> {
+    let a = Args::split(args, &["-H", "--format", "-F", "--file", "-O", "-I"], false);
+    a.has(&["-o", "--create", "-p", "--pass-through"])
+        .then(|| Packed {
+            inputs: vec![INPUT.to_string()],
+            ..Packed::default()
+        })
+}
+
+/// What tar packs; None when it makes no archive. Each name is from the
+/// folder the `-C`s before it lead to.
+fn tar_packs(args: &[String]) -> Option<Packed> {
     let args = tar_args(args);
     let a = Args::split(&args, TAR_VALUES, false);
     if !a.has(&["-c", "--create", "-r", "--append", "-u", "--update"]) {
@@ -2209,6 +2250,7 @@ fn tar_inputs(args: &[String]) -> Option<(Vec<String>, Vec<String>)> {
         .map(|(word, &options)| in_folder(&folder_after(options), word))
         .collect();
     // Names in a list, or on its input (`-T -`).
+    let lists: Vec<&str> = a.values(&["-T", "--files-from"]).collect();
     if a.has(&["-T", "--files-from"]) {
         inputs.push(INPUT.to_string());
     }
@@ -2221,7 +2263,12 @@ fn tar_inputs(args: &[String]) -> Option<(Vec<String>, Vec<String>)> {
         .filter(|p| !as_written && !p.starts_with('/'))
         .map(str::to_string)
         .collect();
-    Some((inputs, excludes))
+    Some(Packed {
+        inputs,
+        lists: owned(&lists).into_iter().filter(|l| l != "-").collect(),
+        excludes,
+        whole: true,
+    })
 }
 
 /// tar's words, its first read as options when it has no `-` (`tar czf
@@ -2243,11 +2290,12 @@ fn tar_args(args: &[String]) -> Vec<String> {
     out
 }
 
-/// What zip packs, the patterns it leaves out as a walk would, and whether
-/// it takes folders with all they hold (`-r`). `-x` and `-i` take the words
-/// after them, to the next option; the first other word is the archive.
-fn zip_inputs(args: &[String], cwd: &Path) -> (Vec<String>, Vec<String>, bool) {
-    let (mut words, mut patterns, mut recursive) = (Vec::new(), Vec::new(), false);
+/// What zip packs, leaving out what its patterns do as a walk would, a
+/// folder with all it holds with `-r`. `-x` and `-i` take the words after
+/// them, to the next option; the first other word is the archive.
+fn zip_packs(args: &[String], cwd: &Path) -> Packed {
+    let (mut words, mut patterns) = (Vec::new(), Vec::new());
+    let (mut recursive, mut names_given) = (false, false);
     // What the words after `-x` (Some(true)) or `-i` (Some(false)) are.
     let mut listing: Option<bool> = None;
     for arg in args {
@@ -2256,7 +2304,7 @@ fn zip_inputs(args: &[String], cwd: &Path) -> (Vec<String>, Vec<String>, bool) {
             "-i" | "--include" => listing = Some(false),
             // Names on its input.
             "-@" | "--names-stdin" => {
-                words.push(INPUT.to_string());
+                names_given = true;
                 listing = None;
             }
             option if option.starts_with('-') && option.len() > 1 => {
@@ -2272,7 +2320,7 @@ fn zip_inputs(args: &[String], cwd: &Path) -> (Vec<String>, Vec<String>, bool) {
             },
         }
     }
-    let inputs: Vec<String> = words.into_iter().skip(1).collect();
+    let mut inputs: Vec<String> = words.into_iter().skip(1).collect();
     // zip matches a pattern against a file's whole path from where it runs,
     // `*` crossing `/`, and keeps a folder's files when only the folder
     // matches. Packing only `.`, one ending in `*` (`.env*`, `config/*`) or
@@ -2285,7 +2333,15 @@ fn zip_inputs(args: &[String], cwd: &Path) -> (Vec<String>, Vec<String>, bool) {
         .filter(|p| p.ends_with('*') || (!has_wildcard(p) && !cwd.join(p).is_dir()))
         .map(|p| format!("/{p}"))
         .collect();
-    (inputs, excludes, recursive)
+    if names_given {
+        inputs.push(INPUT.to_string());
+    }
+    Packed {
+        inputs,
+        excludes,
+        whole: recursive,
+        ..Packed::default()
+    }
 }
 
 /// What git does with files, from the folder `-C` takes it to (from
@@ -3229,8 +3285,15 @@ fn copy_effects(program: &str, args: &[String], slash: bool, cwd: &Path) -> Effe
         writes.extend(owned(&sources));
         trees.extend(sources.iter().map(|s| (s.to_string(), Op::Write)));
     }
+    // rsync's list of names (`--files-from`), whose names its errors print.
+    let lists = a.values(&["--files-from"]).filter(|l| *l != "-");
     Effects {
-        reads: owned(&sources),
+        reads: sources
+            .iter()
+            .copied()
+            .chain(lists)
+            .map(str::to_string)
+            .collect(),
         writes,
         trees,
         excludes: owned(&a.values(&["--exclude"]).collect::<Vec<_>>()),
@@ -3389,6 +3452,19 @@ fn is_slash_option(word: &str) -> bool {
     chars.next() == Some('/')
         && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && matches!(chars.next(), None | Some(':'))
+}
+
+/// The files xargs, among the wrappers before a command, reads the words
+/// it gives the command from (`xargs -a list cat`), rather than its input.
+fn arg_files(wrappers: &[String]) -> Vec<String> {
+    let Some(at) = wrappers
+        .iter()
+        .position(|w| permissions::program_name(w) == "xargs")
+    else {
+        return Vec::new();
+    };
+    let a = Args::split(&wrappers[at + 1..], permissions::XARGS_VALUES, false);
+    owned(&a.values(&["-a", "--arg-file"]).collect::<Vec<_>>())
 }
 
 /// A segment's words past the shell's own words before its command (its
@@ -4711,6 +4787,10 @@ mod tests {
                 "find . -name '*.key' | zip /tmp/keys.zip -@",
                 "config/master.key",
             ),
+            (
+                "find . -name '*.key' | zip -@ /tmp/keys.zip",
+                "config/master.key",
+            ),
             ("7z a /tmp/proj.7z .", "would copy or move .env,"),
             ("find . | cpio -o > /tmp/proj.cpio", ".env"),
         ] {
@@ -4782,6 +4862,33 @@ mod tests {
             let refused = command_problem(command, &root, &none())
                 .unwrap_or_else(|| panic!("{command} should be refused"));
             assert!(refused.contains("would read .env,"), "{command}: {refused}");
+        }
+    }
+
+    #[test]
+    fn a_list_of_names_a_program_reads_is_read() {
+        let (_dir, root) = project(&[]);
+        for command in [
+            "xargs -a .env echo",
+            "xargs --arg-file=.env",
+            "xargs -0a .env echo",
+            "tar -czf /tmp/x.tgz -T .env",
+            "7z a /tmp/x.7z @.env",
+            "rsync -a --files-from=.env src/ /tmp/x",
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains("would read .env,"), "{command}: {refused}");
+        }
+        for command in [
+            "xargs -a files.txt wc -l",
+            "tar -czf /tmp/x.tgz -T files.txt",
+            "7z a /tmp/x.7z @files.txt",
+            "rsync -a --files-from=files.txt src/ /tmp/x",
+            // A list of patterns is only used.
+            "tar -czf /tmp/x.tgz -X .env src",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
         }
     }
 

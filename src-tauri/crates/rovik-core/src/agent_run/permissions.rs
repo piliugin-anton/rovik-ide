@@ -852,6 +852,23 @@ pub(super) fn program_name(word: &str) -> String {
     name
 }
 
+/// xargs's options that take the next word as their value.
+pub(super) const XARGS_VALUES: &[&str] = &[
+    "-I",
+    "-n",
+    "-P",
+    "-L",
+    "-d",
+    "-E",
+    "-s",
+    "-a",
+    "--max-args",
+    "--max-procs",
+    "--delimiter",
+    "--arg-file",
+    "--max-lines",
+];
+
 /// How many words a wrapper takes before the command it runs: its name,
 /// its options (with their values) and, for `timeout`, the duration.
 /// None: `word` isn't a wrapper.
@@ -862,21 +879,7 @@ fn wrapper_words(name: &str, rest: &[String]) -> Option<usize> {
         "timeout" | "gtimeout" => &["-s", "--signal", "-k", "--kill-after"],
         "nice" => &["-n", "--adjustment"],
         "sudo" | "doas" => &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U"],
-        "xargs" => &[
-            "-I",
-            "-n",
-            "-P",
-            "-L",
-            "-d",
-            "-E",
-            "-s",
-            "-a",
-            "--max-args",
-            "--max-procs",
-            "--delimiter",
-            "--arg-file",
-            "--max-lines",
-        ],
+        "xargs" => XARGS_VALUES,
         // Round 3: the other wrappers that only run the rest.
         "stdbuf" => &["-i", "-o", "-e", "--input", "--output", "--error"],
         "ionice" => &["-c", "-n", "-p", "--class", "--classdata"],

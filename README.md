@@ -1053,7 +1053,8 @@ for an approval, with the reason and what to do instead
 - `read`, `outline`, `diagnostics` and `neighbours` of one, `write` to one
   the agent may not change, and an edit of part of one it may not read;
 - a command whose words say it would: `cat .env`, `cp .env /tmp`,
-  `echo X >> .env`, `rm .env`, `rm -r`, `cp -r` or an archive
+  `xargs -a .env` or `tar -T .env` (a list of names, which their errors
+  print), `echo X >> .env`, `rm .env`, `rm -r`, `cp -r` or an archive
   (`tar czf x.tgz .`, `zip -r`) of a folder holding one that its excludes
   don't leave out, `git checkout -- .env`, `git clean -fdx` (which deletes ignored
   `.env`s), `git reset --hard` or `git stash` over changes to one the
