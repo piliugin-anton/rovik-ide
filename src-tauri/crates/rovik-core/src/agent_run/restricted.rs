@@ -351,7 +351,7 @@ struct Loading {
 
 /// What [`Check::vague`] is asked: from where, to do what, and, for a
 /// search, the lines it prints.
-type Vague = (PathBuf, Op, Option<Pattern>);
+type Vague = (PathBuf, Op, Option<Pattern>, bool);
 
 impl Check<'_> {
     /// `command`, read as `shell` reads it, run in `cwd`.
@@ -464,7 +464,7 @@ impl Check<'_> {
             }
             // `> "$f"`: what put the file there decides.
             if files.iter().any(|f| unknown(f)) {
-                if let Some(problem) = self.vague(cwd, op, None) {
+                if let Some(problem) = self.vague(cwd, op, None, false) {
                     return Some(problem);
                 }
             }
@@ -518,7 +518,7 @@ impl Check<'_> {
             }
         }
         for (word, op) in effects.trees.iter().filter(|(w, _)| !unknown(w)) {
-            if let Some(problem) = self.held(cwd, word, *op, &effects.excludes) {
+            if let Some(problem) = self.held(cwd, word, *op, &effects.excludes, None) {
                 return Some(problem);
             }
         }
@@ -528,20 +528,29 @@ impl Check<'_> {
             }
         }
         // Files its words don't name: what lists them decides, and for a
-        // search of them, what lines it prints.
+        // search of them, what lines it prints. A folder among them it
+        // takes whole (`xargs rm -rf`, `cp -r "$d" …`), with all it holds.
+        let whole = |op: Op| {
+            effects
+                .trees
+                .iter()
+                .any(|(word, o)| *o == op && wholly_unknown(word))
+        };
         if effects.reads.iter().any(|f| unknown(f)) {
-            if let Some(problem) = self.vague(cwd, Op::Read, None) {
+            if let Some(problem) = self.vague(cwd, Op::Read, None, whole(Op::Read)) {
                 return Some(problem);
             }
         }
         let searched = effects.search.as_ref();
         if let Some(search) = searched.filter(|s| s.paths.iter().any(|f| unknown(f))) {
-            if let Some(problem) = self.vague(cwd, Op::Read, Some(&search.pattern)) {
+            let lines = Some(&search.pattern);
+            let whole = search.recursive && search.paths.iter().any(|p| wholly_unknown(p));
+            if let Some(problem) = self.vague(cwd, Op::Read, lines, whole) {
                 return Some(problem);
             }
         }
         if effects.writes.iter().any(|f| unknown(f)) {
-            return self.vague(cwd, Op::Write, None);
+            return self.vague(cwd, Op::Write, None, whole(Op::Write));
         }
         None
     }
@@ -552,38 +561,45 @@ impl Check<'_> {
     /// files, a search's, `ls`'s), or a word that may be one of them names
     /// one ([`sources`]: `for f in .env*`, `f=.env`, `echo .env | xargs
     /// cat`). For a search of them, one with a line its `lines` match.
-    fn vague(&self, cwd: &Path, op: Op, lines: Option<&Pattern>) -> Option<String> {
+    /// `whole`: a folder among them is taken with all it holds (`xargs rm
+    /// -rf`, `find … -exec cp -r {} …`, `grep -r KEY "$d"`).
+    fn vague(&self, cwd: &Path, op: Op, lines: Option<&Pattern>, whole: bool) -> Option<String> {
         // What a loading substitution reads it loads, not refuses.
         if self.loading.borrow().is_some() {
-            return self.vague_in(cwd, op, lines);
+            return self.vague_in(cwd, op, lines, whole);
         }
-        let asked: Vague = (cwd.to_path_buf(), op, lines.cloned());
+        let asked: Vague = (cwd.to_path_buf(), op, lines.cloned(), whole);
         let seen = self.vague_found.borrow();
         if let Some((_, found)) = seen.iter().find(|(done, _)| *done == asked) {
             return found.clone();
         }
         drop(seen);
-        let found = self.vague_in(cwd, op, lines);
+        let found = self.vague_in(cwd, op, lines, whole);
         self.vague_found.borrow_mut().push((asked, found.clone()));
         found
     }
 
     /// [`Check::vague`], worked out.
-    fn vague_in(&self, cwd: &Path, op: Op, lines: Option<&Pattern>) -> Option<String> {
+    fn vague_in(&self, cwd: &Path, op: Op, lines: Option<&Pattern>, whole: bool) -> Option<String> {
         let (code, texts) = permissions::split_here_text(self.whole);
         let segments = loose_words(&code);
         for words in &segments {
             for (at, word) in words.iter().enumerate() {
                 let args = &words[at + 1..];
-                let problem = match bare_name(word).as_str() {
-                    "find" => self.found(cwd, &finder(args, cwd, &self.rg_config), op, lines),
-                    "fd" | "fdfind" => {
-                        self.found(cwd, &fd_finder(args, cwd, &self.rg_config), op, lines)
+                // What finds folders gives them to be taken whole.
+                let taken = |mut finder: Finder| {
+                    if whole {
+                        finder.trees.push(op);
                     }
+                    self.found(cwd, &finder, op, lines)
+                };
+                let problem = match bare_name(word).as_str() {
+                    "find" => taken(finder(args, cwd, &self.rg_config)),
+                    "fd" | "fdfind" => taken(fd_finder(args, cwd, &self.rg_config)),
                     "git" if args.first().is_some_and(|a| a == "ls-files") => {
                         self.searched(cwd, &tracked(&args[1..]), op, lines)
                     }
-                    "ls" => self.listed(cwd, args, op, lines),
+                    "ls" => self.listed(cwd, args, op, lines, whole),
                     name if GREPS.contains(&name) || matches!(name, "rg" | "ag") => {
                         search_effects(name, args, false, &self.rg_config, true)
                             .search
@@ -607,8 +623,14 @@ impl Check<'_> {
                 return Some(self.too_slow());
             }
             for path in named_paths(cwd, &word) {
-                // What isn't there can't be read.
                 let at = Path::new(&path);
+                if whole && at.is_dir() {
+                    match self.held(cwd, &path, op, &[], lines) {
+                        Some(problem) => return Some(problem),
+                        None => continue,
+                    }
+                }
+                // What isn't there can't be read.
                 if op == Op::Read && at.symlink_metadata().is_err() {
                     continue;
                 }
@@ -629,19 +651,30 @@ impl Check<'_> {
     /// Why what `ls` lists may not be done `op` with (`ls -A | xargs cat`):
     /// it lists a restricted file (with a line `lines` match, for a search
     /// of them). Its folders' files, all below with `-R`, the hidden too
-    /// with `-a`/`-A`; with `-d`, the folders themselves.
+    /// with `-a`/`-A`; with `-d`, the folders themselves. `whole`: what it
+    /// lists is taken with all it holds (`ls | xargs rm -rf`).
     fn listed(
         &self,
         cwd: &Path,
         args: &[String],
         op: Op,
         lines: Option<&Pattern>,
+        whole: bool,
     ) -> Option<String> {
         let a = Args::split(args, LS_VALUES, false);
-        let picks = Picks {
-            hidden: a.has(&["-a", "-A", "-f", "--all", "--almost-all"]),
-            depth: (!a.has(&["-R", "--recursive"])).then_some(1),
-            ..Picks::default()
+        let hidden = a.has(&["-a", "-A", "-f", "--all", "--almost-all"]);
+        let picks = match whole {
+            // Below what it lists, the hidden are taken too.
+            true => Picks {
+                hidden: true,
+                globs: (!hidden).then(|| "!/.*".to_string()).into_iter().collect(),
+                ..Picks::default()
+            },
+            false => Picks {
+                hidden,
+                depth: (!a.has(&["-R", "--recursive"])).then_some(1),
+                ..Picks::default()
+            },
         };
         let regexes = lines.map(Pattern::compiled);
         let prints = |file: &Path| {
@@ -654,10 +687,17 @@ impl Check<'_> {
         } else {
             a.words.clone()
         };
+        let itself = a.has(&["-d", "--directory"]);
         for word in words {
             for path in named_paths(cwd, word) {
                 let at = Path::new(&path);
-                if at.is_dir() && !a.has(&["-d", "--directory"]) {
+                if at.is_dir() && itself && whole {
+                    match self.held(cwd, &path, op, &[], lines) {
+                        Some(problem) => return Some(problem),
+                        None => continue,
+                    }
+                }
+                if at.is_dir() && !itself {
                     let hit = |key: &str, file: &Path| {
                         self.restricted.blocks_file(key, file, op) && prints(file)
                     };
@@ -911,15 +951,20 @@ impl Check<'_> {
                 .as_ref()
                 .is_none_or(|r| prints_from(file, r.as_deref()))
         };
+        // A folder it finds whole holds files below how far it looks.
+        let picks = Picks {
+            depth: finder.picks.depth.filter(|_| !finder.trees.contains(&op)),
+            ..finder.picks.clone()
+        };
         for word in &finder.folders {
             for folder in named_paths(cwd, word) {
                 let start = Path::new(&folder);
                 let hit = |key: &str, file: &Path| {
-                    finder.finds(word, start, file)
+                    finder.reaches(word, start, file, op)
                         && self.restricted.blocks_file(key, file, op)
                         && prints(file)
                 };
-                let walked = self.walk(start, &finder.picks, op, &hit);
+                let walked = self.walk(start, &picks, op, &hit);
                 if let Some(problem) = self.walked(walked, op, Reading::of(lines.is_some())) {
                     return Some(problem);
                 }
@@ -930,14 +975,32 @@ impl Check<'_> {
 
     /// Why a program may not do `op` with every file in the folders `word`
     /// names (`cp -r dir …`, `rm -r dir`), but those matching `excludes`: a
-    /// restricted one is among them.
-    fn held(&self, cwd: &Path, word: &str, op: Op, excludes: &[String]) -> Option<String> {
+    /// restricted one is among them; for a search of them, one with a line
+    /// its `lines` match.
+    fn held(
+        &self,
+        cwd: &Path,
+        word: &str,
+        op: Op,
+        excludes: &[String],
+        lines: Option<&Pattern>,
+    ) -> Option<String> {
         let picks = Picks {
             hidden: true,
             globs: excludes.iter().map(|e| format!("!{e}")).collect(),
             ..Picks::default()
         };
-        let hit = |key: &str, file: &Path| self.restricted.blocks_file(key, file, op);
+        let regexes = lines.map(Pattern::compiled);
+        let hit = |key: &str, file: &Path| {
+            self.restricted.blocks_file(key, file, op)
+                && regexes
+                    .as_ref()
+                    .is_none_or(|r| prints_from(file, r.as_deref()))
+        };
+        let how = match lines {
+            Some(_) => Reading::Search,
+            None => Reading::Copy,
+        };
         for folder in named_paths(cwd, word) {
             let folder = Path::new(&folder);
             if !folder.is_dir() {
@@ -962,7 +1025,7 @@ impl Check<'_> {
                 }
             }
             let walked = self.walk(folder, &picks, op, &hit);
-            if let Some(problem) = self.walked(walked, op, Reading::Copy) {
+            if let Some(problem) = self.walked(walked, op, how) {
                 return Some(problem);
             }
         }
@@ -1397,7 +1460,7 @@ struct Search {
 }
 
 /// How a program going through a folder picks its files.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct Picks {
     /// It reads hidden files (grep does, ripgrep doesn't unless asked).
     hidden: bool,
@@ -1443,24 +1506,44 @@ struct Finder {
     /// It reads what it finds only searching it (`-exec grep -n x {} +`),
     /// printing the lines this matches.
     lines: Option<Pattern>,
+    /// What it does with a folder it finds with all it holds (`-exec rm
+    /// -rf {} +`, `-exec cp -r {} …`).
+    trees: Vec<Op>,
 }
 
 impl Finder {
+    /// Whether doing `op` with what it finds reaches `file`, under `start`,
+    /// the folder it was given as `word`: it finds it or, doing `op` with a
+    /// folder it finds whole, a folder holding it.
+    fn reaches(&self, word: &str, start: &Path, file: &Path, op: Op) -> bool {
+        if !self.trees.contains(&op) {
+            return self.finds(word, start, file);
+        }
+        file.ancestors()
+            .take_while(|folder| folder.starts_with(start))
+            .any(|folder| self.finds(word, start, folder))
+    }
+
     /// Whether it finds `file`, under `start`, the folder it was given as
     /// `word`.
     fn finds(&self, word: &str, start: &Path, file: &Path) -> bool {
-        let name = file
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        // Its path as `find` prints it: from the folder as it was given.
+        // Its path and name as `find` has them: from the folder as it was
+        // given (`.` is named `.`).
         let rest = file
             .strip_prefix(start)
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
-        let path = match rest.as_str() {
-            "" => word.to_string(),
-            rest => format!("{}/{rest}", word.trim_end_matches('/')),
+        let (path, name) = match rest.as_str() {
+            "" => {
+                let given = word.trim_end_matches(['/', '\\']);
+                let name = given.rsplit(['/', '\\']).next().unwrap_or(given);
+                (word.to_string(), name.to_string())
+            }
+            rest => {
+                let name = file.file_name().map(|n| n.to_string_lossy().into_owned());
+                let path = format!("{}/{rest}", word.trim_end_matches('/'));
+                (path, name.unwrap_or_default())
+            }
         };
         let any = self.names.is_empty()
             && self.paths.is_empty()
@@ -2858,6 +2941,7 @@ fn finder(args: &[String], cwd: &Path, rg_config: &[String]) -> Finder {
                 }
                 finder.reads |= exec.reads;
                 finder.writes |= exec.writes;
+                finder.trees.extend(exec.trees);
                 step = end + 2;
             }
             "-fprintf" => step = 3,
@@ -2960,6 +3044,7 @@ fn fd_finder(args: &[String], cwd: &Path, rg_config: &[String]) -> Finder {
     finder.reads = exec.reads;
     finder.writes = exec.writes;
     finder.lines = exec.lines;
+    finder.trees = exec.trees;
     finder
 }
 
@@ -2970,6 +3055,9 @@ struct Exec {
     writes: bool,
     /// It reads it only searching it, printing the lines this matches.
     lines: Option<Pattern>,
+    /// What it does with a folder it's given with all it holds (`rm -rf
+    /// {}`).
+    trees: Vec<Op>,
 }
 
 /// What the program `find` or `fd` runs on what it finds (`command`,
@@ -2986,6 +3074,7 @@ fn exec_effects(command: &[String], appends: bool, cwd: &Path, rg_config: &[Stri
             reads: true,
             writes: true,
             lines: None,
+            trees: vec![Op::Read, Op::Write],
         };
     }
     let mut args = args.to_vec();
@@ -2996,10 +3085,20 @@ fn exec_effects(command: &[String], appends: bool, cwd: &Path, rg_config: &[Stri
     let found = |word: &String| word.contains("{}");
     let whole = effects.reads.iter().any(found);
     let search = effects.search.filter(|s| s.paths.iter().any(found));
+    // A search through what it finds takes a folder whole too.
+    let searches = search.as_ref().is_some_and(|s| s.recursive);
+    let trees = effects
+        .trees
+        .iter()
+        .filter(|(word, _)| found(word) && wholly_unknown(word))
+        .map(|(_, op)| *op)
+        .chain(searches.then_some(Op::Read))
+        .collect();
     Exec {
         reads: whole || search.is_some(),
         writes: effects.writes.iter().any(found),
         lines: search.filter(|_| !whole).map(|s| s.pattern),
+        trees,
     }
 }
 
@@ -3448,6 +3547,31 @@ fn unknown(word: &str) -> bool {
         || word.contains("{}")
         || word.contains(['$', '`', '(', ')'])
         || word.matches('%').count() >= 2
+}
+
+/// Whether a word is wholly one its words don't say, as a folder taken
+/// whole is (`{}`, `$d`, `"${d}"/`, `$(…)`), not a name in one (`$out/build`).
+fn wholly_unknown(word: &str) -> bool {
+    let mut word = word.trim_matches(['"', '\'']);
+    while let Some(rest) = word.strip_suffix("/.").or_else(|| word.strip_suffix('/')) {
+        word = rest.trim_end_matches(['"', '\'']);
+    }
+    let inside = |open: &str, close: char| {
+        word.strip_prefix(open)
+            .and_then(|w| w.strip_suffix(close))
+            .is_some_and(|w| !w.contains(close))
+    };
+    let name = |w: &str| {
+        matches!(w, "@" | "*")
+            || !w.is_empty() && w.chars().all(|c| c.is_alphanumeric() || c == '_')
+    };
+    word == INPUT
+        || word == "{}"
+        || word.strip_prefix('$').is_some_and(name)
+        || inside("${", '}')
+        || inside("$(", ')')
+        || inside("`", '`')
+        || inside("%", '%')
 }
 
 /// The words of text with no here-documents in it, by simple command, its
@@ -4605,6 +4729,47 @@ mod tests {
             // What an archive holds can't be told.
             "tar xzf /tmp/proj.tgz",
             "tar tzf /tmp/proj.tgz",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn a_folder_found_listed_or_named_for_a_program_that_takes_it_whole_brings_all_it_holds() {
+        let (_dir, root) = project(&[]);
+        for command in [
+            "find . -name config -exec rm -rf {} +",
+            "find . -type d -name config -exec cp -r {} /tmp/x \\;",
+            // However far it looks, a folder it finds holds all below it.
+            "find . -maxdepth 1 -name config -exec tar czf /tmp/c.tgz {} +",
+            "find . -name config -exec grep -r API_KEY {} +",
+            "find . -name config -exec sh -c 'cp -r \"$1\" /tmp/x' _ {} \\;",
+            "fd -t d config -x rm -rf",
+            "find . -name config | xargs rm -rf",
+            "echo config | xargs rm -rf",
+            "echo config | xargs grep -r API_KEY src",
+            "for d in */; do tar czf \"/tmp/$d.tgz\" \"$d\"; done",
+            "ls | xargs -I{} cp -r {} /tmp/x",
+            "ls -d */ | xargs rm -rf",
+            "set -- config; rm -rf \"$@\"",
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(
+                refused.contains("config/master.key"),
+                "{command}: {refused}"
+            );
+        }
+        for command in [
+            "find . -name src -exec rm -rf {} +",
+            "find src -exec cp -r {} /tmp/x \\;",
+            "echo src | xargs rm -rf",
+            "echo config | xargs grep -r useState",
+            "ls src | xargs -I{} cp -r src/{} /tmp/x",
+            // A name in a folder, not the folder.
+            "out=.; rm -rf \"$out/build\"",
+            // find names the folder it starts from as it's given.
+            "cd config && find . -name config -exec rm -rf {} +",
         ] {
             assert_eq!(command_problem(command, &root, &none()), None, "{command}");
         }

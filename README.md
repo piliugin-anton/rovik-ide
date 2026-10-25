@@ -1069,6 +1069,8 @@ for an approval, with the reason and what to do instead
   command's words don't name are judged by what lists
   them (`for f in .env*; do cat "$f"; done`, `f=.env`,
   `find … -exec cat {} +`, `ls -A | xargs cat`, `echo .env | xargs cat`),
+  a folder among them that a program takes whole by all it holds
+  (`find . -name config -exec rm -rf {} +`, `ls | xargs rm -rf`),
   a search of them by the lines it would print, and code given to an interpreter
   (`python3 -c "open('.env')"`) by the files it names. A here-document's
   lines are text (a commit message, a file written whole), but not the
