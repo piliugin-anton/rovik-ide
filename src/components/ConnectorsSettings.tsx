@@ -92,12 +92,14 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
   };
 
   function openDraft(p: Provider, setUp = false) {
+    // The last form's test is forgotten first: a Set up that starts as the
+    // form opens tests at once, and its test is this form's.
+    testRun++;
+    setTest({ kind: 'idle' });
     setSetUpOnOpen(setUp);
     setDraft({ ...p, models: p.models.map((m) => ({ ...m })) });
-    setTest({ kind: 'idle' });
     setFormError(null);
     setAdding(false);
-    testRun++;
   }
 
   function closeDraft() {
@@ -112,9 +114,11 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
 
   /**
    * Tests the connector being edited where it's tested, shows what it found
-   * and keeps its models; throws what failed. "Set up" tests with it too.
+   * and keeps its models; throws what failed, and shows it as the test's
+   * result when `showFailure`. "Set up" tests with it too, without: what
+   * failed is its own to act on (a missing program, it installs) or to show.
    */
-  async function testNow(): Promise<ConnectorProbe> {
+  async function testNow(showFailure: boolean): Promise<ConnectorProbe> {
     const d = draft();
     if (!d) throw new Error('No connector is open.');
     const run = ++testRun;
@@ -134,12 +138,13 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
       setTest({ kind: 'ok', probe, added, first: firstFetch });
       return probe;
     } catch (err) {
-      if (run === testRun) setTest({ kind: 'error', message: errorText(err) });
+      if (run === testRun)
+        setTest(showFailure ? { kind: 'error', message: errorText(err) } : { kind: 'idle' });
       throw err;
     }
   }
 
-  const runTest = () => testNow().catch(() => {});
+  const runTest = () => testNow(true).catch(() => {});
   const testWhere = () =>
     testHost()
       ? `on ${hosts().find((h) => h.id === testHost())?.name ?? 'the host'}`
@@ -393,7 +398,7 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
               title={connectorTitle(kindOfProvider(d()))}
               host={testHost() || null}
               where={testWhere()}
-              probe={testNow}
+              probe={() => testNow(false)}
               signedIn={okState()?.probe.auth?.loggedIn === true}
               update={okState()?.probe.update}
               autoStart={setUpOnOpen()}

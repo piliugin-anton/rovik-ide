@@ -30,7 +30,11 @@ interface ConnectorSetupProps {
   host: string | null;
   /** For the user: `on this computer`, `on Build server`. */
   where: string;
-  /** "Test & refresh models", as the page does it: shows and keeps what it found. */
+  /**
+   * "Test & refresh models", as the page does it: shows and keeps what it
+   * found. What failed it throws without showing it: Set up acts on it (a
+   * missing program, it installs) or shows it as its own result.
+   */
   probe: () => Promise<ConnectorProbe>;
   /** Signed in, as the last test found: Sign out is offered. */
   signedIn: boolean;
