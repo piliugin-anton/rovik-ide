@@ -3814,7 +3814,9 @@ mod tests {
             "rm -rf .next",
             "cp -r src /tmp/src",
             "rsync -a --exclude .env --exclude config --exclude apps . /backup/",
-            "rsync -a -e 'ssh -i ~/.ssh/id_rsa' src host:",
+            // In double quotes, which cmd.exe (read too on Windows) takes as
+            // quotes as well.
+            "rsync -a -e \"ssh -i ~/.ssh/id_rsa\" src host:",
             "scp -i ~/.ssh/id_rsa README.md host:",
             "ln -s .env.example .env.local",
         ] {
