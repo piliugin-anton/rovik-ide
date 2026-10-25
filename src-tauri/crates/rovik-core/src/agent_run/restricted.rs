@@ -815,51 +815,88 @@ impl Check<'_> {
 
     /// Why what git would change that its words don't name may not be
     /// changed: a restricted file among the tracked ones whose changes it
-    /// throws away, or the untracked ones it deletes or stashes.
+    /// throws away, or the untracked ones it deletes or stashes. What git
+    /// can't tell refuses the command.
     fn git_changed(&self, cwd: &Path, change: &GitChange) -> Option<String> {
-        let folder = PathBuf::from(resolve(cwd, &expand_home(&change.folder)));
-        let repo = git2::Repository::discover(&folder).ok()?;
-        // git's paths are from its own folder, as the file system has it.
-        let workdir = repo.workdir()?.canonicalize().ok()?;
-        let under: Vec<String> = change
-            .under
-            .iter()
-            .flat_map(|word| named_paths(cwd, word))
-            .collect();
+        let here = PathBuf::from(resolve(cwd, &expand_home(&folder_or_here(&change.folder))));
+        // Not in a repository, or one with no work tree: git changes nothing.
+        let repo = git2::Repository::discover(&here).ok()?;
+        let top = repo.workdir()?.to_path_buf();
+        self.git_changes(&repo, &top, &here, change)
+            .unwrap_or_else(|e| {
+                Some(format!(
+                    "Error: `{}` would change files git keeps, and they couldn't be checked for restricted files, which the agent may not change ({e}), so it didn't run.",
+                    self.whole
+                ))
+            })
+    }
+
+    /// [`Check::git_changed`] in `repo`, whose work tree is at `top`, git
+    /// working in `here`.
+    fn git_changes(
+        &self,
+        repo: &git2::Repository,
+        top: &Path,
+        here: &Path,
+        change: &GitChange,
+    ) -> Result<Option<String>, String> {
+        // git's paths are from its work tree's top, as the file system has it.
+        let top = top.canonicalize().map_err(|e| e.to_string())?;
+        let from = here.canonicalize().map_err(|e| e.to_string())?;
+        let prefix = from
+            .strip_prefix(&top)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let specs: Vec<String> = if !change.paths.is_empty() {
+            change.paths.iter().map(|p| from_top(&prefix, p)).collect()
+        } else if change.whole {
+            Vec::new()
+        } else {
+            vec![prefix.clone()]
+        };
+        // None: every file.
+        let pathspec = if specs.is_empty() || specs.iter().any(String::is_empty) {
+            None
+        } else {
+            Some(git2::Pathspec::new(specs.iter()).map_err(|e| e.message().to_string())?)
+        };
+        let flags = if paths::ANY_CASE {
+            git2::PathspecFlags::IGNORE_CASE
+        } else {
+            git2::PathspecFlags::DEFAULT
+        };
+        let covers = |rel: &str| {
+            pathspec
+                .as_ref()
+                .is_none_or(|p| p.matches_path(Path::new(rel), flags))
+        };
         if change.modified {
-            let real_under: Vec<PathBuf> = under
-                .iter()
-                .filter_map(|path| Path::new(path).canonicalize().ok())
-                .collect();
             let mut options = git2::StatusOptions::new();
             options.include_untracked(false).include_ignored(false);
-            let statuses = repo.statuses(Some(&mut options)).ok()?;
+            let statuses = repo
+                .statuses(Some(&mut options))
+                .map_err(|e| e.message().to_string())?;
             for entry in statuses.iter() {
                 let Ok(path) = entry.path() else {
                     continue;
                 };
-                // Part by part: git's `/` isn't a separator in Windows'
-                // `\\?\` paths.
-                let file: PathBuf = workdir
-                    .components()
-                    .chain(Path::new(path).components())
-                    .collect();
-                if !real_under.iter().any(|u| file.starts_with(u)) {
+                if !covers(path) {
                     continue;
                 }
+                let file = joined(&top, path);
                 let key = self
                     .restricted
                     .blocked(self.root, &file.to_string_lossy(), Op::Write);
                 if let Some(key) = key {
-                    return Some(refused(self.whole, Op::Write, &key));
+                    return Ok(Some(refused(self.whole, Op::Write, &key)));
                 }
             }
         }
         if !(change.untracked || change.ignored) {
-            return None;
+            return Ok(None);
         }
         // The restricted files there git doesn't track: those it takes.
-        let index = repo.index().ok()?;
+        let index = repo.index().map_err(|e| e.message().to_string())?;
         let picks = Picks {
             hidden: true,
             ..Picks::default()
@@ -869,7 +906,7 @@ impl Check<'_> {
                 return false;
             }
             let real = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
-            let Ok(rel) = real.strip_prefix(&workdir) else {
+            let Ok(rel) = real.strip_prefix(&top) else {
                 return false;
             };
             let rel = rel.to_string_lossy().replace('\\', "/");
@@ -882,24 +919,48 @@ impl Check<'_> {
                     .iter()
                     .any(|p| glob_matches(p, parts[n - 1]) || glob_matches(p, &folder))
             });
-            if kept || index.get_path(Path::new(&rel), 0).is_some() {
+            if kept || !covers(&rel) || index.get_path(Path::new(&rel), 0).is_some() {
                 return false;
             }
-            if repo.is_path_ignored(Path::new(&rel)).unwrap_or(false) {
+            if repo.is_path_ignored(Path::new(&rel)).unwrap_or(true) {
                 change.ignored
             } else {
                 change.untracked
             }
         };
-        let in_project = |f: &&String| paths::norm_rel(&self.key_of(Path::new(f))).is_some();
-        for folder in under.iter().filter(in_project) {
-            match self.walk(Path::new(folder), &picks, Op::Write, &hit) {
+        // Where it looks: the files and folders its paths name; where they're
+        // patterns, the folder it works in, or the whole tree for one from
+        // elsewhere; for none, all it covers.
+        let named = change
+            .paths
+            .iter()
+            .all(|p| !has_wildcard(p) && !p.starts_with(':'));
+        let inside = |s: &String| prefix.is_empty() || s.starts_with(&format!("{prefix}/"));
+        let roots: Vec<PathBuf> = if change.paths.is_empty() {
+            vec![if change.whole {
+                top.clone()
+            } else {
+                from.clone()
+            }]
+        } else if named {
+            change
+                .paths
+                .iter()
+                .map(|p| PathBuf::from(resolve(here, p)))
+                .collect()
+        } else if specs.iter().all(inside) {
+            vec![from.clone()]
+        } else {
+            vec![top.clone()]
+        };
+        for root in roots.iter().filter(|r| r.exists()) {
+            match self.walk(root, &picks, Op::Write, &hit) {
                 Walked::Clean => {}
-                Walked::Found(file) => return Some(refused(self.whole, Op::Write, &file)),
-                Walked::TooLarge => return Some(self.too_large()),
+                Walked::Found(file) => return Ok(Some(refused(self.whole, Op::Write, &file))),
+                Walked::TooLarge => return Ok(Some(self.too_large())),
             }
         }
-        None
+        Ok(None)
     }
 
     /// `path`'s key: relative to the project, however it spells the
@@ -1343,7 +1404,7 @@ fn effects(
     }
     match program {
         "findstr" => findstr_effects(args),
-        "git" => git_effects(args),
+        "git" => git_effects(args, cwd),
         "ln" => ln_effects(args, cwd),
         "docker" if args.iter().any(|a| a == "compose") => compose_effects(args, cwd),
         "docker-compose" => compose_effects(args, cwd),
@@ -1646,12 +1707,67 @@ const GIT_VALUES: &[&str] = &[
     "--list-cmds",
 ];
 
-/// What git does with files, from the folder `-C` takes it to: those its
-/// words name that it prints (`git show REV:path`, `git diff path`, `git
-/// log -p path`, `git blame path`) or changes (`git checkout -- path`,
-/// `git rm path`, `git mv`), and those it changes that they don't name
-/// (`clean`, `reset --hard`, `stash`, `checkout .`).
-fn git_effects(args: &[String]) -> Effects {
+/// Options of what git shows (`log`, `diff`, `show`…) that take a value
+/// that isn't a path (`-S process.env`, `--author me`); `-L`'s holds one.
+const GIT_SHOW_VALUES: &[&str] = &[
+    "-S",
+    "-G",
+    "-n",
+    "-L",
+    "-O",
+    "--author",
+    "--committer",
+    "--grep",
+    "--since",
+    "--until",
+    "--after",
+    "--before",
+    "--max-count",
+    "--skip",
+    "--format",
+    "--pretty",
+    "--date",
+    "--encoding",
+    "--diff-filter",
+];
+/// Options after which `log` prints the lines of the files it shows.
+const GIT_PATCH: &[&str] = &[
+    "-p",
+    "-u",
+    "--patch",
+    "--patch-with-stat",
+    "--patch-with-raw",
+    "--word-diff",
+    "--color-words",
+    "--cc",
+    "-c",
+    "-L",
+    "-W",
+    "--function-context",
+];
+/// Options after which `diff` and `show` print the files' names and
+/// counts, not their lines.
+const GIT_NO_PATCH: &[&str] = &[
+    "-s",
+    "--no-patch",
+    "--stat",
+    "--numstat",
+    "--shortstat",
+    "--name-only",
+    "--name-status",
+    "--summary",
+    "--dirstat",
+    "--compact-summary",
+    "--raw",
+    "--quiet",
+];
+
+/// What git does with files, from the folder `-C` takes it to (from
+/// `cwd`): those its words name that it prints (`git show REV:path`, `git
+/// diff path`, `git log -p path`, `git blame path`) or changes (`git
+/// checkout -- path`, `git rm path`, `git mv`), and those it changes that
+/// they don't name (`clean`, `reset --hard`, `stash`, `checkout .`).
+fn git_effects(args: &[String], cwd: &Path) -> Effects {
     let mut at = 0;
     let mut folder = String::new();
     while let Some(word) = args.get(at) {
@@ -1673,29 +1789,48 @@ fn git_effects(args: &[String]) -> Effects {
     let rest = &args[at + 1..];
     let here =
         |words: &[&str]| -> Vec<String> { words.iter().map(|w| in_folder(&folder, w)).collect() };
-    // What it changes that its words don't name, under its paths (or all).
-    let change = |under: &[&str], change: GitChange| GitChange {
+    let change = |paths: &[&str], change: GitChange| GitChange {
         folder: folder.clone(),
-        under: if under.is_empty() {
-            vec![folder_or_here(&folder)]
-        } else {
-            here(under)
-        },
+        paths: owned(paths),
         ..change
     };
     match command.as_str() {
         "show" | "diff" | "log" | "blame" | "annotate" | "cat-file" | "whatchanged" => {
-            let words = Args::split(rest, &[], false).words;
-            let paths: Vec<&str> = words
+            let a = Args::split(rest, GIT_SHOW_VALUES, false);
+            let patch = a.has(GIT_PATCH);
+            let prints = match command.as_str() {
+                "log" | "whatchanged" => patch,
+                "diff" | "show" => patch || !a.has(GIT_NO_PATCH),
+                "cat-file" => !a.has(&["-t", "-s", "-e"]),
+                _ => true,
+            };
+            if !prints {
+                return Effects::default();
+            }
+            // `-L 1,9:src/a.ts`: that file's lines.
+            let traced = a
+                .values(&["-L"])
+                .filter_map(|v| v.rsplit_once(':').map(|(_, f)| f));
+            let top = git_top(cwd, &folder);
+            let reads = a
+                .words
                 .iter()
-                .map(|w| match w.split_once(':') {
-                    // `HEAD:.env`, `main:config/.env`: the path after the revision.
-                    Some((rev, path)) if !rev.is_empty() && !rev.contains(['/', '\\']) => path,
-                    _ => w,
+                .copied()
+                .chain(traced)
+                .map(|word| match revision_path(word) {
+                    // `HEAD:.env`, `:.env`: from the repository's top, but
+                    // `HEAD:./x` from where it runs.
+                    Some(path) if !path.starts_with("./") && !path.starts_with("../") => match &top
+                    {
+                        Some(top) => joined(top, path).to_string_lossy().into_owned(),
+                        None => in_folder(&folder, path),
+                    },
+                    Some(path) => in_folder(&folder, path),
+                    None => in_folder(&folder, word),
                 })
                 .collect();
             Effects {
-                reads: here(&paths),
+                reads,
                 ..Effects::default()
             }
         }
@@ -1719,25 +1854,23 @@ fn git_effects(args: &[String]) -> Effects {
                 return Effects::default();
             }
             let force = a.has(&["-f", "--force", "--discard-changes"]);
-            // A folder it's given has its tracked files' changes thrown away.
-            let folders: Vec<&str> = a
-                .words
-                .iter()
-                .copied()
-                .filter(|w| w.ends_with(['/', '\\']) || *w == ".")
-                .collect();
-            let git = (force || !folders.is_empty()).then(|| {
-                change(
-                    &folders,
-                    GitChange {
-                        modified: true,
-                        ..GitChange::default()
-                    },
-                )
-            });
+            let paths = match command.as_str() {
+                "restore" => a.words.clone(),
+                "switch" => Vec::new(),
+                _ => checkout_paths(rest, &a.words, cwd, &folder),
+            };
+            // Switching branches keeps the changes, or doesn't switch.
+            if paths.is_empty() && !force {
+                return Effects::default();
+            }
+            let git = GitChange {
+                whole: true,
+                modified: true,
+                ..GitChange::default()
+            };
             Effects {
-                writes: here(&a.words),
-                git,
+                writes: here(&paths),
+                git: Some(change(&paths, git)),
                 ..Effects::default()
             }
         }
@@ -1756,13 +1889,12 @@ fn git_effects(args: &[String]) -> Effects {
         "reset" => {
             let a = Args::split(rest, &[], false);
             let git = a.has(&["--hard", "--merge", "--keep"]).then(|| {
-                change(
-                    &[],
-                    GitChange {
-                        modified: true,
-                        ..GitChange::default()
-                    },
-                )
+                let git = GitChange {
+                    whole: true,
+                    modified: true,
+                    ..GitChange::default()
+                };
+                change(&[], git)
             });
             Effects {
                 git,
@@ -1778,21 +1910,19 @@ fn git_effects(args: &[String]) -> Effects {
             }
             let a = Args::split(
                 &rest[usize::from(sub.is_some())..],
-                &["-m", "--message"],
+                &["-m", "--message", "--pathspec-from-file"],
                 false,
             );
             let all = a.has(&["-a", "--all"]);
-            let git = change(
-                &a.words,
-                GitChange {
-                    modified: true,
-                    untracked: all || a.has(&["-u", "--include-untracked"]),
-                    ignored: all,
-                    ..GitChange::default()
-                },
-            );
+            let git = GitChange {
+                whole: true,
+                modified: true,
+                untracked: all || a.has(&["-u", "--include-untracked"]),
+                ignored: all,
+                ..GitChange::default()
+            };
             Effects {
-                git: Some(git),
+                git: Some(change(&a.words, git)),
                 ..Effects::default()
             }
         }
@@ -1801,22 +1931,98 @@ fn git_effects(args: &[String]) -> Effects {
             if a.has(&["-n", "--dry-run"]) {
                 return Effects::default();
             }
-            let git = change(
-                &a.words,
-                GitChange {
-                    untracked: !a.has(&["-X"]),
-                    ignored: a.has(&["-x", "-X"]),
-                    kept: owned(&a.values(&["-e", "--exclude"]).collect::<Vec<_>>()),
-                    ..GitChange::default()
-                },
-            );
+            // From the folder it runs in.
+            let git = GitChange {
+                untracked: !a.has(&["-X"]),
+                ignored: a.has(&["-x", "-X"]),
+                kept: owned(&a.values(&["-e", "--exclude"]).collect::<Vec<_>>()),
+                ..GitChange::default()
+            };
             Effects {
-                git: Some(git),
+                git: Some(change(&a.words, git)),
                 ..Effects::default()
             }
         }
         _ => Effects::default(),
     }
+}
+
+/// The path of a word naming a file in a revision (`HEAD:.env`,
+/// `main:config/.env`) or in the index (`:.env`, `:2:.env`). None for a
+/// word that's a path itself, or a commit found by its message (`:/fix`).
+fn revision_path(word: &str) -> Option<&str> {
+    let (rev, path) = word.split_once(':')?;
+    // `C:\x`, `C:/x`: a drive's path.
+    let drive = rev.len() == 1 && path.starts_with(['/', '\\']);
+    if rev.contains(['/', '\\']) || drive || (rev.is_empty() && path.starts_with('/')) {
+        return None;
+    }
+    match path.split_once(':') {
+        Some((stage, path)) if rev.is_empty() && stage.len() == 1 => Some(path),
+        _ => Some(path),
+    }
+}
+
+/// The top of the work tree of the repository git works in, from `cwd`
+/// and its `-C` folder.
+fn git_top(cwd: &Path, folder: &str) -> Option<PathBuf> {
+    let here = resolve(cwd, &expand_home(&folder_or_here(folder)));
+    let repo = git2::Repository::discover(here).ok()?;
+    repo.workdir().map(Path::to_path_buf)
+}
+
+/// `git checkout`'s pathspecs: its words after `--`, or after its first
+/// when that names no file or folder there (a revision: `checkout main
+/// config`, `checkout -f main`).
+fn checkout_paths<'a>(
+    rest: &'a [String],
+    words: &[&'a str],
+    cwd: &Path,
+    folder: &str,
+) -> Vec<&'a str> {
+    if let Some(at) = rest.iter().position(|w| w == "--") {
+        return rest[at + 1..].iter().map(String::as_str).collect();
+    }
+    let revision = |word: &str| {
+        let path = resolve(cwd, &expand_home(&in_folder(folder, word)));
+        word != "." && !has_wildcard(word) && !Path::new(&path).exists()
+    };
+    match words.split_first() {
+        Some((first, others)) if revision(first) => others.to_vec(),
+        _ => words.to_vec(),
+    }
+}
+
+/// `rel`, a path git gives from its work tree's top, under `top`, part by
+/// part: `/` isn't a separator in Windows' `\\?\` paths.
+fn joined(top: &Path, rel: &str) -> PathBuf {
+    top.components()
+        .chain(Path::new(rel).components())
+        .collect()
+}
+
+/// A pathspec as git reads it where it runs, `prefix` from its work tree's
+/// top: from the top, with `/`. `:/x` is from the top already. "" for one
+/// of the whole tree, or that can't be read here (other magic, `:(glob)`;
+/// one out of the tree): every file.
+fn from_top(prefix: &str, spec: &str) -> String {
+    if let Some(rest) = spec.strip_prefix(":/") {
+        return rest.to_string();
+    }
+    if spec.starts_with(':') {
+        return String::new();
+    }
+    let joined = format!("{prefix}/{spec}");
+    let mut parts: Vec<&str> = Vec::new();
+    for part in joined.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." if parts.pop().is_none() => return String::new(),
+            ".." => {}
+            part => parts.push(part),
+        }
+    }
+    parts.join("/")
 }
 
 /// `word` from `folder` (a relative one, as git's `-C` takes it).
@@ -1840,9 +2046,14 @@ fn folder_or_here(folder: &str) -> String {
 /// Files git changes that its words don't name.
 #[derive(Debug, Default, PartialEq)]
 struct GitChange {
-    /// Where it works (`git -C`), and the files and folders it's limited to.
+    /// Where it works (`git -C`).
     folder: String,
-    under: Vec<String>,
+    /// The paths it's limited to, git's pathspecs from where it works
+    /// (`config`, `'*.yml'`, `:/keys`). None: all it covers.
+    paths: Vec<String>,
+    /// With no paths, it covers the whole work tree (`reset --hard`,
+    /// `stash`), not only the folder it works in (`clean`).
+    whole: bool,
     /// It throws away the changes to tracked files (`reset --hard`,
     /// `stash`, `checkout .`).
     modified: bool,
@@ -4210,9 +4421,11 @@ mod tests {
         std::fs::write(dir.0.join(".gitignore"), ".env*\nconfig/\n").unwrap();
         repository(&dir.0, &["src/app.ts", "keys/deploy.pem", ".gitignore"]);
         for (command, refusal) in [
-            // Its own options come before its command.
+            // Its own options come before its command; a revision's path is
+            // from the repository's top, unless it starts with `./`.
+            ("git -C apps/api show HEAD:.env", "would read .env,"),
             (
-                "git -C apps/api show HEAD:.env",
+                "git -C apps/api show HEAD:./.env",
                 "would read apps/api/.env,",
             ),
             ("git -c core.pager=cat show HEAD:.env", "would read .env,"),
@@ -4261,6 +4474,112 @@ mod tests {
         assert_eq!(
             command_problem("git checkout -- src/", &root, &none()),
             None
+        );
+    }
+
+    #[test]
+    fn git_works_on_the_whole_repository_and_reads_pathspecs_as_git_does() {
+        let (dir, root) = project(&["keys/deploy.pem", "docs/notes.md", "certs/server.key"]);
+        std::fs::write(dir.0.join(".gitignore"), ".env*\nconfig/\n").unwrap();
+        let tracked = [
+            "src/app.ts",
+            "keys/deploy.pem",
+            "docs/notes.md",
+            ".gitignore",
+        ];
+        repository(&dir.0, &tracked);
+        std::fs::write(dir.0.join("keys/deploy.pem"), "changed\n").unwrap();
+        let src = format!("{root}/src");
+        let problem = |command: &str, cwd: &str| command_problem_in(command, &root, cwd, &none());
+        // From a folder of the project, these change the whole tree.
+        for (command, cwd) in [
+            ("git stash", &src),
+            ("git reset --hard", &src),
+            ("git checkout -f HEAD", &src),
+            ("cd src && git stash", &root),
+            ("git -C src reset --hard", &root),
+            // A folder, a pattern and the top are pathspecs too.
+            ("git restore keys", &root),
+            ("git checkout -- keys", &root),
+            ("git checkout HEAD keys", &root),
+            ("git checkout -- '*.pem'", &root),
+            ("git checkout -- :/", &src),
+            ("git restore ../keys", &src),
+        ] {
+            let refused = problem(command, cwd)
+                .unwrap_or_else(|| panic!("{command} from {cwd} should be refused"));
+            assert!(
+                refused.contains("would change keys/deploy.pem,"),
+                "{command}: {refused}"
+            );
+        }
+        // With the key as committed: `stash -u` takes the untracked files of
+        // the whole tree, `-a` the ignored ones too; `clean`, those of the
+        // folder it runs in.
+        std::fs::write(dir.0.join("keys/deploy.pem"), "API_KEY=x\n").unwrap();
+        assert_eq!(problem("git stash", &src), None);
+        for (command, file) in [
+            ("git stash -u", "certs/server.key"),
+            ("git stash -a", ".env"),
+        ] {
+            let refused = problem(command, &src).unwrap_or_else(|| panic!("{command}"));
+            assert!(
+                refused.contains(&format!("would change {file},")),
+                "{refused}"
+            );
+        }
+        for command in [
+            "git clean -fdx",
+            "git checkout -- .",
+            "git restore '*.ts'",
+            "git checkout -- ../src",
+        ] {
+            assert_eq!(problem(command, &src), None, "{command}");
+        }
+        // What prints no file's lines, and values that aren't paths.
+        for command in [
+            "git log --oneline -- .env",
+            "git log -1 --format=%cd -- keys/deploy.pem",
+            "git diff --stat -- keys/deploy.pem",
+            "git diff --name-only HEAD -- .env",
+            "git log -S process.env --oneline",
+            "git log -G \"import.meta.env\" --oneline",
+            "git log --author me -- .",
+            "git show --stat HEAD",
+            "git cat-file -t HEAD:.env",
+        ] {
+            assert_eq!(problem(command, &root), None, "{command}");
+        }
+        for (command, file) in [
+            ("git log -p -- .env", ".env"),
+            ("git diff -- keys/deploy.pem", "keys/deploy.pem"),
+            ("git log -L 1,3:keys/deploy.pem", "keys/deploy.pem"),
+            ("git show :keys/deploy.pem", "keys/deploy.pem"),
+            ("git cat-file -p HEAD:keys/deploy.pem", "keys/deploy.pem"),
+        ] {
+            let refused = problem(command, &root).unwrap_or_else(|| panic!("{command}"));
+            assert!(
+                refused.contains(&format!("would read {file},")),
+                "{refused}"
+            );
+        }
+        // A user's file, by its path from the top, from a folder.
+        let listed = RestrictedFiles::from_settings(&json!({ "restrictedFiles": [
+            { "path": "docs/notes.md", "blockRead": true, "blockWrite": true },
+        ]}));
+        let shown = command_problem_in("git show HEAD:docs/notes.md", &root, &src, &listed);
+        assert!(shown.is_some_and(|r| r.contains("would read docs/notes.md,")));
+    }
+
+    #[test]
+    fn git_that_cant_be_asked_what_it_would_change_is_refused() {
+        let (dir, root) = project(&[]);
+        repository(&dir.0, &["src/app.ts"]);
+        std::fs::write(dir.0.join(".git/index"), "not an index").unwrap();
+        let refused = command_problem("git reset --hard", &root, &none()).expect("refused");
+        assert!(
+            refused.contains("couldn't be checked for restricted files"),
+            "{refused}"
         );
     }
 

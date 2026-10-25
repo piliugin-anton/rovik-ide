@@ -1055,8 +1055,10 @@ for an approval, with the reason and what to do instead
 - a command whose words say it would: `cat .env`, `cp .env /tmp`,
   `echo X >> .env`, `rm .env`, `rm -r` or `cp -r` of a folder holding
   one, `git checkout -- .env`, `git clean -fdx` (which deletes ignored
-  `.env`s), `git reset --hard` over changes to one the repository
-  tracks, and what prints the values of one (`docker compose config`,
+  `.env`s), `git reset --hard` or `git stash` over changes to one the
+  repository tracks anywhere in it (git's paths read as git reads them:
+  `git checkout -- config`, `'*.pem'`), `git log -p .env` but not
+  `git log --oneline .env`, and what prints the values of one (`docker compose config`,
   `terraform output`); in a `bash -c` script too, from the folder a `cd`
   left it in. A search (`grep`, `rg`) is refused only when it would
   print a line of one, which is looked for there, in the files it would
