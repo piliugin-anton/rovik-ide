@@ -9,6 +9,11 @@
 //! - [`after`] it failed for want of a program or of a package, the
 //!   program is made available, or the project's dependencies installed;
 //!   the caller runs the command again, or tells the model to.
+//! - [`after`] it failed to reach one of the project's services (a port
+//!   its compose file publishes refused the connection, or a service's
+//!   name couldn't be looked up), the service is started where this
+//!   machine runs them (a cloud host's daemon, services/), or the model is
+//!   told it isn't running and what to do.
 //!
 //! A program is made available on a cloud host by installing, as root, the
 //! Node or Rust version the project runs (toolchains::ensure), and Yarn or
@@ -26,10 +31,12 @@ use super::command_output::{environment_failure, program_not_found};
 use super::permissions::{self, Verdict};
 use super::StopSignal;
 use crate::ecosystems::{self, Ecosystem, Install};
+use crate::services::compose::Model;
+use crate::services::{self, Needed, NotStarted};
 use crate::toolchains::{self, Want};
 use crate::Core;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -180,6 +187,13 @@ pub async fn after(cx: &Context, command: &str, exit_code: Option<i32>, output: 
         .filter(|p| ecosystems::of_program(p).is_some())
     {
         ready.add(provide(cx, program, Look::Everywhere).await);
+        return ready;
+    }
+    let services = services_needed(cx, output).await;
+    if !services.is_empty() {
+        for outcome in services {
+            ready.add(outcome);
+        }
         return ready;
     }
     if environment_failure(exit_code, output, std::slice::from_ref(&cx.root)).is_none() {
@@ -478,6 +492,113 @@ fn first_lately(cx: &Context, install: &Install) -> bool {
     ran.insert(key, Instant::now()).is_none()
 }
 
+/// The project's services a failed command needed and didn't find (each
+/// backing service of its compose files publishing a local port the
+/// command was refused at, or named by a host it couldn't look up), each
+/// file's started where this machine runs them, or the model told what to
+/// do. Empty when the output names none: Compose isn't even asked then.
+async fn services_needed(cx: &Context, output: &str) -> Vec<Outcome> {
+    let refused = super::ports::refused_ports(output);
+    let unresolved = super::ports::unresolved_hosts(output);
+    if refused.is_empty() && unresolved.is_empty() {
+        return Vec::new();
+    }
+    let Some(program) = services::compose::program() else {
+        return Vec::new();
+    };
+    let root = PathBuf::from(&cx.root);
+    let models = crate::rt::spawn_blocking(move || services::compose::read_all(&program, &root))
+        .await
+        .unwrap_or_default();
+    let mut outcomes = Vec::new();
+    for model in models {
+        let needed = services::needed(&model, &refused, &unresolved);
+        if !needed.is_empty() {
+            outcomes.extend(start_services(cx, model, needed).await);
+        }
+    }
+    outcomes
+}
+
+/// `needed` of `model` started, where this machine runs the projects'
+/// services and the run isn't in Plan mode; else what the model is told.
+/// A start that failed isn't tried again for that chat for a while: it
+/// would fail the same way after every command.
+async fn start_services(cx: &Context, model: Arc<Model>, needed: Vec<Needed>) -> Vec<Outcome> {
+    let host = services::host();
+    let why = match &host {
+        Some(services::Host::Runs(_)) if cx.plan_mode => NotStarted::PlanMode,
+        Some(services::Host::Runs(runner)) => {
+            let names: Vec<String> = needed.iter().map(|n| n.name.clone()).collect();
+            let key = format!("{}\0{}\0{}", cx.chat, model.dir.display(), names.join(" "));
+            if let Some(why) = failed_lately(&key) {
+                return vec![Outcome::Missing(services::not_started_because(
+                    &model, &needed, &why,
+                ))];
+            }
+            (cx.note)(Some(format!(
+                "Starting the project's {}: {}…",
+                match names.len() {
+                    1 => "service",
+                    _ => "services",
+                },
+                names.join(", ")
+            )));
+            let started = runner.start(cx.chat.clone(), model.clone(), names).await;
+            (cx.note)(None);
+            let mut outcomes = vec![match started {
+                Ok(said) => Outcome::Made(services::started(&model, &needed, &said)),
+                Err(why) => {
+                    remember_failure(key, &why);
+                    Outcome::Missing(services::not_started_because(&model, &needed, &why))
+                }
+            }];
+            // Started or not, a lookup by name won't find it: where to point
+            // the command instead.
+            outcomes.extend(services::by_name_note(&model, &needed).map(Outcome::Missing));
+            return outcomes;
+        }
+        Some(services::Host::Cannot(why)) => NotStarted::Cannot(why),
+        None => NotStarted::Here,
+    };
+    vec![Outcome::Missing(services::not_started_note(
+        &model, &needed, why,
+    ))]
+}
+
+/// The services' starts that failed lately, for which chat and services:
+/// when, and why.
+static FAILED: Mutex<Option<HashMap<String, (Instant, String)>>> = Mutex::new(None);
+
+/// Why the start under `key` failed, when it failed lately.
+fn failed_lately(key: &str) -> Option<String> {
+    let mut failed = FAILED.lock().unwrap_or_else(|e| e.into_inner());
+    let failed = failed.get_or_insert_with(HashMap::new);
+    failed.retain(|_, (at, _)| at.elapsed() < INSTALL_AGAIN_AFTER);
+    failed.get(key).map(|(at, why)| {
+        format!(
+            "it failed {} ago, and isn't tried again for a while: {why}",
+            minutes(at.elapsed())
+        )
+    })
+}
+
+fn remember_failure(key: String, why: &str) {
+    let mut failed = FAILED.lock().unwrap_or_else(|e| e.into_inner());
+    failed
+        .get_or_insert_with(HashMap::new)
+        .insert(key, (Instant::now(), why.to_string()));
+}
+
+/// `elapsed` in words: "less than a minute", "3 minutes".
+fn minutes(elapsed: Duration) -> String {
+    match elapsed.as_secs() / 60 {
+        0 => "less than a minute".to_string(),
+        1 => "a minute".to_string(),
+        n => format!("{n} minutes"),
+    }
+}
+
 /// Whether `text` is rustup saying the toolchain a command asked for isn't
 /// installed: `error: toolchain '1.82-x86_64-unknown-linux-gnu' is not
 /// installed`.
@@ -593,6 +714,209 @@ mod tests {
             plan_mode: false,
         };
         (test, cx, notes)
+    }
+
+    /// What a project's compose file says through Compose: a database and
+    /// a cache with their ports, and the app built from its Dockerfile.
+    const SHOP: &str = r#"{"name": "shop", "services": {
+      "web": {"build": {"context": "/p"}, "ports": [{"target": 3000, "published": "3000", "protocol": "tcp"}]},
+      "db": {"image": "postgres:16-alpine", "ports": [{"target": 5432, "published": "5432", "protocol": "tcp"}]},
+      "cache": {"image": "redis:7-alpine", "ports": [{"target": 6379, "published": "6379", "protocol": "tcp"}]}
+    }}"#;
+
+    /// A Compose that prints `json` for any project, in `dir`.
+    #[cfg(unix)]
+    fn fake_compose(dir: &Path, json: &str) -> services::compose::Program {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("fake-compose");
+        std::fs::write(&path, format!("#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        services::compose::Program::Standalone(path)
+    }
+
+    /// Each start a daemon was asked for: its chat, compose project and
+    /// services.
+    type Asked = Arc<Mutex<Vec<(String, String, Vec<String>)>>>;
+
+    /// What a cloud host's daemon would be asked to start, answered with
+    /// `answer`.
+    struct Recording {
+        asked: Asked,
+        answer: Result<String, String>,
+    }
+
+    impl services::Runner for Recording {
+        fn start(
+            &self,
+            chat: String,
+            model: Arc<Model>,
+            names: Vec<String>,
+        ) -> futures_util::future::BoxFuture<'static, Result<String, String>> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((chat, model.name.clone(), names));
+            let answer = self.answer.clone();
+            Box::pin(async move { answer })
+        }
+    }
+
+    /// A project with a compose file Compose reads as [`SHOP`], on a host
+    /// whose daemon runs services, answering `answer`: what it's asked.
+    #[cfg(unix)]
+    fn shop_on_a_host(
+        answer: Result<String, String>,
+    ) -> (crate::testing::TestCore, Context, Asked) {
+        let (test, cx, _notes) = project(&[("compose.yaml", "services: {}\n")]);
+        services::compose::use_program(Some(fake_compose(&test.dir.0, SHOP)));
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        services::set_host(services::Host::Runs(Arc::new(Recording {
+            asked: asked.clone(),
+            answer,
+        })));
+        (test, cx, asked)
+    }
+
+    /// A command refused at a port the project's database publishes, on a
+    /// cloud host whose daemon runs the services: the database is started
+    /// for the chat, the call says so meanwhile, and the command can run
+    /// again.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_service_a_command_could_not_reach_is_started_where_the_host_runs_them() {
+        let _lock = services::test_lock();
+        let (_test, mut cx, asked) = shop_on_a_host(Ok("at localhost:5432".into()));
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        let kept = notes.clone();
+        cx.note = Arc::new(move |note| kept.lock().unwrap().push(note));
+        let ready = after(
+            &cx,
+            "npm run dev",
+            Some(1),
+            "Error: connect ECONNREFUSED 127.0.0.1:5432",
+        )
+        .await;
+        assert_eq!(
+            ready.done,
+            [
+                "Rovik started the `db` (postgres:16-alpine) service of compose.yaml, which the \
+              command needed (at localhost:5432)"
+            ]
+        );
+        assert!(ready.missing.is_empty(), "{:?}", ready.missing);
+        assert!(ready.note().unwrap().ends_with("Run the command again."));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [(cx.chat.clone(), "shop".to_string(), vec!["db".to_string()])]
+        );
+        assert_eq!(
+            *notes.lock().unwrap(),
+            [
+                Some("Starting the project's service: db…".to_string()),
+                None
+            ]
+        );
+    }
+
+    /// A start that failed is said, and isn't tried again for that chat
+    /// for a while: the next command is told why at once.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_failed_start_is_said_and_not_tried_again_for_a_while() {
+        let _lock = services::test_lock();
+        let (_test, cx, asked) = shop_on_a_host(Err("its image couldn't be pulled".into()));
+        let refused = "redis.exceptions.ConnectionError: Error 111 connecting to localhost:6379. Connection refused.";
+        let first = after(&cx, "pytest", Some(1), refused).await;
+        assert_eq!(
+            first.missing,
+            ["The command needed the `cache` (redis:7-alpine) service of compose.yaml, which isn't \
+              running, and Rovik couldn't start it: its image couldn't be pulled"]
+        );
+        let again = after(&cx, "pytest", Some(1), refused).await;
+        assert!(
+            again.missing[0].contains("it failed less than a minute ago, and isn't tried again"),
+            "{:?}",
+            again.missing
+        );
+        assert_eq!(asked.lock().unwrap().len(), 1, "asked once");
+    }
+
+    /// A service looked up by its name, as the app would inside Compose's
+    /// network, is started all the same, and the command is told where its
+    /// code reaches it.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_service_looked_up_by_its_name_is_started_and_pointed_at_localhost() {
+        let _lock = services::test_lock();
+        let (_test, cx, asked) = shop_on_a_host(Ok("at localhost:5432".into()));
+        let ready = after(&cx, "npm start", Some(1), "Error: getaddrinfo ENOTFOUND db").await;
+        assert_eq!(ready.done.len(), 1, "{ready:?}");
+        assert!(
+            ready.missing[0].contains("its code reaches `db` at localhost:5432 instead"),
+            "{:?}",
+            ready.missing
+        );
+        assert_eq!(asked.lock().unwrap()[0].2, ["db"]);
+    }
+
+    /// Plan mode starts nothing, on a host that would.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn plan_mode_starts_no_service() {
+        let _lock = services::test_lock();
+        let (_test, mut cx, asked) = shop_on_a_host(Ok("at localhost:5432".into()));
+        cx.plan_mode = true;
+        let ready = after(
+            &cx,
+            "npm test",
+            Some(1),
+            "connect ECONNREFUSED 127.0.0.1:5432",
+        )
+        .await;
+        assert!(
+            ready.missing[0].contains("Plan mode starts nothing"),
+            "{ready:?}"
+        );
+        assert!(asked.lock().unwrap().is_empty());
+    }
+
+    /// On the user's own computer, and on a server that can't run them,
+    /// the model is told what to do instead.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn where_no_daemon_runs_the_services_the_model_is_told_what_to_do() {
+        let _lock = services::test_lock();
+        let (test, cx, _notes) = project(&[("compose.yaml", "services: {}\n")]);
+        services::compose::use_program(Some(fake_compose(&test.dir.0, SHOP)));
+        let refused = "connect ECONNREFUSED 127.0.0.1:5432";
+        let here = after(&cx, "npm test", Some(1), refused).await;
+        assert!(
+            here.missing[0].contains("ask the user to start it (`docker compose up -d db`)"),
+            "{here:?}"
+        );
+        services::set_host(services::Host::Cannot("Podman isn't installed".into()));
+        let server = after(&cx, "npm test", Some(1), refused).await;
+        assert!(
+            server.missing[0]
+                .contains("this server can't run the project's services (Podman isn't installed)"),
+            "{server:?}"
+        );
+        // The app's own port, or one no service publishes, is no service's.
+        for other in [
+            "connect ECONNREFUSED 127.0.0.1:3000",
+            "connect ECONNREFUSED 127.0.0.1:9999",
+        ] {
+            assert_eq!(
+                after(&cx, "npm test", Some(1), other).await,
+                Ready::default(),
+                "{other}"
+            );
+        }
     }
 
     /// The root command of a host that installs Node versions: each one

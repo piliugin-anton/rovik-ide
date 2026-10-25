@@ -79,17 +79,22 @@ pub fn ordered_checks(checks: &[ProjectCheck]) -> Vec<ProjectCheck> {
     out
 }
 
-/// The "## Project" section of the system prompt: stack, the check commands
-/// (and that the IDE runs them when verification is on), and the project's
-/// own agent instructions.
+/// The "## Project" section of the system prompt: stack, the services its
+/// compose files declare (`services`, services::prompt_line), the check
+/// commands (and that the IDE runs them when verification is on), and the
+/// project's own agent instructions.
 pub fn project_context(
     profile: &ProjectProfile,
+    services: Option<&str>,
     checks: &[ProjectCheck],
     verify_on: bool,
 ) -> String {
     let mut parts = vec!["## Project".to_string()];
     if !profile.stack.is_empty() {
         parts.push(format!("Stack: {}.", profile.stack.join(", ")));
+    }
+    if let Some(services) = services {
+        parts.push(services.to_string());
     }
 
     let enabled: Vec<ProjectCheck> = ordered_checks(checks)
@@ -188,7 +193,8 @@ pub fn load_for(
             }));
         }
     }
-    let context = project_context(&profile, &checks, verify_on);
+    let services = crate::services::prompt_line(Path::new(root));
+    let context = project_context(&profile, services.as_deref(), &checks, verify_on);
     (checks, context)
 }
 
@@ -759,7 +765,7 @@ mod tests {
             "{detected_only:?}"
         );
         assert_eq!(
-            project_context(&profile, &detected_only, true),
+            project_context(&profile, None, &detected_only, true),
             "## Project\n\nStack: Rust.\n\nThe project's instructions for agents (AGENTS.md); follow them:\n\nBe nice."
         );
 
@@ -770,7 +776,7 @@ mod tests {
             { "kind": "build", "command": "cargo build", "enabled": false },
         ] });
         let checks = effective_checks(&profile, &turned_on);
-        let text = project_context(&profile, &checks, true);
+        let text = project_context(&profile, None, &checks, true);
         assert!(text.starts_with("## Project\n\nStack: Rust.\n\nChecks: when you finish"));
         assert!(text.contains("- Type check: `cargo check`\n- Tests: `cargo test`"));
         assert!(!text.contains("cargo build"));
@@ -780,7 +786,7 @@ mod tests {
             "{text}"
         );
         // Verification off: checks are offered as commands, no no-verify-step line.
-        let off = project_context(&profile, &checks, false);
+        let off = project_context(&profile, None, &checks, false);
         assert!(
             off.contains("Checks you can run with bash after changing code:"),
             "{off}"
@@ -799,7 +805,19 @@ mod tests {
                 enabled: false
             }]
         );
-        assert_eq!(project_context(&ProjectProfile::default(), &[], true), "");
+        assert_eq!(
+            project_context(&ProjectProfile::default(), None, &[], true),
+            ""
+        );
+        // The services' line comes after the stack, before the checks.
+        let profile = ProjectProfile {
+            stack: vec!["TypeScript".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            project_context(&profile, Some("Services (compose.yaml): `db`."), &[], true),
+            "## Project\n\nStack: TypeScript.\n\nServices (compose.yaml): `db`."
+        );
     }
 
     #[test]

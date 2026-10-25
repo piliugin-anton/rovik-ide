@@ -43,6 +43,7 @@ mod reasoning_echo;
 pub mod release_assets;
 mod repo_map;
 pub mod rt;
+pub mod services;
 pub mod staging;
 mod system_one;
 /// Test support for this crate's tests and other crates' (the `testing`
