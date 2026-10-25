@@ -21,7 +21,7 @@
 //! an interpreter's command line, by the files it names in quotes): what
 //! runs at all is the allowed commands' and the approvals' to decide.
 
-use super::permissions::{self, ParsedCommand, Shell};
+use super::permissions::{self, is_assignment, HereDoc, ParsedCommand, Shell, KEYWORDS};
 use super::tools;
 use crate::restricted_files::{
     looks_secret, reason, refusal, skipped_folder, Op, RestrictedFiles, SETTINGS_PAGE,
@@ -328,10 +328,15 @@ impl Check<'_> {
             }
             let (words, from_input) = past_keywords(segment);
             if depth < MAX_DEPTH {
+                // A shell's input is its script too (`bash <<< "…"`).
+                let shell = words.first().map(|w| permissions::program_name(w));
+                let input = input_of(&parsed, at)
+                    .filter(|_| shell.is_some_and(|s| permissions::SHELLS.contains(&s.as_str())));
                 let inner = permissions::inner_scripts(words)
-                    .iter()
-                    .chain(&eval_script(words))
-                    .find_map(|script| self.command(script, Shell::Posix, &place.cwd, depth + 1));
+                    .into_iter()
+                    .chain(eval_script(words))
+                    .chain(input.map(str::to_string))
+                    .find_map(|script| self.command(&script, Shell::Posix, &place.cwd, depth + 1));
                 if inner.is_some() {
                     return inner;
                 }
@@ -357,6 +362,7 @@ impl Check<'_> {
                 args,
                 piped,
                 from_input,
+                input: input_of(&parsed, at),
             };
             if let Some(problem) = self.program(&run) {
                 return Some(problem);
@@ -396,7 +402,14 @@ impl Check<'_> {
         if run.from_input {
             args.push(INPUT.to_string());
         }
-        let effects = effects(run.program, &args, cwd, run.piped, &self.rg_config);
+        let effects = effects(
+            run.program,
+            &args,
+            cwd,
+            run.piped,
+            &self.rg_config,
+            run.input,
+        );
         let named = |files: &[String], op: Op| {
             files
                 .iter()
@@ -449,7 +462,8 @@ impl Check<'_> {
     /// lists them in the command would list a restricted file (`find`'s
     /// files, a search's), or one of its words names one (`for f in .env*`).
     fn vague(&self, cwd: &Path, op: Op) -> Option<String> {
-        let segments = loose_segments(self.whole);
+        let (code, texts) = permissions::split_here_text(self.whole);
+        let segments = loose_words(&code);
         for words in &segments {
             for (at, word) in words.iter().enumerate() {
                 let args = &words[at + 1..];
@@ -471,10 +485,14 @@ impl Check<'_> {
                 }
             }
         }
+        // What a here-document gives `xargs` or `read` (`xargs cat <<'EOF'`).
+        let given = texts.iter().flat_map(|text| permissions::split_words(text));
         let file = segments
             .iter()
             .flatten()
-            .find_map(|w| self.blocked(cwd, w, op))?;
+            .cloned()
+            .chain(given)
+            .find_map(|w| self.blocked(cwd, &w, op))?;
         Some(refused(self.whole, op, &file))
     }
 
@@ -788,6 +806,8 @@ struct Run<'a> {
     piped: bool,
     /// Its input's words are its arguments too (`xargs cat`).
     from_input: bool,
+    /// What the command gives it as its input (a here-document's lines).
+    input: Option<&'a str>,
 }
 
 /// What a walk for restricted files came to.
@@ -820,6 +840,29 @@ fn prints_from(file: &Path, regexes: Option<&[Regex]>) -> bool {
     };
     let text = String::from_utf8_lossy(&bytes);
     regexes.iter().any(|r| r.is_match(&text))
+}
+
+/// What the command gives its segment `at` as its input: the last
+/// here-document or here-string it's given, or, piped from a `cat` given
+/// one, that one's (`cat <<'PY' | python3`).
+fn input_of(parsed: &ParsedCommand, at: usize) -> Option<&str> {
+    let given = |at: usize| {
+        parsed
+            .inputs
+            .iter()
+            .rev()
+            .find(|input| input.segment == at)
+            .map(|input| input.text.as_str())
+    };
+    given(at).or_else(|| {
+        let before = at.checked_sub(1)?;
+        let cat = parsed.segments[before]
+            .first()
+            .is_some_and(|w| permissions::program_name(w) == "cat");
+        (parsed.piped[before] && cat)
+            .then(|| given(before))
+            .flatten()
+    })
 }
 
 /// The redirect files of the segment `at`: those of `files` whose segment
@@ -1032,6 +1075,7 @@ fn effects(
     cwd: &Path,
     piped: bool,
     rg_config: &[String],
+    input: Option<&str>,
 ) -> Effects {
     let slash = SLASH_PROGRAMS.contains(&program);
     let words = |valued: &[&str]| owned(&Args::split(args, valued, slash).words);
@@ -1075,9 +1119,9 @@ fn effects(
             writes: values_of(args, "of="),
             ..Effects::default()
         },
-        "perl" | "ruby" => script_effects(args),
+        "perl" | "ruby" => script_effects(args, input),
         "python" | "python3" | "py" | "node" | "nodejs" | "bun" | "deno" | "php" => {
-            inline_code_effects(program, args)
+            inline_code_effects(program, args, input)
         }
         "find" => Effects {
             finds: Some(finder(args, cwd, rg_config)),
@@ -1691,12 +1735,16 @@ fn terraform_effects(args: &[String], cwd: &Path) -> Effects {
 }
 
 /// perl and ruby: code given with `-e` (else the first word is the
-/// script) reads the files after it, as `-n` and `-p` do, and `-i` changes
-/// them in place; a file the code names in quotes is read too.
-fn script_effects(args: &[String]) -> Effects {
+/// script; none, or `-`, and the code is their `input`) reads the files
+/// after it, as `-n` and `-p` do, and `-i` changes them in place; a file
+/// the code names in quotes is read too.
+fn script_effects(args: &[String], input: Option<&str>) -> Effects {
     let a = Args::split(args, &["-e", "-E", "-M", "-I", "-r", "-F"], false);
-    let code: Vec<&str> = a.values(&["-e", "-E"]).collect();
+    let mut code: Vec<&str> = a.values(&["-e", "-E"]).collect();
     let skip = usize::from(code.is_empty());
+    if code.is_empty() && a.words.first().is_none_or(|w| *w == "-") {
+        code.extend(input);
+    }
     let files: Vec<String> = owned(&a.words).into_iter().skip(skip).collect();
     let reading = !code.is_empty() || a.has(&["-n", "-p", "-i"]);
     let mut reads = if reading { files.clone() } else { Vec::new() };
@@ -1709,9 +1757,10 @@ fn script_effects(args: &[String]) -> Effects {
 }
 
 /// Code given on an interpreter's command line (`python3 -c '…'`, `node -e
-/// '…'`, `deno eval '…'`, `php -r '…'`): what it reads can't be told, but
-/// a file it names in quotes, it reads (`open('.env')`).
-fn inline_code_effects(program: &str, args: &[String]) -> Effects {
+/// '…'`, `deno eval '…'`, `php -r '…'`), or as its `input` when it's given
+/// no code, module nor script (`python3 - <<'PY'`): what it reads can't be
+/// told, but a file it names in quotes, it reads (`open('.env')`).
+fn inline_code_effects(program: &str, args: &[String], input: Option<&str>) -> Effects {
     let code: Vec<String> = match program {
         "deno" if args.first().is_some_and(|a| a == "eval") => args[1..].to_vec(),
         "deno" => Vec::new(),
@@ -1733,7 +1782,12 @@ fn inline_code_effects(program: &str, args: &[String]) -> Effects {
                 _ => (&["-c"], &["-c", "-m", "-W", "-X"]),
             };
             let a = Args::split(args, valued, false);
-            owned(&a.values(given).collect::<Vec<_>>())
+            let mut code = owned(&a.values(given).collect::<Vec<_>>());
+            let script = a.has(&["-m", "-f"]) || a.words.first().is_some_and(|w| *w != "-");
+            if code.is_empty() && !script {
+                code.extend(input.map(str::to_string));
+            }
+            code
         }
     };
     Effects {
@@ -1998,7 +2052,7 @@ fn exec_effects(
     if appends && !args.iter().any(|a| a.contains("{}")) {
         args.push("{}".to_string());
     }
-    let effects = effects(&program, &args, cwd, false, rg_config);
+    let effects = effects(&program, &args, cwd, false, rg_config, None);
     let found = |word: &String| word.contains("{}");
     let searched = effects.search.iter().flat_map(|s| &s.paths);
     let reads = effects.reads.iter().chain(searched).any(found);
@@ -2280,10 +2334,6 @@ fn is_slash_option(word: &str) -> bool {
 
 /// Words that open or go on with a shell's compound commands, before the
 /// command they run: `if`, `then`, `do`, `{`, `!`…
-const KEYWORDS: &[&str] = &[
-    "if", "then", "elif", "else", "do", "while", "until", "!", "{", "}", "fi", "done", "esac",
-];
-
 /// A segment's words past its shell keywords and the wrappers that only
 /// run the rest (`then sudo cat .env` runs `cat .env`), and whether one of
 /// those is `xargs`, which gives the rest its input's words too.
@@ -2362,9 +2412,14 @@ fn unknown(word: &str) -> bool {
 /// A command's words, by simple command, its quotes and the marks of its
 /// substitutions and redirects taken away: a coarse reading of the words
 /// it runs, for where the parsed one can't say (`for f in $(find …)`).
+/// Not its here-documents' text, which no shell reads.
 fn loose_segments(command: &str) -> Vec<Vec<String>> {
-    command
-        .split(['|', ';', '&', '\n', '(', ')', '`'])
+    loose_words(&permissions::split_here_text(command).0)
+}
+
+/// [`loose_segments`] of text with no here-documents in it.
+fn loose_words(text: &str) -> Vec<Vec<String>> {
+    text.split(['|', ';', '&', '\n', '(', ')', '`'])
         .map(|part| permissions::split_words(&part.replace(['"', '\'', '<', '>'], " ")))
         .filter(|words| !words.is_empty())
         .collect()
@@ -2397,9 +2452,13 @@ struct Inner {
 /// The commands `command` runs inside its words: `$(…)`, `` `…` ``, `<(…)`,
 /// `>(…)` and `( … )`; not in single quotes, where they're text, nor
 /// `$((…))`, which is arithmetic. One in an assignment, or in the words of
-/// a program that sets variables from them ([`LOADERS`]), loads.
+/// a program that sets variables from them ([`LOADERS`]), loads. In a
+/// here-document's lines, those the shell runs as it expands them (not
+/// with a quoted delimiter, where they're text), and all a shell reading
+/// them would.
 fn substitutions(command: &str) -> Vec<Inner> {
     let chars: Vec<char> = command.chars().collect();
+    let docs = permissions::here_docs(&chars);
     let mut found = Vec::new();
     let mut quote: Option<char> = None;
     // The simple command being read: its first word, the word being read,
@@ -2407,6 +2466,18 @@ fn substitutions(command: &str) -> Vec<Inner> {
     let (mut first, mut word, mut words) = (String::new(), String::new(), 0);
     let mut i = 0;
     while i < chars.len() {
+        if let Some(doc) = docs.iter().find(|d| d.body.start == i && !d.script) {
+            if !doc.literal {
+                found.extend(expanded(&chars, doc.body.clone(), &docs));
+            }
+            (i, quote) = (doc.end, None);
+            continue;
+        }
+        // A script's lines are read on as code; its delimiter's line isn't.
+        if let Some(doc) = docs.iter().find(|d| d.script && d.body.end == i) {
+            (i, quote) = (doc.end, None);
+            continue;
+        }
         let c = chars[i];
         let next = chars.get(i + 1).copied();
         if quote == Some('\'') {
@@ -2432,9 +2503,9 @@ fn substitutions(command: &str) -> Vec<Inner> {
         };
         if let Some(start) = opens {
             let end = if c == '`' {
-                closing_backtick(&chars, start)
+                closing_backtick(&chars, start, &docs)
             } else {
-                closing_paren(&chars, start)
+                closing_paren(&chars, start, &docs)
             };
             let loads = c != '('
                 && if words == 0 {
@@ -2454,6 +2525,12 @@ fn substitutions(command: &str) -> Vec<Inner> {
             ('"', None) => quote = Some('"'),
             ('"', Some(_)) => quote = None,
             ('\'', None) => quote = Some('\''),
+            // A comment, to the end of its line.
+            ('#', None) if permissions::starts_comment(&chars, i) => {
+                while chars.get(i + 1).is_some_and(|&c| c != '\n') {
+                    i += 1;
+                }
+            }
             (';' | '&' | '|' | '\n', None) => {
                 first.clear();
                 word.clear();
@@ -2475,21 +2552,60 @@ fn substitutions(command: &str) -> Vec<Inner> {
     found
 }
 
-/// Whether a word starts with an assignment (`KEY=…`).
-fn is_assignment(word: &str) -> bool {
-    word.split_once('=').is_some_and(|(name, _)| {
-        name.starts_with(|c: char| c == '_' || c.is_ascii_alphabetic())
-            && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
-    })
+/// The `$(…)` and `` `…` `` the shell runs in `range`, the lines of a
+/// here-document it expands: their quotes are text.
+fn expanded(chars: &[char], range: std::ops::Range<usize>, docs: &[HereDoc]) -> Vec<Inner> {
+    let chars = &chars[..range.end];
+    let mut found = Vec::new();
+    let mut i = range.start;
+    while i < chars.len() {
+        let (c, next) = (chars[i], chars.get(i + 1).copied());
+        let start = match (c, next) {
+            ('\\', _) => {
+                i += 2;
+                continue;
+            }
+            ('$', Some('(')) if chars.get(i + 2) != Some(&'(') => i + 2,
+            ('`', _) => i + 1,
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        let end = if c == '`' {
+            closing_backtick(chars, start, docs)
+        } else {
+            closing_paren(chars, start, docs)
+        };
+        found.push(Inner {
+            text: chars[start..end].iter().collect(),
+            loads: false,
+        });
+        i = end + 1;
+    }
+    found
 }
 
-/// Where the `)` closing what opens before `start` is: past nested ones and
-/// what's quoted, or the end.
-fn closing_paren(chars: &[char], start: usize) -> usize {
+/// Where a here-document's lines that `i` starts end (or, for a script's,
+/// its delimiter's line): where text to read as code goes on. None: `i`
+/// starts no such lines.
+fn past_text(docs: &[HereDoc], i: usize) -> Option<usize> {
+    docs.iter()
+        .find(|d| (d.body.start == i && !d.script) || (d.script && d.body.end == i))
+        .map(|d| d.end)
+}
+
+/// Where the `)` closing what opens before `start` is: past nested ones,
+/// what's quoted and here-documents' lines, or the end.
+fn closing_paren(chars: &[char], start: usize, docs: &[HereDoc]) -> usize {
     let mut depth = 1;
     let mut quote: Option<char> = None;
     let mut i = start;
     while i < chars.len() {
+        if let Some(end) = past_text(docs, i) {
+            (i, quote) = (end, None);
+            continue;
+        }
         let c = chars[i];
         match (c, quote) {
             ('\\', q) if q != Some('\'') => {
@@ -2498,6 +2614,11 @@ fn closing_paren(chars: &[char], start: usize) -> usize {
             }
             ('\'' | '"', None) => quote = Some(c),
             (c, Some(q)) if c == q => quote = None,
+            ('#', None) if permissions::starts_comment(chars, i) => {
+                while chars.get(i + 1).is_some_and(|&c| c != '\n') {
+                    i += 1;
+                }
+            }
             ('(', None) => depth += 1,
             (')', None) => {
                 depth -= 1;
@@ -2512,10 +2633,15 @@ fn closing_paren(chars: &[char], start: usize) -> usize {
     chars.len()
 }
 
-/// Where the backtick closing one before `start` is, or the end.
-fn closing_backtick(chars: &[char], start: usize) -> usize {
+/// Where the backtick closing one before `start` is, past here-documents'
+/// lines, or the end.
+fn closing_backtick(chars: &[char], start: usize, docs: &[HereDoc]) -> usize {
     let mut i = start;
     while i < chars.len() {
+        if let Some(end) = past_text(docs, i) {
+            i = end;
+            continue;
+        }
         match chars[i] {
             '\\' => i += 2,
             '`' => return i,
@@ -3309,6 +3435,12 @@ mod tests {
                 let _ = command_problem(&words[..n].join(" "), &root, &none());
             }
         }
+        // And every prefix of one with here-documents, quotes and
+        // substitutions in it, cut anywhere.
+        let command = "x=\"$(cat <<'A' | bash\n$(b) `c` \"q\" 'r' (d)\nA\n)\"; cat <<-\"B\" <<C\n\tb\n\tB\n$((1<<2)) $(e <<D)\nd\nD\nC\n# don't <<E\nwc <<< 'f'";
+        for (end, _) in command.char_indices() {
+            let _ = command_problem(&command[..end], &root, &none());
+        }
     }
 
     #[test]
@@ -3579,6 +3711,48 @@ mod tests {
             "python3 -m pytest",
         ] {
             assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn a_here_document_is_text_unless_a_shell_or_an_interpreter_runs_it() {
+        let (_dir, root) = project(&[]);
+        for command in [
+            // Commits and pull requests are written so: the message is text.
+            "git commit -m \"$(cat <<'EOT'\nMove the API key out of .env\n\nInstall dotenv; run `cp .env.example .env`, don't `cat .env`.\nEOT\n)\"",
+            "gh pr create --title \"Env\" --body \"$(cat <<'EOT'\n## Summary\n- `cat .env` no longer needed (#12)\nEOT\n)\"",
+            "git commit -F - <<'EOF'\nType .env's keys, then copy .env over\nEOF",
+            // Files written whole: their lines are text.
+            "cat > scripts/setup.sh <<'EOT'\n#!/bin/sh\ncp .env.example .env\nnpm install\nEOT",
+            "cat > README.md <<'EOT'\n1. `cp .env.example .env`\n2. `source .env && npm start`\nEOT",
+            "cat > scripts/load_env.sh <<'EOF'\nexport $(grep -v '^#' .env | xargs)\necho \"Loaded $NODE_ENV\"\nEOF",
+            "cat > notes.md <<EOF\nYour home is $HOME; .env stays out of git\nEOF",
+            // Another machine's files.
+            "ssh host <<'SH'\ncat .env\nSH",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+        for command in [
+            // The shell runs a substitution in lines it expands.
+            "cat > out.txt <<EOF\n$(cat .env)\nEOF",
+            "cat > out.txt <<EOF\n`cat .env`\nEOF",
+            // A shell runs the lines; an interpreter, the code.
+            "bash <<'EOF'\ncat .env\nEOF",
+            "cat <<'EOF' | sh\ncat .env\nEOF",
+            "python3 - <<'PY'\nprint(open('.env').read())\nPY",
+            "node <<'JS'\nconsole.log(require('fs').readFileSync('.env', 'utf8'))\nJS",
+            "cat <<'PY' | python3\nprint(open('.env').read())\nPY",
+            "ruby <<'RB'\nputs File.read('.env')\nRB",
+            // What it gives xargs, it names.
+            "xargs cat <<'EOF'\n.env\nEOF",
+            "bash <<< 'cat .env'",
+            // A comment hides nothing after it.
+            "# don't print it\ncat .env",
+            "ls # it's here\ncat .env",
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains("would read .env,"), "{command}: {refused}");
         }
     }
 

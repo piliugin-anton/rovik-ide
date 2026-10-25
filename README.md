@@ -1065,7 +1065,10 @@ for an approval, with the reason and what to do instead
   checked. Files a command's words don't name are judged by what lists
   them (`for f in .env*; do cat "$f"; done`, `find … -exec cat {} +`,
   `… | xargs cat`), and code given to an interpreter
-  (`python3 -c "open('.env')"`) by the files it names. Loading one into
+  (`python3 -c "open('.env')"`) by the files it names. A here-document's
+  lines are text (a commit message, a file written whole), but not the
+  `$(…)` the shell runs in them, nor lines a shell (`bash <<'EOF'`) or
+  an interpreter (`python3 - <<'PY'`) runs. Loading one into
   the environment (`source .env`) is using it, unless the command prints
   the variables (`echo $API_KEY`, `env`). A program that only uses one
   runs (`node --env-file=.env`), as does a script of the project's:

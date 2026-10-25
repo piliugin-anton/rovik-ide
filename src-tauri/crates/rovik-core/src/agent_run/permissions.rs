@@ -13,6 +13,7 @@
 //! type is the protocol's (rovik-protocol).
 
 use regex::Regex;
+use std::ops::Range;
 use std::sync::LazyLock;
 
 pub use rovik_protocol::permissions::{
@@ -56,6 +57,18 @@ pub struct ParsedCommand {
     /// For each segment: its output goes into the next one (`|`, `|&`; not
     /// `||`), in one pipeline.
     pub piped: Vec<bool>,
+    /// Text the command gives its segments as their input: the lines of
+    /// here-documents no shell reads (`cat <<'EOF'`; a shell's are its
+    /// segments, [`HereDoc::script`]), and here-strings (`<<< "…"`).
+    pub inputs: Vec<Input>,
+}
+
+/// Text a command gives one of its segments as its input.
+#[derive(Debug, PartialEq)]
+pub struct Input {
+    /// The segment it's the input of: its index in `segments`.
+    pub segment: usize,
+    pub text: String,
 }
 
 impl ParsedCommand {
@@ -169,9 +182,33 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
     let mut reads_in = Vec::new();
     let mut opaque = false;
     let mut reads_from = Vec::new();
+    let mut inputs = Vec::new();
+    // cmd.exe has no here-documents.
+    let docs = match shell {
+        Shell::Posix => here_docs(&chars),
+        Shell::Cmd => Vec::new(),
+    };
+    // The delimiter lines of the here-documents read as commands: where
+    // each starts, and where the command goes on past it.
+    let mut delimiters: Vec<(usize, usize)> = Vec::new();
 
     let mut i = 0;
     while i < chars.len() {
+        // A here-document's lines are its command's input, not commands,
+        // unless a shell reads them (but the `$(…)` in them run).
+        if let Some(doc) = docs.iter().find(|d| d.body.start == i) {
+            if doc.script && !doc.nested && quote.is_none() {
+                delimiters.push((doc.body.end, doc.end));
+            } else {
+                opaque |= !doc.literal && runs_commands(&chars[doc.body.clone()]);
+                i = doc.end;
+                continue;
+            }
+        }
+        if let Some(&(_, end)) = delimiters.iter().find(|(start, _)| *start == i) {
+            i = end;
+            continue;
+        }
         let c = chars[i];
         let next = chars.get(i + 1).copied();
 
@@ -216,6 +253,14 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
                 i += 2;
                 continue;
             }
+        }
+        // A comment, to the end of its line: not run.
+        if shell == Shell::Posix && c == '#' && !s.in_word {
+            while chars.get(i + 1).is_some_and(|&c| c != '\n') {
+                i += 1;
+            }
+            i += 1;
+            continue;
         }
         let subshell = match shell {
             Shell::Posix => {
@@ -288,8 +333,18 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
         if c == '<' {
             // Input redirection: not a word of the command; the file is
             // kept apart (it's read: round 2, P2.5). `<<` and `<<<` are
-            // text, not a file.
+            // text, not a file: the command's input.
             s.end_word();
+            if let Some(doc) = docs.iter().find(|d| d.at == i) {
+                if !doc.nested && !doc.script {
+                    inputs.push(Input {
+                        segment: s.segments.len(),
+                        text: chars[doc.body.clone()].iter().collect(),
+                    });
+                }
+                i = doc.after;
+                continue;
+            }
             let text = next == Some('<');
             let mut j = i + 1;
             while chars.get(j) == Some(&'<') {
@@ -297,6 +352,17 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
             }
             while matches!(chars.get(j), Some(' ' | '\t')) {
                 j += 1;
+            }
+            if shell == Shell::Posix && j > i + 2 && chars[i + 2] == '<' {
+                // A here-string: its word, as the shell reads it.
+                let (word, end, _) = shell_word(&chars, j);
+                opaque |= runs_commands(&chars[j..end]);
+                inputs.push(Input {
+                    segment: s.segments.len(),
+                    text: word,
+                });
+                i = end;
+                continue;
             }
             let mut target = String::new();
             while j < chars.len() && !is_target_end(chars[j]) {
@@ -341,7 +407,375 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
         writes_in,
         reads_in,
         piped: s.piped,
+        inputs,
     }
+}
+
+/// Programs that run the lines they read as commands: a here-document one
+/// reads is a script (`bash <<'EOF'`, `cat <<'EOF' | sh`).
+pub(super) const SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "ksh", "ash", "mksh", "yash", "fish", "source", ".",
+];
+
+/// Shell keywords that come before a command (`then cat x`).
+pub(super) const KEYWORDS: &[&str] = &[
+    "if", "then", "elif", "else", "do", "while", "until", "!", "{", "}", "fi", "done", "esac",
+];
+
+/// A here-document: lines after its command's line that the shell gives
+/// the command as its input (`cat <<'EOF'` … `EOF`), which it doesn't run.
+/// Places are indexes into the command's chars.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HereDoc {
+    /// Where its `<<` is.
+    pub at: usize,
+    /// Past its delimiter's word: where its command's line goes on.
+    pub after: usize,
+    /// Its lines: from the line after its command's to its delimiter's.
+    pub body: Range<usize>,
+    /// Past its delimiter's line: where the command goes on.
+    pub end: usize,
+    /// Its delimiter is quoted (`<<'EOF'`, `<<"EOF"`, `<<\EOF`): its lines
+    /// are taken as written. Otherwise the shell runs the `$(…)` and
+    /// `` `…` `` in them, and their quotes are text.
+    pub literal: bool,
+    /// A shell may read it ([`SHELLS`]): its lines are commands.
+    pub script: bool,
+    /// It's in a `$(…)` or `` `…` ``: the input of a command in there.
+    pub nested: bool,
+}
+
+/// An `<<` whose lines are still to come.
+struct Pending {
+    at: usize,
+    after: usize,
+    delimiter: Vec<char>,
+    /// `<<-`: the tabs before its lines' text don't count.
+    tabs: bool,
+    literal: bool,
+    /// Where the command it's part of starts: the line's start, or its
+    /// `$(`'s.
+    line: usize,
+    nested: bool,
+}
+
+/// A command's here-documents, as a POSIX shell reads them: each `<<` in
+/// its code (not quoted, nor a shift in `$((…))`), whose lines start on the
+/// line after the one it's on, and end at the line that is its delimiter
+/// (with `<<-`, past the tabs before it) or at the command's end; in
+/// `$(…)`, the delimiter right before its `)` ends them too.
+pub(crate) fn here_docs(chars: &[char]) -> Vec<HereDoc> {
+    /// What the text being read is.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Frame {
+        /// The command's code, or a `` `…` ``'s.
+        Code,
+        Backtick,
+        /// The code of a `$(…)`, `<(…)` or `>(…)`, with the `(`s opened
+        /// in it.
+        Paren(usize),
+        Double,
+        Single,
+        /// `$((…))`, where `<<` shifts, with the `(`s opened in it.
+        Arith(usize),
+    }
+    let mut docs = Vec::new();
+    let mut pending: Vec<Pending> = Vec::new();
+    let mut frames = vec![Frame::Code];
+    let mut line = 0;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        let frame = frames.last().copied().unwrap_or(Frame::Code);
+        let top = frames.len() - 1;
+        // `$(` opens code, `$((` arithmetic; in code and in double quotes.
+        if c == '$' && next == Some('(') && !matches!(frame, Frame::Single) {
+            if chars.get(i + 2) == Some(&'(') {
+                frames.push(Frame::Arith(0));
+                i += 3;
+            } else {
+                frames.push(Frame::Paren(0));
+                i += 2;
+                line = i;
+            }
+            continue;
+        }
+        match frame {
+            Frame::Single => {
+                if c == '\'' {
+                    frames.pop();
+                }
+                i += 1;
+                continue;
+            }
+            Frame::Double => {
+                match c {
+                    '\\' => i += 1,
+                    '"' => {
+                        frames.pop();
+                    }
+                    '`' => {
+                        frames.push(Frame::Backtick);
+                        line = i + 1;
+                    }
+                    _ => {}
+                }
+                i += 1;
+                continue;
+            }
+            Frame::Arith(depth) => {
+                match c {
+                    '(' => frames[top] = Frame::Arith(depth + 1),
+                    ')' if depth > 0 => frames[top] = Frame::Arith(depth - 1),
+                    // Its `))`.
+                    ')' => {
+                        frames.pop();
+                        i += 1;
+                    }
+                    _ => {}
+                }
+                i += 1;
+                continue;
+            }
+            Frame::Code | Frame::Backtick | Frame::Paren(_) => {}
+        }
+        match c {
+            '\\' => i += 1,
+            '\'' => frames.push(Frame::Single),
+            '"' => frames.push(Frame::Double),
+            '`' if frame == Frame::Backtick => {
+                frames.pop();
+            }
+            '`' => {
+                frames.push(Frame::Backtick);
+                line = i + 1;
+            }
+            '<' | '>' if next == Some('(') => {
+                frames.push(Frame::Paren(0));
+                i += 2;
+                line = i;
+                continue;
+            }
+            // `((…))`: arithmetic too.
+            '(' if next == Some('(') => {
+                frames.push(Frame::Arith(0));
+                i += 2;
+                continue;
+            }
+            '(' => {
+                if let Frame::Paren(depth) = frame {
+                    frames[top] = Frame::Paren(depth + 1);
+                }
+            }
+            ')' => match frame {
+                Frame::Paren(0) => {
+                    frames.pop();
+                }
+                Frame::Paren(depth) => frames[top] = Frame::Paren(depth - 1),
+                _ => {}
+            },
+            // A comment, to the end of its line.
+            '#' if starts_comment(chars, i) => {
+                while chars.get(i + 1).is_some_and(|&c| c != '\n') {
+                    i += 1;
+                }
+            }
+            '<' if next == Some('<') && chars.get(i + 2) == Some(&'<') => i += 2,
+            '<' if next == Some('<') => {
+                let mut j = i + 2;
+                let tabs = chars.get(j) == Some(&'-');
+                if tabs {
+                    j += 1;
+                }
+                while matches!(chars.get(j), Some(' ' | '\t')) {
+                    j += 1;
+                }
+                let (delimiter, after, literal) = shell_word(chars, j);
+                if !delimiter.is_empty() {
+                    pending.push(Pending {
+                        at: i,
+                        after,
+                        delimiter: delimiter.chars().collect(),
+                        tabs,
+                        literal,
+                        line,
+                        nested: frames.len() > 1,
+                    });
+                }
+                i = after.max(i + 2);
+                continue;
+            }
+            '\n' => {
+                let in_paren = matches!(frame, Frame::Paren(_));
+                i = read_bodies(chars, i, &mut pending, &mut docs, in_paren);
+                line = i;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    // An `<<` on the last line: its lines are none.
+    read_bodies(chars, chars.len(), &mut pending, &mut docs, false);
+    docs
+}
+
+/// Reads the lines of the `pending` here-documents, in order, after the
+/// line that ends at `newline`: each ends at its delimiter's line. Returns
+/// where the command goes on.
+fn read_bodies(
+    chars: &[char],
+    newline: usize,
+    pending: &mut Vec<Pending>,
+    docs: &mut Vec<HereDoc>,
+    in_paren: bool,
+) -> usize {
+    let mut i = (newline + 1).min(chars.len());
+    for doc in pending.drain(..) {
+        let start = i;
+        let (body_end, end) = loop {
+            if i >= chars.len() {
+                break (chars.len(), chars.len());
+            }
+            let line_end = chars[i..]
+                .iter()
+                .position(|&c| c == '\n')
+                .map_or(chars.len(), |n| i + n);
+            let line = &chars[i..line_end];
+            let tabs = if doc.tabs {
+                line.iter().take_while(|&&c| c == '\t').count()
+            } else {
+                0
+            };
+            let text = &line[tabs..];
+            if text == doc.delimiter.as_slice() {
+                break (i, (line_end + 1).min(chars.len()));
+            }
+            // `EOF)`: the `)` closes the `$(` it's in.
+            if in_paren
+                && text.starts_with(&doc.delimiter)
+                && text.get(doc.delimiter.len()) == Some(&')')
+            {
+                break (i, i + tabs + doc.delimiter.len());
+            }
+            i = line_end + 1;
+        };
+        let line: String = chars[doc.line.min(newline)..newline].iter().collect();
+        docs.push(HereDoc {
+            at: doc.at,
+            after: doc.after,
+            body: start..body_end,
+            end,
+            literal: doc.literal,
+            script: feeds_a_shell(&line),
+            nested: doc.nested,
+        });
+        i = end;
+    }
+    i.max((newline + 1).min(chars.len()))
+}
+
+/// Whether one of a line's commands is a shell ([`SHELLS`]), past the
+/// assignments, keywords and wrappers before it: one may run the lines of
+/// a here-document on that line.
+fn feeds_a_shell(line: &str) -> bool {
+    line.split(['|', ';', '&', '(', ')', '`']).any(|part| {
+        let words: Vec<String> = part
+            .split_whitespace()
+            .map(|w| w.trim_matches(['"', '\'']).to_string())
+            .skip_while(|w| is_assignment(w) || KEYWORDS.contains(&w.as_str()))
+            .collect();
+        unwrap_wrappers(&words)
+            .first()
+            .is_some_and(|w| SHELLS.contains(&program_name(w).as_str()))
+    })
+}
+
+/// The word at `from`, as the shell reads it (`'EOF'`, `"E O F"`, `\EOF`,
+/// `EOF`): its text without its quotes, where it ends, and whether any of
+/// it is quoted.
+fn shell_word(chars: &[char], from: usize) -> (String, usize, bool) {
+    let (mut word, mut quoted, mut i) = (String::new(), false, from);
+    while let Some(&c) = chars.get(i) {
+        match c {
+            '\'' | '"' => {
+                quoted = true;
+                i += 1;
+                while let Some(&d) = chars.get(i) {
+                    i += 1;
+                    if d == c {
+                        break;
+                    }
+                    let escaped = chars
+                        .get(i)
+                        .filter(|&&e| matches!(e, '"' | '\\' | '$' | '`'));
+                    match escaped {
+                        Some(&e) if c == '"' && d == '\\' => {
+                            word.push(e);
+                            i += 1;
+                        }
+                        _ => word.push(d),
+                    }
+                }
+            }
+            '\\' => {
+                quoted = true;
+                word.extend(chars.get(i + 1));
+                i += 2;
+            }
+            c if c.is_whitespace() || ";&|<>()".contains(c) => break,
+            c => {
+                word.push(c);
+                i += 1;
+            }
+        }
+    }
+    (word, i.min(chars.len()), quoted)
+}
+
+/// Whether the `#` at `i` starts a comment: it starts a word.
+pub(super) fn starts_comment(chars: &[char], i: usize) -> bool {
+    chars[i] == '#' && (i == 0 || chars[i - 1].is_whitespace() || ";&|()".contains(chars[i - 1]))
+}
+
+/// Whether text the shell expands runs commands in it: `$(…)`, `` `…` ``.
+fn runs_commands(text: &[char]) -> bool {
+    text.iter()
+        .enumerate()
+        .any(|(at, &c)| c == '`' || (c == '$' && text.get(at + 1) == Some(&'(')))
+}
+
+/// `command` without the lines of its here-documents that aren't commands
+/// (the ones no shell reads), nor any delimiter's line; and those lines.
+pub(crate) fn split_here_text(command: &str) -> (String, Vec<String>) {
+    let chars: Vec<char> = command.chars().collect();
+    let docs = here_docs(&chars);
+    if docs.is_empty() {
+        return (command.to_string(), Vec::new());
+    }
+    let (mut code, mut texts) = (String::new(), Vec::new());
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some(doc) = docs.iter().find(|d| d.body.start == i && !d.script) {
+            texts.push(chars[doc.body.clone()].iter().collect());
+            i = doc.end;
+        } else if let Some(doc) = docs.iter().find(|d| d.script && d.body.end == i) {
+            i = doc.end;
+        } else {
+            code.push(chars[i]);
+            i += 1;
+        }
+    }
+    (code, texts)
+}
+
+/// Whether a word starts with an assignment (`KEY=…`).
+pub(super) fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.starts_with(|c: char| c == '_' || c.is_ascii_alphabetic())
+            && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+    })
 }
 
 /// Variables a leading `NAME=value` may set without changing which program
@@ -907,7 +1341,11 @@ pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
             < 2;
     }
     if cmd == "awk" {
-        return !rest.iter().any(|a| AWK_WRITES.is_match(a));
+        // `-f prog`: a program it reads (from a here-document too) may
+        // run or write anything.
+        return !rest
+            .iter()
+            .any(|a| AWK_WRITES.is_match(a) || a.starts_with("--file") || a.starts_with("-f"));
     }
     if cmd == "tree" {
         // `tree -o FILE` writes the listing to FILE.
@@ -1440,7 +1878,8 @@ mod tests {
 
     /// A reader told to write, or to run a program, isn't read-only: rg
     /// runs `--pre` over every file, git's readers write `--output`, tree
-    /// writes `-o`, and awk's pipe runs what it names.
+    /// writes `-o`, awk's pipe runs what it names, and a program awk reads
+    /// (`-f`) may do either.
     #[test]
     fn readers_that_write_or_run_programs_are_not_read_only() {
         for (command, read_only) in [
@@ -1455,6 +1894,13 @@ mod tests {
             ("tree -L 2 src", true),
             (r#"awk '{print "rm -rf src" | "sh"}' f"#, false),
             (r#"awk '{print $1}' f"#, true),
+            ("awk -F, '{print $1}' f", true),
+            ("awk -f prog.awk f", false),
+            (
+                "awk -f - f <<'EOF'\nBEGIN { system(\"rm -rf src\") }\nEOF",
+                false,
+            ),
+            ("awk --file=prog.awk f", false),
         ] {
             let parsed = parse_command(command);
             assert_eq!(
@@ -2226,5 +2672,65 @@ mod tests {
         let parsed = parse_command("a | b || c && d |& e; f");
         assert_eq!(parsed.segments.len(), 6);
         assert_eq!(parsed.piped, [true, false, false, true, false, false]);
+    }
+
+    #[test]
+    fn a_here_documents_lines_are_its_commands_input_not_commands() {
+        let p = parse_command(
+            "cat > scripts/setup.sh <<'EOT'\n#!/bin/sh\ncp .env.example .env; rm -rf x\nEOT\nnpm test",
+        );
+        assert_eq!(p.segments, vec![words(&["cat"]), words(&["npm", "test"])]);
+        assert_eq!(p.writes_to, ["scripts/setup.sh"]);
+        let text = "#!/bin/sh\ncp .env.example .env; rm -rf x\n".to_string();
+        assert_eq!(p.inputs, [Input { segment: 0, text }]);
+        assert!(!p.opaque);
+        // A commit message in a substitution: its quotes, parens and
+        // backticks are text, and the command goes on after it.
+        let p = parse_command(
+            "git commit -m \"$(cat <<'EOT'\nSay \"hi\" (#12), don't `cat .env`\nEOT\n)\" && git push",
+        );
+        assert_eq!(p.segments.len(), 2);
+        assert_eq!(p.segments[1], words(&["git", "push"]));
+        // `<<-` leaves out the tabs before the delimiter; two documents
+        // come one after the other.
+        assert_eq!(
+            parse_command("cat <<-EOF\n\tx\n\tEOF\ncat <<A <<B\na\nA\nb\nB\nls").segments,
+            vec![words(&["cat"]), words(&["cat"]), words(&["ls"])]
+        );
+        // The shell runs the substitutions in lines it expands, not in
+        // quoted ones.
+        assert!(parse_command("cat <<EOF\n$(rm -rf x)\nEOF").opaque);
+        assert!(parse_command("cat <<EOF\n`rm -rf x`\nEOF").opaque);
+        assert!(!parse_command("cat <<'EOF'\n$(rm -rf x)\nEOF").opaque);
+        // A shift isn't one; a here-string is input too; a comment isn't run.
+        assert!(parse_command("echo $((1 << 2)) && ((x <<= 1))")
+            .inputs
+            .is_empty());
+        assert_eq!(parse_command("echo $((1 << 2)); ls").segments.len(), 2);
+        let text = "a b".to_string();
+        assert_eq!(
+            parse_command("wc -w <<< \"a b\"").inputs,
+            [Input { segment: 0, text }]
+        );
+        assert_eq!(
+            parse_command("# don't\nls # it's ok\npwd").segments,
+            vec![words(&["ls"]), words(&["pwd"])]
+        );
+    }
+
+    #[test]
+    fn a_here_document_a_shell_reads_is_commands() {
+        for command in [
+            "bash <<'EOF'\nrm -rf src\nEOF",
+            "cat <<'EOF' | sudo sh\nrm -rf src\nEOF",
+            "FOO=1 bash -s <<EOF\nrm -rf src\nEOF",
+        ] {
+            let p = parse_command(command);
+            let rm = words(&["rm", "-rf", "src"]);
+            assert!(p.segments.contains(&rm), "{command}: {:?}", p.segments);
+            assert!(!p.segments.contains(&words(&["EOF"])), "{command}");
+            assert!(command_modifies_files(command), "{command}");
+        }
+        assert!(!command_modifies_files("cat <<'EOF'\nrm -rf src\nEOF"));
     }
 }
