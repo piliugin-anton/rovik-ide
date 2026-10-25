@@ -69,6 +69,18 @@ fn rejected(text: impl Into<String>) -> Authorized {
     }
 }
 
+/// A restricted-file check, off the async threads: a command's may go
+/// through the folders it searches. A check that fails refuses the call.
+async fn checked_off_thread(
+    check: impl FnOnce() -> Option<String> + Send + 'static,
+) -> Option<String> {
+    crate::rt::spawn_blocking(check).await.unwrap_or_else(|e| {
+        Some(format!(
+            "Error: this call couldn't be checked against the restricted files ({e}), so it didn't run."
+        ))
+    })
+}
+
 /// How a call ran: as which tool, with which arguments (an approval may
 /// have changed both), and the file it writes.
 struct Ran {
@@ -307,16 +319,17 @@ impl Run {
     }
 
     /// Why a call may not run, when it would read or change one of the
-    /// project's restricted files (restricted.rs). Off the async threads: a
-    /// command's check may go through the folders it searches. A check that
-    /// fails refuses the call.
+    /// project's restricted files (restricted.rs).
     async fn restricted_problem(&self, name: &str, args: Map<String, Value>) -> Option<String> {
-        self.restricted_problem_in(name, args, None).await
+        let root = self.root.clone()?;
+        let (name, restricted) = (name.to_string(), self.restricted.clone());
+        checked_off_thread(move || super::restricted::problem(&name, &args, &root, &restricted))
+            .await
     }
 
-    /// [`Self::restricted_problem`] for a call whose command runs in `cwd`
-    /// (a harness's shell's folder), or in the project's.
-    async fn restricted_problem_in(
+    /// [`Self::restricted_problem`] for a harness's call, whose command its
+    /// bash runs in `cwd` (its shell's folder), or in the project's.
+    async fn harness_restricted_problem(
         &self,
         name: &str,
         args: Map<String, Value>,
@@ -325,15 +338,10 @@ impl Run {
         let root = self.root.clone()?;
         let cwd = cwd.unwrap_or_else(|| root.clone());
         let (name, restricted) = (name.to_string(), self.restricted.clone());
-        crate::rt::spawn_blocking(move || {
-            super::restricted::problem_in(&name, &args, &root, &cwd, &restricted)
+        checked_off_thread(move || {
+            super::restricted::harness_problem_in(&name, &args, &root, &cwd, &restricted)
         })
         .await
-        .unwrap_or_else(|e| {
-            Some(format!(
-                "Error: this call couldn't be checked against the restricted files ({e}), so it didn't run."
-            ))
-        })
     }
 
     /// A command that names a server's own folder: it waits for the user,
@@ -1489,7 +1497,9 @@ impl Run {
         let command = match check.call {
             // Its own file tools: only what they may do with files.
             HarnessCall::Tool { name, args } => {
-                let refused = self.restricted_problem_in(&name, args, check.cwd).await;
+                let refused = self
+                    .harness_restricted_problem(&name, args, check.cwd)
+                    .await;
                 let _ = check.reply.send(match refused {
                     Some(reason) => CommandAnswer::Deny(reason),
                     None => CommandAnswer::Note(None),
@@ -1501,7 +1511,10 @@ impl Run {
         if check.failed.is_none() {
             let args = json!({ "command": command });
             let args = args.as_object().cloned().unwrap_or_default();
-            if let Some(reason) = self.restricted_problem_in("bash", args, check.cwd).await {
+            if let Some(reason) = self
+                .harness_restricted_problem("bash", args, check.cwd)
+                .await
+            {
                 let _ = check.reply.send(CommandAnswer::Deny(reason));
                 return;
             }

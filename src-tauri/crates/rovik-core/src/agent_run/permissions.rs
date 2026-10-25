@@ -2731,6 +2731,9 @@ mod tests {
             assert!(!p.segments.contains(&words(&["EOF"])), "{command}");
             assert!(command_modifies_files(command), "{command}");
         }
-        assert!(!command_modifies_files("cat <<'EOF'\nrm -rf src\nEOF"));
+        // cmd.exe, which runs commands on Windows too, has no here-documents:
+        // it runs the lines.
+        let text = "cat <<'EOF'\nrm -rf src\nEOF";
+        assert_eq!(command_modifies_files(text), cfg!(windows));
     }
 }

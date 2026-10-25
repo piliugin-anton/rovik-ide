@@ -220,17 +220,31 @@ pub fn problem(
     root: &str,
     restricted: &RestrictedFiles,
 ) -> Option<String> {
-    problem_in(name, args, root, root, restricted)
+    problem_read(name, args, root, root, restricted, Shell::readings())
 }
 
-/// [`problem`] for a call whose command runs in `cwd`, which may not be
-/// the project's folder (a harness's shell stays where it went).
-pub fn problem_in(
+/// [`problem`] for a call of a harness's (Claude Code's), whose command
+/// runs in `cwd`, where its shell went, which may not be the project's
+/// folder. Its shell is bash (Git Bash on Windows): a command is read as
+/// bash reads it, not as cmd.exe does too.
+pub fn harness_problem_in(
     name: &str,
     args: &Map<String, Value>,
     root: &str,
     cwd: &str,
     restricted: &RestrictedFiles,
+) -> Option<String> {
+    problem_read(name, args, root, cwd, restricted, &[Shell::Posix])
+}
+
+/// [`problem`], a command read in each of `readings`.
+fn problem_read(
+    name: &str,
+    args: &Map<String, Value>,
+    root: &str,
+    cwd: &str,
+    restricted: &RestrictedFiles,
+    readings: &[Shell],
 ) -> Option<String> {
     let path = permissions::trimmed_str(args.get("path"));
     match name {
@@ -251,7 +265,17 @@ pub fn problem_in(
                 "Error: {file} is a restricted file: the agent may not read it, so it can't change part of it, which takes its text. Write it whole only if replacing all of it is what the user asked; otherwise tell them what to change in it. They can allow reading it in {SETTINGS_PAGE}."
             ))
         }
-        "bash" => command_problem_in(args.get("command")?.as_str()?, root, cwd, restricted),
+        "bash" => {
+            let command = args.get("command")?.as_str()?;
+            judged_by(
+                command,
+                root,
+                cwd,
+                restricted,
+                readings,
+                Instant::now() + CHECK_TIME,
+            )
+        }
         _ => None,
     }
 }
@@ -271,15 +295,18 @@ pub fn command_problem_in(
     cwd: &str,
     restricted: &RestrictedFiles,
 ) -> Option<String> {
-    judged_by(command, root, cwd, restricted, Instant::now() + CHECK_TIME)
+    let deadline = Instant::now() + CHECK_TIME;
+    judged_by(command, root, cwd, restricted, Shell::readings(), deadline)
 }
 
-/// [`command_problem_in`], refused as too slow to check past `deadline`.
+/// [`command_problem_in`], read in each of `readings`, and refused as too
+/// slow to check past `deadline`.
 fn judged_by(
     command: &str,
     root: &str,
     cwd: &str,
     restricted: &RestrictedFiles,
+    readings: &[Shell],
     deadline: Instant,
 ) -> Option<String> {
     let check = Check {
@@ -290,7 +317,7 @@ fn judged_by(
         deadline,
         vague_found: RefCell::default(),
     };
-    Shell::readings()
+    readings
         .iter()
         .find_map(|&shell| check.command(command, shell, Path::new(cwd), 0))
 }
@@ -3824,8 +3851,20 @@ mod tests {
             // Another machine's files.
             "ssh host <<'SH'\ncat .env\nSH",
         ] {
-            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+            // Claude Code's shell is bash on every system (Git Bash on
+            // Windows).
+            let call = args(json!({ "command": command }));
+            let harness = harness_problem_in("bash", &call, &root, &root, &none());
+            assert_eq!(harness, None, "{command}");
+            // The agent's own commands run through cmd.exe on Windows, which
+            // has no here-documents: there their lines are commands.
+            if !cfg!(windows) {
+                assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+            }
         }
+        let typed = "git commit -F - <<'EOF'\nType .env's keys, then copy .env over\nEOF";
+        let refused = command_problem(typed, &root, &none());
+        assert_eq!(refused.is_some(), cfg!(windows), "{refused:?}");
         for command in [
             // The shell runs a substitution in lines it expands.
             "cat > out.txt <<EOF\n$(cat .env)\nEOF",
@@ -4080,8 +4119,15 @@ mod tests {
     fn a_command_not_judged_by_its_deadline_is_refused() {
         let (_dir, root) = project(&[]);
         for command in ["cat README.md", "grep -r useState ."] {
-            let refused = judged_by(command, &root, &root, &none(), Instant::now())
-                .unwrap_or_else(|| panic!("{command} should be refused"));
+            let refused = judged_by(
+                command,
+                &root,
+                &root,
+                &none(),
+                &[Shell::Posix],
+                Instant::now(),
+            )
+            .unwrap_or_else(|| panic!("{command} should be refused"));
             assert!(
                 refused.contains(
                     "for restricted files, which the agent may not read or change, took too long"
