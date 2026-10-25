@@ -10,7 +10,8 @@
 //! - **`ChatOwner`**: whether the daemon has the chat for the computer that
 //!   asks, and from which move, for a move cut short.
 //! - **`ChatRelease`**: the computer took the chat back. Its rows are only
-//!   read from then on, for the computer's last pull, until `ChatForget`.
+//!   read from then on, for the computer's last pull, until `ChatForget`,
+//!   and what its agent left running here stops.
 //! - **`ChatForget`**: the computer has the rows of the chat it took back,
 //!   which go then, with its files. Its worktree stays until the cleanup
 //!   collects it (R01), and so does what `state.json` keeps of it, which a
@@ -228,6 +229,15 @@ pub async fn release(
         .await
         .map_err(internal)?;
     daemon.store.release(dialog_id, store::now_ms());
+    // What its agent left running here (a dev server) stops: the chat runs
+    // on its computer from now on.
+    let id = dialog_id.to_string();
+    let stopped = rovik_core::rt::spawn_blocking(move || {
+        rovik_core::command_tool::background::stop_chat(&id)
+    });
+    if let Err(e) = stopped.await {
+        log::warn!("{dialog_id}'s background commands: {e}");
+    }
     log::info!("{dialog_id} went back to its computer");
     Ok(Response::Bool(true))
 }

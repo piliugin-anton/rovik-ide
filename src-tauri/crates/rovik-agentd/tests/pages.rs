@@ -13,8 +13,8 @@ use common::{start_request, until, write, Daemon, COMPUTER};
 use rovik_client::{ForwardedPort, HostState, Identity, Remote, UnixConnector};
 use rovik_core::chat_db::store::{self, NewDialog};
 use rovik_core::testing::{model, Reply, TestCore};
-use rovik_protocol::Secret;
-use serde_json::json;
+use rovik_protocol::{Request, Response, Secret};
+use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -60,11 +60,13 @@ fn command_result(seen: &Mutex<Vec<serde_json::Value>>) -> Option<String> {
     })
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_page_a_command_opens_opens_in_the_users_browser_through_a_forwarded_port() {
+/// A daemon whose agent's commands run in the user's private network; None
+/// (the test skipped) where python3, the tests' server, is missing or the
+/// daemon can't make the network.
+async fn daemon_with_network() -> Option<Daemon> {
     if !rovik_core::process::on_path("python3") {
         eprintln!("python3 isn't installed: skipped");
-        return;
+        return None;
     }
     let daemon = Daemon::start_with(&["--same-machine"], &[("ROVIK_PRIVATE_NETWORK", "1")]).await;
     let log = until("the daemon's word on its network", || {
@@ -74,32 +76,14 @@ async fn a_page_a_command_opens_opens_in_the_users_browser_through_a_forwarded_p
     .await;
     if !log.contains("the agent's commands run in this user's private network") {
         eprintln!("no private network here: skipped\n{log}");
-        return;
+        return None;
     }
-    let project = daemon.dir.0.join("project");
-    write(&project.join("hello.txt"), "hello from the server\n");
-    let port = free_port();
-    // The server runs until the test is done with it, then goes with the
-    // command.
-    let command = format!(
-        "python3 -m http.server {port} --bind 127.0.0.1 >/dev/null 2>&1 & server=$!; sleep 1; \
-         xdg-open http://localhost:{port}/hello.txt; \
-         for i in $(seq 600); do [ -e done ] && break; sleep 0.1; done; kill $server"
-    );
-    let (url, seen) = model(vec![
-        Reply::Call {
-            id: "c1",
-            name: "bash",
-            args: json!({ "command": command }),
-        },
-        Reply::Text("Done."),
-    ])
-    .await;
-    let mut start = start_request(&url, &project, "Show me the page.".into());
-    if let Some(config) = start.config.as_mut() {
-        config.permissions.allow_any_command = true;
-    }
+    Some(daemon)
+}
 
+/// The app with the chat, its remote connected to the daemon and the chat
+/// placed there, and the pages its browser was asked to open.
+async fn app_connected(daemon: &Daemon) -> (TestCore, Arc<Remote>, Arc<Mutex<Vec<String>>>) {
     let app = TestCore::new();
     let dialog = NewDialog {
         id: CHAT.into(),
@@ -132,6 +116,39 @@ async fn a_page_a_command_opens_opens_in_the_users_browser_through_a_forwarded_p
         (remote.states() == [(HOST.to_string(), HostState::Ready)]).then_some(())
     })
     .await;
+    (app, remote, opened)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_a_command_opens_opens_in_the_users_browser_through_a_forwarded_port() {
+    let Some(daemon) = daemon_with_network().await else {
+        return;
+    };
+    let project = daemon.dir.0.join("project");
+    write(&project.join("hello.txt"), "hello from the server\n");
+    let port = free_port();
+    // The server runs until the test is done with it, then goes with the
+    // command.
+    let command = format!(
+        "python3 -m http.server {port} --bind 127.0.0.1 >/dev/null 2>&1 & server=$!; sleep 1; \
+         xdg-open http://localhost:{port}/hello.txt; \
+         for i in $(seq 600); do [ -e done ] && break; sleep 0.1; done; kill $server"
+    );
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "c1",
+            name: "bash",
+            args: json!({ "command": command }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut start = start_request(&url, &project, "Show me the page.".into());
+    if let Some(config) = start.config.as_mut() {
+        config.permissions.allow_any_command = true;
+    }
+
+    let (app, remote, opened) = app_connected(&daemon).await;
     remote.start(start).await.unwrap();
 
     let mut page = None;
@@ -194,6 +211,141 @@ async fn a_page_a_command_opens_opens_in_the_users_browser_through_a_forwarded_p
         daemon.output()
     );
     // Its server is gone: the port here closes.
+    until("the port closed", || {
+        remote.forwarded_ports(CHAT).is_empty().then_some(())
+    })
+    .await;
+    for at in [port, tab_port] {
+        until("nothing listens here", || {
+            std::net::TcpStream::connect(("127.0.0.1", at))
+                .is_err()
+                .then_some(())
+        })
+        .await;
+    }
+}
+
+/// The result of the model's call `id`, once a request carries it.
+fn result_of(seen: &Mutex<Vec<Value>>, id: &str) -> Option<String> {
+    let requests = seen.lock().unwrap();
+    requests.iter().find_map(|body| {
+        let messages = body["messages"].as_array()?;
+        let result = messages.iter().find(|m| m["tool_call_id"] == id)?;
+        Some(result["content"].as_str()?.to_string())
+    })
+}
+
+/// The first event the app heard that `which` accepts.
+fn heard(app: &TestCore, which: impl Fn(&Value) -> bool) -> Option<Value> {
+    app.events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|e| which(e))
+        .cloned()
+}
+
+/// A server the agent leaves running (bash's `background`) outlives the
+/// call that started it and the run: the page a later command opens is
+/// still served here, through the forwarded port and the tab's, once the
+/// run has ended. The app hears what the chat runs there, and once the
+/// user stops it, the ports here close.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_left_running_stays_forwarded_after_the_run_until_the_user_stops_it() {
+    let Some(daemon) = daemon_with_network().await else {
+        return;
+    };
+    let project = daemon.dir.0.join("project");
+    write(&project.join("hello.txt"), "hello from the server\n");
+    let port = free_port();
+    let server = format!("python3 -u -m http.server {port} --bind 127.0.0.1");
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "c1",
+            name: "bash",
+            args: json!({ "command": server, "background": true }),
+        },
+        Reply::Call {
+            id: "c2",
+            name: "bash",
+            args: json!({ "command": format!("xdg-open http://localhost:{port}/hello.txt") }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut start = start_request(&url, &project, "Run the server and show me.".into());
+    if let Some(config) = start.config.as_mut() {
+        config.permissions.allow_any_command = true;
+    }
+    let (app, remote, opened) = app_connected(&daemon).await;
+    remote.start(start).await.unwrap();
+
+    let page = until("the page opened", || {
+        opened.lock().unwrap().first().cloned()
+    })
+    .await;
+    assert_eq!(page, format!("http://localhost:{port}/hello.txt"));
+    until("the run's end", || heard(&app, |e| e["type"] == "runEnded")).await;
+    // Its start told the agent how it started, and as what.
+    let started = until("the start's result", || result_of(&seen, "c1")).await;
+    assert!(
+        started.contains("\nrunning in the background as bg"),
+        "{started}"
+    );
+    assert!(
+        started.contains(&format!("Serving HTTP on 127.0.0.1 port {port}")),
+        "{started}"
+    );
+    let forwarded = remote.forwarded_ports(CHAT);
+    let [ForwardedPort {
+        port: there,
+        local_port,
+        tab_port: Some(tab_port),
+    }] = forwarded[..]
+    else {
+        panic!("one port forwarded, with a tab port: {forwarded:?}");
+    };
+    assert_eq!((there, local_port), (port, port));
+    // With the commands and the run over, its page is still served here.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for at in [port, tab_port] {
+        let answer = get(at, "/hello.txt").await;
+        assert!(answer.ends_with("hello from the server\n"), "{answer}");
+    }
+
+    // The app heard what the chat runs, and asks it where the chat runs.
+    let told = until("the app told it runs", || {
+        heard(&app, |e| {
+            e["type"] == "backgroundTasks" && e["tasks"].as_array().is_some_and(|t| !t.is_empty())
+        })
+    })
+    .await;
+    assert_eq!(told["dialogId"], CHAT);
+    assert_eq!(told["tasks"][0]["command"], json!(server));
+    let id = told["tasks"][0]["id"].as_str().unwrap().to_string();
+    let request = Request::BackgroundTasks {
+        dialog_id: CHAT.into(),
+    };
+    let Ok(Response::BackgroundTasks(tasks)) = remote.route(CHAT, request).await else {
+        panic!("the chat's host didn't list what it runs");
+    };
+    let ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, [id.as_str()]);
+
+    // The user's Stop, sent where the chat runs.
+    let request = Request::BackgroundStop {
+        dialog_id: CHAT.into(),
+        id,
+    };
+    let stopped = remote.route(CHAT, request).await;
+    assert!(matches!(stopped, Ok(Response::Bool(true))), "{stopped:?}");
+    until("the app told it ended", || {
+        heard(&app, |e| {
+            e["type"] == "backgroundTasks" && e["tasks"].as_array().is_some_and(|t| t.is_empty())
+        })
+    })
+    .await;
+    // Its server is gone: the ports here close.
     until("the port closed", || {
         remote.forwarded_ports(CHAT).is_empty().then_some(())
     })

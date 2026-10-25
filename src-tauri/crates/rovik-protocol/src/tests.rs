@@ -516,6 +516,13 @@ fn every_request_round_trips() {
                 dialog_id: "d".into(),
                 message_id: "m".into(),
             },
+            Request::BackgroundTasks {
+                dialog_id: "d".into(),
+            },
+            Request::BackgroundStop {
+                dialog_id: "d".into(),
+                id: "bg1".into(),
+            },
             Request::WorkloadFocus {
                 dialog_id: Some("d".into()),
             },
@@ -788,6 +795,11 @@ fn every_response_round_trips() {
             Response::AgentStatus(status),
             Response::Checklist(Some(checklist())),
             Response::Checklist(None),
+            Response::BackgroundTasks(vec![crate::events::BackgroundTask {
+                id: "bg1".into(),
+                command: "npm run dev".into(),
+                started_at: 1_761_060_000_000,
+            }]),
             Response::ClmStatus(clm_status()),
             Response::Revisions(vec![RevisionRow {
                 number: 1,

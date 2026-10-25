@@ -125,6 +125,11 @@
       ]
     },
     {
+      "type": "backgroundTasks",
+      "dialogId": "fx-chat",
+      "tasks": [{ "id": "bg1", "command": "npm run dev", "startedAt": 1761060000000 }]
+    },
+    {
       "type": "contextUpdated",
       "dialogId": "fx-chat",
       "status": {

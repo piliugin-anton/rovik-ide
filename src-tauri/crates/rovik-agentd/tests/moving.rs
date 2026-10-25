@@ -12,7 +12,7 @@ use common::app::{landed, App, HOST};
 use common::project::{
     ended, message, start, tool_results, unattended, writes, Setup, CHAT, PROJECT,
 };
-use common::{messages_in, until};
+use common::{commit_all, messages_in, until, write};
 use rovik_client::shadow::Shadow;
 use rovik_client::CloudEvent;
 use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
@@ -21,8 +21,9 @@ use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::moves::{self, CloudMove};
 use rovik_core::chat_db::store::{self, ChatModel, NewMessage};
 use rovik_core::chat_db::{attachments, mirror, sync};
+use rovik_core::command_tool::background;
 use rovik_core::overlay::chats;
-use rovik_core::testing::{model, Reply};
+use rovik_core::testing::{beating, beats, model, Reply};
 use rovik_protocol::packs::snapshot_ref;
 use rovik_protocol::sync::{ChatBundle, Imported, Ownership};
 use rovik_protocol::work::Project;
@@ -1259,4 +1260,39 @@ async fn within_a_while<T>(future: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(Duration::from_secs(20), future)
         .await
         .expect("the move waited: it never ended")
+}
+
+/// What the chat's agent left running here (a dev server, bash's
+/// `background`) stops as the chat moves to the host, which runs it from
+/// then on: a chat without isolation too, which has no view here to go.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_chat_left_running_here_stops_as_it_moves_there() {
+    let mut setup = Setup::new().await;
+    // The server's heartbeat stays out of what the move pushes.
+    write(&setup.project.join(".gitignore"), "beat\n");
+    commit_all(&setup.project);
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let serve = Reply::Call {
+        id: "b1",
+        name: "bash",
+        args: json!({ "command": beating("listening"), "background": true }),
+    };
+    let (url, _) = model(vec![serve, Reply::Text("It runs.")]).await;
+    let mut here = start(&setup, &url, unattended());
+    here.isolate = Some(false);
+    app.remote.start(here).await.unwrap();
+    until("the server here", || {
+        (!background::tasks(CHAT).is_empty()).then_some(())
+    })
+    .await;
+    until("the run's end here", || {
+        (!app.test.core.agents.is_running(CHAT)).then_some(())
+    })
+    .await;
+    assert!(beats(&setup.project), "it runs on after the run");
+
+    moved_there(&app).await;
+    assert!(!beats(&setup.project), "stopped with the move");
+    assert!(background::list(CHAT).is_empty());
 }

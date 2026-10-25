@@ -129,9 +129,10 @@ fn refused_note(port: u16, listening: &[Listener], ends_with_command: bool) -> S
             // started by an earlier command is gone.
             let ended = if ends_with_command {
                 format!(
-                    " A server a command starts in the background ends with that command, so \
-                     start it and test it in the same command, for example `npm run dev > \
-                     dev.log 2>&1 & sleep 5; curl -s localhost:{port}`."
+                    " A server a command starts with `&` ends with that command: leave one \
+                     running with bash's background: true, or start it and test it in the same \
+                     command, for example `npm run dev > dev.log 2>&1 & sleep 5; curl -s \
+                     localhost:{port}`."
                 )
             } else {
                 String::new()
@@ -251,6 +252,7 @@ mod tests {
         let said = note(refused, &[], true, &[]).unwrap();
         assert!(said.contains("Nothing listens on port 3000"), "{said}");
         assert!(said.contains("ends with that command"), "{said}");
+        assert!(said.contains("background: true"), "{said}");
         assert!(said.contains("curl -s localhost:3000"), "{said}");
         // Where what a command leaves running goes on (Landlock), it isn't
         // said to end.

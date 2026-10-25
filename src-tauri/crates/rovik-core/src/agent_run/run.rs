@@ -2120,8 +2120,12 @@ impl Run {
                 spec.prompt(&sub.budget),
                 self.project_context
             ));
-        } else if !kinds.is_empty() && !context_only && !tools.is_empty() {
-            tools.push(subagent::task_schema(&kinds, self.groups_now()));
+        } else {
+            // The lead's commands may run on after its turn: a dev server.
+            tools::offer_background(&mut tools);
+            if !kinds.is_empty() && !context_only && !tools.is_empty() {
+                tools.push(subagent::task_schema(&kinds, self.groups_now()));
+            }
         }
         let subagent_section = if context_only {
             None

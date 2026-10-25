@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checkCommand, DEFAULT_PERMISSIONS, parseCommand } from './permissions';
+import { checkCommand, DEFAULT_PERMISSIONS, describeToolCall, parseCommand } from './permissions';
 
 /*
  * The cases are shared with the backend's tests (agent_run/permissions.rs):
@@ -49,4 +49,24 @@ test('commands parse and are judged as the backend judges them', () => {
     }
     if (!verdict.permitted) assert.ok(verdict.reason.length > 0, `a reason for ${at}`);
   }
+});
+
+test('a command left running, and the tool that reads and stops it, are described as the backend does', () => {
+  assert.equal(
+    describeToolCall('bash', JSON.stringify({ command: 'npm run dev', background: true })),
+    'Run `npm run dev` in the background'
+  );
+  assert.equal(describeToolCall('bash', JSON.stringify({ command: 'npm test' })), 'Run `npm test`');
+  assert.equal(
+    describeToolCall('background', JSON.stringify({ action: 'stop', id: 'bg2' })),
+    'Stop bg2'
+  );
+  assert.equal(
+    describeToolCall('background', JSON.stringify({ action: 'output', id: 'bg2' })),
+    'Read what bg2 printed'
+  );
+  assert.equal(
+    describeToolCall('background', JSON.stringify({ action: 'list' })),
+    'List the commands running in the background'
+  );
 });

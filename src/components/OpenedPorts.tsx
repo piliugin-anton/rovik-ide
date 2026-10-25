@@ -1,18 +1,29 @@
 // OpenedPorts.tsx
 //
-// The ports a remote chat's servers opened on its team server that a page
-// was opened from (D20), in a row of their own under the chat's title row:
-// "Opened ports: 3000 5173". Each is the server's own port, on a button
-// that does what's chosen with its ▾, for every port: open the server's
-// page in a browser tab of the editor (the default; lib/browserTabs.ts),
-// or copy the address on this computer that leads to it, localhost and the
-// port forwarded here, which differs where the server's port was taken on
-// this computer. A port whose pages no tab can show (an https server's)
-// copies. The choice is remembered. Hidden while the chat has none
-// (lib/cloud.ts keeps them).
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+// What a chat has running, in a row of its own under the chat's title row:
+// the commands its agent left running (bash's `background`: a dev server, a
+// watcher; lib/backgroundTasks.ts), and the ports a remote chat's servers
+// opened on its team server that a page was opened from (D20). "Opened
+// ports: 3000 5173" with ports alone; "Background tasks: 2, open ports:
+// 3000" with tasks, which opens into the tasks, how long each has run, and
+// a Stop for each. A port is the server's own, on a button that does
+// what's chosen with its ▾, for every port: open the server's page in a
+// browser tab of the editor (the default; lib/browserTabs.ts), or copy the
+// address on this computer that leads to it, localhost and the port
+// forwarded here, which differs where the server's port was taken on this
+// computer. A port whose pages no tab can show (an https server's) copies.
+// The choice is remembered. Hidden while the chat has neither (lib/cloud.ts
+// keeps the ports).
+import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from 'solid-js';
+import {
+  backgroundTasksOf,
+  loadBackgroundTasks,
+  stopBackgroundTask,
+  type BackgroundTask,
+} from '../lib/backgroundTasks';
 import { openPage } from '../lib/browserTabs';
-import { cloud, type ForwardedPort } from '../lib/cloud';
+import { formatDuration } from '../lib/chatErrors';
+import { cloud, onCaughtUp, type ForwardedPort } from '../lib/cloud';
 import { focusMenuItem, onMenuKey } from '../lib/menuKeys';
 import { GlobeIcon } from './BrowserView';
 
@@ -46,13 +57,116 @@ function choose(action: PortAction) {
 
 export default function OpenedPorts(props: { dialogId: string | null }) {
   const ports = () => (props.dialogId ? (cloud.ports[props.dialogId] ?? []) : []);
+  const tasks = () => backgroundTasksOf(props.dialogId);
+  const [open, setOpen] = createSignal(false);
+  // What the chat has running, asked where it runs as it opens; closed.
+  createEffect(
+    on(
+      () => props.dialogId,
+      (dialogId) => {
+        setOpen(false);
+        if (dialogId) void loadBackgroundTasks(dialogId);
+      }
+    )
+  );
+  // And again as a host catches up: the chat's may have been away.
+  onCleanup(
+    onCaughtUp(() => {
+      if (props.dialogId) void loadBackgroundTasks(props.dialogId);
+    })
+  );
+  // How long each task has run, while they show.
+  const [now, setNow] = createSignal(Date.now());
+  createEffect(() => {
+    if (!open()) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    onCleanup(() => window.clearInterval(timer));
+  });
   return (
-    <Show when={ports().length > 0}>
+    <Show when={ports().length > 0 || tasks().length > 0}>
       <div class="opened-ports">
-        <span class="opened-ports-label">Opened ports:</span>
-        <For each={ports()}>{(port) => <OpenedPort port={port} />}</For>
+        <div class="opened-ports-row">
+          <Show
+            when={tasks().length > 0}
+            fallback={<span class="opened-ports-label">Opened ports:</span>}
+          >
+            <button
+              type="button"
+              class="background-tasks-toggle"
+              aria-expanded={open()}
+              title={open() ? 'Hide the background tasks' : 'Show the background tasks'}
+              onClick={() => setOpen(!open())}
+            >
+              <span class="background-tasks-caret" aria-hidden="true">
+                {open() ? '▾' : '▸'}
+              </span>
+              <span class="opened-ports-label">
+                Background tasks: {tasks().length}
+                {ports().length > 0 ? ', open ports:' : ''}
+              </span>
+            </button>
+          </Show>
+          <For each={ports()}>{(port) => <OpenedPort port={port} />}</For>
+        </div>
+        <Show when={open() && tasks().length > 0 && props.dialogId}>
+          {(dialogId) => (
+            <ul class="background-tasks" aria-label="Background tasks">
+              <For each={tasks()}>
+                {(task) => <BackgroundTaskRow dialogId={dialogId()} task={task} now={now()} />}
+              </For>
+            </ul>
+          )}
+        </Show>
       </div>
     </Show>
+  );
+}
+
+/** A task: its command, how long it has run, and its Stop, far right. */
+function BackgroundTaskRow(props: { dialogId: string; task: BackgroundTask; now: number }) {
+  const [stopping, setStopping] = createSignal(false);
+  const [failed, setFailed] = createSignal<string | null>(null);
+  const ran = () => formatDuration(props.now - props.task.startedAt);
+
+  async function stop() {
+    setStopping(true);
+    setFailed(null);
+    try {
+      await stopBackgroundTask(props.dialogId, props.task.id);
+    } catch (err) {
+      setFailed(`It didn't stop: ${err}`);
+    } finally {
+      setStopping(false);
+    }
+  }
+
+  return (
+    <li class="background-task">
+      <span class="background-task-command" title={props.task.command}>
+        {props.task.command}
+      </span>
+      <Show when={failed()}>
+        {(why) => (
+          <span class="background-task-failed" role="alert">
+            {why()}
+          </span>
+        )}
+      </Show>
+      <span class="background-task-ran" title={`Running for ${ran()}`}>
+        {ran()}
+      </span>
+      <button
+        type="button"
+        class="background-task-stop"
+        disabled={stopping()}
+        title="Stop it, with everything it started"
+        aria-label={`Stop ${props.task.command}`}
+        onClick={() => void stop()}
+      >
+        {stopping() ? 'Stopping…' : 'Stop'}
+      </button>
+    </li>
   );
 }
 

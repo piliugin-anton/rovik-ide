@@ -242,8 +242,10 @@ export interface ToolMeta {
   failure?: StoredFailure;
   /** Part of the reply arrived, then the request failed. */
   interrupted?: StoredFailure;
-  /** bash results: the exit code (null when killed or signalled). */
+  /** bash results: the exit code (null when killed or signalled, or while it still runs). */
   exitCode?: number | null;
+  /** bash (`background`) results: the id of the command it left running, while it runs. */
+  background?: string;
   /** bash results: a long wait for a CPU slot before it ran. */
   waited?: string;
   /** Tool results that went through approval: who decided, and why. */

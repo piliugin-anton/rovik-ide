@@ -106,6 +106,18 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   the type errors many React Native apps have, isn't the agent's to fix and
   doesn't hold its change back. A test script that runs Jest in watch
   mode is run once.
+- **Dev servers keep running.** The agent starts a server or watcher it
+  means to keep (`npm run dev`, `tsc --watch`) in the background, not with
+  `&`, which under bubblewrap ends with its command: it goes on as soon as
+  the command has started, with what it printed first, reads what it
+  prints later when it needs to, and stops it when it's done. The chat
+  shows **Background tasks: 2** under its title, which opens into each
+  task, how long it has run, and a Stop for it; the agent hears it was
+  stopped. A chat keeps at most 4 running, and they stop when the chat is
+  deleted or moved to another computer, its changes are discarded, or
+  Rovik quits. In an isolated chat they run in the chat's view, which goes
+  once its changes land: the changes wait while one runs, and **Land**
+  stops it.
 - **Several chats at once, safely.** Each chat works on its own private
   copy of your changes, so two chats (or a chat and you) never overwrite
   each other. When a chat finishes, its changes are merged into the
@@ -647,8 +659,11 @@ and so does a window the page opens. A page of another site that refuses
 to be framed, as most sign-in pages do, shows nothing in a tab: open it in
 your browser. The chat shows **Opened ports:** under its title, each port
 on a button that opens its page in a tab, or, as its ▾ chooses for every
-port, copies the address here that leads to it. A page at any other
-address is refused. See
+port, copies the address here that leads to it; **Background tasks: 1,
+open ports:** while the agent has a server running there. A dev server
+the agent leaves running in the background serves its page until it's
+stopped; one it starts with `&` ends with its command, and its page with
+it. A page at any other address is refused. See
 [Rovik on a team server](docs/cloud-hosts.md#each-users-own-network).
 
 ---
@@ -1072,9 +1087,10 @@ Every agent run works in an **overlay**: the project as it is on disk, with
 that chat's changes on top. Only the changed files are stored. When a run
 ends, its changes are **landed**: merged with whatever changed in the
 project meanwhile, checked, and written. A clean merge with passing checks
-lands on its own. Anything else (conflicts, failing checks) is shown in the
-bar above the chat's message box, where you can resolve conflicts, land
-anyway, discard, or undo a landing.
+lands on its own. Anything else (conflicts, failing checks, a dev server the
+agent left running in the chat's view) is shown in the bar above the chat's
+message box, where you can resolve conflicts, land anyway, discard, or undo
+a landing.
 
 On Linux, every command the agent runs is sandboxed with bubblewrap
 (`bwrap`): the system is read-only to it but for the chat's own folders

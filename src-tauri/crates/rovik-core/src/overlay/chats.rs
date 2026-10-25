@@ -541,10 +541,11 @@ pub fn discard(dialog_id: &str) -> Result<(), String> {
     }
 }
 
-/// What goes with the chat's changes besides its store: its view, its
-/// checks' saved output, its children's overlays and what it was compared
-/// with.
+/// What goes with the chat's changes besides its store: the commands it
+/// left running (in its view, maybe), its view, its checks' saved output,
+/// its children's overlays and what it was compared with.
 pub(super) fn let_go(dialog_id: &str) {
+    crate::command_tool::background::stop_chat(dialog_id);
     // Its checks' saved output goes with it (landing discards too).
     crate::agent_run::check_output::clean(dialog_id);
     // And its children's overlays, which stood on its view (F02).

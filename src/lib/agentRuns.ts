@@ -27,6 +27,7 @@ import type { ApiRoute, ChatMessage, ModelProfile, OpenAIChatOptions } from '../
 import type { AgentPermissions } from './permissions';
 import { chatStore, type MessagePatch, type MessageRow, type QueuedSteer } from './chatStore';
 import { noteChecklist, clearLiveChecklist, refreshChecklist } from './checklist';
+import { noteBackgroundTasks, type BackgroundTask } from './backgroundTasks';
 import {
   clearApproval,
   notifyFileDeleted,
@@ -170,6 +171,7 @@ type AgentEvent =
   | { type: 'questionsSettled'; dialogId: string; toolCallId: string }
   | { type: 'toolNote'; dialogId: string; toolCallId: string; note: string | null }
   | { type: 'checklist'; dialogId: string; items: import('./todo').TodoItem[] }
+  | { type: 'backgroundTasks'; dialogId: string; tasks: BackgroundTask[] }
   | {
       type: 'fileWritten';
       /** The chat whose run wrote it. */
@@ -580,6 +582,9 @@ function handle(event: AgentEvent) {
       // Live source while the run goes: the panel reads this, not the
       // messages loaded here (which may be a window around a search hit).
       noteChecklist(event.dialogId, event.items);
+      break;
+    case 'backgroundTasks':
+      noteBackgroundTasks(event.dialogId, event.tasks);
       break;
     case 'fileWritten':
       if (event.deleted) {

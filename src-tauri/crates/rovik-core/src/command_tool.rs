@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub mod background;
+
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
 /// Kept per stream: the start (what ran) and the end, where errors and
@@ -408,14 +410,9 @@ pub fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
     child.try_wait().map(|s| s.is_some())
 }
 
-fn run_blocking(
-    root: &str,
-    command: &str,
-    timeout: Duration,
-    stop: &dyn Fn() -> bool,
-    queued: Option<&Queued>,
-) -> Result<CommandOutput, String> {
-    let root = Path::new(root);
+/// Whether a command may run in `root`: the folder is there, and the
+/// sandbox Linux requires works. Why not, when it can't.
+fn may_run_in(root: &Path) -> Result<(), String> {
     if !root.is_dir() {
         return Err(format!(
             "project root is not a directory: {}",
@@ -426,78 +423,128 @@ fn run_blocking(
     if let Some(why) = crate::overlay::confine::refusal() {
         return Err(why);
     }
+    Ok(())
+}
 
-    // A command predicted heavy waits for a slot; the wait isn't part of
-    // its time or its timeout.
+/// A chat's command (`queued`) admitted to the queue for heavy work
+/// (src/workload): its job, and how long it waited for a slot when it
+/// was predicted heavy (a wait that isn't part of its time or its
+/// timeout).
+type Admitted = (
+    Option<crate::workload::queue::Job>,
+    Option<crate::workload::Waited>,
+);
+
+/// `command`, run in `root`, through the queue for heavy work when it's a
+/// chat's (`queued`): what [`Admitted`] says, once it may start; None when
+/// `stop` came while it waited.
+fn admitted(
+    root: &Path,
+    command: &str,
+    stop: &dyn Fn() -> bool,
+    queued: Option<&Queued>,
+) -> Option<Admitted> {
     let job = queued.map(|q| crate::workload::begin(q.kind.clone(), command, Some(root)));
     let mut waited = None;
     if let (Some(job), Some(q)) = (&job, queued) {
-        match job.wait_for_slot(stop, &*q.note) {
-            Some(w) => waited = Some(w).filter(|w| w.ms > 0),
-            None => {
-                return Ok(CommandOutput {
-                    exit_code: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    stopped: true,
-                    truncated: false,
-                    duration_ms: 0,
-                    waited: None,
-                    whole: None,
-                })
-            }
-        }
+        waited = Some(job.wait_for_slot(stop, &*q.note)?).filter(|w| w.ms > 0);
     }
+    Some((job, waited))
+}
+
+/// The sandbox a command in `root` runs in: an isolated chat's policy (its
+/// overlay's redirect, and hiding), else the one every other agent command
+/// gets: nothing redirected, the credential stores hidden, where this
+/// machine can (overlay/confine.rs).
+fn policy(root: &Path, queued: Option<&Queued>) -> Option<crate::overlay::confine::Confine> {
+    queued
+        .and_then(|q| q.confine.clone())
+        .or_else(|| crate::overlay::confine::hiding_if_available(root))
+}
+
+/// `command` as it starts in `root`: through the user's shell, confined by
+/// `confine`, with no stdin and what every command's environment has (no
+/// pagers or prompts, no colors, its share of the CPU when `job` runs
+/// beside others, `queued`'s variables, the host's toolchains, the private
+/// network's browser), at the head of a process group of its own. Where
+/// its output goes is the caller's to say.
+fn prepared(
+    root: &Path,
+    command: &str,
+    confine: Option<&crate::overlay::confine::Confine>,
+    job: Option<&crate::workload::queue::Job>,
+    queued: Option<&Queued>,
+) -> Command {
+    let mut cmd = shell_command(command, confine);
+    crate::process::no_window(&mut cmd)
+        .current_dir(root)
+        .stdin(Stdio::null())
+        // Tools that page or prompt should just print and exit.
+        .env("GIT_PAGER", "cat")
+        .env("PAGER", "cat")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("CI", "1")
+        // Plain text: color codes only cost context and break matching.
+        .env("NO_COLOR", "1")
+        .env("CARGO_TERM_COLOR", "never");
+    for (key, value) in job.map(|j| j.cpu_split_env()).unwrap_or_default() {
+        cmd.env(key, value);
+    }
+    for (key, value) in queued.map(|q| q.env.as_slice()).unwrap_or_default() {
+        cmd.env(key, value);
+    }
+    // A cloud host's toolchains, where the daemon shares them (toolchains):
+    // the versions' folders in front of the PATH, and rustup's home. Set
+    // here, so a command gets them whether or not it runs confined.
+    for (key, value) in crate::toolchains::env_for(root) {
+        cmd.env(key, value);
+    }
+    // In a team server's private network, the network's browser, which
+    // opens the chat's pages on the user's computer (network/pages.rs).
+    if let Some(network) = confine.and_then(|c| c.network.as_ref()) {
+        let chat = queued.and_then(|q| q.kind.owner()).unwrap_or_default();
+        network.give_browser(&mut cmd, chat);
+    }
+    // Its own process group, so a timeout or a stop can take down
+    // everything the shell started (a `node server.js`), not just the
+    // shell.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd
+}
+
+fn run_blocking(
+    root: &str,
+    command: &str,
+    timeout: Duration,
+    stop: &dyn Fn() -> bool,
+    queued: Option<&Queued>,
+) -> Result<CommandOutput, String> {
+    let root = Path::new(root);
+    may_run_in(root)?;
+    let Some((job, waited)) = admitted(root, command, stop, queued) else {
+        return Ok(CommandOutput {
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+            stopped: true,
+            truncated: false,
+            duration_ms: 0,
+            waited: None,
+            whole: None,
+        });
+    };
 
     let started = Instant::now();
-    // An isolated chat's policy (its overlay's redirect, and hiding), else
-    // the one every other agent command gets: nothing redirected, the
-    // credential stores hidden, where this machine can (overlay/confine.rs).
-    let confine = queued
-        .and_then(|q| q.confine.clone())
-        .or_else(|| crate::overlay::confine::hiding_if_available(root));
+    let confine = policy(root, queued);
     // One run of the command, from its start to its end.
     let attempt = || -> Result<CommandOutput, String> {
-        let mut cmd = shell_command(command, confine.as_ref());
-        crate::process::no_window(&mut cmd)
-            .current_dir(root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // Tools that page or prompt should just print and exit.
-            .env("GIT_PAGER", "cat")
-            .env("PAGER", "cat")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("CI", "1")
-            // Plain text: color codes only cost context and break matching.
-            .env("NO_COLOR", "1")
-            .env("CARGO_TERM_COLOR", "never");
-        for (key, value) in job.as_ref().map(|j| j.cpu_split_env()).unwrap_or_default() {
-            cmd.env(key, value);
-        }
-        for (key, value) in queued.map(|q| q.env.as_slice()).unwrap_or_default() {
-            cmd.env(key, value);
-        }
-        // A cloud host's toolchains, where the daemon shares them (toolchains):
-        // the versions' folders in front of the PATH, and rustup's home. Set
-        // here, so a command gets them whether or not it runs confined.
-        for (key, value) in crate::toolchains::env_for(root) {
-            cmd.env(key, value);
-        }
-        // In a team server's private network, the network's browser, which
-        // opens the chat's pages on the user's computer (network/pages.rs).
-        if let Some(network) = confine.as_ref().and_then(|c| c.network.as_ref()) {
-            let chat = queued.and_then(|q| q.kind.owner()).unwrap_or_default();
-            network.give_browser(&mut cmd, chat);
-        }
-        // Its own process group, so a timeout can take down everything the
-        // shell started (a `node server.js`), not just the shell.
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
+        let mut cmd = prepared(root, command, confine.as_ref(), job.as_ref(), queued);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to start the command: {e}"))?;
