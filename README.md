@@ -1069,7 +1069,9 @@ for an approval, with the reason and what to do instead
   the environment (`source .env`) is using it, unless the command prints
   the variables (`echo $API_KEY`, `env`). A program that only uses one
   runs (`node --env-file=.env`), as does a script of the project's:
-  commands are judged by their words. What git itself prints isn't checked:
+  commands are judged by their words, which keeps credentials from being
+  read by mistake, not from an agent set on guessing them (a search
+  refused says a line matched). What git itself prints isn't checked:
   `git diff`, `git log -p` and `git grep` show a restricted file the
   repository tracks, so credentials belong in files git ignores
   (`.env.local`).
