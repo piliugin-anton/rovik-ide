@@ -28,6 +28,9 @@ use std::path::{Component, Path, PathBuf};
 /// Entries one search's walk looks at, at most, to find a restricted file
 /// it would read.
 const SEARCH_MAX_ENTRIES: usize = 100_000;
+/// Paths one word with wildcards may name, at most: a `**` in a large tree
+/// stops there.
+const EXPAND_MAX_PATHS: usize = 100_000;
 /// Scripts inside scripts (`bash -c "sh -c '…'"`) looked into, at most.
 const MAX_DEPTH: usize = 3;
 /// A restricted file larger than this isn't looked through for the lines
@@ -337,7 +340,7 @@ impl Check<'_> {
     /// reads it (`~`, `$HOME`, wildcards: every file it expands to).
     fn all_blocked(&self, cwd: &Path, word: &str, op: Op) -> Vec<String> {
         let word = expand_home(word);
-        let files = if word.contains(['*', '?', '[']) {
+        let files = if has_wildcard(&word) {
             expand(&word, cwd)
         } else {
             vec![resolve(cwd, &word)]
@@ -1069,29 +1072,79 @@ fn resolve(cwd: &Path, word: &str) -> String {
     out.to_string_lossy().into_owned()
 }
 
-/// The files a word with wildcards in its last part names, as the shell
-/// expands it in `cwd`, absolute: a name that starts with `.` only when
-/// the pattern does, in any case.
+/// Whether a part of a path has the shell's wildcards.
+fn has_wildcard(part: &str) -> bool {
+    part.contains(['*', '?', '['])
+}
+
+/// The files and folders a word with wildcards names, as the shell expands
+/// it in `cwd`, absolute. Each part with wildcards is matched against the
+/// names in its folders (`packages/*/.env`), a name that starts with `.`
+/// only when the part does, in any case; `**` stands for everything below
+/// too, as bash's globstar takes it.
 fn expand(word: &str, cwd: &Path) -> Vec<String> {
-    let (folder, pattern) = match word.rsplit_once(['/', '\\']) {
-        Some((folder, pattern)) => (folder, pattern),
-        None => ("", word),
+    let parts: Vec<&str> = word.split(['/', '\\']).collect();
+    // Up to its first part with a wildcard, the word names one folder.
+    let first = parts
+        .iter()
+        .position(|part| has_wildcard(part))
+        .unwrap_or(parts.len());
+    let folder = match parts[..first].join("/") {
+        folder if folder.is_empty() && word.starts_with(['/', '\\']) => "/".to_string(),
+        folder => folder,
     };
-    if folder.contains(['*', '?', '[']) {
-        return Vec::new();
+    let mut paths = vec![PathBuf::from(resolve(cwd, &folder))];
+    for &part in &parts[first..] {
+        paths = match part {
+            "" | "." => paths,
+            "**" => paths
+                .iter()
+                .flat_map(|path| everything_in(path))
+                .take(EXPAND_MAX_PATHS)
+                .collect(),
+            _ if has_wildcard(part) => paths
+                .iter()
+                .flat_map(|path| names_matching(path, part))
+                .take(EXPAND_MAX_PATHS)
+                .collect(),
+            _ => paths.iter().map(|path| path.join(part)).collect(),
+        };
     }
-    let dir = PathBuf::from(resolve(cwd, folder));
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    paths
+        .iter()
+        .filter(|path| path.symlink_metadata().is_ok())
+        .map(|path| resolve(path, ""))
+        .collect()
+}
+
+/// What in `folder` matches the shell pattern `part`: a name that starts
+/// with `.` only when the pattern does.
+fn names_matching(folder: &Path, part: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
         return Vec::new();
     };
     entries
         .filter_map(Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|name| {
-            (pattern.starts_with('.') || !name.starts_with('.')) && glob_matches(pattern, name)
+            (part.starts_with('.') || !name.starts_with('.')) && glob_matches(part, name)
         })
-        .map(|name| dir.join(name).to_string_lossy().into_owned())
+        .map(|name| folder.join(name))
         .collect()
+}
+
+/// `folder`, and every file and folder below it but in those a search
+/// leaves out ([`skipped_folder`]): what `**` may stand for.
+fn everything_in(folder: &Path) -> impl Iterator<Item = PathBuf> {
+    WalkBuilder::new(folder)
+        .standard_filters(false)
+        .filter_entry(|e| {
+            let dir = e.file_type().is_some_and(|t| t.is_dir());
+            !(dir && skipped_folder(&e.file_name().to_string_lossy()))
+        })
+        .build()
+        .filter_map(Result::ok)
+        .map(ignore::DirEntry::into_path)
 }
 
 /// Whether `name` matches the shell pattern: `*` any run, `?` and `[…]`
@@ -1488,7 +1541,7 @@ mod tests {
         assert!(glob_matches("a*b*c", "aXbYc"));
         assert!(!glob_matches("*.env", "env.txt"));
         assert!(!glob_matches("a*b", "acd"));
-        let (dir, root) = project(&[]);
+        let (dir, root) = project(&["packages/api/.env", "packages/web/.env.example"]);
         let names = |word: &str| {
             let mut found: Vec<String> = expand(word, Path::new(&root))
                 .iter()
@@ -1498,8 +1551,43 @@ mod tests {
             found
         };
         assert_eq!(names(".env*"), ["/.env", "/.env.example"]);
-        assert_eq!(names("*"), ["/README.md", "/config", "/src"]);
+        assert_eq!(names("*"), ["/README.md", "/config", "/packages", "/src"]);
         assert_eq!(names("config/*.key"), ["/config/master.key"]);
+        // Wildcards in a folder's part, and `**` for every folder below.
+        assert_eq!(names("*/*.key"), ["/config/master.key"]);
+        assert_eq!(
+            names("packages/*/.env*"),
+            ["/packages/api/.env", "/packages/web/.env.example"]
+        );
+        assert_eq!(names("**/.env"), ["/.env", "/packages/api/.env"]);
+        assert_eq!(
+            names("src/../conf*/../packages/a*/.env"),
+            ["/packages/api/.env"]
+        );
+        assert_eq!(names(&format!("{root}/*/*.key")), ["/config/master.key"]);
+        assert!(names("packages/*/missing").is_empty());
         drop(dir);
+    }
+
+    #[test]
+    fn a_wildcard_in_any_part_of_a_path_is_expanded_before_its_files_are_judged() {
+        let (_dir, root) = project(&["packages/api/.env", "packages/web/src/index.ts"]);
+        for (command, file) in [
+            ("cat packages/*/.env", "packages/api/.env"),
+            ("cat */master.key", "config/master.key"),
+            ("head -n 3 */*.key", "config/master.key"),
+            ("cat **/.env", ".env"),
+            ("cd packages && cat */.env", "packages/api/.env"),
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(
+                refused.contains(&format!("`{command}` would read {file}, a restricted file")),
+                "{refused}"
+            );
+        }
+        for command in ["cat packages/*/src/index.ts", "cat */app.ts", "cat **/*.ts"] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
     }
 }
