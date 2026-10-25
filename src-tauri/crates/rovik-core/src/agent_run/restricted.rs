@@ -26,8 +26,11 @@ use serde_json::{Map, Value};
 use std::path::{Component, Path, PathBuf};
 
 /// Entries one search's walk looks at, at most, to find a restricted file
-/// it would read.
+/// it would read: past it, the search is refused as too large to check.
+#[cfg(not(test))]
 const SEARCH_MAX_ENTRIES: usize = 100_000;
+#[cfg(test)]
+const SEARCH_MAX_ENTRIES: usize = 1_000;
 /// Paths one word with wildcards may name, at most: a `**` in a large tree
 /// stops there.
 const EXPAND_MAX_PATHS: usize = 100_000;
@@ -78,6 +81,7 @@ const GREP_VALUES: &[&str] = &[
     "--exclude-from",
     "--label",
     "--binary-files",
+    "--group-separator",
 ];
 /// ripgrep's options that take a value.
 const RG_VALUES: &[&str] = &[
@@ -94,6 +98,7 @@ const RG_VALUES: &[&str] = &[
     "-j",
     "-E",
     "-r",
+    "-d",
     "--regexp",
     "--file",
     "--glob",
@@ -108,6 +113,7 @@ const RG_VALUES: &[&str] = &[
     "--context",
     "--max-columns",
     "--max-depth",
+    "--maxdepth",
     "--max-filesize",
     "--threads",
     "--encoding",
@@ -124,6 +130,9 @@ const RG_VALUES: &[&str] = &[
     "--field-context-separator",
     "--path-separator",
     "--engine",
+    "--dfa-size-limit",
+    "--regex-size-limit",
+    "--hyperlink-format",
 ];
 /// The silver searcher's options that take a value.
 const AG_VALUES: &[&str] = &[
@@ -140,23 +149,45 @@ const AG_VALUES: &[&str] = &[
     "--max-count",
     "--pager",
     "--workers",
+    "-p",
+    "--path-to-ignore",
+    "-W",
+    "--width",
 ];
-/// Options after which a search prints names or counts, not lines.
-const NAMES_ONLY: &[&str] = &[
+/// Options after which grep prints names or counts, not lines.
+const GREP_NAMES_ONLY: &[&str] = &[
     "-l",
     "-L",
     "-c",
     "-q",
     "--files-with-matches",
     "--files-without-match",
-    "--files-without-matches",
+    "--count",
+    "--quiet",
+    "--silent",
+];
+/// ripgrep's: its `-L` follows links instead.
+const RG_NAMES_ONLY: &[&str] = &[
+    "-l",
+    "-c",
+    "-q",
+    "--files-with-matches",
+    "--files-without-match",
     "--count",
     "--count-matches",
     "--quiet",
-    "--silent",
     "--files",
     "--type-list",
-    "/m",
+];
+/// The silver searcher's: its `--silent` only quiets its errors.
+const AG_NAMES_ONLY: &[&str] = &[
+    "-l",
+    "-L",
+    "-c",
+    "--files-with-matches",
+    "--files-without-matches",
+    "--count",
+    "--list-file-types",
 ];
 /// Programs that copy or send files: they read their sources.
 const COPIERS: &[&str] = &["cp", "install", "rsync", "scp", "copy", "xcopy"];
@@ -209,6 +240,7 @@ pub fn command_problem(command: &str, root: &str, restricted: &RestrictedFiles) 
         whole: command,
         root,
         restricted,
+        rg_config: ripgrep_config(),
     };
     Shell::readings()
         .iter()
@@ -221,6 +253,8 @@ struct Check<'a> {
     whole: &'a str,
     root: &'a str,
     restricted: &'a RestrictedFiles,
+    /// ripgrep's options from its config file ([`ripgrep_config`]).
+    rg_config: Vec<String>,
 }
 
 impl Check<'_> {
@@ -250,7 +284,9 @@ impl Check<'_> {
             if place.moves(&program, args) {
                 continue;
             }
-            if let Some(problem) = self.program(&place.cwd, &program, args) {
+            // Its input is the one before's output: a search of it reads no file.
+            let piped = at > 0 && parsed.piped[at - 1];
+            if let Some(problem) = self.program(&place.cwd, &program, args, piped) {
                 return Some(problem);
             }
         }
@@ -278,9 +314,10 @@ impl Check<'_> {
         Some(refused(self.whole, Op::Write, &file))
     }
 
-    /// One program's reading and writing, run in `cwd`.
-    fn program(&self, cwd: &Path, program: &str, args: &[String]) -> Option<String> {
-        let effects = effects(program, args, cwd);
+    /// One program's reading and writing, run in `cwd`, `piped` when its
+    /// input is another's output.
+    fn program(&self, cwd: &Path, program: &str, args: &[String], piped: bool) -> Option<String> {
+        let effects = effects(program, args, cwd, piped, &self.rg_config);
         if let Some(file) = effects
             .reads
             .iter()
@@ -354,27 +391,37 @@ impl Check<'_> {
     fn searched(&self, cwd: &Path, search: &Search) -> Option<String> {
         let regexes = search.pattern.compiled();
         let prints = |file: &Path| prints_from(file, regexes.as_deref());
-        for path in &search.paths {
-            let at = PathBuf::from(resolve(cwd, &expand_home(path)));
-            if at.is_dir() {
-                if !search.recursive {
-                    continue;
+        for word in &search.paths {
+            for path in named_paths(cwd, word) {
+                let at = Path::new(&path);
+                if at.is_dir() {
+                    if !search.recursive {
+                        continue;
+                    }
+                    match self.walk(at, search, &prints) {
+                        Walked::Clean => continue,
+                        Walked::Found(file) => {
+                            return Some(format!(
+                                "Error: `{}` would search {file}, a restricted file: {} To search the project, use search_code, which leaves restricted files out, or leave them out of the command's search.",
+                                self.whole,
+                                reason(Op::Read)
+                            ))
+                        }
+                        Walked::TooLarge => {
+                            return Some(format!(
+                                "Error: `{}` would search more files than can be checked for restricted ones, which the agent may not read. Search the folders it needs, or use search_code, which leaves restricted files out.",
+                                self.whole
+                            ))
+                        }
+                    }
                 }
-                if let Some(file) = self.walk(&at, search, &prints) {
-                    return Some(format!(
-                        "Error: `{}` would search {file}, a restricted file: {} To search the project, use search_code, which leaves restricted files out, or leave them out of the command's search.",
-                        self.whole,
-                        reason(Op::Read)
-                    ));
+                let file = self
+                    .restricted
+                    .blocked(self.root, &path, Op::Read)
+                    .filter(|file| prints(Path::new(&tools::to_absolute_path(file, self.root))));
+                if let Some(file) = file {
+                    return Some(refused(self.whole, Op::Read, &file));
                 }
-                continue;
-            }
-            let file = self
-                .all_blocked(cwd, path, Op::Read)
-                .into_iter()
-                .find(|file| prints(Path::new(&tools::to_absolute_path(file, self.root))));
-            if let Some(file) = file {
-                return Some(refused(self.whole, Op::Read, &file));
             }
         }
         None
@@ -382,24 +429,22 @@ impl Check<'_> {
 
     /// The first restricted file under `start` that a search going through
     /// it, the way it picks files, would print a line of.
-    fn walk(
-        &self,
-        start: &Path,
-        search: &Search,
-        prints: &dyn Fn(&Path) -> bool,
-    ) -> Option<String> {
+    fn walk(&self, start: &Path, search: &Search, prints: &dyn Fn(&Path) -> bool) -> Walked {
         let root = Path::new(self.root);
         let mut walk = WalkBuilder::new(start);
         let ignores = search.ignore_files;
+        let (restricted, project) = (self.restricted.clone(), root.to_path_buf());
         walk.hidden(!search.hidden)
             .parents(ignores)
             .ignore(ignores)
             .git_ignore(ignores)
             .git_global(ignores)
             .git_exclude(ignores)
-            .filter_entry(|e| {
+            .follow_links(search.follow)
+            .max_depth(search.depth)
+            .filter_entry(move |e| {
                 let dir = e.file_type().is_some_and(|t| t.is_dir());
-                !(dir && skipped_folder(&e.file_name().to_string_lossy()))
+                !(dir && restricted.skips(&project, e.path()))
             });
         if ignores && search.rg {
             walk.add_custom_ignore_filename(".rgignore");
@@ -408,7 +453,7 @@ impl Check<'_> {
         for glob in &search.globs {
             // A glob the program can't read either: it fails, reading nothing.
             if globs.add(glob).is_err() {
-                return None;
+                return Walked::Clean;
             }
         }
         if let Ok(globs) = globs.build() {
@@ -425,29 +470,47 @@ impl Check<'_> {
             }
             // A type it doesn't know: it fails, reading nothing.
             let Ok(types) = types.build() else {
-                return None;
+                return Walked::Clean;
             };
             walk.types(types);
         }
-        walk.build()
-            .take(SEARCH_MAX_ENTRIES)
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
-            .find_map(|e| {
-                let path = e.path();
-                let key = match path.strip_prefix(root) {
-                    Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
-                    Err(_) => path.to_string_lossy().into_owned(),
-                };
-                (self.restricted.blocks_file(&key, Op::Read) && prints(path)).then_some(key)
-            })
+        for (seen, entry) in walk.build().enumerate() {
+            if seen >= SEARCH_MAX_ENTRIES {
+                return Walked::TooLarge;
+            }
+            let Ok(entry) = entry else {
+                continue;
+            };
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
+                continue;
+            }
+            let path = entry.path();
+            let key = match path.strip_prefix(root) {
+                Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+                Err(_) => path.to_string_lossy().into_owned(),
+            };
+            if self.restricted.blocks_file(&key, Op::Read) && prints(path) {
+                return Walked::Found(key);
+            }
+        }
+        Walked::Clean
     }
 }
 
+/// What a walk for restricted files came to.
+enum Walked {
+    /// None it looks for.
+    Clean,
+    /// This one, relative to the project (or absolute outside it).
+    Found(String),
+    /// More files than it may look at: it couldn't tell.
+    TooLarge,
+}
+
 /// Whether a search would print a line of `file`: one its `regexes`
-/// match, or any line when they're unknown. A file too large to look
-/// through, or that can't be read, may be printed; one that isn't there
-/// can't.
+/// match (they match lines in the whole text, [`Pattern::compiled`]), or
+/// any line when they're unknown. A file too large to look through, or
+/// that can't be read, may be printed; one that isn't there can't.
 fn prints_from(file: &Path, regexes: Option<&[Regex]>) -> bool {
     let Some(regexes) = regexes else {
         return true;
@@ -462,9 +525,8 @@ fn prints_from(file: &Path, regexes: Option<&[Regex]>) -> bool {
     let Ok(bytes) = std::fs::read(file) else {
         return true;
     };
-    String::from_utf8_lossy(&bytes)
-        .lines()
-        .any(|line| regexes.iter().any(|r| r.is_match(line)))
+    let text = String::from_utf8_lossy(&bytes);
+    regexes.iter().any(|r| r.is_match(&text))
 }
 
 /// The redirect files of the segment `at`: those of `files` whose segment
@@ -521,22 +583,30 @@ struct Search {
     /// ripgrep's file types read (`-t`), and left out (`-T`).
     types: Vec<String>,
     not_types: Vec<String>,
+    /// It follows links to folders (`grep -R`, `rg -L`, `ag -f`).
+    follow: bool,
+    /// How far below its folders it goes (`rg --max-depth`), when it says.
+    depth: Option<usize>,
     /// The lines it prints.
     pattern: Pattern,
 }
 
 /// The lines a search prints: those its patterns match, written as Rust's
-/// regex reads them. None: it may print any line (`-v`, patterns read
-/// from a file, Windows' findstr).
+/// regex reads them. None: it may print any line (`-v`, `--passthru`,
+/// patterns read from a file, Windows' findstr).
 #[derive(Debug, Default, PartialEq)]
 struct Pattern {
     regexes: Option<Vec<String>>,
     ignore_case: bool,
+    /// `.` matches a line's end too (`rg --multiline-dotall`).
+    dotall: bool,
 }
 
 impl Pattern {
-    /// The regexes, compiled; None when it may print any line, or one of
-    /// them can't be read.
+    /// The regexes, compiled to match a line anywhere in a file's text:
+    /// `^` and `$` at each line's start and end (`\r\n` ones too), and
+    /// across lines as a multi-line search matches (`rg -U 'KEY=.*\n'`).
+    /// None when it may print any line, or one of them can't be read.
     fn compiled(&self) -> Option<Vec<Regex>> {
         self.regexes
             .as_ref()?
@@ -544,6 +614,9 @@ impl Pattern {
             .map(|r| {
                 RegexBuilder::new(r)
                     .case_insensitive(self.ignore_case)
+                    .multi_line(true)
+                    .crlf(true)
+                    .dot_matches_new_line(self.dotall)
                     .build()
                     .ok()
             })
@@ -581,8 +654,16 @@ fn owned(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| w.to_string()).collect()
 }
 
-/// What `program`, given `args` in `cwd`, does with files.
-fn effects(program: &str, args: &[String], cwd: &Path) -> Effects {
+/// What `program`, given `args` in `cwd`, does with files; `piped` when
+/// its input is another program's output, `rg_config` ripgrep's own
+/// options ([`ripgrep_config`]).
+fn effects(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    piped: bool,
+    rg_config: &[String],
+) -> Effects {
     let slash = SLASH_PROGRAMS.contains(&program);
     let words = |valued: &[&str]| owned(&Args::split(args, valued, slash).words);
     if PRINTERS.contains(&program) {
@@ -604,7 +685,7 @@ fn effects(program: &str, args: &[String], cwd: &Path) -> Effects {
         };
     }
     if GREPS.contains(&program) || matches!(program, "rg" | "ag") {
-        return search_effects(program, args);
+        return search_effects(program, args, piped, rg_config);
     }
     if COPIERS.contains(&program) || MOVERS.contains(&program) {
         return copy_effects(program, args, slash, cwd);
@@ -671,16 +752,26 @@ fn effects(program: &str, args: &[String], cwd: &Path) -> Effects {
 
 /// grep, ripgrep and the silver searcher: the files they're given, and
 /// the folders when they go through them (grep with `-r`); the lines their
-/// patterns match.
-fn search_effects(program: &str, args: &[String]) -> Effects {
+/// patterns match. Given no file or folder, grep -r goes through `.`, and
+/// rg and ag through `.` unless their input is piped (`piped`), which they
+/// search instead. ripgrep takes its config file's options first
+/// (`rg_config`) unless told not to.
+fn search_effects(program: &str, args: &[String], piped: bool, rg_config: &[String]) -> Effects {
     let grep = GREPS.contains(&program);
-    let valued = match program {
-        "rg" => RG_VALUES,
-        "ag" => AG_VALUES,
-        _ => GREP_VALUES,
+    let configured: Vec<String>;
+    let args = if program == "rg" && !args.iter().any(|a| a == "--no-config") {
+        configured = rg_config.iter().chain(args).cloned().collect();
+        &configured
+    } else {
+        args
+    };
+    let (valued, names_only) = match program {
+        "rg" => (RG_VALUES, RG_NAMES_ONLY),
+        "ag" => (AG_VALUES, AG_NAMES_ONLY),
+        _ => (GREP_VALUES, GREP_NAMES_ONLY),
     };
     let a = Args::split(args, valued, false);
-    if a.has(NAMES_ONLY) || (program == "ag" && a.has(&["-g"])) {
+    if a.has(names_only) || (program == "ag" && a.has(&["-g"])) {
         return Effects::default();
     }
     // Patterns given by option, or read from a file (the silver searcher
@@ -703,7 +794,9 @@ fn search_effects(program: &str, args: &[String]) -> Effects {
         || (program == "ag" && a.has(&["-Q", "--literal"]));
     let basic =
         grep && program != "egrep" && !a.has(&["-E", "--extended-regexp", "-P", "--perl-regexp"]);
-    let regexes = (!from_file && !a.has(&["-v", "--invert-match"])).then(|| {
+    // What prints every line it reads, whatever the pattern.
+    let any_line = from_file || a.has(&["-v", "--invert-match", "--passthru", "--passthrough"]);
+    let regexes = (!any_line).then(|| {
         patterns
             .iter()
             // A pattern of several lines is one pattern a line.
@@ -722,6 +815,17 @@ fn search_effects(program: &str, args: &[String]) -> Effects {
     let recursive = !grep
         || a.has(&["-r", "-R", "--recursive", "--dereference-recursive"])
         || a.values(&["-d", "--directories"]).any(|v| v == "recurse");
+    let follow = match program {
+        "rg" => a.has(&["-L", "--follow"]),
+        "ag" => a.has(&["-f", "--follow"]),
+        _ => a.has(&["-R", "--dereference-recursive"]),
+    };
+    let depth = match program {
+        "rg" => a.values(&["-d", "--max-depth", "--maxdepth"]).last(),
+        "ag" => a.values(&["--depth"]).last(),
+        _ => None,
+    }
+    .and_then(|depth| depth.parse().ok());
     let unrestricted = a.count("-u") + a.count("--unrestricted");
     let picks = if grep {
         Search {
@@ -764,18 +868,23 @@ fn search_effects(program: &str, args: &[String]) -> Effects {
             ..Search::default()
         }
     };
-    let paths = if words.is_empty() && recursive {
+    let paths = if !words.is_empty() {
+        owned(words)
+    } else if recursive && (grep || !piped) {
         vec![".".to_string()]
     } else {
-        owned(words)
+        Vec::new()
     };
     Effects {
         search: Some(Search {
             paths,
             recursive,
+            follow,
+            depth,
             pattern: Pattern {
                 regexes,
                 ignore_case,
+                dotall: program == "rg" && a.has(&["--multiline-dotall"]),
             },
             ..picks
         }),
@@ -783,11 +892,35 @@ fn search_effects(program: &str, args: &[String]) -> Effects {
     }
 }
 
+/// ripgrep's options from the config file `RIPGREP_CONFIG_PATH` names,
+/// which it reads before the command's (`--hidden` is a common one): one a
+/// line, `#` lines left out. None without one; none in tests, which don't
+/// depend on the developer's own config.
+fn ripgrep_config() -> Vec<String> {
+    let path = std::env::var_os("RIPGREP_CONFIG_PATH").filter(|p| !p.is_empty() && !cfg!(test));
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(path)
+        .map(|text| config_lines(&text))
+        .unwrap_or_default()
+}
+
+/// The options in a ripgrep config file's text.
+fn config_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Windows' findstr: its strings first (unless `/c:` or `/g:` gives them),
 /// then the files, which `/s` looks for in every folder below.
 fn findstr_effects(args: &[String]) -> Effects {
     let a = Args::split(args, &[], true);
-    if a.has(NAMES_ONLY) {
+    // `/m`: the names of the files that match.
+    if a.has(&["/m"]) {
         return Effects::default();
     }
     let skip = usize::from(!a.has(&["/c", "/g"]));
@@ -1533,6 +1666,138 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_search_through_wildcard_folders_goes_through_each() {
+        let (_dir, root) = project(&["apps/web/.env.local", "apps/api/src/main.ts"]);
+        for command in [
+            "grep -rn API_KEY apps/*",
+            "grep -rn API_KEY apps/*/",
+            "grep -rn API_KEY apps/{api,web}",
+            "rg --hidden API_KEY apps/*",
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(
+                refused.contains("would search apps/web/.env.local,"),
+                "{refused}"
+            );
+        }
+        for command in ["grep -rn useState apps/*", "grep -rn API_KEY apps/api/*"] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn a_searchs_options_are_read_as_its_own_program_reads_them() {
+        let (dir, root) = project(&["apps/web/.env.local"]);
+        std::fs::write(dir.0.join(".env.crlf"), "TOKEN=1\r\nNEXT=2\r\n").unwrap();
+        for command in [
+            // ripgrep's -L follows links; grep's lists files without a match.
+            "rg -L --hidden API_KEY",
+            // -d is ripgrep's depth, not its pattern.
+            "rg --hidden -d 3 API_KEY",
+            // Every line it reads is printed, matching or not.
+            "rg --hidden --passthru zzz apps",
+            // Across lines, and to a line's end before `\r\n`.
+            "rg --hidden -U 'API_KEY=x\\n' .",
+            "grep -r 'TOKEN=1$' .",
+            // The silver searcher's --silent only quiets its errors.
+            "ag --hidden --silent API_KEY",
+        ] {
+            assert!(
+                command_problem(command, &root, &none()).is_some(),
+                "{command} should be refused"
+            );
+        }
+        for command in [
+            "grep -rL API_KEY .",
+            "ag --hidden -L API_KEY",
+            "rg -l --hidden API_KEY",
+            // Not as deep as the file.
+            "rg --hidden --max-depth 1 API_KEY apps",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+        // ripgrep's config file comes first, unless it's told not to.
+        assert_eq!(
+            config_lines("# mine\n--hidden\n\n  --glob=!.git \n"),
+            ["--hidden", "--glob=!.git"]
+        );
+        let hidden = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let effects = search_effects("rg", &args, false, &["--hidden".to_string()]);
+            effects.search.unwrap().hidden
+        };
+        assert!(hidden(&["API_KEY"]));
+        assert!(!hidden(&["--no-config", "API_KEY"]));
+    }
+
+    #[test]
+    fn a_search_of_piped_input_reads_no_file() {
+        let (_dir, root) = project(&[]);
+        for command in [
+            "npm test 2>&1 | rg -i key",
+            "cat src/app.ts | rg API_KEY",
+            "cargo test 2>&1 | ag -i key",
+            "ps aux | grep -i api_key",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+        // grep -r goes through `.` whatever its input.
+        assert!(command_problem("echo | grep -r API_KEY", &root, &none()).is_some());
+    }
+
+    #[test]
+    fn a_search_goes_through_build_output_but_not_dependencies() {
+        let (dir, root) = project(&[]);
+        let write = |path: &str| {
+            let path = dir.0.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "SECRET_TOKEN=abc\n").unwrap();
+        };
+        write("node_modules/pkg/.env");
+        write(".venv/lib/site-packages/pkg/.env");
+        let search = "grep -rn SECRET_TOKEN .";
+        assert_eq!(command_problem(search, &root, &none()), None);
+        // A copy in a build's output is searched, as grep searches it.
+        write(".next/standalone/.env");
+        let refused = command_problem(search, &root, &none()).unwrap();
+        assert!(
+            refused.contains("would search .next/standalone/.env,"),
+            "{refused}"
+        );
+        // What the user listed in a dependency's folder is searched too.
+        std::fs::remove_file(dir.0.join(".next/standalone/.env")).unwrap();
+        std::fs::remove_file(dir.0.join("node_modules/pkg/.env")).unwrap();
+        write("node_modules/pkg/creds.txt");
+        let listed = RestrictedFiles::from_settings(&json!({ "restrictedFiles": [
+            { "path": "node_modules/pkg/creds.txt" },
+        ]}));
+        let refused = command_problem(search, &root, &listed).unwrap();
+        assert!(
+            refused.contains("would search node_modules/pkg/creds.txt,"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_search_too_large_to_check_is_refused() {
+        let (dir, root) = project(&[]);
+        for i in 0..SEARCH_MAX_ENTRIES {
+            std::fs::write(dir.0.join(format!("f{i}.txt")), "x\n").unwrap();
+        }
+        let refused = command_problem("grep -rn useState .", &root, &none()).unwrap();
+        assert!(
+            refused.contains("more files than can be checked"),
+            "{refused}"
+        );
+        // A folder of its own is small enough.
+        assert_eq!(
+            command_problem("grep -rn useState src", &root, &none()),
+            None
+        );
+    }
+
     /// A search runs when it would print no line of a restricted file:
     /// its pattern, as grep or ripgrep reads it, matches none there.
     #[test]
@@ -1582,6 +1847,7 @@ mod tests {
         let pattern = |regexes: &[&str], ignore_case| Pattern {
             regexes: Some(regexes.iter().map(|r| r.to_string()).collect()),
             ignore_case,
+            dotall: false,
         };
         assert!(
             pattern(&["a("], false).compiled().is_none(),

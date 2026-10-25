@@ -1052,8 +1052,10 @@ for an approval, with the reason and what to do instead
 - a command whose words say it would: `cat .env`, `cp .env /tmp`,
   `echo X >> .env`, `rm .env`, in a `bash -c` script too, from the folder a
   `cd` left it in. A search (`grep`, `rg`) is refused only when it would
-  print a line of one, which is looked for there: `grep -r useState .`
-  runs, `grep -r API_KEY .` doesn't. A program that only uses one runs
+  print a line of one, which is looked for there, in the files it would
+  pick (build output too, not dependencies): `grep -r useState .` runs,
+  `grep -r API_KEY .` doesn't, nor one through more files than can be
+  checked. A program that only uses one runs
   (`node --env-file=.env`), as does a script of the project's: commands
   are judged by their words. What git itself prints isn't checked:
   `git diff`, `git log -p` and `git grep` show a restricted file the

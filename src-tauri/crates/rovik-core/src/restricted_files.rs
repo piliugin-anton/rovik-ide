@@ -387,8 +387,8 @@ pub fn rows(root: &Path, restricted: &RestrictedFiles) -> Vec<Row> {
 
 /// The project's files whose names look secret, relative to `root` with
 /// `/`, sorted. Hidden and ignored files too: `.env` files are usually
-/// both. Not in a repository's own folder, nor in the folders the agent's
-/// tools leave out (node_modules, target…: dependencies and builds).
+/// both. Not in the folders a walk for them leaves out ([`skipped_folder`]),
+/// but in build output, which may hold a copy (`.next/standalone/.env`).
 pub fn scan(root: &Path) -> Vec<String> {
     let walk = ignore::WalkBuilder::new(root)
         .standard_filters(false)
@@ -411,10 +411,47 @@ pub fn scan(root: &Path) -> Vec<String> {
     found
 }
 
-/// A folder a scan of the project doesn't go into: version control's own,
-/// and the agent's tools' heavy ones (`agent_tools::is_denylisted_dir`).
+/// Folders of dependencies and caches, and version control's own: never
+/// where the user keeps credentials, and often huge.
+const SKIPPED_FOLDERS: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "bower_components",
+    "vendor",
+    "target",
+    "__pycache__",
+    ".venv",
+    "site-packages",
+    "dist-packages",
+    "Pods",
+    ".gradle",
+    ".tox",
+    ".cache",
+];
+
+/// Whether a walk for restricted files leaves out a folder, by its name
+/// ([`SKIPPED_FOLDERS`]).
 pub(crate) fn skipped_folder(name: &str) -> bool {
-    matches!(name, ".git" | ".hg" | ".svn") || crate::agent_tools::is_denylisted_dir(name)
+    SKIPPED_FOLDERS.contains(&name)
+}
+
+impl RestrictedFiles {
+    /// Whether a walk for restricted files leaves out `folder`, of the
+    /// project in `root`: a [`skipped_folder`], unless the user's list
+    /// names it or something in it.
+    pub(crate) fn skips(&self, root: &Path, folder: &Path) -> bool {
+        let name = folder.file_name().map(|n| n.to_string_lossy());
+        if !name.is_some_and(|name| skipped_folder(&name)) {
+            return false;
+        }
+        let Ok(rel) = folder.strip_prefix(root) else {
+            return true;
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        !self.listed.iter().any(|e| paths::under(&rel, &e.path))
+    }
 }
 
 /// Why the agent may not do `op` with a restricted file, and what it
@@ -681,12 +718,20 @@ mod tests {
             "src/main.rs",
             "node_modules/pkg/.env",
             "target/debug/.env",
+            "venv/lib/python3.12/site-packages/certifi/cacert.pem",
             ".git/config",
+            // A build's copy is one more place the secret is.
+            ".next/standalone/.env",
         ]);
         fs::write(dir.0.join(".gitignore"), ".env*\nconfig/\n").unwrap();
         assert_eq!(
             scan(&dir.0),
-            [".env", "apps/api/.env.local", "config/master.key"]
+            [
+                ".env",
+                ".next/standalone/.env",
+                "apps/api/.env.local",
+                "config/master.key"
+            ]
         );
     }
 

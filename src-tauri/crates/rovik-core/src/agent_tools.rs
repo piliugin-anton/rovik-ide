@@ -43,13 +43,7 @@ const DENYLIST_DIRS: &[&str] = &[
 const DENYLIST_EXTENSIONS: &[&str] = &["pem", "key", "pfx", "p12"];
 
 pub(crate) fn is_denylisted_name(name: &str) -> bool {
-    is_denylisted_dir(name) || is_key_file(name)
-}
-
-/// A folder of dependencies or build output, by its name: left out of the
-/// listings, searches and scans the agent's tools make.
-pub(crate) fn is_denylisted_dir(name: &str) -> bool {
-    DENYLIST_DIRS.contains(&name)
+    DENYLIST_DIRS.contains(&name) || is_key_file(name)
 }
 
 /// A private key or certificate store by its name: its extension, not a
