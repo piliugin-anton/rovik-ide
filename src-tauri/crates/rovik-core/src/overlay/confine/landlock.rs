@@ -440,10 +440,6 @@ impl Mechanism for Landlock {
     fn can_redirect(&self) -> bool {
         false
     }
-
-    fn hides_processes(&self) -> bool {
-        false
-    }
 }
 
 #[cfg(test)]

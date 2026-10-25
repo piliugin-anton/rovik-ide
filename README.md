@@ -108,9 +108,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   mode is run once.
 - **Dev servers keep running.** The agent starts a server or watcher it
   means to keep (`npm run dev`, `tsc --watch`) in the background, not with
-  `&`, which under bubblewrap ends with its command: it goes on as soon as
-  the command has started, with what it printed first, reads what it
-  prints later when it needs to, and stops it when it's done. The chat
+  `&`, which ends with its command: it goes on as soon as the command has
+  started, with what it printed first, reads what it prints later when it
+  needs to, and stops it when it's done. The chat
   shows **Background tasks: 2** under its title, which opens into each
   task, how long it has run, and a Stop for it; the agent hears it was
   stopped. A chat keeps at most 4 running, and they stop when the chat is
@@ -653,11 +653,13 @@ port of Rovik's, which drops what keeps a page out of a frame
 (`X-Frame-Options` and CSP `frame-ancestors`, as Django, Rails or helmet
 send them) and passes WebSockets through, so the dev server's hot reload
 works in the tab. On Windows it also makes the page's cookies ones a frame
-keeps, so signing in to it works there. The tab has an address bar, Reload
-and **Open in your browser**. An https page opens in your browser instead,
-and so does a window the page opens. A page of another site that refuses
-to be framed, as most sign-in pages do, shows nothing in a tab: open it in
-your browser. The chat shows **Opened ports:** under its title, each port
+keeps, so signing in to it works there. It adds a small script of Rovik's
+to each page it loads, which tells the tab where the page is: the tab's
+address bar follows the page as you click through it, and Reload and
+**Open in your browser** take it there. An https page opens in your browser
+instead, and so does a window the page opens. A page of another site that
+refuses to be framed, as most sign-in pages do, shows nothing in a tab: open
+it in your browser. The chat shows **Opened ports:** under its title, each port
 on a button that opens its page in a tab, or, as its ▾ chooses for every
 port, copies the address here that leads to it; **Background tasks: 1,
 open ports:** while the agent has a server running there. A dev server
@@ -872,6 +874,7 @@ src-tauri/               backend (Rust), a Cargo workspace
   crates/rovik-agentd/   the daemon: the agent on a cloud host or in WSL
   crates/rovik-headless/ the agent without a window, for evaluations
   crates/eoka/           headless Chrome automation (for the browser tools)
+  crates/russh/          SSH: russh with fixes, outside the workspace (FORK.md)
 
 docs/                    team servers (cloud-hosts.md), the WSL checklist,
                          the backend review
@@ -1119,8 +1122,9 @@ install it at start where it's missing (the AppImage can't carry it).
 Where bubblewrap can't run (not installed, or user namespaces forbidden,
 as in many containers), the commands run under the kernel's own sandbox,
 Landlock (Linux 6.2 and later, nothing to install), with the same policy
-but lighter: it doesn't hide the other processes or end what a command
-leaves running, can't close the agents' and the session's sockets (only the
+but lighter: it doesn't hide the other processes, ends only what a command
+leaves running in its own process group (a daemon that leaves the group
+goes on), can't close the agents' and the session's sockets (only the
 abstract ones, from Linux 6.12) or hide a login file inside a folder the
 commands may write to (cargo's token), and like Seatbelt below it can't redirect a path, and
 listing your home folder itself fails; the app then sets bubblewrap up by

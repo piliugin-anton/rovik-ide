@@ -432,7 +432,12 @@ CSP's `frame-ancestors` from the server's answers, which would keep the
 page out of a frame, passes WebSocket upgrades (hot reload) through as
 they are, and on Windows rewrites the page's cookies to
 `SameSite=None; Secure; Partitioned`, which WebView2 keeps in a frame of
-another site. The page's own forwarded port carries its bytes unchanged,
+another site. Each HTML page the tab loads, it asks for uncompressed and
+ends with `<script src="/__rovik/tab.js">`, a path that port answers
+itself (with the nonce of the page's CSP, if it asks for one): the script
+tells the app only the page's address, as the page navigates, for the
+tab's address bar and Reload. What a page's own scripts fetch passes through
+as it came. The page's own forwarded port carries its bytes unchanged,
 for the default browser, where an https page opens. The chat shows the
 forwarded ports under its title, "Opened ports: 5173", each the server's
 own port on a button that opens its page in a tab, or copies the address
@@ -440,14 +445,14 @@ on the computer that leads to it (`localhost:5174` where 5173 was taken
 there), as its ▾ chooses; "Background tasks: 1, open ports: 5173" while
 the agent has commands running in the background there. A port stays
 forwarded until nothing listens on it in the network any more. What a
-command starts with `&` ends with it under bubblewrap, which ends its
-sandbox, so a dev server the agent keeps runs as a background command
-(bash's `background`): it serves its page after the agent's turn, until
-the agent stops it or the user does with its Stop in that row, the chat
-is deleted or moved, or the user's daemon stops. Only pages of the user's
-own servers open this way, http or https at localhost, 127.0.0.1 or ::1:
-any other address is refused, for the user's safety, and the agent is
-told why. A chat's commands open at most 5 pages a minute.
+command starts with `&` ends with it, so a dev server the agent keeps runs
+as a background command (bash's `background`): it serves its page after
+the agent's turn, until the agent stops it or the user does with its Stop
+in that row, the chat is deleted or moved, or the user's daemon stops.
+Only pages of the user's own servers open this way, http or https at
+localhost, 127.0.0.1 or ::1: any other address is refused, for the user's
+safety, and the agent is told why. A chat's commands open at most 5 pages
+a minute.
 
 ## Project services
 

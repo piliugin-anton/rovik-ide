@@ -99,7 +99,6 @@ import {
   isBrowserTab,
   isFileTab,
   navigated,
-  reloaded,
   withFiles,
   withPage,
   type EditorTab,
@@ -2306,7 +2305,7 @@ export default function App() {
                 active={activePath() === tab.path}
                 frame={frameUrl(tab.address, forwardedNow())}
                 onNavigate={(address) => setTabs((all) => navigated(all, tab.path, address))}
-                onReload={() => setTabs((all) => reloaded(all, tab.path))}
+                onReload={(address) => setTabs((all) => navigated(all, tab.path, address))}
               />
             )}
           </For>

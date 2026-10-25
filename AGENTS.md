@@ -9,7 +9,8 @@ second pass. Read the code you change, its callers and its tests before editing.
 - `src/`: SolidJS frontend. `components/` (UI), `lib/` (logic, no JSX), `*.test.ts(x)`.
 - `src-tauri/src/`: the Tauri app (commands). `src-tauri/crates/`: `rovik-protocol` (shared
   types, `Request`/`Response`), `rovik-core` (agent loop, tools, connectors), `rovik-client`,
-  `rovik-agentd` (cloud daemon), `rovik-headless`, `eoka` (browser; has its own CLAUDE.md).
+  `rovik-agentd` (cloud daemon), `rovik-headless`, `eoka` (browser; has its own CLAUDE.md),
+  `russh` (SSH; a fork outside the workspace: its FORK.md says how to test it).
 - Docs: `README.md`, `docs/cloud-hosts.md`; decision ids in comments (D6, K09…) are in `docs/design/`.
 
 ## How to write code here

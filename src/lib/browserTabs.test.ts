@@ -1,16 +1,20 @@
 // What a browser tab shows (lib/browserTabs.ts): the address its address
 // bar takes, where its frame loads a forwarded page (through the forward's
-// tab port), its name in the tab strip, and the pages the app and "Opened
-// ports" ask it to open. Run with: npm test
+// tab port), where the page says it is as it moves (the tab port's script,
+// run here as the page runs it), its name in the tab strip, and the pages
+// the app and "Opened ports" ask it to open. Run with: npm test
 import '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   addressFrom,
   frameUrl,
   onPageWanted,
   openPage,
+  pageAddress,
   pageLabel,
+  reportedAddress,
   setPageOpener,
 } from './browserTabs';
 
@@ -125,4 +129,89 @@ test('the pages the app asks for come to the handler until it stops listening', 
     delete (window as any).__TAURI_INTERNALS__;
     delete (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__;
   }
+});
+
+test('a page at its frame’s origin is shown at the port forwarded here, path and all', () => {
+  const frame = 'http://localhost:40001/';
+  const address = 'http://localhost:5174/';
+  assert.equal(
+    pageAddress('http://localhost:40001/a/b?c=1#d', frame, address),
+    'http://localhost:5174/a/b?c=1#d'
+  );
+  assert.equal(pageAddress('http://localhost:40002/a', frame, address), null, 'another origin');
+  assert.equal(pageAddress('nonsense', frame, address), null);
+  // A page framed at its own address (not forwarded) stays where it is.
+  assert.equal(
+    pageAddress('https://example.com/x', 'https://example.com/', 'https://example.com/'),
+    'https://example.com/x'
+  );
+});
+
+test('only the tab port script’s message says where a page is', () => {
+  const href = 'http://localhost:40001/a';
+  assert.equal(reportedAddress({ type: 'rovik-tab-location', href }), href);
+  assert.equal(reportedAddress({ type: 'other', href }), null);
+  assert.equal(reportedAddress({ type: 'rovik-tab-location', href: 1 }), null);
+  assert.equal(reportedAddress(href), null);
+  assert.equal(reportedAddress(null), null);
+});
+
+/** The tab port's script (rovik-client's remote/tab.js), as it's served. */
+const TAB_SCRIPT = readFileSync('src-tauri/crates/rovik-client/src/remote/tab.js', 'utf8');
+
+/**
+ * Runs the tab port's script in a page: in the app's tab's frame, or `in` a
+ * window of its own or a frame of the page's. What it posts, and how to
+ * move the page and let time pass.
+ */
+function pageWithScript(where: 'tab' | 'window' | 'nested' = 'tab', win: any = {}) {
+  const posted: { data: unknown; target: string }[] = [];
+  const parent = { postMessage: (data: unknown, target: string) => posted.push({ data, target }) };
+  win.parent ??= where === 'window' ? win : parent;
+  win.top ??= where === 'nested' ? {} : win.parent;
+  const location = { href: 'http://localhost:40001/' };
+  const listeners = new Map<string, () => void>();
+  const ticks: (() => void)[] = [];
+  let removed = false;
+  const document = { currentScript: { remove: () => (removed = true) } };
+  new Function('window', 'document', 'location', 'addEventListener', 'setInterval', TAB_SCRIPT)(
+    win,
+    document,
+    location,
+    (event: string, listener: () => void) => listeners.set(event, listener),
+    (tick: () => void) => ticks.push(tick)
+  );
+  const tick = () => ticks.forEach((t) => t());
+  return { win, posted, location, listeners, tick, removed: () => removed };
+}
+
+const at = (href: string) => ({ data: { type: 'rovik-tab-location', href }, target: '*' });
+
+test('the tab port’s script tells the tab where its page is, as the page moves', () => {
+  const page = pageWithScript();
+  assert.ok(page.removed(), 'its tag is gone from the page');
+  assert.deepEqual(page.posted, [at('http://localhost:40001/')]);
+  page.tick();
+  assert.equal(page.posted.length, 1, 'told once while it stays');
+  // history.pushState: seen as time passes.
+  page.location.href = 'http://localhost:40001/about';
+  page.tick();
+  // Back, and a hash: told at once.
+  page.location.href = 'http://localhost:40001/';
+  page.listeners.get('popstate')!();
+  page.location.href = 'http://localhost:40001/#top';
+  page.listeners.get('hashchange')!();
+  assert.deepEqual(page.posted, [
+    at('http://localhost:40001/'),
+    at('http://localhost:40001/about'),
+    at('http://localhost:40001/'),
+    at('http://localhost:40001/#top'),
+  ]);
+  // Run again in the same page (its tag in a page fetched by a script).
+  assert.deepEqual(pageWithScript('tab', page.win).posted, [], 'once a page');
+});
+
+test('the tab port’s script tells nothing in a window of its own or a frame of the page’s', () => {
+  assert.deepEqual(pageWithScript('window').posted, []);
+  assert.deepEqual(pageWithScript('nested').posted, []);
 });
