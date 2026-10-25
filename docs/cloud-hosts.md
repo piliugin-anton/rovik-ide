@@ -431,6 +431,54 @@ and `rovik-agentd doctor` says what's missing and how to add it. A WSL
 distribution, one person's computer, gets none of this: its user runs their
 services with their own container engine, such as Docker Desktop's.
 
+### How a service starts
+
+A service starts when a command of the agent's needs it: one that fails to
+connect to a port the compose file publishes (`connect ECONNREFUSED
+127.0.0.1:5432`, or a database client's own words), or that looks a service
+up by its name (`getaddrinfo ENOTFOUND db`). The user's daemon starts it,
+and what it depends on, under their own Podman, as it installs a missing
+toolchain: the call says "Starting the project's service: db…" meanwhile,
+and a command that is one program runs again once it's up. Claude Code's
+commands get the same through Rovik's hooks. The agent's prompt names the
+project's services, and that they start this way. Plan mode starts nothing,
+and a start that failed isn't tried again for that chat for ten minutes.
+
+- **Its ports are the user's own.** Nothing is published on the server.
+  Each port a service publishes listens in the user's private network
+  ([Each user's own network](#each-users-own-network)) instead, and each
+  connection to it is carried into the service's container, in the
+  container's own namespaces. So `localhost:5432` is that user's database
+  for all of their commands, two users' databases can both be on 5432, and
+  no one else's process can reach either. A port another process of the
+  user's holds in their network is said, and the service runs all the same.
+  TCP ports only.
+- **One per project, for all of the user's chats.** A project's services are
+  one Compose project, `rovik-<project id>`, as one computer's checkout
+  shares its database between branches: the first chat that needs one
+  starts it from its own copy of the project, and the others find it
+  running. Its images, containers and volumes are in the user's
+  `~/.rovik/containers`, where the agent's commands can't see them.
+- **Only what's the project's own.** The compose file is the agent's to
+  write, so it mustn't become a way out of the sandbox. A service starts
+  only when every file it reads (bind mounts, env files, secrets' and
+  configs' files) is in the chat's copy of the project, and it asks for
+  none of the server's devices (`privileged`, `devices`, GPUs) or
+  namespaces (`network_mode: host`, `pid: host` and the like), nor a user
+  namespace, cgroup or `security_opt` of its own; a volume with a driver
+  or its options is refused too. What it reads is a copy, made in the
+  daemon's folder before it starts, so a link put in a file's place
+  meanwhile reaches nothing, and what it writes stays in the copy, never in
+  the chat's files. A copy is made again when its files changed and its
+  service isn't running. A service built from the project's own Dockerfile
+  is the project's code, which the agent runs with its commands: it isn't
+  started.
+- **Its life.** A service runs until the user's daemon stops (a restart, an
+  upgrade, a reboot), which stops it cleanly first; its volumes stay. Its
+  containers make no cgroups of their own and stay under the daemon's
+  unit, so the user's memory, CPU and task caps cover them; a service's own
+  limits (`mem_limit`, `pids_limit`) aren't applied.
+
 ## WSL on Windows
 
 On Windows the same daemon runs in a WSL2 distribution, as Rovik's Linux

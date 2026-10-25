@@ -173,6 +173,15 @@ impl Model {
         self.file.rsplit_once('/').map_or("", |(folder, _)| folder)
     }
 
+    /// The project it was read in: its folder, or the one above it for a
+    /// file one level down.
+    pub fn root(&self) -> &Path {
+        match self.folder() {
+            "" => &self.dir,
+            _ => self.dir.parent().unwrap_or(&self.dir),
+        }
+    }
+
     /// The services that run from an image of their own.
     pub fn backing(&self) -> impl Iterator<Item = &Service> {
         self.services.iter().filter(|service| service.backing())
@@ -574,6 +583,17 @@ mod tests {
         assert_eq!(model.on_port(5432), None, "the port inside isn't published");
         assert_eq!(model.on_port(6000), None, "a UDP port isn't connected to");
         assert_eq!(model.on_port(3000).map(|s| s.name.as_str()), Some("web"));
+    }
+
+    #[test]
+    fn a_file_one_level_down_belongs_to_the_project_above_it() {
+        let own = Model::parse(Path::new("/p/shop"), "compose.yaml", PRINTED).unwrap();
+        assert_eq!((own.folder(), own.root()), ("", Path::new("/p/shop")));
+        let below = Model::parse(Path::new("/p/shop/api"), "api/compose.yaml", PRINTED).unwrap();
+        assert_eq!(
+            (below.folder(), below.root()),
+            ("api", Path::new("/p/shop"))
+        );
     }
 
     #[test]

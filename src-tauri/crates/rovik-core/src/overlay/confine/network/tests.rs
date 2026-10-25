@@ -113,14 +113,90 @@ fn run_in(network: &Network, script: &str) -> std::process::Output {
     cmd.output().unwrap()
 }
 
-/// A socket listening on `port` of `network`'s loopback.
+/// A socket listening on `port` of `network`'s loopback, 127.0.0.1's.
 fn listen_on(network: &Network, port: u16) -> io::Result<std::net::TcpListener> {
     network
-        .socket_inside(Inside::Listen(raw_address(SocketAddr::from((
-            Ipv4Addr::LOCALHOST,
-            port,
-        )))))
-        .map(std::net::TcpListener::from)
+        .listen_on(port)
+        .map(|mut listening| listening.remove(0))
+}
+
+/// A port nothing listens on in `network` now.
+fn free_port(network: &Network) -> u16 {
+    let listener = network.listen().unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+/// A service's port listens inside on 127.0.0.1 and, where the network has
+/// IPv6, on ::1: a client that looks `localhost` up as either reaches it.
+#[test]
+fn a_services_port_listens_inside_on_both_loopbacks() {
+    let Some((_dir, network)) = network(&[], None) else {
+        return;
+    };
+    let port = free_port(&network);
+    let listening = network.listen_on(port).expect("a free port listens");
+    let addresses: Vec<SocketAddr> = listening.iter().map(|l| l.local_addr().unwrap()).collect();
+    assert_eq!(addresses[0], SocketAddr::from((Ipv4Addr::LOCALHOST, port)));
+    assert!(
+        addresses[1..]
+            .iter()
+            .all(|a| *a == SocketAddr::from((Ipv6Addr::LOCALHOST, port))),
+        "{addresses:?}"
+    );
+    let first = listening.into_iter().next().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = first.accept().unwrap();
+        stream.write_all(b"the service").unwrap();
+    });
+    let mut client = network.connect(port).unwrap();
+    let mut said = String::new();
+    client.read_to_string(&mut said).unwrap();
+    assert_eq!(said, "the service");
+    server.join().unwrap();
+}
+
+/// A process's own network is reached in its namespaces, entered from
+/// outside: as the daemon reaches a service in one of its user's rootless
+/// containers. The network's holder stands in for the container: its user
+/// namespace is this user's, as Podman's is.
+#[test]
+fn a_port_in_another_processs_network_is_reached_in_its_namespaces() {
+    let Some((_dir, network)) = network(&[], None) else {
+        return;
+    };
+    let listener = network.listen().unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(b"inside the container").unwrap();
+    });
+    let holder = network.holder.load(Ordering::Relaxed);
+    let container = Namespaces::of(holder).expect("the holder's namespaces");
+    let mut client = container.connect(port).expect("its network is entered");
+    let mut said = String::new();
+    client.read_to_string(&mut said).unwrap();
+    assert_eq!(said, "inside the container");
+    server.join().unwrap();
+    // Nothing listening there now: refused, as a stopped service is.
+    let refused = container.connect(port).unwrap_err();
+    assert_eq!(
+        refused.raw_os_error(),
+        Some(libc::ECONNREFUSED),
+        "{refused}"
+    );
+}
+
+/// A process in the daemon's own network is in no container: a connection
+/// made there would reach the server's loopback, which every user shares.
+#[test]
+fn a_process_in_the_daemons_own_network_is_no_container() {
+    let refused = Namespaces::of(std::process::id())
+        .err()
+        .expect("this process's own network refused");
+    assert!(
+        refused.to_string().contains("the daemon's own network"),
+        "{refused}"
+    );
 }
 
 #[test]

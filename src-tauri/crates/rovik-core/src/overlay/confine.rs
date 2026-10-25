@@ -572,11 +572,19 @@ pub mod network {
             match *self {}
         }
 
+        pub fn listen_on(&self, _port: u16) -> std::io::Result<Vec<std::net::TcpListener>> {
+            match *self {}
+        }
+
         pub fn connect(&self, _port: u16) -> std::io::Result<std::net::TcpStream> {
             match *self {}
         }
 
         pub fn listening_ports(&self) -> Vec<u16> {
+            match *self {}
+        }
+
+        pub fn listening_on(&self, _port: u16) -> Vec<(u32, Option<String>)> {
             match *self {}
         }
 
@@ -597,6 +605,19 @@ pub mod network {
     /// None: there's no private network here.
     pub fn current() -> Option<Arc<Network>> {
         None
+    }
+
+    /// A container's namespaces: Linux's alone.
+    pub enum Namespaces {}
+
+    impl Namespaces {
+        pub fn of(_pid: u32) -> std::io::Result<Namespaces> {
+            Err(std::io::Error::new(std::io::ErrorKind::Unsupported, NONE))
+        }
+
+        pub fn connect(&self, _port: u16) -> std::io::Result<std::net::TcpStream> {
+            match *self {}
+        }
     }
 }
 

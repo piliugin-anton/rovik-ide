@@ -188,6 +188,10 @@ async fn run(
             ),
         }
     }
+    // This user's project services (D21), whose ports are in that network:
+    // started by this daemon when a command needs one, or the agent is
+    // told why this server can't.
+    let services = crate::services::set_up(&home, limits.installed);
 
     // 6. The virtual files, so CLM chats can use them (K15).
     let virtual_files_problem = if no_virtual_files {
@@ -250,6 +254,9 @@ async fn run(
             log::info!("stopping during start-up: the runs pause first, for up to {DRAIN_WAIT:?}");
             let paused = agent_run::drain(&core, DRAIN_WAIT).await;
             log::info!("{paused} paused for the next start");
+            if let Some(services) = &services {
+                services.stop_all().await;
+            }
             core.shutdown().await;
             stops.stopped_cleanly(now_ms());
             return Ok(());
@@ -280,6 +287,9 @@ async fn run(
         })
         .await;
     log::info!("stopping");
+    if let Some(services) = &services {
+        services.stop_all().await;
+    }
     core.shutdown().await;
     stops.stopped_cleanly(now_ms());
     let _ = std::fs::remove_file(&socket);

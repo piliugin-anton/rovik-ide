@@ -473,8 +473,11 @@ its permission mode):
   which service it needed and that it isn't running. On your own computer
   it asks you to start it (`docker compose up -d db`): its commands can't
   start containers, since the sandbox closes Docker's and Podman's sockets
-  to them. A service looked up by its name is reached at its published
-  port on localhost instead, and the agent is told so.
+  to them. On a cloud host your daemon starts it under your own Podman, its
+  ports in your private network there, and the command runs again
+  ([docs/cloud-hosts.md](docs/cloud-hosts.md#project-services)). A service
+  looked up by its name is reached at its published port on localhost
+  instead, and the agent is told so.
 - **Running it again.** A command that is one program (`npm test`) runs again
   by itself once what it lacked is there, and the agent sees both why and the
   second run. A longer one (`cd web && npm test`) is left to the agent, since

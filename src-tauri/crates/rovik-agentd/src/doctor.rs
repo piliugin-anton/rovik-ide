@@ -15,6 +15,7 @@ use crate::home::{self, Home};
 use crate::host;
 use crate::limits::{size_of, AdminFile, ADMIN_FILE};
 use crate::network;
+use crate::services::Containers;
 use rovik_protocol::connectors::ConnectorKind;
 use rovik_protocol::host::{Disk, Doctor, Finding, InstallLimits, Level, Storage};
 use rovik_protocol::PROTOCOL;
@@ -82,39 +83,6 @@ pub struct Server {
     pub git: Option<String>,
     /// A folder's file system: its free and total bytes.
     pub disk: fn(&Path) -> Option<(u64, u64)>,
-}
-
-/// What runs a user's project services on a team server (D21,
-/// installer/containers.rs), as doctor finds it.
-pub struct Containers {
-    /// What `podman --version` says, where Podman is installed.
-    pub podman: Option<String>,
-    /// Whether the pinned Docker Compose is installed.
-    pub compose: bool,
-    /// The subordinate uids and gids this user has (/etc/subuid, /etc/subgid).
-    pub ids: (u64, u64),
-}
-
-impl Containers {
-    /// This server's, for the user `user` with uid `uid`.
-    fn here(user: &str, uid: u32) -> Containers {
-        let podman = Command::new("podman")
-            .arg("--version")
-            .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
-        let ids = |file: &str| {
-            std::fs::read_to_string(file)
-                .map(|text| crate::installer::subids::ids_of(&text, user, uid))
-                .unwrap_or(0)
-        };
-        Containers {
-            podman,
-            compose: rovik_core::pinned_compose::installed().is_some(),
-            ids: (ids("/etc/subuid"), ids("/etc/subgid")),
-        }
-    }
 }
 
 impl Server {
@@ -444,36 +412,9 @@ impl Findings {
     /// the pinned Docker Compose, and subordinate ids for their containers.
     /// A warning names everything missing and how it's fixed.
     fn containers(&mut self, containers: &Containers, user: &str) {
-        use crate::installer::containers::{podman_version, MIN_PODMAN};
-        use crate::installer::subids::COUNT;
         use rovik_core::pinned_compose::{NAME, VERSION};
-        let installer = crate::installer::INSTALLED;
-        let version = containers.podman.as_deref().and_then(podman_version);
-        let mut missing = Vec::new();
-        match version {
-            None => missing.push(format!(
-                "Podman isn't installed (sudo {installer} admin containers installs it)"
-            )),
-            Some((major, minor)) if (major, minor) < MIN_PODMAN => missing.push(format!(
-                "Podman {major}.{minor} is older than the {}.{} Rovik needs (a newer release \
-                 of the distribution has it)",
-                MIN_PODMAN.0, MIN_PODMAN.1
-            )),
-            Some(_) => {}
-        }
-        if !containers.compose {
-            missing.push(format!(
-                "{NAME} {VERSION} isn't installed (sudo {installer} admin containers installs it)"
-            ));
-        }
-        let (uids, gids) = containers.ids;
-        if uids < COUNT || gids < COUNT {
-            missing.push(format!(
-                "{user} has {uids} subordinate uids and {gids} gids, not the {COUNT} of each \
-                 their containers' users map to (sudo {installer} user start adds them)"
-            ));
-        }
-        match (missing.is_empty(), version) {
+        let missing = containers.missing(user);
+        match (missing.is_empty(), containers.version()) {
             (true, Some((major, minor))) => self.ok(format!(
                 "containers: Podman {major}.{minor} and {NAME} {VERSION} run this user's \
                  project services"

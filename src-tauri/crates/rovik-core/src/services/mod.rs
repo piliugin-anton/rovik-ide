@@ -18,6 +18,9 @@
 //! sockets from them.
 
 pub mod compose;
+// A cloud host's daemon checks it, on Linux; its paths are Unix paths.
+#[cfg(unix)]
+pub mod policy;
 
 use compose::{Model, Service};
 use futures_util::future::BoxFuture;
