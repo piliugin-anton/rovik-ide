@@ -353,6 +353,9 @@ Rovik opens the sign-in page in your browser and you paste the code it
 shows. **Sign out** signs the program out. A test also finds out whether
 a newer version is published (Anthropic's release channel, `latest`), and
 **Update to …** then runs the program's own updater (`claude update`).
+When the check as Rovik starts finds a newer version on this computer, a
+notification offers it too, once per version: **Update** runs the same
+updater, checks the program again and says how it went.
 
 A chat on a connector's model hands the harness the task: the model, the
 effort and the message, in the project folder. The harness keeps its own

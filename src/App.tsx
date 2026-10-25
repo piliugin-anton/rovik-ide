@@ -150,6 +150,7 @@ import {
   reloadAiSettings,
 } from './lib/aiSettingsStore';
 import { checkConnectorsOnStart } from './lib/connectors';
+import { offerConnectorUpdates } from './lib/connectorUpdates';
 import { dismissBootSplash } from './lib/bootSplash';
 
 let unlistenFSChanges: (() => void) | undefined;
@@ -261,14 +262,17 @@ export default function App() {
   // now, so the dialog opens on them, again each time it opens, and again
   // when another window may have saved them (this one came to the front:
   // rereadAiSettingsOnFocus, below).
-  // Then, once: whether each connector a chat can pick is signed in
-  // (lib/connectors.ts), with a warning for any that can't run.
+  // Then, once: each connector's status (lib/connectors.ts), with a
+  // warning for any a chat can pick that can't run, and an offer to update
+  // any a newer version of is out (lib/connectorUpdates.ts).
   onMount(
     () =>
       void reloadAiSettings()
         .then(() => {
           if (aiSettingsLoadFailed()) return;
-          return checkConnectorsOnStart(aiProviders(), () => openAppSettings('connectors'));
+          return checkConnectorsOnStart(aiProviders(), () => openAppSettings('connectors')).then(
+            (found) => offerConnectorUpdates(aiProviders(), found)
+          );
         })
         .catch((err) => console.error(err))
   );
