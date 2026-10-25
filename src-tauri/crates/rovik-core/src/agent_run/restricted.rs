@@ -1598,6 +1598,9 @@ fn effects(
             ..Effects::default()
         },
         "curl" => curl_effects(args),
+        "tar" | "gtar" | "bsdtar" | "zip" | "7z" | "7za" | "7zz" | "cpio" => {
+            archive_effects(program, args, cwd)
+        }
         "sort" => {
             let a = Args::split(
                 args,
@@ -2006,6 +2009,201 @@ const GIT_NO_PATCH: &[&str] = &[
     "--raw",
     "--quiet",
 ];
+
+/// tar's options that take a value.
+const TAR_VALUES: &[&str] = &[
+    "-f",
+    "--file",
+    "-C",
+    "--directory",
+    "-T",
+    "--files-from",
+    "-X",
+    "--exclude-from",
+    "--exclude",
+    "-b",
+    "--blocking-factor",
+    "-I",
+    "--use-compress-program",
+    "-g",
+    "--listed-incremental",
+    "-H",
+    "--format",
+    "-K",
+    "--starting-file",
+    "-L",
+    "--tape-length",
+    "-F",
+    "--info-script",
+    "-N",
+    "--newer",
+    "-V",
+    "--label",
+    "--transform",
+    "--xform",
+    "--owner",
+    "--group",
+    "--mode",
+    "--mtime",
+];
+
+/// What tar, zip, 7z and cpio put in an archive they make: the files and
+/// folders they're given, a folder with all it holds but what their
+/// excludes leave out (`--exclude='.env*'`, zip's `-x`), or those named on
+/// their input or in a list (`-T -`, `zip -@`, `cpio -o`), which the
+/// command's other words decide. They read them, as `cp -r` does, into a
+/// file the agent may read. What an archive holds can't be told, so
+/// extracting or listing one isn't judged.
+fn archive_effects(program: &str, args: &[String], cwd: &Path) -> Effects {
+    let (inputs, excludes, whole) = match program {
+        "zip" => zip_inputs(args, cwd),
+        "7z" | "7za" | "7zz" => {
+            if !args.first().is_some_and(|a| a == "a" || a == "u") {
+                return Effects::default();
+            }
+            let words = args[1..].iter().filter(|a| !a.starts_with('-')).skip(1);
+            // `@list` names files in a list.
+            let inputs = words
+                .map(|w| match w.starts_with('@') {
+                    true => INPUT.to_string(),
+                    false => w.clone(),
+                })
+                .collect();
+            // `-xr!name` leaves out what has that name, anywhere; others
+            // (`-x!` is only where it's run) are left out of the judging.
+            let excludes = args
+                .iter()
+                .filter_map(|a| a.strip_prefix("-xr!"))
+                .filter(|p| !p.contains(['/', '\\']))
+                .map(str::to_string)
+                .collect();
+            (inputs, excludes, true)
+        }
+        "cpio" => {
+            let a = Args::split(args, &["-H", "--format", "-F", "--file", "-O", "-I"], false);
+            if !a.has(&["-o", "--create", "-p", "--pass-through"]) {
+                return Effects::default();
+            }
+            // It takes the names on its input, and no folder's files.
+            (vec![INPUT.to_string()], Vec::new(), false)
+        }
+        _ => match tar_inputs(args) {
+            Some((inputs, excludes)) => (inputs, excludes, true),
+            None => return Effects::default(),
+        },
+    };
+    Effects {
+        trees: if whole {
+            inputs.iter().map(|i| (i.clone(), Op::Read)).collect()
+        } else {
+            Vec::new()
+        },
+        reads: inputs,
+        excludes,
+        ..Effects::default()
+    }
+}
+
+/// What tar makes an archive of, and the patterns it leaves out; None when
+/// it makes none. Each name is from the folder the `-C`s before it lead to.
+fn tar_inputs(args: &[String]) -> Option<(Vec<String>, Vec<String>)> {
+    let args = tar_args(args);
+    let a = Args::split(&args, TAR_VALUES, false);
+    if !a.has(&["-c", "--create", "-r", "--append", "-u", "--update"]) {
+        return None;
+    }
+    let folder_after = |options: usize| {
+        a.options[..options]
+            .iter()
+            .filter(|(name, _)| name == "-C" || name == "--directory")
+            .filter_map(|(_, folder)| *folder)
+            .fold(String::new(), |folder, to| in_folder(&folder, to))
+    };
+    let mut inputs: Vec<String> = a
+        .words
+        .iter()
+        .zip(&a.before)
+        .map(|(word, &options)| in_folder(&folder_after(options), word))
+        .collect();
+    // Names in a list, or on its input (`-T -`).
+    if a.has(&["-T", "--files-from"]) {
+        inputs.push(INPUT.to_string());
+    }
+    // tar matches a pattern against each part of a name's end: as a walk
+    // leaves a name out anywhere. Not one starting with `/` (no name tar
+    // keeps does), nor any when they match whole names or no wildcards.
+    let as_written = a.has(&["--anchored", "--no-wildcards"]);
+    let excludes = a
+        .values(&["--exclude"])
+        .filter(|p| !as_written && !p.starts_with('/'))
+        .map(str::to_string)
+        .collect();
+    Some((inputs, excludes))
+}
+
+/// tar's words, its first read as options when it has no `-` (`tar czf
+/// out.tgz .`): a letter each, those that take a value taking the next
+/// words in turn (`tar cCf dir out.tar .`).
+fn tar_args(args: &[String]) -> Vec<String> {
+    let Some((first, rest)) = args.split_first().filter(|(f, _)| !f.starts_with('-')) else {
+        return args.to_vec();
+    };
+    let mut rest = rest.iter().cloned();
+    let mut out = Vec::new();
+    for letter in first.chars() {
+        let option = format!("-{letter}");
+        let valued = TAR_VALUES.contains(&option.as_str());
+        out.push(option);
+        out.extend(valued.then(|| rest.next()).flatten());
+    }
+    out.extend(rest);
+    out
+}
+
+/// What zip packs, the patterns it leaves out as a walk would, and whether
+/// it takes folders with all they hold (`-r`). `-x` and `-i` take the words
+/// after them, to the next option; the first other word is the archive.
+fn zip_inputs(args: &[String], cwd: &Path) -> (Vec<String>, Vec<String>, bool) {
+    let (mut words, mut patterns, mut recursive) = (Vec::new(), Vec::new(), false);
+    // What the words after `-x` (Some(true)) or `-i` (Some(false)) are.
+    let mut listing: Option<bool> = None;
+    for arg in args {
+        match arg.as_str() {
+            "-x" | "--exclude" => listing = Some(true),
+            "-i" | "--include" => listing = Some(false),
+            // Names on its input.
+            "-@" | "--names-stdin" => {
+                words.push(INPUT.to_string());
+                listing = None;
+            }
+            option if option.starts_with('-') && option.len() > 1 => {
+                let short = !option.starts_with("--");
+                recursive |= matches!(option, "--recurse-paths" | "--recurse-patterns")
+                    || (short && option.contains(['r', 'R']));
+                listing = None;
+            }
+            word => match listing {
+                Some(true) => patterns.push(word.to_string()),
+                Some(false) => {}
+                None => words.push(word.to_string()),
+            },
+        }
+    }
+    let inputs: Vec<String> = words.into_iter().skip(1).collect();
+    // zip matches a pattern against a file's whole path from where it runs,
+    // `*` crossing `/`, and keeps a folder's files when only the folder
+    // matches. Packing only `.`, one ending in `*` (`.env*`, `config/*`) or
+    // naming a file leaves out what it does from a walk there; others
+    // (`*.env`, a folder, `**/x`) are left out of the judging.
+    let here = inputs.iter().all(|w| w == "." || w == "./");
+    let excludes = patterns
+        .into_iter()
+        .filter(|p| here && !p.starts_with('/') && !p.starts_with("./") && !p.contains("**"))
+        .filter(|p| p.ends_with('*') || (!has_wildcard(p) && !cwd.join(p).is_dir()))
+        .map(|p| format!("/{p}"))
+        .collect();
+    (inputs, excludes, recursive)
+}
 
 /// What git does with files, from the folder `-C` takes it to (from
 /// `cwd`): those its words name that it prints (`git show REV:path`, `git
@@ -3008,6 +3206,8 @@ fn values_of(args: &[String], key: &str) -> Vec<String> {
 struct Args<'a> {
     options: Vec<(String, Option<&'a str>)>,
     words: Vec<&'a str>,
+    /// For each word, how many options come before it.
+    before: Vec<usize>,
 }
 
 impl<'a> Args<'a> {
@@ -3020,7 +3220,7 @@ impl<'a> Args<'a> {
         let mut options_end = false;
         while let Some(word) = words.next() {
             if options_end || word == "-" {
-                out.words.push(word);
+                out.word(word);
             } else if word == "--" {
                 options_end = true;
             } else if slash && is_slash_option(word) {
@@ -3055,10 +3255,15 @@ impl<'a> Args<'a> {
                     out.options.push((name, None));
                 }
             } else {
-                out.words.push(word);
+                out.word(word);
             }
         }
         out
+    }
+
+    fn word(&mut self, word: &'a str) {
+        self.words.push(word);
+        self.before.push(self.options.len());
     }
 
     fn has(&self, names: &[&str]) -> bool {
@@ -4333,6 +4538,73 @@ mod tests {
             "f() { cat README.md; }; f",
             "case x in x) cat README.md;; esac",
             "if (cd src && ls); then echo ok; fi",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn an_archive_reads_what_it_packs_but_what_it_leaves_out() {
+        let (_dir, root) = project(&[]);
+        for (command, refusal) in [
+            ("tar czf /tmp/proj.tgz .", "would copy or move .env,"),
+            (
+                "tar -czf /tmp/proj.tgz -C config .",
+                "would copy or move config/master.key,",
+            ),
+            // Old-style letters take their values in turn.
+            (
+                "tar cCf config /tmp/proj.tar .",
+                "would copy or move config/master.key,",
+            ),
+            // Each `-C` leads on from the one before.
+            (
+                "tar -czf /tmp/proj.tgz -C src . -C .. .env",
+                "would read .env,",
+            ),
+            // Patterns tar matches no name with, or matches as written.
+            (
+                "tar --exclude=/.env -czf /tmp/proj.tgz .",
+                "would copy or move .env,",
+            ),
+            (
+                "tar --anchored --exclude=.env -czf /tmp/proj.tgz .",
+                "would copy or move .env,",
+            ),
+            ("find . -name '.env*' | tar -czf /tmp/proj.tgz -T -", ".env"),
+            ("zip -r /tmp/proj.zip .", "would copy or move .env,"),
+            // zip keeps the .env at the top, and a folder's files.
+            (
+                "zip -r /tmp/proj.zip . -x '**/.env*' 'config/*'",
+                "would copy or move .env,",
+            ),
+            (
+                "zip -r /tmp/proj.zip . -x '.env*' config",
+                "would copy or move config/master.key,",
+            ),
+            ("zip /tmp/env.zip .env", "would read .env,"),
+            (
+                "find . -name '*.key' | zip /tmp/keys.zip -@",
+                "config/master.key",
+            ),
+            ("7z a /tmp/proj.7z .", "would copy or move .env,"),
+            ("find . | cpio -o > /tmp/proj.cpio", ".env"),
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains(refusal), "{command}: {refused}");
+        }
+        for command in [
+            "tar czf /tmp/src.tgz src",
+            "tar -C src -czf /tmp/src.tgz .",
+            "tar --exclude='.env*' --exclude=config -czf /tmp/proj.tgz .",
+            "zip -r /tmp/proj.zip . -x '.env*' 'config/*'",
+            "zip /tmp/proj.zip README.md",
+            "7z a /tmp/proj.7z . -xr!.env* -xr!config",
+            "find src | cpio -o > /tmp/src.cpio",
+            // What an archive holds can't be told.
+            "tar xzf /tmp/proj.tgz",
+            "tar tzf /tmp/proj.tgz",
         ] {
             assert_eq!(command_problem(command, &root, &none()), None, "{command}");
         }
