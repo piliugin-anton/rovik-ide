@@ -73,9 +73,12 @@ export function withoutEntry(entries: RestrictedFile[], path: string): Restricte
   return entries.filter((e) => e.path !== path);
 }
 
-/** Whether a typed path is a pattern (`*.pem`), which the list doesn't match. */
+/**
+ * Whether a typed path is a pattern (`*.pem`), which the list doesn't
+ * match. Brackets are a name's (Next.js's `app/[id]/`).
+ */
 export function isPattern(input: string): boolean {
-  return /[*?[\]]/.test(input);
+  return /[*?]/.test(input);
 }
 
 /**

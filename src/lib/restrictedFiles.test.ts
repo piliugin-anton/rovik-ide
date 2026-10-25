@@ -142,6 +142,8 @@ test('changes made one after another each keep the one before, however long savi
 test('a typed pattern is told apart from a path', () => {
   assert.equal(isPattern('*.pem'), true);
   assert.equal(isPattern('config/key?.json'), true);
-  assert.equal(isPattern('secrets/[ab].txt'), true);
   assert.equal(isPattern('config/keys.json'), false);
+  // Brackets are part of names: Next.js's dynamic routes.
+  assert.equal(isPattern('app/[id]/secret.json'), false);
+  assert.equal(isPattern('app/[...slug]/.env.local'), false);
 });

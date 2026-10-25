@@ -255,6 +255,21 @@ test('restricted files: another project’s table is shown when it opens', async
   );
 });
 
+test('restricted files: a path with brackets in its names is added', async () => {
+  const root = await page();
+  const input = root.querySelector('.restricted-file-add input') as HTMLInputElement;
+  input.value = 'app/[id]/secret.json';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  (root.querySelector('.restricted-file-add') as HTMLFormElement).dispatchEvent(
+    new Event('submit', { bubbles: true, cancelable: true })
+  );
+  await flush();
+  assert.ok(
+    rows(root).some((r) => r.file === 'app/[id]/secret.json'),
+    root.textContent!
+  );
+});
+
 test('restricted files: a pattern isn’t added, as the list matches paths', async () => {
   const root = await page();
   const input = root.querySelector('.restricted-file-add input') as HTMLInputElement;
