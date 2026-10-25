@@ -1,9 +1,10 @@
 # Rovik's fork of eoka
 
 This is [eoka](https://github.com/shrimp-software/eoka) 0.7.2, MIT
-(`LICENSE`), as published on crates.io, with a pipe transport added. The
-workspace uses it in place of the crates.io release through
-`[patch.crates-io]` in `src-tauri/Cargo.toml`.
+(`LICENSE`), as published on crates.io, with a pipe transport added, and
+Chrome's reason kept when a navigation fails. The workspace uses it in place
+of the crates.io release through `[patch.crates-io]` in
+`src-tauri/Cargo.toml`.
 
 ## Why
 
@@ -15,6 +16,10 @@ D18 and K52). With `StealthConfig::pipe`, eoka starts Chrome with
 `--remote-debugging-pipe` instead: CDP travels over two pipes that only
 this process holds, and no port is opened. Rovik's browser tools use it
 on Linux and macOS (`rovik-core/src/browser_tools.rs`).
+
+A page Chrome couldn't open used to fail with "Navigation failed" alone; it
+now says Chrome's reason (`net::ERR_CONNECTION_REFUSED`), which tells the
+agent what went wrong.
 
 ## What differs from 0.7.2
 
@@ -39,10 +44,14 @@ on Linux and macOS (`rovik-core/src/browser_tools.rs`).
   macOS honours only under Google's signature, so it killed the copy as it
   started (SIGKILL, nothing on stderr).
 - `src/lib.rs`: the `pipe` field.
+- `src/action/perform.rs`: a navigation Chrome can't complete fails with
+  Chrome's `errorText` (`Error::Navigation("net::ERR_CONNECTION_REFUSED")`),
+  as `check_nav_result` gives it, not with "Navigation failed".
 - Tests: the transport tests run over both links; `tests/pipe.rs` checks
-  a real Chrome over the pipe.
-- `CHANGELOG.md` and `README.md` describe the pipe; `CLAUDE.md` and
-  `AGENTS.md` name it in the architecture.
+  a real Chrome over the pipe; `tests/actions.rs` checks a refused
+  navigation's reason with a real Chrome.
+- `CHANGELOG.md` and `README.md` describe the pipe and the navigation's
+  reason; `CLAUDE.md` and `AGENTS.md` name the pipe in the architecture.
 
 Dropped from the published package: `Cargo.toml` as normalized by
 `cargo publish` (`Cargo.toml.orig` is now `Cargo.toml`), `Cargo.lock`
@@ -50,15 +59,16 @@ Dropped from the published package: `Cargo.toml` as normalized by
 
 ## Updating and dropping the fork
 
-The change is meant to go upstream. The commit that vendored 0.7.2 is the
+The changes are meant to go upstream. The commit that vendored 0.7.2 is the
 base: `git diff <that commit> --relative=src-tauri/crates/eoka -- . ':!FORK.md'`,
 run in `src-tauri/crates/eoka`, is a patch for eoka's v0.7.2. When an eoka
-release has a pipe transport, set `rovik-core`'s `eoka` to that release, remove the
-`[patch.crates-io]` entry and `crates/eoka` from the workspace members,
-delete this folder, and adapt `browser_tools.rs` to the release's
-option if its name differs.
+release has a pipe transport and the navigation's reason, set `rovik-core`'s
+`eoka` to that release, remove the `[patch.crates-io]` entry and
+`crates/eoka` from the workspace members, delete this folder, and adapt
+`browser_tools.rs` to the release's option if its name differs.
 
 Until then, to move to a newer eoka: unpack the new release over this
 folder (keeping this file), redo the changes listed above, and run
 `cargo test -p eoka` and the ignored browser tests
-(`cargo test -p eoka --test pipe -- --ignored`) with Chrome installed.
+(`cargo test -p eoka --test pipe --test actions -- --ignored`) with Chrome
+installed.

@@ -522,6 +522,10 @@ page.back().await?;
 page.forward().await?;
 ```
 
+A navigation Chrome can't complete fails with Chrome's reason, as the action
+error's source: `Error::Navigation("net::ERR_CONNECTION_REFUSED")`, say. An HTTP
+error status still loads its page, and an aborted navigation isn't an error.
+
 `goto_with_headers` clears extra headers to an empty map after navigation, error,
 or cancellation; it does not restore earlier persistent headers. Navigation and
 header changes through handles for the same target are serialized. After

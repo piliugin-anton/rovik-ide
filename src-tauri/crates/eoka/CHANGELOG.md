@@ -19,6 +19,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- A navigation Chrome can't complete fails with Chrome's own reason
+  (`Navigation error: net::ERR_CONNECTION_REFUSED`), as
+  `navigate_for_download` reports it, not with "Navigation failed".
 - An explicit `/snap/bin/<app>` path is kept as given: it links to the `snap`
   binary, which starts the app only under the link's name.
 - macOS: the patched copy of Chrome is signed ad hoc without the original's

@@ -452,11 +452,14 @@ async fn navigate(page: &Page, dispatch: &Dispatch, params: Value) -> Result<Ver
     let result = dispatch
         .send(page.session(), "Page.navigate", params, false)
         .await?;
-    if result["errorText"]
+    if let Some(error) = result["errorText"]
         .as_str()
-        .is_some_and(|e| e != "net::ERR_HTTP_RESPONSE_CODE_FAILURE" && e != "net::ERR_ABORTED")
+        .filter(|e| *e != "net::ERR_HTTP_RESPONSE_CODE_FAILURE" && *e != "net::ERR_ABORTED")
     {
-        return Err(Error::Navigation("Navigation failed".into()));
+        // Chrome's own reason (`net::ERR_CONNECTION_REFUSED`,
+        // `net::ERR_NAME_NOT_RESOLVED`…), as `check_nav_result` reports it:
+        // without it a caller can't tell why the page didn't open.
+        return Err(Error::Navigation(error.to_owned()));
     }
     Ok(Verification::Navigation {
         loader: result["loaderId"].as_str().map(str::to_owned),
