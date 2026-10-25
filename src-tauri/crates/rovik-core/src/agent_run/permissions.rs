@@ -890,7 +890,7 @@ fn wrapper_words(name: &str, rest: &[String]) -> Option<usize> {
     while let Some(w) = rest.get(at) {
         if name == "env" && w.contains('=') && !w.starts_with('-') {
             at += 1;
-        } else if takes.contains(&w.as_str()) {
+        } else if takes.contains(&w.as_str()) || ends_in_value(w, takes) {
             at += 2;
         } else if w.starts_with('-') && w.len() > 1 {
             at += 1;
@@ -903,6 +903,20 @@ fn wrapper_words(name: &str, rest: &[String]) -> Option<usize> {
         at += 1;
     }
     Some(1 + at)
+}
+
+/// Whether `word`, a cluster of short options, ends with the first of
+/// them that takes a value, so the value is the next word (`xargs -0a
+/// list`, `sudo -iu bob`): one before the end takes the cluster's rest
+/// (`-n1`).
+fn ends_in_value(word: &str, takes: &[&str]) -> bool {
+    let Some(letters) = word.strip_prefix('-').filter(|l| !l.starts_with('-')) else {
+        return false;
+    };
+    letters
+        .char_indices()
+        .find(|(_, c)| takes.contains(&format!("-{c}").as_str()))
+        .is_some_and(|(at, c)| at + c.len_utf8() == letters.len())
 }
 
 /// The words of a segment past the wrappers that only run the rest (P0.2):
@@ -2462,6 +2476,17 @@ mod tests {
         }
         assert!(elevated(&split_words("doas cat f")));
         assert!(!segment_is_read_only(&split_words("doas cat f")));
+        // A cluster's last option takes the next word; one before its end,
+        // the cluster's rest.
+        for (command, runs) in [
+            ("sudo -iu bob cat f", vec!["cat", "f"]),
+            ("xargs -0a list cat", vec!["cat"]),
+            ("xargs -0I {} cat {}", vec!["cat", "{}"]),
+            ("xargs -rn1 cat", vec!["cat"]),
+            ("timeout -k5 10 cat f", vec!["cat", "f"]),
+        ] {
+            assert_eq!(unwrap_wrappers(&split_words(command)), runs, "{command}");
+        }
     }
 
     /// Round 2 (§4.2): the denied list, however `rm -rf` is written or

@@ -4776,6 +4776,16 @@ mod tests {
     }
 
     #[test]
+    fn a_wrappers_options_are_read_as_it_reads_them() {
+        let (_dir, root) = project(&[]);
+        for command in ["sudo -iu root cat .env", "xargs -0I {} cat .env"] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains("would read .env,"), "{command}: {refused}");
+        }
+    }
+
+    #[test]
     fn a_copy_that_never_overwrites_changes_only_new_files() {
         let (_dir, root) = project(&[]);
         for command in [
