@@ -474,7 +474,8 @@ its permission mode):
   it asks you to start it (`docker compose up -d db`): its commands can't
   start containers, since the sandbox closes Docker's and Podman's sockets
   to them. On a cloud host your daemon starts it under your own Podman, its
-  ports in your private network there, and the command runs again
+  ports in your private network there and its image fetched once for the
+  whole server, and the command runs again
   ([docs/cloud-hosts.md](docs/cloud-hosts.md#project-services)). A service
   looked up by its name is reached at its published port on localhost
   instead, and the agent is told so.

@@ -466,7 +466,7 @@ fn the_container_engine_comes_with_every_install_and_upgrade() {
         out.contains(
             "would run: env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 \
              -q -y --no-install-recommends install podman uidmap netavark aardvark-dns passt \
-             slirp4netns iptables nftables catatonit"
+             slirp4netns iptables nftables catatonit skopeo"
         ),
         "{out}"
     );
@@ -640,6 +640,13 @@ fn install_puts_the_shared_toolchains_and_caches_in_place() {
             "{out}"
         );
     }
+    // The image cache is root's to fill and the daemons' to read.
+    let images = server.file("/var/cache/rovik/images");
+    assert_eq!(mode(&images), 0o755, "the image cache");
+    assert!(
+        !out.contains("chown root:rovik /var/cache/rovik/images"),
+        "{out}"
+    );
     let unit = server.text("/etc/systemd/system/rovik-agentd@.service");
     assert!(unit.contains("\nSupplementaryGroups=rovik\n"), "{unit}");
 
@@ -814,6 +821,112 @@ fn a_user_installs_a_toolchain_as_root() {
     }
     let unknown = server.run(&["user", "toolchain", "python", "3"], Some(NOBODY));
     assert!(said(&unknown).contains("say rust or node"), "{}", said(&unknown));
+}
+
+/// D21: a user's daemon has an image of a public registry fetched into the
+/// server's image cache as root, by skopeo, checked words only. One fetched
+/// lately and held there isn't fetched again. An image of another
+/// registry, words that aren't a reference, or the shared caches turned
+/// off: refused, and the daemon pulls the image itself.
+#[test]
+fn a_user_has_an_image_fetched_into_the_cache_as_root() {
+    let server = Server::installed();
+    let (_, uid) = someone_else();
+    let fetched = server.run(&["user", "image", "redis:7-alpine"], Some(uid));
+    let out = said(&fetched);
+    assert!(fetched.status.success(), "{out}");
+    assert!(
+        out.contains(
+            "would run: skopeo --command-timeout 15m copy --quiet --retry-times 2 \
+             docker://docker.io/library/redis:7-alpine \
+             oci:/var/cache/rovik/images:docker.io/library/redis:7-alpine\n"
+        ),
+        "{out}"
+    );
+    let asked = server.text("/var/cache/rovik/images/asked.json");
+    assert!(
+        asked.contains("\"docker.io/library/redis:7-alpine\""),
+        "{asked}"
+    );
+
+    // Held, as skopeo leaves it: not fetched again.
+    let index = r#"{"schemaVersion": 2, "manifests": [{"digest": "sha256:00",
+        "annotations": {"org.opencontainers.image.ref.name": "docker.io/library/redis:7-alpine"}}]}"#;
+    std::fs::write(server.file("/var/cache/rovik/images/index.json"), index).unwrap();
+    let again = server.run(
+        &["user", "image", "docker.io/library/redis:7-alpine"],
+        Some(uid),
+    );
+    let out = said(&again);
+    assert!(again.status.success(), "{out}");
+    assert!(!out.contains("would run"), "{out}");
+    assert!(out.contains("is in the server's image cache"), "{out}");
+
+    for (words, said_why) in [
+        (
+            "registry.example.com/team/db:1",
+            "isn't an image the server caches",
+        ),
+        (
+            "redis:7 --src-creds=me:secret",
+            "isn't an image's reference",
+        ),
+        ("redis:7;id", "isn't an image's reference"),
+    ] {
+        let refused = server.run(&["user", "image", words], Some(uid));
+        assert_eq!(refused.status.code(), Some(1), "{words}");
+        assert!(
+            said(&refused).contains(said_why),
+            "{words}: {}",
+            said(&refused)
+        );
+    }
+    // An option of skopeo's doesn't get past the command line.
+    let option = server.run(&["user", "image", "--src-creds=me:secret"], Some(uid));
+    assert!(!option.status.success(), "{}", said(&option));
+    assert!(!said(&option).contains("would run"), "{}", said(&option));
+    let off = server.run(
+        &["admin", "toolchains", "shared-caches", "off"],
+        Some(NOBODY),
+    );
+    assert!(off.status.success(), "{}", said(&off));
+    let refused = server.run(&["user", "image", "postgres:16"], Some(uid));
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        said(&refused).contains("turned the shared caches off"),
+        "{}",
+        said(&refused)
+    );
+}
+
+/// `admin images list` says what the cache holds; `admin images prune
+/// DAYS` takes what no daemon asked for in that many days. Both are the
+/// administrators'.
+#[test]
+fn administrators_list_and_prune_the_image_cache() {
+    let server = Server::installed();
+    let (_, uid) = someone_else();
+    let empty = said(&server.run(&["admin", "images", "list"], Some(NOBODY)));
+    assert!(empty.contains("The image cache is empty"), "{empty}");
+    let index = r#"{"schemaVersion": 2, "manifests": [{"digest": "sha256:00",
+        "annotations": {"org.opencontainers.image.ref.name": "docker.io/library/redis:7-alpine"}}]}"#;
+    std::fs::write(server.file("/var/cache/rovik/images/index.json"), index).unwrap();
+    let listed = said(&server.run(&["admin", "images", "list"], Some(NOBODY)));
+    assert!(
+        listed.contains("docker.io/library/redis:7-alpine: 0 MB, last asked for never"),
+        "{listed}"
+    );
+    let refused = server.run(&["admin", "images", "prune", "30"], Some(uid));
+    assert_eq!(refused.status.code(), Some(1), "{}", said(&refused));
+    let pruned = server.run(&["admin", "images", "prune", "30"], Some(NOBODY));
+    assert!(pruned.status.success(), "{}", said(&pruned));
+    assert!(
+        said(&pruned).contains("1 image(s) gone"),
+        "{}",
+        said(&pruned)
+    );
+    let listed = said(&server.run(&["admin", "images", "list"], Some(NOBODY)));
+    assert!(listed.contains("The image cache is empty"), "{listed}");
 }
 
 /// An administrator can turn a chat's installs off, and name the Rust

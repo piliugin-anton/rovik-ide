@@ -3068,3 +3068,13 @@ bundle` named a `.deb` with that version, `Cargo.toml`'s and not
     from its compose file with its config a copy, answered at
     localhost:6379 in the user's network and not on the server's, and a
     second start found it running.
+  - The images (`installer/images.rs`, `services/images.rs`) are an OCI
+    layout that root fills with skopeo and each user's Podman copies from
+    (`podman pull oci:…`, which names the copy by its reference). A store
+    root unpacks once, shared through a read-only idmapped mount per user,
+    would keep one copy rather than one per user, but it needs overlayfs
+    over idmapped layers (Linux 5.19; RHEL 9 from 9.6), has root unpack
+    every image, and a prune could take a layer from under a running
+    container; the layout keeps root to fetching and each user to
+    unpacking. Docker Hub refused one of the anonymous fetches made here
+    for its limit ("toomanyrequests"), which skopeo's retry rode out.

@@ -38,21 +38,17 @@ pub struct Podman {
     dir: PathBuf,
     /// The pinned Docker Compose.
     compose: PathBuf,
-    /// The image stores Podman also reads, the shared store's view among
-    /// them where there's one.
-    image_stores: Vec<PathBuf>,
     /// The API service, once started.
     api: tokio::sync::Mutex<Option<tokio::process::Child>>,
 }
 
 impl Podman {
     /// The Podman whose folder is `dir`, its services started with the
-    /// Compose at `compose`, also reading the images in `image_stores`.
-    pub fn new(dir: PathBuf, compose: PathBuf, image_stores: Vec<PathBuf>) -> Podman {
+    /// Compose at `compose`.
+    pub fn new(dir: PathBuf, compose: PathBuf) -> Podman {
         Podman {
             dir,
             compose,
-            image_stores,
             api: tokio::sync::Mutex::new(None),
         }
     }
@@ -74,10 +70,7 @@ impl Podman {
             make_private_dir(&dir)?;
         }
         write_if_changed(&self.dir.join("containers.conf"), &containers_conf())?;
-        write_if_changed(
-            &self.dir.join("storage.conf"),
-            &storage_conf(&self.dir, &self.image_stores),
-        )
+        write_if_changed(&self.dir.join("storage.conf"), &storage_conf(&self.dir))
     }
 
     /// What Podman and Compose run with: their configuration, their run
@@ -169,16 +162,15 @@ impl Podman {
 
     /// `podman ARGS`: what it printed, or why it failed.
     pub async fn podman(&self, args: &[&str]) -> Result<String, String> {
+        self.podman_within(args, CALL_WITHIN).await
+    }
+
+    /// `podman`, given `within` to end: an image's copy may take minutes.
+    pub async fn podman_within(&self, args: &[&str], within: Duration) -> Result<String, String> {
         self.prepare()?;
         let mut cmd = self.command(Path::new("podman"));
         cmd.args(args);
-        run(
-            cmd,
-            None,
-            CALL_WITHIN,
-            &format!("podman {}", args.join(" ")),
-        )
-        .await
+        run(cmd, None, within, &format!("podman {}", args.join(" "))).await
     }
 
     /// Docker Compose with the project name `project`, read in `dir`, with
@@ -307,11 +299,9 @@ events_logger = \"file\"
     .to_string()
 }
 
-/// Where Podman keeps Rovik's images and containers: in `dir`, also
-/// reading `image_stores`.
-fn storage_conf(dir: &Path, image_stores: &[PathBuf]) -> String {
+/// Where Podman keeps Rovik's images and containers: in `dir`.
+fn storage_conf(dir: &Path) -> String {
     let quoted = |path: &Path| format!("{:?}", path.to_string_lossy());
-    let stores: Vec<String> = image_stores.iter().map(|p| quoted(p)).collect();
     format!(
         "\
 # Rovik's own Podman for this user's project services (rovik-agentd, D21).
@@ -320,13 +310,9 @@ fn storage_conf(dir: &Path, image_stores: &[PathBuf]) -> String {
 driver = \"overlay\"
 graphroot = {}
 runroot = {}
-
-[storage.options]
-additionalimagestores = [{}]
 ",
         quoted(&dir.join("storage")),
         quoted(&dir.join("run/storage")),
-        stores.join(", ")
     )
 }
 
@@ -393,7 +379,7 @@ async fn run(
 }
 
 /// The last `count` lines of `text` that say something, on one line.
-fn last_lines(text: &str, count: usize) -> String {
+pub(super) fn last_lines(text: &str, count: usize) -> String {
     let lines: Vec<&str> = text
         .lines()
         .map(str::trim)
@@ -415,11 +401,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rovik_s_podman_keeps_everything_in_its_folder_and_reads_the_shared_images() {
-        let conf = storage_conf(
-            Path::new("/home/ann/.rovik/containers"),
-            &[PathBuf::from("/var/lib/rovik/views/ann")],
-        );
+    fn rovik_s_podman_keeps_everything_in_its_folder() {
+        let conf = storage_conf(Path::new("/home/ann/.rovik/containers"));
         assert!(
             conf.contains("graphroot = \"/home/ann/.rovik/containers/storage\"\n"),
             "{conf}"
@@ -428,11 +411,6 @@ mod tests {
             conf.contains("runroot = \"/home/ann/.rovik/containers/run/storage\"\n"),
             "{conf}"
         );
-        assert!(
-            conf.contains("additionalimagestores = [\"/var/lib/rovik/views/ann\"]\n"),
-            "{conf}"
-        );
-        assert!(storage_conf(Path::new("/x"), &[]).contains("additionalimagestores = []\n"));
         // No cgroups of its own: the containers stay under the daemon's
         // unit, whose caps cover them.
         assert!(containers_conf().contains("[containers]\ncgroups = \"disabled\"\n"));
@@ -442,11 +420,7 @@ mod tests {
     fn the_folders_are_this_users_alone_and_rewritten_only_when_changed() {
         use std::os::unix::fs::PermissionsExt;
         let dir = rovik_core::testing::temp_dir();
-        let podman = Podman::new(
-            dir.0.join("containers"),
-            PathBuf::from("/bin/true"),
-            Vec::new(),
-        );
+        let podman = Podman::new(dir.0.join("containers"), PathBuf::from("/bin/true"));
         podman.prepare().unwrap();
         for sub in ["", "run", "tmp", "storage"] {
             let mode = std::fs::metadata(dir.0.join("containers").join(sub))

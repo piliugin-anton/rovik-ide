@@ -161,6 +161,12 @@ async fn run(
         );
         rovik_core::toolchains::set(shared);
     }
+    // The server's image cache, for the project services' images (below),
+    // where the settings share the caches and this daemon may read it (one
+    // outside the `rovik` group can't).
+    let images = Path::new(installer::images::IMAGES);
+    let images =
+        (limits.admin.toolchains.shared_caches && images.is_dir()).then(|| images.to_path_buf());
     // A delivered task's result goes to its branch when its computer asked
     // (D15, H04).
     core.agents
@@ -191,7 +197,7 @@ async fn run(
     // This user's project services (D21), whose ports are in that network:
     // started by this daemon when a command needs one, or the agent is
     // told why this server can't.
-    let services = crate::services::set_up(&home, limits.installed);
+    let services = crate::services::set_up(&home, limits.installed, images);
 
     // 6. The virtual files, so CLM chats can use them (K15).
     let virtual_files_problem = if no_virtual_files {

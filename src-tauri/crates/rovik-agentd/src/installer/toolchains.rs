@@ -730,7 +730,7 @@ pub(crate) fn installed_here(root: &Path) -> (Vec<String>, Vec<String>) {
 }
 
 /// How long ago `time` was, in words.
-fn age(time: SystemTime) -> String {
+pub(super) fn age(time: SystemTime) -> String {
     let seconds = SystemTime::now()
         .duration_since(time)
         .map(|d| d.as_secs())
@@ -906,6 +906,8 @@ pub(super) fn setup(sys: &System) -> Result<(), String> {
     for cache in ["npm", "crates"] {
         folder(sys, &format!("{CACHES}/{cache}"), 0o2770, Some(SHARE_GROUP))?;
     }
+    // The images, root's to write (`user image`) and the daemons' to read.
+    folder(sys, super::images::IMAGES, 0o755, None)?;
     if sys.systemd() {
         // The unit, for whoever installed before it named the group.
         let path = sys.path(UNIT);

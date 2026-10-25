@@ -8,6 +8,7 @@
 //!   podman.rs  Rovik's own Podman for this user: settings, storage, API
 //!   copy.rs    copies of the project's files a service reads
 //!   relay.rs   a service's ports, as ports of the user's network
+//!   images.rs  a service's image through the server's image cache
 //!
 //! A project's services are one Compose project, `rovik-<project id>`,
 //! shared by the user's chats of that project, as one computer's checkout
@@ -18,6 +19,7 @@
 //! are copies (copy.rs).
 
 mod copy;
+mod images;
 mod podman;
 mod relay;
 
@@ -123,7 +125,9 @@ impl Containers {
 /// pinned Compose, the user's ids and their private network (where the
 /// services' ports go) are there, and the agent is told why not when one
 /// isn't. Elsewhere (a daemon in development, WSL), the user runs them.
-pub fn set_up(home: &Home, installed: bool) -> Option<Services> {
+/// Their images come through the server's image cache at `images`, where
+/// this daemon uses one.
+pub fn set_up(home: &Home, installed: bool, images: Option<PathBuf>) -> Option<Services> {
     if !installed || crate::network::in_wsl() {
         return None;
     }
@@ -147,7 +151,7 @@ pub fn set_up(home: &Home, installed: bool) -> Option<Services> {
     let Some(compose) = rovik_core::pinned_compose::installed() else {
         return cannot("Docker Compose isn't installed".into());
     };
-    let services = Services::new(home.root.join("containers"), compose, network, Vec::new());
+    let services = Services::new(home.root.join("containers"), compose, network, images);
     core_services::set_host(Host::Runs(Arc::new(services.clone())));
     log::info!("the projects' services run under this user's Podman");
     Some(services)
@@ -162,6 +166,8 @@ pub struct Services {
 struct Inner {
     podman: Arc<Podman>,
     relays: Relays,
+    /// The server's image cache, where this daemon uses one.
+    images: Option<images::Cache>,
     /// One start at a time: two chats needing the same database start it
     /// once.
     starting: tokio::sync::Mutex<()>,
@@ -169,18 +175,19 @@ struct Inner {
 
 impl Services {
     /// The services whose Podman keeps its state in `dir`, started with the
-    /// Compose at `compose`, their ports in `network`, reading images in
-    /// `image_stores` too.
+    /// Compose at `compose`, their ports in `network`, their images through
+    /// the server's image cache at `images`, where there's one.
     pub fn new(
         dir: PathBuf,
         compose: PathBuf,
         network: Arc<Network>,
-        image_stores: Vec<PathBuf>,
+        images: Option<PathBuf>,
     ) -> Services {
         Services {
             inner: Arc::new(Inner {
-                podman: Arc::new(Podman::new(dir, compose, image_stores)),
+                podman: Arc::new(Podman::new(dir, compose)),
                 relays: Relays::new(network),
+                images: images.map(images::Cache::new),
                 starting: tokio::sync::Mutex::new(()),
             }),
         }
@@ -219,6 +226,14 @@ impl Inner {
         let project = project_name(&root, model);
         let running = self.podman.running(&project).await;
         let raw = with_copies(&self.podman, &project, model, &plan, &running).await?;
+        if let Some(cache) = &self.images {
+            let wanted: Vec<String> = plan
+                .services
+                .iter()
+                .filter_map(|name| model.service(name)?.image.clone())
+                .collect();
+            cache.bring(&self.podman, &wanted).await;
+        }
         let mut args: Vec<String> = [
             "-f",
             "-",
@@ -549,11 +564,7 @@ mod tests {
         }}});
         let model = Model::parse(&root, "compose.yaml", &printed.to_string()).unwrap();
         let plan = policy::check(&model, &["cache".to_string()], &root).unwrap();
-        let podman = Podman::new(
-            dir.0.join("containers"),
-            PathBuf::from("/bin/true"),
-            Vec::new(),
-        );
+        let podman = Podman::new(dir.0.join("containers"), PathBuf::from("/bin/true"));
         let copied_at = |raw: Value| {
             PathBuf::from(
                 raw["services"]["cache"]["volumes"][0]["source"]
@@ -645,12 +656,7 @@ mod tests {
         let network = Arc::new(
             Network::start(&dir.0.join("net"), Path::new("/bin/true")).expect("a private network"),
         );
-        let services = Services::new(
-            dir.0.join("containers"),
-            compose,
-            network.clone(),
-            Vec::new(),
-        );
+        let services = Services::new(dir.0.join("containers"), compose, network.clone(), None);
 
         let said = services
             .inner

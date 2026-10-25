@@ -22,9 +22,11 @@ Rovik is installed once per server, by root:
 | `/opt/rovik/toolchains/rust/`, `/opt/rovik/toolchains/node/` | The Rust and Node versions every user's chats run (below), owned by root.  |
 | The distro's `claude-code` package, on request               | Claude Code for the connector of that name (below), once for everyone.     |
 | `/var/cache/rovik/npm`, `/var/cache/rovik/crates`            | The package caches the daemons share, owned by root and the `rovik` group. |
+| `/var/cache/rovik/images`                                    | The projects' services' images, fetched once for everyone (below).         |
 | The distro's `bubblewrap` package                            | Confines the chats' commands (see What can read what).                     |
 | The distro's `passt` package                                 | Its `pasta` gives each user's commands a network of their own (below).     |
 | The distro's `podman` and the packages it needs rootless     | Run each user's project services, as that user (below).                    |
+| The distro's `skopeo` package                                | Fetches the projects' images into the image cache (below).                 |
 | `/opt/rovik/compose/<version>/docker-compose`                | The Docker Compose Rovik pins, owned by root (below).                      |
 | Subordinate ids in `/etc/subuid` and `/etc/subgid`           | What the users in each user's containers map to (below).                   |
 | The `rovik-admin` group                                      | The administrators.                                                        |
@@ -258,7 +260,7 @@ An administrator can turn it off, and name what a chat may install:
 ```toml
 [toolchains]
 user_install = false          # only `admin toolchain add` installs
-shared_caches = false         # each daemon keeps its own package caches
+shared_caches = false         # each daemon keeps its own caches and images
 allowed_rust = ["1.82", "nightly"]   # empty: any version Rovik takes
 ```
 
@@ -281,6 +283,8 @@ the result is checked:
   and after a `cargo fetch` the user's checked crates go into the store.
   A file another user left there that doesn't match is skipped, never
   used.
+- **Images.** The projects' services' images, which root alone writes
+  ([Images](#images)).
 
 The daemons find the caches because their unit names the `rovik` group
 (`SupplementaryGroups=rovik`). Without systemd, a daemon isn't in the
@@ -467,6 +471,8 @@ containers` does it again:
   them, so what runs in a container owns no file of the user's or anyone
   else's. `user start` adds them for a user new to the server. A range is
   never moved: files a container wrote are owned by it.
+- **skopeo**, from the distro's packages, with which root fetches the
+  services' images into the server's image cache ([Images](#images)).
 
 None of it stops an install or an upgrade: where something is missing, the
 projects' services don't run, the agent is told so when a command needs one,
@@ -521,6 +527,40 @@ and a start that failed isn't tried again for that chat for ten minutes.
   containers make no cgroups of their own and stay under the daemon's
   unit, so the user's memory, CPU and task caps cover them; a service's own
   limits (`mem_limit`, `pids_limit`) aren't applied.
+
+### Images
+
+A service's image comes from its registry once for the whole server, not
+once for each user: the users of a server all fetch from its address, and
+a registry limits how often one address may fetch without a login. Where
+a user's Podman lacks an image, their daemon has root fetch it into
+`/var/cache/rovik/images`, through the same sudo rule as `user start`, and
+then copies it from there into the user's own storage, as a pull would:
+
+```sh
+sudo /opt/rovik/bin/rovik-agentd user image postgres:16-alpine
+```
+
+- **Only public images, as their registry serves them.** Root takes
+  nothing but an image's reference, checked as Docker reads one, and
+  fetches only from the public registries (Docker Hub, `ghcr.io`,
+  `quay.io`, `gcr.io`, `registry.k8s.io`, `mcr.microsoft.com`,
+  `public.ecr.aws`, `registry.gitlab.com`), without a login: an image that
+  needs one is the user's to pull, with theirs, and never lands in the
+  shared cache. skopeo keeps each image as the registry serves it, every
+  file checked against its digest, so root never unpacks one: each user's
+  Podman unpacks its own copy, rootless.
+- **Followed as its tag moves.** An image fetched a week ago or more is
+  fetched again when a daemon next needs it. What a user's Podman already
+  has stays as it is, as `docker compose up` leaves it.
+- **Never in the way.** An image the cache doesn't take, or couldn't
+  fetch, Compose pulls itself, as it would without the cache.
+
+`admin images list` says what the cache holds, how big each image is and
+when a daemon last asked for it, and `admin images prune DAYS` removes what
+no daemon asked for in that time. With `shared_caches = false` each daemon
+pulls its own images, and so does a daemon outside the `rovik` group, as
+one without systemd is.
 
 ## WSL on Windows
 

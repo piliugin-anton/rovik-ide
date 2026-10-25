@@ -28,7 +28,9 @@
 //! The container engine that runs each user's project services (D21,
 //! `installer/containers.rs`: Podman, the pinned Docker Compose, the users'
 //! subordinate ids) goes in with every install and upgrade, and stops
-//! neither where it can't: `admin containers` tries again.
+//! neither where it can't: `admin containers` tries again. Their images
+//! come through the server's image cache (`installer/images.rs`), which
+//! `user image` fills.
 //!
 //! Without systemd, as in a container, the binary and the settings are
 //! installed, and the app starts the daemon when it connects. `--root DIR`
@@ -49,6 +51,9 @@ mod bubblewrap;
 mod claude_code;
 /// Podman, the pinned Docker Compose and the users' subordinate ids.
 pub(crate) mod containers;
+/// `user image <reference>` and `admin images …`: the projects' services'
+/// images, fetched once for the whole server.
+pub(crate) mod images;
 mod packages;
 mod pasta;
 /// Each user's subordinate ids, which their containers' users map to.
@@ -399,10 +404,15 @@ pub fn user(sys: &System, args: &[String]) -> Result<(), String> {
     if let ["toolchain", kind, version, rest @ ..] = words.as_slice() {
         return user_toolchain(sys, Kind::parse(kind)?, kind, version, rest);
     }
+    // An image is fetched whether systemd runs here or not, as a toolchain
+    // is installed.
+    if let ["image", reference] = words.as_slice() {
+        return images::fetch(sys, reference);
+    }
     let [action] = words.as_slice() else {
         return Err(
-            "user takes one of start, stop, restart or status, or toolchain KIND VERSION \
-             [-c COMPONENT] [-t TARGET]"
+            "user takes one of start, stop, restart or status, toolchain KIND VERSION \
+             [-c COMPONENT] [-t TARGET], or image REFERENCE"
                 .into(),
         );
     };
@@ -580,13 +590,21 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
             Ok(())
         }
         ["toolchains", "setup"] => toolchains::setup(sys),
+        ["images", "list"] => images::list(sys),
+        ["images", "prune", days] => {
+            let days = days
+                .parse::<u64>()
+                .map_err(|_| format!("prune takes a number of days, not {days}"))?;
+            images::prune(sys, days)
+        }
         ["upgrade", from] => upgrade(sys, &file, Path::new(from), &caller, allow_downgrade),
         ["uninstall"] => uninstall(sys),
         _ => Err(
             "admin takes: limits [name=value ...], add USER, remove USER, browser, \
-             bubblewrap, pasta, containers, claude-code, toolchain list | add KIND VERSION | remove KIND VERSION | prune DAYS, \
-             toolchains user-install|shared-caches on|off, toolchains setup, upgrade FILE \
-             [--allow-downgrade], uninstall"
+             bubblewrap, pasta, containers, claude-code, toolchain list | add KIND VERSION | \
+             remove KIND VERSION | prune DAYS, toolchains user-install|shared-caches on|off, \
+             toolchains setup, images list | prune DAYS, upgrade FILE [--allow-downgrade], \
+             uninstall"
                 .into(),
         ),
     }

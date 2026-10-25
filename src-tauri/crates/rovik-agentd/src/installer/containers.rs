@@ -16,6 +16,8 @@
 //!   anything runs it: the daemons read compose files with it and start
 //!   their services through each user's Podman.
 //! - **Subordinate ids** for each user with a daemon here (subids.rs).
+//! - **skopeo**, from the distro's packages, with which root fills the
+//!   server's image cache (images.rs).
 //!
 //! `install` puts them in place, and so does every upgrade: an older build's
 //! `admin upgrade` runs the new build's `admin bubblewrap`, which runs this
@@ -68,6 +70,7 @@ fn packages_for(manager: PackageManager) -> &'static [&'static str] {
             "iptables",
             "nftables",
             "catatonit",
+            "skopeo",
         ],
         PackageManager::Dnf => &[
             "podman",
@@ -75,6 +78,7 @@ fn packages_for(manager: PackageManager) -> &'static [&'static str] {
             "aardvark-dns",
             "passt",
             "shadow-utils",
+            "skopeo",
         ],
         PackageManager::Zypper => &[
             "podman",
@@ -83,15 +87,24 @@ fn packages_for(manager: PackageManager) -> &'static [&'static str] {
             "aardvark-dns",
             "passt",
             "nftables",
+            "skopeo",
         ],
-        PackageManager::Apk => &["podman", "iptables", "nftables"],
-        PackageManager::Pacman => &["podman", "netavark", "aardvark-dns", "passt", "nftables"],
+        PackageManager::Apk => &["podman", "iptables", "nftables", "skopeo"],
+        PackageManager::Pacman => &[
+            "podman",
+            "netavark",
+            "aardvark-dns",
+            "passt",
+            "nftables",
+            "skopeo",
+        ],
     }
 }
 
-/// What Podman needs rootless that isn't there, by name: empty when it
-/// all is. Podman 4 (`version`) carries a project's network out with
-/// slirp4netns; 5 and later with pasta, which Rovik installs anyway.
+/// What Podman needs rootless that isn't there, with skopeo, which fills
+/// the image cache, by name: empty when it all is. Podman 4 (`version`)
+/// carries a project's network out with slirp4netns; 5 and later with
+/// pasta, which Rovik installs anyway.
 fn lacking(sys: &System, version: Option<(u32, u32)>) -> Vec<&'static str> {
     let helper = |name: &str| {
         HELPER_DIRS
@@ -99,7 +112,7 @@ fn lacking(sys: &System, version: Option<(u32, u32)>) -> Vec<&'static str> {
             .any(|dir| Path::new(dir).join(name).is_file())
     };
     let mut lacking = Vec::new();
-    for program in [PODMAN, "newuidmap", "newgidmap"] {
+    for program in [PODMAN, "newuidmap", "newgidmap", "skopeo"] {
         if !sys.has(program) {
             lacking.push(program);
         }
@@ -328,6 +341,10 @@ mod tests {
         ] {
             let packages = packages_for(manager);
             assert_eq!(packages.first(), Some(&"podman"), "{manager:?}");
+            assert!(
+                packages.contains(&"skopeo"),
+                "{manager:?}: the image cache's"
+            );
             // Alpine's podman depends on netavark, aardvark-dns and passt.
             if manager != PackageManager::Apk {
                 assert!(packages.contains(&"aardvark-dns"), "{manager:?}");
@@ -357,6 +374,7 @@ mod tests {
                 "podman",
                 "newuidmap",
                 "newgidmap",
+                "skopeo",
                 "netavark",
                 "aardvark-dns",
                 "a firewall for netavark (iptables or nftables)",
