@@ -259,6 +259,14 @@ export function describeGroup(
           return command ? { text: command, title: str(a.command) } : undefined;
         })
       );
+    case 'background':
+      return label(
+        verb('Checking on', 'Checked on'),
+        argsList.map((a) => {
+          const id = str(a.id);
+          return id ? { text: id } : { text: 'the background tasks' };
+        })
+      );
     case 'browse_url':
       return label(
         verb('Browsing', 'Browsed'),

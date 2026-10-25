@@ -94,12 +94,15 @@ impl Core {
         self.events.agent(&event);
     }
 
-    /// As the process exits: no headless Chrome left running, no dead
-    /// mount where the virtual files were, paused commands resumed and the
-    /// workload's history written, and the database marked closed cleanly.
+    /// As the process exits: no headless Chrome or command the agent left
+    /// running, no dead mount where the virtual files were, paused commands
+    /// resumed and the workload's history written, and the database marked
+    /// closed cleanly.
     pub async fn shutdown(&self) {
         crate::connectors::end_all();
         self.browser.shutdown().await;
+        // Before the chats' views go: they may run in them.
+        let _ = crate::rt::spawn_blocking(crate::command_tool::background::stop_all).await;
         let _ = self.vfs.unmount();
         crate::overlay::chats::close_all();
         crate::workload::shutdown();

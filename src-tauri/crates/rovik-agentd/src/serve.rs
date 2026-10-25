@@ -161,6 +161,12 @@ async fn run(
         );
         rovik_core::toolchains::set(shared);
     }
+    // The server's image cache, for the project services' images (below),
+    // where the settings share the caches and this daemon may read it (one
+    // outside the `rovik` group can't).
+    let images = Path::new(installer::images::IMAGES);
+    let images =
+        (limits.admin.toolchains.shared_caches && images.is_dir()).then(|| images.to_path_buf());
     // A delivered task's result goes to its branch when its computer asked
     // (D15, H04).
     core.agents
@@ -188,6 +194,10 @@ async fn run(
             ),
         }
     }
+    // This user's project services (D21), whose ports are in that network:
+    // started by this daemon when a command needs one, or the agent is
+    // told why this server can't.
+    let services = crate::services::set_up(&home, limits.installed, images);
 
     // 6. The virtual files, so CLM chats can use them (K15).
     let virtual_files_problem = if no_virtual_files {
@@ -250,6 +260,9 @@ async fn run(
             log::info!("stopping during start-up: the runs pause first, for up to {DRAIN_WAIT:?}");
             let paused = agent_run::drain(&core, DRAIN_WAIT).await;
             log::info!("{paused} paused for the next start");
+            if let Some(services) = &services {
+                services.stop_all().await;
+            }
             core.shutdown().await;
             stops.stopped_cleanly(now_ms());
             return Ok(());
@@ -280,6 +293,9 @@ async fn run(
         })
         .await;
     log::info!("stopping");
+    if let Some(services) = &services {
+        services.stop_all().await;
+    }
     core.shutdown().await;
     stops.stopped_cleanly(now_ms());
     let _ = std::fs::remove_file(&socket);

@@ -11,7 +11,8 @@ use common::{until, OTHER};
 use rovik_client::{Client, HostState};
 use rovik_core::chat_db::store::{self, ChatModel, NewDialog, NewMessage};
 use rovik_core::chat_db::{attachments, sync};
-use rovik_core::testing::{model, Reply, TestCore};
+use rovik_core::testing::{beating, beats, model, Reply, TestCore};
+use rovik_protocol::events::BackgroundTask;
 use rovik_protocol::host::Storage;
 use rovik_protocol::packs::{result_ref, snapshot_ref};
 use rovik_protocol::sync::{ChangeSet, ChangesPage, ChatBundle, Imported, Ownership};
@@ -619,4 +620,35 @@ async fn a_bundle_of_fifty_megabytes_imports() {
         )
         .unwrap();
     assert_eq!((count, bytes), (50, 50 << 20));
+}
+
+/// What the chat's agent left running here (a dev server, bash's
+/// `background`) stops as the chat goes back to its computer, which runs
+/// it from then on: with its release, not only once its rows are
+/// forgotten, which can wait for the computer's next connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_chat_left_running_here_stops_as_it_goes_back() {
+    let setup = Setup::new().await;
+    let bundle = bundle(&setup, rows("Moved", vec![row("u1", "user", "Go")]).await).await;
+    import(&setup.client, "move-1", &bundle).await.unwrap();
+    let serve = Reply::Call {
+        id: "b1",
+        name: "bash",
+        args: json!({ "command": beating("listening"), "background": true }),
+    };
+    run(&setup, vec![serve, Reply::Text("It runs.")]).await;
+    let worktree = worktree(&setup);
+    assert!(beats(&worktree), "it runs on after the run");
+    let running = || async {
+        let asked = Request::BackgroundTasks {
+            dialog_id: CHAT.into(),
+        };
+        let tasks: Vec<BackgroundTask> = setup.client.request(asked).await.unwrap();
+        tasks
+    };
+    assert_eq!(running().await.len(), 1);
+
+    assert_eq!(release(&setup.client, Some("move-1")).await, Ok(true));
+    assert!(!beats(&worktree), "stopped with the release");
+    assert!(running().await.is_empty());
 }

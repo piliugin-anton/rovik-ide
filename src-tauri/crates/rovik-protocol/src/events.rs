@@ -161,6 +161,18 @@ pub struct QuestionsRequest {
     pub questions: Vec<Question>,
 }
 
+/// A command a chat's agent left running (bash's `background`): a dev
+/// server, a watcher, as the chat lists it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundTask {
+    /// The agent's name for it: `bg1`, `bg2`…
+    pub id: String,
+    pub command: String,
+    /// When it started, in milliseconds since the Unix epoch.
+    pub started_at: i64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(
     tag = "type",
@@ -291,6 +303,14 @@ pub enum AgentEvent {
         dialog_id: String,
         items: Vec<TodoItem>,
     },
+    /// The commands the chat's agent left running now (bash's
+    /// `background`), oldest first: told when one starts, ends or is
+    /// stopped. The chat's row of background tasks shows them; on opening,
+    /// it asks `BackgroundTasks`.
+    BackgroundTasks {
+        dialog_id: String,
+        tasks: Vec<BackgroundTask>,
+    },
     Notice {
         /// The chat it's about, if it's about one (K02).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -348,6 +368,7 @@ impl AgentEvent {
             | AgentEvent::SteerReturned { dialog_id, .. }
             | AgentEvent::ContextUpdated { dialog_id, .. }
             | AgentEvent::Checklist { dialog_id, .. }
+            | AgentEvent::BackgroundTasks { dialog_id, .. }
             | AgentEvent::SubagentStarted { dialog_id, .. }
             | AgentEvent::SubagentProgress { dialog_id, .. }
             | AgentEvent::SubagentEnded { dialog_id, .. } => Some(dialog_id),

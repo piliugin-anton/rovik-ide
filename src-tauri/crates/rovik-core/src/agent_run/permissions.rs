@@ -61,6 +61,9 @@ pub struct ParsedCommand {
     /// here-documents no shell reads (`cat <<'EOF'`; a shell's are its
     /// segments, [`HereDoc::script`]), and here-strings (`<<< "…"`).
     pub inputs: Vec<Input>,
+    /// A POSIX shell leaves a part of it running without waiting for it: a
+    /// lone `&` (not `&&`, `|&`, `&>` or `>&`) ends that part.
+    pub backgrounds: bool,
 }
 
 /// Text a command gives one of its segments as its input.
@@ -191,6 +194,7 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
     // The delimiter lines of the here-documents read as commands: where
     // each starts, and where the command goes on past it.
     let mut delimiters: Vec<(usize, usize)> = Vec::new();
+    let mut backgrounds = false;
 
     let mut i = 0;
     while i < chars.len() {
@@ -286,6 +290,11 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
             continue;
         }
         if c == '&' || c == '|' || c == '\n' || (shell.semicolon_separates() && c == ';') {
+            // The `&` of a `|&` comes here after its `|`.
+            let after_pipe = i > 0 && chars[i - 1] == '|';
+            if shell == Shell::Posix && c == '&' && next != Some('&') && !after_pipe {
+                backgrounds = true;
+            }
             s.end_segment(c == '|' && next != Some('|'));
             if (c == '&' || c == '|') && next == Some(c) {
                 i += 1;
@@ -408,6 +417,7 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
         reads_in,
         piped: s.piped,
         inputs,
+        backgrounds,
     }
 }
 
@@ -1608,7 +1618,22 @@ pub fn describe_tool_call(name: &str, args_json: &str) -> String {
     };
 
     match name {
-        "bash" => format!("Run `{}`", s("command").unwrap_or_else(|| "…".into())),
+        "bash" => {
+            let background = args.get("background").and_then(|v| v.as_bool()) == Some(true);
+            format!(
+                "Run `{}`{}",
+                s("command").unwrap_or_else(|| "…".into()),
+                if background { " in the background" } else { "" }
+            )
+        }
+        "background" => {
+            let id = s("id").unwrap_or_else(|| "a background command".into());
+            match s("action").as_deref() {
+                Some("output") => format!("Read what {id} printed"),
+                Some("stop") => format!("Stop {id}"),
+                _ => "List the commands running in the background".to_string(),
+            }
+        }
         "read" => {
             let path = s("path").unwrap_or_else(|| "a file".into());
             match s("symbol").filter(|x| !x.trim().is_empty()) {
@@ -2219,6 +2244,22 @@ mod tests {
             describe_tool_call("write", r#"{"path":"a","content":"x\ny"}"#),
             "Write a (2 lines)"
         );
+        assert_eq!(
+            describe_tool_call("bash", r#"{"command":"npm run dev","background":true}"#),
+            "Run `npm run dev` in the background"
+        );
+        assert_eq!(
+            describe_tool_call("background", r#"{"action":"stop","id":"bg2"}"#),
+            "Stop bg2"
+        );
+        assert_eq!(
+            describe_tool_call("background", r#"{"action":"output","id":"bg2"}"#),
+            "Read what bg2 printed"
+        );
+        assert_eq!(
+            describe_tool_call("background", r#"{"action":"list"}"#),
+            "List the commands running in the background"
+        );
     }
 
     #[test]
@@ -2763,5 +2804,33 @@ mod tests {
         // it runs the lines.
         let text = "cat <<'EOF'\nrm -rf src\nEOF";
         assert_eq!(command_modifies_files(text), cfg!(windows));
+    }
+
+    /// A lone `&` leaves what it ends running; `&&`, `|&`, `&>` and `>&`
+    /// don't, nor a quoted `&`.
+    #[test]
+    fn a_part_left_running_with_an_ampersand_is_told_apart() {
+        for left in [
+            "npm run dev &",
+            "npm run dev & sleep 5; curl -s localhost:5173",
+            "npm run dev > dev.log 2>&1 & sleep 5",
+            "nohup vite --port 5173 >/dev/null 2>&1 &",
+            "a &\nb",
+        ] {
+            assert!(parse_command(left).backgrounds, "{left}");
+        }
+        for waited in [
+            "npm test && npm run lint",
+            "make 2>&1 | tee log",
+            "cargo build |& tee log",
+            "cargo build &> log",
+            "echo 'a & b'",
+            "echo \"a & b\"",
+            "echo a\\&b",
+        ] {
+            assert!(!parse_command(waited).backgrounds, "{waited}");
+        }
+        // cmd.exe has no background: its `&` only separates.
+        assert!(!parse_command_in("a & b", Shell::Cmd).backgrounds);
     }
 }

@@ -171,13 +171,11 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
       return { count: result.split('\n').filter((line) => line.startsWith('- ')).length };
     case 'web_search':
       return { count: result.split('\n').filter((line) => /^\d+\. /.test(line)).length };
-    case 'bash': {
-      const lines = result.split('\n');
-      const code = (lines[1] ?? '').match(/^exit code (-?\d+)/)?.[1];
-      // Third line: a long wait for a CPU slot (src-tauri/src/workload).
-      const waited = lines[2]?.startsWith('Waited ') ? lines[2].replace(/\.$/, '') : undefined;
-      return { exitCode: code !== undefined ? Number(code) : null, ...(waited ? { waited } : {}) };
-    }
+    case 'bash':
+      return commandMeta(result);
+    // A command it read or stopped; its list has no meta.
+    case 'background':
+      return result.startsWith('$ ') ? commandMeta(result) : undefined;
     case 'write': {
       // A whole-file write: "wrote 120 bytes to a.ts (+3 -1 lines)", on the
       // first line: a syntax check may follow it (V04).
@@ -191,6 +189,26 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
     default:
       return undefined;
   }
+}
+
+/**
+ * A command's result (agent_run/tools.rs: `format_command_output`,
+ * `format_background`), as its tool block reads it: its exit code (null
+ * when it didn't exit on its own, or still runs), its id while it runs in
+ * the background, and a long wait for a CPU slot.
+ */
+function commandMeta(result: string): ToolMeta {
+  const lines = result.split('\n');
+  const status = lines[1] ?? '';
+  const code = status.match(/^exit code (-?\d+)/)?.[1];
+  const background = status.match(/^running in the background as ([^,]+),/)?.[1];
+  // Third line: a long wait for a CPU slot (src-tauri/src/workload).
+  const waited = lines[2]?.startsWith('Waited ') ? lines[2].replace(/\.$/, '') : undefined;
+  return {
+    exitCode: code !== undefined ? Number(code) : null,
+    ...(background ? { background } : {}),
+    ...(waited ? { waited } : {}),
+  };
 }
 
 /** write on the agent's context file (CLM mode), block by block. */
@@ -300,14 +318,42 @@ function describe(name: string, args: Args, status: CallStatus, meta?: ToolMeta)
     case 'bash': {
       const command = str(args.command);
       const shown = command && command.length > 60 ? `${command.slice(0, 57)}…` : command;
-      const title = `${active ? 'Running' : 'Ran'} ${shown ? `\`${shown}\`` : 'a command'}`;
+      const what = shown ? `\`${shown}\`` : 'a command';
+      const title =
+        args.background === true
+          ? `${active ? 'Starting' : 'Started'} ${what} in the background`
+          : `${active ? 'Running' : 'Ran'} ${what}`;
       if (failed || meta?.exitCode === undefined) return { title };
-      const outcome =
-        meta.exitCode === null ? 'killed' : meta.exitCode === 0 ? 'ok' : `exit ${meta.exitCode}`;
+      const outcome = meta.background
+        ? `running as ${meta.background}`
+        : meta.exitCode === null
+          ? 'killed'
+          : meta.exitCode === 0
+            ? 'ok'
+            : `exit ${meta.exitCode}`;
       const waited = meta.waited
         ? `${meta.waited.charAt(0).toLowerCase()}${meta.waited.slice(1)}`
         : '';
       return { title, meta: waited ? `${outcome} · ${waited}` : outcome };
+    }
+
+    case 'background': {
+      const id = str(args.id) ?? 'a background task';
+      const title =
+        args.action === 'stop'
+          ? `${active ? 'Stopping' : 'Stopped'} ${id}`
+          : args.action === 'output'
+            ? `${active ? 'Reading' : 'Read'} what ${id} printed`
+            : `${active ? 'Listing' : 'Listed'} the background tasks`;
+      if (failed || meta?.exitCode === undefined) return { title };
+      const state = meta.background
+        ? 'running'
+        : meta.exitCode === null
+          ? args.action === 'stop'
+            ? undefined
+            : 'stopped'
+          : `ended, exit ${meta.exitCode}`;
+      return { title, meta: state };
     }
 
     case 'list_dir': {

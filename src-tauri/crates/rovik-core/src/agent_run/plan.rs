@@ -20,7 +20,7 @@ use std::sync::LazyLock;
 pub const PLANS_DIR: &str = ".rovik/plans";
 
 /// Tools Plan mode doesn't offer (or allow, if a model calls them anyway).
-pub const PLAN_BLOCKED_TOOLS: &[&str] = &["write", "bash"];
+pub const PLAN_BLOCKED_TOOLS: &[&str] = &["write", "bash", "background"];
 
 /// What a call of a tool Plan mode doesn't allow gets: why not, and what
 /// comes next. For Rovik's own calls, and for a connector's own tools it

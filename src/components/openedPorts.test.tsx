@@ -1,9 +1,11 @@
-// Component test: the ports a remote chat's servers opened show under its
-// title row (D20): the server's own port each, on one button that opens
-// its page in a browser tab of the editor, or, as its ▾ chooses for every
-// port, copies the address on this computer that leads to it (the port
-// forwarded here). A port whose pages no tab can show copies. Hidden while
-// the chat has none. Run with: npm test
+// Component test: what a chat has running shows under its title row: the
+// ports a remote chat's servers opened (D20), the server's own port each,
+// on one button that opens its page in a browser tab of the editor, or, as
+// its ▾ chooses for every port, copies the address on this computer that
+// leads to it (the port forwarded here), a port whose pages no tab can show
+// copying; and the commands its agent left running, counted, which open
+// into a list with how long each has run and a Stop for each. Hidden while
+// the chat has neither. Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,6 +13,19 @@ import { render } from 'solid-js/web';
 import OpenedPorts from './OpenedPorts';
 import { initCloud } from '../lib/cloud';
 import { setPageOpener } from '../lib/browserTabs';
+import type { BackgroundTask } from '../lib/backgroundTasks';
+
+/** What each chat's agent left running, where it runs, and the Stops it got. */
+const running: Record<string, BackgroundTask[]> = {};
+const stops: [string, string][] = [];
+/** The chats whose host is away: asking what they run fails. */
+const away = new Set<string>();
+/** A task started `ago` ms before now. */
+const task = (id: string, command: string, ago: number): BackgroundTask => ({
+  id,
+  command,
+  startedAt: Date.now() - ago,
+});
 
 const callbacks = new Map<number, (event: unknown) => void>();
 const listeners: { event: string; handler: number }[] = [];
@@ -26,6 +41,17 @@ const listeners: { event: string; handler: number }[] = [];
       return args.handler;
     }
     if (cmd === 'hosts_summaries') return [];
+    if (cmd === 'background_tasks') {
+      if (away.has(args.dialogId)) throw "The chat's host isn't connected.";
+      return running[args.dialogId] ?? [];
+    }
+    if (cmd === 'background_stop') {
+      if (args.id === 'stuck') throw "The host isn't reachable.";
+      stops.push([args.dialogId, args.id]);
+      const before = running[args.dialogId] ?? [];
+      running[args.dialogId] = before.filter((t) => t.id !== args.id);
+      return before.length !== running[args.dialogId].length;
+    }
     // Forwarded before this window listened.
     if (cmd === 'cloud_forwarded_ports') return { earlier: [{ port: 8000, localPort: 8000 }] };
     return null;
@@ -191,4 +217,108 @@ test('ports forwarded before the window listened show too', async () => {
   const dispose = render(() => <OpenedPorts dialogId="earlier" />, root);
   assert.deepEqual(numbers(root), ['8000']);
   dispose();
+});
+
+const commands = (root: HTMLElement) =>
+  [...root.querySelectorAll('.background-task-command')].map((c) => c.textContent);
+
+test('a chat with background tasks shows how many, with its ports when it has some', async () => {
+  await initCloud();
+  running.t1 = [task('bg1', 'npm run dev', 90_000), task('bg2', 'npm run watch:css', 5_500)];
+  const root = container();
+  const dispose = render(() => <OpenedPorts dialogId="t1" />, root);
+  await tick();
+  assert.equal(root.querySelector('.opened-ports-label')?.textContent, 'Background tasks: 2');
+  assert.equal(root.querySelector('.background-tasks'), null, 'closed at first');
+
+  emit({ type: 'ports', dialogId: 't1', ports: [{ port: 5173, localPort: 5173, tabPort: 40003 }] });
+  assert.equal(
+    root.querySelector('.opened-ports-label')?.textContent,
+    'Background tasks: 2, open ports:'
+  );
+  assert.deepEqual(numbers(root), ['5173'], 'its ports on their buttons, as without tasks');
+  assert.deepEqual(labels(root), ['Open localhost:5173 in a tab']);
+  dispose();
+});
+
+test('the row opens into the tasks, how long each has run, and a Stop for each', async () => {
+  await initCloud();
+  running.t2 = [task('bg1', 'npm run dev', 90_000), task('bg2', 'npm run watch:css', 5_500)];
+  const root = container();
+  const dispose = render(() => <OpenedPorts dialogId="t2" />, root);
+  await tick();
+  const toggle = root.querySelector<HTMLButtonElement>('.background-tasks-toggle')!;
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  toggle.click();
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.deepEqual(commands(root), ['npm run dev', 'npm run watch:css'], 'oldest first');
+  assert.deepEqual(
+    [...root.querySelectorAll('.background-task-ran')].map((r) => r.textContent),
+    ['2 min', '6 s']
+  );
+  const stopsOf = () => [...root.querySelectorAll<HTMLButtonElement>('.background-task-stop')];
+  assert.deepEqual(
+    stopsOf().map((b) => [b.textContent, b.getAttribute('aria-label')]),
+    [
+      ['Stop', 'Stop npm run dev'],
+      ['Stop', 'Stop npm run watch:css'],
+    ]
+  );
+
+  stopsOf()[0].click();
+  await tick();
+  await tick();
+  assert.deepEqual(stops, [['t2', 'bg1']], 'where the chat runs');
+  assert.deepEqual(commands(root), ['npm run watch:css'], 'gone once stopped');
+  assert.equal(root.querySelector('.opened-ports-label')?.textContent, 'Background tasks: 1');
+
+  stopsOf()[0].click();
+  await tick();
+  await tick();
+  assert.equal(root.querySelector('.opened-ports'), null, 'hidden once nothing runs');
+  dispose();
+});
+
+test('a Stop that fails says why, and may be tried again', async () => {
+  await initCloud();
+  running.t3 = [task('stuck', 'npm run dev', 1_000)];
+  const root = container();
+  const dispose = render(() => <OpenedPorts dialogId="t3" />, root);
+  await tick();
+  root.querySelector<HTMLButtonElement>('.background-tasks-toggle')!.click();
+  const stop = root.querySelector<HTMLButtonElement>('.background-task-stop')!;
+  stop.click();
+  assert.equal(stop.textContent, 'Stopping…');
+  assert.ok(stop.disabled);
+  await tick();
+  await tick();
+  assert.equal(
+    root.querySelector('.background-task-failed')?.textContent,
+    "It didn't stop: The host isn't reachable."
+  );
+  assert.equal(stop.textContent, 'Stop');
+  assert.ok(!stop.disabled);
+  assert.deepEqual(commands(root), ['npm run dev'], 'still there');
+  dispose();
+});
+
+test('a chat whose host was away as it opened asks again once a host catches up', async () => {
+  await initCloud();
+  running.t4 = [task('bg1', 'npm run dev', 1_000)];
+  away.add('t4');
+  const root = container();
+  const original = console.error;
+  console.error = () => {};
+  try {
+    const dispose = render(() => <OpenedPorts dialogId="t4" />, root);
+    await tick();
+    assert.equal(root.querySelector('.opened-ports'), null, 'its host couldn’t say');
+    away.delete('t4');
+    emit({ type: 'caughtUp', host: 'h-t4' });
+    await tick();
+    assert.equal(root.querySelector('.opened-ports-label')?.textContent, 'Background tasks: 1');
+    dispose();
+  } finally {
+    console.error = original;
+  }
 });

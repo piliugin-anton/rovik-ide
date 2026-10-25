@@ -608,7 +608,13 @@ export function describeToolCall(name: string, argsJson: string): string {
 
   switch (name) {
     case 'bash':
-      return `Run \`${str('command') ?? '…'}\``;
+      return `Run \`${str('command') ?? '…'}\`${args.background === true ? ' in the background' : ''}`;
+    case 'background': {
+      const id = str('id') ?? 'a background command';
+      if (args.action === 'output') return `Read what ${id} printed`;
+      if (args.action === 'stop') return `Stop ${id}`;
+      return 'List the commands running in the background';
+    }
     case 'read':
       return `Read ${str('path') ?? 'a file'}`;
     case 'list_dir':

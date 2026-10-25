@@ -127,6 +127,19 @@ describe('one_and_three_task_calls_stand_alone', () => {
 });
 
 describe('describeGroup', () => {
+  it('names the background tasks the agent checked on', () => {
+    const label = describeGroup(
+      'background',
+      [{ action: 'output', id: 'bg1' }, { action: 'list' }],
+      false
+    );
+    assert.equal(label.verb, 'Checked on');
+    assert.deepEqual(
+      label.items.map((i) => i.text),
+      ['bg1', 'the background tasks']
+    );
+  });
+
   it('names files once each, with where to open them', () => {
     const label = describeGroup(
       'read',

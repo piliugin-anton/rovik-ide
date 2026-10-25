@@ -14,6 +14,7 @@ use crate::agent_run;
 use crate::chat_db::location::{self, Location};
 use crate::chat_db::{api, attachments, sync};
 use crate::clm;
+use crate::command_tool::background;
 use crate::core::Core;
 use crate::workload;
 use rovik_protocol::{Access, Fail, FailCode, Request, Response, Target};
@@ -88,6 +89,16 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         } => agent_run::chat_dismiss_checklist(core, dialog_id, message_id)
             .await
             .map(Response::Checklist),
+        Request::BackgroundTasks { dialog_id } => {
+            Ok(Response::BackgroundTasks(background::tasks(&dialog_id)))
+        }
+        // It waits until what it killed is gone.
+        Request::BackgroundStop { dialog_id, id } => {
+            crate::rt::spawn_blocking(move || background::stop_for_user(&dialog_id, &id))
+                .await
+                .map(Response::Bool)
+                .map_err(|e| e.to_string())
+        }
         Request::ConnectorProbe(args) => crate::connectors::probe(args)
             .await
             .map(Response::ConnectorProbe),

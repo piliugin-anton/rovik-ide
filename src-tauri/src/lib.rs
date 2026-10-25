@@ -380,6 +380,8 @@ pub fn run() {
             commands::agent::agent_answer_questions,
             commands::agent::agent_status,
             commands::agent::chat_checklist,
+            commands::agent::background_tasks,
+            commands::agent::background_stop,
             commands::agent::chat_dismiss_checklist,
             commands::agent::list_models,
             commands::agent::connector_probe,

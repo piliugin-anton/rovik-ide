@@ -4,13 +4,14 @@
 //! connection refused at a local address is told that nothing listens
 //! there, and why that may be. Every port in that network is this user's
 //! own: another user's servers are never what holds or answers it.
+//!
+//! What clients say they couldn't reach is read in unreached.rs, on any
+//! machine.
 
+use super::unreached::{ports_on, refused_ports, REFUSED};
 use crate::overlay::confine::network::Listener;
 use regex::Regex;
 use std::sync::LazyLock;
-
-/// The most ports a note names.
-const MOST_PORTS: usize = 3;
 
 /// A line saying a server couldn't take its port.
 static BUSY: LazyLock<Regex> = LazyLock::new(|| {
@@ -30,21 +31,6 @@ static BUSY_PORT: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// A line saying a connection was refused.
-static REFUSED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)ECONNREFUSED|connection refused|couldn't connect to server").unwrap()
-});
-
-/// A local address's port on a refused line: `127.0.0.1:3000`,
-/// `localhost port 3000` (curl), `|127.0.0.1|:3000` (wget),
-/// `host='localhost', port=3000` (Python's urllib3).
-static REFUSED_PORT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(?:localhost|\b127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\]|::1)(?::|\s+port\s+|\|:)(\d{1,5})\b|host='(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1)',\s*port=(\d{1,5})",
-    )
-    .unwrap()
-});
-
 /// Whether `text`, a command's output, shows trouble with a port: worth
 /// looking at what listens in the network for.
 pub(super) fn troubled(text: &str) -> bool {
@@ -54,16 +40,21 @@ pub(super) fn troubled(text: &str) -> bool {
 /// The note for a command's output `text`, given what listens in the
 /// user's network now, and whether what a command leaves running ends with
 /// it (`ends_with_command`, bubblewrap's sandbox): None when it shows no
-/// trouble with a port.
-pub(super) fn note(text: &str, listening: &[Listener], ends_with_command: bool) -> Option<String> {
+/// trouble with a port. A refused port of `services`, the ports the
+/// project's services publish, is theirs to explain (environment.rs).
+pub(super) fn note(
+    text: &str,
+    listening: &[Listener],
+    ends_with_command: bool,
+    services: &[u16],
+) -> Option<String> {
     let mut notes = Vec::new();
     let (busy, busy_ports) = ports_on(text, &BUSY, &BUSY_PORT);
     if busy {
         notes.push(busy_note(&busy_ports, listening));
     }
-    let (_, refused_ports) = ports_on(text, &REFUSED, &REFUSED_PORT);
-    for port in refused_ports {
-        if busy_ports.contains(&port) {
+    for port in refused_ports(text) {
+        if busy_ports.contains(&port) || services.contains(&port) {
             continue;
         }
         notes.push(refused_note(port, listening, ends_with_command));
@@ -74,26 +65,6 @@ pub(super) fn note(text: &str, listening: &[Listener], ends_with_command: bool) 
             .map(|note| format!("\n({note})"))
             .collect::<String>()
     })
-}
-
-/// Whether a line of `text` matches `line`, and the ports `port` finds on
-/// such lines: the first few, once each.
-fn ports_on(text: &str, line: &Regex, port: &Regex) -> (bool, Vec<u16>) {
-    let mut found = false;
-    let mut ports = Vec::new();
-    for matching in text.lines().filter(|l| line.is_match(l)) {
-        found = true;
-        for captures in port.captures_iter(matching) {
-            let number = captures.iter().skip(1).flatten().next();
-            let Some(port) = number.and_then(|m| m.as_str().parse::<u16>().ok()) else {
-                continue;
-            };
-            if port != 0 && !ports.contains(&port) && ports.len() < MOST_PORTS {
-                ports.push(port);
-            }
-        }
-    }
-    (found, ports)
 }
 
 /// Who holds `port`, in words: each process with its command line.
@@ -158,9 +129,10 @@ fn refused_note(port: u16, listening: &[Listener], ends_with_command: bool) -> S
             // started by an earlier command is gone.
             let ended = if ends_with_command {
                 format!(
-                    " A server a command starts in the background ends with that command, so \
-                     start it and test it in the same command, for example `npm run dev > \
-                     dev.log 2>&1 & sleep 5; curl -s localhost:{port}`."
+                    " A server a command starts with `&` ends with that command: leave one \
+                     running with bash's background: true, or start it and test it in the same \
+                     command, for example `npm run dev > dev.log 2>&1 & sleep 5; curl -s \
+                     localhost:{port}`."
                 )
             } else {
                 String::new()
@@ -230,30 +202,13 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_local_port_is_read_from_what_clients_say() {
-        for (said, port) in [
-            ("Error: connect ECONNREFUSED 127.0.0.1:3000", 3000),
-            ("curl: (7) Failed to connect to localhost port 5173 after 0 ms: Couldn't connect to server", 5173),
-            ("curl: (7) Failed to connect to 127.0.0.1 port 8000: Connection refused", 8000),
-            ("Connecting to localhost (localhost)|127.0.0.1|:8080... failed: Connection refused.", 8080),
-            ("requests.exceptions.ConnectionError: HTTPConnectionPool(host='localhost', port=9000): Max retries exceeded with url: / (Caused by NewConnectionError('Failed to establish a new connection: [Errno 111] Connection refused'))", 9000),
-            ("Get \"http://127.0.0.1:4000/health\": dial tcp 127.0.0.1:4000: connect: connection refused", 4000),
-            ("error sending request for url (http://[::1]:3333/): Connection refused (os error 111)", 3333),
-        ] {
-            assert_eq!(ports_on(said, &REFUSED, &REFUSED_PORT), (true, vec![port]), "{said}");
-        }
-        // A remote host refusing isn't the network's business.
-        let remote = "curl: (7) Failed to connect to example.com port 443: Connection refused";
-        assert_eq!(ports_on(remote, &REFUSED, &REFUSED_PORT), (true, vec![]));
-    }
-
-    #[test]
     fn a_busy_port_names_the_users_process_holding_it() {
         let listening = [listener(3000, 4242, "node server.js")];
         let said = note(
             "Error: listen EADDRINUSE: address already in use :::3000",
             &listening,
             true,
+            &[],
         )
         .unwrap();
         assert!(
@@ -269,7 +224,7 @@ mod tests {
             "{said}"
         );
 
-        let gone = note("Error: Port 5173 is already in use", &[], true).unwrap();
+        let gone = note("Error: Port 5173 is already in use", &[], true, &[]).unwrap();
         assert!(gone.contains("nothing holds port 5173 now"), "{gone}");
     }
 
@@ -280,6 +235,7 @@ mod tests {
             "OSError: [Errno 98] Address already in use",
             &listening,
             true,
+            &[],
         )
         .unwrap();
         assert!(
@@ -293,13 +249,14 @@ mod tests {
     #[test]
     fn a_refused_local_connection_says_nothing_listens_and_why() {
         let refused = "curl: (7) Failed to connect to localhost port 3000 after 0 ms: Couldn't connect to server";
-        let said = note(refused, &[], true).unwrap();
+        let said = note(refused, &[], true, &[]).unwrap();
         assert!(said.contains("Nothing listens on port 3000"), "{said}");
         assert!(said.contains("ends with that command"), "{said}");
+        assert!(said.contains("background: true"), "{said}");
         assert!(said.contains("curl -s localhost:3000"), "{said}");
         // Where what a command leaves running goes on (Landlock), it isn't
         // said to end.
-        let lasting = note(refused, &[], false).unwrap();
+        let lasting = note(refused, &[], false, &[]).unwrap();
         assert!(
             lasting.contains("Nothing listens on port 3000"),
             "{lasting}"
@@ -310,15 +267,33 @@ mod tests {
             "Error: connect ECONNREFUSED 127.0.0.1:3000",
             &[listener(3000, 9, "next dev")],
             true,
+            &[],
         )
         .unwrap();
         assert!(late.contains("Port 3000 listens now"), "{late}");
     }
 
     #[test]
+    fn a_port_a_service_publishes_is_left_to_the_service_to_explain() {
+        let refused = "Error: connect ECONNREFUSED 127.0.0.1:5432\nError: connect ECONNREFUSED 127.0.0.1:3000";
+        let said = note(refused, &[], true, &[5432]).unwrap();
+        assert!(said.contains("Nothing listens on port 3000"), "{said}");
+        assert!(!said.contains("5432"), "{said}");
+        assert_eq!(
+            note(
+                "Error: connect ECONNREFUSED 127.0.0.1:5432",
+                &[],
+                true,
+                &[5432]
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn output_without_port_trouble_gets_no_note() {
         assert!(!troubled("Compiled successfully in 1.2s"));
-        assert_eq!(note("Compiled successfully in 1.2s", &[], true), None);
+        assert_eq!(note("Compiled successfully in 1.2s", &[], true, &[]), None);
         assert!(troubled("connect ECONNREFUSED 127.0.0.1:1"));
     }
 }

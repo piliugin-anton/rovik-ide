@@ -8,9 +8,10 @@
 //! merged result is checked first, before the run ends: it's written into
 //! the chat's view and the run's checks run again there; if they fail, the
 //! chat gets the failures to fix, as with its own ([`Run::take_project_changes`]).
-//! Anything else (conflicts, failing checks, a run that stopped or failed)
-//! is left for the user: resolve the conflicts or hand them to the chat,
-//! land anyway, or discard.
+//! Anything else (conflicts, failing checks, a run that stopped or failed,
+//! a dev server the agent left running in the chat's view) is left for the
+//! user: resolve the conflicts or hand them to the chat, land anyway, or
+//! discard.
 //!
 //! While many files change in the project at once (a branch switch, a
 //! pull), isolated runs wait before their next step and before landing.
@@ -75,6 +76,27 @@ pub fn pending_reason(outcome: &str) -> Option<String> {
         _ => "the run didn't finish",
     };
     Some(format!("Not landed: {reason}."))
+}
+
+/// Why an isolated chat's changes wait while commands its agent left
+/// running (bash's `background`: a dev server) work in its view, which
+/// goes once they land (`chats::discard`), and them with it: they go on
+/// showing the changes until the user lands them, which stops them. An
+/// Autopilot task's delivery says so too. None while none runs.
+fn running_in_view(dialog_id: &str) -> Option<String> {
+    let commands: Vec<String> = crate::command_tool::background::tasks(dialog_id)
+        .iter()
+        .map(|t| format!("`{}`", t.command))
+        .collect();
+    let (which, them) = match commands.as_slice() {
+        [] => return None,
+        [one] => (format!("{one} runs"), "it"),
+        many => (format!("{} run", many.join(", ")), "them"),
+    };
+    Some(format!(
+        "Not landed: {which} in the background in this chat's view, which goes once its \
+         changes land. Land stops {them}."
+    ))
 }
 
 /// Whether checks would run on a result merged with the project's newer
@@ -154,6 +176,16 @@ impl Run {
                 }),
             );
             return Some(("waits: run didn't finish", count));
+        }
+        if let Some(reason) = running_in_view(&dialog_id) {
+            chats::set_pending(
+                &dialog_id,
+                Some(&Pending {
+                    reason,
+                    conflicts: Vec::new(),
+                }),
+            );
+            return Some(("waits: commands running in its view", count));
         }
 
         if !marked.is_empty() {
@@ -570,5 +602,42 @@ mod tests {
             ..on
         };
         assert!(!checks_would_run(&denied, &[check("npm test", true)]));
+    }
+
+    /// The bar says which commands left running hold the chat's changes
+    /// back, and that Land stops them; nothing once none runs.
+    #[cfg(unix)]
+    #[test]
+    fn a_chats_changes_wait_while_commands_it_left_running_work_in_its_view() {
+        use super::running_in_view;
+        use crate::command_tool::{background, Queued};
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.to_string_lossy().into_owned();
+        let chat = "landing-running-in-view";
+        let start = |command: &str| {
+            let agent = crate::workload::JobKind::Agent { owner: chat.into() };
+            let told: background::Told = std::sync::Arc::new(|| {});
+            let queued = Queued::of(agent, None);
+            background::start(chat, &root, command, &|| false, queued, told).unwrap();
+        };
+        assert_eq!(running_in_view(chat), None);
+        start("sleep 30");
+        assert_eq!(
+            running_in_view(chat).as_deref(),
+            Some(
+                "Not landed: `sleep 30` runs in the background in this chat's view, which goes \
+                 once its changes land. Land stops it."
+            )
+        );
+        start("sleep 31");
+        assert_eq!(
+            running_in_view(chat).as_deref(),
+            Some(
+                "Not landed: `sleep 30`, `sleep 31` run in the background in this chat's view, \
+                 which goes once its changes land. Land stops them."
+            )
+        );
+        background::stop_chat(chat);
+        assert_eq!(running_in_view(chat), None);
     }
 }

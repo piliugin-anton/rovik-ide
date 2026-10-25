@@ -1186,18 +1186,114 @@ body.tree-dragging {
   color: var(--fg-dim);
 }
 
-/* The ports a remote chat's servers opened on its host (OpenedPorts), in a
-   row of their own under the title row. */
+/* What a chat has running (OpenedPorts), under the title row: the commands
+   its agent left running, which open into a list, and the ports a remote
+   chat's servers opened on its host. */
 .opened-ports {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 10px;
+  flex-direction: column;
+  gap: 4px;
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   font-size: 12px;
   color: var(--fg-dim);
+}
+
+.opened-ports-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.background-tasks-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.background-tasks-toggle:hover {
+  color: var(--fg);
+}
+
+.background-tasks-toggle:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
+.background-tasks-caret {
+  width: 10px;
+}
+
+/* Each task on a line of its own: its command, how long it has run, and
+   its Stop at the far right. */
+.background-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0 0 0 16px;
+  list-style: none;
+}
+
+.background-task {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 22px;
+}
+
+.background-task-command {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--fg);
+}
+
+.background-task-failed {
+  flex-shrink: 1;
+  min-width: 0;
+  color: var(--error);
+}
+
+.background-task-ran {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.background-task-stop {
+  flex-shrink: 0;
+  height: 20px;
+  padding: 0 8px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.background-task-stop:hover:not(:disabled) {
+  background: var(--hover-strong);
+  color: var(--fg);
+}
+
+.background-task-stop:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.background-task-stop:focus-visible {
+  outline: 1px solid var(--accent);
 }
 
 /* Each port is one button, doing what its ▾ chose (Open, Copy), and the ▾
