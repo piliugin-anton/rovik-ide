@@ -295,3 +295,26 @@ fn the_project_code_a_command_asked_for_is_the_agents_to_run() {
         built_note(&two, &[])
     );
 }
+
+#[test]
+fn the_files_a_command_names_are_a_models_with_only_its_overrides() {
+    let model = shop("compose.yaml");
+    let at = |path: &str| std::path::PathBuf::from(path);
+    assert!(model.read_from(&[at("/p/shop/compose.yaml")]));
+    assert!(model.read_from(&[
+        at("/p/shop/compose.yaml"),
+        at("/p/shop/compose.override.yaml")
+    ]));
+    assert!(
+        !model.read_from(&[at("/p/shop/compose.yaml"), at("/p/shop/compose.prod.yaml")]),
+        "another file changes what runs"
+    );
+    assert!(
+        !model.read_from(&[at("/p/shop/compose.override.yaml")]),
+        "an override alone isn't the file"
+    );
+    assert!(!model.read_from(&[at("/p/shop/docker-compose.yml")]));
+    let below = Model::parse(Path::new("/p/shop/api"), "api/compose.yaml", SHOP).unwrap();
+    assert!(below.read_from(&[at("/p/shop/api/compose.yaml")]));
+    assert!(!below.read_from(&[at("/p/shop/compose.yaml")]));
+}

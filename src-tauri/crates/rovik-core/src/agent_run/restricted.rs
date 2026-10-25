@@ -3955,8 +3955,9 @@ fn closing_backtick(chars: &[char], start: usize, docs: &[HereDoc]) -> usize {
 
 /// Where a command's parts run: the folder `cd`, `pushd` and `popd` leave
 /// it in.
-struct Place {
-    cwd: PathBuf,
+pub(crate) struct Place {
+    /// The folder the next part runs in.
+    pub(crate) cwd: PathBuf,
     /// Where `cd -` goes back to.
     previous: PathBuf,
     /// Where each `popd` goes back to.
@@ -3966,7 +3967,8 @@ struct Place {
 }
 
 impl Place {
-    fn new(cwd: &Path) -> Place {
+    /// A command's start, in `cwd`.
+    pub(crate) fn new(cwd: &Path) -> Place {
         Place {
             cwd: cwd.to_path_buf(),
             previous: cwd.to_path_buf(),
@@ -3975,23 +3977,28 @@ impl Place {
         }
     }
 
+    /// `word`, a path the next part names, as a path from the folder it
+    /// runs in: absolute, its `~`, `.` and `..` worked out.
+    pub(crate) fn path(&self, word: &str) -> PathBuf {
+        PathBuf::from(resolve(&self.cwd, &expand_home(word)))
+    }
+
     /// Whether `program` changes the folder the rest runs in (`cd`,
     /// `pushd`, `popd`), going there.
-    fn moves(&mut self, program: &str, args: &[String]) -> bool {
+    pub(crate) fn moves(&mut self, program: &str, args: &[String]) -> bool {
         // Its folder: the first word that isn't an option (`cd -P x`,
         // cmd.exe's `cd /d x`), or `-`.
         let word = args
             .iter()
             .find(|a| a.as_str() == "-" || !(a.starts_with('-') || a.eq_ignore_ascii_case("/d")));
-        let folder = |word: &str| PathBuf::from(resolve(&self.cwd, &expand_home(word)));
         let to = match program {
             "cd" | "chdir" => match word.map(String::as_str) {
                 None => home().map(PathBuf::from),
                 Some("-") => Some(self.previous.clone()),
-                Some(word) => Some(folder(word)),
+                Some(word) => Some(self.path(word)),
             },
             "pushd" => word.map(|word| {
-                let to = folder(word);
+                let to = self.path(word);
                 self.stack.push(self.cwd.clone());
                 to
             }),

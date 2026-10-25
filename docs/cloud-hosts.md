@@ -506,9 +506,10 @@ commands can't run a container engine, not even the server's `podman`,
 which is the daemon's: their sandbox gives them no user namespaces, and
 Podman's storage is read-only to them. A `docker compose up` of theirs (or
 `docker-compose`, `podman compose`, `podman-compose`) fails, and the daemon
-starts the services it names instead and says so; a service built from the
-project's code is the agent's to run with its own commands. Any other
-command of theirs that reaches for an engine and fails (`docker ps`,
+starts the services it names instead and says so, from the compose file it
+names (`-f docker-compose.yml`) or the one where it runs; a service built
+from the project's code is the agent's to run with its own commands. Any
+other command of theirs that reaches for an engine and fails (`docker ps`,
 `podman run`, a look for `docker` or its socket, a script that runs
 `docker`) is told that they need none, which services the project declares
 and where its code reaches them, or why the server can't run them. Claude

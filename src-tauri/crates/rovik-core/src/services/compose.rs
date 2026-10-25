@@ -39,15 +39,18 @@ pub const FILE_NAMES: &[&str] = &[
     "docker-compose.yml",
 ];
 
-/// What Compose reads beside a compose file without being told: its
-/// override files, and the variables it puts into the file.
-const BESIDE: &[&str] = &[
+/// The override files Compose reads beside a compose file without being
+/// told, and merges into it.
+const OVERRIDES: &[&str] = &[
     "compose.override.yaml",
     "compose.override.yml",
     "docker-compose.override.yaml",
     "docker-compose.override.yml",
-    ".env",
 ];
+
+/// The file Compose reads beside a compose file without being told, for
+/// the variables it puts into it.
+const VARIABLES: &str = ".env";
 
 /// The longest a read is kept, whatever the files say.
 const FRESH: Duration = Duration::from_secs(60);
@@ -197,6 +200,17 @@ impl Model {
             "" => &self.dir,
             _ => self.dir.parent().unwrap_or(&self.dir),
         }
+    }
+
+    /// Whether `files`, the compose files a command named for Compose to
+    /// read (`-f docker-compose.yml`), are the ones this model was read
+    /// from: its file, with none but the override files Compose reads
+    /// beside it unasked.
+    pub fn read_from(&self, files: &[PathBuf]) -> bool {
+        let name = self.file.rsplit('/').next().unwrap_or(&self.file);
+        let file = self.dir.join(name);
+        let beside = |named: &PathBuf| OVERRIDES.iter().any(|o| *named == self.dir.join(o));
+        files.contains(&file) && files.iter().all(|named| *named == file || beside(named))
     }
 
     /// The services that run from an image of their own.
@@ -373,7 +387,8 @@ type Fingerprint = Vec<(&'static str, Option<(SystemTime, u64)>)>;
 fn fingerprint(dir: &Path) -> Fingerprint {
     FILE_NAMES
         .iter()
-        .chain(BESIDE)
+        .chain(OVERRIDES)
+        .chain([&VARIABLES])
         .map(|name| {
             let meta = std::fs::metadata(dir.join(name)).ok();
             (
