@@ -311,10 +311,22 @@ impl Run {
     /// command's check may go through the folders it searches. A check that
     /// fails refuses the call.
     async fn restricted_problem(&self, name: &str, args: Map<String, Value>) -> Option<String> {
+        self.restricted_problem_in(name, args, None).await
+    }
+
+    /// [`Self::restricted_problem`] for a call whose command runs in `cwd`
+    /// (a harness's shell's folder), or in the project's.
+    async fn restricted_problem_in(
+        &self,
+        name: &str,
+        args: Map<String, Value>,
+        cwd: Option<String>,
+    ) -> Option<String> {
         let root = self.root.clone()?;
+        let cwd = cwd.unwrap_or_else(|| root.clone());
         let (name, restricted) = (name.to_string(), self.restricted.clone());
         crate::rt::spawn_blocking(move || {
-            super::restricted::problem(&name, &args, &root, &restricted)
+            super::restricted::problem_in(&name, &args, &root, &cwd, &restricted)
         })
         .await
         .unwrap_or_else(|e| {
@@ -1469,15 +1481,27 @@ impl Run {
     /// Before it runs, one that would read or change a restricted file is
     /// refused, whatever the harness's own permissions.
     pub(super) async fn answer_command_check(&self, check: crate::connectors::CommandCheck) {
-        use crate::connectors::CommandAnswer;
+        use crate::connectors::{CommandAnswer, HarnessCall};
         let Some(root) = self.root.clone() else {
             let _ = check.reply.send(CommandAnswer::Note(None));
             return;
         };
+        let command = match check.call {
+            // Its own file tools: only what they may do with files.
+            HarnessCall::Tool { name, args } => {
+                let refused = self.restricted_problem_in(&name, args, check.cwd).await;
+                let _ = check.reply.send(match refused {
+                    Some(reason) => CommandAnswer::Deny(reason),
+                    None => CommandAnswer::Note(None),
+                });
+                return;
+            }
+            HarnessCall::Command(command) => command,
+        };
         if check.failed.is_none() {
-            let args = json!({ "command": check.command });
+            let args = json!({ "command": command });
             let args = args.as_object().cloned().unwrap_or_default();
-            if let Some(reason) = self.restricted_problem("bash", args).await {
+            if let Some(reason) = self.restricted_problem_in("bash", args, check.cwd).await {
                 let _ = check.reply.send(CommandAnswer::Deny(reason));
                 return;
             }
@@ -1502,11 +1526,11 @@ impl Run {
             plan_mode: self.plan_mode,
         };
         let said = match &check.failed {
-            None => super::environment::before_harness_command(&cx, &check.command)
+            None => super::environment::before_harness_command(&cx, &command)
                 .await
                 .done_sentence()
                 .map(|done| format!("Rovik IDE, before this command ran: {done}")),
-            Some((code, output)) => super::environment::after(&cx, &check.command, *code, output)
+            Some((code, output)) => super::environment::after(&cx, &command, *code, output)
                 .await
                 .note()
                 .map(|note| format!("Rovik IDE: {note}")),

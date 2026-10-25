@@ -1075,9 +1075,11 @@ for an approval, with the reason and what to do instead
 repository map leaves out their declarations, and the reviewers' diffs
 their changes; an edit of one never goes to the AI reviewer. Claude Code
 with its own tools gets them as deny rules of its own (`Read(./.env)`,
-`Edit(./.env)`), and its shell's commands are checked by its `PreToolUse`
-hook. To teach it another name, add it to `SECRET_NAMES` or its kin in
-`restricted_files.rs`.
+`Edit(./.env)`), and its `PreToolUse` hook checks its calls as Rovik's
+own are checked: its shell's commands, from the folder its shell is in,
+and its `Read`, `Edit`, `Write` and `Grep`. A call the hook can't put to
+Rovik doesn't run. To teach it another name, add it to `SECRET_NAMES` or
+its kin in `restricted_files.rs`.
 
 ### Steering
 

@@ -449,10 +449,7 @@ async fn claude_code_is_kept_from_restricted_files_too() {
 async fn claude_codes_own_shell_is_denied_reading_a_restricted_file() {
     let env = env_file();
     let h = harness(&[(".env", &env), ("src/app.ts", "const x = 1;\n")]).await;
-    let commands = json!([
-        ["cat .env", null, "toolu_1"],
-        ["ls src", null, "toolu_2"],
-    ]);
+    let commands = json!([["cat .env", null, "toolu_1"], ["ls src", null, "toolu_2"],]);
     let Some(program) = crate::connectors::fake_claude_with_hooks(&h._dir.0, &commands) else {
         eprintln!("no python3: skipped");
         return;
@@ -461,7 +458,11 @@ async fn claude_codes_own_shell_is_denied_reading_a_restricted_file() {
         allow_any_command: true,
         ..quiet_permissions()
     };
-    let mut request = h.request("connector://claude-code", Harness::send("Look"), permissions);
+    let mut request = h.request(
+        "connector://claude-code",
+        Harness::send("Look"),
+        permissions,
+    );
     request.profile.id = "cc::sonnet".into();
     request.profile.model = "sonnet".into();
     // As the app resolves a connector running its own tools.
@@ -479,7 +480,102 @@ async fn claude_codes_own_shell_is_denied_reading_a_restricted_file() {
     assert_eq!(denied["hookEventName"], "PreToolUse");
     assert_eq!(denied["permissionDecision"], "deny", "{answers:#?}");
     let why = denied["permissionDecisionReason"].as_str().unwrap();
-    assert!(why.contains("`cat .env` would read .env, a restricted file"), "{why}");
+    assert!(
+        why.contains("`cat .env` would read .env, a restricted file"),
+        "{why}"
+    );
     assert_eq!(answers[1]["use"], "toolu_2");
     assert_eq!(answers[1]["answer"], json!({}), "{answers:#?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_codes_own_file_tools_and_its_shells_folder_are_checked_too() {
+    let env = env_file();
+    let h = harness(&[
+        (".env", &env),
+        ("apps/web/.env.local", &env),
+        ("src/app.ts", "const x = 1;\n"),
+    ])
+    .await;
+    let at = |path: &str| h.project.join(path).to_string_lossy().into_owned();
+    let commands = json!([
+        { "tool": "Read", "input": { "file_path": at(".env") }, "use": "toolu_1" },
+        { "tool": "Read", "input": { "file_path": at("src/app.ts") }, "use": "toolu_2" },
+        {
+            "tool": "Edit",
+            "input": { "file_path": at(".env"), "old_string": "A", "new_string": "B" },
+            "use": "toolu_3",
+        },
+        {
+            "tool": "Grep",
+            "input": { "pattern": "API_KEY", "output_mode": "content" },
+            "use": "toolu_4",
+        },
+        { "tool": "Grep", "input": { "pattern": "API_KEY" }, "use": "toolu_5" },
+        { "tool": "Glob", "input": { "pattern": "**/.env*" }, "use": "toolu_6" },
+        // Its shell stays in the folder it went to.
+        ["cat .env.local", null, "toolu_7", "apps/web"],
+        ["ls", null, "toolu_8", "apps/web"],
+    ]);
+    let Some(program) = crate::connectors::fake_claude_with_hooks(&h._dir.0, &commands) else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    let permissions = Permissions {
+        allow_any_command: true,
+        ..quiet_permissions()
+    };
+    let mut request = h.request(
+        "connector://claude-code",
+        Harness::send("Look"),
+        permissions,
+    );
+    request.profile.id = "cc::sonnet".into();
+    request.profile.model = "sonnet".into();
+    request.profile.no_tools = true;
+    request.profile.connector =
+        Some(json!({ "program": program, "permissionMode": "bypassPermissions" }));
+    h.start(request).await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    let answers: Value =
+        serde_json::from_str(&std::fs::read_to_string(h._dir.0.join("hooks.json")).unwrap())
+            .unwrap();
+    let answer = |use_id: &str| {
+        let entry = answers
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["use"] == use_id)
+            .unwrap_or_else(|| panic!("{use_id}: {answers:#?}"));
+        entry["answer"].clone()
+    };
+    let denied = |use_id: &str, why: &str| {
+        let out = &answer(use_id)["hookSpecificOutput"];
+        assert_eq!(out["permissionDecision"], "deny", "{use_id}: {answers:#?}");
+        let reason = out["permissionDecisionReason"].as_str().unwrap();
+        assert!(reason.contains(why), "{use_id}: {reason}");
+    };
+    denied(
+        "toolu_1",
+        ".env is a restricted file: the agent may not read it",
+    );
+    assert_eq!(answer("toolu_2"), json!({}));
+    denied(
+        "toolu_3",
+        ".env is a restricted file: the agent may not change it",
+    );
+    denied("toolu_4", "would search .env, a restricted file");
+    assert_eq!(answer("toolu_5"), json!({}));
+    assert_eq!(
+        answer("toolu_6"),
+        Value::Null,
+        "no hook is for finding files"
+    );
+    denied(
+        "toolu_7",
+        "`cat .env.local` would read apps/web/.env.local, a restricted file",
+    );
+    assert_eq!(answer("toolu_8"), json!({}));
 }

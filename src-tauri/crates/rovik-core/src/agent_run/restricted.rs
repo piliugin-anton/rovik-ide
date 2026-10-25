@@ -214,6 +214,18 @@ pub fn problem(
     root: &str,
     restricted: &RestrictedFiles,
 ) -> Option<String> {
+    problem_in(name, args, root, root, restricted)
+}
+
+/// [`problem`] for a call whose command runs in `cwd`, which may not be
+/// the project's folder (a harness's shell stays where it went).
+pub fn problem_in(
+    name: &str,
+    args: &Map<String, Value>,
+    root: &str,
+    cwd: &str,
+    restricted: &RestrictedFiles,
+) -> Option<String> {
     let path = permissions::trimmed_str(args.get("path"));
     match name {
         "read" | "outline" | "diagnostics" | "neighbours" => {
@@ -233,7 +245,7 @@ pub fn problem(
                 "Error: {file} is a restricted file: the agent may not read it, so it can't change part of it, which takes its text. Write it whole only if replacing all of it is what the user asked; otherwise tell them what to change in it. They can allow reading it in {SETTINGS_PAGE}."
             ))
         }
-        "bash" => command_problem(args.get("command")?.as_str()?, root, restricted),
+        "bash" => command_problem_in(args.get("command")?.as_str()?, root, cwd, restricted),
         _ => None,
     }
 }
@@ -242,6 +254,17 @@ pub fn problem(
 /// read a file the agent may not read or change one it may not change: as
 /// any way the command may be read here says ([`Shell::readings`]).
 pub fn command_problem(command: &str, root: &str, restricted: &RestrictedFiles) -> Option<String> {
+    command_problem_in(command, root, root, restricted)
+}
+
+/// [`command_problem`] for `command` run in `cwd`, a folder of the
+/// project's or not.
+pub fn command_problem_in(
+    command: &str,
+    root: &str,
+    cwd: &str,
+    restricted: &RestrictedFiles,
+) -> Option<String> {
     let check = Check {
         whole: command,
         root,
@@ -250,7 +273,7 @@ pub fn command_problem(command: &str, root: &str, restricted: &RestrictedFiles) 
     };
     Shell::readings()
         .iter()
-        .find_map(|&shell| check.command(command, shell, Path::new(root), 0))
+        .find_map(|&shell| check.command(command, shell, Path::new(cwd), 0))
 }
 
 struct Check<'a> {
