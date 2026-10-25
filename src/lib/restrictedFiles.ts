@@ -34,28 +34,48 @@ export function loadRestrictedFiles(root: string): Promise<RestrictedFileRow[]> 
   return invoke<RestrictedFileRow[]>('restricted_files', { root });
 }
 
-/** Saves the user's list for the project; an empty one is removed. */
-export function saveRestrictedFiles(root: string, entries: RestrictedFile[]): Promise<void> {
-  return updateProjectSettings(root, {
-    restrictedFiles: entries.length > 0 ? entries : undefined,
+/**
+ * Changes the user's list for the project: `change` is given the list as
+ * it's saved, so changes made one after another each keep the one before
+ * (a table shown before a change was saved doesn't undo it). An empty
+ * list is removed.
+ */
+export function updateRestrictedFiles(
+  root: string,
+  change: (entries: RestrictedFile[]) => RestrictedFile[]
+): Promise<void> {
+  return updateProjectSettings(root, (saved) => {
+    const next = change(savedEntries(saved.restrictedFiles));
+    return { restrictedFiles: next.length > 0 ? next : undefined };
   });
 }
 
-/** The user's list in `rows`: the entries they made. */
-export function listedEntries(rows: RestrictedFileRow[]): RestrictedFile[] {
-  return rows
-    .filter((r) => r.listed)
-    .map(({ path, blockRead, blockWrite }) => ({ path, blockRead, blockWrite }));
+/** The user's list as saved: an entry without a box blocks it, as the backend reads it. */
+export function savedEntries(raw: unknown): RestrictedFile[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((e): e is Record<string, unknown> => !!e && typeof e === 'object')
+    .filter((e) => typeof e.path === 'string' && e.path !== '')
+    .map((e) => ({
+      path: e.path as string,
+      blockRead: e.blockRead !== false,
+      blockWrite: e.blockWrite !== false,
+    }));
 }
 
-/** The user's list with `entry` set: added, or in place of the one for its path. */
-export function withEntry(rows: RestrictedFileRow[], entry: RestrictedFile): RestrictedFile[] {
-  return [...listedEntries(rows).filter((e) => e.path !== entry.path), entry];
+/** The list with `entry` set: added, or in place of the one for its path. */
+export function withEntry(entries: RestrictedFile[], entry: RestrictedFile): RestrictedFile[] {
+  return [...entries.filter((e) => e.path !== entry.path), entry];
 }
 
-/** The user's list without the entry for `path`. */
-export function withoutEntry(rows: RestrictedFileRow[], path: string): RestrictedFile[] {
-  return listedEntries(rows).filter((e) => e.path !== path);
+/** The list without the entry for `path`. */
+export function withoutEntry(entries: RestrictedFile[], path: string): RestrictedFile[] {
+  return entries.filter((e) => e.path !== path);
+}
+
+/** Whether a typed path is a pattern (`*.pem`), which the list doesn't match. */
+export function isPattern(input: string): boolean {
+  return /[*?[\]]/.test(input);
 }
 
 /**

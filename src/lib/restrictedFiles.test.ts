@@ -4,12 +4,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  listedEntries,
+  isPattern,
   projectPath,
   restrictedSummary,
-  saveRestrictedFiles,
+  savedEntries,
+  updateRestrictedFiles,
   withEntry,
   withoutEntry,
+  type RestrictedFile,
   type RestrictedFileRow,
 } from './restrictedFiles';
 
@@ -47,25 +49,40 @@ const ROWS = [
   row('config/keys.json', true, true, false, true),
 ];
 
-test('the user’s list is the entries they made; setting a file’s boxes adds or replaces its entry', () => {
-  assert.deepEqual(listedEntries(ROWS), [
-    { path: '.env.local', blockRead: false, blockWrite: true },
-    { path: 'config/keys.json', blockRead: true, blockWrite: true },
-  ]);
+const LISTED: RestrictedFile[] = [
+  { path: '.env.local', blockRead: false, blockWrite: true },
+  { path: 'config/keys.json', blockRead: true, blockWrite: true },
+];
+
+test('setting a file’s boxes adds or replaces its entry in the user’s list', () => {
   // A file found but never changed gets its first entry.
-  assert.deepEqual(withEntry(ROWS, { path: '.env', blockRead: false, blockWrite: true }), [
-    { path: '.env.local', blockRead: false, blockWrite: true },
-    { path: 'config/keys.json', blockRead: true, blockWrite: true },
+  assert.deepEqual(withEntry(LISTED, { path: '.env', blockRead: false, blockWrite: true }), [
+    ...LISTED,
     { path: '.env', blockRead: false, blockWrite: true },
   ]);
   // One already listed is replaced, not doubled.
-  assert.deepEqual(withEntry(ROWS, { path: '.env.local', blockRead: true, blockWrite: true }), [
+  assert.deepEqual(withEntry(LISTED, { path: '.env.local', blockRead: true, blockWrite: true }), [
     { path: 'config/keys.json', blockRead: true, blockWrite: true },
     { path: '.env.local', blockRead: true, blockWrite: true },
   ]);
-  assert.deepEqual(withoutEntry(ROWS, 'config/keys.json'), [
-    { path: '.env.local', blockRead: false, blockWrite: true },
-  ]);
+  assert.deepEqual(withoutEntry(LISTED, 'config/keys.json'), [LISTED[0]]);
+});
+
+test('the saved list is read as the backend reads it: a box left out blocks', () => {
+  assert.deepEqual(savedEntries(undefined), []);
+  assert.deepEqual(savedEntries({ path: 'x' }), []);
+  assert.deepEqual(
+    savedEntries([
+      { path: 'a', blockRead: false },
+      { path: '', blockRead: true },
+      'b',
+      { path: 'c', blockRead: true, blockWrite: false },
+    ]),
+    [
+      { path: 'a', blockRead: false, blockWrite: true },
+      { path: 'c', blockRead: true, blockWrite: false },
+    ]
+  );
 });
 
 test('a typed path is kept relative to the project, and one outside it is refused', () => {
@@ -93,27 +110,38 @@ test('the menu’s line says how many files are kept from the agent', () => {
   );
 });
 
-test('saving the list keeps the project’s checks; an empty list is removed', async () => {
+test('changing the list keeps the project’s checks; an empty list is removed', async () => {
   const checks = [{ kind: 'test', command: 'npm test', enabled: true }];
   stored = { checks };
   const entry = { path: '.env', blockRead: false, blockWrite: true };
-  await saveRestrictedFiles('/home/me/demo', [entry]);
+  await updateRestrictedFiles('/home/me/demo', (entries) => withEntry(entries, entry));
   assert.deepEqual(stored, { checks, restrictedFiles: [entry] });
   assert.equal(calls[calls.length - 1].args.root, '/home/me/demo');
 
-  await saveRestrictedFiles('/home/me/demo', []);
+  await updateRestrictedFiles('/home/me/demo', (entries) => withoutEntry(entries, '.env'));
   assert.deepEqual(stored, { checks });
   stored = { restrictedFiles: [entry] };
-  await saveRestrictedFiles('/home/me/demo', []);
+  await updateRestrictedFiles('/home/me/demo', () => []);
   assert.equal(stored, null, 'nothing left: the project’s settings are removed');
 });
 
-test('saves are made in order: a later one is never overwritten by an earlier one', async () => {
+test('changes made one after another each keep the one before, however long saving takes', async () => {
   stored = null;
-  // The first takes longer to save: it still lands first.
-  saveTakes = (settings) => (settings?.restrictedFiles?.[0]?.path === 'a' ? 30 : 0);
-  const first = saveRestrictedFiles('/p', [{ path: 'a', blockRead: true, blockWrite: true }]);
-  const second = saveRestrictedFiles('/p', [{ path: 'b', blockRead: true, blockWrite: true }]);
-  await Promise.all([first, second]);
-  assert.deepEqual(stored, { restrictedFiles: [{ path: 'b', blockRead: true, blockWrite: true }] });
+  // The first takes longer to save: the second still starts from it.
+  saveTakes = (settings) => (settings?.restrictedFiles?.length === 1 ? 30 : 0);
+  const a = { path: 'a', blockRead: true, blockWrite: true };
+  const b = { path: 'b', blockRead: false, blockWrite: true };
+  await Promise.all([
+    updateRestrictedFiles('/p', (entries) => withEntry(entries, a)),
+    updateRestrictedFiles('/p', (entries) => withEntry(entries, b)),
+  ]);
+  assert.deepEqual(stored, { restrictedFiles: [a, b] });
+  saveTakes = () => 0;
+});
+
+test('a typed pattern is told apart from a path', () => {
+  assert.equal(isPattern('*.pem'), true);
+  assert.equal(isPattern('config/key?.json'), true);
+  assert.equal(isPattern('secrets/[ab].txt'), true);
+  assert.equal(isPattern('config/keys.json'), false);
 });

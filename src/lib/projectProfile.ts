@@ -82,15 +82,22 @@ export async function loadProjectSettings(root: string): Promise<ProjectSettings
 /** The last save of project settings: the next waits for it. */
 let saving: Promise<void> = Promise.resolve();
 
+/** Some of a project's settings: a key given `undefined` is removed. */
+export type ProjectSettingsPatch = {
+  [K in keyof ProjectSettings]: ProjectSettings[K] | undefined;
+};
+
 /**
  * Saves some of a project's settings, keeping the rest: the pages that set
  * them each save their own. A key given `undefined` is removed (back to
  * what's detected), and settings left empty are removed altogether. Saves
  * are made one at a time, in order, so a later one is never overwritten.
+ * `patch` may be made from the settings as saved (`saved => patch`): a
+ * change to a list then keeps the change saved just before it.
  */
 export function updateProjectSettings(
   root: string,
-  patch: { [K in keyof ProjectSettings]: ProjectSettings[K] | undefined }
+  patch: ProjectSettingsPatch | ((saved: Record<string, unknown>) => ProjectSettingsPatch)
 ): Promise<void> {
   const next = saving.then(async () => {
     const saved = await invoke<unknown>('load_project_settings', { root });
@@ -98,7 +105,8 @@ export function updateProjectSettings(
       saved && typeof saved === 'object' && !Array.isArray(saved)
         ? { ...(saved as Record<string, unknown>) }
         : {};
-    for (const [key, value] of Object.entries(patch)) {
+    const changes = typeof patch === 'function' ? patch({ ...settings }) : patch;
+    for (const [key, value] of Object.entries(changes)) {
       if (value === undefined) delete settings[key];
       else settings[key] = value;
     }

@@ -4,6 +4,7 @@
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import RestrictedFilesSettings from './RestrictedFilesSettings';
 import type { RestrictedFile, RestrictedFileRow } from '../lib/restrictedFiles';
@@ -12,16 +13,28 @@ import type { RestrictedFile, RestrictedFileRow } from '../lib/restrictedFiles';
 let stored: any = null;
 let found: string[] = [];
 let failing = false;
+let savesFail = false;
+/** The projects tables were asked for. */
+let looked: string[] = [];
+/**
+ * Set: each table, as the backend has it when asked, waits here until the
+ * test lets it go, so a load can come back after a later change.
+ */
+let held: (() => void)[] | null = null;
 (window as any).__TAURI_INTERNALS__ = {
   invoke: async (cmd: string, args: any) => {
     if (cmd === 'load_project_settings') return stored;
     if (cmd === 'save_project_settings') {
+      if (savesFail) throw new Error('the disk is full');
       stored = args.settings;
       return;
     }
     if (cmd === 'restricted_files') {
+      looked.push(args.root);
       if (failing) throw new Error('the project is gone');
-      return table();
+      const rows = table();
+      if (held) return new Promise((resolve) => held!.push(() => resolve(rows)));
+      return rows;
     }
     throw new Error(`no app: ${cmd}`);
   },
@@ -52,6 +65,8 @@ async function page(options: { found?: string[]; stored?: unknown } = {}) {
   found = options.found ?? ['.env', 'config/master.key'];
   stored = options.stored ?? null;
   failing = false;
+  savesFail = false;
+  held = null;
   const root = container();
   render(() => <RestrictedFilesSettings root="/home/me/demo" />, root);
   await flush();
@@ -175,4 +190,80 @@ test('restricted files: none found says so; a project that can’t be read says 
   render(() => <RestrictedFilesSettings root="/home/me/gone" />, root);
   await flush();
   assert.match(root.textContent!, /Couldn't look at the project: Error: the project is gone/);
+});
+
+test('restricted files: a change shown isn’t undone by a table that comes back late, nor lost by the next', async () => {
+  const root = await page();
+  held = [];
+  box(root, 'Keep the agent from reading .env').click();
+  await flush();
+  box(root, 'Keep the agent from reading config/master.key').click();
+  await flush();
+  // The table asked for after the first change comes back now, older than
+  // the second: it isn't shown.
+  held.shift()!();
+  await flush();
+  assert.equal(box(root, 'Keep the agent from reading config/master.key').checked, false);
+  // A third change keeps the second, whatever the table showed.
+  box(root, 'Keep the agent from changing .env').click();
+  await flush();
+  const entry = (path: string) => stored.restrictedFiles.find((e: any) => e.path === path);
+  assert.deepEqual(entry('config/master.key'), {
+    path: 'config/master.key',
+    blockRead: false,
+    blockWrite: true,
+  });
+  assert.deepEqual(entry('.env'), { path: '.env', blockRead: false, blockWrite: false });
+  while (held.length > 0) held.shift()!();
+  await flush();
+  assert.deepEqual(rows(root), [
+    { file: '.env', read: false, write: false, removable: false },
+    { file: 'config/master.key', read: false, write: true, removable: false },
+  ]);
+});
+
+test('restricted files: a change that can’t be saved says so, and the table shows what’s saved', async () => {
+  const root = await page();
+  savesFail = true;
+  box(root, 'Keep the agent from reading .env').click();
+  await flush();
+  assert.match(root.textContent!, /Couldn't save: Error: the disk is full/);
+  assert.equal(box(root, 'Keep the agent from reading .env').checked, true);
+  assert.equal(stored, null);
+});
+
+test('restricted files: another project’s table is shown when it opens', async () => {
+  found = ['.env'];
+  stored = null;
+  failing = false;
+  savesFail = false;
+  held = null;
+  looked = [];
+  const [project, setProject] = createSignal('/home/me/one');
+  const root = container();
+  render(() => <RestrictedFilesSettings root={project()} />, root);
+  await flush();
+  assert.match(root.textContent!, /Restricted files in one/);
+  found = ['keys/deploy.pem'];
+  setProject('/home/me/two');
+  await flush();
+  assert.deepEqual(looked, ['/home/me/one', '/home/me/two']);
+  assert.match(root.textContent!, /Restricted files in two/);
+  assert.deepEqual(
+    rows(root).map((r) => r.file),
+    ['keys/deploy.pem']
+  );
+});
+
+test('restricted files: a pattern isn’t added, as the list matches paths', async () => {
+  const root = await page();
+  const input = root.querySelector('.restricted-file-add input') as HTMLInputElement;
+  input.value = '*.pem';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  (root.querySelector('.restricted-file-add') as HTMLFormElement).dispatchEvent(
+    new Event('submit', { bubbles: true, cancelable: true })
+  );
+  await flush();
+  assert.match(root.textContent!, /a pattern such as \*\.pem isn’t matched/);
+  assert.equal(stored, null, 'nothing saved');
 });

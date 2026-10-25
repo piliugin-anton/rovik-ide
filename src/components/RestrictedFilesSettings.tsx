@@ -6,12 +6,14 @@
 // and the files the user added; a ticked box keeps the agent from reading
 // or changing that file, and every call that would is refused with the
 // reason. Ticking or unticking a box saves the file's entry for the
-// project at once; nothing to save on close.
-import { createSignal, Index, onMount, Show } from 'solid-js';
+// project at once, kept with the entries saved before it however fast the
+// clicks come; nothing to save on close.
+import { createEffect, createSignal, Index, on, Show } from 'solid-js';
 import {
+  isPattern,
   loadRestrictedFiles,
   projectPath,
-  saveRestrictedFiles,
+  updateRestrictedFiles,
   withEntry,
   withoutEntry,
   type RestrictedFile,
@@ -27,23 +29,45 @@ export default function RestrictedFilesSettings(props: { root: string }) {
 
   const folder = () => props.root.split(/[\\/]/).filter(Boolean).pop() ?? props.root;
 
+  // Loads made: only the last one's table is shown, so an earlier one that
+  // comes back late doesn't undo a change shown since.
+  let loads = 0;
   async function load() {
+    const mine = ++loads;
     try {
-      setRows(await loadRestrictedFiles(props.root));
-      setError(null);
+      const found = await loadRestrictedFiles(props.root);
+      if (mine === loads) {
+        setRows(found);
+        setError(null);
+      }
     } catch (err) {
-      setError(`Couldn't look at the project: ${String(err)}`);
+      if (mine === loads) setError(`Couldn't look at the project: ${String(err)}`);
     } finally {
-      setLoading(false);
+      if (mine === loads) setLoading(false);
     }
   }
-  onMount(load);
+  // The open project's table, again when another project opens.
+  createEffect(
+    on(
+      () => props.root,
+      () => {
+        setLoading(true);
+        void load();
+      }
+    )
+  );
 
-  /** Saves the user's list, then shows the table as it is now. */
-  async function save(entries: RestrictedFile[]) {
+  /**
+   * Changes the user's list as it's saved, then shows the table as it is
+   * now: saved, or as it was if the save failed.
+   */
+  async function change(update: (entries: RestrictedFile[]) => RestrictedFile[]) {
+    // What's loading now was found before this change.
+    loads++;
     try {
-      await saveRestrictedFiles(props.root, entries);
+      await updateRestrictedFiles(props.root, update);
     } catch (err) {
+      await load();
       setError(`Couldn't save: ${String(err)}`);
       return;
     }
@@ -57,13 +81,16 @@ export default function RestrictedFilesSettings(props: { root: string }) {
       blockWrite: row.blockWrite,
       [box]: on,
     };
-    const before = rows();
-    setRows(before.map((r) => (r.path === row.path ? { ...r, ...entry, listed: true } : r)));
-    void save(withEntry(before, entry));
+    setRows(rows().map((r) => (r.path === row.path ? { ...r, ...entry, listed: true } : r)));
+    void change((entries) => withEntry(entries, entry));
   }
 
   function add(e: Event) {
     e.preventDefault();
+    if (isPattern(adding())) {
+      setAddProblem('Give one file or folder: a pattern such as *.pem isn’t matched.');
+      return;
+    }
     const path = projectPath(adding(), props.root);
     if (!path) {
       setAddProblem('Give the path of a file or folder in the project, such as config/keys.json.');
@@ -75,7 +102,7 @@ export default function RestrictedFilesSettings(props: { root: string }) {
     }
     setAddProblem(null);
     setAdding('');
-    void save(withEntry(rows(), { path, blockRead: true, blockWrite: true }));
+    void change((entries) => withEntry(entries, { path, blockRead: true, blockWrite: true }));
   }
 
   return (
@@ -147,7 +174,10 @@ export default function RestrictedFilesSettings(props: { root: string }) {
                           class="icon-button"
                           aria-label={`Remove ${row().path}`}
                           title="Remove"
-                          onClick={() => void save(withoutEntry(rows(), row().path))}
+                          onClick={() => {
+                            const path = row().path;
+                            void change((entries) => withoutEntry(entries, path));
+                          }}
                         >
                           ×
                         </button>
