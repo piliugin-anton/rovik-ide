@@ -2892,6 +2892,15 @@ fn copy_effects(program: &str, args: &[String], slash: bool, cwd: &Path) -> Effe
     } else {
         vec![destination.to_string()]
     };
+    // Never over a file that's there (`cp -n`, `--update=none`, rsync's
+    // `--ignore-existing`): only the new ones are written.
+    let keeps = a.has(&["-n", "--no-clobber", "--ignore-existing"])
+        || a.options.iter().any(|(name, value)| {
+            name == "--update" && matches!(*value, Some("none" | "none-fail"))
+        });
+    if keeps {
+        writes.retain(|file| !Path::new(&resolve(cwd, &expand_home(file))).exists());
+    }
     // A folder's files are read (and moved, changed) with it.
     let mut trees: Vec<(String, Op)> = sources.iter().map(|s| (s.to_string(), Op::Read)).collect();
     if MOVERS.contains(&program) {
@@ -4245,6 +4254,26 @@ mod tests {
         let a = Args::split(&words, &[], true);
         assert!(a.has(&["/s"]) && a.has(&["/c"]));
         assert_eq!(a.words, ["*.env", "/etc/x"]);
+    }
+
+    #[test]
+    fn a_copy_that_never_overwrites_changes_only_new_files() {
+        let (_dir, root) = project(&[]);
+        for command in [
+            "cp -n .env.example .env",
+            "cp --no-clobber .env.example .env",
+            "cp --update=none .env.example .env",
+            "mv -n README.md .env",
+            "rsync --ignore-existing .env.example .env",
+            // No `.env.local` yet: a new one is the agent's to make.
+            "cp -n .env.example .env.local",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+        let refused = command_problem("cp .env.example .env", &root, &none());
+        assert!(refused.is_some_and(|r| r.contains("would change .env,")));
+        let moved = command_problem("mv -n .env .env.bak", &root, &none());
+        assert!(moved.is_some_and(|r| r.contains("would read .env,")));
     }
 
     #[test]
