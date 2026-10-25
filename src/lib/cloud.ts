@@ -58,6 +58,11 @@ export interface ForwardedPort {
   port: number;
   /** The port on this computer's loopback that leads to it. */
   localPort: number;
+  /**
+   * The port here a browser tab of the editor shows the server's pages
+   * through (lib/browserTabs.ts); none for an https server.
+   */
+  tabPort?: number;
 }
 
 /** What moving a chat to a host would do, and whether it can (`MovePreflight`). */

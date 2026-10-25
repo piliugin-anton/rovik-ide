@@ -14,8 +14,8 @@ pub fn local_page(url: &str) -> Result<u16, String> {
     let parsed = reqwest::Url::parse(url.trim()).map_err(|_| {
         format!(
             "Rovik didn't open \"{url}\": it isn't a web address. A command here may open only \
-             pages of the servers it runs, like http://localhost:5173, which Rovik opens in the \
-             user's browser on their computer."
+             pages of the servers it runs, like http://localhost:5173, which Rovik opens on the \
+             user's computer."
         )
     })?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -33,8 +33,8 @@ pub fn local_page(url: &str) -> Result<u16, String> {
         return Err(format!(
             "Rovik refused to open {url}, for the user's safety: a command on a cloud host may \
              open only pages of the servers it runs, at http://localhost or http://127.0.0.1 \
-             and a port, which Rovik opens in the user's browser on their computer. If the user \
-             needs this address, tell them instead."
+             and a port, which Rovik opens on the user's computer. If the user needs this \
+             address, tell them instead."
         ));
     }
     parsed

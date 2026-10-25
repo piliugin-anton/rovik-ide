@@ -4,9 +4,9 @@
 //! (network.rs) a command's browser is Rovik's: its shims run the daemon's
 //! `open`, which asks over the network's socket ([`ask`]).
 //!
-//! A page of this user's own servers (page_url.rs) opens in the browser on
-//! the user's computer, through a port of that computer forwarded here
-//! (the daemon's [`Pages`]). Any other address is refused, for the user's
+//! A page of this user's own servers (page_url.rs) opens on the user's
+//! computer, in a browser tab of the editor or the default browser, through
+//! a port of that computer forwarded here (the daemon's [`Pages`]). Any other address is refused, for the user's
 //! safety: a command must not open a page of its choosing on their
 //! computer. Either way the program is told why, in words the agent reads
 //! in the command's output.
@@ -115,7 +115,7 @@ async fn decide(asked: &str, pages: &dyn Pages, recent: &Mutex<Recent>) -> Resul
         let mut recent = recent.lock().unwrap_or_else(|e| e.into_inner());
         if recent.opened_lately(chat, url, now) {
             return Ok(format!(
-                "Rovik opened {url} in the user's browser a moment ago; it isn't opened twice."
+                "Rovik opened {url} on the user's computer a moment ago; it isn't opened twice."
             ));
         }
         if !recent.may_ask(chat, now) {

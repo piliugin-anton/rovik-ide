@@ -2,6 +2,7 @@ import {
   batch,
   createSignal,
   createMemo,
+  For,
   Show,
   onMount,
   createEffect,
@@ -14,6 +15,7 @@ import * as monaco from 'monaco-editor';
 import FileTree from './components/FileTree';
 import Tabs from './components/Tabs';
 import Editor from './components/Editor';
+import BrowserView from './components/BrowserView';
 import MarkdownViewSwitch from './components/MarkdownViewSwitch';
 import ChatPanel from './components/ChatPanel';
 import { createFileTreeController } from './lib/fileTree';
@@ -93,6 +95,16 @@ import {
   type OpenInEditor,
 } from './lib/openInEditor';
 import { isPlanFile, requestImplementPlan } from './lib/plans';
+import {
+  isBrowserTab,
+  isFileTab,
+  navigated,
+  reloaded,
+  withFiles,
+  withPage,
+  type EditorTab,
+} from './lib/editorTabs';
+import { frameUrl, onPageWanted, setPageOpener } from './lib/browserTabs';
 import { isMarkdownLanguage } from './lib/markdownView';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
 import { diffLines, splitLines, type DiffHunk } from './lib/lineDiff';
@@ -195,7 +207,25 @@ export default function App() {
     }
   });
   const [rootId, setRootId] = createSignal<string | null>(null);
-  const [openFiles, setOpenFiles] = createSignal<OpenFile[]>([]);
+  /** The editor's tabs, files and browser tabs, in order (lib/editorTabs.ts). */
+  const [tabs, setTabs] = createSignal<EditorTab[]>([]);
+  /** The file tabs among them: a new list only when one of them changed. */
+  const openFiles = createMemo(() => tabs().filter(isFileTab), [], {
+    equals: (a, b) => a.length === b.length && a.every((f, i) => f === b[i]),
+  });
+  /** Changes the file tabs; the browser tabs stay where they are. */
+  function setOpenFiles(next: OpenFile[] | ((files: OpenFile[]) => OpenFile[])) {
+    setTabs((all) =>
+      withFiles(all, typeof next === 'function' ? next(all.filter(isFileTab)) : next)
+    );
+  }
+  /** The browser tabs among them. */
+  const browserTabs = createMemo(() => tabs().filter(isBrowserTab));
+  /** The tab to show once the one shown closed: the last one left. */
+  function lastTab(): string | null {
+    const all = tabs();
+    return all.length > 0 ? all[all.length - 1].path : null;
+  }
   // Idle editor models (closed tabs, go-to-definition targets) are kept
   // up to a limit, then the least recently used are disposed (lib/models.ts).
   trackModels(() => new Set(openFiles().map((f) => modelUriFor(f.path).toString())));
@@ -485,7 +515,8 @@ export default function App() {
         if (session?.terminalOpen !== undefined) setTerminalCollapsed(!session.terminalOpen);
         setRootPath(folder);
       });
-      setOpenFiles([]);
+      // The project left's tabs go, its browser tabs too.
+      setTabs([]);
       setActivePath(null);
       if (!session?.files.length) return;
       const files = await reopenFiles(session.files);
@@ -769,11 +800,8 @@ export default function App() {
   const stopDeleted = onFileDeleted((path) => {
     const file = openFiles().find((f) => f.path === path);
     if (!file || file.dirty) return;
-    const remaining = openFiles().filter((f) => f.path !== path);
-    setOpenFiles(remaining);
-    if (activePath() === path) {
-      setActivePath(remaining.length ? remaining[remaining.length - 1].path : null);
-    }
+    setOpenFiles((files) => files.filter((f) => f.path !== path));
+    if (activePath() === path) setActivePath(lastTab());
   });
   // An unreviewed agent edit: when "Open files after agent edits" is on,
   // its file opens in a tab so the changes can be seen. In the background
@@ -1133,10 +1161,7 @@ export default function App() {
     for (const f of stale) clearGitBase(f.path);
     setOpenFiles((prev) => prev.filter((f) => !(f.readOnly && f.stash)));
     const current = activePath();
-    if (current && stale.some((f) => f.path === current)) {
-      const remaining = openFiles().filter((f) => !(f.readOnly && f.stash));
-      setActivePath(remaining.length ? remaining[remaining.length - 1].path : null);
-    }
+    if (current && stale.some((f) => f.path === current)) setActivePath(lastTab());
   }
 
   /*
@@ -1245,15 +1270,46 @@ export default function App() {
     clearGitBase(path);
     dropReveal(path);
 
-    const remaining = openFiles().filter((f) => f.path !== path);
-    setOpenFiles(remaining);
-    if (activePath() === path) {
-      setActivePath(remaining.length ? remaining[remaining.length - 1].path : null);
-    }
+    setOpenFiles((files) => files.filter((f) => f.path !== path));
+    if (activePath() === path) setActivePath(lastTab());
     // Its model stays (lib/models.ts), the file to the worker from now on:
     // edits thrown away go from it, as the file on disk has none of them.
     if (file?.dirty) void followDisk(path);
   }
+
+  /** Closes the tab `path`: a browser tab at once, a file as closeFile does. */
+  function closeTab(path: string) {
+    if (!browserTabs().some((t) => t.path === path)) return void closeFile(path);
+    setTabs((all) => all.filter((t) => t.path !== path));
+    if (activePath() === path) setActivePath(lastTab());
+  }
+
+  /** Browser tabs opened in this window: each one's key is its number. */
+  let pagesOpened = 0;
+
+  /**
+   * Shows `address` in a browser tab (lib/browserTabs.ts): the one showing
+   * it already, loaded again, else a new one. The editor comes into view,
+   * as for a file the user opens.
+   */
+  function openPageTab(address: string) {
+    const opened = withPage(tabs(), address, () => `browser:${++pagesOpened}`);
+    setTabs(opened.tabs);
+    setActivePath(opened.path);
+    showEditor();
+  }
+  // "Opened ports" opens a page again; the app asks for a remote chat's.
+  setPageOpener(openPageTab);
+  onCleanup(() => setPageOpener(null));
+  onMount(() => onCleanup(onPageWanted(openPageTab)));
+
+  /** The active tab's path, when it's a file's: its editor shows. */
+  const activeFilePath = createMemo(() => {
+    const path = activePath();
+    return path && !browserTabs().some((t) => t.path === path) ? path : null;
+  });
+  /** Each forwarded port of the remote chats': browser tabs load through them. */
+  const forwardedNow = () => Object.values(cloud.ports).flat();
 
   function findRowAtPoint(x: number, y: number): TreeRow | null {
     const el = document.elementFromPoint(x, y) as HTMLElement | null;
@@ -2208,13 +2264,13 @@ export default function App() {
       <div class="app-main">
         <div class="tabs-row">
           <Tabs
-            files={openFiles}
+            tabs={tabs}
             activePath={activePath}
             onSelect={(path) => {
               requestEditorFocus(path);
               setActivePath(path);
             }}
-            onClose={closeFile}
+            onClose={closeTab}
           />
           {/* A Markdown file: source, source and preview, or preview. */}
           <Show when={activeMarkdownPath()} keyed>
@@ -2238,10 +2294,26 @@ export default function App() {
               </button>
             </div>
           </Show>
+          {/* Each browser tab keeps its page, hidden while another is shown. */}
+          <For each={browserTabs()}>
+            {(tab) => (
+              <BrowserView
+                tab={tab}
+                active={activePath() === tab.path}
+                frame={frameUrl(tab.address, forwardedNow())}
+                onNavigate={(address) => setTabs((all) => navigated(all, tab.path, address))}
+                onReload={() => setTabs((all) => reloaded(all, tab.path))}
+              />
+            )}
+          </For>
           <Show
-            when={activePath()}
+            when={activeFilePath()}
             keyed
-            fallback={<div class="empty-state">Open a file from the sidebar to start editing</div>}
+            fallback={
+              <Show when={!activePath()}>
+                <div class="empty-state">Open a file from the sidebar to start editing</div>
+              </Show>
+            }
           >
             {(path) => (
               <Editor

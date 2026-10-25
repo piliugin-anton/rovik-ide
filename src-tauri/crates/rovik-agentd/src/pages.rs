@@ -2,8 +2,8 @@
 //! rovik_core::overlay::confine::pages): each goes to the computer its chat
 //! belongs to as `PageWanted`. That computer's Rovik forwards its own port
 //! on the loopback to the same port of the user's private network here
-//! (`/forward/{port}`, server.rs), opens the page in its default browser,
-//! and says how it went (`PageOpened`). The command waits for that, and is
+//! (`/forward/{port}`, server.rs), opens the page (in a browser tab of its
+//! editor, or its default browser), and says how it went (`PageOpened`). The command waits for that, and is
 //! told. Once nothing listens on a forwarded port any more, its server
 //! gone, the computer hears of it (`PageClosed`) and stops forwarding.
 
@@ -168,13 +168,13 @@ impl pages::Pages for Opener {
             }
             match heard {
                 Ok(Ok(Ok(local))) if local == port => Ok(format!(
-                    "Rovik opened {url} in the user's browser, on their computer: its own port \
-                     {port} leads to port {port} here, for as long as a server listens on it."
+                    "Rovik opened {url} on the user's computer: its own port {port} leads to \
+                     port {port} here, for as long as a server listens on it."
                 )),
                 Ok(Ok(Ok(local))) => Ok(format!(
-                    "Rovik opened {url} in the user's browser, on their computer, at port \
-                     {local} there: its port {port} was taken, so its port {local} leads to port \
-                     {port} here, for as long as a server listens on it."
+                    "Rovik opened {url} on the user's computer, at port {local} there: its port \
+                     {port} was taken, so its port {local} leads to port {port} here, for as long \
+                     as a server listens on it."
                 )),
                 Ok(Ok(Err(why))) => Err(why),
                 _ => Err(format!(

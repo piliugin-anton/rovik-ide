@@ -76,8 +76,9 @@ pub enum Event {
     /// A command of the chat's, on a team server, asks to open `url`, a
     /// page of one of its servers on `port` of the user's private network
     /// there (D20): the app forwards its own `port` on 127.0.0.1 to that
-    /// one (`/forward/{port}`), opens the page in the default browser, and
-    /// says how it went (`PageOpened` with `id`).
+    /// one (`/forward/{port}`), opens the page (in a browser tab of the
+    /// editor, or the default browser), and says how it went (`PageOpened`
+    /// with `id`).
     PageWanted {
         dialog_id: String,
         id: String,

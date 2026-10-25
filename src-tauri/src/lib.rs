@@ -140,8 +140,19 @@ pub fn run() {
                     .is_some_and(|i| i.open_elsewhere(Some(project), None).is_some())
             }));
             // A page a remote chat's command opens on its team server opens
-            // in the default browser here, through a forwarded port (D20).
-            remote.on_open_page(Arc::new(open_url::open));
+            // here, through a forwarded port (D20): in a browser tab of the
+            // editor when one can show it (an http page), else in the
+            // default browser.
+            let window = app.handle().clone();
+            remote.on_open_page(Arc::new(move |page| {
+                if page.in_tab {
+                    window
+                        .emit(PAGE_EVENT, page.address)
+                        .map_err(|e| e.to_string())
+                } else {
+                    open_url::open(page.address)
+                }
+            }));
             // Another window may change the hosts' settings: their policies
             // are read again before one goes to a host.
             let page = Arc::downgrade(&hosts);
@@ -185,9 +196,18 @@ pub fn run() {
             // for Ctrl+V), so they're read through the clipboard API, which
             // it refuses without this; WebView2 asks for permission. The
             // input's own menu reads text that way too. macOS allows it.
+            // And to open what a page in a browser tab opens in a window of
+            // its own (a link to a new one, window.open) in the default
+            // browser: the webview would open nothing.
             if let Some(main) = app.config().app.windows.iter().find(|w| w.label == "main") {
                 let window = tauri::WebviewWindowBuilder::from_config(app.handle(), main)?
                     .enable_clipboard_access()
+                    .on_new_window(|url, _| {
+                        if let Err(e) = open_url::open(url.as_str()) {
+                            log::warn!("a page's new window didn't open: {e}");
+                        }
+                        tauri::webview::NewWindowResponse::Deny
+                    })
                     .build()?;
                 cascade(&window, rovik_core::os_lock::slot());
             }
@@ -666,6 +686,10 @@ fn attachment_response(
 
 /// The hosts' own events, apart from the chats': connections and transfers.
 const CLOUD_EVENT: &str = "cloud-event";
+
+/// A page for a browser tab of the editor to open (D20,
+/// src/lib/browserTabs.ts): its address at the port forwarded here.
+const PAGE_EVENT: &str = "open-page";
 
 /// The `log` crate's messages (rovik-client's, mostly) on stderr, where
 /// the app's own go. `ROVIK_LOG` sets the level (error, warn, info, debug,

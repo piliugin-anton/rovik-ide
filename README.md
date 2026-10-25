@@ -39,6 +39,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   rust-analyzer when it's installed.
 - A file tree that stays fast on very large projects and refreshes when
   files change on disk.
+- Browser tabs: a page a dev server on a cloud host opens shows in a tab
+  of the editor, hot reload and all, with an address bar for any http or
+  https page (see [Servers and pages on a cloud
+  host](#servers-and-pages-on-a-cloud-host)).
 - Project-wide text search powered by ripgrep's engine.
 - Several windows, each with a project of its own: **New window** in the
   project menu opens another, and `rovik-ide <folder>` opens a folder in a
@@ -606,11 +610,21 @@ your own there: its dev servers can take any port without clashing with
 another user's, and nobody else can reach them, while the agent tests them
 with `curl localhost:3000` as it would on your computer. When a command
 opens a page of one of them (`vite --open`, `xdg-open
-http://localhost:5173`), Rovik opens it in your browser on this computer,
+http://localhost:5173`), Rovik shows it in a browser tab of the editor,
 through a port of this computer forwarded to it: the same port when it's
-free here, another when it isn't. The chat shows **Opened ports:** under
-its title, each with the server's port and a button that copies the
-address here that leads to it. A page at any other address is refused. See
+free here, another when it isn't. The tab loads the page through a second
+port of Rovik's, which drops what keeps a page out of a frame
+(`X-Frame-Options` and CSP `frame-ancestors`, as Django, Rails or helmet
+send them) and passes WebSockets through, so the dev server's hot reload
+works in the tab. On Windows it also makes the page's cookies ones a frame
+keeps, so signing in to it works there. The tab has an address bar, Reload
+and **Open in your browser**. An https page opens in your browser instead,
+and so does a window the page opens. A page of another site that refuses
+to be framed, as most sign-in pages do, shows nothing in a tab: open it in
+your browser. The chat shows **Opened ports:** under its title, each port
+on a button that opens its page in a tab, or, as its ▾ chooses for every
+port, copies the address here that leads to it. A page at any other
+address is refused. See
 [Rovik on a team server](docs/cloud-hosts.md#each-users-own-network).
 
 ---

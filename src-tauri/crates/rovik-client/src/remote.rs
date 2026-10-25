@@ -42,10 +42,11 @@ mod moving;
 mod pages;
 mod results;
 mod sync;
+mod tab_port;
 
 pub use bar::LOCAL_ONLY;
 pub use moving::MovePreflight;
-pub use pages::{ForwardedPort, OpenPage};
+pub use pages::{ForwardedPort, OpenPage, PageToOpen};
 pub use sync::HandedSync;
 
 /// The outcome told for a run that ended while its host was away: the

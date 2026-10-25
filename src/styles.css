@@ -594,6 +594,12 @@ body.tree-dragging {
   padding: 0 2px;
 }
 
+/* A browser tab's globe, before its page's host. */
+.tab-icon {
+  flex-shrink: 0;
+  margin-right: -2px;
+}
+
 .tab-close:hover {
   color: var(--fg);
 }
@@ -624,6 +630,94 @@ body.tree-dragging {
   background: var(--bg-editor);
   overflow: hidden;
   tab-size: 2;
+}
+
+/*
+ * A browser tab (BrowserView.tsx): its address bar over its page. Every
+ * browser tab's view stays in the editor area, hidden unless it's the tab
+ * shown, so its page keeps running.
+ */
+.browser-view {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.browser-view.active {
+  display: flex;
+}
+
+.browser-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 4px 6px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border);
+}
+
+.browser-address {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.browser-address:focus {
+  border-color: var(--accent);
+}
+
+.browser-address.refused {
+  border-color: var(--error);
+}
+
+.browser-bar-note {
+  flex-shrink: 0;
+  color: var(--error);
+  font-size: 12px;
+}
+
+.browser-bar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.browser-bar-button:hover {
+  background: var(--hover-strong);
+  color: var(--fg);
+}
+
+.browser-bar-button:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
+/* Pages are drawn on white unless they say otherwise, as in a browser. */
+.browser-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #fff;
 }
 
 .editor-loading-overlay {
@@ -1106,10 +1200,38 @@ body.tree-dragging {
   color: var(--fg-dim);
 }
 
+/* Each port is one button, doing what its ▾ chose (Open, Copy), and the ▾
+   itself, joined. */
 .opened-port {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+}
+
+.opened-port-main,
+.opened-port-pick {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font: inherit;
+}
+
+.opened-port-main {
+  gap: 5px;
+  padding: 0 5px 0 6px;
+  border-radius: 4px 0 0 4px;
+}
+
+.opened-port-pick {
+  justify-content: center;
+  width: 16px;
+  padding: 0;
+  border-left: 0;
+  border-radius: 0 4px 4px 0;
+  font-size: 10px;
 }
 
 .opened-port-number {
@@ -1117,27 +1239,16 @@ body.tree-dragging {
   color: var(--fg);
 }
 
-.opened-port-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  background: none;
-  border: 0;
-  border-radius: 4px;
-  color: var(--fg-dim);
-  cursor: pointer;
-}
-
-.opened-port-copy:hover,
-.opened-port-copy.copied {
+.opened-port-main:hover,
+.opened-port-main.copied,
+.opened-port-pick:hover,
+.opened-port-pick[aria-expanded='true'] {
   background: var(--hover-strong);
   color: var(--fg);
 }
 
-.opened-port-copy:focus-visible {
+.opened-port-main:focus-visible,
+.opened-port-pick:focus-visible {
   outline: 1px solid var(--accent);
 }
 
@@ -3796,6 +3907,7 @@ body.tree-dragging {
 .file-context-menu .context-menu-icon,
 .terminal-context-menu .context-menu-icon,
 .terminal-new-menu .context-menu-icon,
+.opened-port-menu .context-menu-icon,
 .chat-input-context-menu .context-menu-icon {
   display: inline-flex;
   flex: 0 0 14px;
@@ -3805,6 +3917,7 @@ body.tree-dragging {
 .file-context-menu .context-menu-label,
 .terminal-context-menu .context-menu-label,
 .terminal-new-menu .context-menu-label,
+.opened-port-menu .context-menu-label,
 .chat-input-context-menu .context-menu-label {
   flex: 1;
 }
@@ -3812,19 +3925,23 @@ body.tree-dragging {
 .file-context-menu .context-menu-shortcut,
 .terminal-context-menu .context-menu-shortcut,
 .terminal-new-menu .context-menu-shortcut,
+.opened-port-menu .context-menu-shortcut,
 .chat-input-context-menu .context-menu-shortcut {
   margin-left: 16px;
   color: var(--fg-dim);
   font-size: 11px;
 }
 
-/* The terminal panel's "+" menu (TerminalNewMenu.tsx) takes the keyboard:
-   its item in focus looks as the hovered one does. */
-.terminal-new-menu .context-menu-item:focus {
+/* The terminal panel's "+" menu (TerminalNewMenu.tsx) and an opened port's
+   ▾ (OpenedPorts.tsx) take the keyboard: the item in focus looks as the
+   hovered one does. */
+.terminal-new-menu .context-menu-item:focus,
+.opened-port-menu .context-menu-item:focus {
   outline: none;
 }
 
-.terminal-new-menu .context-menu-item:focus-visible {
+.terminal-new-menu .context-menu-item:focus-visible,
+.opened-port-menu .context-menu-item:focus-visible {
   background: var(--hover-strong);
 }
 
@@ -3839,6 +3956,7 @@ body.tree-dragging {
 
 .file-context-menu .context-menu-item.disabled,
 .terminal-context-menu .context-menu-item.disabled,
+.opened-port-menu .context-menu-item.disabled,
 .chat-input-context-menu .context-menu-item.disabled {
   cursor: default;
   opacity: 0.4;
@@ -3846,6 +3964,7 @@ body.tree-dragging {
 
 .file-context-menu .context-menu-item.disabled:hover,
 .terminal-context-menu .context-menu-item.disabled:hover,
+.opened-port-menu .context-menu-item.disabled:hover,
 .chat-input-context-menu .context-menu-item.disabled:hover {
   background: none;
 }

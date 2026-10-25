@@ -8,6 +8,7 @@
 // move it, Enter or Space opens the item in focus, and Escape closes the
 // menu, as Tab does on its way to what comes after "+".
 import { For, onMount, Show, type JSX } from 'solid-js';
+import { focusMenuItem, onMenuKey } from '../lib/menuKeys';
 import { remoteLabel, type TerminalHost } from '../lib/terminal';
 
 function Icon(props: { children: JSX.Element }) {
@@ -41,48 +42,8 @@ export interface TerminalNewMenuProps {
 
 export default function TerminalNewMenu(props: TerminalNewMenuProps) {
   let list: HTMLUListElement | undefined;
-  const items = () => [...(list?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
 
-  /** The focus on the item at `index`, counted around from either end. */
-  function focusItem(index: number) {
-    const all = items();
-    all[(index + all.length) % all.length]?.focus({ preventScroll: true });
-  }
-
-  onMount(() => focusItem(0));
-
-  function onKeyDown(e: KeyboardEvent) {
-    const at = items().indexOf(document.activeElement as HTMLElement);
-    switch (e.key) {
-      case 'ArrowDown':
-        focusItem(at + 1);
-        break;
-      case 'ArrowUp':
-        focusItem(at < 0 ? -1 : at - 1);
-        break;
-      case 'Home':
-        focusItem(0);
-        break;
-      case 'End':
-        focusItem(-1);
-        break;
-      case 'Enter':
-      case ' ':
-        items()[at]?.click();
-        break;
-      case 'Escape':
-        props.onClose();
-        break;
-      case 'Tab':
-        // From "+", the focus goes on to what comes after it.
-        props.onClose();
-        return;
-      default:
-        return;
-    }
-    e.preventDefault();
-    e.stopPropagation();
-  }
+  onMount(() => focusMenuItem(list, 0));
 
   const item = (label: string, host: TerminalHost | null, icon: JSX.Element, shortcut?: string) => (
     <li
@@ -111,7 +72,7 @@ export default function TerminalNewMenu(props: TerminalNewMenuProps) {
       style={{ top: `${props.y}px`, left: `${props.x}px` }}
       // A right-click on the menu itself shouldn't open the browser's.
       onContextMenu={(e) => e.preventDefault()}
-      onKeyDown={onKeyDown}
+      onKeyDown={(e) => onMenuKey(e, list, props.onClose)}
     >
       <ul ref={list} class="context-menu-list" role="menu" aria-label="New terminal">
         {item(
