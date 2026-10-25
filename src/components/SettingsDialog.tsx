@@ -36,6 +36,7 @@ import AgentRunsSettings from './AgentRunsSettings';
 import SubagentSettings from './SubagentSettings';
 import AutopilotSettings from './AutopilotSettings';
 import ProjectChecksSettings from './ProjectChecksSettings';
+import RestrictedFilesSettings from './RestrictedFilesSettings';
 import HeavyCommandsSettings from './HeavyCommandsSettings';
 import VirtualFilesSettings from './VirtualFilesSettings';
 import NetworkSettings from './NetworkSettings';
@@ -228,6 +229,14 @@ export default function SettingsDialog(props: SettingsDialogProps) {
             <Match when={page() === 'project'}>
               <p class="settings-hint">
                 No project is open. The checks are set per project: open a folder first.
+              </p>
+            </Match>
+            <Match when={page() === 'files' && props.rootPath}>
+              <RestrictedFilesSettings root={props.rootPath!} />
+            </Match>
+            <Match when={page() === 'files'}>
+              <p class="settings-hint">
+                No project is open. Restricted files are set per project: open a folder first.
               </p>
             </Match>
             <Match when={page() === 'workload'}>

@@ -29,6 +29,7 @@ import { networkSettings, networkSummary } from '../lib/network';
 import { onWindows, wslStatus, wslSummary } from '../lib/wsl';
 import { checkingForUpdates, updateInfo, updatesSummary, updateStatus } from '../lib/updates';
 import { countChecksThatRun, projectChecksSummary } from '../lib/projectProfile';
+import { loadRestrictedFiles, restrictedSummary } from '../lib/restrictedFiles';
 
 interface SettingsMenuProps {
   /** The open project, for its group; none without a project. */
@@ -53,6 +54,11 @@ export default function SettingsMenu(props: SettingsMenuProps) {
   const [checksRunning] = createResource(
     () => props.rootPath,
     (root) => countChecksThatRun(root).catch(() => null)
+  );
+  // The files kept from the agent there.
+  const [restricted] = createResource(
+    () => props.rootPath,
+    (root) => loadRestrictedFiles(root).catch(() => null)
   );
   const vfsLine = () => {
     const status = vfs();
@@ -166,6 +172,12 @@ export default function SettingsMenu(props: SettingsMenuProps) {
               warning={
                 aiSettingsLoaded() && (!aiPermissions().verifyChanges || checksRunning() === 0)
               }
+            />
+            <Item
+              page="files"
+              label="Restricted files"
+              about="Files the agent may not read or change in this project: .env files, keys and other credentials, and any you add."
+              state={restricted() ? restrictedSummary(restricted()!) : undefined}
             />
           </Group>
         )}

@@ -6076,6 +6076,80 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-variant-numeric: tabular-nums;
 }
 
+/* Restricted files settings (RestrictedFilesSettings.tsx) */
+
+.restricted-files {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-collapse: collapse;
+  background: var(--bg-editor);
+  font-size: 12px;
+}
+
+.restricted-files th {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: normal;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.restricted-files th:first-child {
+  text-align: left;
+}
+
+/* The boxes' and the remove button's columns: as narrow as their titles. */
+.restricted-files th:not(:first-child) {
+  width: 1%;
+}
+
+.restricted-files td {
+  padding: 2px 8px;
+  text-align: center;
+}
+
+.restricted-files tbody tr:hover td {
+  background: var(--hover);
+}
+
+.restricted-files .restricted-file-path {
+  text-align: left;
+}
+
+.restricted-file-name {
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+.restricted-file-origin {
+  margin-left: 8px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.restricted-files .restricted-files-empty {
+  padding: 10px;
+  color: var(--fg-muted);
+  text-align: left;
+}
+
+.restricted-file-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.restricted-file-add input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 /* Project checks settings (ProjectChecksSettings.tsx) */
 
 .project-check-list {

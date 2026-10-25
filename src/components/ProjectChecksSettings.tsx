@@ -18,8 +18,8 @@ import {
   detectProject,
   effectiveChecks,
   loadProjectSettings,
-  saveProjectSettings,
   scriptKind,
+  updateProjectSettings,
   workspaceMemberCommand,
   workspaceScriptCommand,
   workspaceScriptSuggestions,
@@ -65,7 +65,7 @@ export default function ProjectChecksSettings(props: {
   function save(next: ProjectCheck[]) {
     setChecks(next);
     setCustomized(true);
-    saveProjectSettings(props.root, { checks: next }).catch((err) =>
+    updateProjectSettings(props.root, { checks: next }).catch((err) =>
       setError(`Couldn't save: ${String(err)}`)
     );
   }
@@ -133,7 +133,9 @@ export default function ProjectChecksSettings(props: {
   function resetToDetected() {
     setChecks(effectiveChecks(profile(), {}));
     setCustomized(false);
-    saveProjectSettings(props.root, null).catch((err) => setError(`Couldn't save: ${String(err)}`));
+    updateProjectSettings(props.root, { checks: undefined }).catch((err) =>
+      setError(`Couldn't save: ${String(err)}`)
+    );
   }
 
   /** Whether the user's command permissions let this check run. */

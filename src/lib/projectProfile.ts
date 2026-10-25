@@ -9,6 +9,7 @@
 // (src-tauri/crates/rovik-core/src/agent_run/project.rs).
 import { invoke } from '@tauri-apps/api/core';
 import { plural } from './textUtils';
+import type { RestrictedFile } from './restrictedFiles';
 
 export type CheckKind = 'typecheck' | 'lint' | 'test' | 'build';
 
@@ -54,9 +55,14 @@ export interface ProjectCheck {
   source?: string;
 }
 
-/** Per-project settings. `checks` replaces the detected list once the user edits it. */
+/**
+ * Per-project settings. `checks` replaces the detected list once the user
+ * edits it; `restrictedFiles` is Settings → Restricted files' list
+ * (restrictedFiles.ts), which the backend reads.
+ */
 export interface ProjectSettings {
   checks?: ProjectCheck[];
+  restrictedFiles?: RestrictedFile[];
 }
 
 export function detectProject(root: string): Promise<ProjectProfile> {
@@ -73,9 +79,36 @@ export async function loadProjectSettings(root: string): Promise<ProjectSettings
   }
 }
 
-/** null removes the project's settings (back to what's detected). */
-export function saveProjectSettings(root: string, settings: ProjectSettings | null): Promise<void> {
-  return invoke('save_project_settings', { root, settings });
+/** The last save of project settings: the next waits for it. */
+let saving: Promise<void> = Promise.resolve();
+
+/**
+ * Saves some of a project's settings, keeping the rest: the pages that set
+ * them each save their own. A key given `undefined` is removed (back to
+ * what's detected), and settings left empty are removed altogether. Saves
+ * are made one at a time, in order, so a later one is never overwritten.
+ */
+export function updateProjectSettings(
+  root: string,
+  patch: { [K in keyof ProjectSettings]: ProjectSettings[K] | undefined }
+): Promise<void> {
+  const next = saving.then(async () => {
+    const saved = await invoke<unknown>('load_project_settings', { root });
+    const settings: Record<string, unknown> =
+      saved && typeof saved === 'object' && !Array.isArray(saved)
+        ? { ...(saved as Record<string, unknown>) }
+        : {};
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) delete settings[key];
+      else settings[key] = value;
+    }
+    await invoke('save_project_settings', {
+      root,
+      settings: Object.keys(settings).length > 0 ? settings : null,
+    });
+  });
+  saving = next.catch(() => undefined);
+  return next;
 }
 
 function normalizeSettings(raw: unknown): ProjectSettings {

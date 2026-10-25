@@ -117,6 +117,31 @@ test('project checks: ticking one turns on that one alone, and the list is the u
   assert.match(root.textContent!, /Your list for this project\./);
 });
 
+test('project checks: saving the checks keeps the project’s restricted files', async () => {
+  const restrictedFiles = [{ path: '.env', blockRead: false, blockWrite: true }];
+  const root = await page({ restrictedFiles });
+  boxes(root)[0].click();
+  await flush();
+  assert.deepEqual(saves, [
+    {
+      restrictedFiles,
+      checks: [
+        { kind: 'typecheck', command: 'npx tsc --noEmit', enabled: true, source: 'tsconfig.json' },
+        { kind: 'test', command: 'npm test', enabled: false, source: 'package.json scripts.test' },
+      ],
+    },
+  ]);
+  // Back to the detected checks: only the checks go.
+  const custom = await page({ checks: [], restrictedFiles });
+  (
+    [...custom.querySelectorAll('button.link-button')].find(
+      (b) => b.textContent === 'Use detected checks'
+    ) as HTMLButtonElement
+  ).click();
+  await flush();
+  assert.deepEqual(saves, [{ restrictedFiles }]);
+});
+
 test('project checks: the user’s list stands; back to the detected ones, none is ticked', async () => {
   const root = await page({ checks: [{ kind: 'test', command: 'npm test', enabled: true }] });
   assert.deepEqual(
