@@ -837,6 +837,7 @@ impl Run {
         let focus = crate::repo_map::focus_from(root_path, "", &touched);
         let options = crate::repo_map::Options {
             max_chars: chars,
+            restricted: self.restricted.clone(),
             ..Default::default()
         };
         Some((

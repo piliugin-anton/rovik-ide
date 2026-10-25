@@ -173,6 +173,9 @@ pub struct Run {
     /// project has none set up (Autopilot, V02).
     pub(super) checks_from_plan: bool,
     pub(super) project_context: String,
+    /// The files the agent may not read or change (restricted_files.rs):
+    /// the project's list, fixed for the run like its checks.
+    pub(super) restricted: Arc<crate::restricted_files::RestrictedFiles>,
     /// The current repository map text (the `## Repository map` section),
     /// if any. Every model turn sends it on the request's message
     /// (`ChatParams::request_context`), never in the system prompt or at
@@ -1010,7 +1013,7 @@ impl Run {
             }
         }
 
-        let (checks, project_context) = match &root {
+        let (checks, project_context, restricted) = match &root {
             Some(r) => {
                 // Settings are kept by the project's folder, not the view's;
                 // a candidate's, by its task chat's (T05).
@@ -1021,15 +1024,20 @@ impl Run {
                     .unwrap_or_else(|| r.clone());
                 let config_dir = core.paths.config_dir.clone();
                 let (r, verify) = (r.clone(), config.permissions.verify_changes);
-                // V09: an Autopilot task's checks the stacks one folder down too.
                 crate::rt::spawn_blocking(move || {
-                    project::load_for(&config_dir, &r, &settings_root, verify, autopilot)
+                    // V09: an Autopilot task's checks the stacks one folder down too.
+                    let (checks, context) =
+                        project::load_for(&config_dir, &r, &settings_root, verify, autopilot);
+                    let restricted =
+                        crate::restricted_files::RestrictedFiles::load(&config_dir, &settings_root);
+                    (checks, context, restricted)
                 })
                 .await
                 .unwrap_or_default()
             }
             None => Default::default(),
         };
+        let restricted = Arc::new(restricted);
         // V02 (D7): an Autopilot implementation in a project with no checks
         // set up is checked by its plan's validation commands.
         let set_up = checks
@@ -1090,6 +1098,7 @@ impl Run {
                 let touched = touched_paths(&recent);
                 let options = crate::repo_map::Options {
                     max_chars: repo_map_chars,
+                    restricted: restricted.clone(),
                     ..Default::default()
                 };
                 crate::rt::spawn_blocking(move || {
@@ -1161,6 +1170,7 @@ impl Run {
             checks,
             checks_from_plan,
             project_context,
+            restricted,
             repo_map,
             repo_map_chars,
             writes_since_verify: !changed_files.is_empty() || inherits_changes,
@@ -1231,6 +1241,7 @@ impl Run {
             checks: Vec::new(),
             checks_from_plan: false,
             project_context: String::new(),
+            restricted: Arc::default(),
             repo_map: None,
             repo_map_chars: 0,
             map_refreshed_at: Instant::now(),
@@ -1370,6 +1381,7 @@ impl Run {
             project_root: parent.project_root.clone(),
             local_date: parent.local_date.clone(),
             project_context: parent.project_context.clone(),
+            restricted: parent.restricted.clone(),
             repo_map: parent.repo_map.clone(),
             repo_map_chars: parent.repo_map_chars,
             ..Run::blank(
@@ -2248,6 +2260,7 @@ impl Run {
                 plan_mode: self.plan_mode,
                 tool_asks,
                 command_checks,
+                restricted: Some(self.restricted.clone()),
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -2890,11 +2903,13 @@ impl Run {
             }
         };
         let max_chars = self.repo_map_chars;
+        let restricted = self.restricted.clone();
         let rebuilt = crate::rt::spawn_blocking(move || {
             let root_path = std::path::Path::new(&root);
             let focus = crate::repo_map::focus_from(root_path, &request_text, &touched);
             let options = crate::repo_map::Options {
                 max_chars,
+                restricted,
                 ..Default::default()
             };
             crate::repo_map::repo_map(root_path, &focus, &options)

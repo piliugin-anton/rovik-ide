@@ -780,7 +780,7 @@ desktop refreshes them every time a cloud run starts.**
 - The daemon runs as the SSH user, never as root; files under
   `~/.rovik/` are 0700.
 - The agent on the server still obeys the permission rules
-  (`agent_run::permissions`, `is_secret_path`), but approvals now arrive
+  (`agent_run::permissions`, the restricted files of `restricted_files`), but approvals now arrive
   remotely, so an unattended remote run waits rather than auto-approves.
 
 Not chosen: **keys sent per session and kept only in memory**, the

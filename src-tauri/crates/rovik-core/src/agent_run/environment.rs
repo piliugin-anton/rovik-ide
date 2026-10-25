@@ -237,7 +237,7 @@ fn assignment(word: &str) -> bool {
 /// Such a command that failed for want of its program did nothing yet.
 pub fn runs_one_program(command: &str) -> bool {
     let parsed = permissions::parse_command(command);
-    parsed.segments.len() == 1 && !parsed.opaque && !parsed.writes_via_redirect
+    parsed.segments.len() == 1 && !parsed.opaque && !parsed.writes_via_redirect()
 }
 
 /// `program` made available for a command run in `cx.root`: on a cloud

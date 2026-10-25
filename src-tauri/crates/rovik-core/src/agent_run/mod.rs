@@ -63,6 +63,7 @@ pub mod repair;
 mod repair_run;
 pub mod repetition;
 pub mod report;
+pub mod restricted;
 pub mod review;
 mod run;
 pub mod server;

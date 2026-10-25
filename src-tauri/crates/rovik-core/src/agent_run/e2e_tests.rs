@@ -36,6 +36,10 @@ mod steer_tests;
 #[path = "connector_e2e_tests.rs"]
 mod connector_tests;
 
+#[cfg(test)]
+#[path = "restricted_e2e_tests.rs"]
+mod restricted_tests;
+
 /*
  * The operations, as the app and the daemon call them: through `dispatch`.
  * These stand in for agent_run's functions of the same names, so every
@@ -3983,6 +3987,15 @@ async fn a_new_file_is_approved_whole_and_an_allowed_edit_is_recorded_as_reviewe
 #[tokio::test]
 async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
     let h = harness(&[("a.txt", "x\n"), (".env", "SECRET=1\n")]).await;
+    // The user lets the agent write .env, not read it (Settings →
+    // Restricted files): its edits may happen, never seen by the reviewer.
+    let root = h.project.to_string_lossy().into_owned();
+    crate::project_profile::save_project_settings(
+        &h.core.paths.config_dir,
+        root,
+        json!({ "restrictedFiles": [{ "path": ".env", "blockRead": true, "blockWrite": false }] }),
+    )
+    .unwrap();
     let (url, _) = model(vec![
         Reply::Calls(vec![
             (
@@ -3993,7 +4006,7 @@ async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
             (
                 "e2",
                 "write",
-                json!({ "path": ".env", "old_text": "1", "content": "2" }),
+                json!({ "path": ".env", "content": "SECRET=2\n" }),
             ),
             ("e3", "write", json!({ "path": "b.txt", "content": "b" })),
         ]),
@@ -4033,7 +4046,7 @@ async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
     assert!(asked["request"]["note"]
         .as_str()
         .unwrap()
-        .starts_with("Edits to credential or secret files"));
+        .starts_with("Edits to restricted files"));
     agent_resolve_approval(
         &core,
         h.dialog_id.clone(),

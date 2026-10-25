@@ -138,6 +138,10 @@ pub struct Turn {
     /// (agent_run/environment.rs): the run answers. None (a one-off
     /// request, a request outside a run): nothing is made ready.
     pub commands: Option<CommandChecks>,
+    /// The project's files its own tools may not read or change
+    /// (restricted_files.rs), relative to `cwd`: a harness that can deny its
+    /// tools files does.
+    pub denied: crate::restricted_files::Denied,
 }
 
 /// A harness's request to run one of its own tools, put to the run's
@@ -180,8 +184,17 @@ pub struct CommandCheck {
     /// None: it's about to run. Some: it failed, with its exit code (None
     /// when its harness doesn't say) and its output.
     pub failed: Option<(Option<i32>, String)>,
-    /// What the model should be told of it; None for nothing.
-    pub reply: oneshot::Sender<Option<String>>,
+    /// The run's answer.
+    pub reply: oneshot::Sender<CommandAnswer>,
+}
+
+/// The run's answer to a `CommandCheck`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandAnswer {
+    /// It runs, or ran: what the model should be told of it, if anything.
+    Note(Option<String>),
+    /// It may not run (asked before it does): why, for the model.
+    Deny(String),
 }
 
 /// Where a harness's `CommandCheck`s go.
@@ -446,6 +459,17 @@ pub async fn run_chat(
     if prompt.trim().is_empty() {
         return Err("Nothing to send: the chat has no message for the harness.".into());
     }
+    // What its own tools may not touch, found in the project (a walk: off
+    // the async threads).
+    let denied = match (&params.cwd, &params.restricted) {
+        (Some(cwd), Some(restricted)) if has_history => {
+            let (cwd, restricted) = (cwd.clone(), restricted.clone());
+            crate::rt::spawn_blocking(move || restricted.denied(&cwd))
+                .await
+                .unwrap_or_default()
+        }
+        _ => Default::default(),
+    };
     let turn = Turn {
         settings,
         api_key: params.api_key.clone(),
@@ -467,6 +491,7 @@ pub async fn run_chat(
         continue_reply: continuing,
         asks: params.tool_asks.clone(),
         commands: params.command_checks.clone(),
+        denied,
     };
     // The session the harness opens or continues is kept for the chat's
     // next turn, as the events say it.

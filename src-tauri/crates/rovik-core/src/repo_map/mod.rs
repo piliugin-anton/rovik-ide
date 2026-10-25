@@ -16,14 +16,16 @@
 //!    with their enclosing declarations for context.
 //!
 //! The walk respects .gitignore and the agent's denylist, skips large
-//! files, and stops at a time and file limit: a huge project gets a map of
-//! what was parsed by then, never a wait.
+//! files and the files the agent may not read (restricted_files.rs), and
+//! stops at a time and file limit: a huge project gets a map of what was
+//! parsed by then, never a wait.
 
 #[cfg(test)]
 mod tests;
 
 use crate::outline::{self, Symbol};
 use crate::read_symbol::ancestors;
+use crate::restricted_files::{Op, RestrictedFiles};
 use ignore::{WalkBuilder, WalkState};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -78,6 +80,8 @@ pub struct Options {
     pub time_limit: Duration,
     /// Files parsed, at most.
     pub max_files: usize,
+    /// The files the agent may not read: their declarations aren't shown.
+    pub restricted: Arc<RestrictedFiles>,
 }
 
 impl Default for Options {
@@ -86,6 +90,7 @@ impl Default for Options {
             max_chars: 6_000,
             time_limit: Duration::from_secs(4),
             max_files: 20_000,
+            restricted: Arc::default(),
         }
     }
 }
@@ -185,6 +190,10 @@ fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
                     .unwrap_or(path)
                     .to_string_lossy()
                     .replace('\\', "/");
+                // Not what the agent may not read: its names would show.
+                if options.restricted.blocks_file(&rel, Op::Read) {
+                    return WalkState::Continue;
+                }
                 // Cheap first: a file no grammar knows isn't read, nor data
                 // and markup (their keys and headings aren't used by name).
                 match outline::language_for(&rel, "") {

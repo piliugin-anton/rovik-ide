@@ -35,7 +35,8 @@ use super::harness::{
 };
 use super::mcp::{McpCall, McpReply, McpServer, HOOK, SERVER_NAME, TOOL_PREFIX};
 use super::{
-    harness_error, trimmed_text, trimmed_value, usage_value, Answers, CommandCheck, CommandChecks,
+    harness_error, trimmed_text, trimmed_value, usage_value, Answers, CommandAnswer, CommandCheck,
+    CommandChecks,
     Connector, ConnectorAuth, ConnectorCommand, ConnectorKind, ConnectorModel, ConnectorProbe,
     HarnessStep, ProbeRequest, ProbeRequestArgs, SetupAction, SetupCommand, ToolAnswer, ToolAsk,
     ToolAsks, Turn,
@@ -319,10 +320,38 @@ fn push_disallowed(args: &mut Vec<String>, settings: &Settings, turn: &Turn) {
     if turn.isolated {
         disallowed.extend(git_deny_rules());
     }
+    disallowed.extend(restricted_rules(&turn.denied));
     if !disallowed.is_empty() {
         args.push("--disallowedTools".into());
         args.extend(disallowed);
     }
+}
+
+/// Claude Code's deny rules for the project's restricted files
+/// (restricted_files.rs), relative to its folder: `Read(./.env)`, which its
+/// searches follow too, and `Edit(./.env)`, which every tool that changes
+/// files does; a folder's for all in it (`Read(./secrets/**)`). Its shell
+/// is Rovik's to check, when it asks.
+fn restricted_rules(denied: &crate::restricted_files::Denied) -> Vec<String> {
+    let rule = |tool: &str, path: &String| {
+        // A rule's path is a gitignore pattern: its wildcards as characters.
+        let (path, all) = match path.strip_suffix('/') {
+            Some(folder) => (folder, "/**"),
+            None => (path.as_str(), ""),
+        };
+        let mut escaped = String::new();
+        for c in path.chars() {
+            if matches!(c, '*' | '?' | '[' | ']' | '\\') {
+                escaped.push('\\');
+            }
+            escaped.push(c);
+        }
+        format!("{tool}(./{escaped}{all})")
+    };
+    let reads = denied.read.iter().map(|path| rule("Read", path));
+    reads
+        .chain(denied.write.iter().map(|path| rule("Edit", path)))
+        .collect()
 }
 
 /// Claude Code's deny rules for the git commands a chat's copy of the
@@ -1928,7 +1957,7 @@ fn answer_hook(call: McpCall, checks: &CommandChecks, env_file: Option<PathBuf>,
     tokio::spawn(async move {
         let said = match (sent, said.await) {
             (Ok(()), Ok(said)) => said,
-            _ => None,
+            _ => CommandAnswer::Note(None),
         };
         // The file is the turn's, gone with it: never made again here.
         if let Some(file) = env_file.filter(|file| file.exists()) {
@@ -1938,10 +1967,19 @@ fn answer_hook(call: McpCall, checks: &CommandChecks, env_file: Option<PathBuf>,
             }
         }
         let answer = match said {
-            Some(text) => json!({
+            // Refused before it runs, whatever Claude Code's permission
+            // mode: the reason is the model's.
+            CommandAnswer::Deny(reason) => json!({
+                "hookSpecificOutput": {
+                    "hookEventName": name,
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                },
+            }),
+            CommandAnswer::Note(Some(text)) => json!({
                 "hookSpecificOutput": { "hookEventName": name, "additionalContext": text },
             }),
-            None => json!({}),
+            CommandAnswer::Note(None) => json!({}),
         };
         let _ = call.reply.send(McpReply::text(answer.to_string()));
     });
@@ -2638,6 +2676,7 @@ mod tests {
             continue_reply: false,
             asks: None,
             commands: None,
+            denied: Default::default(),
         }
     }
 
@@ -2816,6 +2855,43 @@ mod tests {
         let settings = Settings::from_value(&json!({ "permissionMode": "bypassPermissions" }));
         let args = args_for(&settings, &t, &session, None, None, None);
         assert!(disallowed(&args).is_empty(), "{args:?}");
+    }
+
+    #[test]
+    fn its_own_tools_are_denied_the_projects_restricted_files() {
+        let session = Session::New("s-1".into());
+        let mut t = turn("Fix it");
+        t.denied = crate::restricted_files::Denied {
+            read: vec![".env".into(), "secrets/".into(), "odd[1]*.key".into()],
+            write: vec![".env".into()],
+        };
+        for mode in ["bypassPermissions", "rovik"] {
+            let settings = Settings::from_value(&json!({ "permissionMode": mode }));
+            let config = (mode == "rovik").then(|| Path::new("/tmp/mcp.json"));
+            let args = args_for(&settings, &t, &session, None, config, None);
+            let at = args.iter().position(|a| a == "--disallowedTools").unwrap();
+            assert_eq!(
+                args[at + 1..at + 5],
+                [
+                    "Read(./.env)",
+                    "Read(./secrets/**)",
+                    "Read(./odd\\[1\\]\\*.key)",
+                    "Edit(./.env)",
+                ],
+                "{mode}"
+            );
+        }
+        // With Rovik's tools, none of its own: nothing to deny.
+        let settings = Settings::from_value(&json!({ "tools": "rovik" }));
+        let args = args_for(
+            &settings,
+            &t,
+            &session,
+            None,
+            Some(Path::new("/tmp/mcp.json")),
+            None,
+        );
+        assert!(!args.iter().any(|a| a == "--disallowedTools"), "{args:?}");
     }
 
     #[test]

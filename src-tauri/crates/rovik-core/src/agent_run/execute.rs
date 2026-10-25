@@ -295,10 +295,33 @@ impl Run {
             return false;
         }
         let config = self.config();
+        // A read of a restricted file goes through `authorize`, refused.
+        let restricted = |root: &str| {
+            super::restricted::problem(&tc.name, &args, root, &self.restricted).is_some()
+        };
         matches!(
             permissions::check_tool_call(&tc.name, &tc.arguments, &config.permissions),
             ToolVerdict::Permitted { approval: None }
         ) && !self.names_daemon_folder(tc)
+            && !self.root.as_deref().is_some_and(restricted)
+    }
+
+    /// Why a call may not run, when it would read or change one of the
+    /// project's restricted files (restricted.rs). Off the async threads: a
+    /// command's check may go through the folders it searches. A check that
+    /// fails refuses the call.
+    async fn restricted_problem(&self, name: &str, args: Map<String, Value>) -> Option<String> {
+        let root = self.root.clone()?;
+        let (name, restricted) = (name.to_string(), self.restricted.clone());
+        crate::rt::spawn_blocking(move || {
+            super::restricted::problem(&name, &args, &root, &restricted)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            Some(format!(
+                "Error: this call couldn't be checked against the restricted files ({e}), so it didn't run."
+            ))
+        })
     }
 
     /// A command that names a server's own folder: it waits for the user,
@@ -1060,6 +1083,11 @@ impl Run {
     /// Permission first (refused calls never reach approval), then approval
     /// when the settings require it: by the user, or by the AI reviewer.
     async fn authorize(&self, tc: &ToolCall, resume_note: Option<&str>) -> Authorized {
+        // The files the user keeps from the agent: refused, never asked about.
+        let args = permissions::parse_args(&tc.arguments);
+        if let Some(problem) = self.restricted_problem(&tc.name, args).await {
+            return rejected(problem);
+        }
         let config = self.config();
         let p = &config.permissions;
         let daemon_folder = self.names_daemon_folder(tc);
@@ -1149,14 +1177,19 @@ impl Run {
                     "Commands that push, delete, deploy, escalate privileges, run inline scripts or touch secrets need a person's approval, and nobody is there to give it in Autopilot."
                         .into(),
                 );
-            } else if edit_path
-                .as_deref()
-                .is_some_and(permissions::is_secret_path)
-            {
-                manual_reason =
-                    Some("Edits to credential or secret files always need your approval.".into());
+            } else if edit_path.as_deref().is_some_and(|path| {
+                // Its diff would show the reviewer what's in it.
+                let root = self.root.as_deref().unwrap_or_default();
+                self.restricted
+                    .blocked(root, path, crate::restricted_files::Op::Read)
+                    .is_some()
+            }) {
+                manual_reason = Some(
+                    "Edits to restricted files, which the agent may not read, always need your approval."
+                        .into(),
+                );
                 unattended_why = Some(
-                    "Edits to credential or secret files need a person's approval, and nobody is there to give it in Autopilot."
+                    "Edits to restricted files need a person's approval, and nobody is there to give it in Autopilot."
                         .into(),
                 );
             } else if models.is_empty() {
@@ -1432,11 +1465,22 @@ impl Run {
     /// (environment.rs), noted on its call's line while something
     /// installs. The model is told what was done, and, after a failure,
     /// that the command can run again.
+    /// Before it runs, one that would read or change a restricted file is
+    /// refused, whatever the harness's own permissions.
     pub(super) async fn answer_command_check(&self, check: crate::connectors::CommandCheck) {
+        use crate::connectors::CommandAnswer;
         let Some(root) = self.root.clone() else {
-            let _ = check.reply.send(None);
+            let _ = check.reply.send(CommandAnswer::Note(None));
             return;
         };
+        if check.failed.is_none() {
+            let args = json!({ "command": check.command });
+            let args = args.as_object().cloned().unwrap_or_default();
+            if let Some(reason) = self.restricted_problem("bash", args).await {
+                let _ = check.reply.send(CommandAnswer::Deny(reason));
+                return;
+            }
+        }
         let (core, dialog_id, call) = (
             self.core.clone(),
             self.dialog_id.clone(),
@@ -1466,7 +1510,7 @@ impl Run {
                 .note()
                 .map(|note| format!("Rovik IDE: {note}")),
         };
-        let _ = check.reply.send(said);
+        let _ = check.reply.send(CommandAnswer::Note(said));
     }
 
     /// An approved edit whose file changed while the approval waited (another
@@ -1634,6 +1678,7 @@ impl Run {
         );
         tools::CallContext {
             seen: self.seen.clone(),
+            restricted: self.restricted.clone(),
             owner: self.overlay_owner(),
             checks_owner: self
                 .sub()

@@ -11,9 +11,9 @@
 //      apply a small built-in denylist (`is_denylisted_name`) that applies
 //      *regardless* of whether a .gitignore exists — a repo with no
 //      .gitignore yet shouldn't leak node_modules or a stray .pem into the
-//      model's context. Reading and outlining refuse its key files
-//      (`is_key_file`) by name too; writes to them always go to the user
-//      (permissions.rs, `is_secret_path`).
+//      model's context. The files the agent may not read or change at all
+//      (restricted_files.rs: `.env` files, keys, logins, the user's list)
+//      are refused before a call gets here (agent_run/restricted.rs).
 //   3. Returns errors as `Result<_, String>` rather than panicking, since
 //      these run inside a model-driven loop that should degrade to an error
 //      string the model can see and react to, not crash the app.
@@ -22,10 +22,11 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
 use crate::file_guard::{Seen, WriteError};
+use crate::restricted_files::RestrictedFiles;
 
 const DENYLIST_DIRS: &[&str] = &[
     "node_modules",
@@ -42,7 +43,13 @@ const DENYLIST_DIRS: &[&str] = &[
 const DENYLIST_EXTENSIONS: &[&str] = &["pem", "key", "pfx", "p12"];
 
 pub(crate) fn is_denylisted_name(name: &str) -> bool {
-    DENYLIST_DIRS.contains(&name) || is_key_file(name)
+    is_denylisted_dir(name) || is_key_file(name)
+}
+
+/// A folder of dependencies or build output, by its name: left out of the
+/// listings, searches and scans the agent's tools make.
+pub(crate) fn is_denylisted_dir(name: &str) -> bool {
+    DENYLIST_DIRS.contains(&name)
 }
 
 /// A private key or certificate store by its name: its extension, not a
@@ -50,18 +57,6 @@ pub(crate) fn is_denylisted_name(name: &str) -> bool {
 pub(crate) fn is_key_file(name: &str) -> bool {
     name.rsplit_once('.')
         .is_some_and(|(_, ext)| DENYLIST_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
-}
-
-/// Refuses `path` when it names a key file ([`is_key_file`]): what's in
-/// one isn't for the model's context.
-fn not_a_key_file(path: &str, target: &Path) -> Result<(), String> {
-    let name = target.file_name().map(|n| n.to_string_lossy());
-    if name.is_some_and(|n| is_key_file(&n)) {
-        return Err(format!(
-            "{path}: a key or certificate file, which isn't read into the conversation"
-        ));
-    }
-    Ok(())
 }
 
 fn canonicalize_or_err(p: &Path) -> Result<PathBuf, String> {
@@ -277,7 +272,11 @@ pub async fn tool_search_code(
 /// The one-hop structural neighbourhood of a file from the repository map's
 /// graph (see repo_map.rs): which parsed files it uses by name, and which
 /// use it. Runs off the main thread; the walk reuses the map's cache.
-pub async fn tool_neighbours(root: String, path: String) -> Result<String, String> {
+pub async fn tool_neighbours(
+    root: String,
+    path: String,
+    restricted: Arc<RestrictedFiles>,
+) -> Result<String, String> {
     if path.trim().is_empty() {
         return Err("path must not be empty".to_string());
     }
@@ -306,29 +305,33 @@ pub async fn tool_neighbours(root: String, path: String) -> Result<String, Strin
             path.clone()
         }
     };
-    crate::rt::spawn_blocking(move || {
-        crate::repo_map::neighbours(Path::new(&root), &rel, &crate::repo_map::Options::default())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let options = crate::repo_map::Options {
+        restricted,
+        ..Default::default()
+    };
+    crate::rt::spawn_blocking(move || crate::repo_map::neighbours(Path::new(&root), &rel, &options))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Where a symbol is declared and which files use the name, from the
 /// repository map's graph (see repo_map.rs). For exact use sites (lines),
 /// follow up with search_code. Runs off the main thread.
-pub async fn tool_callers(root: String, symbol: String) -> Result<String, String> {
+pub async fn tool_callers(
+    root: String,
+    symbol: String,
+    restricted: Arc<RestrictedFiles>,
+) -> Result<String, String> {
     if symbol.trim().is_empty() {
         return Err("symbol must not be empty".to_string());
     }
-    crate::rt::spawn_blocking(move || {
-        crate::repo_map::callers(
-            Path::new(&root),
-            &symbol,
-            &crate::repo_map::Options::default(),
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let options = crate::repo_map::Options {
+        restricted,
+        ..Default::default()
+    };
+    crate::rt::spawn_blocking(move || crate::repo_map::callers(Path::new(&root), &symbol, &options))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// A file's declarations with line ranges and signatures, without its
@@ -336,7 +339,6 @@ pub async fn tool_callers(root: String, symbol: String) -> Result<String, String
 /// the repo map. Cheaper than reading a large file to learn its shape.
 pub fn tool_outline(root: String, path: String) -> Result<String, String> {
     let (abs, rel) = resolve_project_file(&root, &path, "outline")?;
-    not_a_key_file(&path, &abs)?;
     let symbols = match crate::outline::outline_of_file(&abs, &rel) {
         Some(s) => s,
         // `.h`/`.m` need content to pick a language; the cache lookup
@@ -796,7 +798,6 @@ pub fn read_file_range(
     if !target.is_file() {
         return Err(format!("{path}: not a file"));
     }
-    not_a_key_file(&path, &target)?;
     let size = fs::metadata(&target)
         .map_err(|e| format!("{path}: {e}"))?
         .len();
@@ -913,18 +914,20 @@ pub fn edit_file(
 /// Writes (creating parent directories as needed) or overwrites a file
 /// inside the project root.
 pub fn tool_write_file(root: String, path: String, content: String) -> Result<String, String> {
-    write_file(&root, &path, &content, None)
+    write_file(&root, &path, &content, None, false)
 }
 
 /// [`tool_write_file`], and for a chat's run (`seen`): refused when the file
 /// changed since the run last saw it, or is another writer's change it never
 /// saw (file_guard.rs). The refusal shows the file as it is now, so the
-/// model can redo its change on it.
+/// model can redo its change on it, unless it's `hidden` from the agent (a
+/// restricted file it may not read, restricted_files.rs).
 pub fn write_file(
     root: &str,
     path: &str,
     content: &str,
     seen: Option<&Seen>,
+    hidden: bool,
 ) -> Result<String, String> {
     // Reject '..' up front (same rule as resolve_within_root) before we
     // create any directories on disk.
@@ -942,7 +945,7 @@ pub fn write_file(
         Some(seen) => match crate::file_guard::write_for_chat(&target, content.as_bytes(), seen) {
             Ok(()) => {}
             Err(WriteError::Changed(changed)) => {
-                return Err(changed_error(path, &target, &changed, seen))
+                return Err(changed_error(path, &target, &changed, seen, hidden))
             }
             Err(WriteError::Io(e)) => return Err(format!("{path}: {e}")),
         },
@@ -994,12 +997,17 @@ fn changed_error(
     target: &Path,
     changed: &crate::file_guard::Changed,
     seen: &Seen,
+    hidden: bool,
 ) -> String {
     let by = crate::file_guard::describe_changer(changed.by.as_ref(), Some(seen.owner()));
-    let head = format!(
-        "Error: {path} changed since you last read it ({by}); your write was not applied. \
-         Redo your change on the file as it is now"
-    );
+    let refused =
+        format!("Error: {path} changed since you last read it ({by}); your write was not applied.");
+    if hidden {
+        return format!(
+            "{refused} It's a restricted file, which the agent may not read, so it isn't shown here: tell the user what you meant to change in it."
+        );
+    }
+    let head = format!("{refused} Redo your change on the file as it is now");
     if crate::merge::is_binary(&changed.current) {
         return format!("{head} (a binary file).");
     }
@@ -1034,19 +1042,14 @@ pub fn empty_overwrite_error(path: &str, current: &str, content: &str) -> Option
 mod tests {
     use super::*;
 
-    /// A key or certificate file isn't read or outlined into the model's
-    /// context, whatever its case; a folder named like one is no key.
+    /// Listings and searches leave key and certificate files out, known by
+    /// their extension in any case; a folder named like one is no key.
+    /// Reading one is refused before a tool runs (agent_run/restricted.rs).
     #[test]
-    fn a_key_file_is_not_read_or_outlined() {
-        let dir = crate::testing::temp_dir();
-        fs::write(dir.0.join("server.PEM"), "-----BEGIN PRIVATE KEY-----\n").unwrap();
-        let root = dir.0.to_string_lossy().into_owned();
-        let err =
-            tool_read_file_range(root.clone(), "server.PEM".into(), None, None, None).unwrap_err();
-        assert!(err.contains("key or certificate"), "{err}");
-        let err = tool_outline(root, "server.PEM".into()).unwrap_err();
-        assert!(err.contains("key or certificate"), "{err}");
-        assert!(!is_key_file("key") && is_key_file("id.p12") && !is_key_file("notes.txt"));
+    fn key_files_are_known_by_their_extension() {
+        assert!(is_key_file("server.PEM") && is_key_file("id.p12"));
+        assert!(!is_key_file("key") && !is_key_file("notes.txt"));
+        assert!(is_denylisted_name("server.pem") && is_denylisted_name("node_modules"));
     }
 
     /// A file past the read limit (a log, a dump) is refused by its size,
@@ -1315,17 +1318,25 @@ mod tests {
             .unwrap();
         // neighbours: no `..`, no absolute path outside the root.
         let err = rt
-            .block_on(tool_neighbours(root_s.clone(), "../outside.rs".into()))
+            .block_on(tool_neighbours(
+                root_s.clone(),
+                "../outside.rs".into(),
+                Arc::default(),
+            ))
             .unwrap_err();
         assert!(err.contains("must not contain '..'"), "{err}");
         let err = rt
-            .block_on(tool_neighbours(root_s.clone(), "/etc/passwd".into()))
+            .block_on(tool_neighbours(
+                root_s.clone(),
+                "/etc/passwd".into(),
+                Arc::default(),
+            ))
             .unwrap_err();
         assert!(err.contains("escapes project root"), "{err}");
         // An absolute path through the symlinked root still resolves.
         let inside = root.join("src/a.rs").to_string_lossy().to_string();
         let n = rt
-            .block_on(tool_neighbours(root_s.clone(), inside))
+            .block_on(tool_neighbours(root_s.clone(), inside, Arc::default()))
             .unwrap();
         assert!(n.contains("## Neighbours of src/a.rs"), "{n}");
         // Editor reports: the same confinement.

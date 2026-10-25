@@ -38,8 +38,9 @@ pub struct ParsedCommand {
     /// Simple commands, each as words (leading harmless VAR=value assignments
     /// removed: see [`drop_assignments`]).
     pub segments: Vec<Vec<String>>,
-    /// Output redirected into a file (> or >>), other than /dev/null.
-    pub writes_via_redirect: bool,
+    /// The files output is redirected into (`>`, `>>`, `&>`), as written,
+    /// other than /dev/null.
+    pub writes_to: Vec<String>,
     /// Command substitution or subshells: $( ), backticks, <( ), ( ).
     pub opaque: bool,
     /// For each segment: words the shell expands (globs `*?[`, `~`, `$VAR`,
@@ -50,6 +51,13 @@ pub struct ParsedCommand {
     /// For each segment: its output goes into the next one (`|`, `|&`; not
     /// `||`), in one pipeline.
     pub piped: Vec<bool>,
+}
+
+impl ParsedCommand {
+    /// Whether its output is redirected into a file.
+    pub fn writes_via_redirect(&self) -> bool {
+        !self.writes_to.is_empty()
+    }
 }
 
 #[derive(Default)]
@@ -151,7 +159,7 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
     let chars: Vec<char> = command.chars().collect();
     let mut s = Splitter::default();
     let mut quote: Option<char> = None;
-    let mut writes_via_redirect = false;
+    let mut writes_to = Vec::new();
     let mut opaque = false;
     let mut reads_from = Vec::new();
 
@@ -263,7 +271,7 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
                 j += 1;
             }
             if target != "/dev/null" && target.to_lowercase() != "nul" {
-                writes_via_redirect = true;
+                writes_to.push(target.trim_matches(['"', '\'']).to_string());
             }
             i = j;
             continue;
@@ -316,7 +324,7 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
 
     ParsedCommand {
         segments: s.segments,
-        writes_via_redirect,
+        writes_to,
         opaque,
         expands: s.expands,
         reads_from,
@@ -548,7 +556,7 @@ fn programs(segment: &[String]) -> Vec<(String, &[String])> {
 
 /// The commands a segment runs as text of their own: `env -S`'s string,
 /// a shell's `-c` script.
-fn inner_scripts(segment: &[String]) -> Vec<String> {
+pub(super) fn inner_scripts(segment: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for (program, args) in programs(segment) {
         // `env -S 'git push'`: its string is a command of its own.
@@ -953,7 +961,7 @@ pub fn command_modifies_files(command: &str) -> bool {
 }
 
 fn modifies_files_in(parsed: &ParsedCommand) -> bool {
-    parsed.writes_via_redirect
+    parsed.writes_via_redirect()
         || parsed.opaque
         || !parsed.segments.iter().all(|s| segment_is_read_only(s))
 }
@@ -1244,14 +1252,6 @@ static RISKY_COMMANDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
-/// Paths whose contents are secrets: edits to them always go to the user.
-static SECRET_PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(^|[\\/])(\.env(\.[^\\/]*)?|\.npmrc|\.netrc|id_[a-z0-9]+|[^\\/]*\.(pem|key|pfx|p12))$|(^|[\\/])(\.ssh|\.aws|\.gnupg)([\\/]|$)|credentials",
-    )
-    .unwrap()
-});
-
 static HIDDEN_PARTS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$\(|[<>]\(|`|\\\r?\n").unwrap());
 /// cmd.exe's own ways of hiding a program name: `%VAR%` expansion and the `^`
@@ -1318,11 +1318,6 @@ pub fn is_risky_command(command: &str) -> bool {
         .split(command)
         .map(bare_command)
         .any(|part| part.is_none_or(|part| RISKY_COMMANDS.iter().any(|p| p.is_match(&part))))
-}
-
-/// A file whose edits the AI reviewer must never approve on its own.
-pub fn is_secret_path(path: &str) -> bool {
-    SECRET_PATH.is_match(path.trim())
 }
 
 #[cfg(test)]
@@ -1539,7 +1534,7 @@ mod tests {
             }
             if let Some(w) = expect.get("writesViaRedirect") {
                 assert_eq!(
-                    parsed.writes_via_redirect,
+                    parsed.writes_via_redirect(),
                     w.as_bool().unwrap(),
                     "redirect in {command:?}"
                 );
@@ -1608,9 +1603,9 @@ mod tests {
                 words(&["ls"])
             ]
         );
-        assert!(!p.writes_via_redirect && !p.opaque);
-        assert!(parse_command("echo hi > out.txt").writes_via_redirect);
-        assert!(!parse_command("echo hi >&2").writes_via_redirect);
+        assert!(!p.writes_via_redirect() && !p.opaque);
+        assert!(parse_command("echo hi > out.txt").writes_via_redirect());
+        assert!(!parse_command("echo hi >&2").writes_via_redirect());
         assert!(parse_command("echo $(whoami)").opaque);
         assert!(parse_command(r#"echo "$(whoami)""#).opaque);
         assert!(!parse_command("echo '$(whoami)'").opaque);
@@ -1702,7 +1697,7 @@ mod tests {
     }
 
     #[test]
-    fn risky_shapes_and_secret_paths() {
+    fn risky_shapes() {
         assert!(is_risky_command("git push origin main"));
         assert!(is_risky_command("npm test && rm -rf dist"));
         assert!(is_risky_command("cat .env"));
@@ -1729,10 +1724,6 @@ mod tests {
         assert!(is_risky_command("python -c 'print(1)'"));
         assert!(!is_risky_command("npm test"));
         assert!(!is_risky_command("git status"));
-        assert!(is_secret_path(".env.local"));
-        assert!(is_secret_path("config/server.pem"));
-        assert!(is_secret_path("home/.ssh/config"));
-        assert!(!is_secret_path("src/environment.ts"));
     }
 
     #[test]
@@ -1773,10 +1764,10 @@ mod tests {
             vec![words(&["echo", "a;b"])]
         );
         // Redirects: to a file writes, from a file or to a descriptor doesn't.
-        assert!(parse_command("ls >> log.txt").writes_via_redirect);
-        assert!(parse_command("ls &> all.txt").writes_via_redirect);
-        assert!(!parse_command("wc -l < input.txt 2>&1").writes_via_redirect);
-        assert!(!parse_command("ls > NUL").writes_via_redirect);
+        assert!(parse_command("ls >> log.txt").writes_via_redirect());
+        assert!(parse_command("ls &> all.txt").writes_via_redirect());
+        assert!(!parse_command("wc -l < input.txt 2>&1").writes_via_redirect());
+        assert!(!parse_command("ls > NUL").writes_via_redirect());
         // Only harmless assignments: no command. Others are the command.
         assert!(parse_command("LC_ALL=C TZ=UTC").segments.is_empty());
         assert_eq!(
@@ -1919,9 +1910,6 @@ mod tests {
         assert!(CMD_HIDDEN_PARTS.is_match("%COMSPEC% /c x"));
         assert!(CMD_HIDDEN_PARTS.is_match("p^owershell -c x"));
         assert!(!CMD_HIDDEN_PARTS.is_match("cargo test 100%"));
-        assert!(is_secret_path("C:\\Users\\me\\.aws\\config"));
-        assert!(is_secret_path("deploy/KEY.PEM"));
-        assert!(!is_secret_path("src/keyboard.ts"));
     }
 
     /// Round 2 (§4.2): what the shell expands is read from the quoting,
