@@ -379,7 +379,6 @@ fn round_failures(results: &[CheckResult]) -> RoundFailures {
     }
 }
 
-/// What the agent hears when its fix broke something and was rolled back.
 /// What the project changed in `files` (each with its diff, in the chat's
 /// view at `root`) while the chat worked, for the chat's report: not a
 /// restricted file's lines, which the agent may not read.
@@ -402,6 +401,7 @@ fn project_changes(
         .collect()
 }
 
+/// What the agent hears when its fix broke something and was rolled back.
 fn rollback_note(rb: &repair::Rollback) -> String {
     let broke = repair::key_list(&rb.broke, 8);
     let mut note = format!(
