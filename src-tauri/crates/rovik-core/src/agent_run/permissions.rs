@@ -48,6 +48,11 @@ pub struct ParsedCommand {
     pub expands: Vec<bool>,
     /// The files input is redirected from (`< src/lib.rs`), as written.
     pub reads_from: Vec<String>,
+    /// For each of `writes_to`, then of `reads_from`: the segment it's
+    /// part of, its index in `segments` (the length, for one after the
+    /// last command), so it's read from the folder that segment runs in.
+    pub writes_in: Vec<usize>,
+    pub reads_in: Vec<usize>,
     /// For each segment: its output goes into the next one (`|`, `|&`; not
     /// `||`), in one pipeline.
     pub piped: Vec<bool>,
@@ -160,6 +165,8 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
     let mut s = Splitter::default();
     let mut quote: Option<char> = None;
     let mut writes_to = Vec::new();
+    let mut writes_in = Vec::new();
+    let mut reads_in = Vec::new();
     let mut opaque = false;
     let mut reads_from = Vec::new();
 
@@ -250,17 +257,13 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
                 s.end_word();
             }
             let mut j = i + 1;
-            if chars.get(j) == Some(&'>') {
+            // `>>` appends; `>|` writes where noclobber would refuse to.
+            if matches!(chars.get(j), Some('>' | '|')) {
                 j += 1;
             }
-            if chars.get(j) == Some(&'&') {
-                // ">&2" duplicates a descriptor; no file is written.
+            let duplicates = chars.get(j) == Some(&'&');
+            if duplicates {
                 j += 1;
-                while j < chars.len() && (chars[j].is_ascii_digit() || chars[j] == '-') {
-                    j += 1;
-                }
-                i = j;
-                continue;
             }
             while matches!(chars.get(j), Some(' ' | '\t')) {
                 j += 1;
@@ -270,8 +273,14 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
                 target.push(chars[j]);
                 j += 1;
             }
-            if target != "/dev/null" && target.to_lowercase() != "nul" {
+            // ">&2", ">&-" duplicate or close a descriptor; ">&file" (bash)
+            // writes both streams to the file.
+            let descriptor = duplicates
+                && !target.is_empty()
+                && target.chars().all(|d| d.is_ascii_digit() || d == '-');
+            if !descriptor && target != "/dev/null" && target.to_lowercase() != "nul" {
                 writes_to.push(target.trim_matches(['"', '\'']).to_string());
+                writes_in.push(s.segments.len());
             }
             i = j;
             continue;
@@ -296,6 +305,7 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
             }
             if !text && !target.is_empty() {
                 reads_from.push(target.trim_matches(['"', '\'']).to_string());
+                reads_in.push(s.segments.len());
             }
             i = j;
             continue;
@@ -328,6 +338,8 @@ pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
         opaque,
         expands: s.expands,
         reads_from,
+        writes_in,
+        reads_in,
         piped: s.piped,
     }
 }
@@ -1768,6 +1780,20 @@ mod tests {
         assert!(parse_command("ls &> all.txt").writes_via_redirect());
         assert!(!parse_command("wc -l < input.txt 2>&1").writes_via_redirect());
         assert!(!parse_command("ls > NUL").writes_via_redirect());
+        // `>|` writes past noclobber, `>&file` both streams: files, not a
+        // pipe or a descriptor; `>& 2` and `>&-` are descriptors.
+        assert_eq!(parse_command("echo x >| .env").writes_to, [".env"]);
+        assert_eq!(parse_command("echo x >| .env").segments.len(), 1);
+        assert_eq!(parse_command("make >&build.log").writes_to, ["build.log"]);
+        assert_eq!(parse_command("make >& build.log").writes_to, ["build.log"]);
+        assert!(!parse_command("make >& 2").writes_via_redirect());
+        assert!(!parse_command("make 2>&- 1>&2").writes_via_redirect());
+        // Each redirect knows its command, which runs where a `cd` left it.
+        let p = parse_command("cd web && echo x >> .env.local; cat < a.txt; > b.txt");
+        assert_eq!(p.writes_to, [".env.local", "b.txt"]);
+        assert_eq!(p.writes_in, [1, 3]);
+        assert_eq!(p.reads_from, ["a.txt"]);
+        assert_eq!(p.reads_in, [2]);
         // Only harmless assignments: no command. Others are the command.
         assert!(parse_command("LC_ALL=C TZ=UTC").segments.is_empty());
         assert_eq!(

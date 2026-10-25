@@ -15,7 +15,7 @@
 //! project's): what runs at all is the allowed commands' and the
 //! approvals' to decide.
 
-use super::permissions::{self, Shell};
+use super::permissions::{self, ParsedCommand, Shell};
 use super::tools;
 use crate::restricted_files::{
     reason, refusal, skipped_folder, Op, RestrictedFiles, SETTINGS_PAGE,
@@ -227,51 +227,55 @@ impl Check<'_> {
     /// `command`, read as `shell` reads it, run in `cwd`.
     fn command(&self, command: &str, shell: Shell, cwd: &Path, depth: usize) -> Option<String> {
         let parsed = permissions::parse_command_in(command, shell);
-        let mut cwd = cwd.to_path_buf();
-        let refuse = |op: Op, file: String| Some(refused(self.whole, op, &file));
-        if let Some(file) = parsed
-            .reads_from
-            .iter()
-            .find_map(|f| self.blocked(&cwd, f, Op::Read))
-        {
-            return refuse(Op::Read, file);
-        }
-        if let Some(file) = parsed
-            .writes_to
-            .iter()
-            .find_map(|f| self.blocked(&cwd, f, Op::Write))
-        {
-            return refuse(Op::Write, file);
-        }
-        for segment in &parsed.segments {
+        let mut place = Place::new(cwd);
+        for (at, segment) in parsed.segments.iter().enumerate() {
+            if let Some(problem) = self.redirects(&parsed, at, &place.cwd) {
+                return Some(problem);
+            }
+            let words = past_keywords(segment);
             if depth < MAX_DEPTH {
-                let inner = permissions::inner_scripts(segment)
+                let inner = permissions::inner_scripts(words)
                     .iter()
-                    .find_map(|script| self.command(script, Shell::Posix, &cwd, depth + 1));
+                    .chain(&eval_script(words))
+                    .find_map(|script| self.command(script, Shell::Posix, &place.cwd, depth + 1));
                 if inner.is_some() {
                     return inner;
                 }
             }
-            let words = permissions::unwrap_wrappers(segment);
             let Some((first, args)) = words.split_first() else {
                 continue;
             };
             let program = permissions::program_name(first);
             // The parts after it run where it went.
-            if matches!(program.as_str(), "cd" | "pushd" | "chdir") {
-                if let [folder] = args {
-                    cwd = PathBuf::from(resolve(&cwd, &expand_home(folder)));
-                }
+            if place.moves(&program, args) {
                 continue;
             }
-            if let Some(problem) = self.program(&cwd, &program, args) {
+            if let Some(problem) = self.program(&place.cwd, &program, args) {
                 return Some(problem);
             }
         }
+        // A redirect after the last command (`> f` alone).
+        if let Some(problem) = self.redirects(&parsed, parsed.segments.len(), &place.cwd) {
+            return Some(problem);
+        }
         if parsed.opaque {
-            return self.opaque(command, &cwd);
+            return self.opaque(command, &place.cwd);
         }
         None
+    }
+
+    /// Why the redirects of the segment `at` may not happen from `cwd`,
+    /// where it runs: `< f` reads a restricted file, `> f` changes one.
+    fn redirects(&self, parsed: &ParsedCommand, at: usize, cwd: &Path) -> Option<String> {
+        let reads = of_segment(&parsed.reads_from, &parsed.reads_in, at);
+        if let Some(file) = reads.iter().find_map(|f| self.blocked(cwd, f, Op::Read)) {
+            return Some(refused(self.whole, Op::Read, &file));
+        }
+        let writes = of_segment(&parsed.writes_to, &parsed.writes_in, at);
+        let file = writes
+            .iter()
+            .find_map(|f| self.blocked(cwd, f, Op::Write))?;
+        Some(refused(self.whole, Op::Write, &file))
     }
 
     /// One program's reading and writing, run in `cwd`.
@@ -337,15 +341,9 @@ impl Check<'_> {
     }
 
     /// The restricted files `word` names for `op`, as the shell in `cwd`
-    /// reads it (`~`, `$HOME`, wildcards: every file it expands to).
+    /// reads it ([`named_paths`]).
     fn all_blocked(&self, cwd: &Path, word: &str, op: Op) -> Vec<String> {
-        let word = expand_home(word);
-        let files = if has_wildcard(&word) {
-            expand(&word, cwd)
-        } else {
-            vec![resolve(cwd, &word)]
-        };
-        files
+        named_paths(cwd, word)
             .iter()
             .filter_map(|file| self.restricted.blocked(self.root, file, op))
             .collect()
@@ -467,6 +465,17 @@ fn prints_from(file: &Path, regexes: Option<&[Regex]>) -> bool {
     String::from_utf8_lossy(&bytes)
         .lines()
         .any(|line| regexes.iter().any(|r| r.is_match(line)))
+}
+
+/// The redirect files of the segment `at`: those of `files` whose segment
+/// in `segments` it is.
+fn of_segment<'a>(files: &'a [String], segments: &[usize], at: usize) -> Vec<&'a str> {
+    files
+        .iter()
+        .zip(segments)
+        .filter(|(_, &segment)| segment == at)
+        .map(|(file, _)| file.as_str())
+        .collect()
 }
 
 /// The refusal of `command`, which would do `op` with `file`.
@@ -1042,17 +1051,160 @@ fn is_slash_option(word: &str) -> bool {
         && matches!(chars.next(), None | Some(':'))
 }
 
+/// Words that open or go on with a shell's compound commands, before the
+/// command they run: `if`, `then`, `do`, `{`, `!`…
+const KEYWORDS: &[&str] = &[
+    "if", "then", "elif", "else", "do", "while", "until", "!", "{", "}", "fi", "done", "esac",
+];
+
+/// A segment's words past its shell keywords and the wrappers that only
+/// run the rest: `then sudo cat .env` runs `cat .env`.
+fn past_keywords(segment: &[String]) -> &[String] {
+    let mut rest = segment;
+    loop {
+        let before = rest.len();
+        while rest.first().is_some_and(|w| KEYWORDS.contains(&w.as_str())) {
+            rest = &rest[1..];
+        }
+        rest = permissions::unwrap_wrappers(rest);
+        if rest.len() == before {
+            return rest;
+        }
+    }
+}
+
+/// The script `eval` runs: its words, joined as it joins them.
+fn eval_script(words: &[String]) -> Option<String> {
+    let (first, args) = words.split_first()?;
+    (permissions::program_name(first) == "eval" && !args.is_empty()).then(|| args.join(" "))
+}
+
+/// Where a command's parts run: the folder `cd`, `pushd` and `popd` leave
+/// it in.
+struct Place {
+    cwd: PathBuf,
+    /// Where `cd -` goes back to.
+    previous: PathBuf,
+    /// Where each `popd` goes back to.
+    stack: Vec<PathBuf>,
+}
+
+impl Place {
+    fn new(cwd: &Path) -> Place {
+        Place {
+            cwd: cwd.to_path_buf(),
+            previous: cwd.to_path_buf(),
+            stack: Vec::new(),
+        }
+    }
+
+    /// Whether `program` changes the folder the rest runs in (`cd`,
+    /// `pushd`, `popd`), going there.
+    fn moves(&mut self, program: &str, args: &[String]) -> bool {
+        // Its folder: the first word that isn't an option (`cd -P x`,
+        // cmd.exe's `cd /d x`), or `-`.
+        let word = args
+            .iter()
+            .find(|a| a.as_str() == "-" || !(a.starts_with('-') || a.eq_ignore_ascii_case("/d")));
+        let folder = |word: &str| PathBuf::from(resolve(&self.cwd, &expand_home(word)));
+        let to = match program {
+            "cd" | "chdir" => match word.map(String::as_str) {
+                None => home().map(PathBuf::from),
+                Some("-") => Some(self.previous.clone()),
+                Some(word) => Some(folder(word)),
+            },
+            "pushd" => word.map(|word| {
+                let to = folder(word);
+                self.stack.push(self.cwd.clone());
+                to
+            }),
+            "popd" => self.stack.pop(),
+            _ => return false,
+        };
+        if let Some(to) = to {
+            self.previous = std::mem::replace(&mut self.cwd, to);
+        }
+        true
+    }
+}
+
+/// Words one word's braces may make, at most.
+const BRACES_MAX: usize = 256;
+
+/// The words the shell's braces make of `word`: `.env{,.local}` is `.env`
+/// and `.env.local`, `a{b,c{d,e}}` is `ab`, `acd` and `ace`. A range
+/// (`{1..3}`) stays as it's written.
+fn braces(word: &str) -> Vec<String> {
+    let chars: Vec<char> = word.chars().collect();
+    for open in (0..chars.len()).filter(|&i| chars[i] == '{') {
+        // Its closing brace, and the commas between at its own level.
+        let mut depth = 0;
+        let mut bounds = vec![open];
+        let mut close = None;
+        for (i, &c) in chars.iter().enumerate().skip(open) {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                }
+                ',' if depth == 1 => bounds.push(i),
+                _ => {}
+            }
+        }
+        let Some(close) = close.filter(|_| bounds.len() > 1) else {
+            continue;
+        };
+        bounds.push(close);
+        let prefix: String = chars[..open].iter().collect();
+        let suffix: String = chars[close + 1..].iter().collect();
+        let mut words = Vec::new();
+        for pair in bounds.windows(2) {
+            let choice: String = chars[pair[0] + 1..pair[1]].iter().collect();
+            words.extend(braces(&format!("{prefix}{choice}{suffix}")));
+        }
+        words.truncate(BRACES_MAX);
+        return words;
+    }
+    vec![word.to_string()]
+}
+
+/// The files and folders `word` names, absolute, as the shell in `cwd`
+/// expands it: its braces, a leading `~` or `$HOME`, and its wildcards
+/// (every file they match).
+fn named_paths(cwd: &Path, word: &str) -> Vec<String> {
+    braces(word)
+        .iter()
+        .flat_map(|word| {
+            let word = expand_home(word);
+            if has_wildcard(&word) {
+                expand(&word, cwd)
+            } else {
+                vec![resolve(cwd, &word)]
+            }
+        })
+        .collect()
+}
+
+/// The user's home folder, if the environment says.
+fn home() -> Option<String> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|h| !h.is_empty())
+        .map(|h| h.to_string_lossy().into_owned())
+}
+
 /// `word` with the home folder for a leading `~`, `$HOME` or `${HOME}`.
 fn expand_home(word: &str) -> String {
     let rest = ["~", "$HOME", "${HOME}"]
         .iter()
         .find_map(|home| word.strip_prefix(home))
         .filter(|rest| rest.is_empty() || rest.starts_with(['/', '\\']));
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .filter(|h| !h.is_empty());
-    match (rest, home) {
-        (Some(rest), Some(home)) => format!("{}{rest}", home.to_string_lossy()),
+    match (rest, home()) {
+        (Some(rest), Some(home)) => format!("{home}{rest}"),
         _ => word.to_string(),
     }
 }
@@ -1567,6 +1719,96 @@ mod tests {
         assert_eq!(names(&format!("{root}/*/*.key")), ["/config/master.key"]);
         assert!(names("packages/*/missing").is_empty());
         drop(dir);
+    }
+
+    #[test]
+    fn a_redirect_is_judged_from_the_folder_its_command_runs_in() {
+        let (_dir, root) = project(&["apps/web/.env.local", "private/a.txt"]);
+        let listed = RestrictedFiles::from_settings(&json!({ "restrictedFiles": [
+            { "path": "private", "blockRead": true, "blockWrite": true },
+        ]}));
+        for (command, refusal) in [
+            (
+                "cd apps/web && echo X=1 >> .env.local",
+                "would change apps/web/.env.local,",
+            ),
+            (
+                "bash -c 'cd apps/web && echo X=1 >> .env.local'",
+                "would change apps/web/.env.local,",
+            ),
+            (
+                "cd -P apps/web && printf x > .env.local",
+                "would change apps/web/.env.local,",
+            ),
+            (
+                "cd -- apps && cd web; echo x >| .env.local",
+                "would change apps/web/.env.local,",
+            ),
+            (
+                "pushd apps/web && echo x >& .env.local",
+                "would change apps/web/.env.local,",
+            ),
+            ("cd private && cat < a.txt", "would read private/a.txt,"),
+            (
+                "cd private && echo hi > a.txt",
+                "would change private/a.txt,",
+            ),
+        ] {
+            let refused = command_problem(command, &root, &listed)
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains(refusal), "{command}: {refused}");
+        }
+        // Where the folder went back to, a new `.env.local` may be made.
+        for command in [
+            "cd apps/web && echo x > notes.txt",
+            "echo x > .env.local; cd apps/web",
+            "cd apps/web; cd -; echo x >> .env.local",
+            "pushd apps/web && popd && echo x > .env.local",
+            "cd apps && cd web && cat < ../../README.md",
+        ] {
+            assert_eq!(command_problem(command, &root, &listed), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn shell_keywords_and_eval_dont_hide_the_command_they_run() {
+        let (_dir, root) = project(&[]);
+        for command in [
+            "if [ -f .env ]; then cat .env; fi",
+            "if false; then :; elif true; then cat .env; else cat .env; fi",
+            "for f in a; do cat .env; done",
+            "while true; do cat .env; break; done",
+            "until false; do head .env; done",
+            "{ cat .env; }",
+            "! cat .env",
+            "if true; then bash -c 'cat .env'; fi",
+            "eval cat .env",
+            "eval 'head -n 1 .env'",
+            "cat .env{,.local}",
+        ] {
+            let refused = command_problem(command, &root, &none())
+                .unwrap_or_else(|| panic!("{command} should be refused"));
+            assert!(refused.contains("would read .env,"), "{command}: {refused}");
+        }
+        for command in [
+            "if [ -f .env ]; then echo found; fi",
+            "echo then cat .env",
+            "cat src/{app,missing}.ts",
+        ] {
+            assert_eq!(command_problem(command, &root, &none()), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn braces_make_the_words_the_shell_makes() {
+        assert_eq!(braces(".env{,.local}"), [".env", ".env.local"]);
+        assert_eq!(braces("a{b,c{d,e}}f"), ["abf", "acdf", "acef"]);
+        assert_eq!(braces("{a,b}{1,2}"), ["a1", "a2", "b1", "b2"]);
+        assert_eq!(braces("x{1..3}"), ["x{1..3}"]);
+        assert_eq!(braces("{only}"), ["{only}"]);
+        assert_eq!(braces("plain"), ["plain"]);
+        assert_eq!(braces("{a,b").len(), 1);
+        assert!(braces(&"{a,b}".repeat(12)).len() <= BRACES_MAX);
     }
 
     #[test]
