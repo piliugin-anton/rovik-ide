@@ -22,7 +22,7 @@
 //! runs at all is the allowed commands' and the approvals' to decide.
 
 use super::permissions::{self, is_assignment, HereDoc, ParsedCommand, Shell, KEYWORDS};
-use super::tools;
+use super::{paths, repair, tools};
 use crate::restricted_files::{
     looks_secret, reason, refusal, skipped_folder, Op, RestrictedFiles, SETTINGS_PAGE,
 };
@@ -598,7 +598,7 @@ impl Check<'_> {
             }
             // Outside the project, only folders of logins are known: one
             // (`~/.ssh`), or one in it (`~`).
-            if !folder.starts_with(self.root) {
+            if paths::norm_rel(&self.key_of(folder)).is_none() {
                 let logins = |dir: &Path| looks_secret(&dir.join("x").to_string_lossy());
                 let held = std::fs::read_dir(folder)
                     .into_iter()
@@ -647,7 +647,12 @@ impl Check<'_> {
                 let Ok(path) = entry.path() else {
                     continue;
                 };
-                let file = workdir.join(path);
+                // Part by part: git's `/` isn't a separator in Windows'
+                // `\\?\` paths.
+                let file: PathBuf = workdir
+                    .components()
+                    .chain(Path::new(path).components())
+                    .collect();
                 if !real_under.iter().any(|u| file.starts_with(u)) {
                     continue;
                 }
@@ -695,7 +700,8 @@ impl Check<'_> {
                 change.untracked
             }
         };
-        for folder in under.iter().filter(|f| Path::new(f).starts_with(self.root)) {
+        let in_project = |f: &&String| paths::norm_rel(&self.key_of(Path::new(f))).is_some();
+        for folder in under.iter().filter(in_project) {
             match self.walk(Path::new(folder), &picks, Op::Write, &hit) {
                 Walked::Clean => {}
                 Walked::Found(file) => return Some(refused(self.whole, Op::Write, &file)),
@@ -703,6 +709,18 @@ impl Check<'_> {
             }
         }
         None
+    }
+
+    /// `path`'s key: relative to the project, however it spells the
+    /// project's folder (a link to it, `/private/var` for `/var`), or
+    /// absolute outside it.
+    fn key_of(&self, path: &Path) -> String {
+        let path = path.to_string_lossy();
+        let key = repair::rel_key(self.root, &path);
+        if paths::norm_rel(&key).is_some() {
+            return key;
+        }
+        repair::real_key(self.root, &path).unwrap_or(key)
     }
 
     /// The refusal of a command that goes through more files than can be
@@ -724,15 +742,29 @@ impl Check<'_> {
         op: Op,
         hit: &dyn Fn(&str, &Path) -> bool,
     ) -> Walked {
-        let root = Path::new(self.root);
+        // What it comes to is keyed from where it starts, whatever spelling
+        // of the project's folder that has.
+        let base = self.key_of(start);
+        let at = start.to_path_buf();
+        let key_at = move |path: &Path| match path.strip_prefix(&at) {
+            Ok(rest) if !rest.as_os_str().is_empty() => {
+                let rest = rest.to_string_lossy().replace('\\', "/");
+                match base.as_str() {
+                    "" => rest,
+                    base => format!("{base}/{rest}"),
+                }
+            }
+            _ => base.clone(),
+        };
         // A dependency's folder (or build output, for changes) holds none of
         // the user's credentials.
-        if self.restricted.skips(root, start, op) {
+        if self.restricted.skips(&key_at(start), op) {
             return Walked::Clean;
         }
+        let key_at = std::sync::Arc::new(key_at);
         let mut walk = WalkBuilder::new(start);
         let ignores = picks.ignore_files;
-        let (restricted, project) = (self.restricted.clone(), root.to_path_buf());
+        let (restricted, key_of) = (self.restricted.clone(), key_at.clone());
         walk.hidden(!picks.hidden)
             .parents(ignores)
             .ignore(ignores)
@@ -743,7 +775,7 @@ impl Check<'_> {
             .max_depth(picks.depth)
             .filter_entry(move |e| {
                 let dir = e.file_type().is_some_and(|t| t.is_dir());
-                !(dir && restricted.skips(&project, e.path(), op))
+                !(dir && restricted.skips(&key_of(e.path()), op))
             });
         if ignores && picks.rg {
             walk.add_custom_ignore_filename(".rgignore");
@@ -784,10 +816,7 @@ impl Check<'_> {
                 continue;
             }
             let path = entry.path();
-            let key = match path.strip_prefix(root) {
-                Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
-                Err(_) => path.to_string_lossy().into_owned(),
-            };
+            let key = key_at(path);
             if hit(&key, path) {
                 return Walked::Found(key);
             }
@@ -3878,6 +3907,38 @@ mod tests {
             command_problem("git checkout -- src/", &root, &none()),
             None
         );
+    }
+
+    /// macOS's temporary folders are under `/var`, a link to `/private/var`,
+    /// and Claude Code's shell says where it is as the folder a link leads
+    /// to: a project's folder may come by two spellings in one check.
+    #[cfg(unix)]
+    #[test]
+    fn a_project_opened_through_a_link_is_judged_as_the_folder_it_leads_to() {
+        let (dir, real) = project(&["apps/web/.env.local"]);
+        std::fs::write(dir.0.join(".gitignore"), ".env*\n").unwrap();
+        repository(&dir.0, &["src/app.ts", ".gitignore"]);
+        let link = format!("{real}-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        for (root, cwd) in [(&link, &real), (&real, &link)] {
+            let problem = |command: &str| {
+                command_problem_in(command, root, cwd, &none())
+                    .unwrap_or_else(|| panic!("{command} from {cwd} should be refused"))
+            };
+            assert!(problem("cat .env").contains("`cat .env` would read .env, a restricted"));
+            assert!(problem("rm -rf apps").contains("would change apps/web/.env.local,"));
+            assert!(problem("cp -r config /tmp/x").contains("would read config/master.key,"));
+            assert!(problem("grep -r API_KEY .").contains("would search .env,"));
+            assert!(problem("git clean -fdx").contains("would change .env,"));
+        }
+        // The user's entry for a file is its own by any spelling.
+        let open = RestrictedFiles::from_settings(&json!({ "restrictedFiles": [
+            { "path": ".env", "blockRead": false, "blockWrite": false },
+        ]}));
+        assert_eq!(command_problem_in("cat .env", &link, &real, &open), None);
+        let spelled = format!("cat {real}/.env");
+        assert_eq!(command_problem_in(&spelled, &link, &link, &open), None);
+        std::fs::remove_file(&link).unwrap();
     }
 
     #[test]

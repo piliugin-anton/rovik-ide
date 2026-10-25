@@ -407,7 +407,9 @@ impl RestrictedFiles {
     /// The name to refuse `op` on `path` by, when the agent may not: `path`
     /// as a tool call or a command names it (relative to `root`, or
     /// absolute), or where its links lead (a link to `.env` is `.env`).
-    /// Project-relative inside the project. None: the agent may.
+    /// Project-relative inside the project, however `path` spells its
+    /// folder (a link to it, macOS's `/private/var` for `/var`, Windows'
+    /// `\\?\C:\`). None: the agent may.
     pub fn blocked(&self, root: &str, path: &str, op: Op) -> Option<String> {
         let path = path.trim();
         if path.is_empty() {
@@ -415,6 +417,13 @@ impl RestrictedFiles {
         }
         let key = repair::rel_key(root, path);
         let abs = std::path::PathBuf::from(tools::to_absolute_path(path, root));
+        // Outside the project by its text, inside once resolved: the
+        // project's file, by its key there.
+        if paths::norm_rel(&key).is_none() {
+            if let Some(real) = repair::real_key(root, path) {
+                return self.blocks(&real, &abs, op).then_some(real);
+            }
+        }
         if self.blocks(&key, &abs, op) {
             return Some(key);
         }
@@ -588,22 +597,20 @@ pub(crate) fn skipped_folder(name: &str) -> bool {
 }
 
 impl RestrictedFiles {
-    /// Whether a walk for restricted files to `op` leaves out `folder`, of
-    /// the project in `root`: a [`skipped_folder`], or build output for
-    /// changes ([`BUILD_FOLDERS`]); unless the user's list names it or
-    /// something in it.
-    pub(crate) fn skips(&self, root: &Path, folder: &Path, op: Op) -> bool {
-        let name = folder.file_name().map(|n| n.to_string_lossy());
-        let skipped = name.is_some_and(|name| {
-            skipped_folder(&name) || (op == Op::Write && BUILD_FOLDERS.contains(&&*name))
-        });
+    /// Whether a walk for restricted files to `op` leaves out the folder
+    /// `key` (project-relative, or absolute outside the project): a
+    /// [`skipped_folder`], or build output for changes ([`BUILD_FOLDERS`]);
+    /// unless the user's list names it or something in it.
+    pub(crate) fn skips(&self, key: &str, op: Op) -> bool {
+        let name = key.rsplit(['/', '\\']).next().unwrap_or(key);
+        let skipped = skipped_folder(name) || (op == Op::Write && BUILD_FOLDERS.contains(&name));
         if !skipped {
             return false;
         }
-        let Ok(rel) = folder.strip_prefix(root) else {
+        // Outside the project, no entry of the user's is there.
+        let Some(rel) = paths::norm_rel(key) else {
             return true;
         };
-        let rel = rel.to_string_lossy().replace('\\', "/");
         !self.listed.iter().any(|e| paths::under(&rel, &e.path))
     }
 }
