@@ -34,6 +34,49 @@ Each user's daemon keeps its files in `~/.rovik` and works in
 `~/.local/share/rovik`. Both folders are the user's own, with mode 0700,
 and the daemon refuses to start if either is open to anyone else.
 
+## Supported distributions
+
+The server needs:
+
+- **A kernel that lets an ordinary user make user namespaces and mount
+  overlayfs in them**: Linux 5.11 or later. bubblewrap's sandbox, each
+  user's own network and rootless Podman all make user namespaces, and
+  Podman keeps a container's files in overlayfs. Every release below has
+  it, the 5.14 of RHEL 9 included; Landlock, which confines the commands
+  only where bubblewrap can't run, needs 6.2.
+- **The distro's `passt`**, for each user's own network: the installer
+  stops without it.
+- **Podman 4.0 or later** from the distro, for the projects' services
+  ([Project services](#project-services)). Without it the rest of Rovik
+  works, and the agent is told that the server can't start the services.
+
+So the kernel rules no current release out: passt and Podman do. As of
+October 2026:
+
+| Distribution                    | Kernel         | Podman     | Rovik                                         |
+| ------------------------------- | -------------- | ---------- | --------------------------------------------- |
+| Ubuntu 26.04 LTS                | 7.0            | 5.7        | Yes                                           |
+| Ubuntu 24.04 LTS                | 6.8 (HWE 7.0)  | 4.9        | Yes                                           |
+| Debian 13                       | 6.12           | 5.4        | Yes                                           |
+| Debian 12                       | 6.1            | 4.3        | Yes                                           |
+| RHEL, AlmaLinux, Rocky Linux 10 | 6.12           | 5.8        | Yes                                           |
+| RHEL, AlmaLinux, Rocky Linux 9  | 5.14           | 5.8        | Yes                                           |
+| Fedora 43, 44                   | 6.17 and later | 5.8        | Yes                                           |
+| openSUSE Leap 16.0              | 6.12           | 5.4        | Yes                                           |
+| Alpine 3.21 to 3.24             | 6.12, 6.18     | 5.3 to 5.8 | Yes, without systemd (OpenRC): see Installing |
+| Arch Linux                      | 7.2            | 6.1        | Yes                                           |
+| Ubuntu 22.04 LTS                | 5.15 (HWE 6.8) | 3.4        | No: no passt, and Podman before 4.0           |
+| RHEL, AlmaLinux, Rocky Linux 8  | 4.18           | 4.9        | No: no passt                                  |
+| SLES 15                         | 6.4            | 4.9        | No: no passt                                  |
+| openSUSE Leap 15.6              | 6.4            | 4.9        | No: its support ended in April 2026           |
+| Amazon Linux 2023               | 6.1 to 6.18    | none       | No: its repositories have no Podman           |
+
+The projects' services were run end to end on Ubuntu 24.04, and Podman's
+network for them was checked in Ubuntu 22.04, 24.04 and 26.04 containers;
+the other rows come from each release's packages. Podman 6 (Arch, and
+Fedora 45 when it's out) dropped slirp4netns and the iptables backend,
+which Rovik doesn't need with it, but hasn't been run with Rovik yet.
+
 ## Installing
 
 The first person to deploy from the app installs Rovik and becomes its
@@ -60,11 +103,11 @@ starts USER's daemon, installs the browser for the browser tools
 ([The browser](#the-browser)) and the distro's `bubblewrap` package, which
 confines the chats' commands ([What can read what](#what-can-read-what)),
 and the container engine that runs the projects' services
-([Project services](#project-services)). None of these stops the install when it can't be installed, and `--no-browser`
-leaves the browser out, as the app does for a WSL distribution. To see
-what it would do without changing
-anything, add `--root /tmp/somewhere`. It then writes the files under that
-folder and prints each command it would run.
+([Project services](#project-services)). None of these stops the install
+when it can't be installed, and `--no-browser` leaves the browser out, as
+the app does for a WSL distribution. To see what it would do without
+changing anything, add `--root /tmp/somewhere`. It then writes the files
+under that folder and prints each command it would run.
 
 The daemon never runs as root. A deploy over a root login stops and asks
 for a regular account. Root can still install Rovik by naming a regular
