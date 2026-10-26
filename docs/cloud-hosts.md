@@ -720,8 +720,8 @@ sudo /opt/rovik/bin/rovik-agentd admin codex      # install, or update
 ```
 
 The program lands in `/usr/local/bin`, on every user's PATH, and its
-releases in `/opt/codex`, which every user reads, where the installer's
-own defaults would put both in root's home. Run the command again for the
+releases in `/opt/codex`, which every user reads (whatever umask sudo
+keeps), where the installer's own defaults would put both in root's home. Run the command again for the
 newest version; it needs `curl` on the server. A user can also install it
 for themselves alone: **Set up** in Settings → Connectors, with the host
 chosen, runs OpenAI's installer as that user, which puts `codex` in their

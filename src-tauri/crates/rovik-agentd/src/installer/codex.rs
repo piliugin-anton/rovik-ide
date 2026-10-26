@@ -8,7 +8,8 @@
 //! in a folder every user reads, where the installer's own default would
 //! put both in root's home. That folder isn't Rovik's: `admin uninstall`
 //! leaves Codex working, as it leaves Claude Code's package. `admin codex`
-//! again brings the newest version.
+//! again brings the newest version; a user's own update leaves it to the
+//! administrator (the connector says so).
 //!
 //! Each user signs in as their own: the connector's access token or API
 //! key travels with the chat's model (its profile's key, kept by the
@@ -31,7 +32,7 @@ const RELEASES_HOME: &str = "/opt/codex";
 /// `admin codex`: Codex installed with OpenAI's installer when it isn't
 /// here, or brought up to date when it is.
 pub(super) fn ensure(sys: &System) -> Result<(), String> {
-    let script = format!("curl -fsSL {INSTALLER} | sh");
+    let script = for_everyone(&format!("curl -fsSL {INSTALLER} | sh"));
     let env = [
         ("CODEX_INSTALL_DIR", BIN_DIR),
         ("CODEX_HOME", RELEASES_HOME),
@@ -52,6 +53,13 @@ pub(super) fn ensure(sys: &System) -> Result<(), String> {
         }
     );
     Ok(())
+}
+
+/// `command`, run so that what it makes is everyone's to read and run:
+/// sudo keeps the administrator's umask, and under 077 no other user could
+/// run the program.
+fn for_everyone(command: &str) -> String {
+    format!("umask 022 && {command}")
 }
 
 #[cfg(test)]
@@ -80,5 +88,22 @@ mod tests {
             .any(|dir| dir == BIN_DIR));
         assert!(!RELEASES_HOME.starts_with("/opt/rovik/"));
         assert!(RELEASES_HOME.starts_with('/'));
+    }
+
+    /// What the installer makes is everyone's to read and run, whatever
+    /// umask sudo kept from the administrator's shell.
+    #[test]
+    fn what_the_installer_makes_is_everyones_whatever_the_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = rovik_core::testing::temp_dir();
+        let made = dir.0.join("made");
+        let script = for_everyone(&format!("mkdir '{}'", made.display()));
+        let status = std::process::Command::new("sh")
+            .args(["-c", &format!("umask 077 && {script}")])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mode = std::fs::metadata(&made).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
     }
 }
