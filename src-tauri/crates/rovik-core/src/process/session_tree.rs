@@ -290,9 +290,16 @@ mod tests {
     fn what_ignores_the_hangup_is_asked_to_end_before_it_is_killed() {
         let dir = temp_dir();
         let asked = dir.0.join("asked");
+        // The job ends only when it's asked: the request ends its sleep too,
+        // maybe first, and a single `wait` would then return and end the
+        // job before its own request came.
         let script = r#"
             trap '' HUP
-            (trap 'echo asked > "$1"; exit' TERM; sleep 60 & echo $! > "$1.ready"; wait) &
+            (
+                trap 'echo asked > "$1"; exit' TERM
+                sleep 60 & echo $! > "$1.ready"
+                while :; do wait; sleep 0.05; done
+            ) &
             wait
         "#;
         let (mut leader, tree) = leader(script, &asked);
