@@ -10,6 +10,8 @@
 // the command with everything it started.
 
 use crate::overlay::chats::ChatOverlay;
+#[cfg(windows)]
+use crate::process::JobObject;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -308,7 +310,7 @@ fn drain<R: Read + Send + 'static>(
 /// tree it is.
 pub struct ProcessTree {
     #[cfg(windows)]
-    job: Option<job_object::JobObject>,
+    job: Option<JobObject>,
 }
 
 impl ProcessTree {
@@ -316,9 +318,12 @@ impl ProcessTree {
     /// had the time to start anything outside it.
     #[cfg_attr(not(windows), allow(unused_variables))]
     pub fn of(child: &std::process::Child) -> ProcessTree {
+        #[cfg(windows)]
+        use std::os::windows::io::AsRawHandle;
         ProcessTree {
+            // The child's handle is open while `child` is.
             #[cfg(windows)]
-            job: job_object::JobObject::of(child),
+            job: JobObject::of(windows::Win32::Foundation::HANDLE(child.as_raw_handle())),
         }
     }
 
@@ -327,7 +332,7 @@ impl ProcessTree {
         #[cfg(unix)]
         kill_group(child);
         #[cfg(windows)]
-        if !self.job.as_ref().is_some_and(job_object::JobObject::kill) {
+        if !self.job.as_ref().is_some_and(JobObject::kill) {
             let _ = crate::process::no_window(&mut Command::new("taskkill"))
                 .args(["/T", "/F", "/PID", &child.id().to_string()])
                 .stdin(Stdio::null())
@@ -359,55 +364,6 @@ impl ProcessTree {
 fn kill_group(child: &std::process::Child) {
     if let Ok(pid) = libc::pid_t::try_from(child.id()) {
         unsafe { libc::kill(-pid, libc::SIGKILL) };
-    }
-}
-
-/// A job object holding a started process, and so all it starts.
-#[cfg(windows)]
-mod job_object {
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
-    };
-
-    pub struct JobObject(HANDLE);
-
-    // A job's handle may be used, and closed, from any thread.
-    unsafe impl Send for JobObject {}
-    unsafe impl Sync for JobObject {}
-
-    impl JobObject {
-        /// A new job holding `child`; None where it can't be made or
-        /// `child` can't go in it (before Windows 8, with the app in a job
-        /// of its own already).
-        pub fn of(child: &std::process::Child) -> Option<JobObject> {
-            use std::os::windows::io::AsRawHandle;
-            // SAFETY: a new unnamed job, whose handle Drop closes once;
-            // the child's handle is open while `child` is.
-            unsafe {
-                let job = JobObject(CreateJobObjectW(None, PCWSTR::null()).ok()?);
-                AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())).ok()?;
-                Some(job)
-            }
-        }
-
-        /// Ends every process in the job: whether it could.
-        pub fn kill(&self) -> bool {
-            // SAFETY: the handle is open until Drop.
-            unsafe { TerminateJobObject(self.0, 1).is_ok() }
-        }
-    }
-
-    impl Drop for JobObject {
-        fn drop(&mut self) {
-            // Closing it ends nothing: what was left in it ended with the
-            // shell (`ProcessTree::end_leftovers`).
-            // SAFETY: opened in `of`, closed only here.
-            unsafe {
-                let _ = CloseHandle(self.0);
-            }
-        }
     }
 }
 

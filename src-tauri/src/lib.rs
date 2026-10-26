@@ -469,17 +469,27 @@ pub fn run() {
         });
 }
 
-/// What the app does as it ends: the core done with the project's chats,
-/// then the project let go of, for another window or the next start. Also
-/// before an update's installer ends the process at once (Windows), on a
-/// thread off the runtime's.
+/// What the app does as it ends: its terminals closed, the core done with
+/// the project's chats, then the project let go of, for another window or
+/// the next start, and what the terminals left running ended. Also before
+/// an update's installer ends the process at once (Windows), on a thread
+/// off the runtime's.
 fn before_exit(app: &tauri::AppHandle) {
+    // First, so that what they left running is ended while the core shuts
+    // down (terminal.rs).
+    let terminals = app.try_state::<terminal::TerminalState>();
+    if let Some(terminals) = &terminals {
+        terminals.end_all();
+    }
     if let Some(core) = app.try_state::<Core>() {
         rt::block_on(core.shutdown());
     }
     // Only once the core is done with the project's chats.
     if let Some(instances) = app.try_state::<Instances>() {
         instances.release();
+    }
+    if let Some(terminals) = terminals {
+        terminals.wait_ended();
     }
 }
 

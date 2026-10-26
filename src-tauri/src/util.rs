@@ -88,6 +88,11 @@ impl<T> Registry<T> {
     pub fn remove(&self, id: &str) -> Option<Arc<T>> {
         self.items().remove(id)
     }
+
+    /// Every item, taken out: the registry is left empty.
+    pub fn take_all(&self) -> Vec<Arc<T>> {
+        self.items().drain().map(|(_, item)| item).collect()
+    }
 }
 
 /// `path` as Windows programs show it: `canonicalize` there gives the
@@ -136,6 +141,18 @@ mod tests {
         assert_eq!(*terminals.remove("t1").unwrap(), 7);
         assert!(terminals.remove("t1").is_none());
         assert!(terminals.get("t1").is_err());
+    }
+
+    #[test]
+    fn taking_all_from_a_registry_leaves_it_empty() {
+        let terminals: Registry<u32> = Registry::new("terminal");
+        terminals.insert("t1".into(), 1);
+        terminals.insert("t2".into(), 2);
+        let mut taken: Vec<u32> = terminals.take_all().iter().map(|t| **t).collect();
+        taken.sort();
+        assert_eq!(taken, [1, 2]);
+        assert!(terminals.get("t1").is_err() && terminals.get("t2").is_err());
+        assert!(terminals.take_all().is_empty());
     }
 
     #[test]

@@ -29,16 +29,25 @@
 // its reads are async, so a task pumps its output, and no thread waits.
 // Through Rovik's SSH and in WSL, a bash 4.4 to 5.4 starts as it does here,
 // with the file of ours it reads in place of a login shell's (`bash`).
+//
+// Closing a terminal, or quitting the app, hangs up on its program, as any
+// terminal does, and then ends what the program left running: whatever is
+// still in its session (its job on Windows) once the hangup has had its
+// time, a job run with `nohup` or `disown`ed included
+// (rovik_core::process::SessionTree). A shell that exits on its own, its
+// tab closing with it, leaves its jobs running, as in other terminals.
 
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::util::{blocking, ErrText, Registry};
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use rovik_client::hosts_page::{HostsPage, ShellAccess};
 use rovik_client::ssh::{Shell, ShellEvent, Ssh};
+use rovik_core::process::SessionTree;
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
@@ -56,6 +65,9 @@ pub(crate) struct PtyInstance {
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    /// What the program starts, ended with the terminal
+    /// (`TerminalState::end`); None when its id couldn't be read.
+    tree: Option<Arc<SessionTree>>,
 }
 
 /// One terminal: a program on a pseudo-terminal here (the user's shell, or
@@ -95,25 +107,106 @@ impl Session {
         }
     }
 
-    /// Ends it: the program here is killed, the shell on a host hung up on.
-    fn kill(&self) {
+    /// Hangs up on it: the program here gets SIGHUP (on Windows it's
+    /// ended), the shell on a host is hung up on. Returns what the program
+    /// started, to end once the hangup has had its time.
+    fn hang_up(&self) -> Option<Arc<SessionTree>> {
         match self {
             Session::Pty(pty) => {
                 if let Ok(mut killer) = pty.killer.lock() {
                     let _ = killer.kill();
                 }
+                pty.tree.clone()
             }
-            Session::Ssh(shell) => shell.close(),
+            Session::Ssh(shell) => {
+                shell.close();
+                None
+            }
         }
     }
 }
 
-/// Live terminals by id.
-pub(crate) type TerminalState = Registry<Session>;
+/// The app's terminals: the live ones by id, and the ends under way of
+/// those closed.
+pub(crate) struct TerminalState {
+    sessions: Registry<Session>,
+    /// The threads ending what closed terminals left running: the app's
+    /// exit waits for them (`wait_ended`).
+    ending: Mutex<Vec<JoinHandle<()>>>,
+}
 
 /// The app's terminals, none yet.
 pub fn terminals() -> TerminalState {
-    Registry::new("terminal")
+    TerminalState {
+        sessions: Registry::new("terminal"),
+        ending: Mutex::new(Vec::new()),
+    }
+}
+
+impl TerminalState {
+    /// Closes terminal `id` if it's open (`end_session`).
+    fn end(&self, id: &str) {
+        if let Some(session) = self.sessions.remove(id) {
+            self.end_session(session);
+        }
+    }
+
+    /// Closes every open terminal, as the app exits: what they leave
+    /// running is ended by the time `wait_ended` returns.
+    pub fn end_all(&self) {
+        for session in self.sessions.take_all() {
+            self.end_session(session);
+        }
+    }
+
+    /// Waits until what the closed terminals left running is ended: up to
+    /// the two seconds and a half `SessionTree::end` takes.
+    pub fn wait_ended(&self) {
+        // Again while there are more: one that began meanwhile (a view gone
+        // as the app closed it) is waited for too.
+        loop {
+            let ending = std::mem::take(&mut *self.ending());
+            if ending.is_empty() {
+                return;
+            }
+            for thread in ending {
+                if thread.join().is_err() {
+                    log::warn!(
+                        "terminal: ending what one left running failed (its thread panicked)"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Hangs up on `session`, and on a thread of its own ends what its
+    /// program leaves running: nothing here waits out the hangup's time.
+    fn end_session(&self, session: Arc<Session>) {
+        if let Some(tree) = session.hang_up() {
+            let ended = std::thread::Builder::new()
+                .name("terminal-end".into())
+                .spawn(move || tree.end());
+            match ended {
+                Ok(thread) => {
+                    let mut ending = self.ending();
+                    // Those done need no waiting for.
+                    ending.retain(|t| !t.is_finished());
+                    ending.push(thread);
+                }
+                Err(e) => log::warn!(
+                    "terminal: hung up on, but what it left running runs on: no thread to end it on ({e})"
+                ),
+            }
+        }
+        // Its pseudo-terminal closes now, unless a write still holds it: on
+        // Windows that closes its console, which ends the console programs
+        // still in it.
+        drop(session);
+    }
+
+    fn ending(&self) -> MutexGuard<'_, Vec<JoinHandle<()>>> {
+        self.ending.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 /// Streamed to the frontend over the terminal's channel.
@@ -332,7 +425,7 @@ pub async fn spawn_remote_terminal(
     };
     let (shell, mut output) = opened.err_text()?;
     let id = Uuid::new_v4().to_string();
-    state.insert(id.clone(), Session::Ssh(shell));
+    state.sessions.insert(id.clone(), Session::Ssh(shell));
     let exit_id = id.clone();
     rovik_core::rt::spawn(async move {
         let mut text = Utf8Stream::default();
@@ -344,15 +437,13 @@ pub async fn spawn_remote_terminal(
                     };
                     if on_event.send(TerminalEvent::Output { data }).is_err() {
                         // The view is gone, and nothing else could end it.
-                        if let Some(session) = app.state::<TerminalState>().remove(&exit_id) {
-                            session.kill();
-                        }
+                        app.state::<TerminalState>().end(&exit_id);
                         return;
                     }
                 }
                 ShellEvent::Exit(code) => {
                     // Hangs up, if the host hasn't.
-                    app.state::<TerminalState>().remove(&exit_id);
+                    app.state::<TerminalState>().sessions.remove(&exit_id);
                     if let Some(data) = text.finish() {
                         let _ = on_event.send(TerminalEvent::Output { data });
                     }
@@ -378,8 +469,6 @@ fn spawn_pty(
     on_event: Channel<TerminalEvent>,
     counted: bool,
 ) -> Result<String, String> {
-    let pair = native_pty_system().openpty(size).err_text()?;
-
     // The user's environment, run from an AppImage, not the AppImage's: a
     // login shell's profile runs flatpak, python…
     for (key, value) in rovik_core::process::child_env() {
@@ -393,24 +482,9 @@ fn spawn_pty(
     cmd.env("TERM", TERM);
     cmd.env("COLORTERM", "truecolor");
 
-    let mut child = pair.slave.spawn_command(cmd).err_text()?;
-    // Drop our copy of the slave end now that the child owns it, or the
-    // master's reader never sees EOF when the child exits.
-    drop(pair.slave);
-
-    let mut reader = pair.master.try_clone_reader().err_text()?;
-    let writer = pair.master.take_writer().err_text()?;
-    let killer = child.clone_killer();
-
+    let (pty, mut reader, mut child) = open_pty(cmd, size)?;
     let id = Uuid::new_v4().to_string();
-    state.insert(
-        id.clone(),
-        Session::Pty(PtyInstance {
-            writer: Mutex::new(writer),
-            master: Mutex::new(pair.master),
-            killer: Mutex::new(killer),
-        }),
-    );
+    state.sessions.insert(id.clone(), Session::Pty(pty));
 
     let (drained_tx, drained_rx) = mpsc::channel::<()>();
 
@@ -433,11 +507,7 @@ fn spawn_pty(
                             // The view is gone: so is its shell, as when
                             // the terminal is closed, rather than run on
                             // unseen with nothing reading its output.
-                            if let Some(session) =
-                                reader_app.state::<TerminalState>().remove(&reader_id)
-                            {
-                                session.kill();
-                            }
+                            reader_app.state::<TerminalState>().end(&reader_id);
                             break;
                         }
                     }
@@ -472,7 +542,7 @@ fn spawn_pty(
             drop(job);
             // Drops writer and master. On Windows that closes the
             // pseudoconsole, which is what ends the reader's blocking read.
-            app.state::<TerminalState>().remove(&exit_id);
+            app.state::<TerminalState>().sessions.remove(&exit_id);
             // Let the last output arrive first. Bounded: a background job
             // that inherited the pty can keep the reader open indefinitely.
             let _ = drained_rx.recv_timeout(Duration::from_millis(500));
@@ -483,6 +553,34 @@ fn spawn_pty(
     Ok(id)
 }
 
+/// A program started on a pseudo-terminal (`open_pty`): the terminal, what
+/// reads its output, and the program.
+type Opened = (
+    PtyInstance,
+    Box<dyn Read + Send>,
+    Box<dyn Child + Send + Sync>,
+);
+
+/// `cmd` started on a new pseudo-terminal of `size`.
+fn open_pty(cmd: CommandBuilder, size: PtySize) -> Result<Opened, String> {
+    let pair = native_pty_system().openpty(size).err_text()?;
+    let child = pair.slave.spawn_command(cmd).err_text()?;
+    // Drop our copy of the slave end now that the child owns it, or the
+    // master's reader never sees EOF when the child exits.
+    drop(pair.slave);
+    let reader = pair.master.try_clone_reader().err_text()?;
+    let writer = pair.master.take_writer().err_text()?;
+    let pty = PtyInstance {
+        writer: Mutex::new(writer),
+        master: Mutex::new(pair.master),
+        killer: Mutex::new(child.clone_killer()),
+        // At once: on Windows the program goes into its job now, before it
+        // has started anything.
+        tree: child.process_id().map(|pid| Arc::new(SessionTree::of(pid))),
+    };
+    Ok((pty, reader, child))
+}
+
 /// Off the async threads: a write to a full pty buffer (a big paste into a
 /// program that isn't reading) blocks until the program reads.
 #[tauri::command]
@@ -491,7 +589,7 @@ pub async fn write_to_terminal(
     id: String,
     data: String,
 ) -> Result<(), String> {
-    let session = state.get(&id)?;
+    let session = state.sessions.get(&id)?;
     blocking(move || session.write(data.as_bytes())).await
 }
 
@@ -502,17 +600,16 @@ pub fn resize_terminal(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    state.get(&id)?.resize(cols, rows)
+    state.sessions.get(&id)?.resize(cols, rows)
 }
 
-/// Kills the shell, or hangs up on the one on a host. Its waiter thread, or
-/// its output's task, then cleans up; closing a terminal that already
-/// exited is a no-op.
+/// Closes the terminal: hangs up on its shell, or on the one on a host,
+/// and ends what the shell left running (`TerminalState::end`). Its waiter
+/// thread, or its output's task, then cleans up; closing a terminal that
+/// already exited is a no-op.
 #[tauri::command]
 pub fn close_terminal(state: State<'_, TerminalState>, id: String) -> Result<(), String> {
-    if let Some(session) = state.remove(&id) {
-        session.kill();
-    }
+    state.end(&id);
     Ok(())
 }
 
@@ -540,5 +637,77 @@ mod tests {
         assert_eq!((asked.cols, asked.rows), (132, 43));
         let unsaid = size(None, Some(0));
         assert_eq!((unsaid.cols, unsaid.rows), (80, 1));
+    }
+
+    /// A shell whose job ignores both the hangup and the request to end
+    /// (SIGTERM), so that only a kill ends it: it writes "up" to `$1` once
+    /// the job runs.
+    #[cfg(unix)]
+    const LEFT_RUNNING: &str = r#"trap '' HUP TERM; sleep 60 & echo up > "$1"; wait"#;
+
+    /// A terminal running `script` (sh, with `arg` its `$1`), open in
+    /// `state` as `spawn_pty` opens one: its output read, its program
+    /// reaped. Its id and tree, once the script has written to `arg`.
+    #[cfg(unix)]
+    fn open_in(state: &TerminalState, script: &str, arg: &Path) -> (String, Arc<SessionTree>) {
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.args(["-c", script, "sh"]);
+        cmd.arg(arg);
+        let (pty, mut reader, mut child) = open_pty(cmd, size(None, None)).unwrap();
+        let tree = pty.tree.clone().expect("its tree");
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while matches!(reader.read(&mut buf), Ok(n) if n > 0) {}
+        });
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        let id = Uuid::new_v4().to_string();
+        state.sessions.insert(id.clone(), Session::Pty(pty));
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while std::fs::read_to_string(arg).unwrap_or_default().trim() != "up" {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the script didn't start"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        (id, tree)
+    }
+
+    /// Closing a terminal ends what its shell left running, what ignores
+    /// the hangup and the request to end included.
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_terminal_ends_what_its_shell_left_running() {
+        let state = terminals();
+        let dir = rovik_core::testing::temp_dir();
+        let (id, tree) = open_in(&state, LEFT_RUNNING, &dir.0.join("up"));
+        assert!(!tree.is_empty());
+
+        state.end(&id);
+        assert!(state.sessions.get(&id).is_err(), "closed at once");
+        state.wait_ended();
+        assert!(tree.is_empty(), "nothing it ran is left");
+    }
+
+    /// Quitting closes every terminal and waits until what they left
+    /// running is ended, that of one closed just before included.
+    #[cfg(unix)]
+    #[test]
+    fn quitting_ends_what_every_terminal_left_running() {
+        let state = terminals();
+        let dir = rovik_core::testing::temp_dir();
+        let (closed, closed_tree) = open_in(&state, LEFT_RUNNING, &dir.0.join("closed"));
+        let (_, open_tree) = open_in(&state, LEFT_RUNNING, &dir.0.join("open"));
+
+        state.end(&closed);
+        state.end_all();
+        assert!(state.sessions.take_all().is_empty(), "every one closed");
+        state.wait_ended();
+        assert!(closed_tree.is_empty() && open_tree.is_empty());
+        // Closing them again, as a second exit would, finds nothing to do.
+        state.end_all();
+        state.wait_ended();
     }
 }
