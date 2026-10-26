@@ -29,6 +29,7 @@ import {
 } from '../types';
 import { confirmDialog } from './ConfirmDialog';
 import { SKIP_HINTS, skippableHook } from '../lib/gitHooks';
+import { branchNameProblem } from '../lib/branchNames';
 import { ConflictResolver } from './ConflictResolver';
 import { GitHooksView } from './GitHooksView';
 import { PullStrategyDialog, type PullStrategyPick } from './PullStrategyDialog';
@@ -1393,29 +1394,6 @@ export function GitPanel(props: GitPanelProps) {
   onCleanup(() => {
     if (historyDebounce) clearTimeout(historyDebounce);
   });
-
-  /** The obvious mistakes, caught inline; the backend re-checks for real. */
-  const branchNameProblem = (name: string): string | null => {
-    const n = name.trim();
-    if (!n) return null;
-    if (
-      n === 'HEAD' ||
-      n === '@' ||
-      n.startsWith('-') ||
-      n.startsWith('/') ||
-      n.endsWith('/') ||
-      n.endsWith('.') ||
-      n.includes('..') ||
-      n.includes('//') ||
-      n.includes('@{') ||
-      // No path component may start with "." or end with ".lock".
-      n.split('/').some((part) => part.startsWith('.') || part.endsWith('.lock')) ||
-      /[\s~^:?*\[\\\x00-\x1f\x7f]/.test(n)
-    ) {
-      return `'${n}' isn't a valid branch name.`;
-    }
-    return null;
-  };
 
   const createBranch = (checkout: boolean) =>
     withBusy(async () => {

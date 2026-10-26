@@ -7,10 +7,11 @@
 //
 // What the panel does with a repository is a module each: the status is
 // here, with what the others share; `remote` fetches and pushes, `branches`
-// lists, switches, creates and deletes branches, `changes` commits, reverts
-// and discards, `stash` shelves and shows, and `history` is the log and its
-// search. Every command runs its work on a worker thread (util::blocking).
-// libgit2 runs no git hooks: `hooks` runs the repository's, where git would.
+// lists branches, says where HEAD is, switches, creates and deletes them,
+// `changes` commits, reverts and discards, `stash` shelves and shows, and
+// `history` is the log and its search. Every command runs its work on a
+// worker thread (util::blocking). libgit2 runs no git hooks: `hooks` runs
+// the repository's, where git would.
 
 mod branches;
 mod changes;

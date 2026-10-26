@@ -10,7 +10,8 @@
 //   }
 //
 // Mount <ConfirmDialogHost /> once near the root of the app.
-// <ConfirmDialog> can also be used directly when you need it controlled.
+// <ConfirmDialog> can also be used directly when you need it controlled,
+// with fields under its message (children) that its answer takes.
 import { createSignal, onCleanup, onMount, Show, type JSX } from 'solid-js';
 import { Portal } from 'solid-js/web';
 
@@ -30,6 +31,10 @@ export interface ConfirmDialogProps extends ConfirmOptions {
   onConfirm: () => void;
   onCancel: () => void;
   onAlternate?: () => void;
+  /** Fields under the message that the answer takes (NewBranchDialog's name). */
+  children?: JSX.Element;
+  /** The confirm button can't be pressed yet (a field isn't filled in right). */
+  confirmDisabled?: boolean;
 }
 
 /** What chooseDialog() resolves to. */
@@ -64,9 +69,13 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
       return;
     }
 
-    // Keep Tab inside the dialog.
+    // Keep Tab inside the dialog, its fields' included.
     if (e.key === 'Tab' && dialogRef) {
-      const focusable = [...dialogRef.querySelectorAll<HTMLElement>('button:not(:disabled)')];
+      const focusable = [
+        ...dialogRef.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)'
+        ),
+      ];
       if (focusable.length === 0) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
@@ -108,6 +117,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                 {props.message}
               </div>
             </Show>
+            {props.children}
           </div>
 
           <div class="confirm-dialog-actions">
@@ -127,6 +137,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
               ref={confirmRef}
               type="button"
               class={props.danger ? 'danger-filled' : 'primary'}
+              disabled={props.confirmDisabled}
               onClick={() => props.onConfirm()}
             >
               {props.confirmLabel ?? 'OK'}

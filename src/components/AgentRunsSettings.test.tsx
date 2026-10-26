@@ -1,6 +1,6 @@
-// Component tests: Settings → Agent runs: what happens while the agent
-// works and when it finishes, and what each setting says about whether it
-// has an effect now. Run with: npm test
+// Component tests: Settings → Agent runs: what happens as a chat starts,
+// while the agent works and when it finishes, and what each setting says
+// about whether it has an effect now. Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,6 +9,7 @@ import { createSignal } from 'solid-js';
 import AgentRunsSettings from './AgentRunsSettings';
 import { DEFAULT_PERMISSIONS, type AgentPermissions } from '../lib/permissions';
 import { editorSettings, updateEditorSettings } from '../lib/editorSettings';
+import { offersChatBranch, setOffersChatBranch } from '../lib/chatBranch';
 import type { SettingsPage } from '../lib/appSettings';
 
 /** The backend's answers in the test running now. */
@@ -88,6 +89,7 @@ test('agent runs: the sections, and each setting’s meaning as it is set', asyn
   const { root, permissions } = await page();
   const titles = [...root.querySelectorAll('.settings-section-title')].map((t) => t.textContent);
   assert.deepEqual(titles, [
+    'When a chat starts',
     'While it works',
     'When it finishes',
     'Isolated chats',
@@ -181,6 +183,25 @@ test('agent runs: the conflicts rule has no effect without virtual files, and sa
     statuses(unknown.root).find((s) => s.text.startsWith('No effect now')),
     undefined
   );
+});
+
+test('agent runs: the box offering a new chat a branch turns the offer on and off', async () => {
+  backend = { vfs_status: () => ({ mountpoint: '/mnt/vfs' }), ...project(1) };
+  setOffersChatBranch(true);
+  const { root } = await page();
+  const offer = [...root.querySelectorAll('label.setting-checkbox')]
+    .find((l) => l.textContent?.includes('Offer a new chat a branch of its own'))!
+    .querySelector('input') as HTMLInputElement;
+  assert.equal(offer.checked, true, 'on until turned off');
+  offer.click();
+  assert.equal(offersChatBranch(), false);
+  // “Don’t ask again” in the dialog: the box follows.
+  setOffersChatBranch(true);
+  assert.equal(offer.checked, true);
+  setOffersChatBranch(false);
+  assert.equal(offer.checked, false);
+  offer.click();
+  assert.equal(offersChatBranch(), true);
 });
 
 test('agent runs: opening the files the agent edits is the editor’s setting', async () => {

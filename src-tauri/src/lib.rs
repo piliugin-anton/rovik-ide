@@ -336,6 +336,7 @@ pub fn run() {
             git::git_push,
             git::git_checkout,
             git::git_branches,
+            git::git_head,
             git::git_status,
             git::git_base_content,
             git::git_revert_file,

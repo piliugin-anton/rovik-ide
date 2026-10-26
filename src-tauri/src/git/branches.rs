@@ -1,4 +1,5 @@
-//! Branches: the list, switching to one, and creating and deleting them.
+//! Branches: the list, where HEAD is, switching to one, and creating and
+//! deleting them.
 
 use super::hooks::Hooks;
 use super::{head_commit, open_repo, ErrText};
@@ -40,6 +41,69 @@ pub fn git_branches_blocking(path: String) -> Result<Vec<GitBranch>, String> {
         all.extend(names.into_iter().map(|name| GitBranch { name, is_remote }));
     }
     Ok(all)
+}
+
+/// Where HEAD is: what the chat panel looks at before a new chat's first
+/// run, to offer the chat a branch of its own when the project is on its
+/// main branch (src/lib/chatBranch.ts).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct GitHead {
+    /// The branch HEAD is on; None when it's detached (a rebase detaches
+    /// it), or the repository has no commit yet.
+    pub branch: Option<String>,
+    /// The repository's main branch: the one `origin/HEAD` names, else the
+    /// first of `init.defaultBranch`, `main` and `master` that's a local
+    /// branch; None without any of them.
+    pub main_branch: Option<String>,
+}
+
+/// Where HEAD is in the repository the project at `path` is in.
+#[tauri::command]
+pub async fn git_head(path: String) -> Result<GitHead, String> {
+    blocking(move || git_head_blocking(path)).await
+}
+
+/// [`git_head`]'s work, on the calling thread. Outside a repository, an
+/// error that starts with "Not a git repository".
+pub fn git_head_blocking(path: String) -> Result<GitHead, String> {
+    let repo = open_repo(&path)?;
+    let branch = repo
+        .head()
+        .ok()
+        .filter(|head| head.is_branch())
+        .and_then(|head| head.shorthand().ok().map(str::to_string));
+    Ok(GitHead {
+        branch,
+        main_branch: main_branch(&repo),
+    })
+}
+
+/// The repository's main branch: the one `origin`'s HEAD names (its
+/// default branch, which a clone records as `origin/HEAD`), else the first
+/// of the branch `git init` starts on (`init.defaultBranch`), `main` and
+/// `master` that's a local branch. None when there's none of them.
+fn main_branch(repo: &Repository) -> Option<String> {
+    let remote_default = repo
+        .find_reference("refs/remotes/origin/HEAD")
+        .ok()
+        .and_then(|head| {
+            head.symbolic_target()
+                .ok()
+                .flatten()
+                .and_then(|target| target.strip_prefix("refs/remotes/origin/"))
+                .map(str::to_string)
+        });
+    if remote_default.is_some() {
+        return remote_default;
+    }
+    let configured = repo
+        .config()
+        .ok()
+        .and_then(|config| config.get_string("init.defaultBranch").ok());
+    configured
+        .into_iter()
+        .chain(["main".to_string(), "master".to_string()])
+        .find(|name| repo.find_branch(name, BranchType::Local).is_ok())
 }
 
 #[tauri::command]

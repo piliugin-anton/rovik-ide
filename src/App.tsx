@@ -60,6 +60,7 @@ import {
   ConfirmDialogHost,
   type ConfirmOptions,
 } from './components/ConfirmDialog';
+import { NewBranchDialogHost } from './components/NewBranchDialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   rememberProjectSession,
@@ -2366,6 +2367,7 @@ export default function App() {
         />
       </Show>
       <ConfirmDialogHost />
+      <NewBranchDialogHost />
       <Show when={newProjectOpen()}>
         <NewProjectDialog
           currentPath={rootPath()}
