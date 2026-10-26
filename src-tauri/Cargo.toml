@@ -19,7 +19,7 @@ exclude = ["crates/russh"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.56"
+version = "0.1.57"
 edition = "2021"
 
 # Dependencies the app and the core both use, at one version.
