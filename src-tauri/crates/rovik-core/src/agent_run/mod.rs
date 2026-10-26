@@ -1418,25 +1418,13 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
 /// Why a message's mode can't run on its model, if it can't; refused before
 /// anything is stored. Autopilot's stages work with Rovik's tools (its plan
 /// goes in with `submit_plan`, its subagents run through `task`), which a
-/// model marked "no tools" or a connector running its own doesn't use. Plan
-/// mode changes nothing, which a connector running its own tools promises
-/// only with a plan mode of its own (`Connector::plan_mode`).
+/// model marked "no tools" doesn't use. A connector's harness does: in
+/// Autopilot, as in Plan mode, it runs as Rovik's agent (`run::lead_profile`).
 fn mode_refusal(request: &StartRequest) -> Option<String> {
-    mode_refusal_with(request, |kind| {
-        crate::connectors::connector(kind).plan_mode()
-    })
-}
-
-/// `mode_refusal`, with whether a kind of connector has a plan mode of its
-/// own given (tests: a kind without one).
-fn mode_refusal_with(
-    request: &StartRequest,
-    plan_mode: impl Fn(crate::connectors::ConnectorKind) -> bool,
-) -> Option<String> {
     let StartKind::Send { message } = &request.start else {
         return None;
     };
-    if !request.profile.no_tools {
+    if !request.profile.no_tools || crate::connectors::is_connector(&request.profile.base_url) {
         return None;
     }
     let mode = message
@@ -1445,22 +1433,10 @@ fn mode_refusal_with(
         .and_then(|m| m.get("mode"))
         .and_then(|m| m.as_str())
         .or(request.mode.as_deref());
-    let kind = crate::connectors::kind_of(&request.profile.base_url);
-    match mode {
-        Some(autopilot::MODE) => Some(
-            "Autopilot works with Rovik's tools, which this model doesn't use: pick one that does, or a connector set to use Rovik's tools (Settings → Connectors)."
-                .into(),
-        ),
-        Some("plan") => kind
-            .filter(|k| !plan_mode(*k))
-            .map(|k| {
-                format!(
-                    "{} has no plan mode of its own, and its tools would change the project: use Agent mode, or set it to use Rovik's tools (Settings → Connectors).",
-                    k.title()
-                )
-            }),
-        _ => None,
-    }
+    (mode == Some(autopilot::MODE)).then(|| {
+        "Autopilot works with Rovik's tools, which this model doesn't use: pick one that does."
+            .into()
+    })
 }
 
 /// A start of a run, boxed (`start_run_boxed`).

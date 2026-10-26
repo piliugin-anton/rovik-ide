@@ -1,8 +1,8 @@
 // Component test: Claude Code's part of a connector's form, its
 // `ConnectorFields` (ClaudeCodeFields.tsx). How it signs in is in the
-// Connection section; how chats use it comes first among its options, and
-// what only one way of using it needs (its permission mode and rules, with
-// its own tools) shows only with that one.
+// Connection section; its permissions (for its own tools, in Agent mode)
+// come first among its options. Whose tools it runs is the chat's mode's,
+// not a setting.
 // Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
@@ -11,7 +11,7 @@ import { createSignal, type Component } from 'solid-js';
 import { render } from 'solid-js/web';
 import { CONNECTOR_FIELDS, type ConnectorFieldsProps } from './connectorFields';
 import { newConnector } from '../lib/connectors';
-import { PERMISSION_MODES, USE_MODES } from '../lib/claudeCode';
+import { PERMISSION_MODES } from '../lib/claudeCode';
 import type { Provider } from '../types';
 
 const { Connection, Options } = CONNECTOR_FIELDS['claude-code'];
@@ -66,39 +66,23 @@ const fields = (root: Element) =>
       .trim()
   );
 
-test('chats use Claude Code itself by default, or run Rovik’s agent on it', () => {
-  const { root, dispose } = mount(Options);
-  const runsAs = select(root, 'Runs as')!;
-  assert.deepEqual(
-    [...runsAs.options].map((o) => o.value),
-    ['own', 'rovik']
-  );
-  assert.equal(runsAs.value, 'own');
-  assert.equal(sections(root)[0], 'How chats use it', 'the first of its options');
-  dispose();
-});
-
-test('its permission mode and rules show only when it runs its own tools', () => {
-  const { root, connector, dispose } = mount(Options);
-  assert.deepEqual(sections(root), ['How chats use it', 'Permissions', 'Limits', 'Advanced']);
+test('its permissions come first, and whose tools it runs is no setting', () => {
+  // Saved by an earlier version: Rovik's tools, which hid its permissions.
+  const { root, dispose } = mount(Options, { tools: 'rovik' });
+  assert.deepEqual(sections(root), ['Permissions', 'Limits', 'Advanced']);
+  assert.equal(select(root, 'Runs as'), undefined);
   assert.deepEqual(
     [...select(root, 'Mode')!.options].map((o) => o.value),
     PERMISSION_MODES.map((m) => m.value)
   );
-  choose(select(root, 'Runs as')!, 'rovik');
-  assert.equal(connector().settings?.tools, 'rovik');
-  assert.deepEqual(
-    sections(root),
-    ['How chats use it', 'Limits', 'Advanced'],
-    'Rovik’s permissions decide'
-  );
-  assert.equal(select(root, 'Mode'), undefined);
+  const hint = root.querySelector('.settings-section .settings-hint')!;
+  assert.match(hint.textContent ?? '', /in Agent mode\. In Plan mode and Autopilot/);
   dispose();
 });
 
 test('allowed-tools rules show only when Claude Code’s own permission mode decides', () => {
   const { root, dispose } = mount(Options);
-  const permissions = () => root.querySelectorAll('.settings-section')[1];
+  const permissions = () => root.querySelectorAll('.settings-section')[0];
   assert.deepEqual(
     fields(permissions()),
     ['Mode', 'Denied tools'],
@@ -139,27 +123,28 @@ test('its limits keep whole turns and a budget in dollars, and empty is no limit
 
 test('under a choice is its line, with all of it as the line’s tooltip', () => {
   const { root, dispose } = mount(Options);
-  const runsAs = select(root, 'Runs as')!;
-  const line = runsAs.closest('.setting-row')!.nextElementSibling!;
+  const mode = select(root, 'Mode')!;
+  const line = mode.closest('.setting-row')!.nextElementSibling!;
   assert.deepEqual(
-    [...runsAs.options].map((o) => o.title),
-    USE_MODES.map((m) => m.hint),
+    [...mode.options].map((o) => o.title),
+    PERMISSION_MODES.map((m) => m.hint),
     'each option’s line is its tooltip'
   );
-  assert.equal(line.textContent, USE_MODES[0].hint);
-  assert.equal(line.getAttribute('title'), USE_MODES[0].detail);
-  choose(runsAs, 'rovik');
-  assert.equal(line.textContent, USE_MODES[1].hint);
-  assert.equal(line.getAttribute('title'), USE_MODES[1].detail);
+  assert.equal(line.textContent, PERMISSION_MODES[0].hint);
+  assert.equal(line.getAttribute('title'), PERMISSION_MODES[0].detail);
+  choose(mode, PERMISSION_MODES[1].value);
+  assert.equal(line.textContent, PERMISSION_MODES[1].hint);
+  assert.equal(line.getAttribute('title'), PERMISSION_MODES[1].detail);
   dispose();
 });
 
-test('a change saves its settings without the system prompt choice it had', () => {
-  const { root, connector, dispose } = mount(Options, { systemPrompt: 'append' });
+test('a change saves its settings without the choices it no longer has', () => {
+  const { root, connector, dispose } = mount(Options, { systemPrompt: 'append', tools: 'rovik' });
   choose(select(root, 'Mode')!, 'acceptEdits');
   const saved = connector().settings ?? {};
   assert.equal(saved.permissionMode, 'acceptEdits');
   assert.ok(!('systemPrompt' in saved), 'the prompt is the tools’ now');
+  assert.ok(!('tools' in saved), 'whose tools it runs is the chat’s mode’s');
   dispose();
 });
 

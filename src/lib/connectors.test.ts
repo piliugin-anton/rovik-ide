@@ -16,7 +16,6 @@ import {
   setConnectorAuthState,
   type ConnectorAuth,
   type ConnectorProbe,
-  usesRovikTools,
   connectorSegments,
   type ConnectorMeta,
   type ConnectorSegment,
@@ -39,9 +38,8 @@ import {
   CLAUDE_CODE_DEFAULTS,
   CLAUDE_CODE_TITLE_MODEL,
   PERMISSION_MODES,
-  USE_MODES,
 } from './claudeCode';
-import { CODEX_AUTH_KINDS, CODEX_PERMISSION_MODES, CODEX_USE_MODES } from './codex';
+import { CODEX_AUTH_KINDS, CODEX_PERMISSION_MODES } from './codex';
 import { providersSummary, resolveProfile } from './aiSettings';
 import { EFFORTS } from './reasoning';
 import { dismiss, notifications } from './notifications';
@@ -82,7 +80,7 @@ test('a connector is a provider entry with a connector:// base URL', () => {
   );
 });
 
-test('a connector’s model resolves to a profile the harness runs, with no IDE tools', () => {
+test('a connector’s model resolves to a profile the harness runs, taking Rovik’s tools', () => {
   const claude = { ...newConnector('claude-code'), id: 'c1', apiKey: 'tok' };
   claude.models = [{ id: 'sonnet', enabled: true, contextLength: 1_000_000 }];
   claude.settings = { ...CLAUDE_CODE_DEFAULTS, auth: 'token', maxBudgetUsd: 2 };
@@ -92,7 +90,9 @@ test('a connector’s model resolves to a profile the harness runs, with no IDE 
   assert.equal(profile.label, 'Claude Code/sonnet');
   assert.equal(profile.baseUrl, 'connector://claude-code');
   assert.equal(profile.apiKey, 'tok');
-  assert.equal(profile.noTools, true, 'the harness runs its own tools');
+  // The run offers them by its mode: none in Agent mode (the core's
+  // `run::lead_profile`), where the harness runs its own.
+  assert.equal(profile.noTools, false);
   assert.equal(profile.vision, false);
   assert.equal(profile.contextTokens, 1_000_000);
   assert.deepEqual(profile.connector, claude.settings);
@@ -129,8 +129,8 @@ test('a kind’s spec gives a new connector its settings and its row its summary
   assert.deepEqual(claude.settings, CLAUDE_CODE_DEFAULTS);
   assert.equal(spec.summary(claude.settings ?? {}), 'claude · Follow Rovik’s permissions');
   assert.equal(
-    spec.summary({ tools: 'rovik', program: '/opt/claude' }),
-    '/opt/claude · Rovik’s agent'
+    spec.summary({ permissionMode: 'bypassPermissions', program: '/opt/claude' }),
+    '/opt/claude · Everything'
   );
   assert.equal(specOf(openai), undefined);
 });
@@ -143,10 +143,11 @@ test('settings take the defaults for what isn’t set', () => {
   assert.equal(s.auth, 'login');
 });
 
-test('a system prompt choice saved before is dropped: the prompt is the tools’', () => {
+test('choices saved before that it no longer has are dropped', () => {
   const s = claudeCodeSettings({ settings: { tools: 'rovik', systemPrompt: 'replace' } });
-  assert.equal(s.tools, 'rovik');
-  assert.ok(!('systemPrompt' in s), 'nothing sends it to the core');
+  assert.deepEqual(s, CLAUDE_CODE_DEFAULTS);
+  assert.ok(!('systemPrompt' in s), 'the prompt is the tools’');
+  assert.ok(!('tools' in s), 'whose tools it runs is the chat’s mode’s');
 });
 
 test('the menu lines count providers and connectors apart', () => {
@@ -435,28 +436,22 @@ test('status lines for the rows', () => {
   );
 });
 
-test('with Rovik’s tools, a connector’s model is offered the run’s tools', () => {
+test('a connector’s model takes Rovik’s tools, whatever an earlier tools setting said', () => {
   const claude = { ...newConnector('claude-code'), id: 'c1' };
   claude.models = [{ id: 'sonnet', enabled: true }];
-  assert.equal(claudeCodeSettings(claude).tools, 'own', 'its own tools by default');
-  assert.equal(resolveProfile([claude], { providerId: 'c1', modelId: 'sonnet' })?.noTools, true);
-  assert.ok(!usesRovikTools(claude));
-  claude.settings = { ...CLAUDE_CODE_DEFAULTS, tools: 'rovik' };
-  assert.ok(usesRovikTools(claude));
-  const profile = resolveProfile([claude], { providerId: 'c1', modelId: 'sonnet' });
-  assert.equal(profile?.noTools, false, 'the run offers its tools');
-  assert.equal((profile?.connector as { tools?: string }).tools, 'rovik');
-  assert.ok(!usesRovikTools(openai), 'a provider is no connector');
+  for (const tools of ['own', 'rovik']) {
+    claude.settings = { ...CLAUDE_CODE_DEFAULTS, tools };
+    const profile = resolveProfile([claude], { providerId: 'c1', modelId: 'sonnet' });
+    assert.equal(profile?.noTools, false, tools);
+  }
 });
 
 test('the choices’ tooltips have no markup characters, which WebKitGTK can’t show', () => {
   const choices = [
     ...AUTH_KINDS,
     ...PERMISSION_MODES,
-    ...USE_MODES,
     ...CODEX_AUTH_KINDS,
     ...CODEX_PERMISSION_MODES,
-    ...CODEX_USE_MODES,
   ];
   const tips = [...choices.flatMap((c) => [c.hint, c.detail ?? '']), ...EFFORTS.map((c) => c.hint)];
   for (const tip of tips) assert.doesNotMatch(tip, /[&<>]/, tip);

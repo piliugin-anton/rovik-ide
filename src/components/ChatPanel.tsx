@@ -3597,14 +3597,10 @@ export default function ChatPanel(props: ChatProps) {
     // text stays, and the notice says why.
     const unavailable = modeUnavailable(chatMode(), profile);
     if (unavailable) {
-      const connector = connectorKindOf(profile.baseUrl);
       notify({
         kind: 'warning',
-        title: `${chatMode() === 'plan' ? 'Plan mode' : 'Autopilot'} isn’t available with this model`,
+        title: 'Autopilot isn’t available with this model',
         message: unavailable,
-        actions: connector
-          ? [{ label: 'Open Connectors', run: () => openAppSettings('connectors') }]
-          : [],
         timeout: 15_000,
       });
       return;

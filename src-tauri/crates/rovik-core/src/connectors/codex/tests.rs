@@ -15,7 +15,7 @@ fn turn(prompt: &str) -> Turn {
         prompt: prompt.into(),
         cwd: None,
         isolated: false,
-        plan_mode: false,
+        rovik_tools: false,
         session: None,
         recap: None,
         one_shot: false,
@@ -46,20 +46,21 @@ fn setting<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
 }
 
 #[test]
-fn settings_default_to_rovik_s_permissions_and_codex_s_own_tools() {
+fn settings_default_to_rovik_s_permissions() {
     let s = settings(json!({}));
     assert_eq!(s.permission_mode, PermissionMode::Rovik);
-    assert_eq!(s.tools, ToolsMode::Own);
     assert_eq!(s.auth, Auth::Login);
+    // Whose tools a turn uses was once a setting: it's the run's mode's
+    // now, and stored settings that still have it read as before.
     let s = settings(json!({ "permissionMode": "fullAccess", "auth": "apiKey", "tools": "rovik" }));
     assert_eq!(
-        (s.permission_mode, s.auth, s.tools),
-        (PermissionMode::FullAccess, Auth::ApiKey, ToolsMode::Rovik)
+        (s.permission_mode, s.auth),
+        (PermissionMode::FullAccess, Auth::ApiKey)
     );
 }
 
 #[test]
-fn each_permission_mode_is_codex_s_policy_and_plan_mode_is_read_only() {
+fn each_permission_mode_is_codex_s_policy_and_its_own_tools_idle_with_rovik_s() {
     let t = turn("hi");
     let of = |mode: &str| policy(&settings(json!({ "permissionMode": mode })), &t);
     assert_eq!(
@@ -81,23 +82,19 @@ fn each_permission_mode_is_codex_s_policy_and_plan_mode_is_read_only() {
     );
     assert_eq!(of("readOnly").sandbox, "read-only");
     assert_eq!(of("fullAccess").sandbox, "danger-full-access");
-    // Plan mode, whatever the mode: read-only, never asking.
-    let plan = Turn {
-        plan_mode: true,
-        ..turn("plan it")
-    };
-    let p = policy(&settings(json!({ "permissionMode": "fullAccess" })), &plan);
-    assert_eq!((p.approval, p.sandbox), ("never", "read-only"));
-    // A one-off request and Rovik's tools: Codex's own tools idle.
+    // A one-off request and Rovik's tools (Plan mode, Autopilot), whatever
+    // the mode: Codex's own tools idle, read-only, never asking.
     let one_off = Turn {
         one_shot: true,
         ..turn("title")
     };
     assert_eq!(policy(&settings(json!({})), &one_off).sandbox, "read-only");
-    assert_eq!(
-        policy(&settings(json!({ "tools": "rovik" })), &t).sandbox,
-        "read-only"
-    );
+    let rovik = Turn {
+        rovik_tools: true,
+        ..turn("plan it")
+    };
+    let p = policy(&settings(json!({ "permissionMode": "fullAccess" })), &rovik);
+    assert_eq!((p.approval, p.sandbox), ("never", "read-only"));
 }
 
 #[test]
@@ -121,22 +118,18 @@ fn hooks_follow_the_run_codex_s_asks_only_under_rovik_s_permissions() {
         hook_events(&settings(json!({ "permissionMode": "workspace" })), &chat),
         [Event::PreToolUse, Event::PostToolUse]
     );
-    // Plan mode never asks: nothing for Codex to ask about.
-    let plan = Turn {
-        plan_mode: true,
+    // With Rovik's tools, the refusal of its own alone, whatever the mode.
+    let rovik = Turn {
+        rovik_tools: true,
         ..chat
     };
     assert_eq!(
-        hook_events(&settings(json!({})), &plan),
-        [Event::PreToolUse, Event::PostToolUse]
-    );
-    assert_eq!(
-        hook_events(&settings(json!({ "tools": "rovik" })), &plan),
+        hook_events(&settings(json!({})), &rovik),
         [Event::PreToolUse]
     );
     let one_off = Turn {
         one_shot: true,
-        ..plan
+        ..rovik
     };
     assert!(hook_events(&settings(json!({})), &one_off).is_empty());
     // Outside a run (nothing to check with): none.
@@ -188,13 +181,11 @@ async fn the_app_server_s_arguments_name_rovik_s_servers_and_the_settings_own_la
 
 #[test]
 fn with_rovik_s_tools_codex_s_own_are_off_and_rovik_s_are_functions_of_their_own() {
-    let args = args_for(
-        &settings(json!({ "tools": "rovik" })),
-        &turn("go"),
-        &[],
-        &[],
-        "",
-    );
+    let rovik = Turn {
+        rovik_tools: true,
+        ..turn("go")
+    };
+    let args = args_for(&settings(json!({})), &rovik, &[], &[], "");
     for feature in ["shell_tool", "unified_exec", "view_image", "multi_agent"] {
         assert_eq!(
             setting(&args, &format!("features.{feature}")),
@@ -280,7 +271,7 @@ fn a_picked_command_is_codex_s_and_a_typed_one_is_text() {
 fn each_request_is_the_app_server_s_method_for_it() {
     let t = turn("go");
     let fix = Ask::Text("Fix it".into());
-    let (method, params) = request_for(&fix, "t1", &t, Some("gpt-6.1-sol"), false);
+    let (method, params) = request_for(&fix, "t1", &t);
     assert_eq!(method, "turn/start");
     assert_eq!(
         params["input"],
@@ -289,15 +280,15 @@ fn each_request_is_the_app_server_s_method_for_it() {
     assert_eq!(params["effort"], "high");
     assert_eq!(params["summary"], "auto");
     assert!(params.get("collaborationMode").is_none());
-    let (method, params) = request_for(&Ask::Compact, "t1", &t, None, false);
+    let (method, params) = request_for(&Ask::Compact, "t1", &t);
     assert_eq!(
         (method, params),
         ("thread/compact/start", json!({ "threadId": "t1" }))
     );
-    let (method, params) = request_for(&Ask::Review(String::new()), "t1", &t, None, false);
+    let (method, params) = request_for(&Ask::Review(String::new()), "t1", &t);
     assert_eq!(method, "review/start");
     assert_eq!(params["target"], json!({ "type": "uncommittedChanges" }));
-    let (_, params) = request_for(&Ask::Review("the docs".into()), "t1", &t, None, false);
+    let (_, params) = request_for(&Ask::Review("the docs".into()), "t1", &t);
     assert_eq!(
         params["target"],
         json!({ "type": "custom", "instructions": "the docs" })
@@ -307,62 +298,21 @@ fn each_request_is_the_app_server_s_method_for_it() {
         path: "/s/SKILL.md".into(),
         args: "this one".into(),
     };
-    let (_, params) = request_for(&skill, "t1", &t, None, false);
+    let (_, params) = request_for(&skill, "t1", &t);
     assert_eq!(
         params["input"][0],
         json!({ "type": "skill", "name": "pdf", "path": "/s/SKILL.md" })
     );
     assert_eq!(params["input"][1]["text"], "$pdf this one");
-    // Its own plan mode, with the thread's model.
-    let plan = Turn {
-        plan_mode: true,
-        ..turn("plan")
-    };
-    let (_, params) = request_for(
-        &Ask::Text("Plan".into()),
-        "t1",
-        &plan,
-        Some("gpt-6.1-sol"),
-        true,
-    );
-    assert_eq!(params["collaborationMode"]["mode"], "plan");
-    assert_eq!(
-        params["collaborationMode"]["settings"]["model"],
-        "gpt-6.1-sol"
-    );
     // A one-off request's reasoning isn't shown.
     let one_off = Turn {
         one_shot: true,
         effort: None,
         ..turn("title")
     };
-    let (_, params) = request_for(&Ask::Text("Title".into()), "t1", &one_off, None, false);
+    let (_, params) = request_for(&Ask::Text("Title".into()), "t1", &one_off);
     assert_eq!(params["summary"], "none");
     assert!(params.get("effort").is_none());
-}
-
-/// In a chat's Plan mode Codex plans in its own plan mode only with its
-/// own tools: with Rovik's, the plan mode is Rovik's (an Autopilot task's
-/// plan stage too), and a one-off request has none.
-#[test]
-fn codex_plans_on_its_own_only_with_its_own_tools() {
-    let plan = Turn {
-        plan_mode: true,
-        ..turn("plan")
-    };
-    let own = Settings::default();
-    let rovik = Settings {
-        tools: ToolsMode::Rovik,
-        ..Settings::default()
-    };
-    assert!(plans_on_its_own(&own, &plan));
-    assert!(!plans_on_its_own(&rovik, &plan));
-    assert!(!plans_on_its_own(&own, &turn("go")));
-    let one_off = Turn {
-        one_shot: true,
-        ..plan
-    };
-    assert!(!plans_on_its_own(&own, &one_off));
 }
 
 #[test]

@@ -1185,7 +1185,7 @@ impl Run {
                 core.clone(),
                 crate::file_guard::Seen::new(dialog_id.clone()),
                 dialog_id,
-                request.profile,
+                lead_profile(request.profile, !plan_mode && !autopilot),
                 request.options,
                 controls,
                 Role::Lead,
@@ -1430,9 +1430,8 @@ impl Run {
     /// test writer) is offered there.
     /// Plan mode with Rovik's plan tools (ask_user, submit_plan, search_code…):
     /// their instructions, and the nudges to submit a plan written in the
-    /// reply. A model without them gets neither: a connector running its own
-    /// tools plans in its own plan mode (`ChatParams::plan_mode`), and its
-    /// plan is its reply.
+    /// reply. A model without them gets neither, and its plan is its reply.
+    /// A connector has them: it plans as Rovik's agent (`lead_profile`).
     fn plans_with_rovik_tools(&self) -> bool {
         self.plan_mode && !self.profile.no_tools
     }
@@ -2261,7 +2260,6 @@ impl Run {
                     &self.overlay_owner(),
                     self.core.agents.on_server(),
                 ),
-                plan_mode: self.plan_mode,
                 tool_asks,
                 command_checks,
                 restricted: Some(self.restricted.clone()),
@@ -3905,6 +3903,19 @@ fn run_mode_for(messages: &[MessageRow]) -> Option<String> {
     m.meta.as_ref()?.get("mode")?.as_str().map(str::to_string)
 }
 
+/// The lead's profile for its run. A connector's harness runs its own
+/// tools in Agent mode: the run offers it none of Rovik's, and shows the
+/// steps it takes. In Plan mode and Autopilot it's the model behind
+/// Rovik's agent: Rovik's prompt, plans and checks, and Rovik's tools,
+/// which the run offers it over MCP (connectors/mod.rs). Another model's
+/// profile is as it was set.
+fn lead_profile(mut profile: ModelProfile, agent_mode: bool) -> ModelProfile {
+    if crate::connectors::is_connector(&profile.base_url) {
+        profile.no_tools = agent_mode;
+    }
+    profile
+}
+
 /// B07b: the plan file a "Implement the plan in `…`" request names (or the
 /// chat's own), and what the checker finds in it as it is now.
 fn plan_check_at_start(
@@ -4266,6 +4277,34 @@ mod tests {
         // A file the rows name that's no plan's isn't the chat's plan.
         let elsewhere = vec![row("assistant", Some(json!({ "planFile": "/p/.bashrc" })))];
         assert_eq!(chat_plan_file(&elsewhere), None);
+    }
+
+    #[test]
+    fn a_connector_runs_its_own_tools_in_agent_mode_and_rovik_s_in_any_other() {
+        let profile = |base_url: &str, no_tools: bool| ModelProfile {
+            id: "p::m".into(),
+            label: "P/m".into(),
+            model: "m".into(),
+            base_url: base_url.into(),
+            api_key: String::new(),
+            stream: true,
+            vision: false,
+            pdf: false,
+            context_tokens: None,
+            no_tools,
+            first_byte_timeout_ms: None,
+            api_route: None,
+            connector: None,
+        };
+        for url in ["connector://claude-code", "connector://codex"] {
+            assert!(lead_profile(profile(url, false), true).no_tools, "{url}");
+            // Plan mode and Autopilot: Rovik's tools, whatever it came with.
+            assert!(!lead_profile(profile(url, true), false).no_tools, "{url}");
+        }
+        // A provider's model keeps what its settings say, in any mode.
+        let provider = "https://api.example.com/v1";
+        assert!(!lead_profile(profile(provider, false), true).no_tools);
+        assert!(lead_profile(profile(provider, true), false).no_tools);
     }
 }
 

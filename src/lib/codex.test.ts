@@ -86,9 +86,10 @@ test('its settings take the defaults for what isn’t set, and its row says how 
   assert.equal(codexSettings({ settings: { program: '  ' } }).program, 'codex');
   assert.equal(CODEX.summary({}), 'codex · Follow Rovik’s permissions');
   assert.equal(
-    CODEX.summary({ tools: 'rovik', program: '/opt/codex' }),
-    '/opt/codex · Rovik’s agent'
+    CODEX.summary({ permissionMode: 'readOnly', program: '/opt/codex' }),
+    '/opt/codex · Read only'
   );
-  assert.ok(CODEX.usesRovikTools({ tools: 'rovik' }));
-  assert.ok(CODEX.planMode);
+  // Whose tools it runs, saved by an earlier version, is the chat's mode's now.
+  assert.deepEqual(codexSettings({ settings: { tools: 'rovik' } }), CODEX_DEFAULTS);
+  assert.equal(CODEX.summary({ tools: 'rovik' }), 'codex · Follow Rovik’s permissions');
 });

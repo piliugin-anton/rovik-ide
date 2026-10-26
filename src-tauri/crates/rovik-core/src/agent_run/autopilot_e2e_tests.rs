@@ -7665,7 +7665,7 @@ async fn real_codex_runs_an_autopilot_task_from_its_plan_to_its_delivery() {
     ];
     let (url, _) = responses_routed(routes, plan).await;
     let home = crate::testing::temp_dir();
-    let settings = real_codex(&url, &home.0, json!({ "tools": "rovik" }));
+    let settings = real_codex(&url, &home.0, json!({}));
     let mut request = codex_send(
         &h,
         "",

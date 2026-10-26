@@ -358,10 +358,9 @@ Connectors → Add connector**. Its page groups its settings:
   request, that it's signed in) and lists its models: Claude Code's
   aliases such as `sonnet`, `opus` and `haiku`, and full names; the models
   Codex offers the account.
-- **How chats use it**: as the harness itself, or as Rovik's agent on it
-  (below).
-- **Permissions**, with its own tools: the permission mode its runs get
-  (with Claude Code, and the tools they may or may not use without asking).
+- **Permissions**, for its own tools (Agent mode): the permission mode its
+  runs get (with Claude Code, and the tools they may or may not use
+  without asking).
 - **Limits** (Claude Code): the turns and the budget one message may take.
 - **Advanced**: the program, its settings folder (`CLAUDE_CONFIG_DIR`,
   `CODEX_HOME`), more arguments for every run, and Claude Code's bare mode.
@@ -402,12 +401,18 @@ updater, checks the program again and says how it went.
 
 A chat on a connector's model hands the harness the task: the model, the
 effort and the message, in the project folder. The harness keeps its own
-conversation for the chat, continued on each message. **How chats use
-it** picks how it works:
+conversation for the chat, continued on each message. The chat's mode
+picks how it works: in **Agent** mode the harness runs as itself, with its
+own tools; in **Plan** mode and **Autopilot** it's the model behind
+Rovik's agent, with Rovik's prompt and tools, so it plans as Rovik's agent
+does and its plan is saved in `.rovik/plans`, for **Implement this plan**
+to carry out in Agent mode. A subagent on one of its models runs as
+Rovik's agent too.
 
-- **Claude Code.** It runs as itself: its own tools (Read, Edit, Bash…) in
-  the project folder, its own system prompt and the CLAUDE.md it reads;
-  Rovik sends no prompt. With the permission mode **Follow Rovik's permissions**
+- **Claude Code, in Agent mode.** It runs as itself: its own tools
+  (Read, Edit, Bash…) in the project folder, its own system prompt and
+  the CLAUDE.md it reads; Rovik sends no prompt. With the permission
+  mode **Follow Rovik's permissions**
   (the default), each call it would ask about goes to **Permissions &
   approval**, as a call of the agent's own tool of the same kind would
   (`--permission-prompt-tool`): its commands are judged by the allowed and
@@ -430,12 +435,8 @@ it** picks how it works:
   `reset`, `commit`, `push`…) are refused in every mode, as they are to
   Rovik's agent: Claude Code is given deny rules for them, and Rovik's
   hook refuses other spellings (`git -C . push`) before they run. The
-  chat's changes reach the project when they land. In the chat's **Plan**
-  mode it plans in its own plan mode (`--permission-mode plan`), whatever
-  its permission mode: it reads, changes nothing, and replies with its
-  plan, which you carry out in Agent mode. Autopilot needs Rovik's tools:
-  with Claude Code's own, the chat says so and doesn't send.
-- **Rovik's agent on Claude Code.** Claude Code is the model behind
+  chat's changes reach the project when they land.
+- **Claude Code, in Plan mode and Autopilot.** Claude Code is the model behind
   Rovik's agent, with Rovik's system prompt in place of its own. Rovik
   serves the run's tools to it over MCP (a server on 127.0.0.1 for that
   run alone, behind a token only it has), with Claude Code's own tools
@@ -443,15 +444,16 @@ it** picks how it works:
   Rovik's: Rovik runs the calls under Permissions & approval, in the
   chat's copy of the project, and gives Claude Code the results while it
   waits, however long an approval takes. Rovik's checks, checklist,
-  plans, Autopilot and subagents work as with any model, and such a model
-  can be a subagent's too. The prompt goes in a file
-  (`--system-prompt-file`) with the project's section split off, so the
-  rest stays cached, and is rebuilt on every run
-  (`--system-prompt-snapshot off`), so a changed setting applies to a
-  chat's next message.
-- **Codex.** It runs as itself, its app server (`codex app-server`) in the
-  project folder: its own tools (its shell, its patches, web search…), its
-  own system prompt and the AGENTS.md it reads. With **Follow Rovik's
+  plans, Autopilot and subagents work as with any model. The prompt goes
+  in a file (`--system-prompt-file`) with the project's section split off,
+  so the rest stays cached, and is rebuilt on every run
+  (`--system-prompt-snapshot off`), so a changed setting, or a change of
+  mode, applies to a chat's next message. Claude Code goes on in the same
+  session of its own whichever tools a message gets.
+- **Codex, in Agent mode.** It runs as itself, its app server
+  (`codex app-server`) in the project folder: its own tools (its shell,
+  its patches, web search…), its own system prompt and the AGENTS.md it
+  reads. With **Follow Rovik's
   permissions** (the default), Codex asks before every command and every
   patch, and Rovik's hooks answer as Permissions & approval would for the
   agent's own calls: its commands by the allowed and denied commands, each
@@ -468,14 +470,13 @@ it** picks how it works:
   copy of the project; a command is checked from the project's folder,
   since Codex doesn't tell its hooks the folder a command runs in. A
   command or patch that starts without Rovik's hook having seen it (a hook
-  that failed) stops the turn. In the chat's **Plan** mode it plans in its
-  own plan mode, in a read-only sandbox, whatever its permission mode:
-  Rovik refuses its patches, and its plan is the reply. Its reply shows its
+  that failed) stops the turn. Its reply shows its
   work as Rovik's agent's does: its commands as what Codex read them as
   doing ("Read app.ts", "Searched", or "Ran npm"), each file a patch
-  changed as an edit, its plan as Rovik's checklist. It keeps one thread
-  of its own per chat for each way of using it.
-- **Rovik's agent on Codex.** Codex is the model behind Rovik's agent:
+  changed as an edit, its plan as Rovik's checklist. It keeps a thread of
+  its own per chat; a message that gets the other tools (its own, or
+  Rovik's) starts a new one, told what the chat was about.
+- **Codex, in Plan mode and Autopilot.** Codex is the model behind Rovik's agent:
   Rovik's system prompt replaces its own (`baseInstructions`, with the
   project's section apart, so the rest stays the same from run to run),
   and Rovik serves the run's tools to it over MCP, as functions of their
@@ -484,8 +485,7 @@ it** picks how it works:
   Rovik's tools is a reply of Rovik's, run under Permissions & approval in
   the chat's copy of the project, its result given to Codex while it waits.
   Rovik's checks, checklist, Plan mode (Rovik's own, not Codex's),
-  Autopilot and subagents work as with any model, and such a model can be
-  a subagent's too.
+  Autopilot and subagents work as with any model.
 
 Either way, its thinking shows: Rovik asks Claude Code for it
 (`--thinking-display summarized`) and Codex for its reasoning's summary,
