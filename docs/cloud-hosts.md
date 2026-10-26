@@ -21,6 +21,7 @@ Rovik is installed once per server, by root:
 | `/opt/rovik/browser/<version>/`                              | The browser tools' browser (below), owned by root.                         |
 | `/opt/rovik/toolchains/rust/`, `/opt/rovik/toolchains/node/` | The Rust and Node versions every user's chats run (below), owned by root.  |
 | The distro's `claude-code` package, on request               | Claude Code for the connector of that name (below), once for everyone.     |
+| `/usr/local/bin/codex` and `/opt/codex/`, on request         | Codex for the connector of that name (below), once for everyone.           |
 | `/var/cache/rovik/npm`, `/var/cache/rovik/crates`            | The package caches the daemons share, owned by root and the `rovik` group. |
 | `/var/cache/rovik/images`                                    | The projects' services' images, fetched once for everyone (below).         |
 | The distro's `bubblewrap` package                            | Confines the chats' commands (see What can read what).                     |
@@ -164,6 +165,7 @@ sudo /opt/rovik/bin/rovik-agentd admin bubblewrap                # install it if
 sudo /opt/rovik/bin/rovik-agentd admin pasta                     # install it if it's missing
 sudo /opt/rovik/bin/rovik-agentd admin containers                # Podman, Docker Compose, users' subordinate ids
 sudo /opt/rovik/bin/rovik-agentd admin claude-code               # Claude Code for everyone, or its update
+sudo /opt/rovik/bin/rovik-agentd admin codex                     # Codex for everyone, or its update
 sudo /opt/rovik/bin/rovik-agentd admin toolchain list            # the versions installed
 sudo /opt/rovik/bin/rovik-agentd admin toolchain add rust 1.82   # for everyone
 sudo /opt/rovik/bin/rovik-agentd admin toolchain add node 20
@@ -235,7 +237,8 @@ installs a version before a command that starts one of its programs
 (`node`, `npm`, `cargo`…; in Plan mode, which refuses most commands, only
 once one failed), before the installs that prepare the project, and again
 when a command fails because its program isn't found: the agent's own
-commands and Claude Code's alike ([Claude Code](#claude-code)).
+commands, Claude Code's and Codex's alike ([Claude Code](#claude-code),
+[Codex](#codex)).
 The versions install while the command waits: a Rust version is about
 1 GB on disk and takes a few minutes.
 
@@ -316,7 +319,7 @@ don't run), then the versions, the free space where
 Rovik's folders are, the install and its limits, the shared Rust and
 Node versions (and whether chats may install one and the caches are
 shared), the connectors installed for them
-(`connectors installed: Claude Code`), the heavy commands their daemon
+(`connectors installed: Claude Code, Codex`), the heavy commands their daemon
 runs at once, and what its folders and logs take. The app's
 connection test reads the same once Rovik is deployed. The daemon's log,
 `~/.rovik/logs/agentd.log`, is rotated at 5 MB, with 3 older files kept.
@@ -388,7 +391,7 @@ freed.
 
 Each user's commands run in a network of their own, as on their own
 computer: every command the agent runs, every run of a connector's program
-(Claude Code) and the agent's browser start in it. A server there can
+(Claude Code, Codex) and the agent's browser start in it. A server there can
 listen on any port, on 127.0.0.1 or 0.0.0.0, without clashing with another
 user's server on the same port, and no one else's process can reach it:
 nothing comes into the network from outside. The agent tests its servers
@@ -704,6 +707,52 @@ through a file its shell runs before each command (`CLAUDE_ENV_FILE`),
 written again whenever something was installed, so its next command
 finds that too.
 
+## Codex
+
+The Codex connector runs `codex` on the computer a chat runs on, so a chat
+on a server needs Codex there too. OpenAI publishes no package for a
+server's package manager: an administrator installs it once for everyone
+with OpenAI's own installer, which checks each download against its
+release's checksums:
+
+```sh
+sudo /opt/rovik/bin/rovik-agentd admin codex      # install, or update
+```
+
+The program lands in `/usr/local/bin`, on every user's PATH, and its
+releases in `/opt/codex`, which every user reads, where the installer's
+own defaults would put both in root's home. Run the command again for the
+newest version; it needs `curl` on the server. A user can also install it
+for themselves alone: **Set up** in Settings → Connectors, with the host
+chosen, runs OpenAI's installer as that user, which puts `codex` in their
+`~/.local/bin` and its releases in their `~/.codex`. **Update to …** runs
+`codex update` as that user: it updates their own installation, while the
+shared one is updated by the administrator with `admin codex`. However it
+was installed, the host's page in Settings → Cloud hosts then lists Codex
+among the connectors installed.
+
+Each user signs in as their own. The access token or API key of the
+connector's settings travels with the chat's model, kept by the daemon as
+it keeps providers' keys ([What can read what](#what-can-read-what)): the
+token reaches the program as `CODEX_ACCESS_TOKEN`, the key over its input,
+where Codex keeps it in memory and never writes it to the user's login. A
+connector set to the computer's login uses the login in that user's
+`~/.codex` on the server, made by **Set up**: it runs `codex login
+--device-auth` as that user on the server, opens OpenAI's sign-in page in
+the browser of the user's own computer, and shows the code the sign-in
+printed, to enter there. The login is that user's alone. Codex's own
+thread for a chat is kept by the program in that user's home; Rovik
+remembers which thread each chat continues.
+
+Codex runs its commands itself, not through Rovik's sandbox: in its own
+sandbox in its own permission modes, or, in the connector's default mode,
+without one, once Rovik's Permissions & approval allowed each command and
+patch. Whatever its mode, Rovik's hooks (Codex's `mcp_tool` hooks, served
+by the run's own server on 127.0.0.1 with its token) have each command made
+ready as Claude Code's are, above. Its shell finds the host's toolchains
+through a file `bash` runs before each command (`BASH_ENV`), written again
+whenever something was installed, so its next command finds that too.
+
 ## Upgrades
 
 `admin upgrade FILE` installs a new build beside the current one, moves
@@ -747,7 +796,9 @@ administrators to ask.
 `rovik-admin` groups. `/opt/rovik/toolchains` and `/opt/rovik/compose` go
 with `/opt/rovik`. The libraries the browser needed stay installed, and so
 do Podman's packages and the users' subordinate ids: files their containers
-wrote are owned by those ids.
+wrote are owned by those ids. Claude Code's package and Codex
+(`/usr/local/bin/codex`, `/opt/codex`) stay too, for anyone who runs them
+by hand.
 Each user's `~/.rovik` and `~/.local/share/rovik` stay, because their
 chats are there. A user who no longer wants Rovik runs `user stop` and
 deletes those two folders. The app does this with "Remove Rovik from this
