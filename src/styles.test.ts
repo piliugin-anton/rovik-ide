@@ -209,6 +209,43 @@ test('the model picker’s source switch keeps its height and its three buttons'
   );
 });
 
+test('the command picker keeps a command’s name whole: its hint, then its aliases, give way', () => {
+  // Claude Code's `/code-review` takes a hint wider than the chat, and a
+  // skill synced from claude.ai has an alias such as
+  // `/anthropic-skills:google-workspace`. The name shrank with them, cut to
+  // "/c…" in the sidebar.
+  const name = bodiesOf('.command-suggestions .file-suggestion-head .file-suggestion-name');
+  assert.ok(
+    name.some((b) => /flex-shrink:\s*0/.test(b)),
+    'the name never shrinks'
+  );
+  assert.ok(
+    name.some((b) => /max-width:\s*100%/.test(b)),
+    'a name wider than the whole row is cut at its edge'
+  );
+  const hint = bodiesOf('.command-suggestion-hint');
+  assert.ok(
+    hint.some((b) => /flex:\s*1\s*;/.test(b) && /min-width:\s*0/.test(b)),
+    'the hint only fills the room the name and aliases leave'
+  );
+  const aliases = bodiesOf('.command-suggestions .file-suggestion-tag');
+  assert.ok(
+    aliases.some(
+      (b) =>
+        /flex-shrink:\s*1/.test(b) &&
+        /min-width:\s*0/.test(b) &&
+        /text-overflow:\s*ellipsis/.test(b)
+    ),
+    'aliases too long for the row are cut short with an ellipsis'
+  );
+  assert.ok(
+    bodiesOf('.command-suggestions .file-suggestion-head').some((b) =>
+      /overflow:\s*hidden/.test(b)
+    ),
+    'nothing spills out of the row, so the list never scrolls sideways'
+  );
+});
+
 test('criterion 2: App owns the expanded state and marks its root with sidebar-expanded', () => {
   const app = readFileSync('src/App.tsx', 'utf8');
   assert.match(app, /sidebar-expanded/, 'the root .app element gets the sidebar-expanded class');
