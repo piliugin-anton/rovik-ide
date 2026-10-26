@@ -248,6 +248,29 @@ pub fn programs(command: &str) -> Vec<String> {
     names
 }
 
+/// The programs that look another up by its name without running it.
+/// `command -v` is a wrapper's: [`programs`] has what it names.
+const LOOKUPS: &[&str] = &["which", "type", "hash", "whereis", "where"];
+
+/// The programs `command` looks up by name without running them (`which
+/// docker docker-compose`, `type -P podman`), each as its parts name them.
+fn looked_up(command: &str) -> Vec<String> {
+    let parsed = permissions::parse_command(command);
+    let mut names = Vec::new();
+    for segment in &parsed.segments {
+        let set = segment.iter().take_while(|word| assignment(word)).count();
+        let Some((first, rest)) = permissions::unwrap_wrappers(&segment[set..]).split_first()
+        else {
+            continue;
+        };
+        if LOOKUPS.contains(&permissions::program_name(first).as_str()) {
+            let named = rest.iter().filter(|word| !word.starts_with('-'));
+            names.extend(named.map(|word| permissions::program_name(word)));
+        }
+    }
+    names
+}
+
 /// Whether `word` is a shell's `NAME=value`, which sets a variable for the
 /// program after it.
 fn assignment(word: &str) -> bool {
@@ -581,7 +604,8 @@ async fn services_asked_for(cx: &Context, command: &str) -> Vec<Outcome> {
 }
 
 /// After a failed command that ran a container engine (`docker ps`, `podman
-/// run`, a look for one, or a script whose `docker` the shell didn't find):
+/// run`), looked one up (`which docker`, `ls /var/run/docker.sock`), or ran
+/// a script whose `docker` the shell didn't find:
 /// what the agent is told in place of the engine it reached for. On a
 /// cloud host its commands can run none, not even the `podman` Rovik runs
 /// the project's services with; on the user's own computer, only where the
@@ -594,7 +618,11 @@ async fn engine_unreached(
     output: &str,
 ) -> Option<String> {
     let engine = |program: &str| services::ENGINES.contains(&program);
-    let ran = programs(command).iter().any(|program| engine(program))
+    // Looked up by its name and not found (`which docker`): it isn't
+    // there, whatever the lookup printed.
+    let looked_for = looked_up(command).iter().any(|program| engine(program));
+    let ran = looked_for
+        || programs(command).iter().any(|program| engine(program))
         || missing.is_some_and(engine)
         || command.contains("docker.sock")
         || command.contains("podman.sock");
@@ -603,7 +631,7 @@ async fn engine_unreached(
     }
     let host = services::host();
     if host.is_none() {
-        return super::unreached::engine_unreachable(output)
+        return (looked_for || super::unreached::engine_unreachable(output))
             .then(|| services::engine_note(&[], &[], None));
     }
     let reads = match services::compose::program() {
@@ -826,6 +854,20 @@ mod tests {
             programs("./run.sh && /usr/bin/node x.js"),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn the_programs_a_command_looks_up_are_those_it_names_to_which_or_type() {
+        assert_eq!(
+            looked_up("which docker docker-compose"),
+            ["docker", "docker-compose"]
+        );
+        assert_eq!(
+            looked_up("type -P podman && hash docker 2>/dev/null"),
+            ["podman", "docker"]
+        );
+        assert_eq!(looked_up("cd web && which -a node"), ["node"]);
+        assert_eq!(looked_up("npm run which"), Vec::<String>::new());
     }
 
     #[test]
@@ -1297,6 +1339,46 @@ mod tests {
             script.missing[0].starts_with("Your commands can't run containers on this server"),
             "{:?}",
             script.missing
+        );
+    }
+
+    /// A look for Docker by its name that finds none (`which docker
+    /// docker-compose`, which prints nothing) reached for an engine as much
+    /// as a run of one: on the user's own computer it's told to ask the
+    /// user, and on a cloud host that Rovik runs the services, which start
+    /// on `docker compose up`. A look for another program is left alone.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_look_for_docker_by_name_that_finds_none_is_told_what_runs_the_services() {
+        let _lock = services::test_lock();
+        let look = "which docker docker-compose";
+        let (test, cx, _notes) = project(&[("compose.yaml", "services: {}\n")]);
+        services::compose::use_program(Some(fake_compose(&test.dir.0, SHOP)));
+        let here = after(&cx, look, Some(1), "").await;
+        assert!(
+            here.missing
+                .join("\n")
+                .contains("Ask the user to start the services"),
+            "{here:?}"
+        );
+        assert_eq!(
+            after(&cx, "which node", Some(1), "").await,
+            Ready::default()
+        );
+        let (_test, cx, asked) = shop_on_a_host(Ok("at localhost:5432".into()));
+        let note = after(&cx, look, Some(1), "").await.missing.join("\n");
+        assert!(
+            note.starts_with("Your commands can't run containers on this server"),
+            "{note}"
+        );
+        assert!(
+            note.contains("`docker compose up -d` with the service's name"),
+            "{note}"
+        );
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "nothing starts for a look"
         );
     }
 
