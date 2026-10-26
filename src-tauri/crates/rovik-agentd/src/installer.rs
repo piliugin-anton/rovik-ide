@@ -49,6 +49,7 @@ use toolchains::Kind;
 mod browser;
 mod bubblewrap;
 mod claude_code;
+mod codex;
 /// Podman, the pinned Docker Compose and the users' subordinate ids.
 pub(crate) mod containers;
 /// `user image <reference>` and `admin images …`: the projects' services'
@@ -536,6 +537,9 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
         // Claude Code for the connector of that name, from Anthropic's
         // package repository, once for everyone (installer/claude_code.rs).
         ["claude-code"] => claude_code::ensure(sys),
+        // Codex for the connector of that name, with OpenAI's installer,
+        // once for everyone (installer/codex.rs).
+        ["codex"] => codex::ensure(sys),
         // The shared toolchains and caches go in whether bubblewrap's
         // package does or not: a server installed before this has no
         // `rovik` group and no folder for them yet, and the daemons that
@@ -601,7 +605,7 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
         ["uninstall"] => uninstall(sys),
         _ => Err(
             "admin takes: limits [name=value ...], add USER, remove USER, browser, \
-             bubblewrap, pasta, containers, claude-code, toolchain list | add KIND VERSION | \
+             bubblewrap, pasta, containers, claude-code, codex, toolchain list | add KIND VERSION | \
              remove KIND VERSION | prune DAYS, toolchains user-install|shared-caches on|off, \
              toolchains setup, images list | prune DAYS, upgrade FILE [--allow-downgrade], \
              uninstall"

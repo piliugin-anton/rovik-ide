@@ -57,7 +57,7 @@ usage: rovik-agentd <command>
       runs, fetched once into the server's image cache, from which each
       daemon's Podman copies it. Off where the shared caches are.
   admin [limits [NAME=VALUE ...] | add USER | remove USER | browser |
-         bubblewrap | pasta | containers | claude-code | toolchain list |
+         bubblewrap | pasta | containers | claude-code | codex | toolchain list |
          toolchain add KIND VERSION | toolchain remove KIND VERSION |
          toolchain prune DAYS | toolchains user-install|shared-caches on|off |
          toolchains setup | images list | images prune DAYS |
@@ -73,7 +73,8 @@ usage: rovik-agentd <command>
       the Docker Compose Rovik pins and the users' subordinate ids, which
       install and upgrade put in place too), Claude Code for the connector
       of that name (Anthropic's
-      package, installed once for every user's chats, or updated), the
+      package, installed once for every user's chats, or updated), Codex
+      for the connector of that name (OpenAI's installer, the same), the
       shared Rust and Node versions and the package caches
       the daemons share (toolchain add works whether or not users may
       install them; prune takes the versions no chat used for DAYS), the

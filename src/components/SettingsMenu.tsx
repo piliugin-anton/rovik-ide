@@ -126,7 +126,7 @@ export default function SettingsMenu(props: SettingsMenuProps) {
         <Item
           page="connectors"
           label="Connectors"
-          about="Coding harnesses such as Claude Code, installed where a chat runs, used in place of a model: the chat hands them the task and shows their steps, tokens and cost."
+          about="Coding harnesses such as Claude Code and Codex, installed where a chat runs, used in place of a model: the chat hands them the task and shows their steps, tokens and cost."
           state={ai(() => connectorsSummary(aiProviders()))}
           warning={
             aiSettingsLoaded() &&

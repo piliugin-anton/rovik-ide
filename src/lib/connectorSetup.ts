@@ -28,6 +28,8 @@ export interface SetupJob {
   output: string;
   /** The first web address it printed: the sign-in page. */
   url?: string | null;
+  /** That page asks for a code the step printed (in `output`): nothing is pasted back. */
+  deviceCode?: boolean;
   done: boolean;
   error?: string | null;
 }

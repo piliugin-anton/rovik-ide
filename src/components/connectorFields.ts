@@ -9,6 +9,7 @@
 import type { Component } from 'solid-js';
 import type { ConnectorKind, Provider } from '../types';
 import { CLAUDE_CODE_FIELDS } from './ClaudeCodeFields';
+import { CODEX_FIELDS } from './CodexFields';
 
 /** What a kind's fields get: the same for every kind. */
 export interface ConnectorFieldsProps {
@@ -29,4 +30,5 @@ export interface ConnectorFields {
 /** Each kind's fields: one entry per kind. */
 export const CONNECTOR_FIELDS: Record<ConnectorKind, ConnectorFields> = {
   'claude-code': CLAUDE_CODE_FIELDS,
+  codex: CODEX_FIELDS,
 };

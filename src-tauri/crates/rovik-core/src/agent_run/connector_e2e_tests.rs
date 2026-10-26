@@ -367,6 +367,42 @@ async fn claude_code_in_a_chats_copy_is_refused_git_that_changes_the_repository(
     assert!(args.contains("Bash(git push *)"), "{args}");
 }
 
+/// Whatever a harness's own permission mode, its command that would change
+/// the repository of a chat's copy is refused before it runs, by Rovik's
+/// hook: a spelling Claude Code's deny rules don't match too.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_harness_s_own_git_that_changes_a_chats_copy_is_refused_before_it_runs() {
+    let h = harness(&[("src/a.txt", "one\n")]).await;
+    h.core.agents.set_on_server();
+    let commands = json!([
+        ["git -C . checkout main", null, "toolu_1"],
+        ["git status", null, "toolu_2"],
+    ]);
+    let Some(program) = crate::connectors::fake_claude_with_hooks(&h._dir.0, &commands) else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    h.start(own_tools_send(&h, &program, "agent", "Switch branches"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end().await, "done");
+    let answers: Value =
+        serde_json::from_str(&std::fs::read_to_string(h._dir.0.join("hooks.json")).unwrap())
+            .unwrap();
+    assert_eq!(answers[0]["use"], "toolu_1");
+    let refused = &answers[0]["answer"]["hookSpecificOutput"];
+    assert_eq!(refused["permissionDecision"], "deny", "{answers:#?}");
+    let why = refused["permissionDecisionReason"].as_str().unwrap();
+    assert!(
+        why.contains("`git checkout` changes the repository"),
+        "{why}"
+    );
+    // Reading the repository is fine.
+    assert_eq!(answers[1]["use"], "toolu_2");
+    assert_eq!(answers[1]["answer"], json!({}));
+}
+
 /// A send in `mode` on Claude Code's model with its own tools.
 #[cfg(unix)]
 fn own_tools_send(h: &Harness, program: &str, mode: &str, text: &str) -> StartRequest {

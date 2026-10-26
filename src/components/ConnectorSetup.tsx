@@ -4,8 +4,10 @@
 // computer its chats run on: the flow of lib/connectorSetup.ts, with what
 // each step prints, the sign-in page it gives (opened in this computer's
 // browser when the step runs on a cloud host; a program here opens it
-// itself), and a field for the code that page shows. The same for every
-// connector: what the steps run is the connector's own, in the core.
+// itself), and a field for the code that page shows, or, where the page
+// asks for a code the step printed (a device code), where to read it. The
+// same for every connector: what the steps run is the connector's own, in
+// the core.
 import { createSignal, onCleanup, onMount, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import type { Provider } from '../types';
@@ -189,28 +191,44 @@ export default function ConnectorSetup(props: ConnectorSetupProps) {
 
       <Show when={signingIn()}>
         <div class="connector-setup-signin">
-          <span>
-            {props.host
-              ? 'Sign in on the page opened in your browser, then paste the code it shows.'
-              : 'Sign in in your browser. If it asks you to paste a code here, paste it below.'}
-          </span>
-          <div class="connector-setup-code">
-            <button onClick={() => openPage(job()!.url!)}>Open sign-in page</button>
-            <input
-              value={code()}
-              onInput={(e) => setCode(e.currentTarget.value)}
-              onKeyDown={(e) => e.key === 'Enter' && void sendCode()}
-              placeholder="Paste the code"
-              aria-label="Sign-in code"
-              spellcheck={false}
-              autocomplete="off"
-            />
-            <button onClick={() => void sendCode()} disabled={!code().trim()}>
-              Send
-            </button>
-          </div>
-          <Show when={codeError()}>
-            <div class="provider-test-status error">{codeError()}</div>
+          <Show
+            when={job()?.deviceCode}
+            fallback={
+              <>
+                <span>
+                  {props.host
+                    ? 'Sign in on the page opened in your browser, then paste the code it shows.'
+                    : 'Sign in in your browser. If it asks you to paste a code here, paste it below.'}
+                </span>
+                <div class="connector-setup-code">
+                  <button onClick={() => openPage(job()!.url!)}>Open sign-in page</button>
+                  <input
+                    value={code()}
+                    onInput={(e) => setCode(e.currentTarget.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && void sendCode()}
+                    placeholder="Paste the code"
+                    aria-label="Sign-in code"
+                    spellcheck={false}
+                    autocomplete="off"
+                  />
+                  <button onClick={() => void sendCode()} disabled={!code().trim()}>
+                    Send
+                  </button>
+                </div>
+                <Show when={codeError()}>
+                  <div class="provider-test-status error">{codeError()}</div>
+                </Show>
+              </>
+            }
+          >
+            <span>
+              {props.host
+                ? 'Sign in on the page opened in your browser, and enter there the code printed below.'
+                : 'Open the sign-in page, and enter there the code printed below.'}
+            </span>
+            <div class="connector-setup-code">
+              <button onClick={() => openPage(job()!.url!)}>Open sign-in page</button>
+            </div>
           </Show>
         </div>
       </Show>

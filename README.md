@@ -325,7 +325,7 @@ computer right now. The pages:
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Editor                 | How code looks and is formatted in the editor: theme, font, indentation, wrapping, formatters                               |
 | Model providers        | The models chats can use, with your API keys; the AI reviewer and the subagents pick theirs here too                        |
-| Connectors             | Coding harnesses such as Claude Code, installed where a chat runs, used in place of a model (see [Connectors](#connectors)) |
+| Connectors             | Coding harnesses (Claude Code, Codex) installed where a chat runs, used in place of a model (see [Connectors](#connectors)) |
 | Permissions & approval | What the agent may run and change in every chat, and what waits for your approval, or an AI reviewer's, first               |
 | Agent runs             | While the agent works and when it finishes: pauses, its checklist, the checks on its changes, conflicts between chats       |
 | Subagents              | The helpers the agent can send, their models and limits                                                                     |
@@ -348,47 +348,54 @@ with a switch to see one kind alone and a search.
 ### Connectors
 
 A connector is a coding harness installed on the computer a chat runs on,
-used in place of a model provider. Claude Code is the first: **Settings →
+used in place of a model provider: Claude Code or Codex. **Settings →
 Connectors → Add connector**. Its page groups its settings:
 
-- **Connection**: how it signs in (the login of this computer's user, a
-  long-lived token from `claude setup-token`, or an API key). **Test &
-  refresh models** checks the program runs (with a request, that it's
-  signed in) and lists its models: aliases such as `sonnet`, `opus` and
-  `haiku`, and full names.
-- **How chats use it**: as Claude Code itself, or as Rovik's agent on
-  Claude Code (below).
-- **Permissions**, with Claude Code's own tools: the permission mode its
-  runs get, and the tools they may or may not use without asking.
-- **Limits**: the turns and the budget one message may take.
-- **Advanced**: the program, its config folder (`CLAUDE_CONFIG_DIR`),
-  more arguments for every run, and bare mode.
+- **Connection**: how it signs in (the login of this computer's user; a
+  token: Claude Code's long-lived one from `claude setup-token`, or a
+  Codex access token; or an API key), the token or key kept in the
+  keychain. **Test & refresh models** checks the program runs (with a
+  request, that it's signed in) and lists its models: Claude Code's
+  aliases such as `sonnet`, `opus` and `haiku`, and full names; the models
+  Codex offers the account.
+- **How chats use it**: as the harness itself, or as Rovik's agent on it
+  (below).
+- **Permissions**, with its own tools: the permission mode its runs get
+  (with Claude Code, and the tools they may or may not use without asking).
+- **Limits** (Claude Code): the turns and the budget one message may take.
+- **Advanced**: the program, its settings folder (`CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME`), more arguments for every run, and Claude Code's bare mode.
 
 The models you enable show in the chat's model picker, marked as a
 connector's.
 
 When Rovik starts, it checks each connector on this computer with a test
 that makes no request, so it costs no tokens: whether its program is
-installed (its version), whether it's signed in (`claude auth status`), and
+installed (its version), whether it's signed in (`claude auth status`,
+`codex login status`), and
 whether a newer version is published. It warns about any connector a chat
 can pick that isn't signed in, or whose program isn't installed, with a way
 to its settings. The connector rows show what the last check found as
 Settings → Connectors opens, and the page checks each again meanwhile;
 **Check status** asks again. A connector's page shows the same at once and
 tests again, also with no request, as it opens and when you pick another
-**Computer**. The check trusts a token Claude Code has; one that expired or
-was revoked shows as the chat's error at its first message.
+**Computer**. The check trusts a token the program has; one that expired
+or was revoked shows as the chat's error at its first message.
 
 **Set up** (on a connector's page, or on its row when it can't run) does
 the rest where its chats run, this computer or a cloud host: it tests the
-connector; installs the program if it's missing, once you agree, with
-Anthropic's own installer for your user (`claude` in `~/.local/bin`, no
-admin rights); and signs it in if it isn't (`claude auth login`), showing
-what each step prints. Here the browser opens to sign in; for a host,
-Rovik opens the sign-in page in your browser and you paste the code it
-shows. **Sign out** signs the program out. A test also finds out whether
-a newer version is published (Anthropic's release channel, `latest`), and
-**Update to …** then runs the program's own updater (`claude update`).
+connector; installs the program if it's missing, once you agree, with its
+makers' own installer for your user (`claude` or `codex` in
+`~/.local/bin`, no admin rights); and signs it in if it isn't (`claude
+auth login`, `codex login`), showing what each step prints. Here the
+browser opens to sign in; for a host, Rovik opens the sign-in page in your
+browser and you paste the code it shows (Codex's page asks instead for the
+code its sign-in printed there, `codex login --device-auth`, as on any
+computer without a screen). A connector that signs in with a token or a
+key takes it in its settings. **Sign out** signs the program out. A test
+also finds out whether a newer version is published (Anthropic's release
+channel, `latest`; Codex's npm package), and **Update to …** then runs
+the program's own updater (`claude update`, `codex update`).
 When the check as Rovik starts finds a newer version on this computer, a
 notification offers it too, once per version: **Update** runs the same
 updater, checks the program again and says how it went.
@@ -421,8 +428,8 @@ it** picks how it works:
   chat's own copy of the project (an isolated chat, or one on a cloud
   host), git commands that change the repository (`checkout`, `switch`,
   `reset`, `commit`, `push`…) are refused in every mode, as they are to
-  Rovik's agent: Claude Code is given deny rules for them, and Rovik
-  refuses other spellings (`git -C . push`) when Claude Code asks. The
+  Rovik's agent: Claude Code is given deny rules for them, and Rovik's
+  hook refuses other spellings (`git -C . push`) before they run. The
   chat's changes reach the project when they land. In the chat's **Plan**
   mode it plans in its own plan mode (`--permission-mode plan`), whatever
   its permission mode: it reads, changes nothing, and replies with its
@@ -442,12 +449,50 @@ it** picks how it works:
   rest stays cached, and is rebuilt on every run
   (`--system-prompt-snapshot off`), so a changed setting applies to a
   chat's next message.
+- **Codex.** It runs as itself, its app server (`codex app-server`) in the
+  project folder: its own tools (its shell, its patches, web search…), its
+  own system prompt and the AGENTS.md it reads. With **Follow Rovik's
+  permissions** (the default), Codex asks before every command and every
+  patch, and Rovik's hooks answer as Permissions & approval would for the
+  agent's own calls: its commands by the allowed and denied commands, each
+  file a patch changes as Rovik's edit of it, reviewed in the editor change
+  by change; of a patch you accept in part, Codex applies what you
+  accepted. What Rovik allows, Codex runs without its own sandbox, as
+  Claude Code runs its commands. Codex's own modes are its sandbox
+  presets: **Auto** (in
+  the project's folder, its own reviewer deciding on anything more),
+  **Project folder** (there, without network, never asking), **Read only**
+  and **Everything**. In every mode, a command or patch that would read or
+  change one of the project's [restricted files](#restricted-files) is
+  refused before it runs, as is git that changes the repository in a chat's
+  copy of the project; a command is checked from the project's folder,
+  since Codex doesn't tell its hooks the folder a command runs in. A
+  command or patch that starts without Rovik's hook having seen it (a hook
+  that failed) stops the turn. In the chat's **Plan** mode it plans in its
+  own plan mode, in a read-only sandbox, whatever its permission mode:
+  Rovik refuses its patches, and its plan is the reply. Its reply shows its
+  work as Rovik's agent's does: its commands as what Codex read them as
+  doing ("Read app.ts", "Searched", or "Ran npm"), each file a patch
+  changed as an edit, its plan as Rovik's checklist. It keeps one thread
+  of its own per chat for each way of using it.
+- **Rovik's agent on Codex.** Codex is the model behind Rovik's agent:
+  Rovik's system prompt replaces its own (`baseInstructions`, with the
+  project's section apart, so the rest stays the same from run to run),
+  and Rovik serves the run's tools to it over MCP, as functions of their
+  own. Codex's own tools are off, or refused by Rovik's hook where they
+  can't be turned off, in a read-only sandbox. Each of its calls of
+  Rovik's tools is a reply of Rovik's, run under Permissions & approval in
+  the chat's copy of the project, its result given to Codex while it waits.
+  Rovik's checks, checklist, Plan mode (Rovik's own, not Codex's),
+  Autopilot and subagents work as with any model, and such a model can be
+  a subagent's too.
 
 Either way, its thinking shows: Rovik asks Claude Code for it
-(`--thinking-display summarized`), since current Claude models send none
-unless asked. What comes is the API's summary of the thinking, and it
-costs nothing more; with Rovik's tools, it shows above the reply, as any
-model's does. Connector models take no images or PDFs from the chat.
+(`--thinking-display summarized`) and Codex for its reasoning's summary,
+since current models send none unless asked. What comes is the API's
+summary of the thinking, and it costs nothing more; with Rovik's tools, it
+shows above the reply, as any model's does. Connector models take no
+images or PDFs from the chat.
 
 **Commands.** In a chat on a connector, typing `/` at the start of the
 message lists the commands the harness offers there: Claude Code's own
@@ -466,7 +511,10 @@ typed and alone, without the editor's context before it, and its output
 is the reply (`/compact` says how far it shrank the conversation). Only
 a picked command runs as one: a message typed by hand, `/compact` or
 `/etc/passwd has a typo`, goes as a message, so Claude Code reads it as
-text.
+text. Codex offers `/compact`, `/review` (the uncommitted changes, or what
+you name) and its skills, from the project, the user's folder and its own;
+a picked skill goes to Codex attached, as `$name` and what you typed after
+it.
 
 **Context.** The harness keeps the conversation and compacts it itself,
 so a connector's chat has no context mode (Trimming, CLMs) and Rovik
@@ -475,14 +523,14 @@ context after its last reply instead, "Context used: 35k / 1M (4%)", with
 where it compacts on its own in the tooltip.
 
 On a cloud host, the host needs its own installation: an administrator
-runs `sudo /opt/rovik/bin/rovik-agentd admin claude-code` once, which
-installs Anthropic's package for every user (see
-[docs/cloud-hosts.md](docs/cloud-hosts.md)), or each user runs **Set up**
-with the host chosen, which installs it for them alone. The host's page in
-**Settings → Cloud hosts** lists the connectors installed there for you, in
-one line: "Connectors installed: Claude Code". Each user's chats
-sign in with the token or key of the connector's settings, or the login
-Set up made for them there.
+runs `sudo /opt/rovik/bin/rovik-agentd admin claude-code` (or `admin
+codex`) once, which installs Anthropic's package (OpenAI's installer, for
+Codex) for every user (see [docs/cloud-hosts.md](docs/cloud-hosts.md)), or
+each user runs **Set up** with the host chosen, which installs it for them
+alone. The host's page in **Settings → Cloud hosts** lists the connectors
+installed there for you, in one line: "Connectors installed: Claude Code,
+Codex". Each user's chats sign in with the token or key of the connector's
+settings, or the login Set up made for them there.
 
 When the agent runs commands from the IDE, they get the same `PATH` as your
 login shell, so tools like `npm`, `cargo` and Homebrew packages are found
@@ -493,8 +541,8 @@ found too: when a command fails for want of a program that isn't on that
 
 Rovik makes ready what a command needs, before it runs and again when it
 fails for want of a program or a package. The same goes for the agent's own
-commands and for Claude Code's own shell (through Rovik's hooks, whatever
-its permission mode):
+commands and for Claude Code's and Codex's own shells (through Rovik's
+hooks, whatever their permission mode):
 
 - **Toolchains.** On a cloud host, the Node or Rust version the project asks
   for is installed for the whole server if it isn't there, and Yarn and pnpm
@@ -532,8 +580,8 @@ its permission mode):
 - **Running it again.** A command that is one program (`npm test`) runs again
   by itself once what it lacked is there, and the agent sees both why and the
   second run. A longer one (`cd web && npm test`) is left to the agent, since
-  running it twice could repeat its first parts; Claude Code is told beside
-  the failed command's result.
+  running it twice could repeat its first parts; Claude Code or Codex is
+  told beside the failed command's result.
 
 What a project needs is read the same way everywhere (these checks, the
 Prepare stage, the toolchains a host installs): its own folder, the packages
@@ -1155,8 +1203,11 @@ with its own tools gets them as deny rules of its own (`Read(./.env)`,
 `Edit(./.env)`), and its `PreToolUse` hook checks its calls as Rovik's
 own are checked: its shell's commands, from the folder its shell is in,
 and its `Read`, `Edit`, `Write` and `Grep`. A call the hook can't put to
-Rovik doesn't run. To teach it another name, add it to `SECRET_NAMES` or
-its kin in `restricted_files.rs`.
+Rovik doesn't run. Codex with its own tools has its `PreToolUse` hook check
+the same: its shell's commands, from the project's folder (Codex doesn't
+tell its hooks the folder its shell is in), each file a patch adds,
+changes or deletes, and the images it views. To teach it another name, add
+it to `SECRET_NAMES` or its kin in `restricted_files.rs`.
 
 ### Steering
 

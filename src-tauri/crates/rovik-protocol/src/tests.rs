@@ -946,6 +946,7 @@ fn every_response_round_trips() {
                 command: "claude auth login".into(),
                 output: "Paste code here if prompted >".into(),
                 url: Some("https://claude.com/cai/oauth/authorize?code=true".into()),
+                device_code: false,
                 done: false,
                 error: None,
             }),
