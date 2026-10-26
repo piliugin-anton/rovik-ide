@@ -160,6 +160,20 @@ pub fn score(findings: &[Finding]) -> f64 {
     findings.iter().map(Finding::rank).sum()
 }
 
+/// Findings as a change review's record keeps them: each with its rank.
+pub(super) fn ranked(findings: &[Finding]) -> Value {
+    Value::Array(
+        findings
+            .iter()
+            .map(|f| {
+                let mut v = json!(f);
+                v["rank"] = json!(f.rank());
+                v
+            })
+            .collect(),
+    )
+}
+
 // The severity and the location may be in bold or backticks; a note in
 // parentheses may follow the location; "Steps 2 and 4" is a location. The
 // title's separator is TITLE_SEPARATOR's: a hyphen, en dash or colon in a
@@ -1128,7 +1142,8 @@ impl Run {
                     // confidence: none is only shown.
                     serious = kept.clone();
                     review["status"] = json!(if kept.is_empty() { "clean" } else { "findings" });
-                    review["findings"] = json!(kept);
+                    review["findings"] = ranked(&kept);
+                    review["score"] = json!(score(&kept));
                     if r.status == SubStatus::Partial {
                         review["partial"] = json!(true);
                     }
@@ -1165,7 +1180,7 @@ impl Run {
         let open = serious.len() + unchecked.len();
         if blocking && last && open > 0 && !self.stopped() {
             if !unchecked.is_empty() {
-                review["findings"] = json!(unchecked);
+                review["findings"] = ranked(&unchecked);
             }
             review["blocked"] = json!(true);
             review["open"] = json!(open);
@@ -1174,7 +1189,7 @@ impl Run {
         let asked_again = blocking && !reported && !last && !self.review_held.is_empty();
         if asked_again {
             serious = self.review_held.clone();
-            review["findings"] = json!(serious);
+            review["findings"] = ranked(&serious);
         }
         self.review_record(&record_id, review.clone()).await?;
         self.review_outcome = Some((
@@ -1190,6 +1205,7 @@ impl Run {
                 "status": review["status"],
                 "findings": review["findings"].as_array().map_or(0, Vec::len),
                 "serious": serious.len(),
+                "score": review["score"],
                 "dropped": review["dropped"].as_array().map_or(0, Vec::len),
                 "changedLines": rendered.changed_lines,
                 "reduced": rendered.reduced,
@@ -1358,6 +1374,16 @@ mod tests {
             f.confidence = "plausible".into();
             assert_eq!(f.rank(), plausible, "{severity}, plausible");
         }
+    }
+
+    /// Findings in a change review's record carry their rank.
+    #[test]
+    fn a_records_findings_carry_their_rank() {
+        let found = parse_findings(GOOD).unwrap();
+        let record = ranked(&found);
+        assert_eq!(record[0]["rank"], 1.0);
+        assert_eq!(record[1]["rank"], 0.125);
+        assert_eq!(record[0]["title"], "Off by one in the loop");
     }
 
     /// A review's score adds up its open findings' ranks: 0 when it's
