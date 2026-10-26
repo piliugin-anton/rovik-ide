@@ -55,8 +55,6 @@ let calls: { cmd: string; args: any }[] = [];
         return [];
       case 'git_head':
         return head;
-      case 'git_branches':
-        return [{ name: 'main', is_remote: false }];
       case 'agent_start':
         return 'run-1';
       case 'send_chat_message':

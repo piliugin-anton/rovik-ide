@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import { askForChatBranch, NewBranchDialogHost } from './NewBranchDialog';
 
-const OFFER = { current: 'main', suggested: 'kind-torvalds' };
+const OFFER = { current: 'main', suggested: 'rovik-kind-torvalds-x7k2m9qa' };
 
 const flush = async () => {
   for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -51,13 +51,13 @@ test('the dialog names the main branch and offers the name made up for it', asyn
     'Create a branch for this chat?'
   );
   assert.match(dialog()!.querySelector('.confirm-dialog-message')!.textContent!, /on main\./);
-  assert.equal(nameInput().value, 'kind-torvalds');
+  assert.equal(nameInput().value, OFFER.suggested);
   assert.equal(dontAsk().checked, false);
   assert.equal(document.activeElement, button('Yes'), 'Enter takes the name as it is');
 
   button('Yes').click();
   assert.equal(await answer, true, 'asked again next time');
-  assert.deepEqual(created, ['kind-torvalds']);
+  assert.deepEqual(created, [OFFER.suggested]);
   assert.equal(dialog(), null, 'closed');
   dispose();
 });
@@ -97,7 +97,7 @@ test('No creates nothing, and “Don’t ask again” goes with either answer', 
   dontAsk().click();
   button('Yes').click();
   assert.equal(await answer, false);
-  assert.deepEqual(created, ['kind-torvalds']);
+  assert.deepEqual(created, [OFFER.suggested]);
   dispose();
 });
 
@@ -112,8 +112,7 @@ test('Escape is No', async () => {
 });
 
 test('a branch that can’t be created keeps the dialog open, saying why', async () => {
-  const refused =
-    "Couldn't create branch 'kind-torvalds': a reference with that name already exists";
+  const refused = `Couldn't create branch '${OFFER.suggested}': a reference with that name already exists`;
   const { dispose, create } = mount(refused);
   let answered = false;
   const answer = askForChatBranch(OFFER, create).then((askAgain) => {
@@ -127,7 +126,7 @@ test('a branch that can’t be created keeps the dialog open, saying why', async
   assert.equal(answered, false, 'the chat still waits');
   assert.equal(button('Yes').disabled, false, 'to try again');
 
-  type('kind-torvalds-2');
+  type('rovik-kind-torvalds-m3p8z1kd');
   assert.equal(note(), null, 'a new name clears it');
   button('No').click();
   assert.equal(await answer, true);
@@ -137,8 +136,11 @@ test('a branch that can’t be created keeps the dialog open, saying why', async
 test('one question at a time: a chat that would be asked meanwhile isn’t', async () => {
   const { dispose, create } = mount();
   const first = askForChatBranch(OFFER, create);
-  assert.equal(await askForChatBranch({ ...OFFER, suggested: 'brave-hopper' }, create), true);
-  assert.equal(nameInput().value, 'kind-torvalds', 'the first one stays');
+  assert.equal(
+    await askForChatBranch({ ...OFFER, suggested: 'rovik-brave-hopper-q4w8e2r6' }, create),
+    true
+  );
+  assert.equal(nameInput().value, OFFER.suggested, 'the first one stays');
   button('No').click();
   assert.equal(await first, true);
   dispose();

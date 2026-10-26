@@ -563,13 +563,6 @@ export type GitStatus = {
   push_remote?: string | null;
 };
 
-/** A branch the Git panel lists (src-tauri/src/git/branches.rs, `git_branches`). */
-export interface GitBranch {
-  /** `main`, or `origin/main` for a remote-tracking branch. */
-  name: string;
-  is_remote: boolean;
-}
-
 /** Where HEAD is (src-tauri/src/git/branches.rs, `git_head`). */
 export interface GitHead {
   /** The branch HEAD is on; none when it's detached, or before the first commit. */

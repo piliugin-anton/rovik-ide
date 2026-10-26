@@ -140,9 +140,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   while the project is on its main branch (the remote's default branch;
   without one, `init.defaultBranch`, `main` or `master`), the agent waits
   while you're asked whether to create a branch for the chat's work and
-  switch to it. Its name is made up of an adjective and a programmer's
-  last name, such as `kind-torvalds`, and you can change it. Your
-  uncommitted changes come along. **Don't ask again** turns the question
+  switch to it. Its name is made up for it, and you can change it:
+  `rovik-`, an adjective, a programmer's last name and 8 random letters
+  and digits, such as `rovik-kind-torvalds-x7k2m9qa`. Your uncommitted
+  changes come along. **Don't ask again** turns the question
   off; Settings → Agent runs turns it back on.
 - **Long tasks stay on track.** Older history is trimmed automatically, or
   the agent can manage its own context (see

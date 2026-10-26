@@ -64,40 +64,29 @@ function drawing(...numbers: number[]): () => number {
 /** The draw that picks `word` from `list`. */
 const drawOf = (list: readonly string[], word: string) => (list.indexOf(word) + 0.5) / list.length;
 
-test('a suggested name is an adjective and a programmer’s last name', () => {
-  // The adjective comes from the first draw, the name from the second.
+test('a suggested name is rovik-, an adjective, a programmer’s last name and 8 random characters', () => {
+  // Drawn in that order: the adjective, the name, then each character.
   const name = suggestBranchName(
-    [],
-    drawing(drawOf(ADJECTIVES, 'kind'), drawOf(PROGRAMMERS, 'torvalds'))
+    drawing(drawOf(ADJECTIVES, 'kind'), drawOf(PROGRAMMERS, 'torvalds'), ...Array(8).fill(0))
   );
-  assert.equal(name, 'kind-torvalds');
-  // Any draw Math.random makes picks a word, the lowest and the highest too.
+  assert.equal(name, 'rovik-kind-torvalds-aaaaaaaa');
+  // Any draw Math.random makes picks one, the lowest and the highest too.
   assert.equal(
-    suggestBranchName([], () => 0),
-    `${ADJECTIVES[0]}-${PROGRAMMERS[0]}`
+    suggestBranchName(() => 0),
+    `rovik-${ADJECTIVES[0]}-${PROGRAMMERS[0]}-aaaaaaaa`
   );
   assert.equal(
-    suggestBranchName([], () => 1 - Number.EPSILON),
-    `${ADJECTIVES[ADJECTIVES.length - 1]}-${PROGRAMMERS[PROGRAMMERS.length - 1]}`
+    suggestBranchName(() => 1 - Number.EPSILON),
+    `rovik-${ADJECTIVES[ADJECTIVES.length - 1]}-${PROGRAMMERS[PROGRAMMERS.length - 1]}-99999999`
   );
 });
 
-test('a suggested name that a branch has already gets a number', () => {
-  const first = `${ADJECTIVES[0]}-${PROGRAMMERS[0]}`;
-  assert.equal(
-    suggestBranchName([first], () => 0),
-    `${first}-2`
-  );
-  assert.equal(
-    suggestBranchName(['main', first, `${first}-2`], () => 0),
-    `${first}-3`
-  );
-});
-
-test('every suggested name is a valid branch name', () => {
-  for (let i = 0; i < 500; i++) {
-    const name = suggestBranchName([]);
-    assert.match(name, /^[a-z]+-[a-z]+$/, name);
+test('suggested names are valid branch names, ending in 8 lowercase letters and digits, that don’t repeat', () => {
+  const names = Array.from({ length: 500 }, () => suggestBranchName());
+  for (const name of names) {
+    assert.match(name, /^rovik-[a-z]+-[a-z]+-[a-z0-9]{8}$/, name);
     assert.equal(branchNameProblem(name), null, name);
   }
+  // Without the random end, 500 of the pairs alone would almost surely repeat.
+  assert.equal(new Set(names).size, names.length, 'no name twice');
 });

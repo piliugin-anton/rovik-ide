@@ -16,7 +16,6 @@ import { listen } from '@tauri-apps/api/event';
 import { createVirtualizer } from '@tanstack/solid-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  GitBranch,
   GitFileStatusCode,
   GitPanelPhase,
   GitStatus,
@@ -452,6 +451,10 @@ export function GitPanel(props: GitPanelProps) {
     )
   );
   const [branchOpen, setBranchOpen] = createSignal(false);
+  interface GitBranch {
+    name: string;
+    is_remote: boolean;
+  }
   const [branches, setBranches] = createSignal<GitBranch[]>([]);
   const [branchesLoading, setBranchesLoading] = createSignal(false);
 

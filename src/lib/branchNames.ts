@@ -2,9 +2,9 @@
 //
 // Git branch names: what makes one valid, and a fresh one to suggest. The
 // Git panel checks the names typed into it here, and a new chat's offer of
-// a branch of its own (lib/chatBranch.ts) suggests one made up of an
-// adjective and a programmer's last name, "kind-torvalds", that no branch
-// of the repository has yet.
+// a branch of its own (lib/chatBranch.ts) suggests one made up for it:
+// "rovik-", an adjective, a programmer's last name and 8 random letters
+// and digits, "rovik-kind-torvalds-x7k2m9qa".
 
 /**
  * Why `name` can't be a branch's name, or null when it can (or is empty):
@@ -89,18 +89,23 @@ export const PROGRAMMERS = words(`
 `);
 
 /**
- * A name for a new branch that none of `taken` has: an adjective and a
- * programmer's last name, "kind-torvalds". With so many pairs, one is
- * rarely taken; one that is gets a number, "kind-torvalds-2".
+ * What the random end of a suggested name is made of: lowercase, as the
+ * rest of it, so two names never differ only in case (the same branch on
+ * macOS and Windows, whose files don't tell case apart).
  */
-export function suggestBranchName(
-  taken: Iterable<string>,
-  random: () => number = Math.random
-): string {
-  const used = new Set(taken);
-  const pick = (list: readonly string[]) => list[Math.floor(random() * list.length)];
-  const pair = `${pick(ADJECTIVES)}-${pick(PROGRAMMERS)}`;
-  let name = pair;
-  for (let n = 2; used.has(name); n++) name = `${pair}-${n}`;
-  return name;
+const RANDOM_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+/**
+ * A name for a new branch: "rovik-", an adjective, a programmer's last
+ * name and 8 random letters and digits, "rovik-kind-torvalds-x7k2m9qa".
+ * The random end makes it a name no branch has yet. `random` draws from
+ * [0, 1), as Math.random does: the adjective first, then the name, then
+ * each character.
+ */
+export function suggestBranchName(random: () => number = Math.random): string {
+  const pick = (list: ArrayLike<string>) => list[Math.floor(random() * list.length)];
+  const adjective = pick(ADJECTIVES);
+  const programmer = pick(PROGRAMMERS);
+  const end = Array.from({ length: 8 }, () => pick(RANDOM_CHARS)).join('');
+  return `rovik-${adjective}-${programmer}-${end}`;
 }

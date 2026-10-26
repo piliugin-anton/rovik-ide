@@ -12,7 +12,7 @@
 // again" turns it off; Settings → Agent runs turns it on again.
 import { createSignal } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
-import type { GitBranch, GitHead } from '../types';
+import type { GitHead } from '../types';
 import { suggestBranchName } from './branchNames';
 import { sharedMap, type Entries } from './sharedState';
 
@@ -38,7 +38,7 @@ export function setOffersChatBranch(offer: boolean): void {
 export interface BranchOffer {
   /** The branch the project is on: its main one. */
   current: string;
-  /** A name for the new branch that no branch has yet, here or on a remote. */
+  /** A name made up for the new branch (lib/branchNames.ts). */
   suggested: string;
 }
 
@@ -65,12 +65,7 @@ async function offerFor(root: string): Promise<BranchOffer | null> {
   try {
     const head = await invoke<GitHead>('git_head', { path: root });
     if (!head.branch || head.branch !== head.main_branch) return null;
-    const branches = await invoke<GitBranch[]>('git_branches', { path: root });
-    // A remote's branch is pushed to under its own name: `origin/x` takes x.
-    const taken = branches.map((b) =>
-      b.is_remote ? b.name.slice(b.name.indexOf('/') + 1) : b.name
-    );
-    return { current: head.branch, suggested: suggestBranchName(taken) };
+    return { current: head.branch, suggested: suggestBranchName() };
   } catch (err) {
     // A project that isn't in a repository is the usual case, not a problem.
     if (!/not a git repository/i.test(String(err))) console.warn('No branch offered:', err);
