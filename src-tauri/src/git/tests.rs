@@ -1,5 +1,6 @@
 use super::branches::validate_branch_name;
 use super::history::{compact_contains, git_log_blocking, git_log_scan};
+#[cfg(unix)]
 use super::remote::credential_fill;
 use super::*;
 use git2::{BranchType, Repository};

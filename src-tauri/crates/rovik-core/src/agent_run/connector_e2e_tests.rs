@@ -2,10 +2,12 @@
 //! (a stand-in, connectors::fake_claude_with_mcp) is the model behind
 //! Rovik's agent loop, and its calls are Rovik's tool calls, run by Rovik.
 
+#[cfg(unix)]
 use super::permissions::{ApprovalRule, Approver};
 use super::*;
 
 /// A start on Claude Code's model, with Rovik's tools.
+#[cfg(unix)]
 fn connector_start(h: &Harness, program: &str, text: &str) -> StartRequest {
     let mut request = h.request(
         "connector://claude-code",
@@ -366,6 +368,7 @@ async fn claude_code_in_a_chats_copy_is_refused_git_that_changes_the_repository(
 }
 
 /// A send in `mode` on Claude Code's model with its own tools.
+#[cfg(unix)]
 fn own_tools_send(h: &Harness, program: &str, mode: &str, text: &str) -> StartRequest {
     let send = StartKind::Send {
         message: UserMessage {
