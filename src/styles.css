@@ -5847,9 +5847,11 @@ body.is-resizing * {
   opacity: 0.8;
 }
 
-/* A check round's triage and repair, inside its record. */
+/* A check round's triage and repair, inside its record; a change
+   review's guide, inside the review's (ReviewRecord.tsx). */
 .chat-verify-triage,
-.chat-verify-repair {
+.chat-verify-repair,
+.review-guide {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -5860,19 +5862,23 @@ body.is-resizing * {
   background: var(--tool-background);
 }
 
-.chat-verify-triage.running {
+.chat-verify-triage.running,
+.review-guide.running {
   border-left-color: var(--info);
 }
 
-.chat-verify-triage.done {
+.chat-verify-triage.done,
+.review-guide.done {
   border-left-color: var(--accent);
 }
 
-.chat-verify-triage.skipped {
+.chat-verify-triage.skipped,
+.review-guide.skipped {
   border-left-color: var(--warning);
 }
 
-.chat-verify-triage.stopped {
+.chat-verify-triage.stopped,
+.review-guide.stopped {
   opacity: 0.8;
 }
 
@@ -9704,6 +9710,12 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .review-confidence {
   margin-left: auto;
   color: var(--fg-dim);
+}
+
+/* A change review's finding: what it weighs (change_review.rs `rank`). */
+.review-rank {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .review-finding-body {

@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  formatScore,
+  guideHeadline,
   reviewAnswersSummary,
   reviewDetails,
   reviewFacts,
@@ -247,4 +249,46 @@ test('answer_review’s answers in a line (S06)', () => {
   );
   assert.equal(reviewAnswersSummary({}), undefined);
   assert.equal(reviewAnswersSummary({ responses: 'fixed' }), undefined);
+});
+
+test('a change review’s score shows in its line and its facts, as a plain number', () => {
+  assert.equal(formatScore(1), '1');
+  assert.equal(formatScore(0.125), '0.125');
+  assert.equal(formatScore(1.375), '1.375');
+  const scored: ReviewMeta = { ...base, status: 'findings', round: 2, score: 1.25 };
+  assert.equal(reviewDetails(scored), 'Review 2 of at most 3 · score 1.25');
+  assert.deepEqual(
+    reviewFacts(scored).find(([label]) => label === 'Score'),
+    [
+      'Score',
+      '1.25: the open findings’ ranks added up (high 1, medium 0.5, low 0.25, halved when plausible)',
+    ]
+  );
+  // A clean review scores 0; a record from before scores has none.
+  assert.equal(
+    reviewDetails({ ...base, status: 'clean', score: 0 }),
+    'Review 1 of at most 3 · score 0'
+  );
+  assert.equal(reviewDetails({ ...base, status: 'clean' }), 'Review 1 of at most 3');
+});
+
+test('the guide’s line says what it did, or why it didn’t', () => {
+  assert.equal(
+    guideHeadline({ status: 'running' }),
+    'The reviewer found problems again: a guide is reading the reviews and the agent’s answers…'
+  );
+  assert.equal(
+    guideHeadline({ status: 'done' }),
+    'The guide told the agent where and why it goes wrong.'
+  );
+  assert.equal(
+    guideHeadline({ status: 'done', partial: true }),
+    'The guide told the agent where and why it goes wrong (out of budget: what it found so far).'
+  );
+  assert.equal(
+    guideHeadline({ status: 'skipped', reason: 'its model failed (overloaded)' }),
+    'Guide skipped: its model failed (overloaded). The agent got the findings alone.'
+  );
+  assert.equal(guideHeadline({ status: 'stopped' }), 'The guide was stopped.');
+  assert.match(guideHeadline({ status: 'running' }, true), /didn’t finish/);
 });

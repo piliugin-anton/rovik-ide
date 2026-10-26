@@ -24,6 +24,7 @@ import {
 export type SubagentKindId =
   | 'scout'
   | 'reviewer'
+  | 'guide'
   | 'triage'
   | 'planReviewer'
   | 'worker'
@@ -58,6 +59,14 @@ export const SUBAGENT_KINDS: {
     when: 'Runs when the agent finishes a change of at least the size set in Limits, at most 3 times a run.',
     toolCalls: 30,
     minutes: 5,
+  },
+  {
+    id: 'guide',
+    label: 'Guide',
+    hint: 'Reads every review of the change, the agent’s answers and the change, and tells the agent where and why it goes wrong. Read-only.',
+    when: 'Runs once the change reviewer has found problems twice in a run, and after each later review that finds some, before the findings go to the agent. Needs the change reviewer.',
+    toolCalls: 20,
+    minutes: 4,
   },
   {
     id: 'triage',
@@ -207,6 +216,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
   kinds: {
     scout: { ...DEFAULT_KIND },
     reviewer: { ...DEFAULT_KIND },
+    guide: { ...DEFAULT_KIND },
     triage: { ...DEFAULT_KIND },
     planReviewer: { ...DEFAULT_KIND },
     worker: { ...DEFAULT_KIND },

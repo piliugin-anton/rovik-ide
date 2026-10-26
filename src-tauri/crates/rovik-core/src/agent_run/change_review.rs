@@ -132,6 +132,32 @@ impl Finding {
             (true, _) => self.title.clone(),
         }
     }
+
+    /// How much the finding weighs: its severity's weight (high 1, medium
+    /// 0.5, low 0.25), halved when the reviewer found it only plausible.
+    pub fn rank(&self) -> f64 {
+        let weight = match self.severity.as_str() {
+            "high" => 1.0,
+            "medium" => 0.5,
+            _ => 0.25,
+        };
+        if self.confidence == "confirmed" {
+            weight
+        } else {
+            weight * PLAUSIBLE_FACTOR
+        }
+    }
+}
+
+/// What a finding the reviewer found only plausible weighs, of what a
+/// confirmed one of its severity does.
+const PLAUSIBLE_FACTOR: f64 = 0.5;
+
+/// A review's score: its open findings' ranks added up. 0 for a clean
+/// review; the higher, the more is still wrong with the change. The
+/// weights are powers of two, so the sum is exact.
+pub fn score(findings: &[Finding]) -> f64 {
+    findings.iter().map(Finding::rank).sum()
 }
 
 // The severity and the location may be in bold or backticks; a note in
@@ -1315,6 +1341,38 @@ mod tests {
         - Scenario: none at run time,\n     just noise.\n   \
         - Fix: remove it.\n   \
         - Confidence: plausible.";
+
+    /// A finding weighs its severity's weight (high 1, medium 0.5, low
+    /// 0.25), half of it when the reviewer found it only plausible.
+    #[test]
+    fn a_findings_rank_is_its_severity_weight_halved_when_plausible() {
+        let mut f = parse_findings(GOOD).unwrap().remove(0);
+        for (severity, confirmed, plausible) in [
+            ("high", 1.0, 0.5),
+            ("medium", 0.5, 0.25),
+            ("low", 0.25, 0.125),
+        ] {
+            f.severity = severity.into();
+            f.confidence = "confirmed".into();
+            assert_eq!(f.rank(), confirmed, "{severity}, confirmed");
+            f.confidence = "plausible".into();
+            assert_eq!(f.rank(), plausible, "{severity}, plausible");
+        }
+    }
+
+    /// A review's score adds up its open findings' ranks: 0 when it's
+    /// clean, exact for any mix (the weights are powers of two).
+    #[test]
+    fn a_reviews_score_adds_up_its_findings_ranks() {
+        // A high confirmed one (1) and a low plausible one (0.125).
+        let found = parse_findings(GOOD).unwrap();
+        assert_eq!(score(&found), 1.125);
+        assert_eq!(score(&[]), 0.0);
+        let mut medium = found[0].clone();
+        medium.severity = "medium".into();
+        medium.confidence = "plausible".into();
+        assert_eq!(score(&[found[0].clone(), medium]), 1.25);
+    }
 
     #[test]
     fn findings_parse_strictly() {
