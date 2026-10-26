@@ -347,6 +347,7 @@ impl ProcessTree {
     /// started with `&`): everything still in its process group on Unix,
     /// where a process that left the group (setsid, a daemon) is out of
     /// reach, and in its job on Windows.
+    #[cfg_attr(not(unix), allow(unused_variables))]
     pub fn end_leftovers(&self, child: &std::process::Child) {
         #[cfg(unix)]
         kill_group(child);
