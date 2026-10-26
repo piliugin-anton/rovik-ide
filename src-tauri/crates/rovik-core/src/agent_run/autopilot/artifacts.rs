@@ -222,7 +222,8 @@ pub(in crate::agent_run) async fn implementation_message(
         return Ok(Err(format!("The plan's file {file} can't be read")));
     };
     let shown = plan::relative_plan_path(&file, root);
-    let mut content = plan::implementation_request(&text, Some(&shown));
+    // Autopilot's stages run with Rovik's tools, on any model.
+    let mut content = plan::implementation_request(&text, Some(&shown), true);
     // S04: the tests written first, which it makes pass.
     if let Some(line) = tests_line(&tests_of(core, dialog_id, records).await?) {
         content.push_str("\n\n");

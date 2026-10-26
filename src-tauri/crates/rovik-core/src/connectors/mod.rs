@@ -63,6 +63,16 @@ const RECAP_CHARS: usize = 24_000;
 /// How many stored messages are read to build a turn.
 const RECENT_MESSAGES: usize = 400;
 
+/// What a message says first when it changes the harness's tools in the
+/// middle of its session (`prompt_for`): the tools it called before stay in
+/// its conversation, and it would call them again. Its own tools now (Agent
+/// mode), or Rovik's (Plan mode, Autopilot).
+const NOW_ITS_OWN_TOOLS: &str = "Rovik IDE: you work with your own tools from this message on. \
+     Rovik's tools, which you called earlier in this conversation, aren't available any more.";
+const NOW_ROVIK_TOOLS: &str = "Rovik IDE: you work with Rovik's tools from this message on, as \
+     your system prompt lists them. Your own tools, which you used earlier in this conversation, \
+     aren't available any more.";
+
 /// A step the harness ran itself (a tool of its own), or a stretch of its
 /// thinking between them (`thinking`), as the chat shows it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -483,6 +493,12 @@ pub async fn run_chat(
                 false => None,
             };
             let session = sessions::get(&data_dir, kind, dialog_id);
+            // The chat's mode changed whose tools the session works with
+            // since its last turn (Claude Code keeps one session for both).
+            let tools_changed = session
+                .as_deref()
+                .and_then(|s| worked_with_rovik_tools(&rows, s))
+                .is_some_and(|had| had != rovik_tools);
             let current = params.current_user_content.as_deref();
             let ask = |new_session| {
                 prompt_for(
@@ -491,6 +507,7 @@ pub async fn run_chat(
                     continuing,
                     new_session,
                     rovik_tools,
+                    tools_changed,
                     answers.as_ref(),
                 )
             };
@@ -609,13 +626,16 @@ fn sent_text(m: &MessageRow) -> String {
 /// In Rovik's tools mode (`rovik_tools`) every message of the harness's is
 /// a reply, its tool calls' too, and when the last one made calls whose
 /// results its session never got (`answers`: the run ended while it
-/// waited), they're given first.
+/// waited), they're given first. When the session it goes on with last
+/// worked with the other tools (`tools_changed`), it's told which it has
+/// now before anything else.
 pub fn prompt_for(
     rows: &[MessageRow],
     current_user_content: Option<&str>,
     continue_reply: bool,
     new_session: bool,
     rovik_tools: bool,
+    tools_changed: bool,
     answers: Option<&Answers>,
 ) -> String {
     // Rows up to the pending reply this turn fills (unfinished, at the end).
@@ -686,6 +706,12 @@ pub fn prompt_for(
                  project is in your working folder as it is now):\n\n{recap}\n\n---\n\n{prompt}"
             );
         }
+    } else if tools_changed {
+        let now = match rovik_tools {
+            true => NOW_ROVIK_TOOLS,
+            false => NOW_ITS_OWN_TOOLS,
+        };
+        prompt = format!("{now}\n\n{prompt}");
     }
     // Not a command the user picked, but it starts like one: a harness runs
     // a message that starts with `/name` as its command (`/compact` typed by
@@ -694,6 +720,17 @@ pub fn prompt_for(
         prompt.insert(0, ' ');
     }
     prompt
+}
+
+/// Whether the harness's `session` worked with Rovik's tools on its last
+/// turn in the chat, as the latest reply naming it records
+/// (`meta.connector`, agent_run); none when no reply does.
+fn worked_with_rovik_tools(rows: &[MessageRow], session: &str) -> Option<bool> {
+    rows.iter().rev().find_map(|m| {
+        let connector = m.meta.as_ref()?.get("connector")?;
+        (connector.get("session")?.as_str()? == session)
+            .then(|| connector.get("rovikTools").and_then(Value::as_bool) == Some(true))
+    })
 }
 
 /// The user's own request, not the IDE's notes (`harness`) or what the
@@ -1208,7 +1245,7 @@ mod tests {
             ),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, false, false, false, None);
+        let prompt = prompt_for(&rows, None, false, false, false, false, None);
         assert_eq!(
             prompt,
             "Checks failed:\n- lint\n\nAlso rename it\n\n[editor: foo.rs]"
@@ -1216,6 +1253,7 @@ mod tests {
         let prompt = prompt_for(
             &rows,
             Some("Also rename it (sent)"),
+            false,
             false,
             false,
             false,
@@ -1239,7 +1277,7 @@ mod tests {
         ];
         // No editor context before it, and no recap even for a new session.
         let sent = Some("[editor: foo.rs]\n\n/compact keep the API");
-        let prompt = prompt_for(&rows, sent, false, true, false, None);
+        let prompt = prompt_for(&rows, sent, false, true, false, false, None);
         assert_eq!(prompt, "/compact keep the API");
 
         // Not one of the harness's commands: a message like any other.
@@ -1248,7 +1286,7 @@ mod tests {
             row("assistant", "", None, false),
         ];
         let sent = Some("[editor: foo.rs]\n\n/etc/passwd has a typo");
-        let prompt = prompt_for(&rows, sent, false, false, false, None);
+        let prompt = prompt_for(&rows, sent, false, false, false, false, None);
         assert_eq!(prompt, "[editor: foo.rs]\n\n/etc/passwd has a typo");
 
         // Typed by hand, not picked: a message, though nothing comes before
@@ -1257,7 +1295,7 @@ mod tests {
             row("user", "/compact keep the API", None, true),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, false, false, false, None);
+        let prompt = prompt_for(&rows, None, false, false, false, false, None);
         assert_eq!(prompt, " /compact keep the API");
     }
 
@@ -1269,7 +1307,7 @@ mod tests {
             row("user", "Next", None, true),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, false, true, false, None);
+        let prompt = prompt_for(&rows, None, false, true, false, false, None);
         assert!(
             prompt.starts_with("Earlier in this conversation"),
             "{prompt}"
@@ -1282,7 +1320,63 @@ mod tests {
             row("user", "Hello", None, true),
             row("assistant", "", None, false),
         ];
-        assert_eq!(prompt_for(&first, None, false, true, false, None), "Hello");
+        assert_eq!(
+            prompt_for(&first, None, false, true, false, false, None),
+            "Hello"
+        );
+    }
+
+    #[test]
+    fn a_message_that_changes_the_tools_mid_session_says_which_it_has_now() {
+        let rows = vec![
+            row("user", "Plan it", None, true),
+            row("assistant", "Saved the plan.", None, true),
+            row("user", "Implement it", None, true),
+            row("assistant", "", None, false),
+        ];
+        let own = prompt_for(&rows, None, false, false, false, true, None);
+        assert_eq!(own, format!("{NOW_ITS_OWN_TOOLS}\n\nImplement it"));
+        let rovik = prompt_for(&rows, None, false, false, true, true, None);
+        assert_eq!(rovik, format!("{NOW_ROVIK_TOOLS}\n\nImplement it"));
+        // The same tools: nothing to say. A new session has none it called.
+        assert_eq!(
+            prompt_for(&rows, None, false, false, false, false, None),
+            "Implement it"
+        );
+        let fresh = prompt_for(&rows, None, false, true, false, true, None);
+        assert!(!fresh.contains(NOW_ITS_OWN_TOOLS), "{fresh}");
+        // A picked command goes alone, as typed.
+        let command = Some(json!({ "command": true }));
+        let rows = vec![
+            row("user", "/compact", command, true),
+            row("assistant", "", None, false),
+        ];
+        assert_eq!(
+            prompt_for(&rows, None, false, false, false, true, None),
+            "/compact"
+        );
+    }
+
+    #[test]
+    fn whose_tools_a_session_last_worked_with_is_its_latest_reply_s() {
+        let reply = |connector: Value| {
+            row(
+                "assistant",
+                "x",
+                Some(json!({ "connector": connector })),
+                true,
+            )
+        };
+        let rows = vec![
+            reply(json!({ "session": "s-1", "rovikTools": true })),
+            reply(json!({ "session": "s-2" })),
+            row("assistant", "a provider's", None, true),
+            reply(json!({ "session": "s-1" })),
+        ];
+        assert_eq!(worked_with_rovik_tools(&rows, "s-1"), Some(false));
+        assert_eq!(worked_with_rovik_tools(&rows[..1], "s-1"), Some(true));
+        assert_eq!(worked_with_rovik_tools(&rows, "s-2"), Some(false));
+        assert_eq!(worked_with_rovik_tools(&rows, "s-3"), None);
     }
 
     #[test]
@@ -1292,7 +1386,7 @@ mod tests {
             row("assistant", "Half a re", None, true),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, true, false, false, None);
+        let prompt = prompt_for(&rows, None, true, false, false, false, None);
         assert!(prompt.contains("interrupted"), "{prompt}");
     }
 
@@ -1306,7 +1400,7 @@ mod tests {
             row("assistant", "recent reply", None, true),
             row("user", "Now", None, true),
         ];
-        let prompt = prompt_for(&rows, None, false, true, false, None);
+        let prompt = prompt_for(&rows, None, false, true, false, false, None);
         assert!(prompt.contains("[earlier turns left out]"));
         assert!(prompt.contains("recent reply"));
         assert!(!prompt.contains(&long));

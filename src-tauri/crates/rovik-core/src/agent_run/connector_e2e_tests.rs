@@ -129,6 +129,113 @@ async fn claude_code_s_plan_is_saved_in_the_project_s_plans_folder() {
     assert_eq!(h.file("src/alpha.rs").as_deref(), Some(ALPHA));
 }
 
+/// One session of Claude Code's goes on whichever tools a message gets:
+/// Rovik's in Plan mode, its own in Agent mode. A message that changes them
+/// says first which it has now, since the ones it called before stay in its
+/// conversation and it would call them again.
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_code_is_told_when_the_chat_s_mode_changes_its_tools() {
+    let h = harness(&[("src/alpha.rs", "pub fn alpha() -> u32 {\n    42\n}\n")]).await;
+    let read = json!({ "path": "src/alpha.rs" });
+    let rovik_tools = || crate::connectors::fake_claude_with_mcp(&h._dir.0, "read", &read);
+    let Some(program) = rovik_tools() else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    let file = |name: &str| std::fs::read_to_string(h._dir.0.join(name)).unwrap();
+    let send = |mode: &str, text: &str| {
+        h.events.lock().unwrap().clear();
+        h.start(claude_code_send(&h, &program, mode, text))
+    };
+
+    // Plan mode, the chat's first message: a new session, nothing to say.
+    send("plan", "What does alpha return?").await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(file("prompt.txt"), "What does alpha return?");
+
+    // Agent mode goes on in the session (s-9), with its own tools.
+    crate::connectors::fake_claude(
+        &h._dir.0,
+        r#"here=$(dirname "$0")
+echo "$@" > "$here/args.txt"
+cat > "$here/prompt.txt"
+echo '{"type":"system","subtype":"init","session_id":"s-9","model":"claude-sonnet-5","tools":["Read"]}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Made it 43.","usage":{},"num_turns":1}'
+"#,
+    );
+    send("agent", "Make it 43").await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+    assert!(
+        file("args.txt").contains("--resume s-9"),
+        "{}",
+        file("args.txt")
+    );
+    let prompt = file("prompt.txt");
+    assert!(
+        prompt.starts_with("Rovik IDE: you work with your own tools from this message on.")
+            && prompt.ends_with("\n\nMake it 43"),
+        "{prompt}"
+    );
+    // A second message with its own tools: nothing changed.
+    send("agent", "And document it").await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(file("prompt.txt"), "And document it");
+
+    // Plan mode again: Rovik's tools.
+    rovik_tools().unwrap();
+    send("plan", "Plan the tests").await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+    let prompt = file("prompt.txt");
+    assert!(
+        prompt.starts_with("Rovik IDE: you work with Rovik's tools from this message on")
+            && prompt.ends_with("\n\nPlan the tests"),
+        "{prompt}"
+    );
+}
+
+/// "Implement this plan" on Claude Code, in Agent mode, with its own
+/// tools: it's sent the plan, and asked to keep its checklist with its own
+/// tool, not with Rovik's `todo`, which it hasn't there.
+#[cfg(unix)]
+#[tokio::test]
+async fn implementing_a_plan_on_claude_code_asks_for_its_own_checklist() {
+    let plan = "# Alpha\n\nMake alpha return 43.\n";
+    let h = harness(&[
+        ("src/alpha.rs", "pub fn alpha() -> u32 {\n    42\n}\n"),
+        (".rovik/plans/alpha.md", plan),
+    ])
+    .await;
+    let program = crate::connectors::fake_claude(
+        &h._dir.0,
+        r#"cat > "$(dirname "$0")/prompt.txt"
+echo '{"type":"system","subtype":"init","session_id":"s-1","model":"claude-sonnet-5","tools":["Read"]}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Done.","usage":{},"num_turns":1}'
+"#,
+    );
+    let mut request = claude_code_send(
+        &h,
+        &program,
+        "agent",
+        "Implement the plan in `.rovik/plans/alpha.md`.",
+    );
+    if let StartKind::Send { message } = &mut request.start {
+        let file = h.project.join(".rovik/plans/alpha.md");
+        message.meta = Some(json!({
+            "mode": "agent", "implementsPlan": true, "planPath": file.to_string_lossy(),
+        }));
+    }
+    h.start(request).await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+    let prompt = std::fs::read_to_string(h._dir.0.join("prompt.txt")).unwrap();
+    assert!(prompt.contains("<plan>\n# Alpha"), "{prompt}");
+    assert!(
+        prompt.contains("with your own checklist tool, if you have one"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("todo"), "{prompt}");
+}
+
 /// Claude Code with its own tools, under Rovik's permissions: each call it
 /// would ask about comes to the run as Rovik's call of the same kind, and
 /// is refused, allowed, or put to the user, as Rovik's own would be.
@@ -738,4 +845,20 @@ async fn real_claude_code_plans_as_rovik_s_agent_then_implements_with_its_own_to
         "its own tools: {meta:#}"
     );
     assert_eq!(meta["connector"]["session"], session, "{meta:#}");
+    // Told its tools changed, it calls none of Rovik's it planned with.
+    let steps: Vec<String> = h
+        .messages()
+        .await
+        .iter()
+        .skip_while(|m| m.id != planned.id)
+        .skip(1)
+        .filter_map(|m| m.meta.as_ref()?["connector"]["steps"].as_array().cloned())
+        .flatten()
+        .filter_map(|s| s["name"].as_str().map(str::to_string))
+        .collect();
+    eprintln!("its steps: {steps:?}");
+    assert!(
+        !steps.iter().any(|s| s.starts_with("mcp__rovik__")),
+        "{steps:?}"
+    );
 }

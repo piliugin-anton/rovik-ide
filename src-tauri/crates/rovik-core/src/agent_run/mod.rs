@@ -1479,8 +1479,11 @@ pub(super) async fn start_run(
     let mut request = request;
     if let StartKind::Send { message } = &mut request.start {
         check_attachments(db, message).await?;
-        // "Implement this plan": the plan's text, from its file (A04).
-        plan::expand_implementation(message, request.root.as_deref())?;
+        // "Implement this plan": the plan's text, from its file (A04), in
+        // Agent mode, where a connector's harness has its own tools, not
+        // Rovik's `todo` (`run::lead_profile`).
+        let todo = !run::lead_profile(request.profile.clone(), true).no_tools;
+        plan::expand_implementation(message, request.root.as_deref(), todo)?;
     }
     // A change to the chat's files outside any run (a server's merge)
     // ends first: the run starts on them as they're left.

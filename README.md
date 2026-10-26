@@ -449,7 +449,9 @@ Rovik's agent too.
   so the rest stays cached, and is rebuilt on every run
   (`--system-prompt-snapshot off`), so a changed setting, or a change of
   mode, applies to a chat's next message. Claude Code goes on in the same
-  session of its own whichever tools a message gets.
+  session of its own whichever tools a message gets, told first when they
+  change; implementing a plan in Agent mode, it keeps its checklist with
+  its own tools.
 - **Codex, in Agent mode.** It runs as itself, its app server
   (`codex app-server`) in the project folder: its own tools (its shell,
   its patches, web search…), its own system prompt and the AGENTS.md it

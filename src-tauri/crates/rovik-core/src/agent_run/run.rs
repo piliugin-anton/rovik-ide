@@ -3909,7 +3909,7 @@ fn run_mode_for(messages: &[MessageRow]) -> Option<String> {
 /// Rovik's agent: Rovik's prompt, plans and checks, and Rovik's tools,
 /// which the run offers it over MCP (connectors/mod.rs). Another model's
 /// profile is as it was set.
-fn lead_profile(mut profile: ModelProfile, agent_mode: bool) -> ModelProfile {
+pub(super) fn lead_profile(mut profile: ModelProfile, agent_mode: bool) -> ModelProfile {
     if crate::connectors::is_connector(&profile.base_url) {
         profile.no_tools = agent_mode;
     }
