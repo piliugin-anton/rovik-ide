@@ -4,15 +4,16 @@ Today a window has one project, and a project is one folder. A **workspace**
 is a named list of folders opened together in one window. Each folder is a
 row at the top of the file tree, search covers all of them, and the Git
 panel lists every repository they're in. A commit puts each file into the
-repository it belongs to, on the branch that repository is on.
+repository it belongs to, on the branch that repository is on. A chat works
+in one folder, or, as an **All folders** chat, in every folder at once.
 
 This plan says what to build, in which files, in which order, and how each
 step is tested. Section 1 lists the decisions; section 2 what the code does
-today; sections 3 and 4 how workspaces work and the edge cases; sections 5
-to 7 the milestones, the tasks and the tests; section 8 the risks; section 9
-the questions asked and the ones decided while planning, for the user to
-check; section 10 what a later plan would add (chats that change several
-folders at once); section 11 the problems in today's code found on the way.
+today; section 3 how workspaces work; section 4 how All folders chats work;
+section 5 the edge cases; sections 6 to 8 the milestones, the tasks and the
+tests; section 9 the risks; section 10 the questions asked and the ones
+decided while planning, for the user to check; section 11 what this plan
+leaves out; section 12 the problems in today's code found on the way.
 
 The user's requirements:
 
@@ -22,60 +23,86 @@ The user's requirements:
 - A workspace holds several folders and shows them in the file tree.
 - A folder may be a repository of its own. A commit puts each file into the
   repository it belongs to, on the branch that repository is on.
+- **New chat** shows which folder the chat is for: a dropdown of the
+  workspace's folders.
+- Chats that work across the folders, with the context of all of them, in
+  the first release.
 - The other places a second folder changes are found, handled and tested.
 
-The idea in one sentence: **a workspace groups projects; it doesn't replace
-them.** Each folder stays the project it is when opened alone, with its
-chats, its settings, its plans and its ID file. So everything built per
-project (runs, isolation, landing, cloud hosts, WSL, checks) works as it
-does, folder by folder. What's new is a window with several folders at once:
-the tree, the watcher, search, tabs, terminals, the editor's services, the
-Git panel and the chat list learn to take a list of folders, and a project
-is the list of one.
+The idea in one sentence: **a workspace groups projects, and has chats of
+its own.** Each folder stays the project it is when opened alone, with its
+chats, its settings, its plans and its ID file: a chat started in a folder
+is that folder's, and everything built per project (runs, isolation,
+landing, WSL, cloud hosts, checks) works for it as it does. The workspace
+is a project too, with no folder of its own: its chats are the All folders
+chats, which see every folder as a top-level folder of one view
+(`api/src/x.ts`, `web/src/y.ts`). Around them, the tree, the watcher,
+search, tabs, terminals, the editor's services, the Git panel and the chat
+list learn to take a list of folders, and a project is the list of one.
 
-The plan was reviewed against the code before it was committed; section 9
-ends with what that review changed.
+The plan was reviewed against the code twice before it was committed;
+section 10 ends with what the reviews changed.
 
 Contents:
 
 1. [Decisions](#1-decisions)
 2. [What the code does today](#2-what-the-code-does-today)
 3. [How workspaces work](#3-how-workspaces-work)
-4. [Edge cases](#4-edge-cases)
-5. [Milestones](#5-milestones)
-6. [Implementation order for an AI agent](#6-implementation-order-for-an-ai-agent)
-7. [Testing](#7-testing)
-8. [Risks and known limits](#8-risks-and-known-limits)
-9. [Questions](#9-questions)
-10. [Later: chats across folders](#10-later-chats-across-folders)
-11. [Problems in today's code found while planning](#11-problems-in-todays-code-found-while-planning)
+4. [All folders chats](#4-all-folders-chats)
+5. [Edge cases](#5-edge-cases)
+6. [Milestones](#6-milestones)
+7. [Implementation order for an AI agent](#7-implementation-order-for-an-ai-agent)
+8. [Testing](#8-testing)
+9. [Risks and known limits](#9-risks-and-known-limits)
+10. [Questions](#10-questions)
+11. [Not in this plan](#11-not-in-this-plan)
+12. [Problems in today's code found while planning](#12-problems-in-todays-code-found-while-planning)
 
 ---
 
 ## 1. Decisions
 
-| #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | **A workspace groups projects.** It is a name and an ordered list of folders. Each folder stays a project of its own: its chats, project settings, plans, ID file (`.rovik/project.json`) and window claim are the ones it has when opened alone, and opening a workspace opens each folder as opening it alone does.                                                                                                                                                                                                                                                 | Every per-project mechanism keys on one project with one folder: a chat's run and its overlay (`agent_run/run.rs:149-152`; `overlay/chats.rs:405-480` binds a chat to one folder), landing, the sync to WSL and hosts (one shadow repository per project, `rovik-client/src/shadow.rs`), the settings (`project-settings.json`, by folder). Reused folder by folder, none of them changes, and a folder's chats are the same whether it's open alone or in a workspace.            |
-| D2  | **A chat works in one folder, which the user picks.** With several folders, **New chat** opens a dropdown of the workspace's folders, and the chat is made in the one clicked; the message box then shows the chat's folder. A workspace lists the chats of all its folders, each marked with its folder. Chats that change several folders are a later plan (section 10).                                                                                                                                                                                            | On Windows every chat of a project runs in WSL from a snapshot of its one folder (`Remote::go_home`, `rovik-client/src/remote.rs:753-756`); overlays, the sandbox's redirect, landing and the hosts' protocol are one-folder designs. A chat per folder keeps all of them as they are. A chat across folders needs all of them redesigned. The folder decides what the chat can read and change, so the user picks it rather than the app guessing (the user's choice, section 9). |
-| D3  | **The menu:** **Create a workspace…** always, and **Add folder to workspace…** when a workspace is open, both above **New window**.                                                                                                                                                                                                                                                                                                                                                                                                                                   | The user's wording (section 9).                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| D4  | **Create** opens a dialog: the workspace's name and its folders, the open folder already listed. **Create** opens the workspace in this window; the open folder's tabs, terminals and commit message come along. **Add folder to workspace…** opens the folder picker, which takes several folders at once.                                                                                                                                                                                                                                                           | Making one from the open project is the common case. Opening it in this window follows **Open project…**; **New window** is there for the other case.                                                                                                                                                                                                                                                                                                                              |
-| D5  | **Folder rules.** A workspace has at least one folder. A folder can't be in it twice (the same folder however it's spelled: case where the file system ignores it, a trailing separator, a link), nor inside another of its folders, nor contain one, nor share another member's project ID (a copy made with `cp -r`, or one sharing its chats). A folder may be in several workspaces.                                                                                                                                                                              | Nested folders would list, watch, search, claim and index the same files twice. Two folders with one project ID would need one claim key twice, which an OS lock refuses (`os_lock.rs:1-7`), and a chat of that project would have two folders.                                                                                                                                                                                                                                    |
-| D6  | **Stored as a shared map** (`<data>/shared/workspaces.json`, through `shared_state.rs`), not in the chats database. The workspace writes nothing into its folders, and there's no workspace file.                                                                                                                                                                                                                                                                                                                                                                     | A workspace owns no chats (D1): it's a list, like the projects' tabs the shared maps already keep, one save per entry and one window at a time. It needs no schema step, so nothing in the database changes before the feature ships (every merge to master is released, `release.yml:1`). A file to share, like VS Code's `.code-workspace`, wasn't asked for.                                                                                                                    |
-| D7  | **One window per folder.** A workspace is claimed as a project is (`instances.rs`): `workspace:<id>` and each folder's own keys (`folder:` and `project:`), all or none. A folder is open in one window at a time, alone or in a workspace; opening it where it's taken brings that window to the front.                                                                                                                                                                                                                                                              | A chat's run lives in the process of the window that has its project (README, "Several windows"). With D1, a workspace has its folders' chats.                                                                                                                                                                                                                                                                                                                                     |
-| D8  | **The tree** of a workspace has a row per folder at the top, named after the folder (with its parent folder added when two have the same name). A folder's row can't be renamed, deleted, cut, copied or dragged, from the menu, a shortcut or the mouse, and the backend refuses those on a window's folder; its menu has **Remove from workspace**, and **Locate…** while the folder is missing. A project's tree stays as it is.                                                                                                                                   | Deleting a folder's row would trash the whole folder (`delete_path` has no guard, `filesystem/entries.rs:437-455`), and Mod+Backspace deletes the selected rows (`App.tsx:1762-1765`). Moving one into another folder would nest them (D5).                                                                                                                                                                                                                                        |
-| D9  | **Git, per repository.** Each folder's repository is the one it's in, found upward as today; a folder without one says so. There is one entry per repository, by its git folder (two folders in one repository share it; a linked worktree has its own), listing only the changes in the window's folders. With one repository the panel is as today. With several, each has a section (its branch with ahead and behind, Pull, History, stash and hooks in its header), and one message box commits every included repository's changes, each on the branch it's on. | The user's requirement. Hooks, merges and branches are already per repository (`Repository::discover`, `git/mod.rs:41-43`). One message box matches "commit, and each file goes to its repository"; a different message per repository is one commit per repository, the others unticked. Repositories inside a folder aren't searched for: to commit in several repositories, add each as a folder.                                                                               |
-| D10 | **A commit across repositories runs every checking hook first:** pre-commit in each repository, then the message hooks in each, and only then the commits. A hook that fails stops the commit everywhere, before any is written. A commit that fails after others were written is reported by repository, and the message stays.                                                                                                                                                                                                                                      | All or nothing as far as git can do it: commits in several repositories can't be one transaction. Each repository's hooks still run in git's order.                                                                                                                                                                                                                                                                                                                                |
-| D11 | **A commit never takes changes outside its folders.** If a repository has changes staged outside the window's folders (a terminal's `git add` beside them), its commit is refused before anything is staged or run, naming them. An untracked folder with a `.git` of its own is never staged by the repository around it.                                                                                                                                                                                                                                            | Today a folder of a repository commits whatever a terminal staged beside it, and a repository inside the folder makes Commit fail (section 11). Refusing keeps the hooks seeing what's committed, as today; committing around such changes would need a second index the hooks don't see.                                                                                                                                                                                          |
-| D12 | **Search covers every folder**, its results grouped by folder. A chat's `@` lists its folder's files.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | A chat can't read the other folders (D2).                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| D13 | **The editor's services take the window's folders.** IntelliSense loads every folder, and the active file's folder decides the compiler options, as the active file's config already decides them (`intellisense/activeConfig.ts:1-21`). rust-analyzer gets every folder as a workspace folder. The formatter, the Markdown preview and the diagnostics the agent reads take the file's own folder.                                                                                                                                                                   | One program and one rust-analyzer per window are what the app has. One folder's options for every file would give the others false errors, which reach the agent's diagnostics (`lib/diagnostics.ts:84-93`).                                                                                                                                                                                                                                                                       |
-| D14 | **Terminals are the window's.** A workspace's terminals are its own, as a project's are. In a workspace, **+** asks which folder, as it already asks which host once one is connected; a new terminal opened otherwise starts in the active folder.                                                                                                                                                                                                                                                                                                                   | No new kind of menu, and the terminal panel already keeps each project's terminals apart (`TerminalPanel.tsx:88-104`).                                                                                                                                                                                                                                                                                                                                                             |
-| D15 | **Settings stay per folder.** Project checks and Restricted files are kept per folder, as now; in a workspace their pages have a folder picker.                                                                                                                                                                                                                                                                                                                                                                                                                       | Checks run in the chat's folder, and a chat is one folder's (D2).                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| D16 | **What's saved:** the window's workspace in `last-project.json`; its tabs, open folders in the tree and terminal panel in `project-sessions` under `workspace:<id>`. An update's restart reopens it (`--workspace <id>`).                                                                                                                                                                                                                                                                                                                                             | As for a project.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| D17 | **Names.** "Workspace" is the user's word, and the name of the code that stores and opens one. Code that takes several folders (tree, watcher, search, git) says folders and repositories, and treats a project as a list of one. Project checks' "Workspaces (N packages)" heading becomes "Packages (N)".                                                                                                                                                                                                                                                           | "Workspace" already means package-manager workspaces (`project_profile/workspaces.rs`, the Project checks page), Codex's `workspace-write`, the LSP's workspace folders and Cargo's workspace.                                                                                                                                                                                                                                                                                     |
-| D18 | **Removing a folder** closes its tabs (asking about unsaved ones). Its chats at work keep running, and its claim is kept until they finish, as when a window leaves a project for another. Its terminals keep running.                                                                                                                                                                                                                                                                                                                                                | The window does this already when it switches projects (`instances.rs`, `AtWork`).                                                                                                                                                                                                                                                                                                                                                                                                 |
-| D19 | **A missing folder** (deleted, or a drive or share that isn't mounted) shows as missing, with **Locate…**, **Try again** and **Remove from workspace**; the rest of the workspace opens.                                                                                                                                                                                                                                                                                                                                                                              | One folder gone mustn't close the others.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| D20 | **No feature flag, and each merge safe to ship.** Every merge to master is released (`release.yml:1`). The menu items come last (milestone F): until then no window has more than one folder, and every task keeps a project as it is, but for the bugs it fixes and two changes a project benefits from too (C03's tab titles, C05's heading).                                                                                                                                                                                                                       | AGENTS.md: no speculative options. Nothing reaches a user half built.                                                                                                                                                                                                                                                                                                                                                                                                              |
+### The workspace
+
+| #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Why                                                                                                                                                                                                                                                                                                                                                                                |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | **A workspace groups projects, and has chats of its own.** It is a name and an ordered list of folders. Each folder stays a project of its own: its chats, project settings, plans, ID file (`.rovik/project.json`) and window claim are the ones it has when opened alone. The workspace is itself a project, with no folder: its chats are the All folders chats (D22).                                                                                                                                                                                             | Every per-project mechanism keys on one project: a chat's run and its overlay (`agent_run/run.rs:149-152`; `overlay/chats.rs:405-480`), landing, the sync to WSL and hosts (`rovik-client/src/shadow.rs`), the settings (by folder). A folder's chats stay the same whether it's open alone or in a workspace, and the workspace's own chats need an owner (`dialogs.project_id`). |
+| D2  | **New chat asks which folder.** With several folders, both **New chat** buttons open a dropdown of the workspace's folders, then **All folders**; the chat is made in the one clicked. A folder chat works in its folder, as a project's chat does. The message box shows the chat's folder; it doesn't change once the chat has a message.                                                                                                                                                                                                                           | The user's choice. The folder decides what the chat can read and change, so the user picks it rather than the app guessing.                                                                                                                                                                                                                                                        |
+| D3  | **The menu:** **Create a workspace…** always, and **Add folder to workspace…** when a workspace is open, both above **New window**.                                                                                                                                                                                                                                                                                                                                                                                                                                   | The user's wording.                                                                                                                                                                                                                                                                                                                                                                |
+| D4  | **Create** opens a dialog: the workspace's name and its folders, the open folder already listed. **Create** opens the workspace in this window; the open folder's tabs, terminals and commit message come along. **Add folder to workspace…** opens the folder picker, which takes several folders at once.                                                                                                                                                                                                                                                           | Making one from the open project is the common case. Opening it in this window follows **Open project…**; **New window** is there for the other case.                                                                                                                                                                                                                              |
+| D5  | **Folder rules.** A workspace has at least one folder. A folder can't be in it twice (the same folder however it's spelled: case where the file system ignores it, a trailing separator, a link), nor inside another of its folders, nor contain one, nor share another member's project ID (a copy made with `cp -r`, or one sharing its chats). A folder may be in several workspaces.                                                                                                                                                                              | Nested folders would list, watch, search, claim and index the same files twice. Two folders with one project ID would need one claim key twice, which an OS lock refuses (`os_lock.rs:1-7`).                                                                                                                                                                                       |
+| D6  | **Stored in the chats database**, schema version 11: `projects.kind` (`folder` or `workspace`) and a `workspace_folders` table. A workspace is a `projects` row of kind `workspace` with no path; its folders are rows of their own. Only `projects::list` and `summary` learn the kind; everything that asks which chats, may this chat run here, or is it open elsewhere works by ID as it does.                                                                                                                                                                    | The All folders chats need an owner row: `dialogs.project_id` references `projects`. In the same database, a workspace and its folders change in one transaction, across windows. The schema step also makes an older Rovik refuse the database rather than show a workspace as a missing project with **Relink** (`schema.rs:368-376`).                                           |
+| D7  | **One window per folder.** A workspace is claimed as a project is (`instances.rs`): its own `project:<id>` and each folder's keys (`folder:` and `project:`), all or none. A folder is open in one window at a time, alone or in a workspace; opening it where it's taken brings that window to the front.                                                                                                                                                                                                                                                            | A chat's run lives in the process of the window that has its project (README, "Several windows"). With `project:<id>`, the checks made today by project ID (`open_elsewhere`, `handled_elsewhere`) guard the workspace's chats unchanged.                                                                                                                                          |
+| D8  | **Each folder has a stored name**, a valid path segment on every system, unique in the workspace whatever its case, given when the folder joins and never changed: its folder's name, else `<parent>-<name>`, then `-2`, `-3`. A removed folder's name stays taken, and comes back if the folder does. The name is what the tree, tabs, search, the Git panel and the chats show.                                                                                                                                                                                     | All folders chats write `api/src/x.ts` into their history and their plans: a name that changed, or went to another folder, would point old messages at the wrong files.                                                                                                                                                                                                            |
+| D9  | **The tree** of a workspace has a row per folder at the top, with its name. A folder's row can't be renamed, deleted, cut, copied or dragged, from the menu, a shortcut or the mouse, and the backend refuses those on a window's folder; its menu has **Remove from workspace**, and **Locate…** and **Try again** while the folder is missing. A project's tree stays as it is.                                                                                                                                                                                     | Deleting a folder's row would trash the whole folder (`delete_path` has no guard, `filesystem/entries.rs:437-455`), and Mod+Backspace deletes the selected rows (`App.tsx:1762-1765`). Moving one into another would nest them (D5).                                                                                                                                               |
+| D10 | **Git, per repository.** Each folder's repository is the one it's in, found upward as today; a folder without one says so. There is one entry per repository, by its git folder (two folders in one repository share it; a linked worktree has its own), listing only the changes in the window's folders. With one repository the panel is as today. With several, each has a section (its branch with ahead and behind, Pull, History, stash and hooks in its header), and one message box commits every included repository's changes, each on the branch it's on. | The user's requirement. Hooks, merges and branches are already per repository (`git/mod.rs:41-43`). A different message per repository is one commit per repository, the others unticked. Repositories inside a folder aren't searched for: to commit in several repositories, add each as a folder.                                                                               |
+| D11 | **A commit across repositories runs every checking hook first:** pre-commit in each repository, then the message hooks in each, and only then the commits. A hook that fails stops the commit everywhere, before any is written. A commit that fails after others were written is reported by repository, and the message stays.                                                                                                                                                                                                                                      | All or nothing as far as git can do it. Each repository's hooks still run in git's order.                                                                                                                                                                                                                                                                                          |
+| D12 | **A commit never takes changes outside its folders.** If a repository has changes staged outside the window's folders (a terminal's `git add` beside them), its commit is refused before anything is staged or run, naming them. An untracked folder with a `.git` of its own is never staged by the repository around it.                                                                                                                                                                                                                                            | Today a folder of a repository commits whatever a terminal staged beside it, and a repository inside the folder makes Commit fail (section 12). Refusing keeps the hooks seeing what's committed, as today.                                                                                                                                                                        |
+| D13 | **Search covers every folder**, its results grouped by folder. A folder chat's `@` lists its folder's files; an All folders chat's lists every folder's, under their names.                                                                                                                                                                                                                                                                                                                                                                                           | A folder chat can't read the other folders.                                                                                                                                                                                                                                                                                                                                        |
+| D14 | **The editor's services take the window's folders.** IntelliSense loads every folder, and the active file's folder decides the compiler options, as the active file's config already decides them (`intellisense/activeConfig.ts:1-21`). rust-analyzer gets every folder as a workspace folder. The formatter, the Markdown preview and the diagnostics the agent reads take the file's own folder.                                                                                                                                                                   | One program and one rust-analyzer per window are what the app has. One folder's options for every file would give the others false errors, which reach the agent's diagnostics (`lib/diagnostics.ts:84-93`).                                                                                                                                                                       |
+| D15 | **Terminals are the window's.** In a workspace, **+** asks which folder (the same folder list as New chat), as it already asks which host once one is connected; a new terminal opened otherwise starts in the active folder.                                                                                                                                                                                                                                                                                                                                         | No new kind of menu, and the terminal panel already keeps each project's terminals apart (`TerminalPanel.tsx:88-104`).                                                                                                                                                                                                                                                             |
+| D16 | **Settings stay per folder.** Project checks and Restricted files are kept per folder, as now; in a workspace their pages have a folder picker. An All folders chat follows each folder's, for that folder's files.                                                                                                                                                                                                                                                                                                                                                   | Checks and secrets are a folder's: the same file is restricted whichever chat touches it.                                                                                                                                                                                                                                                                                          |
+| D17 | **What's saved:** the window's workspace in `last-project.json`; its tabs, open folders in the tree and terminal panel in `project-sessions` under `workspace:<id>`. An update's restart reopens it (`--workspace <id>`).                                                                                                                                                                                                                                                                                                                                             | As for a project.                                                                                                                                                                                                                                                                                                                                                                  |
+| D18 | **Names in the code.** "Workspace" is the user's word, and the name of the code that stores and opens one. Code that takes several folders (tree, watcher, search, git, the overlay's `Folders`) says folders and repositories, and treats a project as a list of one. Project checks' "Workspaces (N packages)" heading becomes "Packages (N)".                                                                                                                                                                                                                      | "Workspace" already means package-manager workspaces (`project_profile/workspaces.rs`, the Project checks page), Codex's `workspace-write`, the LSP's workspace folders and Cargo's workspace.                                                                                                                                                                                     |
+| D19 | **Removing or locating a folder** is refused while an All folders chat is at work or has changes in that folder that aren't landed, naming the chats. Otherwise it closes the folder's tabs (asking about unsaved ones); its own chats at work keep running, its claim kept until they finish, as when a window leaves a project for another. Its terminals keep running.                                                                                                                                                                                             | An All folders chat's changes in a folder that left would have nowhere to land. A folder chat's changes land in its own folder whatever the window has open.                                                                                                                                                                                                                       |
+| D20 | **A missing folder** (deleted, or a drive or share that isn't mounted) shows as missing, with **Locate…**, **Try again** and **Remove from workspace**; the rest of the workspace opens. An All folders chat doesn't start a run while one is missing, and says which.                                                                                                                                                                                                                                                                                                | One folder gone mustn't close the others; an All folders chat's view needs every folder.                                                                                                                                                                                                                                                                                           |
+| D21 | **No feature flag, and each merge safe to ship.** Every merge to master is released (`release.yml:1`). The menu items come last (milestone H): until then no window has more than one folder, nothing offers All folders, and every task keeps a project as it is, but for the bugs it fixes and two changes a project benefits from too (C03's tab titles, C05's heading).                                                                                                                                                                                           | AGENTS.md: no speculative options. Nothing reaches a user half built.                                                                                                                                                                                                                                                                                                              |
+
+### All folders chats
+
+| #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Why                                                                                                                                                                                                             |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D22 | **One view of every folder.** An All folders chat's run works in one folder, mounted for the chat, whose top-level folders are the workspace's folders by name, each backed by that folder's own overlay. The view's top level is read-only; moving a file from one folder to another is a copy and a delete (EXDEV), as across file systems. A chat's folders share its one 512 MiB budget.                                                                                | The run keeps one root: every tool, the repository map, write scopes, plans' `Files:` and subagents work as they do. Each folder keeps its own overlay, so its ignore rules, conflicts and landing are its own. |
+| D23 | **Always isolated.** An All folders chat opens its view for every run, Plan mode included, and needs the virtual-files driver for it, as the agent-managed context does today. Without the driver, or with isolation turned off, it doesn't start, and the dropdown shows **All folders** greyed with the reason and a way to the driver's settings.                                                                                                                        | There is no single folder to fall back to working in.                                                                                                                                                           |
+| D24 | **Lands all or nothing across folders.** One landing writes every folder's changes under one journal; a conflict in any folder lands nothing. **Undo** puts back every folder.                                                                                                                                                                                                                                                                                              | One change across an API and its client is one change.                                                                                                                                                          |
+| D25 | **Each folder speaks for itself.** The agent is told it works in a workspace and how paths are made; each folder's instructions (`AGENTS.md`…), stack and checks are given under its name, with one shared limit on the instructions (12,000 characters). Each folder's restricted files apply under its name.                                                                                                                                                              | A folder's rules are for its files; N full instruction files on every request would crowd the context.                                                                                                          |
+| D26 | **Commands run at the view's top** (`cd api && npm test`). Under bubblewrap each folder's view also shows at the folder's real path; where commands can't be redirected (Seatbelt, Landlock), a command naming any folder's real path is refused by text, as one folder's is today.                                                                                                                                                                                         | As an isolated chat's commands work now, for every folder.                                                                                                                                                      |
+| D27 | **Checks: those of the folders the chat changed**, each run in its folder; a failure that was there before the change is set apart per folder, as today.                                                                                                                                                                                                                                                                                                                    | Checks are a folder's setting. Unchanged folders' slow suites stay out of every round.                                                                                                                          |
+| D28 | **Plans go in the workspace's first folder**, in its `.rovik/plans`, as a project's do; **Implement** on a plan whose `Files:` name the workspace's folders starts an All folders chat.                                                                                                                                                                                                                                                                                     | A plan in a folder lands, syncs to WSL and hosts and shows in the tree like any other file, with no special place to keep.                                                                                      |
+| D29 | **The branch offer covers every repository** on its main branch: one question names them all, and one branch name goes to each.                                                                                                                                                                                                                                                                                                                                             | One task, one branch name across its repositories.                                                                                                                                                              |
+| D30 | **In WSL and on hosts**, an All folders chat is carried as one project: each folder's files under its name, in one snapshot, one push and one worktree. The chat's results come back split by folder and land through each folder's overlay. There, git shows Rovik's snapshots, not the folders' history, and Autopilot keeps its results for the app to land rather than pushing a branch. A Rovik there without the feature refuses the chat, with the upgrade it needs. | On Windows every chat runs in WSL, so All folders chats need this to exist there. One project there keeps the daemon and the protocol as they are, but for a list of folders.                                   |
+| D31 | **Connectors work in the view.** Claude Code and Codex run with the view as their folder, so they need no extra directories; the workspace's section of the prompt is given to them, as they'd find no `AGENTS.md` at the view's top.                                                                                                                                                                                                                                       | Every folder is under their working folder; a chat keeps its view's path, so their sessions keep going.                                                                                                         |
+| D32 | **An empty chat can change folder**, by New chat's dropdown (which reuses it); a chat with messages never does. To work across folders later, start an All folders chat.                                                                                                                                                                                                                                                                                                    | A chat's history names paths from its folder (`src/x.ts` against `api/src/x.ts`): moving it would make them wrong.                                                                                              |
 
 ---
 
@@ -89,7 +116,7 @@ Contents:
   (`:2327`), the terminals (`:2346`), the Settings dialog (`:2388`) and
   what's saved (`:1929-1977`). It's only ever set to a folder (`:199`,
   `:520`). Every run's `root` is it (`ChatPanel.tsx:3057`, `:3097`).
-- Switching projects (`openProjectAt`, `:485-506`) checks the claim, settles
+- Switching projects (`openProjectAt`, `App.tsx:485-506`) checks the claim, settles
   unsaved tabs, saves the session, claims, then resets the tabs, the git
   marks, the tree's selection and Monaco's models. The tree, the watcher,
   rust-analyzer and IntelliSense follow `rootPath`.
@@ -106,7 +133,8 @@ Contents:
   (`chat_db/projects.rs:29`), a row in `projects` (one name, one path, one git
   fingerprint), its other locations (copies and moves) in `project_paths`.
   Chats point at it by `dialogs.project_id`; every chat query filters on one
-  project (`chat_db/store.rs:226, 240, 273`; `search.rs:191`).
+  project (`chat_db/store.rs:226, 240, 273`; `search.rs:191`). The schema is
+  at version 10 (`chat_db/schema.rs:354`).
 - A chat runs only in one of its project's folders (`check_project`,
   `agent_run/mod.rs:1301-1333`; `chat_may_use`, `projects.rs:348-364`).
 - A window claims its folder with OS locks in `<data>/open-projects`
@@ -130,10 +158,9 @@ Contents:
   (`u:dev:ino`), open folders by absolute path. The context menu has New
   file, New folder, Rename, Copy, Cut, Paste and Delete
   (`FileContextMenu.tsx:58-148`), the keyboard has the same
-  (`App.tsx:1744-1766`), and any row can be dragged (`FileTree.tsx:57-72`);
-  one drop target moves a file to "the project root" (`FileTree.tsx:22,
-486-494`). Creating, renaming, pasting and deleting rely on the watcher to
-  refresh the tree.
+  (`App.tsx:1744-1766`), and any row can be dragged (`FileTree.tsx:57-72`).
+  Creating, renaming, pasting and deleting rely on the watcher to refresh
+  the tree.
 - One watcher per process, for one folder (`filesystem/watch.rs:363-396`). It
   sends `fs-changes` with absolute paths, an `unknown` change with the root
   when more than 300 come at once, and `git-changed` with no payload. It
@@ -186,23 +213,69 @@ Contents:
   Two buttons make one: ＋ in the chat's header and **New chat** in the chat
   list (`ChatPanel.tsx:4438`, `:4450`); either reuses an empty open chat
   (`:1160-1175`). With no chat to show, the panel makes an empty one itself
-  (`:1029-1034`, `:1270`). `set_dialog_project` (`chat_db/store.rs:504`) can
-  move a chat to another project.
+  (`:1029-1034`, `:1270`). `set_dialog_project` (`chat_db/store.rs:504`)
+  can move a chat to another project.
+- The editor context sent with a message names the active file by its
+  absolute path (`activeContext.ts:71-83`).
 
 ### The agent
 
 - A run has one `root` (where it works: the overlay's mount in an isolated
-  chat) and one `project_root` (`agent_run/run.rs:149-152`). Its tools
-  resolve paths within that root (`resolve_within_root`,
-  `agent_tools.rs:110-133`), and the model never sees the absolute path.
-- A chat's overlay is bound to one folder and mounted as the run's root
-  (`overlay/chats.rs:405-480`); the sandbox redirects one view to one folder
-  (`overlay/confine.rs:92-105`); landing writes one folder
-  (`overlay/land.rs:565-625`).
-- The project's context is one folder's: its instructions file, stack,
-  settings and restricted files (`load_for`, `agent_run/project.rs:168-198`).
-- On Windows a project's chats run in WSL, and on a host, from snapshots of
-  the folder (`shadow.rs`).
+  chat) and one `project_root`, the real folder (`agent_run/run.rs:149-152`),
+  used in about 35 places in 11 files: settings, plans, the code before the
+  change, the busy waits. `Run::isolated()` is `root != project_root`
+  (`repair.rs:843-846`). Tools resolve paths within the root
+  (`resolve_within_root`, `agent_tools.rs:110-133`); the model never sees
+  the absolute path.
+- A failed mount, or Plan mode with no changes, works directly in the
+  project (`run.rs:751-806`).
+- The project's context is one folder's: its instructions file (the first
+  of `AGENTS.md`, `CLAUDE.md`…, 6000 characters at most), stack, checks,
+  settings and restricted files (`load_for`, `agent_run/project.rs:168-198`;
+  `project_profile.rs:643-670`). Autopilot's V09 already runs checks of
+  folders one level down as `cd <folder> && …` (`project.rs:200-227`).
+- Checks run in the root (`run_checks`, `verify.rs:1610, 1685-1686`); a check that fails runs
+  again on the code before the change, in a scratch overlay of the project
+  (`before.rs:186-275`).
+- Plans are saved in `project_root`'s `.rovik/plans`, also in an isolated
+  chat (`execute.rs:2087-2139`).
+- Commands run in the root (`command_tool.rs:632-655`). bubblewrap binds
+  the chat's view at the project's path; Seatbelt and Landlock can't, so a
+  command naming the project's full path is refused by text
+  (`overlay/confine.rs:71-105, 906-911`; `overlay/chats.rs:80-99`).
+- Connectors run in the root (`run.rs:2259`), and are given no project
+  section in their own-tools mode: they read `CLAUDE.md`/`AGENTS.md` from
+  their working folder (`connectors/claude_code.rs:276-278`).
+
+### The overlay
+
+- The view is one `OverlayFs` over one folder (`overlay/fs.rs:430-509`),
+  mounted per chat (`overlay/chats.rs:352-392`) through the inode-based
+  `vfs::backend::Backend` (`vfs/backend.rs:15-67`). Its store is
+  `<data>/overlays/<chat>/`, bound to the folder by `project.txt`
+  (`chats.rs:428-440`).
+- Landing plans a three-way merge per file, locks the project
+  (`PROJECT_LOCKS`, `land.rs:458-468`) and its files, and writes under a
+  journal, with `project.txt` per chat (`land.rs:565-625, 884-959`). A
+  landing can be undone (`:1156-1222`).
+- Each chat's clashes with other chats on the same project are kept by chat
+  (`refresh_project_peers`, `chats.rs:1565-1650`).
+- Windows has no driver: a project's chat runs in WSL (`vfs/mod.rs:108-121`;
+  `rovik-client/src/remote/moving.rs:275-297`).
+
+### WSL and hosts
+
+- A chat there works in a worktree of its project's repository on the
+  daemon, `work/<chat>` (`rovik-agentd/src/work.rs:200-234`). The client
+  snapshots the folder into the project's shadow repository, pushes it, and
+  sends `WorkSync` before each message (`rovik-client/src/remote/sync.rs`);
+  the daemon refuses a chat in another project (`work.rs:162-163`).
+- Results come back as commits, imported into the chat's overlay
+  (`remote/results.rs:250-319`; `overlay/import.rs:103-410`) and landed
+  while the project is open. Delivery pushes a branch to the project's
+  remote (`rovik-agentd/src/results.rs:164-240`).
+- Features are negotiated (`rovik-protocol/src/lib.rs:66-68`); an older
+  host is offered an upgrade (`moving.rs:753-784`).
 
 ### The editor's services
 
@@ -221,47 +294,91 @@ Contents:
 
 ### 3.1 What's stored
 
-A shared map, `workspaces` (`<data>/shared/workspaces.json`, kept by
-`shared_state.rs`, used through `lib/sharedState.ts`), one entry per
-workspace:
+Schema version 11 (`chat_db/schema.rs`):
 
-```ts
-/** A workspace, as the shared map keeps it (key: its id). */
-interface StoredWorkspace {
-  name: string;
-  /** In order, as each is opened: shown, and what its settings are kept by. */
-  folders: string[];
-  createdAt: number;
-  lastOpenedAt: number;
-}
+```sql
+ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'folder'
+  CHECK (kind IN ('folder', 'workspace'));
+CREATE TABLE workspace_folders (
+  project_id TEXT NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+  key        TEXT NOT NULL,   -- path_key: what folders are compared by
+  name       TEXT NOT NULL,   -- stable: the chats' `<name>/<path>`
+  path       TEXT NOT NULL,   -- as opened: shown, and its settings' key
+  position   INTEGER NOT NULL,
+  removed_at INTEGER,         -- set: no longer a member; its name stays taken
+  PRIMARY KEY (project_id, key)
+) STRICT;
+CREATE UNIQUE INDEX workspace_folders_by_name
+  ON workspace_folders (project_id, name COLLATE NOCASE);
+CREATE TRIGGER project_paths_of_folders_only BEFORE INSERT ON project_paths
+  WHEN (SELECT kind FROM projects WHERE id = NEW.project_id) = 'workspace'
+BEGIN SELECT RAISE(ABORT, 'a workspace has no project folders'); END;
 ```
 
-`src/lib/workspaces.ts` (new) does what's done with them: `create(name,
-folders)`, `addFolders(id, folders)`, `removeFolder(id, folder)` (refused for
-the last), `relinkFolder(id, folder, to)` (Locate…), `remove(id)`, `list()`
-(most recently opened first, each folder with `missing`) and `opened(id)`.
+- A workspace's row in `projects` holds its name, an empty `path` and no git
+  columns. Its All folders chats point at it by `dialogs.project_id`.
+- `projects::list` and `summary` take `kind = 'folder'` only, so a
+  workspace never shows as a missing project with **Relink**, and never
+  reaches `project_of` as a folder.
+- `chat_may_use` stays one rule, with no branch on the kind: a folder is
+  one of the owner's folders if `project_paths` has it, or
+  `workspace_folders` has it as a member (one `UNION ALL`, two key
+  lookups).
+- The trigger keeps `project_paths` for folder projects: a bug that sent a
+  workspace's ID there fails instead of corrupting it.
+- `schema.rs`'s two upgrade tests that assert version 10 (`:414`, `:506`)
+  use `VERSION` instead, and `upgrades_a_version_10_database` is added.
+- Once released, version 11 is permanent: an older Rovik refuses the
+  database, and older windows still open stop writing to it until they're
+  restarted (`chat_db/mod.rs:216-232`), as after every schema step. Its task
+  (B01) merges once this plan is reviewed, so no later column means a
+  version 12.
 
-- A save changes only its workspace's entry, one window at a time, and
-  every window reads the map again as it comes to the front, as the
-  projects' tabs work today.
-- A name is trimmed, not empty, at most 80 characters. Names needn't be
-  unique: the list shows each one's folders.
-- A folder's label isn't stored: it's the folder's name, with its parent
-  folder's added when two have the same name (`openFolders.ts`, 3.2).
-- No folder's project ID is stored. A folder's ID file is its identity, so
-  copies and moved folders are recognised as they are when it's opened
-  alone.
-- Removing a workspace removes its entry only: its folders, their projects
-  and their chats stay. It's refused while another window has the workspace
-  open (`project_check`).
+`chat_db/workspaces.rs` (new, beside `projects.rs`):
 
-The rules of D5 need the file system, so they're one backend command,
-`workspace_check_folder(folders, folder)` (`src-tauri/src/workspace.rs`,
-new). It answers `Duplicate`, `Inside(other)`, `Contains(other)`,
-`SameProject(other)` (the folder's ID file names another member's
-project) or `NotAFolder(error)`. It compares by `path_key`
-(`projects.rs:85-92`). Every way a folder joins (create, add, locate) goes
-through it.
+- `check_folder(members, folder) -> Option<FolderProblem>`: `Duplicate`,
+  `Inside`, `Contains`, `SameProject` (its ID file names another member's
+  project), `NotAFolder` (D5), each naming the other folder. It compares by
+  `path_key` (`projects.rs:85-92`).
+- `create(name, folders)`, `add_folders(id, folders)`,
+  `remove_folder(id, name)` (refused for the last; refused while an All
+  folders chat is at work or has changes there, D19),
+  `relocate_folder(id, name, to)` (Locate…, same guard), `opened(id)`,
+  `list()` (most recently opened first, each folder with `missing`), and
+  `get(id)`. `create` and `add_folders` check and name folders inside their
+  write transaction, so D5 and D8 hold across windows.
+- A workspace's name is trimmed, not empty, at most 80 characters, and
+  needn't be unique.
+- Deleting a workspace is `chat_delete_project` with its ID, as for a
+  project (`chat_db/api.rs:107-123, 187-231`): its own chats are stopped and
+  deleted with their overlays, and its folders' projects and chats stay.
+
+**Folder names** (D8): `folder_name(folder, taken)`, a pure function:
+
+1. The folder's last part as opened (`D:\` gives `D`).
+2. Made portable: `<>:"/\|?*` and control characters become `-`; spaces and
+   trailing dots trimmed; leading `.` and `@` dropped (the view's top keeps
+   `@context` for the agent-managed context); a Windows device name (`CON`,
+   `NUL`, `COM1`…) gets `_` in front; at most 64 characters; empty becomes
+   `folder`.
+3. A name the agent's walkers skip (`build`, `dist`, `target`, `vendor`,
+   `node_modules`…, `agent_tools.rs:31-47`) is taken as taken, so it gets
+   its parent's name: `app-build`.
+4. Unique whatever its case among every name the workspace ever gave,
+   removed folders' included: the base, then `<parent>-<base>`, then
+   `<base>-2`, `-3`.
+
+The file-name check this needs moves from
+`src-tauri/src/filesystem/entries.rs:84-147` into
+`rovik-core/src/file_name.rs`, so both sides share it, with the Windows
+device names it lacks (`COM0`, `LPT0`, `CONIN$`, `CONOUT$`).
+
+Commands (`src-tauri/src/commands/workspace.rs`, new): `workspace_list`,
+`workspace_create`, `workspace_add_folders`, `workspace_remove_folder`,
+`workspace_relocate_folder`, `workspace_check_folder`. `src/lib/chatApi.ts`
+wraps them, beside the project calls. `DialogSummary` gains the chat's
+`projectId` (`chat_db/store.rs:49-59`, serialize only), so the UI knows a
+chat's folder.
 
 ### 3.2 The window's folders
 
@@ -271,13 +388,13 @@ through it.
 /** What a window has open: a folder (a project), or a workspace. */
 export type WindowTarget =
   | { kind: 'folder'; path: string }
-  | { kind: 'workspace'; id: string; name: string; folders: string[] };
+  | { kind: 'workspace'; id: string; name: string; folders: WorkspaceFolder[] };
 
 /** One folder the window has open. */
 export interface OpenFolder {
   path: string;
-  /** Its name, with its parent's when two folders have the same name. */
-  label: string;
+  /** Its stored name in the workspace (D8); a project's folder name. */
+  name: string;
   /** The project it is, once resolved (chat_open_project). */
   project?: ProjectInfo;
   missing: boolean;
@@ -292,9 +409,18 @@ export interface OpenFolder {
 - `isAtOrUnder`, `parentOf` and `samePath` move into `lib/fileTools.ts`,
   beside `toRelativePath`: one copy each, with the platform's case rule, and
   drive roots right (`D:\x`'s parent is `D:\`).
+- A chat's paths go through one pair of functions, for both kinds of chat:
+  `chatPathToAbsolute(chatRoot, path)` (a folder chat's `src/x.ts` is joined
+  to its folder; an All folders chat's `api/src/x.ts` is found in the folder
+  named `api`; an unknown name names no file) and `chatPathOf(chatRoot,
+abs)` (the reverse, with `/` separators; null outside the chat's folders).
+  `chatRootOf(projectId)` gives a chat's root: its folder, every folder for
+  the workspace's project, or none when the folder has left the window.
+  `runPlace(chatRoot)` gives what a run is sent: `{ root }`, or `{ root:
+null, folders }`, refusing while a folder is missing (D20).
 - Code that works on folders takes `openFolders()` (a project is a list of
-  one) or `folderOf(path)`. Only the menu, the dialog, the folder rows and
-  Remove, Locate and Try again check `target().kind`.
+  one) or `folderOf(path)`. Only the menu, the dialog, the folder rows,
+  Remove, Locate and Try again, and these chat functions look at the kind.
 
 ### 3.3 Opening, switching, restoring
 
@@ -316,8 +442,11 @@ for both (`switchTarget`, from `openProjectAt`):
 
 A folder that looks like a copy, or like a project that moved, is asked
 about as when it's opened alone, in a notification of its own that names
-it (each folder has its own notification id and its own counter of answers
-still coming, in place of `projects.ts`'s one of each, `:57-61, 95, 124`).
+it (each folder has its own notification id, and its own count of runs so
+that resolving one folder doesn't drop another's answer, in place of
+`projects.ts`'s one of each, `:57-61, 95, 124`).
+When the original of a copy is a member, the question offers only
+**Separate history** (D5).
 
 Creating a workspace from the open project: the folder's keys are part of
 the new target's, so they're never let go. Its tabs stay, and its
@@ -325,38 +454,44 @@ terminals and commit message move to the workspace's `sessionKey` (D4).
 
 Adding folders: each folder picked is checked (`workspace_check_folder`),
 then `project_claim` takes the target with it. A folder another window has
-is refused and that window comes to the front; the others are added, then
-resolved and shown.
+is refused and that window comes to the front; the others are added (and
+named, D8), then resolved and shown.
 
-Removing a folder: its tabs are settled, then `project_claim` takes the
-target without it (its keys kept while its chats are at work here, D18),
-then `removeFolder`.
+Removing a folder: refused while an All folders chat is at work or has
+changes there (D19). Otherwise its tabs are settled, `project_claim` takes
+the target without it (its keys kept while its own chats are at work here),
+and `remove_folder` marks it removed.
 
 Claims (`instances.rs`):
 
 - `Instances` keeps the window's target, which only `project_claim` sets,
-  and a record per folder: its project ID, once resolved, and whether it's
-  at work. `opened`, `AtWork` and the cloud client's open projects all come
-  from that record.
+  and a record per owner: each folder's project ID once resolved, the
+  workspace's ID from the start, and whether its chats are at work.
+  `opened`, `AtWork` and the cloud client's open owners come from that
+  record.
 - `claim_keys(target)` runs under the claims' lock, without duplicates:
   `no-project` with nothing open; a folder's `folder:<key>` and
-  `project:<id>`; a workspace's `workspace:<id>` and each folder's two. The
-  target carries its folders, so claiming never reads anything but the ID
-  files.
+  `project:<id>`; a workspace's `project:<its id>` and each folder's two.
+  `project_claim` reads a workspace's folders from the database.
 - `reclaim(root, id)` (after `chat_open_project` and a copy or move answer)
   records that folder's project ID, and claims the stored target again only
   if `root` is still in it. So two folders resolved at once both keep their
-  `project:` keys, and an answer that comes late, for a folder the window
-  has left, claims nothing back (today it would claim that folder and let
-  go of the new one until the new one's answer came).
-- `project_claim` decides per folder being let go whether to keep its keys:
-  `at_work_in` (`lib.rs:538-547`) for that folder's project.
+  keys, and an answer that comes late, for a folder the window has left,
+  claims nothing back (today it would claim that folder and let go of the
+  new one until the new one's answer came).
+- Leaving a workspace whose own chats are at work keeps its key and every
+  folder's (an All folders run uses them all); leaving one whose folder
+  chats are at work keeps those folders'. `at_work_in` (`lib.rs:538-547`)
+  takes the owners.
 - Each key's holder file names its own folder, and the workspace's name
   (`workspace`, with a serde default), so a notice reads "api is open in
-  another window, in Shop".
+  another window, in Shop", or "Shop is open in another window".
+  `elsewhere()` reports a copy only for a holder with a folder
+  (`instances.rs:266`): another window's workspace isn't "a copy sharing its
+  chats".
 - `project_claim` and `project_check` take the target (`{ folder }`,
-  `{ workspace: { id, name, folders } }` or none); `lib/instances.ts` wraps
-  them, and `openElsewhereNotice` words a workspace.
+  `{ workspace }` or none); `lib/instances.ts` wraps them, and
+  `openElsewhereNotice` words a workspace.
 
 Starting and restarting:
 
@@ -364,7 +499,7 @@ Starting and restarting:
   it with the retries a project gets (`App.tsx:371-388`).
 - `rovik-ide <folder>` works as today. `--workspace <id>` opens a workspace:
   an update's restart passes it (`restart_args`, `updates.rs:404-417`). Its
-  `workspace:<id>` key is claimed before the window exists, as a command
+  `project:<id>` key is claimed before the window exists, as a command
   line's folder is (`lib.rs:68-73`); its folders are claimed as the window
   opens it.
 
@@ -385,8 +520,9 @@ New window
 - The list (`ProjectList.tsx`) shows workspaces among the projects, by when
   each was last opened: the name, "Workspace · 3 folders", the folders, and
   "1 folder missing" when one is. A workspace opens with a click. **Delete**
-  (not on the open one, as for projects) asks "Delete the workspace Shop?
-  Its folders and their chats stay."
+  (not on the open one) asks "Delete the workspace Shop? Its 4 chats of all
+  folders are deleted for good. Its folders, and their own chats, aren't
+  touched."
 - The list hides **Delete** for every project the window has open, not only
   for one (`ProjectList.tsx:57`), and `chat_delete_project` refuses a
   project this window has open, as it refuses one another window has.
@@ -396,7 +532,7 @@ New window
 
 `NewWorkspaceDialog.tsx` (new, built as `NewProjectDialog.tsx` is):
 
-- **Name**: the folders' labels joined ("api + web") until the user types
+- **Name**: the folders' names joined ("api + web") until the user types
   one.
 - **Folders**: a list, each with ✕, the open folder first. **Add folder…**
   opens the picker, several at once; a field beside it takes a folder's
@@ -404,7 +540,7 @@ New window
 - Each folder is checked as it's added (`workspace_check_folder`, and
   `project_check` for another window's): the reason shows on its row, and
   **Create** stays off while one does.
-- **Create**: `workspaces.create`, then `switchTarget`.
+- **Create**: `workspace_create`, then `switchTarget`.
 
 ### 3.5 The tree, files, the watcher
 
@@ -414,7 +550,7 @@ The tree (`lib/fileTree.ts`, `FileTree.tsx`, `App.tsx`):
   listing uses that folder as its root. Rows are keyed by folder and file
   id, so a link in one folder to another
   (`web/node_modules/@shop/api → ../../api`) gives rows of its own.
-- A folder's row: folder icon, label, the path as its tooltip. A missing
+- A folder's row: folder icon, name, the path as its tooltip. A missing
   folder's row is greyed, says "Folder not found", and offers **Locate…**,
   **Try again** and **Remove from workspace**.
 - A folder's row's menu: New file, New folder, Paste, Remove from
@@ -450,7 +586,9 @@ The watcher (`filesystem/watch.rs`, `filesystem/mod.rs`):
   worktree). A commit, a checkout or a push from a terminal then refreshes
   the Git panel. A HEAD that moves makes the repository's working folder
   busy (`project_busy`), which holds the isolated chats of every folder in
-  it (3.7, scopes).
+  it (3.7).
+- Changes in a folder reach the overlays of every chat on it: the folder's
+  own chats, and the All folders chats' parts for that folder (4.2).
 - The tree's gitignore matcher becomes a map by folder.
 
 ### 3.6 Search, `@`, tabs and the editor's services
@@ -460,11 +598,12 @@ The watcher (`filesystem/watch.rs`, `filesystem/mod.rs`):
   one, as today. Collapsed state is kept by folder and path, and a result
   opens from its folder. Include and exclude globs are relative to each
   folder. The result limit is for the whole search.
-- **`@`** in a chat lists the chat's folder's files
-  (`list_project_files(chatRoot)`).
+- **`@`** in a chat: a folder chat lists its folder's files
+  (`list_project_files`); an All folders chat lists every folder's, under
+  their names (`api/src/x.ts`).
 - **Tabs** (`Tabs.tsx`): when names collide, each title gets the shortest end
   of its parent path that tells them apart; in a workspace that starts with
-  the folder's label ("package.json · api", "package.json · web"). A project
+  the folder's name ("package.json · api", "package.json · web"). A project
   benefits too (two `index.ts`).
 - **IntelliSense** loads every open folder: definitions from each
   (`load_project_definitions`), `owns` true in any folder, within today's
@@ -482,7 +621,8 @@ The watcher (`filesystem/watch.rs`, `filesystem/mod.rs`):
 - **Markdown preview**: a link starting with `/` resolves from the
   document's folder.
 - **Diagnostics for the agent**: each marker is reported for its file's
-  folder (`lib/diagnostics.ts`), where that folder's chats look them up.
+  folder (`lib/diagnostics.ts`), and a run finds them through its folders
+  (4.10).
 
 ### 3.7 Git
 
@@ -524,7 +664,7 @@ pub struct Repo {
   `overlay/chats.rs:1294-1340`). So a checkout holds the isolated chats of
   every folder in the repository, those left at work included, with no list.
 
-**What a commit takes (D11).**
+**What a commit takes (D12).**
 
 - Before anything is staged, the index is compared with HEAD. An entry that
   differs outside the scopes (`git2::Pathspec`) refuses the commit, naming
@@ -581,92 +721,100 @@ pub struct Repo {
   branch, `GIT_LOG_LATEST` by repository, and ConflictResolver's `opKey` with
   the repository.
 
-**Change marks in the editor** (fixes section 11, item 1). `loadGitBase`,
+**Change marks in the editor** (fixes section 12, item 1). `loadGitBase`,
 `refreshGitBases` and the stash and commit previews find the file's
 repository among `git_repos`' (the deepest working folder that holds it), and
 send the path relative to its working folder. Tabs that aren't files on
-disk (`disk:`, `chat:`) are left out of the refresh (section 11, item 8).
+disk (`disk:`, `chat:`) are left out of the refresh (section 12, item 8).
 
-### 3.8 Chats and the agent
+### 3.8 Chats
 
 The chat list:
 
 - `chat_db`'s `list_dialogs`, `search` and `unsettled_sends` take the
-  window's project IDs (`project_id IN (…)`). ChatPanel's `projectId` prop
-  becomes `projectIds` (`ChatPanel.tsx:273, 1015-1082`).
-- `chatStore.setProjects(ids)` keeps the open chat while its project is
-  still in the set: a folder resolving, added, removed or located doesn't
-  move the user to another chat or clear the composer. The chat list
-  resets as today only when the window's target changes.
-- Unanswered sends left by a crash are recovered for each project as it's
-  added to the set (`recoverUnsettledSends`, `ChatPanel.tsx:2780-2788`), not only
-  for the first.
-- The unread dots are those of the window's projects. With several folders,
-  each chat's row shows its folder's label.
+  window's owners: its folders' projects, and the workspace's own
+  (`project_id IN (…)`). ChatPanel's `projectId` prop becomes `projectIds`
+  (`ChatPanel.tsx:273, 1015-1082`).
+- `chatStore.setProjects(ids)` keeps the open chat while its owner is still
+  in the set: a folder resolving, added, removed or located doesn't move the
+  user to another chat or clear the composer. The chat list resets as today
+  only when the window's target changes.
+- Unanswered sends left by a crash are recovered for each owner as it's
+  added to the set (`recoverUnsettledSends`, `ChatPanel.tsx:2780-2788`), not
+  only for the first.
+- The unread dots are those of the window's owners. With several folders,
+  each chat's row shows its folder's name, or "All folders".
 
-A chat's folder:
+New chat (D2):
 
-- A chat's project is one folder's. `chatRoot(dialog)` is that folder's path
-  in the window. ChatPanel's uses of `props.rootPath()` go through it: the
-  run's `root` (`:3057`, `:3097`), the context estimate (`:724`, `:768`),
-  `@` (`:922`, `:937`), the editor's selection reference (`:870`), the
-  connector's commands (`:608`), the branch offer (`:3113`) and
-  **Implement** on a plan (`:3150`). The "Open a folder" hint (`:4488`) is
-  for a window with no folder.
-- With several folders, **New chat** (both buttons) opens a dropdown of the
-  window's folders: each folder's label, its path as a tooltip, a missing
-  one listed but not clickable. The chat is made in the folder clicked;
-  Escape or a click outside makes none. The arrow keys and Enter work too,
-  starting on the active folder. With one folder there's no dropdown, as
-  today.
-- An empty open chat is reused, as today, moved to the folder clicked
-  (`set_dialog_project`, `chat_db/store.rs:504`), so empty chats don't pile
-  up.
-- With no chat to show (no chat yet in any folder, or the last one
-  deleted), the panel lists the folders to start a chat in, rather than
-  making an empty chat in a folder it would have to guess.
+- With several folders, **New chat** (both buttons) opens a dropdown:
+  each folder's name, its path as a tooltip, a missing one listed but not
+  clickable; then a separator and **All folders** (4.12). The chat is made
+  in the one clicked; Escape or a click outside makes none. The arrow keys
+  and Enter work too, starting on the active folder. With one folder
+  there's no dropdown, as today.
+- An empty open chat is reused, as today, moved to the owner clicked
+  (`set_dialog_project`, `chat_db/store.rs:504`, refused once the chat has
+  a message), so empty chats don't pile up (D32).
+- With no chat to show (no chat yet, or the last one deleted), the panel
+  lists the same choices to start a chat in, rather than making an empty
+  chat in a folder it would have to guess.
 - The message box shows the chat's folder beside its location
-  (`ChatLocation.tsx`): "in api". It's a label, not a control: to work in
-  another folder, start a new chat there.
+  (`ChatLocation.tsx`): "in api", "in all folders". It's a label, not a
+  control.
 - `FolderMenu.tsx` draws the folders as menu items, for New chat's
-  dropdown, the panel's list and the terminal's **+** menu (3.9).
-- The editor context, `@`, and **Add to chat** from another folder aren't
-  sent. The composer says why: "web/src/x.ts is in web; this chat works in
-  api."
+  dropdown, the panel's list and the terminal's **+** menu (3.9), with a
+  slot for what a caller adds (New chat's **All folders**).
+
+A folder chat:
+
+- `chatRoot(dialog)` comes from `chatRootOf` (3.2). ChatPanel's uses of
+  `props.rootPath()` go through it and `runPlace`: the run (`ChatPanel.tsx:3057`,
+  `:3097`), the context estimate (`:724`, `:768`), `@` (`:922`, `:937`), the
+  editor's selection reference (`:870`), the connector's commands (`:608`),
+  the branch offer (`:3113`) and **Implement** (`:3150`). The "Open a
+  folder" hint (`:4488`) is for a window with no folder.
+- What the user sends names files as the chat does: the editor context, `@`
+  and **Add to chat** give `chatPathOf` (today the editor context gives the
+  absolute path, which an isolated chat's tools refuse: section 12). A file
+  outside the chat's folders isn't sent; the composer says why: "web/src/x.ts
+  is in web; this chat works in api."
 - **Implement** on a plan in another folder starts a new chat in that
-  folder.
+  folder; on a plan whose `Files:` name the workspace's folders, an All
+  folders chat (D28).
 - The isolation bar and the comparison tabs (`chat:<dialog>:<rel>`) resolve
-  paths from the chat's folder.
+  paths through `chatPathToAbsolute`.
 - Runs don't change: `root` is the chat's folder, which `check_project`
   accepts. The branch offer asks about the chat's folder's repository. Plans
   go to its `.rovik/plans`. Project checks and restricted files are its
   folder's.
 
-Cloud hosts and WSL:
+Cloud hosts and WSL, for folder chats:
 
-- `State.open` becomes the window's open projects (`set_open_projects`, from
-  the claims' record per folder). `handled_elsewhere`, `land_waiting`,
-  `project_of`, `is_open` and `folder_answered` look among them. A steering
-  message's paths are made relative to its chat's own folder. The delivery
-  test uses the first folder with an `origin` remote.
-- Moving a chat, WSL and the snapshots don't change: each still carries one
-  folder.
+- `State.open` becomes the window's open owners, from the claims' record.
+  `handled_elsewhere`, `land_waiting`, `is_open` and `folder_answered` look
+  among them; a chat's files come from `files_of(chat)` (4.11), which for a
+  folder chat is today's `project_of`. A steering message's paths are made
+  relative to its chat's own folder. The delivery test uses the first
+  folder with an `origin` remote.
+- Moving a folder chat, WSL and the snapshots don't change.
 
 ### 3.9 Terminals
 
 - `TerminalPanel` groups terminals by `sessionKey(target)` instead of by
   `rootPath`. A terminal keeps the folder it started in (`cwd`).
 - In a workspace, **+** opens its menu with the folders first
-  (`FolderMenu`), then the hosts.
-  A terminal opened otherwise (the panel opening empty) starts in the active
-  folder. A tab's tooltip names its folder.
+  (`FolderMenu`), then the hosts. A terminal opened otherwise (the panel
+  opening empty) starts in the active folder. A tab's tooltip names its
+  folder.
 
 ### 3.10 Settings
 
 - `SettingsDialog` gets the open folders and the active one. With several,
   the two "This project" pages (Project checks, Restricted files) show a
   folder select (the active folder first) and work on the folder selected,
-  as they work on the root today.
+  as they work on the root today. An All folders chat has no settings of
+  its own (D16).
 - "Workspaces (N packages)" becomes "Packages (N)"
   (`ProjectChecksSettings.tsx:262-330`). The page's `.workspace-*` CSS
   classes stay; new classes are named after their components
@@ -682,109 +830,485 @@ terminalCollapsed }`, with `path` empty for a workspace.
 
 ---
 
-## 4. Edge cases
+## 4. All folders chats
 
-| Case                                                                                                          | What happens                                                                                                                                                       | Tested in                                                                                                                 |
-| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| **Folders**                                                                                                   |                                                                                                                                                                    |                                                                                                                           |
-| The same folder twice, spelled differently (case on Windows and macOS, a trailing separator, a link to it)    | Refused: "api is already in the workspace".                                                                                                                        | `workspace.rs` tests; `NewWorkspaceDialog.test.tsx`                                                                       |
-| A folder inside another folder of the workspace, or containing one                                            | Refused: "web is inside api, which is in the workspace".                                                                                                           | `workspace.rs` tests; `NewWorkspaceDialog.test.tsx`                                                                       |
-| A copy of a member (`cp -r`, the same ID file), or a folder sharing a member's chats                          | Refused: "web-copy shares its chats with web, which is in the workspace". A member's copy question offers only **Separate history** when its original is a member. | `workspace.rs` tests; `instances.rs`: a target's keys have no duplicates                                                  |
-| Two folders with the same name                                                                                | Labels "api · server" and "api · client" in the tree, tabs, search, Git sections and chat rows.                                                                    | `openFolders.test.ts`                                                                                                     |
-| A file, a folder that's gone, or one that can't be read                                                       | Refused, with the system's reason.                                                                                                                                 | `workspace.rs` tests                                                                                                      |
-| A folder in several workspaces                                                                                | Allowed. Only one window can have it open at a time (D7).                                                                                                          | `instances.rs` tests                                                                                                      |
-| Adding a folder another window has open (alone or in a workspace)                                             | Refused; that window comes to the front. In the Create dialog, the reason shows on the folder's row.                                                               | `instances.rs` tests; `NewWorkspaceDialog.test.tsx`                                                                       |
-| Opening a workspace when another window has one of its folders                                                | Nothing opens; that window comes to the front, and the notice names the folder.                                                                                    | `instances.rs` tests; `instances.test.ts`                                                                                 |
-| Opening a folder alone while a workspace in another window has it                                             | That window comes to the front: "api is open in another window, in Shop".                                                                                          | `instances.rs` tests; `instances.test.ts`                                                                                 |
-| Opening a workspace another window has                                                                        | That window comes to the front.                                                                                                                                    | `instances.rs` tests                                                                                                      |
-| Switching from a workspace to one of its folders, or back                                                     | The shared folder's keys are held throughout; no other window can take it meanwhile.                                                                               | `instances.rs` tests                                                                                                      |
-| Two folders resolved at once                                                                                  | Both keep their `project:` keys.                                                                                                                                   | `instances.rs`: "two folders resolved at once both keep their project keys"                                               |
-| A folder resolved after the window moved on                                                                   | It claims nothing back.                                                                                                                                            | `instances.rs`: "a folder resolved after the window moved on doesn't take its claim back"                                 |
-| Leaving a workspace while chats of two of its folders are at work                                             | Both folders' keys are kept until their chats finish.                                                                                                              | `instances.rs`: "leaving a workspace keeps every folder whose chats are at work"                                          |
-| Removing a folder whose chats are at work                                                                     | They go on; the folder's keys are kept until they finish, then let go. Its chats leave the list (they're its folder's: open it alone to see them).                 | `instances.rs` tests; `chatStore.test.ts`                                                                                 |
-| Removing the last folder                                                                                      | Refused: "A workspace keeps at least one folder. Delete it instead."                                                                                               | `workspaces.test.ts`                                                                                                      |
-| A folder missing when the workspace opens (deleted, a drive or share not mounted)                             | Its row shows it missing, with Locate…, Try again and Remove from workspace; the others open. It isn't resolved, and its chats aren't listed until it's back.      | `workspaces.test.ts`; `switchTarget.test.ts`; `FileTree.test.tsx`                                                         |
-| A missing folder's drive mounted again                                                                        | Found as the window comes to the front, or with **Try again**.                                                                                                     | `switchTarget.test.ts`                                                                                                    |
-| A folder deleted or renamed while open                                                                        | Its row turns missing; its tabs show [DELETED], as tabs do now.                                                                                                    | `watch.rs` tests; `FileTree.test.tsx`                                                                                     |
-| A folder that can't be watched (unreadable, a share without events)                                           | The other folders are watched; its tree refreshes as its rows are expanded.                                                                                        | `watch.rs` tests                                                                                                          |
-| A folder opened through a link (macOS: `/tmp` is `/private/tmp`)                                              | Its changes are reported under the folder's own path.                                                                                                              | `watch.rs` tests                                                                                                          |
-| Locate… a folder at its new place                                                                             | Checked as an added folder is (D5), then shown again.                                                                                                              | `workspaces.test.ts`                                                                                                      |
-| Deleting a workspace another window has open                                                                  | Refused. Deleting never touches the folders or their chats.                                                                                                        | `workspaces.test.ts`                                                                                                      |
-| Deleting, or relinking, the project of one of the window's folders from the list                              | Delete isn't offered, and `chat_delete_project` refuses it. Relink on a missing folder's project does what Locate… does.                                           | `ProjectList` test; `chat_db` `api` tests                                                                                 |
-| A drive root (`D:\`) as a folder                                                                              | Works; a change at its top refreshes it.                                                                                                                           | `fileTools.test.ts`; `fileTree.test.ts`                                                                                   |
-| A folder in WSL (`\\wsl.localhost\…`) beside a Windows folder                                                 | Each is a project as it would be alone: its chats run in WSL from its snapshot.                                                                                    | By hand (Windows)                                                                                                         |
-| **Tree and files**                                                                                            |                                                                                                                                                                    |                                                                                                                           |
-| A file dragged from one folder to another                                                                     | Moved (across drives: copied, then deleted); its tab follows.                                                                                                      | `FileTree.test.tsx`; `entries.rs` tests                                                                                   |
-| A folder's row: Rename, Delete, Cut or Copy from the menu, Mod+Backspace, Mod+X, a drag                       | None of them acts on it; the backend refuses deleting, renaming or moving a window's folder.                                                                       | `FileTree.test.tsx`: "Mod+Backspace on a folder row deletes nothing", "a folder row can't be dragged"; `entries.rs` tests |
-| A link in one folder to another (`web/node_modules/@shop/api → ../../api`)                                    | Its rows are told apart from api's own.                                                                                                                            | `fileTree.test.ts`                                                                                                        |
-| New file with nothing selected                                                                                | In the active folder.                                                                                                                                              | `openFolders.test.ts`                                                                                                     |
-| **Search, `@`, tabs, IntelliSense**                                                                           |                                                                                                                                                                    |                                                                                                                           |
-| The same relative path in two folders                                                                         | Two groups; each result opens its own file.                                                                                                                        | `searchPanel.test.tsx`                                                                                                    |
-| Two tabs with the same file name                                                                              | Told apart by their folders.                                                                                                                                       | `Tabs.test.tsx`                                                                                                           |
-| A saved tab from a folder that left the workspace                                                             | Not reopened.                                                                                                                                                      | `projectSessions.test.ts`                                                                                                 |
-| A TSX file in the second folder                                                                               | Gets its folder's `jsx` and `lib`, not the first folder's.                                                                                                         | `activeConfig.test.ts`                                                                                                    |
-| **Git**                                                                                                       |                                                                                                                                                                    |                                                                                                                           |
-| Two folders in one repository                                                                                 | One section listing both folders' changes.                                                                                                                         | `git/tests.rs`; `GitPanel.test.tsx`                                                                                       |
-| A folder inside a repository                                                                                  | Its changes only, as today; the editor's marks compare with the right file (fixed).                                                                                | `git/tests.rs`; `gitMarks.test.ts`                                                                                        |
-| Folders `app` and `app2` of one repository, only `app` in the workspace                                       | `app2`'s changes aren't listed or committed.                                                                                                                       | `git/tests.rs`                                                                                                            |
-| A folder that isn't a repository but holds some                                                               | "Not a repository", with **Initialize repository**. Each repository added as a folder gets its section.                                                            | `GitPanel.test.tsx`                                                                                                       |
-| A repository inside a folder's repository (untracked or ignored)                                              | The outer one never lists or stages it, so its Commit works and its row's revert can't trash it (fixed). Commit in it from a terminal, as today.                   | `git/tests.rs`                                                                                                            |
-| A submodule                                                                                                   | The outer repository lists it only when its commit moved; no empty commits (fixed).                                                                                | `git/tests.rs`                                                                                                            |
-| A linked worktree beside its main folder                                                                      | Two sections.                                                                                                                                                      | `git/tests.rs`                                                                                                            |
-| A detached HEAD                                                                                               | Its header says so; the commit goes on it, as git's would.                                                                                                         | `git/tests.rs`                                                                                                            |
-| A new repository with no commit                                                                               | The commit makes its branch.                                                                                                                                       | `git/tests.rs`                                                                                                            |
-| A merge, a rebase or conflicts in one repository                                                              | Its box is off, saying why; the others commit.                                                                                                                     | `GitPanel.test.tsx`                                                                                                       |
-| Changes staged from a terminal outside the window's folders                                                   | Nothing is committed anywhere; the problem names them; they stay staged (fixed).                                                                                   | `git/tests.rs`                                                                                                            |
-| pre-commit fails in one repository                                                                            | Nothing is committed anywhere; its output and **Commit without hooks** show.                                                                                       | `git/tests.rs`                                                                                                            |
-| commit-msg rewrites the message in one repository                                                             | Only that repository's commit has the change.                                                                                                                      | `git/tests.rs`                                                                                                            |
-| A commit fails after others were written (a terminal holds the third repository's `refs/heads/<branch>.lock`) | "Committed in api and web; infra: …"; the message stays.                                                                                                           | `git/tests.rs`; `GitPanel.test.tsx`                                                                                       |
-| A branch switched, or a push, from a terminal in a folder's repository                                        | The section updates; during a checkout, the isolated chats of that repository's folders wait.                                                                      | `watch.rs` tests; `overlay` tests (`is_busy`)                                                                             |
-| One push rejected                                                                                             | That section says so; the others are pushed.                                                                                                                       | `GitPanel.test.tsx`                                                                                                       |
-| A repository that was only ahead when Commit is clicked                                                       | Not pushed by that commit; the button offers Push for it afterwards.                                                                                               | `GitPanel.test.tsx`                                                                                                       |
-| A folder without a repository                                                                                 | Its section offers **Initialize repository**.                                                                                                                      | `GitPanel.test.tsx`                                                                                                       |
-| **Chats**                                                                                                     |                                                                                                                                                                    |                                                                                                                           |
-| **New chat** with several folders                                                                             | A dropdown of the folders; the chat is made in the one clicked, and Escape makes none. With one folder, no dropdown, as today.                                     | `chatInput.test.tsx`                                                                                                      |
-| **New chat** while an empty chat is open                                                                      | The empty chat is reused, moved to the folder clicked; its draft stays.                                                                                            | `chatInput.test.tsx`                                                                                                      |
-| No chat yet in any folder, or the last one deleted                                                            | The chat panel lists the folders to start a chat in; no empty chat is made in a guessed folder.                                                                    | `chatInput.test.tsx`                                                                                                      |
-| A missing folder in New chat's dropdown                                                                       | Listed, but can't be clicked.                                                                                                                                      | `chatInput.test.tsx`                                                                                                      |
-| A folder resolving, added, removed or located while a chat is open                                            | The open chat and its draft stay (unless its folder left).                                                                                                         | `chatStore.test.ts`: "adding a folder keeps the open chat and its draft"                                                  |
-| A crash with an unanswered message in the second folder's chat                                                | It comes back into the input when the workspace opens.                                                                                                             | `chatStore.test.ts`: "after a crash, an unanswered send in the second folder's chat comes back"                           |
-| Another folder's file in the editor context, `@` or **Add to chat**                                           | Not sent; the composer says why.                                                                                                                                   | `chatInput.test.tsx`                                                                                                      |
-| A new chat on a folder's main branch                                                                          | The branch offer asks about that folder's repository.                                                                                                              | `chatBranchOffer.test.tsx`                                                                                                |
-| A chat on a host or in WSL                                                                                    | As when its folder is open alone; its results land while the workspace is open.                                                                                    | `rovik-client` `remote/tests.rs`                                                                                          |
-| Two folders that look like copies or moved projects                                                           | Each is asked about in a notification of its own, naming it.                                                                                                       | `projects.test.ts`                                                                                                        |
-| **Saved state**                                                                                               |                                                                                                                                                                    |                                                                                                                           |
-| Quitting and starting again                                                                                   | The workspace and its tabs come back.                                                                                                                              | e2e: restart                                                                                                              |
-| An update's restart                                                                                           | The workspace opens again.                                                                                                                                         | `updates.rs` tests                                                                                                        |
-| The last workspace open in another window at start                                                            | This window starts with nothing open, as with a project.                                                                                                           | `switchTarget.test.ts`                                                                                                    |
-| Creating a workspace from the open project                                                                    | Its tabs, its running terminals and its commit message come along.                                                                                                 | `terminalPanel.test.tsx`; `GitPanel.test.tsx`                                                                             |
-| **Terminals**                                                                                                 |                                                                                                                                                                    |                                                                                                                           |
-| A new terminal in a workspace                                                                                 | **+** asks which folder; the terminal starts there.                                                                                                                | `terminalPanel.test.tsx`                                                                                                  |
-| A folder removed with terminals in it                                                                         | They keep running.                                                                                                                                                 | `terminalPanel.test.tsx`                                                                                                  |
+### 4.1 What they are
+
+- An All folders chat belongs to the workspace's project (D1). Its run is
+  given the workspace's folders by name and path, and works in one view of
+  them (D22): `api/src/x.ts`, `web/src/y.ts`. Paths in its tools, its
+  history, its plans and its changes start with a folder's name.
+- `StartRequest` (`rovik-protocol/src/agent.rs:230-258`) gains
+  `folders: Vec<RunFolder>` with a serde default, and then has no `root`:
+
+  ```rust
+  /// One folder of an All folders chat's run.
+  pub struct RunFolder {
+      /// Its stored name (D8): the top-level folder of the run's view.
+      pub name: String,
+      /// Where it is. Never sent to a daemon, which has its own (4.11).
+      #[serde(default, skip_serializing_if = "Option::is_none")]
+      pub path: Option<String>,
+      /// Its project settings, for a daemon (as `project_settings` is).
+      #[serde(default, skip_serializing_if = "Option::is_none")]
+      pub settings: Option<serde_json::Value>,
+  }
+  ```
+
+  Autopilot's `Settings` (`autopilot/driver.rs:38-77`) and the context
+  estimate (`agent.rs`, `chat_context_estimate`) carry `folders` too.
+
+- `check_project` (`agent_run/mod.rs:1301-1333`) takes `root` or `folders`,
+  never both. A workspace chat's `folders` must be exactly the workspace's
+  members, by name, each passing `chat_may_use`; a missing folder is refused
+  by name (D20); a project chat sends none. Thorough candidates keep their
+  exception (`:1312-1317`).
+- Folder chats are unchanged.
+
+### 4.2 The view
+
+`overlay/folders.rs` (new):
+
+```rust
+/// The folders a chat's view shows: one, named "" (a folder chat), or a
+/// workspace's, each by its name.
+pub struct Folder { pub name: String, pub path: PathBuf }
+pub struct Folders(Vec<Folder>);
+impl Folders {
+    pub fn one(path: PathBuf) -> Self;
+    pub fn named(list: Vec<Folder>) -> Result<Self, String>;
+    /// `api/src/x.ts` → (api, `src/x.ts`); a folder chat's path as it is.
+    pub fn split<'a>(&self, path: &'a str) -> Option<(&Folder, &'a str)>;
+    /// The real file a chat path names.
+    pub fn abs(&self, path: &str) -> Option<PathBuf>;
+    /// The chat path of a real file.
+    pub fn chat_path(&self, abs: &Path) -> Option<String>;
+}
+```
+
+`overlay/composite.rs` (new): `CompositeFs`, a `vfs::backend::Backend`
+(inode based, `vfs/backend.rs:15-67`) over the folders' `OverlayFs`s:
+
+- **Inode numbers**: a folder's inode `n` is `(n << 16) | slot`, with a slot
+  per folder never reused while mounted; the root stays 1 (`vfs/store.rs:22-23`).
+  Every `Attr.ino` and `DirEntry.ino` is renumbered, so numbers stay below
+  2^53 (Node reads them as doubles).
+- **The root**: a folder of mode 0o555 listing each folder by its name;
+  `lookup` takes the exact name, and the case folding `OverlayFs::find`
+  does on macOS (`fs.rs:825-862`). Creating, removing or renaming at the
+  root, or setting its attributes, is refused by the backend itself (root
+  ignores 0o555).
+- **Across folders**: `rename` and `link` between two folders answer EXDEV:
+  a new `VfsError::CrossDevice` (`vfs/store.rs:39-52`, mapped in
+  `fuse.rs:37-52`). `mv` copies and deletes, as across file systems; the
+  chat's changes then show an add in one folder and a delete in the other.
+- **Notifications**: each folder's listener renumbers what it tells the
+  kernel and forwards it (`Listener`, `vfs/store.rs:137`); a new folder is a
+  new slot and a new entry at the root, without remounting (the kernel keeps
+  an entry a second and no listing, `fuse.rs:34, 498`).
+- **`usage`**: the chat's budget, below.
+
+`overlay/fs.rs`:
+
+- **One budget per chat**: `limit`, `used` and `warned` move into an
+  `Arc<Budget>` the folders share (about ten places today:
+  `fs.rs:918-920, 1004-1024, 1217-1250, 1462-1475, 1536, 1747, 1785,
+2256-2300, 2466`), so a chat keeps 512 MiB and one warning at 80%.
+  `OverlayFs::open(base, store, limit)` keeps its signature, with a budget
+  of its own.
+- A `ChatFs` trait (`changes`, `versions`, `rebase_file`, `revert_file`,
+  `flush`, `close_handles`, `used`, `by_product_bytes`, `generation`),
+  implemented by `OverlayFs` and `CompositeFs`, which routes by the path's
+  first part and names its changes from the view's root.
+
+`overlay/chats.rs`:
+
+- `ChatOverlay { fs: Arc<dyn ChatFs>, parts, view, store, … }`: a folder
+  chat has one part, mounted directly, with its store and `project.txt` as
+  today. An All folders chat's store is `overlays/<chat>/folders.json` and
+  `overlays/<chat>/parts/<name>/` per folder; its chat-level files
+  (`landing.json`, `markers.json`, …) hold chat paths. An older Rovik finds
+  no `manifest.json` or `project.txt` there, and leaves it alone.
+- `open_all(chat, &Folders, on_warn)` opens and mounts it; at each run's
+  start it adds folders that joined. `folders_of(chat)` replaces
+  `project_of`. `changes_in_folder(chat, folder)` answers Remove and Locate
+  (D19).
+- **Watcher and peers per folder**: `project_changed(folder, …)` reaches
+  each open overlay's part for that folder, with the paths it notes and
+  marks prefixed with the folder's name. Clashes between chats are kept per
+  (chat, folder) and compared by in-folder path, so a folder chat and an All
+  folders chat on the same folder see each other's clashes. Refreshing one
+  folder no longer replaces the chat's whole row (`chats.rs:1635, 1646`).
+- `is_busy` for an All folders chat is any of its folders busy; the busy
+  wait before landing loops over them (`agent_run/landing.rs:481-507`).
+- Child overlays (subagents' workers, Thorough candidates) stay one
+  `OverlayFs` over the parent's view (`chats.rs:670-697`): their paths are
+  the parent's chat paths, and their landing goes through the composite
+  into the right folder. Their room comes from the shared budget.
+- Scratch views (the before-run, the test writer's red check) take
+  `&Folders`: a scratch of an All folders chat is a composite too
+  (`open_scratch`, `chats.rs:700-712`).
+- `project_for(view)` maps `view/<name>/…` to the folder
+  (`chats.rs:495-502`, the workload's history).
+- `CARGO_TARGET_DIR` is one folder per set of folders (`chats.rs:45-60`).
+
+### 4.3 The run
+
+`agent_run/folders.rs` (new) replaces `Run.project_root`:
+
+- `Folders` (4.2) with `single()` (a folder chat's folder), `file(key)`
+  (the real file a chat path names), `each()` and `plans_home()` (D28).
+  `isolated()` becomes "the root isn't `single()`", so an All folders chat
+  is always isolated.
+- Each of today's uses moves to it, one folder giving today's behaviour:
+  `run.rs:751-786, 1016-1036, 1166, 1233, 1381`; the code before a change
+  (`repair.rs:895, 968, 1157`; `verify.rs:748-760`); landing
+  (`landing.rs:134, 410, 456, 481-507`); the before-run and the red check
+  (`before.rs:186-275`; `test_writer.rs:378-405`); plans
+  (`execute.rs:2087-2139`; `run.rs:1001-1003`; `subagent_run.rs:1646`;
+  `change_review.rs:1029`; `test_writer.rs:622`); Thorough candidates
+  (`candidates.rs:789, 842, 869, 962, 1005, 1556`, a candidate's own
+  `Settings` clearing `folders`).
+- `prepare` opens the view for every run of an All folders chat, Plan mode
+  included, and refuses without it: "An All folders chat needs the virtual
+  files driver (Settings → Virtual files), or start a chat in one folder."
+  The same with isolation off (`ROVIK_ISOLATE_CHATS=0`). It never falls back
+  to working in a folder (`run.rs:775-805`).
+
+### 4.4 What the agent is told
+
+`agent_run/project.rs` gains `load_folders(config_dir, root, &folders, …)`;
+with one folder it's today's `load_for`. For an All folders chat, per
+folder:
+
+- `detect(root/<name>)` on the view; its settings from
+  `load_project_settings(config_dir, path)`; its checks as
+  `in_folder(name, cmd)`; its stack as `"{stack} ({name}/)"`, V09's form
+  (`project.rs:183-202`).
+- Its instructions file, under its name, the folders sharing 12,000
+  characters (D25). `project_context` (`project.rs:85-148`) is split into
+  its checks part and its instructions part, so both builders share them.
+- Its restricted files with `name/` in front (`restricted_files.rs:348-363`);
+  `blocked` and the scan of the view work as they are.
+
+The project section adds:
+
+> This chat works in a workspace: each of its folders is a top-level folder
+> of the project root (`api`, `web`), and every path starts with one
+> (`api/src/main.rs`); nothing can be made at the root itself. Run a
+> folder's commands with `cd api && …`. `api` and `web` are git
+> repositories (`git -C web status`); the root isn't. A folder's checks and
+> instructions are for its files.
+
+The system prompt's lines and the tools' descriptions stay true: the
+project root is the view's.
+
+### 4.5 Commands and the sandbox
+
+- Commands run at the view's top (`command_tool.rs:632-655`), background
+  commands too.
+- `Confine` (`overlay/confine.rs:71-105`) takes a list of redirects:
+  bubblewrap binds each `<view>/<name>` at its folder's path (`:906-911`).
+  `writable_dirs(view)` already covers every folder.
+- Where commands can't be redirected (Seatbelt, Landlock), `command_problem`
+  (`overlay/chats.rs:80-99`) refuses a command naming any folder's real
+  path. It's applied to the connectors' commands always: they run
+  unconfined (`connectors/harness.rs:272-290`), so a harness command could
+  reach a folder's real path even where bubblewrap confines the agent's own.
+- Installs after a failing `cd web && …` install that folder's
+  dependencies, not every folder's (`environment.rs:423-441`).
+
+### 4.6 Landing
+
+`overlay/land.rs` works on `Folders` (D24):
+
+- **Plan**: `plan(&Folders, changes, keep_chat)` merges each file against
+  the folder its path names; a path that names no folder is a conflict. A
+  conflict in any folder means nothing is written anywhere.
+- **Locks**: each folder's `PROJECT_LOCKS` entry (`land.rs:458-468`) is
+  taken in the order of its real path, then every file's
+  (`file_guard::lock_all`, sorted). A folder chat takes one, as today, so
+  no cycle is possible. Undo takes the same set in the same order.
+- **One journal**: `Journal` gains `folders` (serde default), and its
+  entries hold chat paths. `apply` (`land.rs:884-959`) writes them, rolling
+  back every folder on a failure, and writes no `project.txt` for such a
+  landing; recovery and undo read their folders from the journal, else from
+  `project.txt` as today. An interrupted landing is finished at start, path
+  by path; a folder missing then keeps its paths for the next start.
+- After a landing, `project_changed` runs once per folder.
+- The bar's payload (`src/lib/overlay.ts:14-81`) keeps its types: paths are
+  chat paths (`api/src/x.ts`), and `used`/`limit` the chat's budget.
+- Wrappers with today's signature (`Folders::one`) keep child landings and
+  today's tests as they are.
+
+### 4.7 Checks
+
+- **Which**: the enabled checks of the folders the chat changed (D27): the
+  first part of `touched_keys()` (`repair.rs:1133-1141`), command changes
+  and earlier unlanded runs included, filters `enabled_checks()`
+  (`verify.rs:601-607`). The prompt lists every folder's checks, so the
+  agent can run the others itself.
+- **Where**: from the root, as `cd api && cmd`; `run_checks`
+  (`verify.rs:1610`) is unchanged. A folder's failed type check skips
+  only that folder's tests (`verify.rs:1653-1667`).
+- **Before the change**: the before-run uses a scratch view of every folder
+  under the same names, so its output compares with the round's.
+- **Output paths**: a folder's real path in a check's output is rewritten
+  to `<view>/<name>`; a relative path printed under `cd api` resolves
+  against that folder first (`command_output.rs:236-259`).
+- File-to-command helpers that assume the root is a package
+  (`js_runner(root)`, `project.rs:331, 402`: light checks, scoped tests, the
+  breaker's runs, the test writer's red check) group files by folder, run
+  in the folder, and wrap the result in `in_folder`.
+
+### 4.8 Plans
+
+- `plans_home()` is the workspace's first folder (D28): a plan is saved in
+  its `.rovik/plans`, as `api/.rovik/plans/<date>-<stem>.md`, and lands,
+  syncs and shows like any file there.
+- Plans are shown by their chat path, found from their real path through
+  `Folders` (`relative_plan_path`, `plan.rs:713-726`); `Files:` lines are
+  checked against the view, so they name folders (`api/src/x.ts`).
+- **Implement** (3.8) starts an All folders chat for a plan whose `Files:`
+  name the workspace's folders.
+
+### 4.9 Subagents, Thorough, Autopilot, the test writer
+
+- Subagents share the run's root, folders, context, restricted files and
+  map (`run.rs:1363-1386`); workers' write scopes are chat paths
+  (`worker.rs:98-160`). Nothing else changes.
+- Thorough candidates diff and adopt against the main view
+  (`candidates.rs:148-175`); their changes are listed in 4.3.
+- Autopilot carries `folders` in its `Settings`; its delivery reports what
+  landing did, as for a folder chat here (`delivery.rs:63-75`). In WSL and
+  on hosts it keeps its results for the app to land (D30).
+- The test writer's red check runs a new test in its own folder (4.7); its
+  `test_check()` names each changed folder's test check
+  (`test_writer.rs:501-506`).
+
+### 4.10 Connectors, diagnostics, the estimate
+
+- Connectors run in the view (`run.rs:2259`); Claude Code's edit paths come
+  out as chat paths (`claude_code.rs:1590-1593`), and its session resumes,
+  the view's path being the chat's own. In their own-tools mode the
+  workspace's section of the prompt is given to them
+  (`--append-system-prompt`; Codex's developer instructions), as the view's
+  top has no `AGENTS.md` (`claude_code.rs:276-278`; `codex/mod.rs:841`).
+- The editor's diagnostics are found through the folders: `name/rest` is
+  looked up as (that folder's path, `rest`), and a folder chat's key as
+  (its folder, key) (`agent_tools.rs:433-435, 555-571`). This also fixes
+  today's isolated chats, which never see them (section 12).
+- The context estimate is given `folders`, and caches by the folder list
+  (`project.rs:229-251`).
+
+### 4.11 In WSL and on hosts
+
+Carried as one project (D30). The protocol grows by fields, with a feature
+to agree on them:
+
+- `features::FOLDERS` (`rovik-protocol/src/lib.rs`), advertised by a daemon
+  whose core runs All folders chats (`rovik-agentd/src/session.rs:30-37`).
+- `Project.folders: Vec<ProjectFolder { label, settings }>` (serde
+  default): a project whose top-level folders are those, with `subpath` "".
+  `ProjectEnsure`, `WorkSync`, `WorkRecheck`, `WorkStatus`, `WorkFile`,
+  `WorkLanded`, `ChatBundle`, results, moves, deletion and ownership don't
+  change: their paths start with a folder's name.
+
+The daemon (small):
+
+- `ProjectState.folders` (`rovik-agentd/src/store.rs:52-69`), set by `ensure_project`, which
+  checks each label is one plain name; `folder_roots()` gives each
+  folder's root in the worktree, for its settings
+  (`work.rs:226-232`; `daemon.rs:404-422`) and the run's `folders`.
+- A result is unchecked if any folder has checks
+  (`results.rs:298-303`); delivery of such a project fails, saying to land
+  the results from the app (`results.rs:164-240`).
+
+The client (`rovik-client`):
+
+- `ChatFiles` (`remote/files.rs`, new) replaces `project_of`: the chat's
+  owner, name and folders. A folder chat is one folder named "" and takes
+  today's path unchanged: a full snapshot with history and `subpath`.
+- **Snapshots**: each folder is snapshotted into its own shadow as today;
+  a `Composite` shadow per workspace (`shadow/composite.rs`) commits one
+  tree with each folder's tree under its name, borrowing the folder shadows'
+  objects. One push and one `WorkSync` per message.
+- **Ignore rules**: a folder inside a repository loses the `.gitignore`s
+  above it in the composite, so `shadow/rules.rs` rebases them under the
+  folder's name (global excludes, `info/exclude`, then each ancestor's
+  `.gitignore`), or `node_modules` under `web/` would come back in a
+  result.
+- **Results**: the composite result is fetched once, then each folder's
+  part is grafted into that folder's own shadow and imported into its part
+  of the chat's overlay with today's `import` (taking the store it writes),
+  so each repository's attributes (line ends) apply. A missing folder fails
+  the whole import; it's never partial.
+- **Landing**: the chat lands all folders or none (4.6), then reports one
+  `WorkLanded` with every folder's paths.
+- **Moves**: each folder's store is folded, then composed; the move dialog
+  lists the folders and says that their git history stays here and the
+  first push carries all their files. A missing folder blocks the move.
+- **Start**: the folders' paths are made relative with their names
+  (`remote.rs:1605-1649`), each folder's settings go with it, and a host
+  without `FOLDERS` refuses the chat: a cloud host through the move's
+  preflight (an upgrade for its administrators, `moving.rs:753-784`), WSL
+  with "WSL runs an older Rovik, which can't run a chat across folders yet:
+  update it from Settings → This computer → WSL."
+
+### 4.12 In the UI
+
+- **New chat**'s **All folders** item (3.8) is greyed, with the reason as
+  its second line, when the chat couldn't run: no virtual-files driver here
+  ("Needs FUSE: Settings → Virtual files"), on Windows WSL not ready or too
+  old, or a folder missing. Clicking it opens that page
+  (`ChatPanel.tsx:4842`, as the agent-managed context does), named once for
+  both.
+- The message box says "in all folders"; the chat's row says "All folders".
+- `@`, the editor context, **Add to chat** and pasted references use
+  `chatPathOf`: any folder's file goes in as `api/…` or `web/…`.
+- The branch offer (D29): folders are grouped by repository (`git_repos`),
+  each repository on its main branch is named in one question with one
+  name, and a repository on another branch is said to stay there. Yes makes
+  the branch in each in turn; one that fails says which have it, and Yes
+  again makes it in the rest.
+- The isolation bar lists the changed files by chat path, with one **Land**
+  and one **Undo**; conflicts open in today's resolver.
+- Removing or locating a folder that an All folders chat has changes in is
+  refused, naming the chats (D19).
 
 ---
 
-## 5. Milestones
+## 5. Edge cases
 
-| Milestone                            | What it delivers                                                                                                                                                                                                                                                                    | Done when                                                                                                                                              |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **A. A project as a list of one**    | One copy of the path helpers; `openFolders` with one folder; the watcher, the tree's controller, git's scopes and the editor's services take folders; the repository list; commits that never take what's staged outside; nested repositories left alone; the editor's marks fixed. | Every existing test passes unchanged, the new ones pass with two folders, and the e2e run is unchanged. Nothing changes for a user but the fixed bugs. |
-| **B. Workspaces stored and opened**  | The shared map and its operations, `workspace_check_folder`, the claims, `switchTarget`, what's saved, `--workspace`, the guards on the window's projects in the list.                                                                                                              | Their tests pass; a workspace opens in `switchTarget.test.ts`. No menu yet, so nothing creates one.                                                    |
-| **C. A window with several folders** | Folder rows and their guards, Remove, Locate and Try again, search, tabs, terminals, the settings pages, IntelliSense and rust-analyzer.                                                                                                                                            | The tests in tasks C01–C07 pass.                                                                                                                       |
-| **D. Git across repositories**       | Sections, the commit across repositories, refreshing by repository.                                                                                                                                                                                                                 | The git tests in tasks D02 and D03 pass, and GitPanel's tests with one repository pass unchanged.                                                      |
-| **E. Chats in a workspace**          | The chat list of several projects, a chat's folder, what's sent, the isolation bar, the cloud client.                                                                                                                                                                               | The tests in E01–E04 pass.                                                                                                                             |
-| **F. The menu**                      | The menu items, the dialog, workspaces in the list, the README, the e2e steps.                                                                                                                                                                                                      | The e2e steps in section 7 pass on Linux, macOS and Windows.                                                                                           |
+| Case                                                                                                          | What happens                                                                                                                                                                                  | Tested in                                                                 |
+| ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| **Folders**                                                                                                   |                                                                                                                                                                                               |                                                                           |
+| The same folder twice, spelled differently (case on Windows and macOS, a trailing separator, a link to it)    | Refused: "api is already in the workspace".                                                                                                                                                   | `workspaces_tests.rs`; `NewWorkspaceDialog.test.tsx`                      |
+| A folder inside another folder of the workspace, or containing one                                            | Refused: "web is inside api, which is in the workspace".                                                                                                                                      | `workspaces_tests.rs`; `NewWorkspaceDialog.test.tsx`                      |
+| A copy of a member (`cp -r`, the same ID file), or a folder sharing a member's chats                          | Refused: "web-copy shares its chats with web, which is in the workspace". A member's copy question offers only **Separate history** when its original is a member.                            | `workspaces_tests.rs`; `instances.rs`: a target's keys have no duplicates |
+| Two folders with the same name                                                                                | Named `api` and `server-api` for good; the tree, tabs, search, Git sections and chats use those.                                                                                              | `workspaces_tests.rs`                                                     |
+| A folder named `build`, `CON` or `.config`, or a drive root                                                   | Named `app-build`, `_CON`, `config`, `D`: valid everywhere, and seen by the agent's walkers.                                                                                                  | `workspaces_tests.rs`; `file_name.rs` tests                               |
+| A folder removed, then added again                                                                            | It gets its old name back; no other folder ever takes it.                                                                                                                                     | `workspaces_tests.rs`                                                     |
+| A file, a folder that's gone, or one that can't be read                                                       | Refused, with the system's reason.                                                                                                                                                            | `workspaces_tests.rs`                                                     |
+| A folder in several workspaces                                                                                | Allowed. Only one window can have it open at a time (D7).                                                                                                                                     | `instances.rs` tests                                                      |
+| Adding a folder another window has open (alone or in a workspace)                                             | Refused; that window comes to the front. In the Create dialog, the reason shows on the folder's row.                                                                                          | `instances.rs` tests; `NewWorkspaceDialog.test.tsx`                       |
+| Opening a workspace when another window has one of its folders                                                | Nothing opens; that window comes to the front, and the notice names the folder.                                                                                                               | `instances.rs` tests; `instances.test.ts`                                 |
+| Opening a folder alone while a workspace in another window has it                                             | That window comes to the front: "api is open in another window, in Shop".                                                                                                                     | `instances.rs` tests; `instances.test.ts`                                 |
+| Opening a workspace another window has                                                                        | That window comes to the front: "Shop is open in another window", not "a copy sharing its chats".                                                                                             | `instances.rs` tests                                                      |
+| Switching from a workspace to one of its folders, or back                                                     | The shared folder's keys are held throughout.                                                                                                                                                 | `instances.rs` tests                                                      |
+| Two folders resolved at once                                                                                  | Both keep their `project:` keys.                                                                                                                                                              | `instances.rs`                                                            |
+| A folder resolved after the window moved on                                                                   | It claims nothing back.                                                                                                                                                                       | `instances.rs`                                                            |
+| Leaving a workspace while its All folders chat is at work                                                     | The workspace's key and every folder's are kept until the chat finishes.                                                                                                                      | `instances.rs`                                                            |
+| Leaving a workspace while two of its folders' chats are at work                                               | Both folders' keys are kept until their chats finish.                                                                                                                                         | `instances.rs`                                                            |
+| Removing a folder whose own chats are at work                                                                 | They go on; the folder's keys are kept until they finish. Its chats leave the list (they're its folder's).                                                                                    | `instances.rs`; `chatStore.test.ts`                                       |
+| Removing or locating a folder an All folders chat has changes in, or is at work in                            | Refused, naming the chat: "Fix the API has changes in api that aren't landed: land or discard them first."                                                                                    | `chat_db/tests.rs`; `overlay` tests (`changes_in_folder`)                 |
+| Removing the last folder                                                                                      | Refused: "A workspace keeps at least one folder. Delete it instead."                                                                                                                          | `workspaces_tests.rs`                                                     |
+| A folder missing when the workspace opens (deleted, a drive or share not mounted)                             | Its row shows it missing, with Locate…, Try again and Remove from workspace; the others open. It isn't resolved, its chats aren't listed, and All folders chats don't start, until it's back. | `workspaces_tests.rs`; `switchTarget.test.ts`; `openFolders.test.ts`      |
+| A missing folder's drive mounted again                                                                        | Found as the window comes to the front, or with **Try again**.                                                                                                                                | `switchTarget.test.ts`                                                    |
+| A folder deleted or renamed while open                                                                        | Its row turns missing; its tabs show [DELETED], as tabs do now.                                                                                                                               | `watch.rs` tests; `FileTree.test.tsx`                                     |
+| A folder that can't be watched (unreadable, a share without events)                                           | The other folders are watched; its tree refreshes as its rows are expanded.                                                                                                                   | `watch.rs` tests                                                          |
+| A folder opened through a link (macOS: `/tmp` is `/private/tmp`)                                              | Its changes are reported under the folder's own path.                                                                                                                                         | `watch.rs` tests                                                          |
+| Deleting a workspace                                                                                          | Its own chats are deleted (the question says how many); its folders and their chats aren't touched. Refused while another window has it open.                                                 | `projects_tests.rs`; `ProjectList` test                                   |
+| Deleting, or relinking, the project of one of the window's folders from the list                              | Delete isn't offered, and `chat_delete_project` refuses it. Relink on a missing folder's project does what Locate… does.                                                                      | `ProjectList` test; `chat_db` `api` tests                                 |
+| A drive root (`D:\`) as a folder                                                                              | Works; a change at its top refreshes it.                                                                                                                                                      | `fileTools.test.ts`; `fileTree.test.ts`                                   |
+| A folder in WSL (`\\wsl.localhost\…`) beside a Windows folder                                                 | Each is a project as it would be alone: its chats run in WSL from its snapshot.                                                                                                               | By hand (Windows)                                                         |
+| **Tree and files**                                                                                            |                                                                                                                                                                                               |                                                                           |
+| A file dragged from one folder to another                                                                     | Moved (across drives: copied, then deleted); its tab follows.                                                                                                                                 | `FileTree.test.tsx`; `entries.rs` tests                                   |
+| A folder's row: Rename, Delete, Cut or Copy from the menu, Mod+Backspace, Mod+X, a drag                       | None of them acts on it; the backend refuses deleting, renaming or moving a window's folder.                                                                                                  | `FileTree.test.tsx`; `entries.rs` tests                                   |
+| A link in one folder to another (`web/node_modules/@shop/api → ../../api`)                                    | Its rows are told apart from api's own.                                                                                                                                                       | `fileTree.test.ts`                                                        |
+| New file with nothing selected                                                                                | In the active folder.                                                                                                                                                                         | `openFolders.test.ts`                                                     |
+| **Search, `@`, tabs, IntelliSense**                                                                           |                                                                                                                                                                                               |                                                                           |
+| The same relative path in two folders                                                                         | Two groups; each result opens its own file.                                                                                                                                                   | `searchPanel.test.tsx`                                                    |
+| Two tabs with the same file name                                                                              | Told apart by their folders.                                                                                                                                                                  | `Tabs.test.tsx`                                                           |
+| A saved tab from a folder that left the workspace                                                             | Not reopened.                                                                                                                                                                                 | `projectSessions.test.ts`                                                 |
+| A TSX file in the second folder                                                                               | Gets its folder's `jsx` and `lib`, not the first folder's.                                                                                                                                    | `activeConfig.test.ts`                                                    |
+| **Git**                                                                                                       |                                                                                                                                                                                               |                                                                           |
+| Two folders in one repository                                                                                 | One section listing both folders' changes.                                                                                                                                                    | `git/tests.rs`; `GitPanel.test.tsx`                                       |
+| A folder inside a repository                                                                                  | Its changes only, as today; the editor's marks compare with the right file (fixed).                                                                                                           | `git/tests.rs`; `gitMarks.test.ts`                                        |
+| Folders `app` and `app2` of one repository, only `app` in the workspace                                       | `app2`'s changes aren't listed or committed.                                                                                                                                                  | `git/tests.rs`                                                            |
+| A folder that isn't a repository but holds some                                                               | "Not a repository", with **Initialize repository**. Each repository added as a folder gets its section.                                                                                       | `GitPanel.test.tsx`                                                       |
+| A repository inside a folder's repository (untracked or ignored)                                              | The outer one never lists or stages it, so its Commit works and its row's revert can't trash it (fixed).                                                                                      | `git/tests.rs`                                                            |
+| A submodule                                                                                                   | The outer repository lists it only when its commit moved; no empty commits (fixed).                                                                                                           | `git/tests.rs`                                                            |
+| A linked worktree beside its main folder                                                                      | Two sections.                                                                                                                                                                                 | `git/tests.rs`                                                            |
+| A detached HEAD                                                                                               | Its header says so; the commit goes on it, as git's would.                                                                                                                                    | `git/tests.rs`                                                            |
+| A new repository with no commit                                                                               | The commit makes its branch.                                                                                                                                                                  | `git/tests.rs`                                                            |
+| A merge, a rebase or conflicts in one repository                                                              | Its box is off, saying why; the others commit.                                                                                                                                                | `GitPanel.test.tsx`                                                       |
+| Changes staged from a terminal outside the window's folders                                                   | Nothing is committed anywhere; the problem names them; they stay staged (fixed).                                                                                                              | `git/tests.rs`                                                            |
+| pre-commit fails in one repository                                                                            | Nothing is committed anywhere; its output and **Commit without hooks** show.                                                                                                                  | `git/tests.rs`                                                            |
+| commit-msg rewrites the message in one repository                                                             | Only that repository's commit has the change.                                                                                                                                                 | `git/tests.rs`                                                            |
+| A commit fails after others were written (a terminal holds the third repository's `refs/heads/<branch>.lock`) | "Committed in api and web; infra: …"; the message stays.                                                                                                                                      | `git/tests.rs`; `GitPanel.test.tsx`                                       |
+| A branch switched, or a push, from a terminal in a folder's repository                                        | The section updates; during a checkout, the isolated chats of that repository's folders wait.                                                                                                 | `watch.rs` tests; `overlay` tests (`is_busy`)                             |
+| One push rejected                                                                                             | That section says so; the others are pushed.                                                                                                                                                  | `GitPanel.test.tsx`                                                       |
+| A repository that was only ahead when Commit is clicked                                                       | Not pushed by that commit; the button offers Push for it afterwards.                                                                                                                          | `GitPanel.test.tsx`                                                       |
+| **Folder chats**                                                                                              |                                                                                                                                                                                               |                                                                           |
+| **New chat** with several folders                                                                             | A dropdown of the folders, then All folders; the chat is made in the one clicked, and Escape makes none. With one folder, no dropdown, as today.                                              | `chatInput.test.tsx`                                                      |
+| **New chat** while an empty chat is open                                                                      | The empty chat is reused, moved to the choice clicked; its draft stays. A chat with a message is never moved.                                                                                 | `chatInput.test.tsx`; `chat_db/tests.rs`                                  |
+| No chat yet, or the last one deleted                                                                          | The chat panel lists the choices to start a chat in; no empty chat is made in a guessed folder.                                                                                               | `chatInput.test.tsx`                                                      |
+| A missing folder in New chat's dropdown                                                                       | Listed, but can't be clicked.                                                                                                                                                                 | `chatInput.test.tsx`                                                      |
+| A folder resolving, added, removed or located while a chat is open                                            | The open chat and its draft stay (unless its folder left).                                                                                                                                    | `chatStore.test.ts`                                                       |
+| A crash with an unanswered message in the second folder's chat, or an All folders chat                        | It comes back into the input when the workspace opens.                                                                                                                                        | `chatStore.test.ts`                                                       |
+| Another folder's file in a folder chat's editor context, `@` or **Add to chat**                               | Not sent; the composer says why.                                                                                                                                                              | `chatInput.test.tsx`                                                      |
+| A new chat on a folder's main branch                                                                          | The branch offer asks about that folder's repository.                                                                                                                                         | `chatBranchOffer.test.tsx`                                                |
+| A folder chat on a host or in WSL                                                                             | As when its folder is open alone; its results land while the workspace is open.                                                                                                               | `rovik-client` `remote/tests.rs`                                          |
+| Two folders that look like copies or moved projects                                                           | Each is asked about in a notification of its own, naming it.                                                                                                                                  | `projects.test.ts`                                                        |
+| **All folders chats**                                                                                         |                                                                                                                                                                                               |                                                                           |
+| An All folders chat reads, edits and runs commands in two folders                                             | Its paths start with the folders' names; `cd api && npm test` runs in api's view.                                                                                                             | `workspace_e2e_tests.rs`                                                  |
+| Its changes in two folders                                                                                    | Land in both, under one landing; **Undo** puts both back.                                                                                                                                     | `overlay` land tests; `workspace_e2e_tests.rs`                            |
+| A conflict in one folder                                                                                      | Nothing lands in either; the conflict shows under its folder's name.                                                                                                                          | `overlay` land tests                                                      |
+| A crash while landing in two folders                                                                          | The landing is finished at the next start, in both.                                                                                                                                           | `overlay` land tests                                                      |
+| `mv api/x web/x` in a command                                                                                 | Copied and deleted (EXDEV): web shows an add, api a delete.                                                                                                                                   | `overlay` composite tests (mounted)                                       |
+| A file made at the view's top                                                                                 | Refused: the top is read-only.                                                                                                                                                                | `overlay` composite tests                                                 |
+| A command naming a folder's real path                                                                         | Under bubblewrap it reaches the view; elsewhere it's refused by text, a connector's too.                                                                                                      | `confine.rs` tests; `workspace_e2e_tests.rs`                              |
+| Only api changed                                                                                              | Only api's checks run, in api; a failure that was there before is set apart.                                                                                                                  | `workspace_e2e_tests.rs`                                                  |
+| api's type check fails                                                                                        | web's tests still run.                                                                                                                                                                        | `workspace_e2e_tests.rs`                                                  |
+| A restricted file in one folder                                                                               | Refused by its path in the view; the other folder's file of that name isn't restricted.                                                                                                       | `workspace_e2e_tests.rs`                                                  |
+| Each folder's `AGENTS.md`                                                                                     | Given under its name, within the shared limit.                                                                                                                                                | `workspace_e2e_tests.rs`                                                  |
+| A plan from an All folders chat                                                                               | Saved in the first folder's `.rovik/plans`; its `Files:` name folders; **Implement** on it starts an All folders chat.                                                                        | `workspace_e2e_tests.rs`; `plans.test.ts`                                 |
+| A subagent's worker in an All folders chat                                                                    | Writes only its step's paths, through the view, into the right folder.                                                                                                                        | `workspace_e2e_tests.rs`                                                  |
+| Two chats changing one file (a folder chat and an All folders chat)                                           | Each sees the other's clash; refreshing one folder keeps the other folder's clashes.                                                                                                          | `overlay` chats tests                                                     |
+| No virtual-files driver, or isolation off                                                                     | All folders is greyed, saying why; a chat made before is refused at start, naming Settings → Virtual files.                                                                                   | `virtualFiles.test.ts`; `workspace_e2e_tests.rs`                          |
+| A folder added while an All folders chat's view is mounted                                                    | It shows at the chat's next run.                                                                                                                                                              | `overlay` composite tests                                                 |
+| A request whose folders aren't the workspace's                                                                | Refused.                                                                                                                                                                                      | `agent_run` `check_project` tests                                         |
+| The editor's diagnostics                                                                                      | Found by the agent through the view (fixed for isolated folder chats too).                                                                                                                    | `workspace_e2e_tests.rs`                                                  |
+| Claude Code in an All folders chat                                                                            | Works in the view, keeps its session, and is told about the folders.                                                                                                                          | `workspace_e2e_tests.rs`                                                  |
+| On Windows, an All folders chat                                                                               | Runs in WSL as one project; an older Rovik there refuses it with how to update.                                                                                                               | `rovik-agentd/tests/folders.rs`; `remote/tests.rs`                        |
+| Moving an All folders chat to a cloud host                                                                    | The dialog lists its folders and says their git history stays here; an older host is offered its upgrade; a missing folder blocks the move.                                                   | `chatLocation.test.tsx`; `remote/tests.rs`                                |
+| A folder inside a repository, on a host                                                                       | Its ancestors' ignore rules still keep `node_modules` out of the chat's results.                                                                                                              | `shadow/rules.rs` tests; `rovik-agentd/tests/folders.rs`                  |
+| Autopilot's delivery in an All folders chat on a host                                                         | Its results wait for the app to land them, saying why.                                                                                                                                        | `rovik-agentd/tests/folders.rs`                                           |
+| **Saved state**                                                                                               |                                                                                                                                                                                               |                                                                           |
+| Quitting and starting again                                                                                   | The workspace and its tabs come back.                                                                                                                                                         | e2e: restart                                                              |
+| An update's restart                                                                                           | The workspace opens again.                                                                                                                                                                    | `updates.rs` tests                                                        |
+| The last workspace open in another window at start                                                            | This window starts with nothing open, as with a project.                                                                                                                                      | `switchTarget.test.ts`                                                    |
+| Creating a workspace from the open project                                                                    | Its tabs, its running terminals and its commit message come along.                                                                                                                            | `terminalPanel.test.tsx`; `GitPanel.test.tsx`                             |
+| **Terminals**                                                                                                 |                                                                                                                                                                                               |                                                                           |
+| A new terminal in a workspace                                                                                 | **+** asks which folder; the terminal starts there.                                                                                                                                           | `terminalPanel.test.tsx`                                                  |
+| A folder removed with terminals in it                                                                         | They keep running.                                                                                                                                                                            | `terminalPanel.test.tsx`                                                  |
+
+---
+
+## 6. Milestones
+
+| Milestone                                    | What it delivers                                                                                                                                                                                                                                                                    | Done when                                                                                                                                              |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **A. A project as a list of one**            | One copy of the path helpers; `openFolders` with one folder; the watcher, the tree's controller, git's scopes and the editor's services take folders; the repository list; commits that never take what's staged outside; nested repositories left alone; the editor's marks fixed. | Every existing test passes unchanged, the new ones pass with two folders, and the e2e run is unchanged. Nothing changes for a user but the fixed bugs. |
+| **B. Workspaces stored and opened**          | Schema 11 and `workspaces.rs`, the shared file-name check, the commands, the claims, `switchTarget`, what's saved, `--workspace`, the guards on the window's projects.                                                                                                              | Their tests pass; a workspace opens in `switchTarget.test.ts`. No menu yet, so nothing creates one.                                                    |
+| **C. A window with several folders**         | Folder rows and their guards, Remove, Locate and Try again, search, tabs, terminals, the settings pages, IntelliSense and rust-analyzer.                                                                                                                                            | The tests in C01–C07 pass.                                                                                                                             |
+| **D. Git across repositories**               | Sections, the commit across repositories, refreshing by repository.                                                                                                                                                                                                                 | The git tests in D02 and D03 pass, and GitPanel's tests with one repository pass unchanged.                                                            |
+| **E. Folder chats in a workspace**           | The chat list of several owners, New chat's dropdown, a chat's folder, what's sent, the isolation bar, the cloud client's owners.                                                                                                                                                   | The tests in E01–E04 pass.                                                                                                                             |
+| **F. All folders chats on this computer**    | The run's `Folders`, the composite view, landing across folders, context, sandbox, checks, plans, subagents, connectors, and the UI.                                                                                                                                                | The overlay, land and run tests of F01–F14 pass, with FUSE on Linux CI and macFUSE by hand.                                                            |
+| **G. All folders chats in WSL and on hosts** | The protocol's folders, the daemon's, the composite snapshot and its ignore rules, results per folder, moves and the dialog.                                                                                                                                                        | `rovik-agentd/tests/folders.rs` and the client's tests pass.                                                                                           |
+| **H. The menu**                              | The menu items, the dialog, workspaces in the list, the README, the e2e steps.                                                                                                                                                                                                      | The e2e steps in section 8 pass on Linux, macOS and Windows.                                                                                           |
 
 Every merge to master is released (`release.yml:1`), so each task is safe to
-ship alone. A–E keep the menu items out: no window has more than one folder
-until F. What a user of a project sees change before F: the fixed bugs
-(section 11), tab titles told apart (C03), and the "Packages (N)" heading
-(C05). Nothing in the chats database changes (D6). Sizes: A M, B M, C M, D L,
-E M, F S.
+ship alone. A–G keep the menu items out: no window has more than one folder
+until H, and nothing offers All folders. What a user of a project sees
+change before H: the fixed bugs (section 12), tab titles told apart (C03),
+and the "Packages (N)" heading (C05). B01's schema step is permanent once
+released (3.1). Sizes: A M, B M, C M, D L, E M, F XL, G L, H S.
 
 ---
 
-## 6. Implementation order for an AI agent
+## 7. Implementation order for an AI agent
 
 Rules for every task (AGENTS.md):
 
@@ -792,7 +1316,9 @@ Rules for every task (AGENTS.md):
   changing them; follow the comments' style.
 - Every task ships with tests that would fail without it, named as sentences.
 - A project (one folder) behaves as it does today after every task, but for
-  the fixes and changes section 5 names: its existing tests pass unchanged.
+  the fixes and changes section 6 names: its existing tests pass unchanged.
+- A protocol type's new field has a serde default and a sample in
+  `covers()`; an older peer's message still parses.
 - Before each commit: `npm test`, `npm run typecheck` and
   `npm run format:check`. From `src-tauri/`: `cargo nextest run -p <crate>`
   for each crate changed (the app crate is `rovik-ide`), and
@@ -801,67 +1327,91 @@ Rules for every task (AGENTS.md):
 - Write each task's notes under "Notes from implementation" at the end of
   this file.
 
-| Task | Files                                                                                                                                                                                                                   | What                                                                                                                                                                                                                                                                                                                                                  | Tests                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A01  | `src/lib/fileTools.ts`, `src/lib/fileTree.ts`, `src/components/FileTree.tsx`, `src/components/NewProjectDialog.tsx`, `src/App.tsx`                                                                                      | One `isAtOrUnder`, `parentOf` and `samePath` in `fileTools.ts`, with the platform's case rule, drive roots and UNC roots, in place of the six copies.                                                                                                                                                                                                 | `fileTools.test.ts`: POSIX and Windows paths; `D:\x`'s parent is `D:\`; `\\server\share`; case ignored on Windows and macOS only. `fileTree.test.ts`: a change at the top of `D:\` refreshes it.                                                                                                                                                                                                                                                                          |
-| A02  | `src/lib/openFolders.ts` (new), `src/App.tsx`                                                                                                                                                                           | `WindowTarget`, `target()` in place of `rootPath`, `openFolders`, `folderOf`, `activeFolder`, labels, `sessionKey`. App.tsx's 28 uses of `rootPath()` go through them (a project is a list of one).                                                                                                                                                   | `openFolders.test.ts`: `folderOf` with two folders and with none; labels when names clash; `activeFolder`'s order; `sessionKey`.                                                                                                                                                                                                                                                                                                                                          |
-| A03  | `src-tauri/src/filesystem/watch.rs`, `src-tauri/src/filesystem/mod.rs`, `src/lib/commands.ts`, `src/App.tsx`                                                                                                            | `start_file_watch(paths)`: a watch and ignore rules per folder, one folder's error not stopping the others; paths under each folder's own spelling; `unknown` names its folder; `git-changed { folder }`; a repository's git folder outside the folder, and its `refs/`, watched; `project_busy` on the working folder; the tree's matcher by folder. | `watch.rs`: changes in two folders are both reported; an unwatchable folder leaves the other watched; an overflow names its folder; a commit and a push from a terminal in a repository above a folder send `git-changed` for it; a folder opened through a link reports under its own path; a new set of folders stops the old watches.                                                                                                                                  |
-| A04  | `src/lib/fileTree.ts`, `src/components/FileTree.tsx`, `src/App.tsx`                                                                                                                                                     | The controller takes the roots and whether they're rows; each folder's listing uses its own root; rows keyed by folder and file id; `rootId` per folder. With one root and no rows, the rows are today's.                                                                                                                                             | `fileTree.test.ts`: two roots as rows, each expanded, refreshed and moved across; a link in one folder to the other lists rows of its own; one root lists as before.                                                                                                                                                                                                                                                                                                      |
-| A05  | `src-tauri/src/git/repos.rs` (new), `git/mod.rs`, `git/changes.rs`, `src-tauri/src/util.rs`, `rovik-core/src/overlay/chats.rs`, `src-tauri/src/lib.rs`                                                                  | `git_repos(folders)`; `scopes` on `git_status`, `git_commit` and `git_discard_all` (by default today's one), matched as pathspecs; line counts scoped; `rewriting` holds the working folder, and `is_busy` counts holds above and below.                                                                                                              | `git/tests.rs`: two subfolders of one repository are one repository with two scopes; a linked worktree is its own; a folder in none says so; a status with two scopes lists both and nothing beside; `app2` isn't taken with `app`; line counts stay in scope. `overlay` tests: a hold on a working folder makes a folder inside it busy, and one beside it not.                                                                                                          |
-| A06  | `git/changes.rs`, `git/mod.rs`                                                                                                                                                                                          | Commit refused while something is staged outside the scopes; status leaves out nested repositories and submodules changed only inside; revert refuses both.                                                                                                                                                                                           | `git/tests.rs`: a change staged outside the folder stops the commit and stays staged; a nested repository doesn't stop a commit and isn't listed; its revert is refused; a submodule changed only inside isn't listed, and no empty commit is made.                                                                                                                                                                                                                       |
-| A07  | `src/App.tsx`, `src/lib/gitMarks.ts`, `src/components/GitPanel.tsx`                                                                                                                                                     | The editor's marks ask with the path relative to the file's repository; GitPanel's `onOpenFile` keeps the file it's given; tabs not on disk aren't refreshed.                                                                                                                                                                                         | `gitMarks.test.ts`: in a project at `repo/app`, `package.json` is asked as `app/package.json`; `disk:` and `chat:` tabs keep their bases on a refresh.                                                                                                                                                                                                                                                                                                                    |
-| A08  | `src/components/Editor.tsx`, `src/lib/fileFormatters.ts`, `src/lib/markdownPreview.ts`, `src/lib/diagnostics.ts`                                                                                                        | The formatter's root, the Markdown preview's `/` and the diagnostics' root are the file's folder.                                                                                                                                                                                                                                                     | With two folders, a file of the second is formatted with the second's config, its `/` links resolve in the second, and its markers are reported for the second.                                                                                                                                                                                                                                                                                                           |
-| B01  | `src/lib/workspaces.ts` (new), `src-tauri/src/workspace.rs` (new), `src-tauri/src/lib.rs`                                                                                                                               | The shared map and its operations; `workspace_check_folder` (D5).                                                                                                                                                                                                                                                                                     | `workspaces.test.ts` (a fake shared backend): create, add, remove (the last refused), locate, delete (refused while open elsewhere), list order and `missing`. `workspace.rs`: each rule of D5, including a copy with the same ID file.                                                                                                                                                                                                                                   |
-| B02  | `src-tauri/src/instances.rs`, `src-tauri/src/lib.rs` (`project_claim`, `project_check`, `at_work_in`), `src-tauri/src/commands/chat.rs` (`reclaim`), `src/lib/instances.ts`                                             | Claim targets (D7): the stored target, the record per folder, keys under the lock and without duplicates, `reclaim(root, id)`, `keep_open` per folder, holders with the workspace's name, the notices.                                                                                                                                                | `instances.rs`: a workspace takes every key or none; a folder another process has stops it and is named; adding and removing a folder keep the others' keys; the three races of section 4 (two folders resolved at once, a folder resolved after the window moved on, leaving a workspace with two folders at work). `instances.test.ts`: the notices.                                                                                                                    |
-| B03  | `src/lib/switchTarget.ts` (new), `src/lib/projects.ts`, `src/App.tsx`                                                                                                                                                   | `switchTarget(target)` for a folder or a workspace, its steps (3.3) as calls it's given; each folder resolved, with a notification and a counter of its own; missing folders not resolved, and tried again on focus and Try again.                                                                                                                    | `switchTarget.test.ts`: the steps' order; a refused claim changes nothing; a cancelled unsaved tab stops the switch; a missing folder isn't resolved, and is when it's back; a target taken elsewhere at start leaves the window empty. `projects.test.ts` (new): two folders' copy questions are both asked, each naming its folder.                                                                                                                                     |
-| B04  | `src-tauri/src/filesystem/mod.rs`, `src/lib/projectHistory.ts`, `src/lib/projectSessions.ts`, `src-tauri/src/lib.rs` (`--workspace`), `src-tauri/src/updates.rs`, `src/lib/updates.ts`                                  | What's saved and the restart (D16).                                                                                                                                                                                                                                                                                                                   | `updates.rs`: `restart_args` with a workspace passes `--workspace`. `projectSessions.test.ts`: a workspace's entry, and a tab of a folder that left isn't restored. A `last-project.json` without `workspace` reads as before.                                                                                                                                                                                                                                            |
-| B05  | `src/components/ProjectList.tsx`, `src/App.tsx`, `rovik-core/src/chat_db/api.rs`, `src-tauri/src/commands/chat.rs`                                                                                                      | Delete hidden for every project the window has; `chat_delete_project` refuses one this window has; Relink on a workspace folder's project does what Locate… does.                                                                                                                                                                                     | `ProjectList` test: no Delete on any of the window's projects. `chat_db` `api` tests: deleting a project this window has open is refused.                                                                                                                                                                                                                                                                                                                                 |
-| C01  | `src/components/FileTree.tsx`, `src/components/FileContextMenu.tsx`, `src/App.tsx`, `src-tauri/src/filesystem/entries.rs`, `src/styles.css`                                                                             | Folder rows (label, missing); their menu (Remove from workspace, Locate…, Try again); no rename, delete, cut, copy or drag of them by menu, keyboard or mouse; the backend's refusal; dropping on a folder's row; the project-root target for a project only; Remove and Locate (tabs settled, claim, map).                                           | `FileTree.test.tsx`: a folder row's menu; "Mod+Backspace on a folder row deletes nothing"; "a folder row can't be dragged"; a drop on it moves into that folder; a missing row's actions. `entries.rs`: deleting, renaming or moving a watched folder is refused.                                                                                                                                                                                                         |
-| C02  | `src/components/SearchPanel.tsx`, `src/components/searchPanel.test.tsx` (new)                                                                                                                                           | A search per folder, grouped by folder, one limit, results opened from their folder.                                                                                                                                                                                                                                                                  | Two folders' results under their headers; the same relative path opens two files; one folder looks as today.                                                                                                                                                                                                                                                                                                                                                              |
-| C03  | `src/components/Tabs.tsx`, `src/lib/editorTabs.ts`                                                                                                                                                                      | Colliding titles told apart.                                                                                                                                                                                                                                                                                                                          | `Tabs.test.tsx`: two `package.json` show their folders; a unique name shows alone.                                                                                                                                                                                                                                                                                                                                                                                        |
-| C04  | `src/components/TerminalPanel.tsx`, `src/components/FolderMenu.tsx` (new)                                                                                                                                               | Grouped by `sessionKey`; **+** asks for the folder in a workspace, its folders drawn by `FolderMenu` (the window's folders as menu items, which E02 reuses); the tooltip.                                                                                                                                                                             | `terminalPanel.test.tsx`: the menu lists the folders, and the terminal starts in the one picked; a removed folder's terminal keeps running.                                                                                                                                                                                                                                                                                                                               |
-| C05  | `src/components/SettingsDialog.tsx`, `ProjectChecksSettings.tsx`, `RestrictedFilesSettings.tsx`, `SettingsMenu.tsx`                                                                                                     | The folder select in a workspace; "Packages (N)".                                                                                                                                                                                                                                                                                                     | `SettingsDialog.test.tsx`: the select, and the page following it. `ProjectChecksSettings.test.tsx`: the heading. `RestrictedFilesSettings.test.tsx`: the selected folder's list.                                                                                                                                                                                                                                                                                          |
-| C06  | `src/lib/intellisense/index.ts`, `src/lib/intellisense/project.ts`, `src/lib/intellisense/activeConfig.ts`, `src/lib/intellisense/compilerOptions.ts`, `src-tauri/src/typings.rs`                                       | The worker loads every folder; `owns` any; each folder's options kept, the active file's folder's applied; the limits shared.                                                                                                                                                                                                                         | `activeConfig.test.ts` (new): a TSX file in the second folder gets its folder's `jsx` and `lib`. `projectWorker.test.ts`: adding a folder loads its sources.                                                                                                                                                                                                                                                                                                              |
-| C07  | `src/lib/lsp/client.ts`, `src/lib/lsp/rustAnalyzer.ts`, `src/components/Editor.tsx`, `src/App.tsx`                                                                                                                      | rust-analyzer with every folder; the `workspace/workspaceFolders` answer; a restart when the folders change.                                                                                                                                                                                                                                          | `lsp/client.test.ts` (new): `initialize` lists both folders; the request is answered with them.                                                                                                                                                                                                                                                                                                                                                                           |
-| D01  | `src/components/GitPanel.tsx`, `src/components/GitRepoSection.tsx` (new), `GitHooksView.tsx`, `ConflictResolver.tsx`, `src-tauri/src/git/history.rs`                                                                    | GitPanel split into the window's part and a section per repository; one repository looks as today; drafts, publish answers and `GIT_LOG_LATEST` by repository; `opKey` with the repository; folders without one.                                                                                                                                      | `GitPanel.test.tsx`: one repository renders as before; two show two sections with their branches. The `gitBranchMenu`, `gitRebase` and `conflictResolver` tests pass unchanged. `history.rs`: two repositories' logs don't stop each other.                                                                                                                                                                                                                               |
-| D02  | `git/changes.rs` (`git_commit_many`), `git/hooks.rs`, `src/lib/gitPublish.ts`, `GitPanel.tsx`, `GitRepoSection.tsx`                                                                                                     | The commit across repositories (D10), holding each repository; the include boxes; `commitAction(statuses)`; pushing what was committed; one publish question.                                                                                                                                                                                         | `git/tests.rs`: a pre-commit failing in the second repository leaves the first uncommitted; a commit-msg hook changes its repository's message only; each commit goes on its own branch; a held `refs/heads/<branch>.lock` in the third reports the first two. `gitPublish.test.ts`: the actions over several. `GitPanel.test.tsx`: a partial failure keeps the message; a rejected push shows in its section; a repository that was only ahead isn't pushed by a commit. |
-| D03  | `GitPanel.tsx`, `src/App.tsx`                                                                                                                                                                                           | A folder's `git-changed` refreshes its repository's section; the list found again for a new repository.                                                                                                                                                                                                                                               | `GitPanel.test.tsx`: an event refreshes its section only; `git init` in a folder without a repository adds a section.                                                                                                                                                                                                                                                                                                                                                     |
-| E01  | `rovik-core/src/chat_db/store.rs`, `chat_db/search.rs`, `chat_db/api.rs`, `src-tauri/src/commands/chat.rs`, `src/lib/chatApi.ts`, `src/lib/chatStore.ts`, `src/components/ChatPanel.tsx`, `src/components/ChatList.tsx` | The chats of several projects; `setProjects` keeping the open chat; unanswered sends recovered per project added; the folder on each row.                                                                                                                                                                                                             | `chat_db/tests.rs`: two projects' chats listed together by recency, and searched together. `chatStore.test.ts`: "adding a folder keeps the open chat and its draft"; "after a crash, an unanswered send in the second folder's chat comes back".                                                                                                                                                                                                                          |
-| E02  | `src/components/ChatPanel.tsx`, `src/components/FolderMenu.tsx`, `src/lib/chatStore.ts`, `src/lib/fileReferences.ts`, `src/lib/chatBranch.ts`, `src/lib/plans.ts`                                                       | `chatRoot`; New chat's folder dropdown on both buttons, and the panel's folder list when there's no chat; an empty chat reused in the folder clicked (`set_dialog_project`); the chat's folder shown in the message box; context and `@` kept to the chat's folder, with the note; Implement on another folder's plan.                                | `chatInput.test.tsx`: with two folders, New chat lists them and makes the chat in the one clicked; Escape makes none; with one folder there's no dropdown; an empty chat is reused in the folder clicked; with no chat, the panel lists the folders; a missing folder can't be clicked; another folder's file isn't sent. `chatBranchOffer.test.tsx`: the offer asks about the chat's folder's repository.                                                                |
-| E03  | `src/components/IsolationBar.tsx`, `src/lib/overlay.ts`, `src/App.tsx` (`chat:` tabs)                                                                                                                                   | Paths from the chat's folder.                                                                                                                                                                                                                                                                                                                         | `isolationBar.test.tsx`: a changed file of the second folder's chat opens from the second folder.                                                                                                                                                                                                                                                                                                                                                                         |
-| E04  | `rovik-client/src/remote.rs`, `rovik-client/src/remote/results.rs`, `src-tauri/src/commands/chat.rs`                                                                                                                    | The window's open projects; steering paths relative to the chat's own folder; the delivery test's folder.                                                                                                                                                                                                                                             | `remote/tests.rs`: a host's result for the second folder's chat lands while the workspace is open; a steering message's paths are relative to its chat's folder.                                                                                                                                                                                                                                                                                                          |
-| F01  | `src/components/ProjectSwitcher.tsx`, `ProjectList.tsx`, `NewWorkspaceDialog.tsx` (new), `src/App.tsx`, `src/styles.css`                                                                                                | The menu items; the dialog (picker and typed path); Add folder; workspaces in the list; the trigger; Create bringing the folder's terminals and commit message along.                                                                                                                                                                                 | `ProjectSwitcher.test.tsx` (new): the items' order, and Add folder only in a workspace. `NewWorkspaceDialog.test.tsx` (new): each refusal shows on its row and keeps Create off; the open folder is listed first; a typed path is added. The list's workspace row, its missing count and its delete question.                                                                                                                                                             |
-| F02  | `README.md`                                                                                                                                                                                                             | Features, Getting started, Several windows and the Git panel, for workspaces.                                                                                                                                                                                                                                                                         | `npm run format:check`.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| F03  | `scripts/e2e/run.mjs`, `scripts/e2e/README.md`                                                                                                                                                                          | The e2e steps (section 7), after the project's restart step, with a restart of their own at the end.                                                                                                                                                                                                                                                  | The steps themselves.                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Task | Files                                                                                                                                                                                                                                                      | What                                                                                                                                                                                                                                                                                                                                                  | Tests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A01  | `src/lib/fileTools.ts`, `src/lib/fileTree.ts`, `src/components/FileTree.tsx`, `src/components/NewProjectDialog.tsx`, `src/App.tsx`                                                                                                                         | One `isAtOrUnder`, `parentOf` and `samePath` in `fileTools.ts`, with the platform's case rule, drive roots and UNC roots, in place of the six copies.                                                                                                                                                                                                 | `fileTools.test.ts`: POSIX and Windows paths; `D:\x`'s parent is `D:\`; `\\server\share`; case ignored on Windows and macOS only. `fileTree.test.ts`: a change at the top of `D:\` refreshes it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| A02  | `src/lib/openFolders.ts` (new), `src/App.tsx`                                                                                                                                                                                                              | `WindowTarget`, `target()` in place of `rootPath`, `openFolders`, `folderOf`, `activeFolder`, `sessionKey`. App.tsx's 28 uses of `rootPath()` go through them (a project is a list of one).                                                                                                                                                           | `openFolders.test.ts`: `folderOf` with two folders and with none; `activeFolder`'s order; `sessionKey`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| A03  | `src-tauri/src/filesystem/watch.rs`, `src-tauri/src/filesystem/mod.rs`, `src/lib/commands.ts`, `src/App.tsx`                                                                                                                                               | `start_file_watch(paths)`: a watch and ignore rules per folder, one folder's error not stopping the others; paths under each folder's own spelling; `unknown` names its folder; `git-changed { folder }`; a repository's git folder outside the folder, and its `refs/`, watched; `project_busy` on the working folder; the tree's matcher by folder. | `watch.rs`: changes in two folders are both reported; an unwatchable folder leaves the other watched; an overflow names its folder; a commit and a push from a terminal in a repository above a folder send `git-changed` for it; a folder opened through a link reports under its own path; a new set of folders stops the old watches.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| A04  | `src/lib/fileTree.ts`, `src/components/FileTree.tsx`, `src/App.tsx`                                                                                                                                                                                        | The controller takes the roots and whether they're rows; each folder's listing uses its own root; rows keyed by folder and file id; `rootId` per folder. With one root and no rows, the rows are today's.                                                                                                                                             | `fileTree.test.ts`: two roots as rows, each expanded, refreshed and moved across; a link in one folder to the other lists rows of its own; one root lists as before.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| A05  | `src-tauri/src/git/repos.rs` (new), `git/mod.rs`, `git/changes.rs`, `src-tauri/src/util.rs`, `rovik-core/src/overlay/chats.rs`, `src-tauri/src/lib.rs`                                                                                                     | `git_repos(folders)`; `scopes` on `git_status`, `git_commit` and `git_discard_all` (by default today's one), matched as pathspecs; line counts scoped; `rewriting` holds the working folder, and `is_busy` counts holds above and below.                                                                                                              | `git/tests.rs`: two subfolders of one repository are one repository with two scopes; a linked worktree is its own; a folder in none says so; a status with two scopes lists both and nothing beside; `app2` isn't taken with `app`; line counts stay in scope. `overlay` tests: a hold on a working folder makes a folder inside it busy, and one beside it not.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| A06  | `git/changes.rs`, `git/mod.rs`                                                                                                                                                                                                                             | Commit refused while something is staged outside the scopes; status leaves out nested repositories and submodules changed only inside; revert refuses both.                                                                                                                                                                                           | `git/tests.rs`: a change staged outside the folder stops the commit and stays staged; a nested repository doesn't stop a commit and isn't listed; its revert is refused; a submodule changed only inside isn't listed, and no empty commit is made.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| A07  | `src/App.tsx`, `src/lib/gitMarks.ts`, `src/components/GitPanel.tsx`                                                                                                                                                                                        | The editor's marks ask with the path relative to the file's repository; GitPanel's `onOpenFile` keeps the file it's given; tabs not on disk aren't refreshed.                                                                                                                                                                                         | `gitMarks.test.ts`: in a project at `repo/app`, `package.json` is asked as `app/package.json`; `disk:` and `chat:` tabs keep their bases on a refresh.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| A08  | `src/components/Editor.tsx`, `src/lib/fileFormatters.ts`, `src/lib/markdownPreview.ts`, `src/lib/diagnostics.ts`                                                                                                                                           | The formatter's root, the Markdown preview's `/` and the diagnostics' root are the file's folder.                                                                                                                                                                                                                                                     | With two folders, a file of the second is formatted with the second's config, its `/` links resolve in the second, and its markers are reported for the second.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| B01  | `rovik-core/src/chat_db/schema.rs`, `chat_db/workspaces.rs` (new), `chat_db/workspaces_tests.rs` (new), `chat_db/projects.rs`, `chat_db/projects_tests.rs`, `chat_db/store.rs`, `rovik-core/src/file_name.rs` (new), `src-tauri/src/filesystem/entries.rs` | Schema 11 (3.1); `workspaces.rs`; `list`/`summary` by kind; `chat_may_use`'s union; the trigger; `DialogSummary.projectId`; `set_dialog_project` for empty chats only; the file-name check moved, with `folder_name`. Merged once this plan is reviewed.                                                                                              | `upgrades_a_version_10_database`. `workspaces_tests.rs`: each rule of D5 (a symlink, a copy's ID); names (a clash takes its parent's, then a number; case; `CON`, `build`, `@context`, a drive root, 300 characters; a removed name never reused; a re-added folder's name back; locating keeps it); the last folder stays; list order and `missing`. `projects_tests.rs`: a workspace isn't listed or summarised as a project; it never gets project folders; a workspace chat works only in its folders, not in a removed one; a folder chat doesn't work in the other folders; deleting a workspace deletes its own chats and leaves its folders' projects.                                                                                                                                                                                                                                                                                          |
+| B02  | `chat_db/api.rs`, `src-tauri/src/commands/workspace.rs` (new), `commands/mod.rs`, `src-tauri/src/lib.rs`, `src/lib/chatApi.ts`, `src/lib/workspaces.ts` (new), `src/types.ts`                                                                              | The commands; the frontend's calls.                                                                                                                                                                                                                                                                                                                   | `chat_db` `api` tests: removing or locating a folder is refused while a workspace chat is at work there or has changes in it; deleting a workspace open elsewhere is refused.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| B03  | `src-tauri/src/instances.rs`, `src-tauri/src/lib.rs` (`project_claim`, `project_check`, `at_work_in`), `src-tauri/src/commands/chat.rs` (`reclaim`), `src/lib/instances.ts`                                                                                | Claim targets (D7): the stored target, the record per owner, keys under the lock and without duplicates, `reclaim(root, id)`, `keep_open` per owner, holders with the workspace's name, `elsewhere()`'s copy only with a folder, the notices.                                                                                                         | `instances.rs`: a workspace takes its key and its folders' or none; a folder another process has stops it and is named; adding and removing a folder keep the others' keys; two folders resolved at once keep their keys; a folder resolved after the window moved on takes nothing back; leaving a workspace with its own chat at work keeps it and its folders; with two folders' chats at work keeps both; a workspace open elsewhere isn't reported as a copy. `instances.test.ts`: the notices.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| B04  | `src/lib/switchTarget.ts` (new), `src/lib/projects.ts`, `src/App.tsx`                                                                                                                                                                                      | `switchTarget(target)` for a folder or a workspace (3.3), its steps as calls it's given; each folder resolved, with a notification and a counter of its own; missing folders not resolved, and tried again on focus and Try again.                                                                                                                    | `switchTarget.test.ts`: the steps' order; a refused claim changes nothing; a cancelled unsaved tab stops the switch; a missing folder isn't resolved, and is when it's back; a target taken elsewhere at start leaves the window empty. `projects.test.ts` (new): two folders' copy questions are both asked, each naming its folder.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| B05  | `src-tauri/src/filesystem/mod.rs`, `src/lib/projectHistory.ts`, `src/lib/projectSessions.ts`, `src-tauri/src/lib.rs` (`--workspace`), `src-tauri/src/updates.rs`, `src/lib/updates.ts`                                                                     | What's saved and the restart (D17).                                                                                                                                                                                                                                                                                                                   | `updates.rs`: `restart_args` with a workspace passes `--workspace`. `projectSessions.test.ts`: a workspace's entry, and a tab of a folder that left isn't restored. A `last-project.json` without `workspace` reads as before.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| B06  | `src/components/ProjectList.tsx`, `src/App.tsx`, `rovik-core/src/chat_db/api.rs`, `src-tauri/src/commands/chat.rs`                                                                                                                                         | Delete hidden for every project the window has; `chat_delete_project` refuses one this window has; Relink on a workspace folder's project does what Locate… does.                                                                                                                                                                                     | `ProjectList` test: no Delete on any of the window's projects. `chat_db` `api` tests: deleting a project this window has open is refused.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| C01  | `src/components/FileTree.tsx`, `src/components/FileContextMenu.tsx`, `src/App.tsx`, `src-tauri/src/filesystem/entries.rs`, `src/styles.css`                                                                                                                | Folder rows (name, missing); their menu (Remove from workspace, Locate…, Try again); no rename, delete, cut, copy or drag of them by menu, keyboard or mouse; the backend's refusal; dropping on a folder's row; the project-root target for a project only; Remove and Locate (their guard, tabs settled, claim).                                    | `FileTree.test.tsx`: a folder row's menu; "Mod+Backspace on a folder row deletes nothing"; "a folder row can't be dragged"; a drop on it moves into that folder; a missing row's actions. `entries.rs`: deleting, renaming or moving a watched folder is refused.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| C02  | `src/components/SearchPanel.tsx`, `src/components/searchPanel.test.tsx` (new)                                                                                                                                                                              | A search per folder, grouped by folder, one limit, results opened from their folder.                                                                                                                                                                                                                                                                  | Two folders' results under their headers; the same relative path opens two files; one folder looks as today.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| C03  | `src/components/Tabs.tsx`, `src/lib/editorTabs.ts`                                                                                                                                                                                                         | Colliding titles told apart.                                                                                                                                                                                                                                                                                                                          | `Tabs.test.tsx`: two `package.json` show their folders; a unique name shows alone.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| C04  | `src/components/TerminalPanel.tsx`, `src/components/FolderMenu.tsx` (new)                                                                                                                                                                                  | Grouped by `sessionKey`; **+** asks for the folder in a workspace (`FolderMenu`, with a slot for a caller's own items); the tooltip.                                                                                                                                                                                                                  | `terminalPanel.test.tsx`: the menu lists the folders, and the terminal starts in the one picked; a removed folder's terminal keeps running.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| C05  | `src/components/SettingsDialog.tsx`, `ProjectChecksSettings.tsx`, `RestrictedFilesSettings.tsx`, `SettingsMenu.tsx`                                                                                                                                        | The folder select in a workspace; "Packages (N)".                                                                                                                                                                                                                                                                                                     | `SettingsDialog.test.tsx`: the select, and the page following it. `ProjectChecksSettings.test.tsx`: the heading. `RestrictedFilesSettings.test.tsx`: the selected folder's list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| C06  | `src/lib/intellisense/index.ts`, `src/lib/intellisense/project.ts`, `src/lib/intellisense/activeConfig.ts`, `src/lib/intellisense/compilerOptions.ts`, `src-tauri/src/typings.rs`                                                                          | The worker loads every folder; `owns` any; each folder's options kept, the active file's folder's applied; the limits shared.                                                                                                                                                                                                                         | `activeConfig.test.ts` (new): a TSX file in the second folder gets its folder's `jsx` and `lib`. `projectWorker.test.ts`: adding a folder loads its sources.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| C07  | `src/lib/lsp/client.ts`, `src/lib/lsp/rustAnalyzer.ts`, `src/components/Editor.tsx`, `src/App.tsx`                                                                                                                                                         | rust-analyzer with every folder; the `workspace/workspaceFolders` answer; a restart when the folders change.                                                                                                                                                                                                                                          | `lsp/client.test.ts` (new): `initialize` lists both folders; the request is answered with them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| D01  | `src/components/GitPanel.tsx`, `src/components/GitRepoSection.tsx` (new), `GitHooksView.tsx`, `ConflictResolver.tsx`, `src-tauri/src/git/history.rs`                                                                                                       | GitPanel split into the window's part and a section per repository; one repository looks as today; drafts, publish answers and `GIT_LOG_LATEST` by repository; `opKey` with the repository; folders without one.                                                                                                                                      | `GitPanel.test.tsx`: one repository renders as before; two show two sections with their branches. The `gitBranchMenu`, `gitRebase` and `conflictResolver` tests pass unchanged. `history.rs`: two repositories' logs don't stop each other.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| D02  | `git/changes.rs` (`git_commit_many`), `git/hooks.rs`, `src/lib/gitPublish.ts`, `GitPanel.tsx`, `GitRepoSection.tsx`                                                                                                                                        | The commit across repositories (D11), holding each repository; the include boxes; `commitAction(statuses)`; pushing what was committed; one publish question.                                                                                                                                                                                         | `git/tests.rs`: a pre-commit failing in the second repository leaves the first uncommitted; a commit-msg hook changes its repository's message only; each commit goes on its own branch; a held `refs/heads/<branch>.lock` in the third reports the first two. `gitPublish.test.ts`: the actions over several. `GitPanel.test.tsx`: a partial failure keeps the message; a rejected push shows in its section; a repository that was only ahead isn't pushed by a commit.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| D03  | `GitPanel.tsx`, `src/App.tsx`                                                                                                                                                                                                                              | A folder's `git-changed` refreshes its repository's section; the list found again for a new repository.                                                                                                                                                                                                                                               | `GitPanel.test.tsx`: an event refreshes its section only; `git init` in a folder without a repository adds a section.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| E01  | `rovik-core/src/chat_db/store.rs`, `chat_db/search.rs`, `chat_db/api.rs`, `src-tauri/src/commands/chat.rs`, `src/lib/chatApi.ts`, `src/lib/chatStore.ts`, `src/components/ChatPanel.tsx`, `src/components/ChatList.tsx`                                    | The chats of several owners; `setProjects` keeping the open chat; unanswered sends recovered per owner added; the folder on each row.                                                                                                                                                                                                                 | `chat_db/tests.rs`: two owners' chats listed together by recency, and searched together; a subagent of a workspace chat belongs to the workspace. `chatStore.test.ts`: "adding a folder keeps the open chat and its draft"; "after a crash, an unanswered send in the second folder's chat comes back".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| E02  | `src/components/ChatPanel.tsx`, `src/components/FolderMenu.tsx`, `src/lib/openFolders.ts`, `src/lib/chatStore.ts`, `src/lib/fileReferences.ts`, `src/lib/activeContext.ts`, `src/lib/chatBranch.ts`, `src/lib/plans.ts`                                    | New chat's dropdown on both buttons, and the panel's list when there's no chat; an empty chat reused for the choice; `chatRootOf`, `chatPathToAbsolute`, `chatPathOf`, `runPlace`; the folder label; what's sent named as the chat names files (the editor context included), another folder's file not sent; Implement on another folder's plan.     | `openFolders.test.ts`: a folder chat's path is joined to its folder; a file is named from its folder; a file outside the chat's folders has no name; a Windows file is named with `/` and found again. `chatInput.test.tsx`: with two folders, New chat lists them and makes the chat in the one clicked; Escape makes none; with one folder there's no dropdown; an empty chat is reused; with no chat, the panel lists the folders; a missing folder can't be clicked; the editor context names the file as the chat does; another folder's file isn't sent. `chatBranchOffer.test.tsx`: the offer asks about the chat's folder's repository.                                                                                                                                                                                                                                                                                                         |
+| E03  | `src/components/IsolationBar.tsx`, `src/lib/overlay.ts`, `src/App.tsx` (`chat:` tabs)                                                                                                                                                                      | Paths through `chatPathToAbsolute`.                                                                                                                                                                                                                                                                                                                   | `isolationBar.test.tsx`: a changed file of the second folder's chat opens from the second folder.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| E04  | `rovik-client/src/remote.rs`, `rovik-client/src/remote/results.rs`, `rovik-client/src/remote/files.rs` (new), `src-tauri/src/commands/chat.rs`                                                                                                             | The window's open owners; `files_of(chat)` (one folder named "" for a folder chat, today's path); steering paths relative to the chat's own folder; the delivery test's folder.                                                                                                                                                                       | `remote/tests.rs`: a host's result for the second folder's chat lands while the workspace is open; a steering message's paths are relative to its chat's folder; a project without folders reads and writes as before.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| F01  | `rovik-core/src/agent_run/folders.rs` (new), `run.rs`, `repair.rs`, `verify.rs`, `landing.rs`, `before.rs`, `test_writer.rs`, `execute.rs`, `subagent_run.rs`, `change_review.rs`, `candidates.rs`, `agent_run/mod.rs`                                     | `Folders` in place of `Run.project_root` (4.3), one folder giving today's behaviour everywhere.                                                                                                                                                                                                                                                       | The existing agent_run suites pass unchanged. Unit: a key maps to its folder's real file; a folder chat is `single()`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| F02  | `rovik-protocol/src/agent.rs`, `src/lib/agentRuns.ts`, `agent_run/mod.rs` (`check_project`), `autopilot/driver.rs`, `agent.rs` (estimate), `src-tauri/src/commands/agent.rs`                                                                               | `StartRequest.folders` (`RunFolder`), `check_project` with folders, Autopilot's `Settings.folders`, the estimate's.                                                                                                                                                                                                                                   | Protocol: a start request without folders still parses; `covers()` samples. `check_project`: a workspace chat's folders must be its members by name; a missing or unknown folder is refused by name; root and folders together are refused; a project chat with folders is refused.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| F03  | `rovik-core/src/vfs/store.rs`, `vfs/fuse.rs`, `vfs/macfuse.rs`, `overlay/fs.rs`                                                                                                                                                                            | `VfsError::CrossDevice` (EXDEV); the shared `Budget`; the `ChatFs` trait. No behaviour change.                                                                                                                                                                                                                                                        | `overlay` tests: folders of one chat share its limit; the warning comes once per chat. `vfs` tests: a cross-device error reaches the kernel as EXDEV.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| F04  | `overlay/folders.rs` (new), `overlay/land.rs`, `overlay/chats.rs`                                                                                                                                                                                          | `Folders` (4.2); landing on `Folders` (4.6): plan, lock order, one journal with its folders, recovery, undo; `folders_of` in place of `project_of`.                                                                                                                                                                                                   | `land` tests: changes in two folders land under one landing; a conflict in one folder lands nothing in any; a failed write in the second folder puts the first back; an interrupted two-folder landing is finished at start; undo puts back every folder; such a landing writes no `project.txt`; two such chats landing at once both finish; a folder chat's journal has no folders.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| F05  | `overlay/composite.rs` (new)                                                                                                                                                                                                                               | `CompositeFs` (4.2), unit-tested without FUSE.                                                                                                                                                                                                                                                                                                        | `the_root_lists_each_folder_by_its_name`; `inode_numbers_of_two_folders_never_collide`; `a_folders_root_has_the_views_root_as_its_parent`; `nothing_can_be_created_renamed_or_removed_at_the_root`; `a_rename_between_folders_is_a_cross_device_error`; `a_folders_kernel_notifications_carry_the_views_inode_numbers`; `changes_name_paths_from_the_views_root`; `a_folder_added_while_mounted_shows_and_old_inodes_stay_valid`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| F06  | `overlay/chats.rs`, `overlay/fs.rs`                                                                                                                                                                                                                        | `open_all` (store layout, reconciliation), the watcher and peers per (chat, folder), busy per folder, children over the view, scratch views of `&Folders`, `project_for`, `changes_in_folder`, `CARGO_TARGET_DIR` per set.                                                                                                                            | Mounted (FUSE): common tools work across the folders of one view; `mv` between folders lands as an add and a delete; the view's root is read-only to commands. `chats` tests: an All folders chat reopens with each folder's changes; the project changing under one folder notes paths with its name; a folder chat and an All folders chat see each other's clashes; refreshing one folder keeps the other's clashes; a folder with changes can't leave; a worker lands into the right folders.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| F07  | `agent_run/run.rs`, `agent_run/landing.rs`                                                                                                                                                                                                                 | `prepare` opens the view for every run, Plan mode too, and refuses without the driver or with isolation off; landing through `Folders`; the busy wait over every folder.                                                                                                                                                                              | `workspace_e2e_tests.rs` (new, with a `workspace_harness`): an All folders chat reads and edits files in two folders by their names; its changes land in each folder and nowhere else; Plan mode works in the view and changes nothing; a workspace chat is refused without the driver or with isolation off.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| F08  | `agent_run/project.rs`, `project_profile.rs`, `restricted_files.rs`, `agent.rs`                                                                                                                                                                            | `load_folders` (4.4): per folder detection, settings, checks, stack, instructions under the shared limit; restricted files prefixed; the project section.                                                                                                                                                                                             | `workspace_e2e_tests.rs`: each folder's instructions and checks are in the prompt under its name; a folder's restricted file is refused by its path in the view; one folder's restricted entry doesn't restrict the other.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| F09  | `overlay/confine.rs`, `overlay/confine/landlock.rs`, `overlay/chats.rs` (`command_problem`), `agent_run/execute.rs`, `agent_run/environment.rs`                                                                                                            | Redirects per folder; the text check for every folder's path, connectors' commands always; installs by folder.                                                                                                                                                                                                                                        | `confine.rs`: each folder's path shows its place in the view (bubblewrap); a command naming any folder's path is refused where it can't be redirected. `workspace_e2e_tests.rs`: a command in each folder runs there and sees the chat's changes; a command naming a folder's real path works in the view or is refused.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| F10  | `agent_run/verify.rs`, `agent_run/before.rs`, `agent_run/command_output.rs`, `agent_run/project.rs` (helpers), `agent_run/group.rs`, `agent_run/breaker.rs`, `agent_run/test_writer.rs`                                                                    | Checks of the changed folders, each in its folder; the type-check rule per folder; before-runs on a scratch view; output paths rewritten; the file-to-command helpers per folder.                                                                                                                                                                     | `workspace_e2e_tests.rs`: only the changed folder's checks run, in it; a failed type check in one folder doesn't skip the other's tests; a check failing as before the change is set apart per folder; the red check runs a new test in its own folder.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| F11  | `agent_run/plan.rs`, `agent_run/execute.rs`, `src/lib/plans.ts`                                                                                                                                                                                            | Plans in the first folder; shown by chat path, the Plan-mode plan's too; `Files:` against the view; Implement's choice.                                                                                                                                                                                                                               | `workspace_e2e_tests.rs`: a workspace chat's plan is saved in the first folder's plans; its files are checked against the folders by name. `plans.test.ts`: a plan naming the workspace's folders is implemented by an All folders chat.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| F12  | `agent_run/candidates.rs`, `autopilot/driver.rs`, `agent_tools.rs`, `agent_run/tools.rs`, `agent_run/project.rs` (estimate)                                                                                                                                | Thorough candidates and Autopilot with folders; diagnostics through the folders; the estimate.                                                                                                                                                                                                                                                        | `workspace_e2e_tests.rs`: a scout reads both folders and a worker writes only its step's folder; a candidate follows its task chat's folders' settings; the diagnostics tool finds the editor's markers through the view (and in an isolated folder chat).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| F13  | `connectors/claude_code.rs`, `connectors/codex/mod.rs`, `connectors/mod.rs`                                                                                                                                                                                | The workspace's section given in own-tools mode.                                                                                                                                                                                                                                                                                                      | `workspace_e2e_tests.rs` (scripted harness): Claude Code works in the view, keeps its session, and is told about the folders.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| F14  | `src/components/ChatPanel.tsx`, `src/components/FolderMenu.tsx`, `src/lib/virtualFiles.ts`, `src/lib/chatBranch.ts`, `src/components/NewBranchDialog.tsx`, `src/components/ChatList.tsx`                                                                   | New chat's **All folders** item and its availability; labels; every folder's files in `@`, the editor context and Add to chat; the branch offer across repositories.                                                                                                                                                                                  | `openFolders.test.ts`: an All folders chat's path is found in the folder its first part names; an unknown name names no file; an All folders run is sent every folder by name and no root; a missing folder stops the run, naming it. `virtualFiles.test.ts` (new): All folders needs the driver and says how to get it; on Windows it needs Rovik in WSL to take it. `workspaceChat.test.tsx` (new): New chat lists the folders, then All folders, and the chat made there is the workspace's; All folders can't be picked without the driver; `@` lists each folder's files under its name; Add to chat from either folder goes in as `api/…` or `web/…`; the message box says the chat works in all folders. `chatBranch.test.ts`: repositories on their main branch are offered one branch, named once; two folders of one repository are asked about once; a repository on another branch keeps it; a branch that fails in one says which have it. |
+| G01  | `rovik-protocol/src/lib.rs`, `rovik-protocol/src/work.rs`, `rovik-protocol/src/agent.rs`                                                                                                                                                                   | `features::FOLDERS`; `Project.folders` (`ProjectFolder`); `RunFolder`'s daemon fields.                                                                                                                                                                                                                                                                | Protocol: an older peer's `Project` reads with no folders; `covers()` samples.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| G02  | `rovik-agentd/src/session.rs`, `store.rs`, `work.rs`, `daemon.rs`, `results.rs`                                                                                                                                                                            | `FOLDERS` advertised; `ProjectState.folders`; labels checked; `folder_roots()` for settings and the run; unchecked per folder; delivery refused for such a project.                                                                                                                                                                                   | `rovik-agentd/tests/folders.rs` (new): a two-folder chat's first sync gives it one worktree with each folder under its name; each folder's settings reach the run; a merge checked on the server runs each folder's checks; a chat across folders isn't delivered and says why.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| G03  | `rovik-client/src/shadow.rs`, `rovik-client/src/shadow/composite.rs` (new)                                                                                                                                                                                 | `folder_tree`, `graft`, `borrow`; the `Composite` shadow and `compose`.                                                                                                                                                                                                                                                                               | Unit: composing two folders' trees puts each under its name; an unchanged compose keeps its commit; grafting a folder's result back gives its repository's tree.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| G04  | `rovik-client/src/shadow/rules.rs` (new)                                                                                                                                                                                                                   | Ignore rules rebased under a folder's name.                                                                                                                                                                                                                                                                                                           | `rebased_rules_ignore_what_git_ignores_in_the_folder` (a table checked against libgit2's `is_path_ignored` in the real layout); `what_an_ancestors_gitignore_ignores_stays_out_of_the_result`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| G05  | `rovik-client/src/remote/files.rs`, `remote/sync.rs`, `remote/results.rs`, `remote/moving.rs`, `remote/back.rs`, `remote/bar.rs`, `rovik-core/src/overlay/import.rs`                                                                                       | Sync, recheck, start, import per folder, landing's report, moves and back, the bar, for a chat of folders; `import` taking its store.                                                                                                                                                                                                                 | `remote/tests.rs` (fake daemon): a chat across folders isn't carried to a daemon without folders, and an upgrade is offered. `rovik-agentd/tests/folders.rs`: a run editing both folders brings one result with both; the result comes back into each folder's changes and lands in both; a landing moves the base for both; a chat across folders moved back waits with its changes in each folder; a folder added reaches the chat's worktree at its next message; a folder inside a repository imports with its repository's attributes.                                                                                                                                                                                                                                                                                                                                                                                                             |
+| G06  | `rovik-client/src/remote/moving.rs`, `src/components/MoveChatDialog.tsx`, `src/lib/cloud.ts`                                                                                                                                                               | The preflight's folders and notes; blocked by a missing folder or an old host.                                                                                                                                                                                                                                                                        | `chatLocation.test.tsx`: the dialog lists the folders and the notes; a missing folder blocks the move.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| H01  | `src/components/ProjectSwitcher.tsx`, `ProjectList.tsx`, `NewWorkspaceDialog.tsx` (new), `src/App.tsx`, `src/styles.css`                                                                                                                                   | The menu items; the dialog (picker and typed path); Add folder; workspaces in the list, and their delete question; the trigger; Create bringing the folder's terminals and commit message along.                                                                                                                                                      | `ProjectSwitcher.test.tsx` (new): the items' order, and Add folder only in a workspace. `NewWorkspaceDialog.test.tsx` (new): each refusal shows on its row and keeps Create off; the open folder is listed first; a typed path is added. The list's workspace row, its missing count, and its delete question naming its chats.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| H02  | `README.md`                                                                                                                                                                                                                                                | Features, Getting started, Several windows, the Git panel, and chats across folders.                                                                                                                                                                                                                                                                  | `npm run format:check`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| H03  | `scripts/e2e/run.mjs`, `scripts/e2e/README.md`                                                                                                                                                                                                             | The e2e steps (section 8), after the project's restart step, with a restart of their own at the end.                                                                                                                                                                                                                                                  | The steps themselves.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ---
 
-## 7. Testing
+## 8. Testing
 
 **Rust** (`cargo nextest run` per crate, as CI runs them on Linux, macOS and
 Windows):
 
-- The app crate: `workspace.rs` (each rule of D5), `instances.rs` (claims,
-  and the races of section 4), `filesystem/watch.rs` (several folders, a
-  repository above a folder, a folder through a link), `entries.rs` (a
-  window's folder can't be deleted, renamed or moved), `git/tests.rs`
-  (repositories, scopes, the refusal of what's staged outside, nested
-  repositories and submodules, the commit across repositories with its hooks
-  and its partial failure), `updates.rs` (`restart_args`).
-- `rovik-core`: the chat list and search across several projects
-  (`chat_db/tests.rs`), `chat_delete_project`'s refusal, `is_busy` above and
-  below a folder.
-- `rovik-client`: `remote/tests.rs` (open projects, landing, steering paths).
+- The app crate: `instances.rs` (claims, and the races of section 5),
+  `filesystem/watch.rs`, `entries.rs`, `git/tests.rs`, `updates.rs`.
+- `rovik-core`: `chat_db/workspaces_tests.rs`, `projects_tests.rs`,
+  `chat_db/tests.rs`, the schema's `upgrades_a_version_10_database`,
+  `file_name.rs`; the overlay's composite, budget, land and chats tests (the
+  mounted ones gated by `vfs::mount_works()`, as today); `confine.rs`; the
+  new `agent_run/workspace_e2e_tests.rs`, with a `workspace_harness` beside
+  `harness` (`agent_run/e2e_tests.rs:132-198`): two folders, their checks
+  on, the chat's folders, isolation, and the request sent with `folders`.
+- `rovik-client`: `remote/tests.rs`, `shadow` and `rules` unit tests.
+- `rovik-agentd`: the new `tests/folders.rs`, with `common/folders.rs`: `api`
+  (a repository with history), `web` (a folder of a repository whose root
+  `.gitignore` ignores `node_modules/`), `notes` (no git).
 
 Tests that change process-wide state (the watcher's generation,
-`GIT_LOG_LATEST`, the busy holds) take that state's lock, so they pass under
-nextest and `cargo test` alike.
+`GIT_LOG_LATEST`, the busy holds, the overlays' data folder) take that
+state's lock, so they pass under nextest and `cargo test` alike.
 
-**Frontend** (`npm test`): the tests named in section 6, among them these
+**Frontend** (`npm test`): the tests named in section 7, among them these
 new files: `openFolders.test.ts`, `workspaces.test.ts`,
 `switchTarget.test.ts`, `projects.test.ts`, `searchPanel.test.tsx`,
-`activeConfig.test.ts`, `lsp/client.test.ts`, `ProjectSwitcher.test.tsx`
-and `NewWorkspaceDialog.test.tsx`.
+`activeConfig.test.ts`, `lsp/client.test.ts`, `virtualFiles.test.ts`,
+`workspaceChat.test.tsx`, `ProjectSwitcher.test.tsx` and
+`NewWorkspaceDialog.test.tsx`.
 
 **End to end** (`scripts/e2e/run.mjs`). A second demo folder, a repository of
 its own, is added through the dialog's path field (the native picker can't
@@ -873,147 +1423,161 @@ back`, so the project's steps are unchanged:
 3. `workspace: search finds a match in each folder`
 4. `workspace: git lists both repositories with their branches; one commit lands in each`
 5. `workspace: New chat's dropdown starts a chat in the second folder, which changes a file there`
-6. `workspace: a folder removed closes its tabs; the other folder stays`
-7. `instances: the workspace's folder opened in another window brings this one to the front`
-8. `restart: the workspace and its tabs come back`
+6. `workspace: an All folders chat changes a file in each folder, and both land`
+7. `workspace: a folder removed closes its tabs; the other folder stays`
+8. `instances: the workspace's folder opened in another window brings this one to the front`
+9. `restart: the workspace and its tabs come back`
+
+Step 6 needs FUSE in the e2e run on Linux (its job installs `fuse3`, as
+CI's Rust jobs do), macFUSE on macOS, and WSL on Windows; where it isn't
+there, the step checks that All folders is greyed with its reason.
 
 **By hand**, once per system, for what CI can't reach:
 
-- Windows: a folder in WSL beside a Windows folder (a chat in each); a drive
-  root; the same folder added with two spellings of case.
-- macOS: a folder under `/tmp` (FSEvents reports `/private/tmp`); a folder on
-  a case-insensitive volume added twice in two cases.
-- Linux: four large folders (the inotify limit); a chat in each of two
-  folders at once, each in bubblewrap with its own folder writable.
+- Windows: a folder in WSL beside a Windows folder (a chat in each); an All
+  folders chat running in WSL, landing in both folders; WSL on an older
+  Rovik refusing it; a drive root; the same folder added with two spellings
+  of case.
+- macOS: an All folders chat with macFUSE (FSKit and the kernel extension);
+  a folder under `/tmp` (FSEvents reports `/private/tmp`); a folder on a
+  case-insensitive volume added twice in two cases.
+- Linux: four large folders (the inotify limit); an All folders chat under
+  bubblewrap, and under Landlock alone (`ROVIK_CONFINE_COMMANDS=landlock`);
+  a chat in each of two folders at once.
+- A cloud host: moving an All folders chat there and back; an Autopilot
+  task there waiting for the app to land it.
 
 ---
 
-## 8. Risks and known limits
+## 9. Risks and known limits
 
-- **A chat changes one folder.** "Add a field to the API and use it in the
-  client" takes a chat per folder, or opening the folders' parent as a
-  project. This is the largest limit, and the reason for section 10.
+- **The composite view is new code under FUSE**: inode numbers,
+  notifications, EXDEV. It's unit-tested without FUSE (F05) and mounted on
+  Linux CI; a tool that mishandles EXDEV within one mount is possible
+  (Linux's overlayfs does the same, so most handle it).
+- **All folders chats need the virtual-files driver** here: macOS without
+  macFUSE has none, and the item says why. On Windows they need WSL.
+- **Rebasing ignore rules** for WSL and hosts (G04) is the riskiest piece of
+  G: a rule rebased wrongly lets by-products into a result, or keeps a file
+  out. Its tests compare with libgit2 on the real layout.
+- **In WSL and on hosts, an All folders chat has no git history**: git there
+  shows Rovik's snapshots, and Autopilot doesn't push branches for it (D30).
+- **Only the changed folders' checks run** (D27): a change in `api` that
+  breaks an unchanged `web` isn't caught by the checks. The prompt lists
+  every folder's checks.
+- **Instructions share 12,000 characters**: a workspace of many folders with
+  long `AGENTS.md` files has them cut.
+- **The same relative path in two folders** can make a check's output
+  ambiguous; a check's own folder is looked at first (4.7).
+- **`CARGO_TARGET_DIR` is one per set of folders**: two folders building
+  binaries of one name overwrite each other's in `target/debug`.
+- **The repository map's limits (4 seconds, 20,000 files) are reached
+  sooner** over several folders.
+- **A chat changes one folder, or all of them**: a folder chat can't start
+  working across folders; a new All folders chat can, with the folder
+  chat's history left behind (D32).
 - **A folder is open in one window at a time**, alone or in one workspace
   (D7). Wanting it in two windows means a copy of it, which can't then be in
   the same workspace (D5).
-- **Repositories inside a folder aren't listed** (D9). The repository around
-  them never stages them (D11); commit in them from a terminal, or add them
-  as folders when the folder around them isn't in the workspace.
-- **A commit with changes staged outside its folders is refused** (D11) until
+- **Repositories inside a folder aren't listed** (D10). The repository around
+  them never stages them (D12).
+- **A commit with changes staged outside its folders is refused** (D12) until
   they're committed or unstaged from a terminal.
 - **Commits across repositories aren't one transaction.** The hooks all run
-  first (D10); a failure while writing the commits leaves the earlier ones,
+  first (D11); a failure while writing the commits leaves the earlier ones,
   says which, and keeps the message.
-- **Hooks run interleaved:** every pre-commit before any commit. A hook that
-  looks at another repository sees it before its own commit.
-- **IntelliSense restarts its worker** when the active file moves to a folder
-  with other compiler options, as it does between configs today.
-- **inotify's limit is the system's**, shared by the folders. A folder that
-  can't be watched whole falls back as today, and its tree refreshes when
-  its rows are expanded again.
+- **Schema 11 is permanent once released** (3.1).
 - **Two spellings of one WSL folder** (`\\wsl$\…` and `\\wsl.localhost\…`)
-  aren't recognised as one folder, as for projects today: `path_key` keeps
-  the host name as written.
+  aren't recognised as one folder, as for projects today.
 - **Opening a workspace counts as opening each folder**: their own rows
   move up the list too (`record_path`, `projects.rs:240-260`).
-- **The workspaces' file is a shared map:** losing it loses the lists of
-  folders, not chats (D1). It's written as the other shared maps are, whole
-  and atomically (`atomic_file`).
-- **Cost:** a refresh runs a status per repository, and a search runs per
-  folder.
+- **Folder names don't fold Unicode forms** (macOS's NFD against NFC): two
+  names that look alike can both exist.
 
 ---
 
-## 9. Questions
+## 10. Questions
 
 Asked of the user while planning:
 
-| Question                      | Answer                                                                                                  |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------- |
-| The menu items' wording       | **Create a workspace…** and **Add folder to workspace…**, both above **New window** (D3).               |
-| How a chat's folder is chosen | **New chat** opens a dropdown of the workspace's folders, and the chat is made in the one clicked (D2). |
+| Question                                              | Answer                                                                                                  |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| The menu items' wording                               | **Create a workspace…** and **Add folder to workspace…**, both above **New window** (D3).               |
+| How is a chat's folder chosen?                        | **New chat** opens a dropdown of the workspace's folders, and the chat is made in the one clicked (D2). |
+| Should a chat be able to change folders between runs? | No: chats across folders are better served by All folders chats, which see every folder at once (D32).  |
+| When do chats across folders ship?                    | In the first release (D22–D31).                                                                         |
 
 Decided while planning, for the user to check:
 
-- **A workspace groups projects, and a chat works in one folder** (D1, D2).
-  This is the decision with the most weight. It keeps the agent's
-  isolation, landing, sandbox, WSL and hosts as they are, and ships the
-  user's requirements without rebuilding them. Chats across folders would
-  come next (section 10).
+- **A workspace groups projects and owns its All folders chats** (D1): a
+  folder's own chats stay with it.
+- **All folders chats need the virtual-files driver** (D23), as the
+  agent-managed context does: none on macOS without macFUSE.
+- **In WSL and on hosts they carry no git history and Autopilot keeps their
+  results** for the app to land (D30): Windows gets All folders chats
+  through WSL in the first release.
+- **Only the changed folders' checks run** (D27), rather than every
+  folder's.
+- **Plans go in the workspace's first folder** (D28), rather than in the
+  app's data.
+- **Instructions share 12,000 characters** (D25).
+- **Folder names are given once and kept**, a removed folder's too (D8).
+- **Stored in the chats database** (D6), with a schema step.
 - **Create opens the workspace in this window**, bringing the open folder's
-  tabs, terminals and commit message (D4), rather than a new window.
+  tabs, terminals and commit message (D4).
 - **Nested folders, and two folders of one project, are refused** (D5).
-- **One window per folder** (D7): a folder can't be open alone in one window
-  and in a workspace in another.
-- **One message box, a commit per repository**, with every checking hook
-  run before any commit (D9, D10).
+- **One window per folder** (D7).
+- **One message box, a commit per repository**, every checking hook first
+  (D10, D11).
 - **A commit never takes what's staged outside its folders**, and is refused
-  while there is some (D11). This changes today's behaviour for a project
+  while there is some (D12). This changes today's behaviour for a project
   inside a repository, which commits it now.
-- **Only the repository each folder is in** is listed, not repositories
-  inside a folder (D9).
-- **IntelliSense loads every folder**, and the active file's folder decides
-  the compiler options (D13).
-- **Kept in a shared map, not the chats database**, with no workspace file
-  and no renaming: making one again is quick (D6).
-- **Workspaces' names needn't be unique.**
+- **Only the repository each folder is in** is listed (D10).
+- **IntelliSense loads every folder**, the active file's folder deciding the
+  compiler options (D14).
+- **No workspace file, and no renaming** of workspaces or folders.
 
-The plan was reviewed against the code before it was committed. What that
-changed: the claims keep the window's target and a record per folder, so
-folders resolved at once, late answers and folders left at work keep their
-claims; two folders of one project are refused; the chat list keeps the open
-chat as folders come and go, and recovers each folder's unanswered messages;
-a chat's folder is set when it's made; folder
-rows are guarded from the keyboard and the mouse as well as the menu, and in
-the backend; a commit is refused while something is staged outside its
-folders, rather than committed around it with an index the hooks wouldn't
-see; workspaces are kept in a shared map rather than a schema step, as every
-merge is released; repositories inside a folder aren't searched for; each
-folder keeps its own compiler options; the watcher covers a repository's
-refs, a linked worktree's git folder, and folders reached through a link;
-the project list guards the window's projects; the e2e adds folders by
-typed path.
-
----
-
-## 10. Later: chats across folders
-
-Not in this plan's milestones; what a plan for it would need, from the code
-as it is:
-
-- **Whose chat.** A chat of the workspace itself, which then needs a row in
-  the chats database (`dialogs.project_id` references `projects`): the schema
-  step this plan avoids. `check_project` accepts the workspace's folders.
-- **One view of every folder.** The run's root would be a folder whose
-  entries are the workspace's folders by label (`api/src/x.ts`): a
-  `vfs::backend::Backend` that hands each top-level name to that folder's
-  `OverlayFs`, behind one mount (`vfs::platform_mount`). The tools and the
-  paths the model sees (`resolve_within_root`, `paths::norm_rel`, write
-  scopes, plans' `Files:`) stay as they are; child overlays mount over the
-  view as they do now (`overlay/chats.rs:670-697`).
-- **Without the driver** there is no such folder. A run that would work
-  directly in the project (no virtual-files driver; Plan mode without an
-  overlay, `run.rs:760-786`) would be refused, or kept to one folder.
-- **The sandbox:** a redirect per folder (`--bind <view>/<label> <folder>`,
-  `confine.rs:896-912`). Seatbelt and Landlock can't redirect, so commands
-  naming any folder's path are refused by text, as one folder's are today
-  (`overlay/chats.rs:80-99`).
-- **Landing:** per folder, under one journal, all or none across folders.
-- **Context and checks:** each folder's instructions file, labelled; checks
-  per folder, run as `cd <label> && …`, as V09 runs checks one folder down
-  (`agent_run/project.rs:200-227`).
-- **Windows and hosts:** `ProjectEnsure`, `WorkSync` and `ChatBundle` carry a
-  snapshot per folder, and the daemon builds `work/<chat>/<label>/`; a
-  feature flag (`rovik-protocol/src/lib.rs:66-68`) keeps older hosts on
-  one-folder chats.
-- **Connectors:** Claude Code's `--add-dir` and Codex's writable roots for
-  the other folders (neither is passed today).
-
-Size: L, in a plan of its own once workspaces are in use.
+The plan was reviewed against the code twice. The first review: the claims
+keep the window's target and a record per owner, so folders resolved at
+once, late answers and folders left at work keep their claims; two folders
+of one project are refused; the chat list keeps the open chat as folders
+come and go, and recovers each folder's unanswered messages; folder rows
+are guarded from the keyboard and the mouse as well as the menu, and in the
+backend; a commit is refused while something is staged outside its
+folders; repositories inside a folder aren't searched for; each folder
+keeps its own compiler options; the watcher covers a repository's refs, a
+linked worktree's git folder, and folders reached through a link; the
+project list guards the window's projects; the e2e adds folders by typed
+path. The second, for All folders chats: the workspace moved into the chats
+database (its chats need an owner row; the schema step also keeps older
+Rovik from misreading it); folder names are stored and kept, a removed
+one's too; the claim key is the workspace's `project:` key, and another
+window's workspace isn't taken for a copy; each folder keeps its overlay
+under one composite view rather than one overlay over several folders or a
+folder of links (`resolve_within_root` refuses links out of the root, and
+walkers don't follow them); one landing journal rather than one per folder;
+peers kept per (chat, folder); plans in the first folder, so they sync to
+WSL and hosts with nothing special; WSL and hosts carry one composite
+project rather than a worktree per folder.
 
 ---
 
-## 11. Problems in today's code found while planning
+## 11. Not in this plan
+
+- **Moving a chat with messages to another folder**, or from a folder to
+  All folders (D32).
+- **A folder chat reading the other folders.** It would work here, but not
+  in WSL or on hosts, where a chat has its own folder's files only.
+- **Git history and branch delivery for All folders chats in WSL and on
+  hosts**: each folder's snapshot pushed to its own project there, and the
+  result grafted per repository. A later plan, once these chats are in use.
+- **Renaming** a workspace or a folder's name; a **workspace file** to share
+  (VS Code's `.code-workspace`).
+- **Repositories found inside a folder**, beyond the folder's own.
+
+---
+
+## 12. Problems in today's code found while planning
 
 On this plan's path, so it fixes them:
 
@@ -1044,7 +1608,22 @@ On this plan's path, so it fixes them:
 9. **A late `reclaim` takes back a folder the window has left**: it claims
    the folder it was asked about and lets go of the new one, until the new
    one's own answer comes (`commands/chat.rs:63-71`, `instances.rs:140-200`).
-   B02.
+   B03.
+10. **An isolated chat never sees the editor's diagnostics**: they're kept
+    by the real folder and looked up by the run's root, the view
+    (`agent_tools.rs:433-435, 555-571`). F12.
+11. **The editor context names the active file by its absolute path**
+    (`activeContext.ts:71-83`), which an isolated chat's tools refuse: they
+    take paths inside the view only (`agent_tools.rs:110-133`). E02. (Seen
+    in the code; not reproduced.)
+12. **A connector's commands may reach the real folder**: they run
+    unconfined (`connectors/harness.rs:272-290`), and the text check against
+    naming the project's path is skipped wherever the agent's own commands
+    are confined (`overlay/chats.rs:80-99`). F09. (Seen in the code; not
+    reproduced.)
+13. **In Plan mode, an isolated chat's current plan is named by its full
+    path**: it's made relative to the run's root, the view, while plans are
+    saved in the project (`run.rs:1064`; `plan.rs:713-726`). F11.
 
 Left as they are, for issues of their own:
 
@@ -1058,8 +1637,9 @@ Left as they are, for issues of their own:
   (`filesystem/mod.rs:111-127`, `watch.rs:78-130`, `code_search.rs:283-292`,
   `project_files.rs`).
 - `last-project.json` is written at every keystroke (`App.tsx:1929-1939`).
-- An isolated run may look up the editor's diagnostics by its view's root,
-  and so never see them (`agent_tools.rs:563-571`; not confirmed).
+- A command that names a restricted file by its real path may not match the
+  file's entry, which is kept by its path in the project
+  (`restricted_files.rs:348-363`; not confirmed).
 
 ---
 
