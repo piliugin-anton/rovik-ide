@@ -124,6 +124,20 @@ Rovik already has most of the pieces a subagent system needs:
   to the verification gate.
 - **Difference from `review.rs`:** that reviewer decides whether one
   action may run. This one judges the whole change.
+- **Ranks and the guide (`guide.rs`):** each finding is ranked by what it
+  weighs: its severity (high 1, medium 0.5, low 0.25), halved when the
+  reviewer found it only plausible. A review's score adds up the ranks of
+  the findings it left open; its record shows both. From the run's second
+  review that finds problems on, a read-only **guide** reads every such
+  review: each finding with its rank, the lead's answer and the next
+  review's verdict, how many fix attempts each open finding has survived,
+  the scores, and the diff, never the lead's conversation. It tells the
+  lead where and why it goes wrong, highest ranks first, and what to do
+  differently: a finding still open after a fix attempt needs another
+  approach, not another version of the same fix, or an answer with
+  evidence when the reviewer is wrong. Its guidance goes to the lead with
+  that review's findings; the follow-up review still decides. With three
+  reviews a run, it runs at most once, after the second.
 - **Plan reviewer (Plan mode):** the same idea, applied to a plan before
   the user sees it. Code checks run first: the files a step names must
   exist, and steps in a parallel group must not share files. Then a
@@ -305,8 +319,8 @@ result.
 `step` is for a worker (the plan step it carries out) and `group` for
 `workers` (a plan group, one worker per step). The harness, not the brief,
 sets each kind's tools and budget: `max_tool_calls` can only lower it.
-The reviewer, triage and the plan reviewer are started by the harness,
-not through `task`.
+The reviewer, the guide, triage and the plan reviewer are started by the
+harness, not through `task`.
 
 **Result** (returned as the tool's output). Each kind has its own `## `
 sections (`subagent.rs` `KindSpec`); a report must have the first ones
@@ -319,6 +333,7 @@ sections (`subagent.rs` `KindSpec`); a report must have the first ones
 | test writer   | `Summary`; `Test files`, `Assumptions`                                                                                                                                                                                                            |
 | triage        | `Root cause`, `Files to fix`, `Next step`, `Confidence`                                                                                                                                                                                           |
 | reviewer      | `Findings`: a numbered list (`change_review.rs`), or None.                                                                                                                                                                                        |
+| guide         | `Where it goes wrong`, `Why`, `Guidance` (after the second change review that found problems, `guide.rs`)                                                                                                                                         |
 | plan reviewer | `Findings`, the same list, with `Step N` for a location.                                                                                                                                                                                          |
 | acceptance    | `Verdicts`; `Evidence`, `Unmet` (Autopilot's, `acceptance.rs`)                                                                                                                                                                                    |
 | planner       | `Plan`, `Criteria`: one of them, as the brief asks: the whole plan under `Plan`, or the criteria alone (Thorough's, `planning.rs`)                                                                                                                |

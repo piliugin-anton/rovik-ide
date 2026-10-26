@@ -153,7 +153,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   context and hand back a short report, so long explorations don't fill
   the agent's own context. A change reviewer can read each finished
   change with fresh eyes before the checks run; the agent fixes or
-  answers what it finds. When a check fails with a long output, or fails
+  answers what it finds. Each finding is ranked by its severity and how
+  sure the reviewer is, and when the reviewer finds problems a second
+  time in a run, a guide reads every review, the agent's answers and the
+  change, and tells the agent where and why it goes wrong before its
+  next attempt. When a check fails with a long output, or fails
   again, a triage helper reads all of it and tells the agent the root
   cause, instead of the agent getting pages of compiler output. In Plan
   mode, a plan reviewer checks each plan against the code before it's

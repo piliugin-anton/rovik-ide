@@ -342,6 +342,11 @@ pub struct Run {
     /// A finding, of any severity, still open after the run's last review:
     /// the run ends `review-open`.
     pub(super) review_blocked: bool,
+    /// Each change review that found problems in this run, oldest first:
+    /// what it sent, the agent's answers and the next review's verdicts,
+    /// which the guide reads (guide.rs); and what the last guide said.
+    pub(super) review_rounds: Vec<super::guide::ReviewRound>,
+    pub(super) last_guidance: Option<super::guide::Guidance>,
     /// S07: the test writer ran for a change that had no test (once).
     pub(super) tests_after_change: bool,
     /// T04: the adversarial tester ran in this run (once a run).
@@ -1313,6 +1318,8 @@ impl Run {
             review_answers: Vec::new(),
             review_answer_nudges: 0,
             review_blocked: false,
+            review_rounds: Vec::new(),
+            last_guidance: None,
             tests_after_change: false,
             breaker_ran: false,
             plan_review_progress: Default::default(),

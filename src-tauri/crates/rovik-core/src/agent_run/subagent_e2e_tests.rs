@@ -990,6 +990,278 @@ async fn a_low_finding_left_open_blocks_the_change_in_agent_mode() {
     assert_eq!(last["findings"][0]["severity"], "low", "{last}");
 }
 
+const GUIDE: &str = "# Guide the agent";
+const GUIDANCE: &str = "## Where it goes wrong\n- Finding 1 (`a.txt:1`): it changed the case of \"helo\", not its spelling.\n\n\
+    ## Why\nIt read the finding as a style problem and never reread the line.\n\n\
+    ## Guidance\n1. Spell it \"hello\" as the request does, then read a.txt:1 again.";
+/// The follow-up of FINDING_A that finds it still open, with a new medium,
+/// plausible finding about b.txt.
+const STILL_WRONG: &str = "## Earlier findings\n\n- Earlier 1: not resolved — a.txt says Helo, not hello\n\n## Findings\n\n\
+    1. [medium] b.txt:1 — The farewell is missing\n   - Scenario: b.txt is empty.\n   - Fix: add one.\n   - Confidence: plausible";
+const ALL_RESOLVED: &str = "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n- Earlier 2: resolved — b.txt says bye\n\n## Findings\n\nNone.";
+
+fn guide_on() -> subagent::SubagentConfig {
+    serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "reviewer": { "enabled": true }, "guide": { "enabled": true } },
+        "reviewMinLines": 1,
+    }))
+    .unwrap()
+}
+
+/// The lead's script for two reviews that find problems: a fix that
+/// misses the first finding, then one that fixes both.
+fn fixed_on_the_third_try() -> Vec<Reply> {
+    vec![
+        write_call("w1", "a.txt", "helo\n"),
+        Reply::Text("Done."),
+        write_call("w2", "a.txt", "Helo\n"),
+        answered("a1", "fixed", "capitalized it"),
+        Reply::Text("Fixed."),
+        write_call("w3", "a.txt", "hello\n"),
+        write_call("w4", "b.txt", "bye\n"),
+        Reply::Call {
+            id: "a2",
+            name: "answer_review",
+            args: json!({ "responses": [
+                { "finding": 1, "status": "fixed", "note": "spelled it hello" },
+                { "finding": 2, "status": "fixed", "note": "added a farewell" },
+            ] }),
+        },
+        Reply::Text("Fixed both."),
+    ]
+}
+
+/// The review notes the lead got, in order.
+fn review_notes(messages: &[MessageRow]) -> Vec<&MessageRow> {
+    messages
+        .iter()
+        .filter(|m| m.meta.as_ref().is_some_and(|m| m["harness"] == "review"))
+        .collect()
+}
+
+/// The run's second review that finds problems brings the guide: it reads
+/// both reviews, each finding with its rank, the agent's answer and the
+/// next review's verdict, and what it says goes to the agent with that
+/// review's findings. The records keep the ranks, the scores and the guide.
+#[tokio::test]
+async fn the_second_review_that_finds_problems_brings_a_guide() {
+    let h = harness(&[("a.txt", "old\n"), ("b.txt", "")]).await;
+    let (url, seen) = model_routed(
+        vec![
+            (
+                REVIEW,
+                vec![
+                    Reply::Text(FINDING_A),
+                    Reply::Text(STILL_WRONG),
+                    Reply::Text(ALL_RESOLVED),
+                ],
+            ),
+            (GUIDE, vec![Reply::Text(GUIDANCE)]),
+        ],
+        fixed_on_the_third_try(),
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), guide_on()))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+
+    let messages = h.messages().await;
+    assert_eq!(
+        record_order(&messages),
+        [
+            "review:findings",
+            "note",
+            "review:findings",
+            "note",
+            "review:clean",
+            "verification:unverified"
+        ]
+    );
+    // A high, confirmed finding weighs 1; a medium, plausible one 0.25.
+    let rounds = reviews(&messages);
+    assert_eq!(rounds[0]["findings"][0]["rank"], 1.0);
+    assert_eq!(rounds[0]["score"], 1.0);
+    assert_eq!(rounds[1]["findings"][1]["rank"], 0.25);
+    assert_eq!(rounds[1]["score"], 1.25);
+    assert_eq!(rounds[2]["score"], 0.0);
+    // The guide ran once, after the second review, in its record.
+    assert!(rounds[0].get("guide").is_none() && rounds[2].get("guide").is_none());
+    let guide = &rounds[1]["guide"];
+    assert_eq!(guide["status"], "done", "{guide}");
+    assert_eq!(
+        guide["result"]["why"],
+        "It read the finding as a style problem and never reread the line."
+    );
+    let child = guide["childDialogId"].as_str().unwrap().to_string();
+    assert!(h.messages_of(&child).await[0].content.starts_with(GUIDE));
+
+    // Its brief: both reviews, with the agent's answer, the verdict, the
+    // ranks and the scores; never the lead's conversation.
+    let asked = requests_with(&seen, GUIDE);
+    assert_eq!(asked.len(), 1);
+    let brief = asked[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(brief.contains("2 of its reviews found problems"), "{brief}");
+    assert!(
+        brief.contains("The scores so far: review 1: 1 → review 2: 1.25."),
+        "{brief}"
+    );
+    assert!(brief.contains(
+        "   - Rank: 1\n   - The agent's answer: fixed — capitalized it\n   - The next review: still open — a.txt says Helo, not hello"
+    ), "{brief}");
+    assert!(
+        brief.contains(
+            "   - Rank: 1\n   - Still open after a fix attempt: it needs another approach."
+        ),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("2. [medium] b.txt:1 — The farewell is missing"),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("   - Rank: 0.25\n   - New in this review."),
+        "{brief}"
+    );
+    assert!(brief.contains("+Helo"), "the change as it is: {brief}");
+    assert!(
+        !brief.contains("Fixed."),
+        "nothing from the lead's conversation"
+    );
+    let tools = tool_names(&asked[0]);
+    assert!(tools.contains(&"read".to_string()), "{tools:?}");
+    for t in ["write", "bash", "task", "answer_review"] {
+        assert!(!tools.contains(&t.to_string()), "{t} offered to the guide");
+    }
+    assert!(system_prompt(&asked[0]).starts_with("You are a guide"));
+
+    // The lead got the guidance with the second review's findings, before
+    // what to do next; the first review's note had none.
+    let notes = review_notes(&messages);
+    assert!(!notes[0].content.contains("from a guide"));
+    let note = &notes[1].content;
+    let findings = note
+        .find("2. [medium] b.txt:1 — The farewell is missing")
+        .unwrap();
+    let guidance = note
+        .find("## Where you go wrong, from a guide")
+        .unwrap_or_else(|| panic!("{note}"));
+    let next = note.find("Every finding must be resolved").unwrap();
+    assert!(findings < guidance && guidance < next, "{note}");
+    assert!(note.contains(": review 1: 1 → review 2: 1.25."), "{note}");
+    assert!(
+        note.contains("**Guidance for this attempt:**\n1. Spell it \"hello\""),
+        "{note}"
+    );
+}
+
+/// One review that finds problems, then one that finds them fixed, starts
+/// no guide; nor do two that find problems with the guide off, whose
+/// findings go to the agent alone, still scored.
+#[tokio::test]
+async fn one_review_that_finds_problems_or_the_guide_off_brings_none() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let resolved =
+        "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\nNone.";
+    let (url, seen) = model_routed(
+        vec![
+            (REVIEW, vec![Reply::Text(FINDING_A), Reply::Text(resolved)]),
+            (GUIDE, vec![Reply::Text(GUIDANCE)]),
+        ],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "hello\n"),
+            answered("a1", "fixed", "it says hello now"),
+            Reply::Text("Fixed it."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), guide_on()))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    assert!(requests_with(&seen, GUIDE).is_empty());
+    assert!(reviews(&h.messages().await)
+        .iter()
+        .all(|r| r.get("guide").is_none()));
+
+    let h = harness(&[("a.txt", "old\n"), ("b.txt", "")]).await;
+    let (url, seen) = model_routed(
+        vec![
+            (
+                REVIEW,
+                vec![
+                    Reply::Text(FINDING_A),
+                    Reply::Text(STILL_WRONG),
+                    Reply::Text(ALL_RESOLVED),
+                ],
+            ),
+            (GUIDE, vec![Reply::Text(GUIDANCE)]),
+        ],
+        fixed_on_the_third_try(),
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    assert!(requests_with(&seen, GUIDE).is_empty());
+    let messages = h.messages().await;
+    let rounds = reviews(&messages);
+    assert!(rounds.iter().all(|r| r.get("guide").is_none()));
+    assert_eq!(rounds[1]["score"], 1.25);
+    assert!(review_notes(&messages)
+        .iter()
+        .all(|m| !m.content.contains("from a guide")));
+}
+
+/// A guide whose report can't be read, even after its repair turn, is
+/// recorded as skipped, and the review's findings go to the agent alone:
+/// the run goes on as it would without a guide.
+#[tokio::test]
+async fn a_guide_that_cant_report_is_skipped_and_the_findings_still_go() {
+    let h = harness(&[("a.txt", "old\n"), ("b.txt", "")]).await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                REVIEW,
+                vec![
+                    Reply::Text(FINDING_A),
+                    Reply::Text(STILL_WRONG),
+                    Reply::Text(ALL_RESOLVED),
+                ],
+            ),
+            (
+                GUIDE,
+                vec![
+                    Reply::Text("It just needs another try."),
+                    Reply::Text("Really, try again."),
+                ],
+            ),
+        ],
+        fixed_on_the_third_try(),
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), guide_on()))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let messages = h.messages().await;
+    let guide = &reviews(&messages)[1]["guide"];
+    assert_eq!(guide["status"], "skipped", "{guide}");
+    assert!(
+        guide["reason"]
+            .as_str()
+            .unwrap()
+            .contains("didn't follow the format"),
+        "{guide}"
+    );
+    let notes = review_notes(&messages);
+    assert_eq!(notes.len(), 2);
+    assert!(notes[1]
+        .content
+        .contains("2. [medium] b.txt:1 — The farewell is missing"));
+    assert!(!notes[1].content.contains("from a guide"));
+}
+
 #[tokio::test]
 async fn a_repeated_finding_without_new_evidence_is_dropped() {
     let h = harness(&[("a.txt", "old\n")]).await;

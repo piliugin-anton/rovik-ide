@@ -17,6 +17,8 @@
 //!   guard.rs      checkpoints and loop detection
 //!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
 //!   change_review.rs  a fresh-context review of the change before the checks
+//!   guide.rs      after the second review that found problems: where and
+//!                 why the agent goes wrong, with the review's findings
 //!   tools.rs      tool schemas and running a tool
 //!   steer.rs      messages the user sends a run while it works
 //!   autopilot/    a task carried out with nobody there: its stages
@@ -44,6 +46,7 @@ mod execute;
 pub mod failure;
 pub mod group;
 pub mod guard;
+pub mod guide;
 pub mod judge;
 mod landing;
 pub mod log;

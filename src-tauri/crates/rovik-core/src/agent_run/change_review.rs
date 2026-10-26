@@ -23,7 +23,7 @@
 use super::diff::{self, Hunk};
 use super::run::{chat_plan_file, new_message, Run, IDE_NOTE};
 use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubStatus, SubagentSettings};
-use super::{log, plan, plan_review, tools};
+use super::{log, plan, plan_review, tools, ModelProfile};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -622,11 +622,18 @@ pub enum Rounds {
 /// counts, whatever its severity. `last`: the run's last review, which no
 /// review follows.
 pub fn findings_note(findings: &[Finding], round: u32, last: bool) -> String {
-    findings_note_in(findings, round, last, Rounds::Count)
+    findings_note_in(findings, round, last, Rounds::Count, None)
 }
 
-/// `findings_note`, its rounds counted as `rounds` says.
-pub fn findings_note_in(findings: &[Finding], round: u32, last: bool, rounds: Rounds) -> String {
+/// `findings_note`, its rounds counted as `rounds` says, with the guide's
+/// part (guide.rs `for_agent`) after the findings when one ran.
+pub fn findings_note_in(
+    findings: &[Finding],
+    round: u32,
+    last: bool,
+    rounds: Rounds,
+    guidance: Option<&str>,
+) -> String {
     let list = findings
         .iter()
         .enumerate()
@@ -655,10 +662,11 @@ pub fn findings_note_in(findings: &[Finding], round: u32, last: bool, rounds: Ro
         Rounds::Count => format!("review {round} of at most {MAX_CHANGE_REVIEWS_PER_RUN}"),
         Rounds::ByProgress { .. } => format!("review {round}"),
     };
+    let guidance = guidance.map_or(String::new(), |g| format!("{}\n\n", g.trim()));
     format!(
         "{IDE_NOTE}A reviewer read your change with fresh eyes ({which}): it saw the request, the plan and the diff, not this conversation. \
          Its findings are another model's opinion: check each against the code before you act on it. \
-         A finding with \"New evidence\" was answered before, and the reviewer says why it's still open.\n\n{list}\n\n{next}"
+         A finding with \"New evidence\" was answered before, and the reviewer says why it's still open.\n\n{list}\n\n{guidance}{next}"
     )
 }
 
@@ -756,6 +764,16 @@ fn file_header(c: &FileChange) -> String {
         (_, None) => format!("--- {} (deleted)", c.path),
         _ => format!("--- {}", c.path),
     }
+}
+
+/// The diff a helper's brief may hold, in characters, by its model: about
+/// a quarter of the model's context (the reviewer's, the guide's).
+pub(super) fn diff_budget(model: &ModelProfile) -> usize {
+    model
+        .context_tokens
+        .filter(|t| *t > 0)
+        .unwrap_or(32_000)
+        .clamp(8_000, 400_000)
 }
 
 /// The diff of the change, whole when it fits `budget` characters; else
@@ -1015,15 +1033,9 @@ impl Run {
         {
             return Ok(false);
         }
-        // About a quarter of the reviewer model's context, in characters.
         let models = config.models(Kind::Reviewer, &self.profile);
-        let budget = models[0]
-            .context_tokens
-            .filter(|t| *t > 0)
-            .unwrap_or(32_000)
-            .clamp(8_000, 400_000);
         let changes = self.change_set();
-        let rendered = render_diff(&changes, budget);
+        let rendered = render_diff(&changes, diff_budget(&models[0]));
         // A follow-up checks its findings however small the change is.
         if rendered.changed_lines < config.review_min_lines().max(1) && !follow_up {
             self.review_outcome = Some((
@@ -1104,6 +1116,8 @@ impl Run {
             .await;
         review["ms"] = json!(started.elapsed().as_millis() as u64);
         let mut serious: Vec<Finding> = Vec::new();
+        // A follow-up's verdict on each finding it checked (guide.rs).
+        let mut verdicts: Vec<plan_review::Verdict> = Vec::new();
         match subagent::outcome_of(&mut review, outcome) {
             subagent::SubOutcome::Stopped => review["status"] = json!("stopped"),
             subagent::SubOutcome::Skipped(skip) => {
@@ -1116,7 +1130,7 @@ impl Run {
                         // S06: B13's rules: an answered finding stays open
                         // when the review says it isn't resolved, or the
                         // change came back as it was with nothing said.
-                        let follow = plan_review::follow_up(
+                        let mut follow = plan_review::follow_up(
                             &plan_review::Facts {
                                 earlier: &held,
                                 responses: &responses,
@@ -1130,6 +1144,7 @@ impl Run {
                         if !follow.dropped.is_empty() {
                             review["dropped"] = json!(follow.dropped);
                         }
+                        verdicts = std::mem::take(&mut follow.verdicts);
                         follow.open
                     } else {
                         let (kept, dropped) = drop_repeats(found, &earlier);
@@ -1165,6 +1180,22 @@ impl Run {
         // numbers the agent answers to. A review that couldn't report
         // leaves them as they were.
         if blocking && reported {
+            // guide.rs: the findings the last review sent are settled now,
+            // with the agent's answers and this review's verdicts; this
+            // review's own, if any, are the next to settle.
+            if follow_up {
+                if let Some(sent) = self.review_rounds.last_mut() {
+                    sent.answers = responses.clone();
+                    sent.verdicts = std::mem::take(&mut verdicts);
+                }
+            }
+            if !serious.is_empty() {
+                self.review_rounds.push(super::guide::ReviewRound {
+                    round,
+                    findings: serious.clone(),
+                    ..Default::default()
+                });
+            }
             self.review_held = serious.clone();
             self.review_answers.clear();
             self.review_answer_nudges = 0;
@@ -1217,6 +1248,16 @@ impl Run {
         if serious.is_empty() || self.stopped() || self.review_blocked {
             return Ok(false);
         }
+        // guide.rs: from the run's second review that found problems on,
+        // where and why the agent goes wrong goes with the findings. A
+        // review asked again (it couldn't report) found nothing new.
+        let guidance = match asked_again {
+            true => None,
+            false => self.guide_after_review(&record_id, &mut review).await?,
+        };
+        if self.stopped() {
+            return Ok(false);
+        }
         let rounds = match thorough {
             true => Rounds::ByProgress {
                 stalled: self.change_review_progress.stalled(),
@@ -1225,7 +1266,7 @@ impl Run {
         };
         let mut note = new_message(
             "user",
-            &findings_note_in(&serious, round, last, rounds),
+            &findings_note_in(&serious, round, last, rounds, guidance.as_deref()),
         );
         note.meta = Some(json!({ "harness": "review" }));
         self.review_note_id = Some(note.id.clone());
@@ -1374,6 +1415,23 @@ mod tests {
             f.confidence = "plausible".into();
             assert_eq!(f.rank(), plausible, "{severity}, plausible");
         }
+    }
+
+    /// The guide's part goes after the findings and before what to do
+    /// next, which ends the note; without a guide, nothing is between.
+    #[test]
+    fn the_findings_note_carries_the_guide_between_the_findings_and_what_to_do() {
+        let f = parse_findings(GOOD).unwrap();
+        let guide = "## Where you go wrong, from a guide\n\nIt keeps fixing the caller.\n";
+        let note = findings_note_in(&f[..1], 2, false, Rounds::Count, Some(guide));
+        let list = note.find("1. [high] src/a.ts:42").unwrap();
+        let from = note
+            .find("## Where you go wrong, from a guide\n\nIt keeps fixing the caller.\n\nEvery finding must be resolved")
+            .unwrap_or_else(|| panic!("{note}"));
+        assert!(list < from, "{note}");
+        let plain = findings_note(&f[..1], 2, false);
+        assert!(!plain.contains("from a guide"));
+        assert!(plain.contains("Confidence: confirmed\n\nEvery finding must be resolved"));
     }
 
     /// Findings in a change review's record carry their rank.

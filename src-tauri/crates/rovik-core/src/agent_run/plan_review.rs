@@ -1229,6 +1229,9 @@ pub struct FollowUp {
     /// Each earlier finding with the agent's answer and the verdict, for
     /// the record.
     pub earlier: Vec<Value>,
+    /// The verdict on each earlier finding, by its number: as `earlier`
+    /// has it, for the change review's guide (guide.rs).
+    pub verdicts: Vec<Verdict>,
     /// How many of `open`, at its start, are earlier findings.
     pub kept: usize,
     /// New findings about steps the revision didn't change (`changed`),
@@ -1292,6 +1295,11 @@ pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
             }
             out.open.push(f);
         }
+        out.verdicts.push(Verdict {
+            finding: n,
+            resolved,
+            reason: reason.clone(),
+        });
         out.earlier.push(json!({
             "finding": n,
             "severity": e.severity,
@@ -3365,6 +3373,14 @@ mod tests {
         );
         // Each was the review's word: a verdict, or a repeat with evidence.
         assert!(e.iter().all(|e| e["checked"] == true), "{e:?}");
+        // The same verdicts, typed, for the change review's guide.
+        let verdicts: Vec<(usize, bool)> = follow
+            .verdicts
+            .iter()
+            .map(|v| (v.finding, v.resolved))
+            .collect();
+        assert_eq!(verdicts, [(1, true), (2, false), (3, false)]);
+        assert_eq!(follow.verdicts[0].reason, "step 5 updates the CLI.");
 
         // Not mentioned: settled, and not checked. The plan back unchanged
         // with nothing said: everything stays open, whatever the review says.
