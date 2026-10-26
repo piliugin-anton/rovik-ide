@@ -658,12 +658,15 @@ fn works(mechanism: &dyn Mechanism, c: &Confine) -> bool {
         cmd.stdin(Stdio::null());
         cmd.output().map_err(|e| e.to_string())
     };
-    let unmade = |out: &std::process::Output| {
-        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
-        !out.status.success()
-            && mechanism.never_started(out.status.code(), &text(&out.stdout), &text(&out.stderr))
-    };
-    until_made(probe, unmade).is_ok_and(|out| out.status.success())
+    until_made(probe, |out| unmade(mechanism, out)).is_ok_and(|out| out.status.success())
+}
+
+/// Whether `out`, what a command confined by `mechanism` ended with, says
+/// its sandbox couldn't be made, so nothing ran ([`until_made`]).
+fn unmade(mechanism: &dyn Mechanism, out: &std::process::Output) -> bool {
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    !out.status.success()
+        && mechanism.never_started(out.status.code(), &text(&out.stdout), &text(&out.stderr))
 }
 
 /// What the probe runs under: the process's temporary folder as the root.
@@ -1731,19 +1734,23 @@ mod tests {
     }
 
     /// Runs `script` under `c` in `cwd`: its output, or None where bwrap
-    /// can't make a sandbox here (the test is then skipped).
+    /// can't make a sandbox here (the test is then skipped). A sandbox
+    /// bwrap couldn't make this once, as another test's chat view was
+    /// unmounted while it made the mounts read-only, is made again, as for
+    /// the agent's commands.
     fn run(c: &Confine, cwd: &Path, script: &str) -> Option<std::process::Output> {
         if !works(BWRAP, c) {
             eprintln!("bwrap can't confine commands here: skipped");
             return None;
         }
-        Some(
+        let start = || {
             BWRAP
                 .command(c, "/bin/sh", &["-c", script])
                 .current_dir(cwd)
                 .output()
-                .unwrap(),
-        )
+                .map_err(|e| e.to_string())
+        };
+        Some(until_made(start, |out| unmade(BWRAP, out)).unwrap())
     }
 
     fn stdout(out: &std::process::Output) -> String {
