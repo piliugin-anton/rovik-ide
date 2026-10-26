@@ -1,7 +1,7 @@
-//! Connectors: coding harnesses (Claude Code first) a chat can use in place
-//! of a model provider. A connector is a program on the computer the chat
-//! runs on; it brings its own model loop and tools, so the IDE hands it the
-//! task and shows what it did.
+//! Connectors: coding harnesses (Claude Code, Codex) a chat can use in
+//! place of a model provider. A connector is a program on the computer the
+//! chat runs on; it brings its own model loop and tools, so the IDE hands
+//! it the task and shows what it did.
 //!
 //! A connector's models go through the same settings as a provider's:
 //! each is a `Provider` entry in the AI settings whose base URL is
@@ -23,15 +23,18 @@ pub const SCHEME: &str = "connector://";
 #[serde(rename_all = "kebab-case")]
 pub enum ConnectorKind {
     ClaudeCode,
+    /// OpenAI's Codex CLI.
+    Codex,
 }
 
 impl ConnectorKind {
-    pub const ALL: [ConnectorKind; 1] = [ConnectorKind::ClaudeCode];
+    pub const ALL: [ConnectorKind; 2] = [ConnectorKind::ClaudeCode, ConnectorKind::Codex];
 
     /// Its id, as the base URL names it: `claude-code`.
     pub fn id(self) -> &'static str {
         match self {
             ConnectorKind::ClaudeCode => "claude-code",
+            ConnectorKind::Codex => "codex",
         }
     }
 
@@ -39,6 +42,7 @@ impl ConnectorKind {
     pub fn title(self) -> &'static str {
         match self {
             ConnectorKind::ClaudeCode => "Claude Code",
+            ConnectorKind::Codex => "Codex",
         }
     }
 
@@ -235,6 +239,10 @@ pub struct SetupJob {
     /// The first web address it printed: the sign-in page to open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Its sign-in page asks for a code the step printed (a device code,
+    /// in `output`), rather than showing one to paste back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub device_code: bool,
     pub done: bool,
     /// Why it failed, once done; none when it succeeded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -255,7 +263,12 @@ mod tests {
             kind_of(" connector://claude-code/ "),
             Some(ConnectorKind::ClaudeCode)
         );
-        assert_eq!(kind_of("connector://codex"), None);
+        assert_eq!(kind_of("connector://codex"), Some(ConnectorKind::Codex));
+        assert_eq!(
+            kind_of("connector://aider"),
+            None,
+            "a kind Rovik doesn't know"
+        );
         assert_eq!(kind_of("https://api.openai.com/v1"), None);
         assert!(!is_connector("http://localhost:11434/v1"));
         assert_eq!(
@@ -296,9 +309,40 @@ mod tests {
 
     #[test]
     fn kinds_travel_as_their_ids() {
-        let json = serde_json::to_string(&ConnectorKind::ClaudeCode).unwrap();
-        assert_eq!(json, "\"claude-code\"");
-        let back: ConnectorKind = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, ConnectorKind::ClaudeCode);
+        for kind in ConnectorKind::ALL {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("\"{}\"", kind.id()));
+            let back: ConnectorKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, kind);
+            assert_eq!(ConnectorKind::from_id(kind.id()), Some(kind));
+        }
+        assert_eq!(ConnectorKind::Codex.base_url(), "connector://codex");
+        assert_eq!(ConnectorKind::Codex.title(), "Codex");
+    }
+
+    #[test]
+    fn a_setup_step_says_when_its_page_asks_for_a_code_it_printed() {
+        let job = SetupJob {
+            id: "j".into(),
+            action: SetupAction::Login,
+            command: "codex login --device-auth".into(),
+            output: "Enter this one-time code\n   ABCD-1234".into(),
+            url: Some("https://auth.openai.com/codex/device".into()),
+            device_code: true,
+            done: false,
+            error: None,
+        };
+        let json = serde_json::to_value(&job).unwrap();
+        assert_eq!(json["deviceCode"], true);
+        // A step whose page gives a code to paste back says nothing, and an
+        // older daemon's answer, without the field, reads as such a step.
+        let pasted = SetupJob {
+            device_code: false,
+            ..job
+        };
+        let json = serde_json::to_value(&pasted).unwrap();
+        assert!(json.get("deviceCode").is_none(), "{json}");
+        let back: SetupJob = serde_json::from_value(json).unwrap();
+        assert!(!back.device_code);
     }
 }

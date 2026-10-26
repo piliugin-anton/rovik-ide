@@ -41,6 +41,8 @@ pub struct SetupCommand {
     pub env: Vec<(String, String)>,
     /// For the user: the command as they'd type it.
     pub shown: String,
+    /// Its sign-in page asks for a code it prints (`SetupJob::device_code`).
+    pub device_code: bool,
 }
 
 impl SetupCommand {
@@ -52,6 +54,7 @@ impl SetupCommand {
             program,
             args: Vec::new(),
             env: Vec::new(),
+            device_code: false,
         };
         args.iter().fold(command, |command, arg| command.arg(arg))
     }
@@ -82,6 +85,7 @@ impl SetupCommand {
                 .collect(),
             env: Vec::new(),
             shown: line.into(),
+            device_code: false,
         }
     }
 
@@ -93,6 +97,13 @@ impl SetupCommand {
 
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
         self.env = env;
+        self
+    }
+
+    /// Its sign-in page asks for the code it prints: the user enters it
+    /// there, rather than pasting one back.
+    pub fn with_device_code(mut self) -> Self {
+        self.device_code = true;
         self
     }
 }
@@ -138,6 +149,7 @@ struct Job {
     kind: ConnectorKind,
     action: SetupAction,
     shown: String,
+    device_code: bool,
     state: Mutex<State>,
     /// Its input, while it runs.
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
@@ -185,6 +197,7 @@ fn start(
         kind,
         action,
         shown: command.shown,
+        device_code: command.device_code,
         state: Mutex::default(),
         stdin: tokio::sync::Mutex::new(child.stdin.take()),
         stop,
@@ -301,6 +314,7 @@ impl Job {
             action: self.action,
             command: self.shown.clone(),
             url: first_url(&output),
+            device_code: self.device_code,
             output,
             done: state.ended.is_some(),
             error: state.error.clone(),
@@ -458,6 +472,25 @@ mod tests {
         );
         assert_eq!(first_url("http://a.dev https:// none"), None);
         assert_eq!(first_url("nothing here"), None);
+    }
+
+    /// A step whose page asks for the code it printed says so as it runs.
+    #[test]
+    fn a_device_code_sign_in_says_so() {
+        let _turn = turn();
+        crate::rt::block_on(async {
+            let command = SetupCommand::shell(
+                "printf 'Open https://example.com/device\\nEnter this one-time code\\n   ABCD-1234\\n'",
+            )
+            .with_device_code();
+            let job = start(ConnectorKind::Codex, SetupAction::Login, command).unwrap();
+            assert!(job.device_code);
+            let job = wait(&job.id, |j| j.done).await;
+            assert_eq!(job.url.as_deref(), Some("https://example.com/device"));
+            assert!(job.output.contains("ABCD-1234"), "{}", job.output);
+            assert!(job.device_code);
+            assert!(!run("true").device_code, "a sign-in pasted back");
+        });
     }
 
     #[test]

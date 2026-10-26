@@ -33,12 +33,14 @@
 use super::harness::{
     self, expand_home, pump, split_args, Lines, Process, Stop, TempFile, MIN_FIRST_LINE,
 };
+use super::live::{LiveRuns, Matcher};
 use super::mcp::{McpCall, McpReply, McpServer, HOOK, SERVER_NAME, TOOL_PREFIX};
+use super::steps::{relative_paths, thought_id, thousands, Thought};
 use super::{
-    harness_error, trimmed_text, trimmed_value, usage_value, Answers, CommandAnswer, CommandCheck,
-    CommandChecks, Connector, ConnectorAuth, ConnectorCommand, ConnectorKind, ConnectorModel,
-    ConnectorProbe, HarnessCall, HarnessStep, ProbeRequest, ProbeRequestArgs, SetupAction,
-    SetupCommand, ToolAnswer, ToolAsk, ToolAsks, Turn,
+    harness_error, hook_answer, trimmed_text, trimmed_value, usage_value, CommandAnswer,
+    CommandCheck, CommandChecks, Connector, ConnectorAuth, ConnectorCommand, ConnectorKind,
+    ConnectorModel, ConnectorProbe, HarnessCall, HarnessStep, ProbeRequest, ProbeRequestArgs,
+    SetupAction, SetupCommand, ToolAnswer, ToolAsk, ToolAsks, Turn, UNCHECKED,
 };
 use crate::agent::{ChatStreamEvent, ReasoningEffort};
 use crate::chat_request::{ChatError, ErrorKind};
@@ -47,7 +49,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -225,28 +226,18 @@ pub fn models() -> Vec<ConnectorModel> {
 /// Where the program is looked for besides the PATH: the native
 /// installer's place, the package managers', and a server's shared copy.
 fn well_known_places() -> Vec<PathBuf> {
-    let mut places = Vec::new();
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from);
-    if cfg!(windows) {
-        if let Some(home) = &home {
-            places.push(home.join(".local").join("bin").join("claude.exe"));
-        }
-    } else {
-        if let Some(home) = &home {
-            places.push(home.join(".local/bin/claude"));
-        }
-        for dir in [
-            "/usr/local/bin",
-            "/usr/bin",
-            "/opt/rovik/bin",
-            "/opt/homebrew/bin",
-        ] {
-            places.push(Path::new(dir).join("claude"));
-        }
+    if !cfg!(windows) {
+        return harness::unix_places("claude");
     }
-    places
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    home.map(|home| {
+        PathBuf::from(home)
+            .join(".local")
+            .join("bin")
+            .join("claude.exe")
+    })
+    .into_iter()
+    .collect()
 }
 
 /// The program to run: `program` as given when it names a path, else the
@@ -556,17 +547,7 @@ pub fn rovik_tools_env() -> Vec<(String, String)> {
     .iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
-    for key in ["NO_PROXY", "no_proxy"] {
-        let now = crate::process::child_var(key)
-            .map(|v| v.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let value = if now.trim().is_empty() {
-            "127.0.0.1,localhost".to_string()
-        } else {
-            format!("{now},127.0.0.1,localhost")
-        };
-        env.push((key.to_string(), value));
-    }
+    env.extend(super::mcp::loopback_env());
     env
 }
 
@@ -627,68 +608,6 @@ pub struct Parser {
     /// The folder the run works in: the paths its steps name are shown
     /// relative to it (`relative_paths`).
     root: Option<PathBuf>,
-}
-
-/// A tool's input with the paths it names (`file_path`, `path`,
-/// `notebook_path`) relative to the run's folder where they're in it, as
-/// Rovik's own tools take them: the chat opens them in the project, or in
-/// the chat's copy of it. Others stay as they are.
-fn relative_paths(input: &Value, root: Option<&Path>) -> Value {
-    let mut input = input.clone();
-    let (Some(root), Some(fields)) = (root, input.as_object_mut()) else {
-        return input;
-    };
-    // The folder as given, and as the system resolves it (`/tmp` and
-    // `/private/tmp`): the harness may name it either way.
-    let roots = [Some(root.to_path_buf()), root.canonicalize().ok()];
-    for key in ["file_path", "path", "notebook_path"] {
-        let Some(Value::String(path)) = fields.get_mut(key) else {
-            continue;
-        };
-        let inside = roots
-            .iter()
-            .flatten()
-            .find_map(|root| Path::new(path.as_str()).strip_prefix(root).ok());
-        if let Some(rest) = inside {
-            let rest = rest.to_string_lossy().replace('\\', "/");
-            *path = if rest.is_empty() { ".".into() } else { rest };
-        }
-    }
-    input
-}
-
-/// A stretch of thinking as it streams, with Claude Code's own tools.
-struct Thought {
-    /// Its step, numbered once it says anything (`thought_id`).
-    step: HarnessStep,
-    started: Instant,
-}
-
-impl Thought {
-    /// A thought beginning now.
-    fn new() -> Thought {
-        Thought {
-            step: HarnessStep {
-                thinking: Some(String::new()),
-                ..HarnessStep::default()
-            },
-            started: Instant::now(),
-        }
-    }
-}
-
-/// The step id of a run's `n`th thought shown.
-fn thought_id(n: usize) -> String {
-    format!("thinking-{n}")
-}
-
-/// A token count for the user: `35.3k`, `1.2M`, `950`.
-fn thousands(n: u64) -> String {
-    match n {
-        0..1_000 => n.to_string(),
-        1_000..1_000_000 => format!("{:.1}k", n as f64 / 1_000.0),
-        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
-    }
 }
 
 /// A message's token counts as the stream gives them.
@@ -1892,9 +1811,6 @@ async fn run_turn(
 /// version and the project's dependencies to install.
 const HOOK_TIMEOUT_SECS: u64 = 3600;
 
-/// Why a call before which Rovik couldn't be asked doesn't run.
-const UNCHECKED: &str = "Error: Rovik IDE couldn't check this call against the project's restricted files, so it didn't run. Try it again.";
-
 /// Claude Code's own tools Rovik's hook sees before they run: its shell,
 /// and those that read, change or search files, which a restricted file
 /// is kept from (restricted_files.rs).
@@ -2055,21 +1971,8 @@ fn answer_hook(call: McpCall, checks: &CommandChecks, env_file: Option<PathBuf>,
                 ::log::warn!("claude code: its environment file {}: {e}", file.display());
             }
         }
-        let answer = match said {
-            // Refused before it runs, whatever Claude Code's permission
-            // mode: the reason is the model's.
-            CommandAnswer::Deny(reason) => json!({
-                "hookSpecificOutput": {
-                    "hookEventName": name,
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                },
-            }),
-            CommandAnswer::Note(Some(text)) => json!({
-                "hookSpecificOutput": { "hookEventName": name, "additionalContext": text },
-            }),
-            CommandAnswer::Note(None) => json!({}),
-        };
+        // Refused before it runs, whatever Claude Code's permission mode.
+        let answer = hook_answer(&name, said);
         let _ = call.reply.send(McpReply::text(answer.to_string()));
     });
 }
@@ -2094,39 +1997,19 @@ fn exit_and_output(error: &str) -> (Option<i32>, String) {
  * Rovik's tools mode
  * ---------------------------------------------------------------------------
  *
- * Claude Code is the model behind Rovik's agent loop. A turn of Rovik's is
- * a message of Claude Code's: the run starts (or resumes its session) with
- * Rovik's tools offered over MCP (connectors/mcp.rs), and when a message
- * calls any of them, Rovik's turn ends with those calls as the reply's
- * (`Stop::Yielded`) while Claude Code waits, its calls held open on the
- * MCP server. Rovik runs them, under its permissions and approvals, and
- * stores the results; its next turn finds the run waiting (`LIVE`), gives
- * each call its stored result, and reads on to the next message. A message
- * without calls ends Claude Code's run, and the turn with it.
- *
- * However Rovik's run ends (done, stopped, paused, failed), the waiting
- * run goes with it (`end_live`, from the run's `Drop`). One started again
- * resumes the session, told the results it never got.
+ * Claude Code is the model behind Rovik's agent loop (connectors/live.rs).
+ * A turn of Rovik's is a message of Claude Code's: the run starts (or
+ * resumes its session) with Rovik's tools offered over MCP
+ * (connectors/mcp.rs), and when a message calls any of them, Rovik's turn
+ * ends with those calls as the reply's (`Stop::Yielded`) while Claude Code
+ * waits. Its next turn finds the run waiting (`LIVE`), gives each call its
+ * stored result, and reads on to the next message. A message without calls
+ * ends Claude Code's run, and the turn with it. One started again resumes
+ * the session, told the results it never got.
  */
 
 /// The runs waiting for Rovik's results, by chat.
-static LIVE: LazyLock<Mutex<HashMap<String, Live>>> = LazyLock::new(Default::default);
-
-fn live_runs() -> std::sync::MutexGuard<'static, HashMap<String, Live>> {
-    LIVE.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Ends the chat's waiting run, if any: Rovik's run is over.
-pub fn end_live(dialog_id: &str) {
-    let ended = live_runs().remove(dialog_id);
-    drop(ended);
-}
-
-/// Ends every waiting run: the process is exiting.
-pub fn end_all() {
-    let all: Vec<Live> = live_runs().drain().map(|(_, live)| live).collect();
-    drop(all);
-}
+static LIVE: LiveRuns<Live> = LiveRuns::new();
 
 /// A run of Claude Code's waiting between Rovik's turns, or being read.
 struct Live {
@@ -2136,97 +2019,6 @@ struct Live {
     matcher: Matcher,
     _server: McpServer,
     resumed: bool,
-}
-
-/// Matches Claude Code's MCP calls to the tool calls Rovik ran, and
-/// answers each with its result once both are there.
-#[derive(Default)]
-struct Matcher {
-    /// The calls handed to Rovik at the last yield: id, name, arguments.
-    pending: Vec<(String, String, Value)>,
-    /// Calls made, waiting for their result, by tool use id.
-    waiting: HashMap<String, oneshot::Sender<McpReply>>,
-    /// Results given, waiting for their call, by tool use id.
-    answers: HashMap<String, McpReply>,
-    /// Ids already matched to a call that named none.
-    matched: HashSet<String>,
-}
-
-impl Matcher {
-    /// A call Claude Code made: answered if its result is there, else kept.
-    fn take(&mut self, call: McpCall) {
-        let id = call.tool_use_id.clone().or_else(|| {
-            // A version that doesn't say the id: the first pending call of
-            // that name and those arguments.
-            let found = self
-                .pending
-                .iter()
-                .find(|(id, name, arguments)| {
-                    *name == call.name && *arguments == call.arguments && !self.matched.contains(id)
-                })
-                .map(|(id, ..)| id.clone());
-            if let Some(id) = &found {
-                self.matched.insert(id.clone());
-            }
-            found
-        });
-        let Some(id) = id else {
-            let _ = call
-                .reply
-                .send(McpReply::error("Rovik has no call like this to answer."));
-            return;
-        };
-        match self.answers.remove(&id) {
-            Some(answer) => {
-                let _ = call.reply.send(answer);
-            }
-            None => {
-                self.waiting.insert(id, call.reply);
-            }
-        }
-    }
-
-    /// Rovik's results for the pending calls, answering those made.
-    fn deliver(&mut self, answers: &Answers) {
-        let count = self.pending.len();
-        for (n, (id, ..)) in self.pending.iter().enumerate() {
-            let mut text = answers
-                .results
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| "[Rovik didn't run this call.]".into());
-            // What Rovik said after the results (a check's failure, a
-            // message the user sent) goes with the last.
-            if n + 1 == count && !answers.notes.trim().is_empty() {
-                text = format!("{text}\n\n---\n{}", answers.notes.trim());
-            }
-            let answer = McpReply::text(text);
-            match self.waiting.remove(id) {
-                Some(reply) => {
-                    let _ = reply.send(answer);
-                }
-                None => {
-                    self.answers.insert(id.clone(), answer);
-                }
-            }
-        }
-    }
-}
-
-impl Live {
-    /// Whether Rovik's turn goes on with this run: the chat's last message
-    /// is the one with the calls this run is waiting on.
-    fn takes(&self, answers: Option<&Answers>) -> bool {
-        let Some(answers) = answers else {
-            return false;
-        };
-        !self.matcher.pending.is_empty()
-            && self
-                .matcher
-                .pending
-                .iter()
-                .all(|(id, ..)| answers.calls.iter().any(|(call, _)| call == id))
-    }
 }
 
 /// Starts a run with Rovik's tools, for `prompt`.
@@ -2288,9 +2080,9 @@ async fn run_with_rovik_tools(
     let Some(dialog) = turn.dialog_id.clone() else {
         return Err("Rovik's tools are for a chat's run.".into());
     };
-    let waiting = live_runs().remove(&dialog);
+    let waiting = LIVE.take(&dialog);
     let mut live = match waiting {
-        Some(mut live) if !turn.continue_reply && live.takes(turn.answers.as_ref()) => {
+        Some(mut live) if !turn.continue_reply && live.matcher.takes(turn.answers.as_ref()) => {
             if let Some(answers) = &turn.answers {
                 live.matcher.deliver(answers);
             }
@@ -2326,15 +2118,8 @@ async fn run_with_rovik_tools(
         .await;
         if stop == Stop::Yielded {
             let made = live.parser.yielded.take().unwrap_or_default();
-            live.matcher.pending = made
-                .into_iter()
-                .map(|(id, name, arguments)| {
-                    let arguments = serde_json::from_str(&arguments).unwrap_or(Value::Null);
-                    (id, name, arguments)
-                })
-                .collect();
-            live.matcher.matched.clear();
-            live_runs().insert(dialog, live);
+            live.matcher.await_answers(made);
+            LIVE.keep(dialog, live);
             return Ok(());
         }
         let resumed = live.resumed;
@@ -2614,11 +2399,11 @@ impl Connector for ClaudeCode {
     }
 
     fn end_live(&self, dialog_id: &str) {
-        end_live(dialog_id);
+        LIVE.end(dialog_id);
     }
 
     fn end_all(&self) {
-        end_all();
+        LIVE.end_all();
     }
 
     fn run<'a>(
@@ -2741,7 +2526,7 @@ async fn test_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connectors::Connector;
+    use crate::connectors::{Answers, Connector};
 
     fn turn(prompt: &str) -> Turn {
         Turn {
@@ -4317,54 +4102,6 @@ fi
         );
     }
 
-    #[test]
-    fn calls_are_matched_by_their_tool_use_or_their_arguments() {
-        let mut m = Matcher {
-            pending: vec![
-                ("t1".into(), "read".into(), json!({ "path": "a" })),
-                ("t2".into(), "read".into(), json!({ "path": "b" })),
-            ],
-            ..Matcher::default()
-        };
-        let call = |id: Option<&str>, path: &str| {
-            let (reply, rx) = oneshot::channel();
-            (
-                McpCall {
-                    tool_use_id: id.map(str::to_string),
-                    name: "read".into(),
-                    arguments: json!({ "path": path }),
-                    reply,
-                },
-                rx,
-            )
-        };
-        // Made before the results: waits.
-        let (c1, mut r1) = call(Some("t1"), "a");
-        m.take(c1);
-        assert!(r1.try_recv().is_err());
-        let answers = Answers {
-            calls: vec![("t1".into(), "read".into()), ("t2".into(), "read".into())],
-            results: HashMap::from([
-                ("t1".to_string(), "A".to_string()),
-                ("t2".to_string(), "B".to_string()),
-            ]),
-            notes: "Checks failed.".into(),
-        };
-        m.deliver(&answers);
-        assert_eq!(r1.try_recv().unwrap(), McpReply::text("A"));
-        // Made after, naming no id: matched by its arguments; the notes go with the last.
-        let (c2, mut r2) = call(None, "b");
-        m.take(c2);
-        assert_eq!(
-            r2.try_recv().unwrap(),
-            McpReply::text("B\n\n---\nChecks failed.")
-        );
-        // A call nothing matches is an error.
-        let (c3, mut r3) = call(None, "zzz");
-        m.take(c3);
-        assert!(r3.try_recv().unwrap().is_error);
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn rovik_tools_mode_yields_rovik_runs_the_call_and_the_run_goes_on() {
@@ -4402,10 +4139,7 @@ fi
             matches!(events.last(), Some(ChatStreamEvent::Done)),
             "{events:?}"
         );
-        assert!(
-            live_runs().contains_key(&dialog),
-            "it waits for Rovik's result"
-        );
+        assert!(LIVE.has(&dialog), "it waits for Rovik's result");
         let args = std::fs::read_to_string(dir.0.join("args.txt")).unwrap();
         assert!(
             args.contains("--strict-mcp-config") && args.contains("mcp__rovik"),
@@ -4458,7 +4192,7 @@ fi
             matches!(events.last(), Some(ChatStreamEvent::Done)),
             "{events:?}"
         );
-        assert!(!live_runs().contains_key(&dialog), "its run is over");
+        assert!(!LIVE.has(&dialog), "its run is over");
     }
 
     #[cfg(unix)]
@@ -4478,9 +4212,9 @@ fi
             .run(first, &mut cancel, &mut |_| {})
             .await
             .unwrap();
-        assert!(live_runs().contains_key(&dialog));
+        assert!(LIVE.has(&dialog));
         crate::connectors::end_live(&dialog);
-        assert!(!live_runs().contains_key(&dialog));
+        assert!(!LIVE.has(&dialog));
         // A turn that doesn't answer the waiting calls (another reply came
         // between) starts afresh instead of going on.
         let mut other = turn("Something else");
@@ -4585,10 +4319,7 @@ fi
         let (id, name, arguments) = calls[0].clone();
         assert_eq!(name, "read");
         assert!(arguments.contains("notes.txt"), "{arguments}");
-        assert!(
-            live_runs().contains_key(&dialog),
-            "waiting for Rovik's result"
-        );
+        assert!(LIVE.has(&dialog), "waiting for Rovik's result");
         // As long as an approval can take: ROVIK_REAL_CLAUDE_WAIT seconds.
         if let Some(wait) = std::env::var("ROVIK_REAL_CLAUDE_WAIT")
             .ok()
@@ -4628,7 +4359,7 @@ fi
             _ => None,
         });
         eprintln!("usage: {usage:?}");
-        assert!(!live_runs().contains_key(&dialog));
+        assert!(!LIVE.has(&dialog));
     }
 
     #[test]

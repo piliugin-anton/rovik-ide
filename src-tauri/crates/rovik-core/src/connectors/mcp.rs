@@ -13,9 +13,9 @@
 //! - `tools/call` is answered as an event stream: the call goes to the
 //!   connector ([`McpCall`]) and the stream stays open, a comment every
 //!   few seconds, until its result comes, which can take as long as the
-//!   user takes to approve it. Claude Code sends the tool use id the call
-//!   is for (`_meta["claudecode/toolUseId"]`), which matches it to the
-//!   call in its stream.
+//!   user takes to approve it. The harness sends the tool use id the call
+//!   is for, which matches it to the call in its stream: Claude Code as
+//!   `_meta["claudecode/toolUseId"]`, Codex as `_meta.callId`.
 //! - `GET` (a stream of server messages) isn't offered: 405.
 //!
 //! It also takes a harness's hooks, as Claude Code's `http` hooks post
@@ -79,7 +79,8 @@ const READ_ONLY: &[&str] = &[
 /// A call the harness made: the connector answers it through `reply`.
 #[derive(Debug)]
 pub struct McpCall {
-    /// The tool use it's for, when the harness says (Claude Code does).
+    /// The tool use it's for, when the harness says (Claude Code and Codex
+    /// do).
     pub tool_use_id: Option<String>,
     /// The tool's name as Rovik names it, without the prefix.
     pub name: String,
@@ -143,6 +144,19 @@ impl McpServer {
         instructions: &str,
         network: Option<&Arc<Network>>,
     ) -> std::io::Result<(McpServer, mpsc::UnboundedReceiver<McpCall>)> {
+        let (calls, received) = mpsc::unbounded_channel();
+        let server = Self::start_sending(tools, instructions, network, calls).await?;
+        Ok((server, received))
+    }
+
+    /// `start`, its calls sent on `calls`: two servers of one run (Rovik's
+    /// tools, and the hooks the harness calls as tools) share a receiver.
+    pub async fn start_sending(
+        tools: &[Value],
+        instructions: &str,
+        network: Option<&Arc<Network>>,
+        calls: mpsc::UnboundedSender<McpCall>,
+    ) -> std::io::Result<McpServer> {
         let listener = match network {
             Some(network) => {
                 let network = network.clone();
@@ -160,7 +174,6 @@ impl McpServer {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        let (calls, received) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
             token: token.clone(),
             session: uuid::Uuid::new_v4().to_string(),
@@ -178,14 +191,11 @@ impl McpServer {
                 });
             }
         });
-        Ok((
-            McpServer {
-                port,
-                token,
-                accept,
-            },
-            received,
-        ))
+        Ok(McpServer {
+            port,
+            token,
+            accept,
+        })
     }
 
     pub fn url(&self) -> String {
@@ -203,6 +213,12 @@ impl McpServer {
         format!("Bearer {}", self.token)
     }
 
+    /// The token alone, for a harness that reads it from a variable of its
+    /// environment (Codex's `bearer_token_env_var`): never a command line.
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
     /// The harness's MCP configuration for it, with the token: for a file
     /// only this user can read, never a command line.
     pub fn config_json(&self) -> String {
@@ -217,6 +233,26 @@ impl McpServer {
         })
         .to_string()
     }
+}
+
+/// What a harness's environment gets so it reaches Rovik's servers on
+/// the loopback interface directly, never through a proxy it's given:
+/// `127.0.0.1` and `localhost` added to `NO_PROXY` (both spellings).
+pub fn loopback_env() -> Vec<(String, String)> {
+    ["NO_PROXY", "no_proxy"]
+        .iter()
+        .map(|key| {
+            let now = crate::process::child_var(key)
+                .map(|v| v.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let value = if now.trim().is_empty() {
+                "127.0.0.1,localhost".to_string()
+            } else {
+                format!("{now},127.0.0.1,localhost")
+            };
+            (key.to_string(), value)
+        })
+        .collect()
 }
 
 /// Rovik's tools (OpenAI function schemas) as MCP lists them.
@@ -368,10 +404,10 @@ async fn call(
         .and_then(|n| n.as_str())
         .unwrap_or("")
         .to_string();
-    let tool_use_id = params
-        .get("_meta")
-        .and_then(|m| m.get("claudecode/toolUseId"))
-        .and_then(|t| t.as_str())
+    let meta = params.get("_meta");
+    let tool_use_id = ["claudecode/toolUseId", "callId"]
+        .iter()
+        .find_map(|key| meta?.get(*key)?.as_str())
         .map(str::to_string);
     let arguments = params
         .get("arguments")
@@ -906,6 +942,33 @@ mod tests {
         assert_eq!(data["id"], 7);
         assert_eq!(data["result"]["content"][0]["text"], "fn a() {}");
         assert_eq!(data["result"]["isError"], false);
+    }
+
+    /// Codex names the call it's for as `_meta.callId`; two servers of a
+    /// run can share one receiver.
+    #[tokio::test]
+    async fn codex_s_call_id_names_the_tool_use_and_servers_share_a_receiver() {
+        let (sender, mut calls) = mpsc::unbounded_channel();
+        let tools_server = McpServer::start_sending(&tools(), "", None, sender.clone())
+            .await
+            .unwrap();
+        let hooks_server = McpServer::start_sending(&[], "", None, sender)
+            .await
+            .unwrap();
+        assert_ne!(tools_server.port, hooks_server.port);
+        assert_eq!(
+            hooks_server.authorization(),
+            format!("Bearer {}", hooks_server.token())
+        );
+        let token = token_of(&hooks_server);
+        let body = r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hook","arguments":{},"_meta":{"callId":"exec-1","threadId":"t"}}}"#;
+        let port = hooks_server.port;
+        let request = tokio::spawn(async move { send(port, &token, "POST", body).await });
+        let call = calls.recv().await.unwrap();
+        assert_eq!(call.tool_use_id.as_deref(), Some("exec-1"));
+        assert_eq!(call.name, "hook");
+        call.reply.send(McpReply::text("{}")).unwrap();
+        assert_eq!(request.await.unwrap().0, 200);
     }
 
     #[tokio::test]

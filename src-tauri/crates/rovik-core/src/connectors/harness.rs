@@ -2,8 +2,9 @@
 //! run in the project folder, its output read line by line into a chat's
 //! events by the connector's own parser ([`Lines`]), stopped or timed out,
 //! and told as an error when it ended without saying how. A connector
-//! brings the arguments, the environment and the parser; claude_code.rs is
-//! the first.
+//! brings the arguments, the environment and the parser: claude_code.rs's
+//! program reads its message and runs to its end; codex/'s speaks a
+//! protocol on its input as it runs ([`Process::spawn_with_input`]).
 
 use super::harness_error;
 use super::mcp::McpCall;
@@ -38,7 +39,24 @@ pub(super) trait Lines {
     fn yielded(&self) -> bool {
         false
     }
+
+    /// The turn is over, though the program still runs: one that serves a
+    /// protocol stays up until its input closes.
+    fn finished(&self) -> bool {
+        false
+    }
+
+    /// The program waits on Rovik's answer to something it asked on its
+    /// output (an approval the user takes their time over): it's silent,
+    /// not stalled.
+    fn waiting(&self) -> bool {
+        false
+    }
 }
+
+/// Where a run's input goes while it runs: each string is written to the
+/// program's stdin as it is, and the input closes once every sender is gone.
+pub(super) type Input = mpsc::UnboundedSender<String>;
 
 /// The program a connector runs: `setting` as given when it names a path,
 /// else `name` (when the setting is empty) found on the PATH the IDE's
@@ -74,6 +92,23 @@ pub fn resolve_program(
         "{program} isn't installed, or isn't on the PATH. {install}, or name the \
          program's path in the connector's settings."
     ))
+}
+
+/// Where `name` is installed on Linux and macOS when it isn't on the PATH:
+/// the user's `~/.local/bin` (the native installers'), then the system's
+/// `bin` folders (a package's, a cloud host's), Rovik's and Homebrew's.
+pub(super) fn unix_places(name: &str) -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/bin"));
+    let dirs = [
+        "/usr/local/bin",
+        "/usr/bin",
+        "/opt/rovik/bin",
+        "/opt/homebrew/bin",
+    ];
+    home.into_iter()
+        .chain(dirs.iter().map(PathBuf::from))
+        .map(|dir| dir.join(name))
+        .collect()
 }
 
 /// `~/…` as the user's home.
@@ -203,13 +238,15 @@ pub(super) struct Process {
     stderr: Option<tokio::task::JoinHandle<String>>,
     got_line: bool,
     first_line_within: Duration,
+    /// Its input while it stays open (`spawn_with_input`).
+    input: Option<Input>,
     _files: Vec<TempFile>,
 }
 
 impl Process {
-    /// Starts `program`, the turn's message on its stdin: in `network` for
-    /// a chat when given (a team server's private network, with its
-    /// browser for that chat: overlay/confine/network.rs).
+    /// Starts `program`, the turn's message on its stdin, which closes once
+    /// written: in `network` for a chat when given (a team server's private
+    /// network, with its browser for that chat: overlay/confine/network.rs).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn(
         program: &str,
@@ -218,6 +255,26 @@ impl Process {
         cwd: Option<&Path>,
         network: Option<(&Network, &str)>,
         prompt: String,
+        first_line_within: Duration,
+        files: Vec<TempFile>,
+    ) -> Result<Process, String> {
+        let mut process =
+            Self::spawn_with_input(program, args, env, cwd, network, first_line_within, files)?;
+        if let Some(input) = process.input.take() {
+            let _ = input.send(prompt);
+        }
+        Ok(process)
+    }
+
+    /// Starts `program` as `spawn` does, its stdin open for what the run
+    /// sends it as it goes (`input`): a protocol's requests and answers.
+    /// It closes with `close_input`, and as the run finishes.
+    pub(super) fn spawn_with_input(
+        program: &str,
+        args: &[String],
+        env: &[(String, String)],
+        cwd: Option<&Path>,
+        network: Option<(&Network, &str)>,
         first_line_within: Duration,
         files: Vec<TempFile>,
     ) -> Result<Process, String> {
@@ -231,10 +288,17 @@ impl Process {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Couldn't start {program}: {e}"))?;
-        // The message on stdin, which closes once written.
+        // What the run sends, written in order; the input closes once
+        // every sender is gone.
+        let (input, mut sent) = mpsc::unbounded_channel::<String>();
         if let Some(mut stdin) = child.stdin.take() {
             tokio::spawn(async move {
-                let _ = stdin.write_all(prompt.as_bytes()).await;
+                while let Some(text) = sent.recv().await {
+                    if stdin.write_all(text.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    let _ = stdin.flush().await;
+                }
                 let _ = stdin.shutdown().await;
             });
         }
@@ -267,8 +331,27 @@ impl Process {
             stderr,
             got_line: false,
             first_line_within,
+            input: Some(input),
             _files: files,
         })
+    }
+
+    /// A sender of what goes to its input, while it's open.
+    pub(super) fn input(&self) -> Option<Input> {
+        self.input.clone()
+    }
+
+    /// Closes its input once what was sent is written (a sender still held
+    /// elsewhere keeps it open until it goes too).
+    pub(super) fn close_input(&mut self) {
+        self.input = None;
+    }
+
+    /// The next line it printed; none once its output has ended.
+    pub(super) async fn next_line(&mut self) -> Option<String> {
+        let line = self.lines.recv().await;
+        self.got_line |= line.is_some();
+        line
     }
 
     fn kill(&mut self, force: bool) {
@@ -276,8 +359,10 @@ impl Process {
     }
 
     /// How it ended: its exit code (none when killed) and its stderr's end.
-    /// What it left running is ended.
+    /// Its input closes first, which ends one that serves it; what it left
+    /// running is ended.
     pub(super) async fn finish(&mut self) -> (Option<i32>, String) {
+        self.close_input();
         let status = tokio::time::timeout(STOP_GRACE, self.child.wait()).await;
         let code = match status {
             Ok(Ok(status)) => status.code(),
@@ -318,9 +403,9 @@ pub(super) enum Stop {
     Stalled,
 }
 
-/// Reads the run's lines into events until it ends, makes Rovik's tool
-/// calls, is stopped or stalls; the MCP calls that come meanwhile go to
-/// `on_call`.
+/// Reads the run's lines into events until it ends (or its parser says the
+/// turn is over), makes Rovik's tool calls, is stopped or stalls; the MCP
+/// calls that come meanwhile go to `on_call`.
 pub(super) async fn pump(
     process: &mut Process,
     parser: &mut (impl Lines + ?Sized),
@@ -355,6 +440,9 @@ pub(super) async fn pump(
                     if parser.yielded() && !stopping {
                         return Stop::Yielded;
                     }
+                    if parser.finished() && !stopping {
+                        return Stop::Ended;
+                    }
                 }
                 None => return if stopping { Stop::Stopped } else { Stop::Ended },
             },
@@ -370,7 +458,7 @@ pub(super) async fn pump(
                 process.kill(true);
                 return Stop::Stopped;
             }
-            _ = tokio::time::sleep(timeout), if !stopping && !waiting => {
+            _ = tokio::time::sleep(timeout), if !stopping && !waiting && !parser.waiting() => {
                 process.kill(true);
                 return Stop::Stalled;
             }
@@ -529,6 +617,26 @@ pub(super) fn ended_error(
 mod tests {
     use super::*;
 
+    /// A program not on the PATH is looked for in the user's own `bin`
+    /// first, where the native installers put it, then in the system's.
+    #[test]
+    fn a_program_is_looked_for_in_the_users_bin_before_the_systems() {
+        let places = unix_places("codex");
+        let system = [
+            "/usr/local/bin/codex",
+            "/usr/bin/codex",
+            "/opt/rovik/bin/codex",
+            "/opt/homebrew/bin/codex",
+        ];
+        assert_eq!(
+            places[places.len() - system.len()..],
+            system.map(PathBuf::from)
+        );
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(places[0], PathBuf::from(home).join(".local/bin/codex"));
+        }
+    }
+
     /// On a team server a connector's program runs in the user's private
     /// network, with its browser for the chat.
     #[cfg(target_os = "linux")]
@@ -563,6 +671,113 @@ mod tests {
             assert_eq!(lines[2], "open http://localhost:9/");
             let (code, _) = process.finish().await;
             assert_eq!(code, Some(0));
+        });
+    }
+
+    /// A run that speaks a protocol: what it's sent reaches it as it runs,
+    /// and its input closes when the run finishes, which ends it.
+    #[test]
+    fn a_programs_input_stays_open_for_a_conversation_and_closes_with_the_run() {
+        crate::rt::block_on(async {
+            let script = "while read line; do echo \"got $line\"; done; echo bye";
+            let args = ["-c".to_string(), script.to_string()];
+            let mut process = Process::spawn_with_input(
+                "sh",
+                &args,
+                &[],
+                None,
+                None,
+                Duration::from_secs(30),
+                Vec::new(),
+            )
+            .unwrap();
+            let input = process.input().unwrap();
+            input.send("one\n".into()).unwrap();
+            assert_eq!(process.next_line().await.as_deref(), Some("got one"));
+            input.send("two\n".into()).unwrap();
+            assert_eq!(process.next_line().await.as_deref(), Some("got two"));
+            drop(input);
+            // The run's own sender goes as it finishes: the program reads
+            // the end of its input and ends.
+            let (code, _) = process.finish().await;
+            assert_eq!(code, Some(0));
+            assert_eq!(process.next_line().await.as_deref(), Some("bye"));
+            assert_eq!(process.next_line().await, None);
+        });
+    }
+
+    /// A parser that ends its turn on a line `end`, and is waiting on Rovik
+    /// all along when told to.
+    struct Ends {
+        waits: bool,
+        finished: bool,
+    }
+
+    impl Lines for Ends {
+        fn on_line(&mut self, line: &str, _emit: &mut dyn FnMut(ChatStreamEvent)) {
+            self.finished |= line == "end";
+        }
+
+        fn finished(&self) -> bool {
+            self.finished
+        }
+
+        fn waiting(&self) -> bool {
+            self.waits
+        }
+    }
+
+    /// Pumps `script`'s run with `parser`, its first line due in 300 ms.
+    async fn pump_script(script: &str, parser: &mut Ends) -> Stop {
+        let args = ["-c".to_string(), script.to_string()];
+        let mut process = Process::spawn_with_input(
+            "sh",
+            &args,
+            &[],
+            None,
+            None,
+            Duration::from_millis(300),
+            Vec::new(),
+        )
+        .unwrap();
+        let (_stop, mut cancel) = watch::channel(false);
+        pump(
+            &mut process,
+            parser,
+            None,
+            &mut |_| {},
+            &mut cancel,
+            &mut |_| {},
+        )
+        .await
+    }
+
+    /// A program that serves a protocol stays up after its turn: the turn
+    /// ends when its parser says so. One waiting on Rovik is silent, not
+    /// stalled; one that isn't, is.
+    #[test]
+    fn a_turn_ends_when_its_parser_says_and_waiting_on_rovik_is_not_stalling() {
+        crate::rt::block_on(async {
+            let started = std::time::Instant::now();
+            let mut parser = Ends {
+                waits: false,
+                finished: false,
+            };
+            let stop = pump_script("echo end; sleep 30", &mut parser).await;
+            assert_eq!(stop, Stop::Ended);
+            assert!(started.elapsed() < Duration::from_secs(10));
+
+            let late = "sleep 1; echo end; sleep 30";
+            let mut waiting = Ends {
+                waits: true,
+                finished: false,
+            };
+            assert_eq!(pump_script(late, &mut waiting).await, Stop::Ended);
+            let mut silent = Ends {
+                waits: false,
+                finished: false,
+            };
+            assert_eq!(pump_script(late, &mut silent).await, Stop::Stalled);
         });
     }
 

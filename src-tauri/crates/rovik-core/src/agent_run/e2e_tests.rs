@@ -37,6 +37,10 @@ mod steer_tests;
 mod connector_tests;
 
 #[cfg(test)]
+#[path = "codex_e2e_tests.rs"]
+mod codex_tests;
+
+#[cfg(test)]
 #[path = "restricted_e2e_tests.rs"]
 mod restricted_tests;
 

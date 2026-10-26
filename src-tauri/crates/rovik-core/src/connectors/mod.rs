@@ -1,8 +1,8 @@
 //! Connectors: coding harnesses a chat uses in place of a model provider
-//! (rovik_protocol::connectors). A harness such as Claude Code brings its
-//! own model loop and tools: the IDE hands it the system prompt, the model,
-//! the message and the project folder, follows what it does, and shows its
-//! steps, its tokens and its cost with the reply.
+//! (rovik_protocol::connectors). A harness such as Claude Code or Codex
+//! brings its own model loop and tools: the IDE hands it the system prompt,
+//! the model, the message and the project folder, follows what it does, and
+//! shows its steps, its tokens and its cost with the reply.
 //!
 //! The chat request path is the same as a provider's: `agent::run_chat`
 //! sees a connector's base URL (`connector://claude-code`) and hands the
@@ -21,16 +21,19 @@
 //! models", its sign-in check, whether its program is installed, a turn,
 //! and, where it has them, what its "Set up" steps run (setup.rs runs
 //! them, the same for every connector), its commands, its newest version
-//! and its plan mode. A new harness (Codex, say) is one more module here
-//! implementing it, one more `ConnectorKind`, and its line in
+//! and its plan mode. A new harness is one more module here implementing
+//! it (claude_code.rs, codex/), one more `ConnectorKind`, and its line in
 //! [`connector`]; nothing else here or in the run changes. The app's side
 //! is its `ConnectorSpec` and its `ConnectorFields` (src/lib/connectors.ts).
 
 mod claude_code;
+mod codex;
 mod harness;
+mod live;
 pub mod mcp;
 pub mod sessions;
 mod setup;
+mod steps;
 
 use crate::agent::{ChatParams, ChatStreamEvent, ReasoningEffort};
 use crate::chat_db::store::MessageRow;
@@ -218,6 +221,29 @@ pub enum CommandAnswer {
 /// Where a harness's `CommandCheck`s go.
 pub type CommandChecks = mpsc::UnboundedSender<CommandCheck>;
 
+/// Why a call before which Rovik couldn't be asked doesn't run.
+pub(crate) const UNCHECKED: &str = "Error: Rovik IDE couldn't check this call against the project's restricted files, so it didn't run. Try it again.";
+
+/// The run's answer to a check as a harness's hook gives it back for its
+/// event (`PreToolUse`…), in the hook output Claude Code and Codex both
+/// read: a refusal, whose reason the model reads; what the model should be
+/// told beside the call's result; or nothing to say.
+pub(crate) fn hook_answer(event: &str, said: CommandAnswer) -> Value {
+    match said {
+        CommandAnswer::Deny(reason) => json!({
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            },
+        }),
+        CommandAnswer::Note(Some(text)) => json!({
+            "hookSpecificOutput": { "hookEventName": event, "additionalContext": text },
+        }),
+        CommandAnswer::Note(None) => json!({}),
+    }
+}
+
 /// The tool calls of the chat's last reply, as Rovik ran them: what a
 /// harness that made them (Rovik's tools mode) is answered with.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -336,6 +362,7 @@ pub trait Connector: Send + Sync {
 pub fn connector(kind: ConnectorKind) -> &'static dyn Connector {
     match kind {
         ConnectorKind::ClaudeCode => &claude_code::ClaudeCode,
+        ConnectorKind::Codex => &codex::Codex,
     }
 }
 
@@ -949,6 +976,28 @@ out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Got: 
 "#;
     let path = dir.join("claude");
     std::fs::write(&path, script.replace("READ_PATH", read_path)).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// A stand-in for `codex` (tests): codex/fake_codex.py, an app server that
+/// plays `scenario`'s turn as Codex's would, calling Rovik's hooks and
+/// tools as Codex does, and keeps what happened in `codex.json` beside it.
+/// None without a python3 that reads TOML (3.11 and later).
+#[cfg(all(test, unix))]
+pub(crate) fn fake_codex(dir: &std::path::Path, scenario: &Value) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let reads_toml = crate::process::on_path("python3")
+        && std::process::Command::new("python3")
+            .args(["-c", "import tomllib"])
+            .status()
+            .is_ok_and(|s| s.success());
+    if !reads_toml {
+        return None;
+    }
+    let script = include_str!("codex/fake_codex.py");
+    let path = dir.join("codex");
+    std::fs::write(&path, script.replace("__SCENARIO__", &scenario.to_string())).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     Some(path.to_string_lossy().into_owned())
 }
