@@ -1116,6 +1116,105 @@ mod branch_tests {
         (dir, repo, remote)
     }
 
+    fn head_of(dir: &Path) -> GitHead {
+        git_head_blocking(p(dir)).unwrap()
+    }
+
+    fn on(branch: &str, main_branch: Option<&str>) -> GitHead {
+        GitHead {
+            branch: Some(branch.into()),
+            main_branch: main_branch.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn the_main_branch_is_the_one_origin_head_names() {
+        let (dir, repo, _remote) = repo_with_origin("head-origin");
+        // What a clone records of the remote's default branch.
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+            true,
+            "clone",
+        )
+        .unwrap();
+        assert_eq!(head_of(&dir), on("main", Some("main")));
+
+        // A remote whose default is another branch: main is just a branch.
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/feature",
+            true,
+            "set-head",
+        )
+        .unwrap();
+        assert_eq!(head_of(&dir), on("main", Some("feature")));
+    }
+
+    #[test]
+    fn without_origin_head_the_main_branch_is_where_git_init_starts_then_main_then_master() {
+        let (dir, repo) = repo_on_main("head-local");
+        // The repository's own setting, so this machine's doesn't count.
+        repo.config()
+            .unwrap()
+            .set_str("init.defaultBranch", "trunk")
+            .unwrap();
+        let start = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("master", &start, true).unwrap();
+        assert_eq!(
+            head_of(&dir),
+            on("main", Some("main")),
+            "main before master"
+        );
+
+        repo.branch("trunk", &start, false).unwrap();
+        assert_eq!(head_of(&dir), on("main", Some("trunk")));
+
+        git_checkout_blocking(p(&dir), "master".into()).unwrap();
+        git_delete_branch_blocking(p(&dir), "trunk".into()).unwrap();
+        git_delete_branch_blocking(p(&dir), "main".into()).unwrap();
+        assert_eq!(head_of(&dir), on("master", Some("master")));
+
+        git_create_branch_blocking(p(&dir), "work".into(), true, None).unwrap();
+        git_delete_branch_blocking(p(&dir), "master".into()).unwrap();
+        assert_eq!(
+            head_of(&dir),
+            on("work", None),
+            "none of them: no main branch"
+        );
+    }
+
+    #[test]
+    fn head_is_on_no_branch_when_detached_or_before_the_first_commit() {
+        let (dir, repo) = repo_on_main("head-detached");
+        let start = tip(&repo, "refs/heads/main");
+        repo.set_head_detached(start).unwrap();
+        assert_eq!(
+            head_of(&dir),
+            GitHead {
+                branch: None,
+                main_branch: Some("main".into())
+            }
+        );
+
+        let empty = temp_dir("head-unborn");
+        Repository::init(&empty).unwrap();
+        assert_eq!(
+            head_of(&empty),
+            GitHead {
+                branch: None,
+                main_branch: None
+            }
+        );
+    }
+
+    #[test]
+    fn head_outside_a_repository_says_so() {
+        let err = git_head_blocking(p(&temp_dir("head-no-repo"))).unwrap_err();
+        // The chat panel tells this apart from a repository it can't read.
+        assert!(err.starts_with("Not a git repository"), "{err}");
+    }
+
     #[test]
     fn branch_names_follow_gits_rules() {
         for ok in ["feature", "feature/x", "v1.2", "a-b_c", "ünïcode"] {

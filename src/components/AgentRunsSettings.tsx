@@ -1,13 +1,15 @@
 // AgentRunsSettings.tsx
 //
-// Settings → Agent runs: what happens while the agent works on a request
-// (a run) and when it finishes, in every chat on this computer. The
-// settings are the permissions' (lib/permissions.ts; the backend enforces
-// them with the rest, src-tauri/crates/rovik-core/src/agent_run), except
-// the editor's opening of the files the agent edits, which is the editor's
-// (lib/editorSettings.ts). Each says what it affects, and when it has no
-// effect: the conflicts rule needs isolated chats, so virtual files; the
-// checks need a project with checks set up (Project checks).
+// Settings → Agent runs: what happens as a chat starts, while the agent
+// works on a request (a run) and when it finishes, in every chat on this
+// computer. The settings are the permissions' (lib/permissions.ts; the
+// backend enforces them with the rest,
+// src-tauri/crates/rovik-core/src/agent_run), except the offer of a branch
+// to a new chat (lib/chatBranch.ts) and the editor's opening of the files
+// the agent edits, which is the editor's (lib/editorSettings.ts). Each
+// says what it affects, and when it has no effect: the conflicts rule
+// needs isolated chats, so virtual files; the checks need a project with
+// checks set up (Project checks).
 import { createResource, For, Show } from 'solid-js';
 import type { SettingsPage } from '../lib/appSettings';
 import {
@@ -16,6 +18,7 @@ import {
   type ChecklistMode,
 } from '../lib/permissions';
 import { editorSettings, updateEditorSettings } from '../lib/editorSettings';
+import { offersChatBranch, setOffersChatBranch } from '../lib/chatBranch';
 import { vfsStatus } from '../lib/virtualFiles';
 import { countChecksThatRun } from '../lib/projectProfile';
 import { plural } from '../lib/textUtils';
@@ -58,13 +61,33 @@ export default function AgentRunsSettings(props: AgentRunsSettingsProps) {
   return (
     <div class="permissions-settings agent-runs-settings">
       <p class="settings-hint">
-        What happens while the agent works on a request and when it finishes, in every chat on this
-        computer, in Agent and Plan mode. Autopilot’s tasks follow their own rules (
+        What happens as a chat starts, while the agent works on a request and when it finishes, in
+        every chat on this computer. While it works and when it finishes, Autopilot’s tasks follow
+        their own rules (
         <button class="link-button" onClick={() => props.onOpenPage('autopilot')}>
           Autopilot
         </button>
         ): they never pause on count, always check their changes, and keep a checklist when needed.
       </p>
+
+      <section class="settings-section">
+        <div class="settings-section-title">When a chat starts</div>
+        <label class="setting-checkbox">
+          <input
+            type="checkbox"
+            checked={offersChatBranch()}
+            onChange={(e) => setOffersChatBranch(e.currentTarget.checked)}
+          />
+          <span>
+            Offer a new chat a branch of its own
+            <span class="setting-checkbox-sub">
+              When a new chat’s first message is sent while the project is on its main branch, the
+              agent waits while you’re asked whether to create a branch for the chat’s work and
+              switch to it, under a name made up for it. “Don’t ask again” there turns this off.
+            </span>
+          </span>
+        </label>
+      </section>
 
       <section class="settings-section">
         <div class="settings-section-title">While it works</div>

@@ -144,7 +144,7 @@ export default function SettingsMenu(props: SettingsMenuProps) {
         <Item
           page="agent"
           label="Agent runs"
-          about="While the agent works and when it finishes: pauses, its checklist, the checks on its changes, conflicts between chats, the files it edits."
+          about="As a chat starts, while the agent works and when it finishes: a branch for a new chat, pauses, its checklist, the checks on its changes, conflicts between chats, the files it edits."
           state={ai(() => agentRunsSummary(aiPermissions()))}
         />
         <Item

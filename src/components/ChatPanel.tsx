@@ -156,6 +156,8 @@ import { onWindows } from '../lib/wsl';
 import { chatsAtWorkElsewhere } from '../lib/instances';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
+import { askForChatBranch } from './NewBranchDialog';
+import { offerChatBranch } from '../lib/chatBranch';
 import ChatList, { type ChatListRow } from './ChatList';
 import MessageList, { type MessageListController } from './MessageList';
 import {
@@ -3105,7 +3107,12 @@ export default function ChatPanel(props: ChatProps) {
     message: { id: string; content: string; meta: ChatMessage['meta']; attachments?: string[] },
     wireContent: string | undefined
   ): Promise<boolean> {
+    // A new chat's first message, on this computer: before its run starts,
+    // a project on its main branch offers the chat a branch of its own.
+    const root =
+      isEmptyChat(dialogId) && !store.summaryOf(dialogId)?.place ? props.rootPath() : null;
     store.addLocal(dialogId, { ...message, role: 'user', finalized: true });
+    if (root) await offerChatBranch(root, askForChatBranch);
     const started = await beginRun(dialogId, { kind: 'send', message }, wireContent);
     // Never stored: shown as failed.
     if (!started) store.applyPatch(dialogId, message.id, { failed: true });

@@ -563,6 +563,23 @@ export type GitStatus = {
   push_remote?: string | null;
 };
 
+/** A branch the Git panel lists (src-tauri/src/git/branches.rs, `git_branches`). */
+export interface GitBranch {
+  /** `main`, or `origin/main` for a remote-tracking branch. */
+  name: string;
+  is_remote: boolean;
+}
+
+/** Where HEAD is (src-tauri/src/git/branches.rs, `git_head`). */
+export interface GitHead {
+  /** The branch HEAD is on; none when it's detached, or before the first commit. */
+  branch: string | null;
+  /** The repository's main branch: the one `origin/HEAD` names, else the
+   *  first of `init.defaultBranch`, `main` and `master` that's a branch;
+   *  none without any of them. */
+  main_branch: string | null;
+}
+
 /** A merge / rebase / … in progress (src-tauri/src/git_sync.rs). */
 export interface GitOperation {
   kind: 'merge' | 'rebase' | 'cherry-pick' | 'revert' | 'bisect';

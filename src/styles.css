@@ -8284,7 +8284,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   line-height: 1.45;
 }
 
-/* New project dialog (components/NewProjectDialog.tsx) */
+/* New project dialog (components/NewProjectDialog.tsx); its labels, inputs
+   and notes are the new-branch dialog's too (components/NewBranchDialog.tsx) */
 
 .modal.confirm-dialog.new-project-dialog {
   width: 460px;
@@ -8567,6 +8568,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 11px;
 }
 
+/* Also the new-branch dialog's "Don't ask again" */
 .pull-strategy-remember {
   display: flex;
   align-items: center;
