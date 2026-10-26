@@ -1827,6 +1827,11 @@ async fn a_resume_while_a_stage_waits_out_a_rate_limit_starts_nothing() {
         records.first().is_some_and(|r| r.waits_until().is_some())
     })
     .await;
+    // The driver records the wait, arms its timer, then ends its turn. A
+    // resume during that turn finds it taken and arms nothing, so a
+    // restart's resume there left the wait unarmed on a slow machine.
+    // What's tested is a resume after the turn, as a restart's always is.
+    quiet(&h).await;
     let until = waiting[0].waits_until().unwrap();
     assert!(
         h.start(resume_request(&h, &url)).await.is_none(),
