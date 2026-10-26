@@ -1209,15 +1209,17 @@ async fn a_running_chat_resolves_its_own_conflict() {
     );
     request.isolate = Some(true);
     h.start(request).await;
-    for _ in 0..200 {
-        if crate::overlay::chats::changes(&h.dialog_id)
-            .iter()
-            .any(|c| c.path() == "a.txt")
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    // The user's edit, once the write's result is stored: the conflict is
+    // found while `sleep` runs, and told with its result. The chat's change
+    // shows earlier, while the write finishes, and a conflict found then
+    // goes with the write's own result.
+    h.wait_for("w1's result", |e| {
+        e["type"] == "messagesAdded"
+            && e["messages"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|m| m["toolCallId"] == "w1"))
+    })
+    .await;
     std::fs::write(h.project.join("a.txt"), "user\n").unwrap();
     // What the project's watcher does when the file changes.
     crate::overlay::chats::project_changed(&h.project, &[h.project.join("a.txt")], false);
