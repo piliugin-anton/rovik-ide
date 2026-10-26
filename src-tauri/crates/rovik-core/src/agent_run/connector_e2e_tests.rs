@@ -217,7 +217,13 @@ async fn claude_code_asks_rovik_before_its_own_tools() {
 /// so. Needs npm.
 #[cfg(unix)]
 #[tokio::test]
+// Its install runs for real: the lock keeps out other tests' cloud hosts,
+// whose Node would come first on its commands' PATH, from a folder that
+// goes when their test ends (`toolchains::env_for`). This test's one
+// thread holds it across its awaits.
+#[allow(clippy::await_holding_lock)]
 async fn claude_codes_own_commands_have_what_they_need_made_ready() {
+    let _no_host = crate::toolchains::test_lock();
     if !has_npm() {
         eprintln!("npm isn't installed: skipped");
         return;

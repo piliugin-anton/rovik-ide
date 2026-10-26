@@ -4781,7 +4781,13 @@ async fn project_without_its_dependencies() -> Harness {
 /// the command, a lone program call, runs again by itself. The model sees
 /// the second run, and why there was one. Needs npm.
 #[tokio::test]
+// Its install runs for real: the lock keeps out other tests' cloud hosts,
+// whose Node would come first on its commands' PATH, from a folder that
+// goes when their test ends (`toolchains::env_for`). This test's one
+// thread holds it across its awaits.
+#[allow(clippy::await_holding_lock)]
 async fn a_command_missing_the_projects_dependencies_runs_again_once_theyre_installed() {
+    let _no_host = crate::toolchains::test_lock();
     if !has_npm() {
         eprintln!("npm isn't installed: skipped");
         return;
@@ -4820,7 +4826,13 @@ async fn a_command_missing_the_projects_dependencies_runs_again_once_theyre_inst
 /// run it again. One the user's permissions would ask about first is the
 /// model's to run. Needs npm.
 #[tokio::test]
+// Its install runs for real: the lock keeps out other tests' cloud hosts,
+// whose Node would come first on its commands' PATH, from a folder that
+// goes when their test ends (`toolchains::env_for`). This test's one
+// thread holds it across its awaits.
+#[allow(clippy::await_holding_lock)]
 async fn a_compound_command_is_left_to_the_model_to_run_again() {
+    let _no_host = crate::toolchains::test_lock();
     if !has_npm() {
         eprintln!("npm isn't installed: skipped");
         return;
