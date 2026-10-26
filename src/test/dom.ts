@@ -17,6 +17,8 @@ const globals = [
   'Text',
   'Comment',
   'DocumentFragment',
+  // The composer walks its text nodes (ChatPanel's findTextOffset).
+  'NodeFilter',
   'Event',
   'MouseEvent',
   'KeyboardEvent',

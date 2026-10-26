@@ -18,6 +18,14 @@ export type SendAction =
   | 'send'
   /** A run that takes messages goes: it reads this one at its next step. */
   | 'steer'
+  /**
+   * A connector's command picked from the `/` menu (`/compact`) while a run
+   * that takes messages goes: the harness runs a command only as a message
+   * of its own, never in the middle of a turn, so it isn't the run's to
+   * read. It waits, queued, and goes as a new message once the run has
+   * ended.
+   */
+  | 'after'
   /** A run that takes none goes (Plan mode, an Autopilot task's, one still starting): the text stays. */
   | 'hold';
 
@@ -28,10 +36,13 @@ export function sendAction(chat: {
   running: boolean;
   /** The run said it takes messages (`runStarted`): an Agent-mode run's. */
   steerable: boolean;
+  /** What's typed is a connector's command picked from the `/` menu. */
+  command: boolean;
 }): SendAction {
   if (chat.questionWaits) return 'answer';
   if (!chat.running) return 'send';
-  return chat.steerable ? 'steer' : 'hold';
+  if (!chat.steerable) return 'hold';
+  return chat.command ? 'after' : 'steer';
 }
 
 /** What the run is busy with, as the chat shows it, for a queued message's label. */

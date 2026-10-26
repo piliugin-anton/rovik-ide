@@ -511,10 +511,13 @@ typed and alone, without the editor's context before it, and its output
 is the reply (`/compact` says how far it shrank the conversation). Only
 a picked command runs as one: a message typed by hand, `/compact` or
 `/etc/passwd has a typo`, goes as a message, so Claude Code reads it as
-text. Codex offers `/compact`, `/review` (the uncommitted changes, or what
-you name) and its skills, from the project, the user's folder and its own;
-a picked skill goes to Codex attached, as `$name` and what you typed after
-it.
+text. A command picked while the agent works isn't sent to the run, which
+Claude Code would read as text in the middle of its turn: it waits at the
+end of the chat and runs once the agent has finished, as Claude Code's own
+terminal runs one typed while it works. Codex offers `/compact`, `/review`
+(the uncommitted changes, or what you name) and its skills, from the
+project, the user's folder and its own; a picked skill goes to Codex
+attached, as `$name` and what you typed after it.
 
 **Context.** The harness keeps the conversation and compacts it itself,
 so a connector's chat has no context mode (Trimming, CLMs) and Rovik
