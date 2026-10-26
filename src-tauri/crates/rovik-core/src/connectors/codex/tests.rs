@@ -279,7 +279,8 @@ fn a_picked_command_is_codex_s_and_a_typed_one_is_text() {
 #[test]
 fn each_request_is_the_app_server_s_method_for_it() {
     let t = turn("go");
-    let (method, params) = request_for(&Ask::Text("Fix it".into()), "t1", &t, Some("gpt-6.1-sol"));
+    let fix = Ask::Text("Fix it".into());
+    let (method, params) = request_for(&fix, "t1", &t, Some("gpt-6.1-sol"), false);
     assert_eq!(method, "turn/start");
     assert_eq!(
         params["input"],
@@ -288,15 +289,15 @@ fn each_request_is_the_app_server_s_method_for_it() {
     assert_eq!(params["effort"], "high");
     assert_eq!(params["summary"], "auto");
     assert!(params.get("collaborationMode").is_none());
-    let (method, params) = request_for(&Ask::Compact, "t1", &t, None);
+    let (method, params) = request_for(&Ask::Compact, "t1", &t, None, false);
     assert_eq!(
         (method, params),
         ("thread/compact/start", json!({ "threadId": "t1" }))
     );
-    let (method, params) = request_for(&Ask::Review(String::new()), "t1", &t, None);
+    let (method, params) = request_for(&Ask::Review(String::new()), "t1", &t, None, false);
     assert_eq!(method, "review/start");
     assert_eq!(params["target"], json!({ "type": "uncommittedChanges" }));
-    let (_, params) = request_for(&Ask::Review("the docs".into()), "t1", &t, None);
+    let (_, params) = request_for(&Ask::Review("the docs".into()), "t1", &t, None, false);
     assert_eq!(
         params["target"],
         json!({ "type": "custom", "instructions": "the docs" })
@@ -306,18 +307,24 @@ fn each_request_is_the_app_server_s_method_for_it() {
         path: "/s/SKILL.md".into(),
         args: "this one".into(),
     };
-    let (_, params) = request_for(&skill, "t1", &t, None);
+    let (_, params) = request_for(&skill, "t1", &t, None, false);
     assert_eq!(
         params["input"][0],
         json!({ "type": "skill", "name": "pdf", "path": "/s/SKILL.md" })
     );
     assert_eq!(params["input"][1]["text"], "$pdf this one");
-    // Plan mode: Codex's own, with the thread's model.
+    // Its own plan mode, with the thread's model.
     let plan = Turn {
         plan_mode: true,
         ..turn("plan")
     };
-    let (_, params) = request_for(&Ask::Text("Plan".into()), "t1", &plan, Some("gpt-6.1-sol"));
+    let (_, params) = request_for(
+        &Ask::Text("Plan".into()),
+        "t1",
+        &plan,
+        Some("gpt-6.1-sol"),
+        true,
+    );
     assert_eq!(params["collaborationMode"]["mode"], "plan");
     assert_eq!(
         params["collaborationMode"]["settings"]["model"],
@@ -329,9 +336,33 @@ fn each_request_is_the_app_server_s_method_for_it() {
         effort: None,
         ..turn("title")
     };
-    let (_, params) = request_for(&Ask::Text("Title".into()), "t1", &one_off, None);
+    let (_, params) = request_for(&Ask::Text("Title".into()), "t1", &one_off, None, false);
     assert_eq!(params["summary"], "none");
     assert!(params.get("effort").is_none());
+}
+
+/// In a chat's Plan mode Codex plans in its own plan mode only with its
+/// own tools: with Rovik's, the plan mode is Rovik's (an Autopilot task's
+/// plan stage too), and a one-off request has none.
+#[test]
+fn codex_plans_on_its_own_only_with_its_own_tools() {
+    let plan = Turn {
+        plan_mode: true,
+        ..turn("plan")
+    };
+    let own = Settings::default();
+    let rovik = Settings {
+        tools: ToolsMode::Rovik,
+        ..Settings::default()
+    };
+    assert!(plans_on_its_own(&own, &plan));
+    assert!(!plans_on_its_own(&rovik, &plan));
+    assert!(!plans_on_its_own(&own, &turn("go")));
+    let one_off = Turn {
+        one_shot: true,
+        ..plan
+    };
+    assert!(!plans_on_its_own(&own, &one_off));
 }
 
 #[test]

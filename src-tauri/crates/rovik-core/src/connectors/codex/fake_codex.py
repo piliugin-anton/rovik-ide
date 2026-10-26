@@ -58,6 +58,8 @@ HOOKS = {key[len('hooks.'):]: value for key, value in CONFIG.items() if key.star
 SNAKE = {'PreToolUse': 'pre_tool_use', 'PermissionRequest': 'permission_request', 'PostToolUse': 'post_tool_use'}
 THREAD = None
 TURN = None
+# Whether the client asked for the experimental API (`initialize`).
+EXPERIMENTAL = [False]
 POLICY = {}
 
 OUT = threading.Lock()
@@ -342,6 +344,7 @@ def main():
         if rid is None:
             continue
         if method == 'initialize':
+            EXPERIMENTAL[0] = bool((params.get('capabilities') or {}).get('experimentalApi'))
             result = {'userAgent': 'rovik/0.164.0', 'codexHome': os.environ.get('CODEX_HOME', '~/.codex'),
                       'platformFamily': 'unix', 'platformOs': 'linux'}
         elif method == 'account/login/start':
@@ -363,6 +366,12 @@ def main():
         elif method == 'model/list':
             result = {'data': SCENARIO.get('models', [])}
         elif method in ('turn/start', 'thread/compact/start', 'review/start'):
+            # As Codex's: an experimental field from a client that didn't
+            # ask for the experimental API is refused.
+            if 'collaborationMode' in params and not EXPERIMENTAL[0]:
+                send({'id': rid, 'error': {'code': -32600, 'message':
+                      'turn/start.collaborationMode requires experimentalApi capability'}})
+                continue
             TURN = 'tu-%d' % len(RECORD['requests'])
             send({'id': rid, 'result': {'turn': {'id': TURN, 'status': 'inProgress', 'items': []}}})
             note('turn/started', {'turn': {'id': TURN, 'status': 'inProgress'}})

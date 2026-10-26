@@ -483,6 +483,9 @@ it** picks how it works:
   can't be turned off, in a read-only sandbox. Each of its calls of
   Rovik's tools is a reply of Rovik's, run under Permissions & approval in
   the chat's copy of the project, its result given to Codex while it waits.
+  Rovik's checks, checklist, Plan mode (Rovik's own, not Codex's),
+  Autopilot and subagents work as with any model, and such a model can be
+  a subagent's too.
 
 Either way, its thinking shows: Rovik asks Claude Code for it
 (`--thinking-display summarized`) and Codex for its reasoning's summary,

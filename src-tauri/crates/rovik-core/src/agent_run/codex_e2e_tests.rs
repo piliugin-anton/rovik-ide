@@ -14,7 +14,7 @@ use super::*;
 /// A send in `mode` on Codex's model, its connector's `settings` with the
 /// stand-in as its program.
 #[cfg(unix)]
-fn codex_send(
+pub(super) fn codex_send(
     h: &Harness,
     program: &str,
     mode: &str,
@@ -462,6 +462,46 @@ async fn codex_with_rovik_tools_runs_its_calls_through_rovik() {
     assert_eq!(record["env"]["ROVIK_MCP_TOKEN"], true);
 }
 
+/// Rovik's agent on Codex in Plan mode (as an Autopilot task's plan stage
+/// runs too): the plan mode is Rovik's, in its prompt, and none of Codex's
+/// own, which Codex refuses from a client without its experimental API.
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_with_rovik_tools_plans_in_rovik_s_plan_mode() {
+    let h = harness(&[("src/alpha.rs", "pub fn alpha() -> u32 {\n    42\n}\n")]).await;
+    let scenario = json!({ "steps": [{ "text": "# Plan\n1. Make alpha return 43." }] });
+    let Some(program) = crate::connectors::fake_codex(&h._dir.0, &scenario) else {
+        eprintln!("no python3 with tomllib: skipped");
+        return;
+    };
+    let settings = json!({ "tools": "rovik" });
+    let request = codex_send(
+        &h,
+        &program,
+        "plan",
+        "Plan a change to alpha",
+        settings,
+        quiet_permissions(),
+    );
+    h.start(request).await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+    let reply = h.messages().await.last().unwrap().content.clone();
+    assert!(reply.contains("Make alpha return 43."), "{reply}");
+    let record = record(&h);
+    assert!(request_of(&record, "turn/start")
+        .get("collaborationMode")
+        .is_none());
+    // Rovik's plan mode is told with the project's part of its prompt.
+    let developer = request_of(&record, "thread/start")["developerInstructions"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        developer.contains("The user chose Plan mode"),
+        "{developer}"
+    );
+}
+
 /// A chat whose Codex thread is gone (another computer, a cleared folder)
 /// goes on in a new one, told what the chat was about.
 #[cfg(unix)]
@@ -626,14 +666,31 @@ async fn on_a_host_codex_s_shell_gets_the_host_s_toolchains() {
 /// last again once they're used up; the requests are kept, in order.
 #[cfg(unix)]
 async fn responses_api(script: Vec<Vec<Value>>) -> (String, Arc<Mutex<Vec<Value>>>) {
+    responses_routed(Vec::new(), script).await
+}
+
+/// `responses_api` with a script for each run of a task: a request takes
+/// the next response of the first route whose marker it holds (`last:`, in
+/// its last input item), else of `default`.
+#[cfg(unix)]
+pub(super) async fn responses_routed(
+    routes: Vec<(&'static str, Vec<Vec<Value>>)>,
+    default: Vec<Vec<Value>>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let kept = seen.clone();
+    let (markers, mut scripts): (Vec<&str>, Vec<Vec<Vec<Value>>>) = routes.into_iter().unzip();
+    scripts.push(default);
+    let scripts = Arc::new(scripts);
+    // How far each script has gone.
+    let taken = Arc::new(Mutex::new(vec![0usize; scripts.len()]));
     tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
-            let (script, kept) = (script.clone(), kept.clone());
+            let (kept, markers) = (kept.clone(), markers.clone());
+            let (scripts, taken) = (scripts.clone(), taken.clone());
             tokio::spawn(async move {
                 let (read, mut write) = stream.into_split();
                 let mut reader = BufReader::new(read);
@@ -657,11 +714,26 @@ async fn responses_api(script: Vec<Vec<Value>>) -> (String, Arc<Mutex<Vec<Value>
                 }
                 let (kind, text) = if head.starts_with("POST") {
                     let request: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                    let text = request.to_string();
+                    let last = request["input"]
+                        .as_array()
+                        .and_then(|input| input.last())
+                        .map(Value::to_string)
+                        .unwrap_or_default();
+                    let route = markers
+                        .iter()
+                        .position(|marker| match marker.strip_prefix("last:") {
+                            Some(marker) => last.contains(marker),
+                            None => text.contains(marker),
+                        })
+                        .unwrap_or(markers.len());
+                    kept.lock().unwrap().push(request);
                     let n = {
-                        let mut kept = kept.lock().unwrap();
-                        kept.push(request);
-                        kept.len() - 1
+                        let mut taken = taken.lock().unwrap();
+                        taken[route] += 1;
+                        taken[route] - 1
                     };
+                    let script = &scripts[route];
                     let events = &script[n.min(script.len() - 1)];
                     let stream: String = events
                         .iter()
@@ -687,7 +759,7 @@ async fn responses_api(script: Vec<Vec<Value>>) -> (String, Arc<Mutex<Vec<Value>
 
 /// One response of the scripted model: `output`, then its usage.
 #[cfg(unix)]
-fn response(id: &str, output: Value) -> Vec<Value> {
+pub(super) fn response(id: &str, output: Value) -> Vec<Value> {
     vec![
         json!({ "type": "response.created", "response": { "id": id } }),
         json!({ "type": "response.output_item.done", "item": output }),
@@ -698,7 +770,7 @@ fn response(id: &str, output: Value) -> Vec<Value> {
 
 /// A reply of the scripted model, in words.
 #[cfg(unix)]
-fn says(id: &str, text: &str) -> Vec<Value> {
+pub(super) fn says(id: &str, text: &str) -> Vec<Value> {
     response(
         id,
         json!({ "type": "message", "role": "assistant", "id": format!("m-{id}"),
@@ -723,7 +795,7 @@ fn runs(id: &str, calls: &[(&str, &str)]) -> Vec<Value> {
 /// The real `codex`'s settings: on the scripted model at `url`, its own
 /// settings folder `home`.
 #[cfg(unix)]
-fn real_codex(url: &str, home: &std::path::Path, mut settings: Value) -> Value {
+pub(super) fn real_codex(url: &str, home: &std::path::Path, mut settings: Value) -> Value {
     let provider = format!(
         r#"model_providers.mock={{name="mock",base_url="{url}",wire_api="responses",env_key="HOME"}}"#
     );
@@ -848,6 +920,41 @@ async fn real_codex_runs_rovik_tools() {
     assert!(
         sent(&seen).contains("pub fn alpha()"),
         "Codex got Rovik's result"
+    );
+}
+
+/// The real `codex` as the model behind Rovik's agent, in Plan mode (as
+/// an Autopilot task's plan stage runs too): the plan mode is Rovik's, its
+/// prompt and its tools, not Codex's own, and the plan is the reply.
+///   ROVIK_REAL_CODEX=1 cargo test -p rovik-core real_codex -- --ignored
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "runs the real codex: set ROVIK_REAL_CODEX=1 and pass --ignored"]
+async fn real_codex_with_rovik_tools_plans_in_rovik_s_plan_mode() {
+    if std::env::var("ROVIK_REAL_CODEX").is_err() {
+        return;
+    }
+    let h = harness(&[("src/alpha.rs", "pub fn alpha() -> u32 {\n    42\n}\n")]).await;
+    let (url, seen) = responses_api(vec![says("r1", "# Plan\n1. Make alpha return 43.")]).await;
+    let home = crate::testing::temp_dir();
+    let settings = real_codex(&url, &home.0, json!({ "tools": "rovik" }));
+    let mut request = codex_send(
+        &h,
+        "codex",
+        "plan",
+        "Plan a change to alpha",
+        settings,
+        quiet_permissions(),
+    );
+    request.profile.connector.as_mut().unwrap()["program"] = json!("");
+    h.start(request).await.unwrap();
+    assert_eq!(h.run_end_within(Duration::from_secs(120)).await, "done");
+    let reply = h.messages().await.last().unwrap().content.clone();
+    assert!(reply.contains("Make alpha return 43."), "{reply}");
+    let first = seen.lock().unwrap()[0].to_string();
+    assert!(
+        first.contains("The user chose Plan mode"),
+        "Rovik's plan mode: {first}"
     );
 }
 

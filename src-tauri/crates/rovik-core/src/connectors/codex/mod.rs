@@ -213,6 +213,13 @@ fn follows_rovik(settings: &Settings) -> bool {
     settings.tools == ToolsMode::Own && settings.permission_mode == PermissionMode::Rovik
 }
 
+/// Whether Codex plans in its own plan mode: with its own tools, in a
+/// chat's Plan mode. With Rovik's tools the plan mode is Rovik's (its
+/// prompt and its tools), as with any model, Autopilot's plan stage too.
+fn plans_on_its_own(settings: &Settings, turn: &Turn) -> bool {
+    turn.plan_mode && !turn.one_shot && settings.tools == ToolsMode::Own
+}
+
 /// The effort as Codex takes it: the levels every model it lists has.
 fn effort_arg(effort: ReasoningEffort) -> &'static str {
     match effort {
@@ -686,8 +693,15 @@ fn commands_from(listed: &Value) -> Vec<ConnectorCommand> {
     commands
 }
 
-/// The request that runs `ask` in `thread`, its method and parameters.
-fn request_for(ask: &Ask, thread: &str, turn: &Turn, model: Option<&str>) -> (&'static str, Value) {
+/// The request that runs `ask` in `thread`, its method and parameters: in
+/// Codex's own plan mode when `plan` ([`plans_on_its_own`]).
+fn request_for(
+    ask: &Ask,
+    thread: &str,
+    turn: &Turn,
+    model: Option<&str>,
+    plan: bool,
+) -> (&'static str, Value) {
     let text = |text: &str| json!({ "type": "text", "text": text, "text_elements": [] });
     let input = match ask {
         Ask::Compact => return ("thread/compact/start", json!({ "threadId": thread })),
@@ -724,7 +738,7 @@ fn request_for(ask: &Ask, thread: &str, turn: &Turn, model: Option<&str>) -> (&'
     if let Some(effort) = effort {
         params["effort"] = json!(effort);
     }
-    if turn.plan_mode && !turn.one_shot {
+    if plan {
         params["collaborationMode"] = json!({
             "mode": "plan",
             "settings": { "model": model.unwrap_or_default(), "reasoning_effort": effort, "developer_instructions": null },
@@ -816,7 +830,7 @@ async fn run_turn(
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
         env_file.into_iter().collect(),
     )?;
-    let plan = turn.plan_mode && !turn.one_shot;
+    let plan = plans_on_its_own(settings, turn);
     let opening = Opening {
         policy: policy(settings, turn),
         resume: thread,
@@ -891,7 +905,7 @@ async fn run_turn(
         true => Ask::Text(prompt.to_string()),
         false => ask_of(prompt, &skills),
     };
-    let (method, params) = request_for(&ask, &id, turn, model.as_deref());
+    let (method, params) = request_for(&ask, &id, turn, model.as_deref(), plan);
     parser.begin(rpc.request(method, params));
     let rovik_decides = (follows_rovik(settings) || plan) && !turn.one_shot;
     let hooks = Arc::new(Hooks {

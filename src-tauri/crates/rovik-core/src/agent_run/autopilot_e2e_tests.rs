@@ -7613,3 +7613,88 @@ async fn a_message_that_never_started_doesnt_end_the_current_task() {
         "a message that started takes over"
     );
 }
+
+/// An Autopilot task on the real `codex`, the model behind Rovik's agent:
+/// it plans in Rovik's plan mode and submits its plan with Rovik's
+/// `submit_plan`; the plan's reviewer and the task's other helpers run on
+/// it too; it carries the plan out with Rovik's tools, the project's checks
+/// pass, and the task is delivered with its report.
+///   ROVIK_REAL_CODEX=1 cargo test -p rovik-core real_codex -- --ignored
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "runs the real codex: set ROVIK_REAL_CODEX=1 and pass --ignored"]
+async fn real_codex_runs_an_autopilot_task_from_its_plan_to_its_delivery() {
+    if std::env::var("ROVIK_REAL_CODEX").is_err() {
+        return;
+    }
+    use super::codex_tests::{codex_send, real_codex, response, responses_routed, says};
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // A call of one of Rovik's tools, as Codex's model makes it.
+    let rovik = |id: &str, name: &str, args: Value| {
+        let call = json!({ "type": "function_call", "namespace": "mcp__rovik", "name": name,
+                           "arguments": args.to_string(), "call_id": format!("call_{id}") });
+        response(id, call)
+    };
+    let checklist = |first: &str, second: &str| {
+        json!({ "items": [
+            { "title": "Write ok", "status": first },
+            { "title": "Check", "status": second },
+        ] })
+    };
+    let implement = vec![
+        rovik("t1", "todo", checklist("in_progress", "pending")),
+        rovik("w1", "write", json!({ "path": "ok.txt", "content": "ok" })),
+        rovik("t2", "todo", checklist("done", "done")),
+        says("done", "Done: ok.txt says ok."),
+    ];
+    let routes = vec![
+        (REPORT, vec![says("report", A_REPORT)]),
+        (PLAN_REVIEW, vec![says("review", "## Findings\n\nNone.")]),
+        (TESTS_FIRST, vec![says("tests", NO_TESTS)]),
+        (TESTS_AFTER, vec![says("tests-after", NO_TESTS)]),
+        (ACCEPTANCE, vec![says("acceptance", NO_VERDICTS)]),
+        ("Implement this plan", implement),
+    ];
+    let plan = vec![
+        rovik("p1", "submit_plan", json!({ "plan": TASK_PLAN })),
+        says("saved", "Saved the plan."),
+    ];
+    let (url, _) = responses_routed(routes, plan).await;
+    let home = crate::testing::temp_dir();
+    let settings = real_codex(&url, &home.0, json!({ "tools": "rovik" }));
+    let mut request = codex_send(
+        &h,
+        "",
+        "autopilot",
+        "Make the test pass",
+        settings,
+        Permissions::default(),
+    );
+    request.mode = Some("autopilot".into());
+    request.config.as_mut().unwrap().subagents = serde_json::from_value(
+        json!({ "enabled": true, "kinds": { "planReviewer": { "enabled": true } } }),
+    )
+    .unwrap();
+    h.start(request).await;
+    // Each of its runs starts Codex: longer than a scripted provider's.
+    let waited = tokio::time::timeout(Duration::from_secs(300), async {
+        loop {
+            let records = stages(&h).await;
+            if delivered(&records) {
+                quiet(&h).await;
+                return records;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    let Ok(records) = waited else {
+        panic!("no delivery: {:#?}", stages(&h).await);
+    };
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}
