@@ -157,7 +157,7 @@ pub fn own_group(cmd: &mut Command) -> &mut Command {
 
 /// Ends a process started with [`own_group`] and everything it started:
 /// SIGTERM to its group, or SIGKILL when `force`. Off Unix, the process
-/// alone is killed.
+/// alone is killed outright, whatever `force`.
 pub fn kill_group(pid: Option<u32>, child: &mut tokio::process::Child, force: bool) {
     #[cfg(unix)]
     if let Some(pid) = pid.and_then(|id| libc::pid_t::try_from(id).ok()) {
@@ -169,7 +169,7 @@ pub fn kill_group(pid: Option<u32>, child: &mut tokio::process::Child, force: bo
         }
     }
     #[cfg(not(unix))]
-    let _ = pid;
+    let _ = (pid, force);
     let _ = child.start_kill();
 }
 
