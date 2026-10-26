@@ -1,8 +1,10 @@
 // CommandSuggestions.tsx
 //
 // The composer's `/` picker for a connector's commands
-// (lib/connectorCommands.ts): each command's name, what it takes and what
-// it does, in the list the `@` file picker uses. The composer keeps focus
+// (lib/connectorCommands.ts): each command's name, its aliases, what it
+// takes and what it does, in the list the `@` file picker uses. The name
+// is what the user picks, so it stays whole: the hint after it is cut
+// short first, then the aliases (styles.css). The composer keeps focus
 // and handles the keys; a click picks a row.
 import { Index, Show } from 'solid-js';
 import type { ConnectorCommand } from '../lib/connectorCommands';
@@ -40,13 +42,15 @@ export default function CommandSuggestions(props: CommandSuggestionsProps) {
           >
             <span class="file-suggestion-head">
               <span class="file-suggestion-name">/{command().name}</span>
-              <Show when={command().argumentHint}>
-                <span class="command-suggestion-hint">{command().argumentHint}</span>
-              </Show>
+              {/* The aliases before the hint: the hint takes only the room
+                  left, so a long one can't push them out. */}
               <Show when={(command().aliases ?? []).length > 0}>
                 <span class="file-suggestion-tag">
                   {(command().aliases ?? []).map((a) => `/${a}`).join(' ')}
                 </span>
+              </Show>
+              <Show when={command().argumentHint}>
+                <span class="command-suggestion-hint">{command().argumentHint}</span>
               </Show>
             </span>
             <Show when={command().description}>

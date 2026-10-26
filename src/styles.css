@@ -3256,9 +3256,31 @@ body.tree-dragging {
   color: var(--fg);
 }
 
-/* The `/` picker of a connector's commands: the file picker's list. */
+/* The `/` picker of a connector's commands: the file picker's list. The
+   name is what the user picks, so it never shrinks: the hint (what the
+   command takes) only fills the room the name and its aliases leave, and
+   the aliases are cut short when the name leaves too little for them. A
+   name wider than the whole row is cut, and nothing spills out sideways
+   (the list would scroll). */
+.command-suggestions .file-suggestion-head {
+  overflow: hidden;
+}
+
+.command-suggestions .file-suggestion-head .file-suggestion-name {
+  flex-shrink: 0;
+  max-width: 100%;
+}
+
+.command-suggestions .file-suggestion-tag {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .command-suggestion-hint {
-  flex: 0 1 auto;
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

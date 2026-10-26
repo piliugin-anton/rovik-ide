@@ -37,6 +37,39 @@ test('each command shows its name, what it takes, its aliases and what it does',
   dispose();
 });
 
+test('a command’s aliases come right after its name, before what it takes', () => {
+  // What it takes only fills the room the name and aliases leave
+  // (styles.css), so a long hint is cut short before the aliases are.
+  const root = container();
+  const dispose = render(
+    () => (
+      <CommandSuggestions
+        commands={[
+          {
+            name: 'code-review',
+            description: 'Review the current diff',
+            argumentHint: '[low|medium|high] [--fix]',
+            aliases: ['review'],
+          },
+        ]}
+        selected={0}
+        onPick={() => {}}
+      />
+    ),
+    root
+  );
+  const head = root.querySelector('.file-suggestion-head');
+  assert.deepEqual(
+    [...(head?.children ?? [])].map((c) => [c.className, c.textContent]),
+    [
+      ['file-suggestion-name', '/code-review'],
+      ['file-suggestion-tag', '/review'],
+      ['command-suggestion-hint', '[low|medium|high] [--fix]'],
+    ]
+  );
+  dispose();
+});
+
 test('a line says the commands are being listed, or why they couldn’t be', () => {
   const root = container();
   const dispose = render(
