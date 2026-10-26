@@ -512,13 +512,13 @@ starts the services it names instead and says so, from the compose file it
 names (`-f docker-compose.yml`) or the one where it runs; a service built
 from the project's code is the agent's to run with its own commands. Any
 other command of theirs that reaches for an engine and fails (`docker ps`,
-`podman run`, a look for `docker` or its socket, a script that runs
-`docker`) is told that they need none, which services the project declares
-and where its code reaches them, or why the server can't run them. Claude
-Code's commands get the same through Rovik's hooks. The agent's prompt
-names the project's services, and that they start this way. Plan mode
-starts nothing, and a start that failed isn't tried again for that chat
-for ten minutes.
+`podman run`, a look for `docker` or its socket such as `which docker`, a
+script that runs `docker`) is told that they need none, which services the
+project declares and where its code reaches them, or why the server can't
+run them. Claude Code's commands get the same through Rovik's hooks. The
+agent's prompt names the project's services, and that they start this way.
+Plan mode starts nothing, and a start that failed isn't tried again for that
+chat for ten minutes.
 
 - **Its ports are the user's own.** Nothing is published on the server.
   Each port a service publishes listens in the user's private network
