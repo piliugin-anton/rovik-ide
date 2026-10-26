@@ -1187,6 +1187,13 @@ mod branch_tests {
     #[test]
     fn head_is_on_no_branch_when_detached_or_before_the_first_commit() {
         let (dir, repo) = repo_on_main("head-detached");
+        // The repository's own setting, so this machine's doesn't count: with
+        // master there (CI's Windows runner), the master `repo_on_main` leaves
+        // beside main would be the main branch.
+        repo.config()
+            .unwrap()
+            .set_str("init.defaultBranch", "main")
+            .unwrap();
         let start = tip(&repo, "refs/heads/main");
         repo.set_head_detached(start).unwrap();
         assert_eq!(
