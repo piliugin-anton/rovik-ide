@@ -4,13 +4,22 @@
 // no console window popping up on Windows, on macOS/Linux the PATH the
 // user's shell would have, not the bare one a desktop launcher hands a GUI
 // app, and run from an AppImage, the user's environment rather than the
-// AppImage's (process/appimage.rs).
+// AppImage's (process/appimage.rs). And the end, with it, of what a program
+// started: a Windows job holds it all (process/job_object.rs), and a
+// terminal's tree is its session (process/session_tree.rs).
 
 use std::ffi::{OsStr, OsString};
 use std::process::Command;
 
 #[cfg(target_os = "linux")]
 mod appimage;
+#[cfg(windows)]
+mod job_object;
+mod session_tree;
+
+#[cfg(windows)]
+pub(crate) use job_object::JobObject;
+pub use session_tree::SessionTree;
 
 /// A command for `program`. When the app runs from an AppImage, it starts
 /// with the user's environment ([`child_env`]) and in the folder the

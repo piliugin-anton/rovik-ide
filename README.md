@@ -52,7 +52,15 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 - A built-in terminal that uses your own shell, on this computer or on a
   connected [cloud host](#a-terminal-on-a-cloud-host). Each project has
   its own terminals: switching to another project, its terminals are shown,
-  and the ones left keep running until you come back. Bash up to 5.3, and
+  and the ones left keep running until you come back. Closing a terminal,
+  or quitting Rovik, ends what still runs in it, a job started with `nohup`
+  or `disown`ed included: as in any terminal it's hung up on first, then
+  what's left is asked to stop, and what's still running two seconds later
+  is killed. On macOS and Linux a program that started a session of its own
+  (`setsid`, tmux's server) keeps running; on Windows everything started
+  from the terminal ends, a window it opened too (an editor or a browser
+  that wasn't open yet). On a cloud host the shell is hung up on, as when
+  an ssh connection closes. Bash up to 5.3, and
   5.4 in development, garbles a command line taller than the terminal;
   with bash 5.1 to 5.4, on this computer, a cloud host or in WSL, a paste
   that would make one stays on one row that scrolls sideways, and wraps

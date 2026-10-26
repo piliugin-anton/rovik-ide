@@ -129,6 +129,11 @@ tauri-plugin-window-state = "2"
 # aren't made here.
 tauri-plugin-updater = { version = "~2.14", default-features = false, features = ["system-proxy"] }
 
+# The core's test support, and its short waits (a closed terminal's end,
+# rovik_core::process::SessionTree), as the other crates' tests have them.
+[dev-dependencies]
+rovik-core = { workspace = true, features = ["testing"] }
+
 # Dependencies optimized in dev builds (the tests', `tauri dev`): the tests
 # spent half their CPU in them (hashing, Git, SQLite, tree-sitter, images)
 # unoptimized, and they're built once, then cached. The workspace's own
