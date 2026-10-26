@@ -56,6 +56,7 @@ fn edits_become_the_context_and_survive_a_restart() {
                     created_at: 1,
                     updated_at: 1,
                     project_id: None,
+                    folders: None,
                 },
             )
         })
@@ -327,6 +328,7 @@ fn a_rendering_whose_state_was_not_saved_doubles_nothing() {
                     created_at: 1,
                     updated_at: 1,
                     project_id: None,
+                    folders: None,
                 },
             )
         })
@@ -421,6 +423,7 @@ fn missing_task_card_reads_as_guidance() {
                     created_at: 1,
                     updated_at: 1,
                     project_id: None,
+                    folders: None,
                 },
             )
         })

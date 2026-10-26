@@ -368,7 +368,7 @@ pub fn summary(conn: &Connection, id: &str) -> DbResult<Option<ProjectSummary>> 
         .query_row(
             "SELECT p.name, p.path, p.last_opened_at,
                     (SELECT COUNT(*) FROM dialogs d WHERE d.project_id = p.id AND d.parent_id IS NULL)
-             FROM projects p WHERE p.id = ?1",
+             FROM projects p WHERE p.id = ?1 AND p.kind = 'folder'",
             params![id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -682,10 +682,13 @@ pub fn decline(conn: &mut Connection, root: &Path, ids: &[String]) -> DbResult<(
     Ok(())
 }
 
-/// Every project, most recently opened first.
+/// Every project, most recently opened first. A workspace isn't one: it has
+/// no folder to be missing, and its own summary (chat_db/workspaces.rs).
 pub fn list(conn: &Connection) -> DbResult<Vec<ProjectSummary>> {
     let mut stmt = conn
-        .prepare_cached("SELECT id FROM projects ORDER BY last_opened_at DESC")
+        .prepare_cached(
+            "SELECT id FROM projects WHERE kind = 'folder' ORDER BY last_opened_at DESC",
+        )
         .map_err(err)?;
     let ids: Vec<String> = stmt
         .query_map([], |r| r.get(0))

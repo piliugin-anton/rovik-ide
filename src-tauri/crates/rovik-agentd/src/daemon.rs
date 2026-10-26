@@ -444,6 +444,7 @@ impl Daemon {
                         created_at: now,
                         updated_at: now,
                         project_id: project,
+                        folders: None,
                     },
                 )
             })

@@ -914,7 +914,13 @@ async fn a_plan_run_without_a_plan_fails_the_task() {
     let (url, _) = model(vec![Reply::Text("I looked, and wrote nothing down.")]).await;
     let mut request = h.request(&url, autopilot_send("Do something"), quiet_permissions());
     // Step 9's automatic retries are off here: one run, then the delivery.
-    request.config.as_mut().unwrap().autopilot.plan_fix.max_retries = 0;
+    request
+        .config
+        .as_mut()
+        .unwrap()
+        .autopilot
+        .plan_fix
+        .max_retries = 0;
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(
@@ -954,12 +960,16 @@ async fn a_failed_plan_stage_retries_on_its_own_within_its_limit() {
             (Stage::Deliver, Status::Failed)
         ]
     );
-    assert_eq!(records.iter().map(|r| r.round).take(3).collect::<Vec<_>>(), [1, 2, 3]);
+    assert_eq!(
+        records.iter().map(|r| r.round).take(3).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
     let messages = h.messages().await;
     let retries = messages
         .iter()
         .filter(|m| {
-            m.meta.as_ref().and_then(|x| x.get("harness")) == Some(&json!(super::plan_review::PLAN_RETRY))
+            m.meta.as_ref().and_then(|x| x.get("harness"))
+                == Some(&json!(super::plan_review::PLAN_RETRY))
         })
         .count();
     assert_eq!(retries, 2);
@@ -1295,7 +1305,13 @@ async fn a_plan_review_that_cant_report_keeps_its_high_finding_open() {
     )
     .await;
     let mut request = task_request(&h, &url);
-    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 3;
+    request
+        .config
+        .as_mut()
+        .unwrap()
+        .autopilot
+        .plan_fix
+        .max_rounds = 3;
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(
@@ -1329,7 +1345,11 @@ async fn an_unreadable_plan_review_is_tried_again_not_skipped() {
     let (url, _) = model_routed(
         vec![(
             PLAN_REVIEW,
-            vec![Reply::Text(garbled), Reply::Text(garbled), Reply::Text(high)],
+            vec![
+                Reply::Text(garbled),
+                Reply::Text(garbled),
+                Reply::Text(high),
+            ],
         )],
         vec![
             Reply::Call {
@@ -1342,7 +1362,13 @@ async fn an_unreadable_plan_review_is_tried_again_not_skipped() {
     )
     .await;
     let mut request = task_request(&h, &url);
-    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 1;
+    request
+        .config
+        .as_mut()
+        .unwrap()
+        .autopilot
+        .plan_fix
+        .max_rounds = 1;
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(
@@ -1361,7 +1387,9 @@ async fn an_unreadable_plan_review_is_tried_again_not_skipped() {
     );
     let messages = h.messages().await;
     assert!(
-        !result_of(&messages, "p1").content.contains("Review skipped"),
+        !result_of(&messages, "p1")
+            .content
+            .contains("Review skipped"),
         "{}",
         result_of(&messages, "p1").content
     );
@@ -1400,7 +1428,10 @@ async fn a_plan_review_that_never_runs_blocks_the_plan() {
     assert_eq!(records[1].outcome.as_deref(), Some("plan-blocked"));
     let messages = h.messages().await;
     let result = &result_of(&messages, "p1").content;
-    assert!(result.contains("The plan wasn't saved, and won't be"), "{result}");
+    assert!(
+        result.contains("The plan wasn't saved, and won't be"),
+        "{result}"
+    );
     assert!(result.contains("no plan reviewer could run"), "{result}");
 }
 
@@ -1472,7 +1503,10 @@ async fn a_stop_during_a_plan_review_holds_the_plan_with_its_findings_open() {
     );
     assert_eq!(review["planState"]["held"], TASK_PLAN);
     let result = &result_of(&messages, "p2").content;
-    assert!(result.contains("Stopped: the plan wasn't saved"), "{result}");
+    assert!(
+        result.contains("Stopped: the plan wasn't saved"),
+        "{result}"
+    );
 }
 
 /// S02 (4.2): the plan review's high finding the planner never fixes: an
@@ -1496,9 +1530,15 @@ async fn a_high_finding_never_fixed_blocks_the_plan_after_three_reviews() {
     };
     let (url, _) = model_routed(
         vec![
-            (PLAN_REVIEW, vec![Reply::Text(high), Reply::Text(again), Reply::Text(again)]),
+            (
+                PLAN_REVIEW,
+                vec![Reply::Text(high), Reply::Text(again), Reply::Text(again)],
+            ),
             // Step 8: disputed twice, the arbiter rules it valid.
-            ("You are settling one disputed review finding", vec![Reply::Text(high)]),
+            (
+                "You are settling one disputed review finding",
+                vec![Reply::Text(high)],
+            ),
         ],
         vec![
             Reply::Call {
@@ -1514,7 +1554,13 @@ async fn a_high_finding_never_fixed_blocks_the_plan_after_three_reviews() {
     )
     .await;
     let mut request = task_request(&h, &url);
-    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 3;
+    request
+        .config
+        .as_mut()
+        .unwrap()
+        .autopilot
+        .plan_fix
+        .max_rounds = 3;
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(
@@ -4671,7 +4717,13 @@ async fn a_change_without_tests_gets_the_test_writer_once_its_checks_pass() {
     )
     .await;
     let mut request = task_request(&h, &url);
-    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 3;
+    request
+        .config
+        .as_mut()
+        .unwrap()
+        .autopilot
+        .plan_fix
+        .max_rounds = 3;
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
@@ -4753,7 +4805,13 @@ async fn an_unsatisfied_criterion_gets_one_more_round_and_a_second_check() {
     )
     .await;
     let mut request = task_request(&h, &url);
-    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 3;
+    request
+        .config
+        .as_mut()
+        .unwrap()
+        .autopilot
+        .plan_fix
+        .max_rounds = 3;
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     let mut expected = BALANCED_OK.to_vec();

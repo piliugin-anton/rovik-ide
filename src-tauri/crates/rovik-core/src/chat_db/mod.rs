@@ -26,6 +26,7 @@ pub mod store;
 pub mod sync;
 #[cfg(test)]
 mod tests;
+pub mod workspaces;
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use std::fs::{File, OpenOptions, TryLockError};

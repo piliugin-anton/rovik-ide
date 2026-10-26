@@ -17,14 +17,21 @@ export async function loadLastProject(): Promise<LastProjectData | null> {
   }
 }
 
+/**
+ * What the window shows is kept for its next start: a folder's path, or the
+ * workspace's ID (with no path: a workspace has none), and its tabs
+ * (docs/design/workspaces-plan.md, D17).
+ */
 export async function saveLastProject(
   path: string,
+  workspace: string | null,
   openedFiles: OpenFile[],
   expandedPaths: string[],
   terminalCollapsed: boolean
 ): Promise<void> {
   await invoke<void>('save_last_project', {
     path,
+    workspace,
     openedFiles: openedFiles.map((f) => ({
       id: f.id,
       path: f.path,

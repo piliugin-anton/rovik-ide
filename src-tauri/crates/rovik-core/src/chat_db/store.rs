@@ -56,6 +56,13 @@ pub struct DialogSummary {
     /// Where it is, when it isn't simply here (6.3, 6.8).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub place: Option<Place>,
+    /// The project or workspace it belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// A workspace chat's folders: `"all"`, or the names checked as JSON
+    /// (`["api","web"]`). None for every other chat (workspaces-plan.md, 3.1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folders: Option<String>,
 }
 
 /// Where a listed chat is when it isn't simply here.
@@ -94,6 +101,10 @@ pub struct NewDialog {
     /// The project it belongs to (chat_db/projects.rs); none: no folder open.
     #[serde(default)]
     pub project_id: Option<String>,
+    /// A workspace chat's folders (`"all"`, or the names checked as JSON);
+    /// none: a folder chat (workspaces-plan.md, 3.1).
+    #[serde(default)]
+    pub folders: Option<String>,
 }
 
 /// A subagent's chat (agent_run/subagent.rs), hidden from the chat list and
@@ -186,6 +197,8 @@ fn dialog_from_row(r: &Row) -> rusqlite::Result<DialogSummary> {
         message_count: r.get(4)?,
         preview: r.get(5)?,
         place: place_of(location.as_deref(), r.get(7)?),
+        project_id: r.get(8)?,
+        folders: r.get(9)?,
     })
 }
 
@@ -207,7 +220,8 @@ fn place_of(location: Option<&str>, leaving: Option<String>) -> Option<Place> {
 const DIALOG_COLUMNS: &str =
     "id, title, created_at, updated_at, message_count, preview, location, \
      (SELECT host FROM cloud_moves m WHERE m.dialog_id = dialogs.id \
-      AND m.direction = 'back' AND m.step NOT IN ('forgetting', 'deleted'))";
+      AND m.direction = 'back' AND m.step NOT IN ('forgetting', 'deleted')), \
+     project_id, folders";
 
 /// A project's chats, newest first (`project` None: the chats with no
 /// project); keyset paging so deep pages cost the same as the first.
@@ -314,8 +328,16 @@ pub fn message_dialog(conn: &Connection, message_id: &str) -> DbResult<Option<St
 pub fn create_dialog(conn: &mut Connection, d: &NewDialog) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     tx.execute(
-        "INSERT INTO dialogs (id, title, created_at, updated_at, project_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![d.id, d.title, d.created_at, d.updated_at, d.project_id],
+        "INSERT INTO dialogs (id, title, created_at, updated_at, project_id, folders)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            d.id,
+            d.title,
+            d.created_at,
+            d.updated_at,
+            d.project_id,
+            d.folders
+        ],
     )
     .map_err(err)?;
     index_title(&tx, &d.id, &d.title)?;
@@ -505,6 +527,18 @@ pub fn set_dialog_project(conn: &Connection, id: &str, project_id: Option<&str>)
     conn.execute(
         "UPDATE dialogs SET project_id = ?2 WHERE id = ?1",
         params![id, project_id],
+    )
+    .map(drop)
+    .map_err(err)
+}
+
+/// A workspace chat works in these folders from now on (`"all"`, or the
+/// names checked as JSON); none: a folder chat. Its revision moves with every
+/// change to a chat (workspaces-plan.md, 3.1).
+pub fn set_dialog_folders(conn: &Connection, id: &str, folders: Option<&str>) -> DbResult<()> {
+    conn.execute(
+        "UPDATE dialogs SET folders = ?2 WHERE id = ?1",
+        params![id, folders],
     )
     .map(drop)
     .map_err(err)

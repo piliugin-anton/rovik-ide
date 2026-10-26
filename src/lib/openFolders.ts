@@ -68,6 +68,25 @@ export function folderOf(folders: readonly OpenFolder[], path: string): OpenFold
 }
 
 /**
+ * `paths` split by the open folder each is in, one entry per folder in the
+ * order given. The tree keeps its saved expansion per root, and its roots are
+ * the window's folders: a workspace's session is kept under `workspace:<id>`,
+ * which no root is named, so what it saved is registered folder by folder. A
+ * path in none of them is left out.
+ */
+export function pathsByFolder(
+  paths: readonly string[],
+  folders: readonly string[]
+): { folder: string; paths: string[] }[] {
+  const by = new Map<string, string[]>(folders.map((folder) => [folder, []]));
+  for (const path of paths) {
+    const at = innermostFolder(folders, path);
+    by.get(at ?? '')?.push(path);
+  }
+  return folders.map((folder) => ({ folder, paths: by.get(folder) ?? [] }));
+}
+
+/**
  * The folder the user is working in: the active tab's, else the tree's
  * selected row's, else the first, else none (nothing open). The tab decides
  * because it's the file being edited; a path in no folder of the window

@@ -511,6 +511,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         created_at: store::now_ms(),
         updated_at: store::now_ms(),
         project_id: None,
+        folders: None,
     };
     db.write(move |c| store::create_dialog(c, &dialog)).await?;
 

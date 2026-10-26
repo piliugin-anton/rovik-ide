@@ -88,6 +88,8 @@ export type UpdateStatus =
 export interface UpdateHooks {
   /** The project open in the window, to open again; null without one. */
   folder: () => string | null;
+  /** The workspace open in the window, to open again; null without one. */
+  workspace?: () => string | null;
   /** Tabs with unsaved text saved or let go, as the user says, and the tabs kept: false if they cancelled. */
   settle: () => Promise<boolean>;
   /** Asks the user: true for yes. */
@@ -447,7 +449,11 @@ export function createUpdater(deps: UpdaterDeps) {
         offerRestart(release.version);
         return;
       }
-      await deps.invoke('update_restart', { folder: hooks.folder() });
+      const workspace = hooks.workspace?.() ?? null;
+      await deps.invoke(
+        'update_restart',
+        workspace ? { folder: hooks.folder(), workspace } : { folder: hooks.folder() }
+      );
     } catch (err) {
       setStatus({ kind: 'failed', message: String(err), release });
       notify({
@@ -471,7 +477,11 @@ export function createUpdater(deps: UpdaterDeps) {
     busy = true;
     try {
       if (await readyToRestart()) {
-        await deps.invoke('update_restart', { folder: hooks.folder() });
+        const workspace = hooks.workspace?.() ?? null;
+        await deps.invoke(
+          'update_restart',
+          workspace ? { folder: hooks.folder(), workspace } : { folder: hooks.folder() }
+        );
       }
     } catch (err) {
       notify({

@@ -101,6 +101,7 @@ impl App {
             created_at: 0,
             updated_at: 0,
             project_id: None,
+            folders: None,
         };
         core.db
             .write(move |c| store::create_dialog(c, &dialog))

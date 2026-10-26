@@ -3,18 +3,19 @@
 // Rovik runs as several processes, each with its own project: the chats,
 // agent runs and file state a process keeps in memory are its own, and two
 // processes on one project would each change its chats unaware of the
-// other's changes. So a project is open in one process at a time. Opening
-// a folder claims it, and the project ID in it (folders with the same ID,
+// other's changes. So a project is open in one process at a time. Opening a
+// folder claims it, and the project ID in it (folders with the same ID,
 // copies of one another, share their chats); a window with no folder open
-// claims the chats without a project. A claim is an OS lock on a file
-// named after it (rovik_core::os_lock), held while the project is open
-// here and let go when another one is opened or the process ends (a crash
-// too: the OS lets go of its locks). A project left for another while its
-// chats are still at work here stays claimed until they're done. A project
-// another process holds isn't opened again: that process is asked to bring
-// its window to the front instead, over a localhost connection that only
-// takes the token it wrote next to its locks, in the user's own data
-// folder.
+// claims the chats without a project. A workspace claims its own ID and
+// every one of its folders', all or none (docs/design/workspaces-plan.md,
+// D7). A claim is an OS lock on a file named after it (rovik_core::os_lock),
+// held while the project is open here and let go when another one is opened
+// or the process ends (a crash too: the OS lets go of its locks). A project
+// left for another while its chats are still at work here stays claimed
+// until they're done. A project another process holds isn't opened again:
+// that process is asked to bring its window to the front instead, over a
+// localhost connection that only takes the token it wrote next to its
+// locks, in the user's own data folder.
 
 use rovik_core::os_lock::Held;
 use std::collections::HashMap;
@@ -31,12 +32,15 @@ use sha2::{Digest, Sha256};
 /// The claim of a window with no folder open: the chats without a project.
 const NO_PROJECT: &str = "no-project";
 
-/// What the process holding a project wrote next to its locks: how to ask
+/// What a process holding a project wrote next to its locks: how to ask
 /// it to come to the front.
 #[derive(Serialize, Deserialize)]
 struct Holder {
-    /// The folder ("" for the chats without a project).
+    /// The folder ("" for a workspace, and for the chats without a project).
     path: String,
+    /// The workspace it's open in, when it is one (D7's notices name it).
+    #[serde(default)]
+    workspace: Option<String>,
     pid: u32,
     port: u16,
     token: String,
@@ -53,8 +57,12 @@ pub struct Claim {
     pub claimed: bool,
     /// Another process has it open: it's not opened here.
     pub open_elsewhere: bool,
-    /// The folder open there (none for the chats without a project).
+    /// The folder open there (none for a workspace, and for the chats
+    /// without a project).
     pub open_as: Option<String>,
+    /// The workspace it's open in there, when it's one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     /// That's another folder, a copy of this one sharing its chats.
     pub copy: bool,
     /// That process left it for another project, its chats still at work.
@@ -72,23 +80,103 @@ impl Claim {
     }
 }
 
-/// A project this process left for another while its chats were at work.
-struct AtWork {
-    keys: Vec<String>,
-    path: String,
-    project: Option<Option<String>>,
+/// What a window has open (docs/design/workspaces-plan.md, D7): a folder
+/// opened as itself (a project), or a workspace's folders. A claim with no
+/// target is the chats without a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Folder(PathBuf),
+    Workspace {
+        id: String,
+        name: String,
+        folders: Vec<PathBuf>,
+    },
+}
+
+/// One project the window lists chats for: its target's, or one it left
+/// while its chats were at work here.
+#[derive(Debug, Clone, PartialEq)]
+struct Owner {
+    /// Its ID; None for the chats without a project, and for a folder whose
+    /// project the window hasn't resolved yet.
+    project: Option<String>,
+    /// Its folder (a workspace's owner has none).
+    folder: Option<PathBuf>,
+    /// The workspace it is, or the workspace its folder is open in.
+    workspace: Option<WorkspaceRef>,
+}
+
+/// A workspace as a claim names it: its ID, which its folders are matched
+/// by (names needn't be unique), and its name, which a notice reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceRef {
+    id: String,
+    name: String,
+}
+
+impl Owner {
+    fn no_project() -> Self {
+        Owner {
+            project: None,
+            folder: None,
+            workspace: None,
+        }
+    }
+
+    /// The keys it's claimed by: its folder's, and its project's.
+    fn keys(&self) -> Vec<String> {
+        match (&self.folder, &self.project) {
+            (Some(folder), project) => {
+                let mut keys = vec![format!("folder:{}", path_key(folder))];
+                if let Some(id) = project {
+                    keys.push(format!("project:{id}"));
+                }
+                keys
+            }
+            (None, Some(id)) => vec![format!("project:{id}")],
+            (None, None) => vec![NO_PROJECT.to_string()],
+        }
+    }
+
+    /// The ID of the workspace it is or is in, if one.
+    fn workspace_id(&self) -> Option<&str> {
+        self.workspace
+            .as_ref()
+            .map(|workspace| workspace.id.as_str())
+    }
+
+    /// The folder as a notice names it ("" for a workspace).
+    fn shown(&self) -> String {
+        self.folder
+            .as_ref()
+            .map(|folder| display(folder))
+            .unwrap_or_default()
+    }
+}
+
+fn display(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// A folder's path as it's compared (with links and `..` resolved).
+fn same_folder(a: &Path, b: &Path) -> bool {
+    path_key(a) == path_key(b)
 }
 
 #[derive(Default)]
 struct Claims {
     /// Every lock held, by claim.
     held: HashMap<String, Held>,
-    /// The project open in the window: its claims, its folder ("" for none),
-    /// and its project's ID once the window knows it (`opened`).
+    /// The keys of the target open in the window.
     open: Vec<String>,
-    path: String,
-    project: Option<Option<String>>,
-    at_work: Vec<AtWork>,
+    /// What the window has open: only `claim` sets it.
+    target: Vec<Owner>,
+    /// The projects it left while their chats were at work here: they keep
+    /// their keys until those are done.
+    at_work: Vec<Owner>,
 }
 
 /// This process's claims on projects, and its "come to the front" line.
@@ -132,27 +220,30 @@ impl Instances {
         self.claims.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Opens the folder `project` in this process (None: the chats without
-    /// a project) unless another one has it (or its chats) open, in which
-    /// case that one is asked to come to the front (`focus_other`). What
-    /// this process had open before is let go, or kept while its chats are
-    /// at work here (`keep_open`).
-    pub fn claim(&self, project: Option<&Path>, focus_other: bool, keep_open: bool) -> Claim {
-        let keys = claim_keys(project);
-        let path = project
-            .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
+    /// Opens `target` in this process (None: the chats without a project)
+    /// unless another one has it (or its chats) open, in which case that one
+    /// is asked to come to the front (`focus_other`). A workspace takes its
+    /// key and its folders', all or none.
+    ///
+    /// What this process had open before is let go, but for the projects in
+    /// `at_work` (their chats are still at work here): they keep their keys
+    /// until they're done.
+    pub fn claim(
+        &self,
+        target: Option<&Target>,
+        focus_other: bool,
+        at_work: &[Option<String>],
+    ) -> Claim {
         let mut claims = self.claims();
-        let mut taken: HashMap<String, Held> = HashMap::new();
+        let owners = owners_of(target, &claims.target);
+        let keys = keys_of(&owners);
+        let mut taken: Vec<(String, Held)> = Vec::new();
         for key in &keys {
             if claims.held.contains_key(key) {
                 continue;
             }
             match self.lock(key) {
-                Ok(Some(file)) => {
-                    taken.insert(key.clone(), file);
-                }
+                Ok(Some(file)) => taken.push((key.clone(), file)),
                 // Better a project open twice than none opened at all.
                 Err(e) => log::warn!("instances: {key}: {e}"),
                 Ok(None) => {
@@ -162,49 +253,60 @@ impl Instances {
             }
         }
         claims.held.extend(taken);
-        // Back to a project left at work: it's the open one again.
-        for left in claims.at_work.iter_mut() {
-            left.keys.retain(|k| !keys.contains(k));
-        }
-        claims.at_work.retain(|left| !left.keys.is_empty());
-        let before: Vec<String> = std::mem::take(&mut claims.open)
+        // The owners left for this target: those whose chats are at work
+        // here keep their keys, and the others let them go.
+        let before: Vec<Owner> = std::mem::take(&mut claims.at_work)
             .into_iter()
-            .filter(|k| !keys.contains(k))
+            .chain(std::mem::take(&mut claims.target))
+            .filter(|owner| !owners.iter().any(|now| same_owner(now, owner)))
             .collect();
-        let (was, was_project) = (
-            std::mem::replace(&mut claims.path, path),
-            claims.project.take(),
-        );
-        if before.is_empty() {
-            // The same project, claimed again (its ID file written meanwhile).
-            claims.project = was_project.filter(|_| was == claims.path);
-        } else if keep_open {
-            claims.at_work.push(AtWork {
-                keys: before,
-                path: was,
-                project: was_project,
-            });
-        } else {
-            for key in before {
-                if let Some(file) = claims.held.remove(&key) {
-                    self.let_go(&key, file);
-                }
+        let busy = |owner: &Owner| {
+            owner
+                .project
+                .as_ref()
+                .is_some_and(|id| at_work.iter().any(|at| at.as_deref() == Some(id.as_str())))
+        };
+        let mut kept: Vec<Owner> = before.iter().filter(|owner| busy(owner)).cloned().collect();
+        // A workspace whose own chats are at work keeps every folder of it:
+        // a workspace chat's run uses some or all of them (D19). By the
+        // workspace's ID: two workspaces may be named alike.
+        let busy_workspaces: Vec<String> = kept
+            .iter()
+            .filter(|owner| owner.folder.is_none())
+            .filter_map(Owner::workspace_id)
+            .map(str::to_string)
+            .collect();
+        for folder in before.iter().filter(|owner| owner.folder.is_some()) {
+            let of = folder.workspace_id();
+            if of.is_some_and(|id| busy_workspaces.iter().any(|busy| busy == id))
+                && !kept.iter().any(|held| same_owner(held, folder))
+            {
+                kept.push(folder.clone());
             }
         }
-        if project.is_none() {
-            claims.project = Some(None);
+        claims.at_work = kept;
+        let keep = keys_of(&claims.at_work);
+        // A key neither the target nor a project at work holds goes.
+        for key in claims.held.keys().cloned().collect::<Vec<_>>() {
+            if keys.contains(&key) || keep.contains(&key) {
+                continue;
+            }
+            if let Some(file) = claims.held.remove(&key) {
+                self.let_go(&key, file);
+            }
         }
         claims.open = keys;
+        claims.target = owners;
         self.write_holders(&claims);
         Claim::claimed()
     }
 
-    /// Whether another process has `project` (or a copy sharing its chats)
+    /// Whether another process has `target` (or a copy sharing its chats)
     /// open, as `claim` would find, without claiming it: what this process
     /// has open stays its own (a switch the user may still cancel).
-    pub fn check(&self, project: Option<&Path>, focus_other: bool) -> Claim {
+    pub fn check(&self, target: Option<&Target>, focus_other: bool) -> Claim {
         let claims = self.claims();
-        for key in claim_keys(project) {
+        for key in keys_of(&owners_of(target, &[])) {
             if !claims.held.contains_key(&key) && self.held_elsewhere(&key) {
                 return self.elsewhere(&key, focus_other);
             }
@@ -212,25 +314,68 @@ impl Instances {
         Claim::default()
     }
 
-    /// The project open in the window is the one with the ID `project`
-    /// (None: the chats without one), as the window found once it opened.
-    pub fn opened(&self, project: Option<String>) {
-        self.claims().project = Some(project);
+    /// The folder `root`'s project is `project` (the window opened it, or
+    /// answered a question about a copy or a move): it's claimed, if the
+    /// folder is one of the window's. A folder the window has left since
+    /// claims nothing back (an answer that came late).
+    pub fn reclaim(&self, root: &Path, project: &str) {
+        let mut claims = self.claims();
+        let found = rename_project(&mut claims.target, root, project)
+            | rename_project(&mut claims.at_work, root, project);
+        if !found {
+            return;
+        }
+        let mut held: Vec<Owner> = claims.target.clone();
+        held.extend(claims.at_work.iter().cloned());
+        let wanted = keys_of(&held);
+        // Its project's key, if it's free: better a project open twice than
+        // one whose chats two windows change unaware.
+        let missing: Vec<String> = wanted
+            .iter()
+            .filter(|key| !claims.held.contains_key(*key))
+            .cloned()
+            .collect();
+        for key in missing {
+            match self.lock(&key) {
+                Ok(Some(file)) => {
+                    claims.held.insert(key, file);
+                }
+                Ok(None) => log::warn!("instances: {key} is open in another window too"),
+                Err(e) => log::warn!("instances: {key}: {e}"),
+            }
+        }
+        // A folder whose ID changed (a separate history) lets the old go.
+        for key in claims.held.keys().cloned().collect::<Vec<_>>() {
+            if wanted.contains(&key) {
+                continue;
+            }
+            if let Some(file) = claims.held.remove(&key) {
+                self.let_go(&key, file);
+            }
+        }
+        claims.open = keys_of(&claims.target);
+        self.write_holders(&claims);
     }
 
-    /// The project open in the window, if known: its ID (None: the chats
-    /// without a project).
-    pub fn open_project(&self) -> Option<Option<String>> {
-        self.claims().project.clone()
+    /// The projects the window lists chats for, as the claims record has
+    /// them: its target's, and those it left while their chats are at work
+    /// here.
+    pub fn owners(&self) -> Vec<Option<String>> {
+        let claims = self.claims();
+        claims
+            .target
+            .iter()
+            .chain(claims.at_work.iter())
+            .map(|owner| owner.project.clone())
+            .collect()
     }
 
     /// The projects left for another while their chats were at work here.
     pub fn left_at_work(&self) -> Vec<Option<String>> {
-        let claims = self.claims();
-        claims
+        self.claims()
             .at_work
             .iter()
-            .filter_map(|left| left.project.clone())
+            .map(|owner| owner.project.clone())
             .collect()
     }
 
@@ -238,12 +383,12 @@ impl Instances {
     /// `still` doesn't name), and those whose project was never known.
     pub fn let_go_done(&self, still: impl Fn(&Option<String>) -> bool) {
         let mut claims = self.claims();
-        let (busy, done): (Vec<AtWork>, Vec<AtWork>) = std::mem::take(&mut claims.at_work)
+        let (busy, done): (Vec<Owner>, Vec<Owner>) = std::mem::take(&mut claims.at_work)
             .into_iter()
-            .partition(|left| left.project.as_ref().is_some_and(&still));
+            .partition(|owner| owner.project.is_some() && still(&owner.project));
         claims.at_work = busy;
-        for left in done {
-            for key in left.keys {
+        for owner in done {
+            for key in owner.keys() {
                 if let Some(file) = claims.held.remove(&key) {
                     self.let_go(&key, file);
                 }
@@ -255,15 +400,21 @@ impl Instances {
     /// to the front (`focus_other`).
     fn elsewhere(&self, key: &str, focus_other: bool) -> Claim {
         let holder = read_holder(&self.files(key).1);
+        let folder = holder
+            .as_ref()
+            .map(|h| h.path.clone())
+            .filter(|path| !path.is_empty());
         Claim {
             claimed: false,
             open_elsewhere: true,
-            open_as: holder
+            open_as: folder.clone(),
+            workspace: holder
                 .as_ref()
-                .map(|h| h.path.clone())
-                .filter(|p| !p.is_empty()),
-            // The folder's free; its project ID isn't.
-            copy: key.starts_with("project:"),
+                .and_then(|h| h.workspace.clone())
+                .filter(|name| !name.is_empty()),
+            // The folder's free; its project ID isn't. A workspace's key
+            // isn't a copy of anything: it has no folder (D7).
+            copy: key.starts_with("project:") && folder.is_some(),
             at_work: holder.as_ref().is_some_and(|h| h.at_work),
             focused: focus_other && holder.is_some_and(|h| ask_to_focus(&h)),
         }
@@ -291,31 +442,37 @@ impl Instances {
     pub fn release(&self) {
         let mut claims = self.claims();
         claims.open.clear();
+        claims.target.clear();
         claims.at_work.clear();
         for (key, file) in std::mem::take(&mut claims.held) {
             self.let_go(&key, file);
         }
     }
 
-    /// Who holds each of this process's claims, for another to read.
+    /// Who holds each of this process's claims, for another to read: each
+    /// key names its own folder, and the workspace it's open in.
     fn write_holders(&self, claims: &Claims) {
-        let holder = |path: &str, at_work: bool| Holder {
-            path: path.to_string(),
+        let holder = |owner: &Owner, at_work: bool| Holder {
+            path: owner.shown(),
+            workspace: owner
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.name.clone()),
             pid: std::process::id(),
             port: self.port,
             token: self.token.clone(),
             at_work,
         };
-        let open = claims.open.iter().map(|k| (k, holder(&claims.path, false)));
-        let left = claims
-            .at_work
-            .iter()
-            .flat_map(|l| l.keys.iter().map(move |k| (k, holder(&l.path, true))));
-        for (key, holder) in open.chain(left) {
-            let info = self.files(key).1;
-            let json = serde_json::to_vec(&holder).unwrap_or_default();
-            if let Err(e) = rovik_core::atomic_file::write_atomic_private(&info, &json) {
-                log::warn!("instances: {}: {e}", info.display());
+        let open = claims.target.iter().map(|owner| (owner, false));
+        let left = claims.at_work.iter().map(|owner| (owner, true));
+        for (owner, at_work) in open.chain(left) {
+            let holder = holder(owner, at_work);
+            for key in owner.keys() {
+                let info = self.files(&key).1;
+                let json = serde_json::to_vec(&holder).unwrap_or_default();
+                if let Err(e) = rovik_core::atomic_file::write_atomic_private(&info, &json) {
+                    log::warn!("instances: {}: {e}", info.display());
+                }
             }
         }
     }
@@ -347,18 +504,89 @@ impl Instances {
     }
 }
 
-/// What opening `project` claims: its folder, and its project ID if it has
-/// one (the folders with the same ID share their chats); with none, the
-/// chats without a project.
-fn claim_keys(project: Option<&Path>) -> Vec<String> {
-    let Some(project) = project else {
-        return vec![NO_PROJECT.to_string()];
+/// The owners of a target: a folder's, or a workspace's own and each of its
+/// folders'. A folder keeps the project the window resolved for it while it
+/// has no ID file (a read-only folder, say).
+fn owners_of(target: Option<&Target>, before: &[Owner]) -> Vec<Owner> {
+    let remembered = |folder: &Path| -> Option<String> {
+        before
+            .iter()
+            .find(|owner| {
+                owner
+                    .folder
+                    .as_ref()
+                    .is_some_and(|known| same_folder(known, folder))
+            })
+            .and_then(|owner| owner.project.clone())
     };
-    let mut keys = vec![format!("folder:{}", path_key(project))];
-    if let Some(id) = folder_project_id(project) {
-        keys.push(format!("project:{id}"));
+    let folder_owner = |folder: &Path, workspace: &Option<WorkspaceRef>| Owner {
+        project: folder_project_id(folder).or_else(|| remembered(folder)),
+        folder: Some(folder.to_path_buf()),
+        workspace: workspace.clone(),
+    };
+    match target {
+        None => vec![Owner::no_project()],
+        Some(Target::Folder(path)) => vec![folder_owner(path, &None)],
+        Some(Target::Workspace { id, name, folders }) => {
+            let workspace = Some(WorkspaceRef {
+                id: id.clone(),
+                name: name.clone(),
+            });
+            let mut owners = vec![Owner {
+                project: Some(id.clone()),
+                folder: None,
+                workspace: workspace.clone(),
+            }];
+            owners.extend(
+                folders
+                    .iter()
+                    .map(|folder| folder_owner(folder, &workspace)),
+            );
+            owners
+        }
+    }
+}
+
+/// The keys of these owners, each once: a folder whose ID file names the
+/// workspace's ID takes one key, not two.
+fn keys_of(owners: &[Owner]) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for key in owners.iter().flat_map(Owner::keys) {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
     }
     keys
+}
+
+/// The owner whose folder is `root` is the project `project` from now on:
+/// whether one was.
+fn rename_project(owners: &mut [Owner], root: &Path, project: &str) -> bool {
+    let mut found = false;
+    for owner in owners.iter_mut() {
+        if owner
+            .folder
+            .as_ref()
+            .is_some_and(|folder| same_folder(folder, root))
+        {
+            owner.project = Some(project.to_string());
+            found = true;
+        }
+    }
+    found
+}
+
+/// Whether two owners are the window's one project: by its ID, else by its
+/// folder.
+fn same_owner(a: &Owner, b: &Owner) -> bool {
+    match (&a.project, &b.project) {
+        (Some(a), Some(b)) => a == b,
+        _ => match (&a.folder, &b.folder) {
+            (Some(a), Some(b)) => same_folder(a, b),
+            (None, None) => a.workspace_id().is_some() && a.workspace_id() == b.workspace_id(),
+            _ => false,
+        },
+    }
 }
 
 /// Whether `stream` sent `token`, on a line of its own.
@@ -459,6 +687,7 @@ mod tests {
             claimed: false,
             open_elsewhere: true,
             open_as: Some(at.to_string_lossy().into_owned()),
+            workspace: None,
             copy: false,
             at_work: false,
             focused,
@@ -467,7 +696,16 @@ mod tests {
 
     /// Opens a folder, as a window does: its chats aren't at work.
     fn open(instance: &Instances, path: &Path) -> Claim {
-        instance.claim(Some(path), true, false)
+        instance.claim(Some(&Target::Folder(path.to_path_buf())), true, &[])
+    }
+
+    /// A workspace of these folders, as the window opens it.
+    fn workspace(id: &str, name: &str, folders: &[&Path]) -> Target {
+        Target::Workspace {
+            id: id.to_string(),
+            name: name.to_string(),
+            folders: folders.iter().map(|f| f.to_path_buf()).collect(),
+        }
     }
 
     #[test]
@@ -484,7 +722,8 @@ mod tests {
         assert_eq!(open(&b, &dir.join("app/../app/")), elsewhere(&app, true));
         assert_eq!(a_focused.load(Ordering::SeqCst), 1);
         // Not asked to come to the front (a project restored at start).
-        assert_eq!(b.claim(Some(&app), false, false), elsewhere(&app, false));
+        let target = Target::Folder(app.clone());
+        assert_eq!(b.claim(Some(&target), false, &[]), elsewhere(&app, false));
         assert_eq!(a_focused.load(Ordering::SeqCst), 1);
         assert_eq!(b_focused.load(Ordering::SeqCst), 0);
     }
@@ -550,9 +789,13 @@ mod tests {
         let (b, _) = instance(&dir);
 
         assert_eq!(open(&a, &one), Claim::claimed());
-        a.opened(Some("project-one".into()));
+        a.reclaim(&one, "project-one");
         // A opens `two` while one's chats are at work there.
-        assert_eq!(a.claim(Some(&two), true, true), Claim::claimed());
+        let target = Target::Folder(two.clone());
+        assert_eq!(
+            a.claim(Some(&target), true, &[Some("project-one".into())]),
+            Claim::claimed()
+        );
         assert_eq!(a.left_at_work(), vec![Some("project-one".to_string())]);
         assert_eq!(
             open(&b, &one),
@@ -580,8 +823,15 @@ mod tests {
         let (b, _) = instance(&dir);
 
         assert_eq!(open(&a, &one), Claim::claimed());
-        a.opened(Some("project-one".into()));
-        assert_eq!(a.claim(Some(&two), true, true), Claim::claimed());
+        a.reclaim(&one, "project-one");
+        assert_eq!(
+            a.claim(
+                Some(&Target::Folder(two.clone())),
+                true,
+                &[Some("project-one".into())]
+            ),
+            Claim::claimed()
+        );
         assert_eq!(open(&a, &one), Claim::claimed());
         assert!(a.left_at_work().is_empty());
         // Open again, not at work: B is told it's open there.
@@ -598,10 +848,10 @@ mod tests {
         let (a, _) = instance(&dir);
         let (b, _) = instance(&dir);
 
-        assert_eq!(a.claim(None, false, false), Claim::claimed());
-        assert_eq!(a.open_project(), Some(None));
+        assert_eq!(a.claim(None, false, &[]), Claim::claimed());
+        assert_eq!(a.owners(), vec![None]);
         assert_eq!(
-            b.claim(None, false, false),
+            b.claim(None, false, &[]),
             Claim {
                 open_as: None,
                 ..elsewhere(&app, false)
@@ -609,7 +859,7 @@ mod tests {
         );
         // A opens a folder: they're free.
         assert_eq!(open(&a, &app), Claim::claimed());
-        assert_eq!(b.claim(None, false, false), Claim::claimed());
+        assert_eq!(b.claim(None, false, &[]), Claim::claimed());
         assert!(b.check(None, false) == Claim::default());
         assert!(a.check(None, false).open_elsewhere);
     }
@@ -625,12 +875,19 @@ mod tests {
         assert_eq!(open(&a, &one), Claim::claimed());
         assert_eq!(open(&b, &two), Claim::claimed());
         // B checks one: A has it, and comes to the front.
-        assert_eq!(b.check(Some(&one), true), elsewhere(&one, true));
+        let target = Target::Folder(one.clone());
+        assert_eq!(b.check(Some(&target), true), elsewhere(&one, true));
         assert_eq!(a_focused.load(Ordering::SeqCst), 1);
         // A checks a free folder: nothing's claimed, and A keeps `one`.
         let three = folder(&dir, "three", None);
-        assert_eq!(a.check(Some(&three), true), Claim::default());
-        assert_eq!(b.claim(Some(&one), false, false), elsewhere(&one, false));
+        assert_eq!(
+            a.check(Some(&Target::Folder(three.clone())), true),
+            Claim::default()
+        );
+        assert_eq!(
+            b.claim(Some(&Target::Folder(one.clone())), false, &[]),
+            elsewhere(&one, false)
+        );
         assert_eq!(open(&b, &three), Claim::claimed());
     }
 
@@ -652,6 +909,285 @@ mod tests {
         a.release();
         assert_eq!(b.open_elsewhere(Some("project-app-1"), Some(&app)), None);
         assert_eq!(open(&b, &app), Claim::claimed());
+    }
+
+    /// D7: a workspace takes its own key and its folders', all or none: a
+    /// window that can't have one folder has nothing of the workspace, and
+    /// one that stops on a key it couldn't take holds none of the others.
+    #[test]
+    fn a_workspace_takes_its_key_and_its_folders_or_none() {
+        let dir = temp_dir("workspace");
+        let api = folder(&dir, "api", Some("project-api"));
+        let web = folder(&dir, "web", Some("project-web"));
+        let shop = workspace("workspace-shop", "Shop", &[&api, &web]);
+        let (a, a_focused) = instance(&dir);
+        let (b, _) = instance(&dir);
+
+        assert_eq!(a.claim(Some(&shop), true, &[]), Claim::claimed());
+        // Every key is A's: the workspace's, each folder's and each project's.
+        for target in [
+            shop.clone(),
+            Target::Folder(api.clone()),
+            Target::Folder(web.clone()),
+        ] {
+            assert!(b.claim(Some(&target), false, &[]).open_elsewhere);
+        }
+        // A window that can't have one of the folders has nothing of it:
+        // it holds no key of the workspace it tried, so once A lets go, B
+        // takes the whole workspace.
+        assert_eq!(
+            b.claim(Some(&shop), false, &[]),
+            Claim {
+                open_as: None,
+                workspace: Some("Shop".into()),
+                ..elsewhere(&api, false)
+            }
+        );
+        // A folder of another window's workspace is named with it, and
+        // isn't a copy of anything: it has a folder, the workspace's ID.
+        let claim = b.claim(Some(&Target::Folder(api.clone())), false, &[]);
+        assert_eq!(claim.open_as, Some(api.to_string_lossy().into_owned()));
+        assert_eq!(claim.workspace.as_deref(), Some("Shop"));
+        assert!(!claim.copy);
+        assert_eq!(a_focused.load(Ordering::SeqCst), 0);
+        a.release();
+        assert_eq!(b.claim(Some(&shop), true, &[]), Claim::claimed());
+    }
+
+    /// D7: a target's keys are each once, even when a folder's ID file names
+    /// the workspace's own ID.
+    #[test]
+    fn a_targets_keys_have_no_duplicates() {
+        let dir = temp_dir("keys");
+        let api = folder(&dir, "api", Some("workspace-shop"));
+        let shop = workspace("workspace-shop", "Shop", &[&api]);
+        let keys = keys_of(&owners_of(Some(&shop), &[]));
+        let mut once = keys.clone();
+        once.sort();
+        once.dedup();
+        assert_eq!(keys.len(), once.len(), "{keys:?}");
+        assert_eq!(
+            keys.len(),
+            2,
+            "the workspace's (which the folder's ID file names) and the folder's"
+        );
+    }
+
+    /// D7: adding a folder to a workspace claims its keys, and removing one
+    /// lets only its own go.
+    #[test]
+    fn adding_and_removing_a_folder_keep_the_others_keys() {
+        let dir = temp_dir("add-remove");
+        let api = folder(&dir, "api", Some("project-api"));
+        let web = folder(&dir, "web", Some("project-web"));
+        let other = folder(&dir, "other", Some("project-other"));
+        let (a, _) = instance(&dir);
+        let (b, _) = instance(&dir);
+
+        assert_eq!(
+            a.claim(Some(&workspace("w", "Shop", &[&api])), true, &[]),
+            Claim::claimed()
+        );
+        assert_eq!(
+            a.claim(Some(&workspace("w", "Shop", &[&api, &web])), true, &[]),
+            Claim::claimed()
+        );
+        assert!(open(&b, &web).open_elsewhere, "the folder added is A's");
+        assert!(open(&b, &api).open_elsewhere);
+        // `web` leaves: only its keys go.
+        assert_eq!(
+            a.claim(Some(&workspace("w", "Shop", &[&api])), true, &[]),
+            Claim::claimed()
+        );
+        assert!(open(&b, &api).open_elsewhere, "the folder kept is A's");
+        assert_eq!(open(&b, &web), Claim::claimed());
+        // So does another folder, added and then removed.
+        assert_eq!(
+            a.claim(Some(&workspace("w", "Shop", &[&api, &other])), true, &[]),
+            Claim::claimed()
+        );
+        assert!(open(&b, &other).open_elsewhere);
+        assert_eq!(
+            a.claim(Some(&workspace("w", "Shop", &[&api])), true, &[]),
+            Claim::claimed()
+        );
+        assert_eq!(open(&b, &other), Claim::claimed());
+    }
+
+    /// D7: two folders resolved at once both keep their keys, and a folder
+    /// the window has left takes nothing back when its answer comes late.
+    #[test]
+    fn two_folders_resolved_at_once_keep_their_keys() {
+        let dir = temp_dir("resolve");
+        let api = folder(&dir, "api", None);
+        let web = folder(&dir, "web", None);
+        let (a, _) = instance(&dir);
+        let (b, _) = instance(&dir);
+
+        assert_eq!(
+            a.claim(Some(&workspace("w", "Shop", &[&api, &web])), true, &[]),
+            Claim::claimed()
+        );
+        a.reclaim(&api, "project-api");
+        a.reclaim(&web, "project-web");
+        let copy = folder(&dir, "api-copy", Some("project-api"));
+        assert!(open(&b, &copy).copy, "api's project is A's");
+        let copy = folder(&dir, "web-copy", Some("project-web"));
+        assert!(open(&b, &copy).copy, "web's project is A's");
+
+        // The window moves on; api's answer comes late.
+        let other = folder(&dir, "other", Some("project-other"));
+        assert_eq!(
+            a.claim(Some(&Target::Folder(other.clone())), true, &[]),
+            Claim::claimed()
+        );
+        a.reclaim(&api, "project-late");
+        assert_eq!(a.open_elsewhere(Some("project-late"), None), None);
+    }
+
+    /// D7 and D19: leaving a workspace whose own chats are at work keeps the
+    /// workspace and every folder; leaving one whose folders' chats are at
+    /// work keeps those folders.
+    #[test]
+    fn leaving_a_workspace_keeps_the_keys_of_the_chats_at_work() {
+        let dir = temp_dir("workspace-at-work");
+        let api = folder(&dir, "api", Some("project-api"));
+        let web = folder(&dir, "web", Some("project-web"));
+        let other = folder(&dir, "other", Some("project-other"));
+        let (a, _) = instance(&dir);
+        let (b, _) = instance(&dir);
+        let shop = workspace("workspace-shop", "Shop", &[&api, &web]);
+        assert_eq!(a.claim(Some(&shop), true, &[]), Claim::claimed());
+
+        // A workspace chat of Shop is at work: Shop and both folders stay.
+        let target = Target::Folder(other.clone());
+        assert_eq!(
+            a.claim(Some(&target), true, &[Some("workspace-shop".into())]),
+            Claim::claimed()
+        );
+        assert!(
+            b.claim(Some(&shop), false, &[]).open_elsewhere,
+            "Shop stays"
+        );
+        assert!(open(&b, &api).open_elsewhere);
+        assert!(open(&b, &web).open_elsewhere);
+        a.let_go_done(|_| false);
+        assert_eq!(
+            b.check(Some(&Target::Folder(api.clone())), false),
+            Claim::default(),
+            "done: api is free"
+        );
+
+        // Now the folders' own chats are at work: the folders stay, and the
+        // workspace's own key, whose chats aren't, goes.
+        let (c, _) = instance(&dir);
+        assert_eq!(c.claim(Some(&shop), true, &[]), Claim::claimed());
+        let (d, _) = instance(&dir);
+        let at_work = [
+            Some("project-api".to_string()),
+            Some("project-web".to_string()),
+        ];
+        let away = Target::Folder(folder(&dir, "away", Some("project-away")));
+        assert_eq!(c.claim(Some(&away), true, &at_work), Claim::claimed());
+        assert_eq!(
+            d.open_elsewhere(Some("workspace-shop"), None),
+            None,
+            "Shop's own key went"
+        );
+        assert!(open(&d, &api).open_elsewhere);
+        assert!(open(&d, &web).open_elsewhere);
+    }
+
+    /// D7: a folder opened alone keeps its keys while a workspace chat that
+    /// uses it is at work.
+    #[test]
+    fn a_folder_opened_alone_keeps_its_keys_while_a_workspace_chat_uses_it() {
+        let dir = temp_dir("folder-at-work");
+        let api = folder(&dir, "api", Some("project-api"));
+        let other = folder(&dir, "other", Some("project-other"));
+        let (a, _) = instance(&dir);
+        let (b, _) = instance(&dir);
+
+        assert_eq!(open(&a, &api), Claim::claimed());
+        let target = Target::Folder(other.clone());
+        assert_eq!(
+            a.claim(Some(&target), true, &[Some("project-api".into())]),
+            Claim::claimed()
+        );
+        let copy = folder(&dir, "api-copy", Some("project-api"));
+        assert!(open(&b, &copy).open_elsewhere, "a workspace chat uses api");
+        a.let_go_done(|_| false);
+        assert_eq!(open(&b, &copy), Claim::claimed(), "then api is free");
+        assert!(
+            !b.claim(Some(&Target::Folder(api)), false, &[])
+                .open_elsewhere
+        );
+    }
+
+    /// D7: another window's workspace isn't "a copy sharing its chats": it
+    /// has no folder to be a copy of.
+    #[test]
+    fn a_workspace_open_elsewhere_isnt_a_copy() {
+        let dir = temp_dir("workspace-copy");
+        let api = folder(&dir, "api", Some("project-api"));
+        let shop = workspace("workspace-shop", "Shop", &[&api]);
+        let (a, _) = instance(&dir);
+        let (b, _) = instance(&dir);
+
+        assert_eq!(a.claim(Some(&shop), true, &[]), Claim::claimed());
+        let claim = b.claim(Some(&shop), false, &[]);
+        assert!(claim.open_elsewhere);
+        assert!(!claim.copy);
+        assert_eq!(claim.open_as, None);
+        assert_eq!(claim.workspace.as_deref(), Some("Shop"));
+        // A folder of it is named with its workspace.
+        let claim = b.claim(Some(&Target::Folder(api.clone())), false, &[]);
+        assert_eq!(claim.open_as, Some(api.to_string_lossy().into_owned()));
+        assert_eq!(claim.workspace.as_deref(), Some("Shop"));
+    }
+
+    /// D7: two workspaces may be named alike. A folder is kept at work for
+    /// its own workspace, not for another one of the same name.
+    #[test]
+    fn two_workspaces_named_alike_are_told_apart_by_their_ids() {
+        let dir = temp_dir("same-name");
+        let api = folder(&dir, "api", Some("project-api"));
+        let web = folder(&dir, "web", Some("project-web"));
+        let away = folder(&dir, "away", Some("project-away"));
+        let (a, _) = instance(&dir);
+        let (b, _) = instance(&dir);
+        let shop_a = workspace("w-a", "Shop", &[&api]);
+        let shop_b = workspace("w-b", "Shop", &[&web]);
+        let target = Target::Folder(away);
+
+        // A opens its "Shop" and leaves it, while another window's workspace
+        // of that same name has its chats at work.
+        assert_eq!(a.claim(Some(&shop_a), true, &[]), Claim::claimed());
+        assert_eq!(
+            a.claim(Some(&target), true, &[Some("w-b".into())]),
+            Claim::claimed()
+        );
+        assert_eq!(a.left_at_work(), Vec::new(), "A's own workspace wasn't");
+        assert_eq!(
+            open(&b, &api),
+            Claim::claimed(),
+            "api is kept for the workspace it's in, not for one named alike"
+        );
+
+        // Its own workspace's chats at work do keep it, told apart by ID.
+        let away2 = folder(&dir, "away2", Some("project-away-2"));
+        let (c, _) = instance(&dir);
+        let (d, _) = instance(&dir);
+        assert_eq!(c.claim(Some(&shop_b), true, &[]), Claim::claimed());
+        assert_eq!(
+            c.claim(Some(&Target::Folder(away2)), true, &[Some("w-b".into())]),
+            Claim::claimed()
+        );
+        assert!(c.left_at_work().contains(&Some("project-web".to_string())));
+        assert!(
+            open(&d, &web).open_elsewhere,
+            "web stays with its workspace"
+        );
     }
 
     #[test]

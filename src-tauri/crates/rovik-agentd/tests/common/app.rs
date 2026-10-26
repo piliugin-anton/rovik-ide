@@ -49,6 +49,7 @@ impl App {
             created_at: 0,
             updated_at: 0,
             project_id: Some(PROJECT.into()),
+            folders: None,
         };
         let made = test.core.db.write(move |c| {
             projects::ensure(c, PROJECT, "app", &root)?;

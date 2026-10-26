@@ -9,6 +9,7 @@
 import { createSignal } from 'solid-js';
 import { chatApi, type ProjectInfo, type ProjectSummary } from './chatApi';
 import { claimNoProject } from './instances';
+import type { OpenFolder, WindowTarget } from './openFolders';
 import { notify } from './notifications';
 
 /** undefined: not resolved yet; null: no folder open. */
@@ -44,6 +45,26 @@ export async function refreshProjects() {
   }
 }
 
+/**
+ * The workspace `id` as a target, its folders as the database has them (each
+ * with the name its chats write); null when it's gone (D20).
+ */
+export async function workspaceTarget(id: string): Promise<WindowTarget | null> {
+  try {
+    const found = (await chatApi.listWorkspaces()).find((workspace) => workspace.id === id);
+    if (!found) return null;
+    return {
+      kind: 'workspace',
+      id: found.id,
+      name: found.name,
+      folders: found.folders.map(({ name, path }) => ({ name, path })),
+    };
+  } catch (err) {
+    console.error('Reading the workspace failed:', err);
+    return null;
+  }
+}
+
 function sameProject(a: ProjectSummary, b: ProjectSummary) {
   return (
     a.name === b.name &&
@@ -54,15 +75,45 @@ function sameProject(a: ProjectSummary, b: ProjectSummary) {
   );
 }
 
-let resolving = 0;
+/**
+ * How many times a folder was resolved: an answer that comes for a folder
+ * the window resolved again since is the old one, and is dropped. Each
+ * folder has its own, so resolving one doesn't drop another's answer
+ * (docs/design/workspaces-plan.md, 3.3).
+ */
+const runs = new Map<string, number>();
 
-/** The folder just opened (null: none): which project it is, asking if unsure. */
-export async function resolveProject(root: string | null) {
-  const run = ++resolving;
+/**
+ * The window's set of folders, as a generation: each switch makes a new one,
+ * so an answer for a folder of an earlier one — a folder the window has left
+ * — is dropped too, even though that folder was resolved only once.
+ */
+let generation = 0;
+
+/** The window shows another set of folders: answers asked before are dropped. */
+export function newFoldersGeneration(): number {
+  return ++generation;
+}
+
+/**
+ * The folder just opened (null: none) is which project, asking if unsure.
+ * `folders`: the window's folders, so a copy whose original is one of them
+ * is only offered its own history (D5). `as`: the generation it's asked in,
+ * the window's when it's asked (App.tsx's `resolveFolders` makes one per
+ * switch).
+ */
+export async function resolveProject(
+  root: string | null,
+  folders: OpenFolder[] = [],
+  as = generation
+) {
+  const run = (runs.get(root ?? '') ?? 0) + 1;
+  runs.set(root ?? '', run);
+  const current = () => as === generation && run === runs.get(root ?? '');
   if (!root) {
     // The chats without a project, if no other window has them.
     const ours = await claimNoProject();
-    if (run !== resolving) return;
+    if (!current()) return;
     setBlocked(ours ? null : { kind: 'no-project-elsewhere' });
     setCurrent(null);
     void refreshProjects(); // for the recent projects in the empty Files tab
@@ -72,16 +123,16 @@ export async function resolveProject(root: string | null) {
   setCurrent(undefined);
   try {
     const opened = await chatApi.openProject(root);
-    if (run !== resolving) return;
+    if (!current()) return;
     setCurrent(opened.project);
     void refreshProjects();
     const s = opened.suggestion;
-    if (s?.kind === 'copy') askAboutCopy(root, s.original);
+    if (s?.kind === 'copy') askAboutCopy(root, s.original, folders);
     else if (s?.kind === 'moved') askAboutMoved(root, opened.project, s.candidates);
   } catch (err) {
     console.error('Opening the project failed:', err);
     // Not the chats without a project instead: another window's, maybe.
-    if (run === resolving) {
+    if (current()) {
       setBlocked({ kind: 'failed', error: String(err) });
       setCurrent(null);
     }
@@ -90,23 +141,43 @@ export async function resolveProject(root: string | null) {
 
 const chats = (n: number) => `${n} chat${n === 1 ? '' : 's'}`;
 
-function askAboutCopy(root: string, original: ProjectSummary) {
+/**
+ * The copy's history is its own: a new ID in this folder. Each folder asks
+ * its own question, under an id of its own (3.3).
+ */
+function askAboutCopy(root: string, original: ProjectSummary, folders: OpenFolder[]) {
+  const separate = async () => {
+    const project = await chatApi.answerCopy(root, original.id, false);
+    if (current()?.path === root) setCurrent(project);
+    void refreshProjects();
+  };
+  // The original is another folder of this window: the two would share their
+  // chats, and a workspace holds one project once (D5), so sharing isn't
+  // offered.
+  const member = folders.some((folder) => folder.project?.id === original.id);
+  if (member) {
+    notify({
+      id: `project-copy:${root}`,
+      kind: 'info',
+      title: `This folder looks like a copy of ${original.name}`,
+      message:
+        `${root} looks like a copy of ${original.name}, which is another folder of this ` +
+        'window: the two would share their chats. This folder keeps a separate chat history ' +
+        'instead.',
+      actions: [{ label: 'Separate history', primary: true, run: separate }],
+    });
+    return;
+  }
   notify({
-    id: 'project-copy',
+    id: `project-copy:${root}`,
     kind: 'info',
     title: `This folder looks like a copy of ${original.name}`,
     message:
-      `${original.name} is also at ${original.path}. Share its chats (${chats(original.chatCount)}) ` +
-      'with this folder, or keep a separate chat history for the copy?',
+      `${root} looks like a copy of ${original.name}, at ${original.path}. Share its chats ` +
+      `(${chats(original.chatCount)}) with this folder, or keep a separate chat history for ` +
+      'the copy?',
     actions: [
-      {
-        label: 'Separate history',
-        run: async () => {
-          const project = await chatApi.answerCopy(root, original.id, false);
-          if (current()?.path === root) setCurrent(project);
-          void refreshProjects();
-        },
-      },
+      { label: 'Separate history', run: separate },
       {
         label: 'Share chats',
         primary: true,
@@ -121,12 +192,12 @@ function askAboutMoved(root: string, here: ProjectInfo, candidates: ProjectSumma
   const [first, ...rest] = candidates;
   if (!first) return;
   notify({
-    id: 'project-moved',
+    id: `project-moved:${root}`,
     kind: 'info',
     title: `This looks like ${first.name}`,
     message:
       `A project with the same git history used to be at ${first.path}, which is gone. ` +
-      `Use its chats (${chats(first.chatCount)}) here?`,
+      `Does ${root} use its chats (${chats(first.chatCount)})?`,
     actions: [
       {
         label: rest.length ? 'Not this one' : 'No',

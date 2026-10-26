@@ -819,12 +819,10 @@ fn record_order(messages: &[MessageRow]) -> Vec<String> {
 #[tokio::test]
 async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
     let h = harness(&[("a.txt", "old\n")]).await;
-    let resolved = "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\nNone.";
+    let resolved =
+        "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\nNone.";
     let (url, seen) = model_routed(
-        vec![(
-            REVIEW,
-            vec![Reply::Text(FINDING_A), Reply::Text(resolved)],
-        )],
+        vec![(REVIEW, vec![Reply::Text(FINDING_A), Reply::Text(resolved)])],
         vec![
             write_call("w1", "a.txt", "helo\n"),
             Reply::Text("Done."),
@@ -890,7 +888,11 @@ async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
     // Round 2, a follow-up: the earlier findings and the lead's answer.
     assert!(briefs[1].contains("## The earlier review"));
     assert!(briefs[1].contains("The greeting is wrong"));
-    assert!(briefs[1].contains("The agent's answer: fixed — it says hello now."), "{}", briefs[1]);
+    assert!(
+        briefs[1].contains("The agent's answer: fixed — it says hello now."),
+        "{}",
+        briefs[1]
+    );
     assert!(briefs[1].contains("+hello"));
     let tools = tool_names(&requests_with(&seen, REVIEW)[0]);
     assert!(tools.contains(&"read".to_string()) && tools.contains(&"callers".to_string()));
@@ -6829,7 +6831,10 @@ async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
     // The third review, the run's last, found a new problem: it blocks.
     let last = all.last().unwrap();
     assert_eq!(last["blocked"], true, "{last}");
-    assert_eq!(last["findings"][0]["title"], "The greeting has no name", "{last}");
+    assert_eq!(
+        last["findings"][0]["title"], "The greeting has no name",
+        "{last}"
+    );
 }
 
 /// Round 2 (§4.2): the third round is the first green; its review's fix
@@ -8274,7 +8279,7 @@ async fn deleting_a_project_removes_its_subagents_chats_and_files() {
         }
     }
     let core = h.core.clone();
-    crate::chat_db::api::chat_delete_project(&core, project_id)
+    crate::chat_db::api::chat_delete_project(&core, project_id, Vec::new())
         .await
         .unwrap();
     for id in [&kid, &grandkid] {
@@ -10471,7 +10476,9 @@ async fn budget_used_record_shape() {
     );
     let mut third_meta = third.meta.clone().unwrap();
     // Step 7: the plan as checked is kept with the result.
-    assert!(third_meta["plan"].as_str().is_some_and(|p| p.starts_with("# Users")));
+    assert!(third_meta["plan"]
+        .as_str()
+        .is_some_and(|p| p.starts_with("# Users")));
     third_meta.as_object_mut().unwrap().remove("plan");
     assert_eq!(
         &third_meta,

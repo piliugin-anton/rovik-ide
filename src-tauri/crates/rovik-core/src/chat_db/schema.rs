@@ -337,6 +337,41 @@ CREATE TABLE cloud_moves (
 ) STRICT;
 "#;
 
+/// Workspaces (workspaces-plan.md, 3.1): a workspace groups projects, and
+/// has chats of its own.
+///
+/// - `projects.kind`: `folder` for a project (a folder), `workspace` for a
+///   workspace, which has a name and no path of its own. Rows from before
+///   are projects' folders.
+/// - `workspace_folders`: the folders a workspace holds, in the order it
+///   shows them, each with the name its chats write before a path
+///   (`api/src/x.ts`, D8) and the path it was opened as. A name is never
+///   reused, a removed folder's included, so a chat's earlier messages keep
+///   naming the right folder: removing one sets `removed_at`, which a
+///   folder re-added clears.
+/// - `dialogs.folders`: a workspace chat's folders, `"all"` for every
+///   folder of the workspace (those added later included) or the names
+///   checked as JSON (`["api","web"]`); NULL for every other chat.
+const SCHEMA_V11: &str = r#"
+ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'folder'
+  CHECK (kind IN ('folder', 'workspace'));
+
+CREATE TABLE workspace_folders (
+  project_id TEXT NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+  key        TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  path       TEXT NOT NULL,
+  position   INTEGER NOT NULL,
+  removed_at INTEGER,
+  PRIMARY KEY (project_id, key)
+) STRICT;
+
+CREATE UNIQUE INDEX workspace_folders_by_name
+  ON workspace_folders (project_id, name COLLATE NOCASE);
+
+ALTER TABLE dialogs ADD COLUMN folders TEXT;
+"#;
+
 pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", true)?;
@@ -351,13 +386,13 @@ pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
 }
 
 /// The schema this build writes and reads.
-pub const VERSION: i64 = 10;
+pub const VERSION: i64 = 11;
 
 /// Each version's step, in order: the first takes an empty database to
 /// version 1, the last to `VERSION`.
 const STEPS: [&str; VERSION as usize] = [
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_V10,
+    SCHEMA_V9, SCHEMA_V10, SCHEMA_V11,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -411,7 +446,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, VERSION);
         let project: Option<String> = conn
             .query_row("SELECT project_id FROM dialogs WHERE id = 'old'", [], |r| {
                 r.get(0)
@@ -503,7 +538,7 @@ mod tests {
         migrate(&mut conn).unwrap();
 
         let one = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
-        assert_eq!(one("PRAGMA user_version"), 10);
+        assert_eq!(one("PRAGMA user_version"), VERSION);
         assert_eq!(one("SELECT rev FROM sync_clock"), 1);
         for table in ["dialogs", "messages", "clm_state", "clm_revisions"] {
             let revs = one(&format!("SELECT COUNT(*) FROM {table} WHERE rev = 1"));
@@ -570,6 +605,85 @@ mod tests {
             plan.iter().any(|step| step.contains("messages_by_rev")),
             "{plan:?}"
         );
+        // And it runs once.
+        migrate(&mut conn).unwrap();
+    }
+
+    /// A version 10 database keeps its projects as folders, its chats with
+    /// no folders of their own, and can hold a workspace (3.1): its name,
+    /// its folders in their order with the names a chat writes, and its
+    /// chats' folders.
+    #[test]
+    fn upgrades_a_version_10_database() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure(&conn, true).unwrap();
+        for step in &STEPS[..10] {
+            conn.execute_batch(step).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 10).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, path, created_at, last_opened_at)
+               VALUES ('p', 'app', '/work/app', 1, 1);
+             INSERT INTO dialogs (id, title, created_at, updated_at, project_id)
+               VALUES ('old', 'Old chat', 1, 1, 'p');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let one = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(one("PRAGMA user_version"), VERSION);
+        assert_eq!(
+            one("SELECT COUNT(*) FROM projects WHERE kind = 'folder'"),
+            1,
+            "a project is a folder"
+        );
+        let folders: Option<String> = conn
+            .query_row("SELECT folders FROM dialogs WHERE id = 'old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(folders, None, "a folder chat has none of its own");
+
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, path, created_at, last_opened_at, kind)
+               VALUES ('w', 'Shop', '', 1, 2, 'workspace');
+             INSERT INTO workspace_folders (project_id, key, name, path, position)
+               VALUES ('w', '/work/api', 'api', '/work/api', 0),
+                      ('w', '/work/web', 'web', '/work/web', 1);
+             UPDATE dialogs SET project_id = 'w', folders = '[\"api\",\"web\"]' WHERE id = 'old';",
+        )
+        .unwrap();
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM workspace_folders WHERE project_id = 'w' ORDER BY position")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(names, ["api", "web"]);
+        let folders: String = conn
+            .query_row("SELECT folders FROM dialogs WHERE id = 'old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(folders, "[\"api\",\"web\"]");
+        // A name is the workspace's, whatever its case.
+        let clash = conn.execute(
+            "INSERT INTO workspace_folders (project_id, key, name, path, position)
+             VALUES ('w', '/work/api2', 'API', '/work/api2', 2)",
+            [],
+        );
+        assert!(clash.is_err(), "a name is taken once, whatever its case");
+        // The workspace's folders go with it; its projects stay.
+        conn.execute("DELETE FROM projects WHERE id = 'w'", [])
+            .unwrap();
+        assert_eq!(
+            one("SELECT COUNT(*) FROM workspace_folders"),
+            0,
+            "a deleted workspace takes its folder rows"
+        );
+        assert_eq!(one("SELECT COUNT(*) FROM projects"), 1);
         // And it runs once.
         migrate(&mut conn).unwrap();
     }

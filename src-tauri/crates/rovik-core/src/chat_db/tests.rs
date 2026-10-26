@@ -24,6 +24,7 @@ fn dialog(conn: &mut Connection, id: &str, title: &str, age_days: i64) {
             created_at: t,
             updated_at: t,
             project_id: None,
+            folders: None,
         },
     )
     .unwrap();
@@ -426,6 +427,7 @@ fn unsettled_sends_are_the_chats_latest_unanswered() {
                 created_at: now_ms(),
                 updated_at: now_ms(),
                 project_id: project.map(str::to_string),
+                folders: None,
             },
         )
         .unwrap();
@@ -568,6 +570,7 @@ fn unsettled_sends_take_the_steering_messages_after_the_latest_send() {
                 created_at: now_ms(),
                 updated_at: now_ms(),
                 project_id: None,
+                folders: None,
             },
         )
         .unwrap();
@@ -1182,6 +1185,7 @@ fn deleting_a_project_deletes_its_chats_subagents_and_search_rows() {
                 created_at: now_ms(),
                 updated_at: now_ms(),
                 project_id: Some("proj".into()),
+                folders: None,
             },
         )
         .unwrap();
@@ -1621,4 +1625,66 @@ fn more_messages_than_a_statement_takes_keep_their_attachments() {
     let rows = messages_by_id(&conn, &ids).unwrap();
     assert_eq!(rows.len(), MANY);
     assert!(rows.iter().all(|r| r.attachments == ["img"]));
+}
+
+/// A chat's summary carries its project and, for a workspace chat, its
+/// folders: `"all"` for every folder of the workspace, or the names checked
+/// (workspaces-plan.md, 3.1).
+#[test]
+fn a_chats_summary_carries_its_project_and_folders() {
+    let mut conn = db();
+    conn.execute(
+        "INSERT INTO projects (id, name, path, created_at, last_opened_at, kind)
+         VALUES ('w', 'Shop', '', 1, 1, 'workspace')",
+        [],
+    )
+    .unwrap();
+    let workspace_chat = |id: &str, folders: Option<&str>| NewDialog {
+        id: id.into(),
+        title: id.into(),
+        created_at: 1,
+        updated_at: 1,
+        project_id: Some("w".into()),
+        folders: folders.map(Into::into),
+    };
+    create_dialog(&mut conn, &workspace_chat("all", Some("all"))).unwrap();
+    create_dialog(&mut conn, &workspace_chat("both", Some(r#"["api","web"]"#))).unwrap();
+    create_dialog(
+        &mut conn,
+        &NewDialog {
+            id: "plain".into(),
+            title: "Plain".into(),
+            created_at: 2,
+            updated_at: 2,
+            project_id: None,
+            folders: None,
+        },
+    )
+    .unwrap();
+
+    let summary = get_dialog(&conn, "both").unwrap().unwrap();
+    assert_eq!(summary.project_id.as_deref(), Some("w"));
+    assert_eq!(summary.folders.as_deref(), Some(r#"["api","web"]"#));
+    let all = get_dialog(&conn, "all").unwrap().unwrap();
+    assert_eq!(all.folders.as_deref(), Some("all"));
+    let plain = get_dialog(&conn, "plain").unwrap().unwrap();
+    assert_eq!(plain.project_id, None);
+    assert_eq!(plain.folders, None, "a folder chat has none of its own");
+
+    // The list carries them too, and one set of folders for the next run.
+    let page = list_dialogs(&conn, Some("w"), None, 50).unwrap();
+    assert_eq!(page.items.len(), 2);
+    assert!(page
+        .items
+        .iter()
+        .all(|d| d.project_id.as_deref() == Some("w")));
+    set_dialog_folders(&conn, "all", Some(r#"["api"]"#)).unwrap();
+    assert_eq!(
+        get_dialog(&conn, "all")
+            .unwrap()
+            .unwrap()
+            .folders
+            .as_deref(),
+        Some(r#"["api"]"#)
+    );
 }

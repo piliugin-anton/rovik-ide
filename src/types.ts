@@ -433,6 +433,10 @@ export interface DialogSummary {
   preview?: string | null;
   /** Absent for a chat on this computer. */
   place?: ChatPlace;
+  /** The project or workspace it belongs to (docs/design/workspaces-plan.md, 3.1). */
+  projectId?: string | null;
+  /** A workspace chat's folders: `"all"`, or the names checked as JSON. */
+  folders?: string | null;
 }
 
 export interface DialogCursor {
@@ -530,7 +534,10 @@ export interface LastProjectOpenFile {
 }
 
 export interface LastProjectData {
+  /** The folder open (empty for a workspace, which has none). */
   path: string | null;
+  /** The workspace open, if one was (docs/design/workspaces-plan.md, D17). */
+  workspace?: string | null;
   openedFiles: LastProjectOpenFile[] | null;
   expandedPaths: string[] | null;
   terminalCollapsed: boolean;

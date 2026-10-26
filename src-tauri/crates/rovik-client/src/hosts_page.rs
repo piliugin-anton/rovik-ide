@@ -1893,6 +1893,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             project_id: None,
+            folders: None,
         };
         let db = &setup.app.core.db;
         db.write(move |c| store::create_dialog(c, &dialog))

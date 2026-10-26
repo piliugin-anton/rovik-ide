@@ -80,6 +80,7 @@ impl App {
             created_at: 0,
             updated_at: 0,
             project_id: project.map(str::to_string),
+            folders: None,
         };
         let id = id.to_string();
         self.core
@@ -1525,7 +1526,10 @@ fn a_hosts_plan_fix_changes_only_the_fields_it_sets() {
     );
     let mut waiting = config.clone();
     ApprovalPolicy::WaitForMe.apply(&autonomy, &mut waiting);
-    assert_eq!(waiting.autopilot.plan_fix.max_rounds, 10, "only a host that works on its own");
+    assert_eq!(
+        waiting.autopilot.plan_fix.max_rounds, 10,
+        "only a host that works on its own"
+    );
     ApprovalPolicy::Autonomous.apply(&autonomy, &mut config);
     assert_eq!(
         config.autopilot.plan_fix,

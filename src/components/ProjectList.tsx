@@ -1,6 +1,9 @@
 // ProjectList.tsx: projects, most recently opened first, for the switcher
 // and the empty Files tab (lib/projects.ts). A project whose folder is gone
 // shows "folder missing", with Relink (point it at its folder) and Delete.
+// Delete is hidden for every project this window has open: its chats are
+// the window's, and deleting them from under it would close what it shows
+// (docs/design/workspaces-plan.md, 3.4).
 import { For, Show } from 'solid-js';
 import type { ProjectSummary } from '../lib/chatApi';
 
@@ -15,7 +18,10 @@ function ago(ms: number): string {
 
 export default function ProjectList(props: {
   projects: ProjectSummary[];
+  /** The project shown now. */
   currentId?: string | null;
+  /** The projects this window has open: no Delete on any of them. */
+  openIds?: ReadonlySet<string>;
   onOpen: (p: ProjectSummary) => void;
   onRelink: (p: ProjectSummary) => void;
   onDelete: (p: ProjectSummary) => void;
@@ -54,7 +60,7 @@ export default function ProjectList(props: {
                   Relink…
                 </button>
               </Show>
-              <Show when={p.id !== props.currentId}>
+              <Show when={!props.openIds?.has(p.id)}>
                 <button
                   type="button"
                   class="link-button project-row-delete"

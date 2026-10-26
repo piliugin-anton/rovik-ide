@@ -10,6 +10,7 @@
 // A convenience: losing it loses nothing but tabs.
 import type { OpenFile } from '../types';
 import { sharedMap } from './sharedState';
+import { innermostFolder } from './openFolders';
 
 const KEY = 'rovik.projectSessions';
 /** How many projects' tabs are kept, the most recently left first. */
@@ -64,4 +65,21 @@ export function projectSession(root: string): ProjectSession | null {
 export async function savedProjectSession(root: string): Promise<ProjectSession | null> {
   await sessions.refresh();
   return projectSession(root);
+}
+
+/**
+ * The session's tabs, active tab and open tree folders that are of these
+ * folders: a tab of a folder that left a workspace isn't reopened, as a
+ * file that's gone isn't (docs/design/workspaces-plan.md, 3.11).
+ */
+export function sessionInFolders(
+  session: ProjectSession,
+  folders: readonly string[]
+): ProjectSession {
+  const files = session.files.filter((f) => innermostFolder(folders, f.path) !== null);
+  const expanded = session.expanded.filter((p) => innermostFolder(folders, p) !== null);
+  const active = files.some((f) => f.path === session.active)
+    ? session.active
+    : (files[files.length - 1]?.path ?? null);
+  return { ...session, files, active, expanded };
 }

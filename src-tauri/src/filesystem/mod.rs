@@ -444,7 +444,11 @@ pub async fn save_ai_settings(
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LastProjectData {
+    /// The folder open (empty for a workspace, which has none).
     path: Option<String>,
+    /// The workspace open, if one is (docs/design/workspaces-plan.md, D17).
+    #[serde(default)]
+    workspace: Option<String>,
     opened_files: Option<Vec<OpenFile>>,
     expanded_paths: Option<Vec<String>>,
     terminal_collapsed: bool,
@@ -465,6 +469,7 @@ pub fn load_last_project(app: AppHandle) -> Result<String, String> {
     if !path.exists() {
         let defaults = LastProjectData {
             path: None,
+            workspace: None,
             opened_files: None,
             expanded_paths: None,
             terminal_collapsed: true,
@@ -488,6 +493,7 @@ pub struct OpenFile {
 pub fn save_last_project(
     app: AppHandle,
     path: String,
+    workspace: Option<String>,
     opened_files: Option<Vec<OpenFile>>,
     expanded_paths: Option<Vec<String>>,
     terminal_collapsed: bool,
@@ -495,6 +501,7 @@ pub fn save_last_project(
     let project_path = last_project_path(&app)?;
     let data = LastProjectData {
         path: Some(path),
+        workspace,
         opened_files,
         expanded_paths,
         terminal_collapsed,

@@ -62,11 +62,7 @@ pub async fn chat_open_project(
 /// or the project it was merged into. `project`: the folder's project.
 fn reclaim(app: &AppHandle, root: &str, project: &str) {
     if let Some(instances) = app.try_state::<Instances>() {
-        let claim = instances.claim(Some(Path::new(root)), false, false);
-        if claim.open_elsewhere {
-            log::warn!("{root}'s chats are open in another window too");
-        }
-        instances.opened(Some(project.to_string()));
+        instances.reclaim(Path::new(root), project);
     }
 }
 
@@ -201,8 +197,12 @@ pub async fn chat_delete_project(
     project_id: String,
 ) -> Result<(), String> {
     not_open_elsewhere(&app, &project_id, None, "delete it")?;
+    let open = app
+        .try_state::<Instances>()
+        .map(|instances| instances.owners())
+        .unwrap_or_default();
     remote.before_deleting_project(&project_id).await?;
-    api::chat_delete_project(&core, project_id).await
+    api::chat_delete_project(&core, project_id, open).await
 }
 
 #[tauri::command]

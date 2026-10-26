@@ -40,13 +40,8 @@ import {
 } from './lib/commands';
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
 import { checkProject, claimProject, openNewWindow, showNoProjectWindow } from './lib/instances';
-import type {
-  FileWatchPayload,
-  GitStashFilePreview,
-  LastProjectOpenFile,
-  OpenFile,
-  TreeRow,
-} from './types';
+import { claimTargetOf, openAtStart, resolvable, switchTarget } from './lib/switchTarget';
+import type { FileWatchPayload, GitStashFilePreview, OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext, CursorInfo } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
@@ -66,6 +61,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   rememberProjectSession,
   savedProjectSession,
+  sessionInFolders,
   type ProjectSession,
   type SessionFile,
 } from './lib/projectSessions';
@@ -76,9 +72,11 @@ import ProjectList from './components/ProjectList';
 import {
   chatsBlocked,
   currentProject,
+  newFoldersGeneration,
   projectList,
   refreshProjects,
   resolveProject,
+  workspaceTarget,
 } from './lib/projects';
 import { chatApi, type ProjectSummary } from './lib/chatApi';
 import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
@@ -127,7 +125,15 @@ import {
 import { followDisk, scheduleModelPrune, syncTabModels, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { movedPath, toAbsolutePath, toRelativePath, isAtOrUnder, parentOf } from './lib/fileTools';
-import { activeFolder, folderOf, openFolders, type WindowTarget } from './lib/openFolders';
+import {
+  activeFolder,
+  folderOf,
+  openFolders,
+  pathsByFolder,
+  sessionKey,
+  type OpenFolder,
+  type WindowTarget,
+} from './lib/openFolders';
 import { contextRealPath, isContextPath, remoteContextText } from './lib/contextMode';
 import { isLiveContextPath } from './lib/contextDoc';
 import { chatStore } from './lib/chatStore';
@@ -167,8 +173,18 @@ let unlistenFSChanges: (() => void) | undefined;
 export default function App() {
   /** What the window has open: a folder (a project), or a workspace (D1). */
   const [target, setTarget] = createSignal<WindowTarget | null>(null);
-  /** The folders it has open; a project is the list of one. */
-  const folders = createMemo(() => openFolders(target()));
+  /** The folders that aren't there (deleted, or a drive that isn't mounted):
+   *  shown, not resolved, and tried again as the window comes to the front
+   *  or by their row's Try again (D20). */
+  const [missingFolders, setMissingFolders] = createSignal<ReadonlySet<string>>(new Set());
+  /** The folders it has open, each marked when it isn't there; a project is
+   *  the list of one. */
+  const folders = createMemo(() =>
+    openFolders(target()).map((folder) => ({
+      ...folder,
+      missing: missingFolders().has(folder.path),
+    }))
+  );
   /**
    * The window's one folder, for the parts that still take a folder and not
    * a list (the tree, the watcher, search and the Git panel take folders
@@ -180,6 +196,21 @@ export default function App() {
   };
   /** The open folder `path` is in, or null when it's in none of them. */
   const folderAt = (path: string) => folderOf(folders(), path);
+  /**
+   * The projects this window has open: its workspace, and the project of the
+   * folder it shows (a folder resolving comes through `resolveProject`). The
+   * project list hides Delete for every one of them (B06); the backend
+   * refuses a project this window has open anyway, which covers every folder
+   * of a workspace (`chat_delete_project` with `Instances::owners()`).
+   */
+  const openProjectIds = createMemo(() => {
+    const ids = new Set<string>();
+    const at = target();
+    if (at?.kind === 'workspace') ids.add(at.id);
+    const project = currentProject();
+    if (project) ids.add(project.id);
+    return ids;
+  });
 
   /**
    * The working folders of the window's repositories: git takes a file's
@@ -246,31 +277,41 @@ export default function App() {
   // The web tools' browser: downloaded if it's missing (in the background).
   onMount(() => void startBrowser());
 
-  // Load last opened project on startup: the folder the command line asked
-  // for (`rovik-ide <folder>`, claimed for this window by the backend), else
-  // the last project, unless another window has it open (lib/instances.ts).
-  // A window another one started ("New window") starts without one.
+  // Load last opened project on startup: the workspace or folder the command
+  // line asked for (`--workspace <id>`, `rovik-ide <folder>`, claimed for
+  // this window by the backend), else the last project, unless another window
+  // has it open (lib/instances.ts). A window another one started ("New
+  // window") starts without one. A workspace's folders come from the
+  // database (D17, 3.11). A window that opens with nothing still has its
+  // chats — the ones without a project — which `openAtStart` has resolved
+  // too.
   onMount(async () => {
     try {
-      const startup = await invoke<{ folder: string | null; newWindow: boolean }>(
-        'startup_info'
-      ).catch(() => ({ folder: null, newWindow: false }));
-      if (startup.newWindow && !startup.folder) return;
-      const asked = startup.folder;
-      const projectData = await getLastProject(asked ?? undefined);
-      if (!projectData) {
-        if (asked) await openWithItsTabs(asked);
-        return;
-      }
-      const [path, openFiles, expandedPaths, terminalCollapsed] = projectData;
-      for (const m of monaco.editor.getModels()) m.dispose();
-      tree.presetExpanded(path, expandedPaths);
-      setTarget({ kind: 'folder', path });
-      setOpenFiles(openFiles);
-      setTerminalCollapsed(terminalCollapsed);
-      if (openFiles.length > 0) {
-        setActivePath(openFiles[openFiles.length - 1].path);
-      }
+      const startup = await invoke<{
+        folder: string | null;
+        workspace: string | null;
+        newWindow: boolean;
+      }>('startup_info').catch(() => ({ folder: null, workspace: null, newWindow: false }));
+      // Another window's "New window", with nothing asked for: nothing opens.
+      const asked = startup.newWindow && !startup.folder && !startup.workspace ? null : startup;
+      const opening = asked ? await targetToOpen(asked) : null;
+      await openAtStart(opening?.target ?? null, {
+        show: async (target) => {
+          if (!opening) return;
+          for (const m of monaco.editor.getModels()) m.dispose();
+          presetTreeExpansion(target, opening.expanded);
+          setTarget(target);
+          setTerminalCollapsed(!opening.terminalOpen);
+          const files = await reopenFiles(opening.files);
+          setOpenFiles(files);
+          if (files.length > 0) setActivePath(files[files.length - 1].path);
+        },
+        // Its folders as they are now: each that's there is its own project,
+        // and a missing one is shown as missing and asks nothing (D20). None
+        // open: the chats without a project are this window's.
+        resolve: resolveFolders,
+        exists: (path) => pathExists(path),
+      });
     } finally {
       setRestoringProject(false);
       dismissBootSplash();
@@ -454,25 +495,75 @@ export default function App() {
     return at ? (rootIds()[at.path] ?? null) : null;
   };
 
-  /** The last project, as it was left, if this window may open it; only
-   *  `folder` when given (its tabs come back if it was the last). */
-  async function getLastProject(
-    folder?: string
-  ): Promise<[string, OpenFile[], string[], boolean] | null> {
-    const lastProject = await loadLastProject();
-    if (!lastProject || !lastProject.path) return null;
-    if (folder !== undefined && lastProject.path !== folder) return null;
-    // Open in another window: this one starts without a project.
-    if (!(await claimProject(lastProject.path, { focusOther: false, retries: 2 }))) return null;
-    const openedFilesRaw: LastProjectOpenFile[] = lastProject.openedFiles ?? [];
-    const openFiles = await reopenFiles(openedFilesRaw);
+  /** What the window opens with at its start, and the tabs it comes back with. */
+  interface StartTarget {
+    target: WindowTarget;
+    files: SessionFile[];
+    expanded: string[];
+    /** Its terminal panel was open; false when none was kept. */
+    terminalOpen: boolean;
+  }
 
-    return [
-      lastProject.path,
-      openFiles,
-      lastProject.expandedPaths ?? [],
-      lastProject.terminalCollapsed,
-    ];
+  /**
+   * What this window starts with: the workspace or folder the command line
+   * asked for, else the last project, as it was left (last-project.json,
+   * 3.11). Null when another window has it: this one starts without a
+   * project.
+   */
+  async function targetToOpen(startup: {
+    folder: string | null;
+    workspace: string | null;
+  }): Promise<StartTarget | null> {
+    const last = await loadLastProject();
+    const asked: WindowTarget | null = startup.workspace
+      ? await workspaceTarget(startup.workspace)
+      : startup.folder
+        ? { kind: 'folder', path: startup.folder }
+        : null;
+    const lastTarget: WindowTarget | null = last?.workspace
+      ? await workspaceTarget(last.workspace)
+      : last?.path
+        ? { kind: 'folder', path: last.path }
+        : null;
+    // The last project is the one asked for (its tabs come back from
+    // last-project.json), or the one opened with none asked for at all.
+    const isLast = lastTarget !== null && (!asked || sameWindowTarget(asked, lastTarget));
+    const target = asked ?? lastTarget;
+    if (!target) return null;
+    // Open in another window: this one starts without a project.
+    if (!(await claimProject(claimTargetOf(target), { focusOther: false, retries: 2 }))) {
+      return null;
+    }
+    if (isLast && last) {
+      return {
+        target,
+        files: last.openedFiles ?? [],
+        expanded: last.expandedPaths ?? [],
+        terminalOpen: !last.terminalCollapsed,
+      };
+    }
+    // Not the last project: its tabs are kept with it (project-sessions),
+    // but for those of a folder that has left the workspace (3.11).
+    const session = await savedProjectSession(sessionKey(target) ?? '').catch(() => null);
+    const kept = session
+      ? sessionInFolders(
+          session,
+          openFolders(target).map((folder) => folder.path)
+        )
+      : null;
+    return {
+      target,
+      files: kept?.files ?? [],
+      expanded: kept?.expanded ?? [],
+      terminalOpen: kept?.terminalOpen ?? false,
+    };
+  }
+
+  /** Whether `a` is the target `b` is: the same workspace, or the same folder. */
+  function sameWindowTarget(a: WindowTarget, b: WindowTarget): boolean {
+    if (a.kind === 'workspace' && b.kind === 'workspace') return a.id === b.id;
+    if (a.kind === 'folder' && b.kind === 'folder') return a.path === b.path;
+    return false;
   }
 
   /** Tabs saved for later, read again from disk. */
@@ -534,6 +625,10 @@ export default function App() {
   onMount(() => {
     void startUpdates({
       folder: () => rootPath(),
+      workspace: () => {
+        const at = target();
+        return at?.kind === 'workspace' ? at.id : null;
+      },
       settle: async () => {
         if (!(await settleUnsavedTabs('app'))) return false;
         await keepTabsNow();
@@ -572,80 +667,134 @@ export default function App() {
   /** Opens a project folder: Files, Chat and Git switch to it. */
   async function openProjectAt(folder: string) {
     if (folder === rootPath()) return;
-    // Open in another window (or a copy sharing its chats): that one comes
-    // to the front instead (lib/instances.ts).
-    if (!(await checkProject(folder))) return;
-    if (!(await settleUnsavedTabs('project'))) return;
-    // Chosen meanwhile (the dialog was open), or the same one again.
-    if (folder === rootPath()) return;
-    // Its tabs as the window that had it last left them, this one or
-    // another (checked above: none has it now).
-    const session = await savedProjectSession(folder);
-    // Claimed elsewhere since the check, if it came to that.
-    if (!(await claimProject(folder))) return;
-    // The project left keeps its tabs for coming back to it.
-    void keepTabsNow();
-    for (const m of monaco.editor.getModels()) m.dispose();
-    // The old project's change marks; its tabs close below.
-    for (const { absPath } of markedFiles()) clearGitBase(absPath);
-    setSelectedFileIds(new Set<string>());
-    setLastSelectedId(null);
-    await showWithTabs(folder, session);
+    await switchTo({ kind: 'folder', path: folder });
   }
 
-  /** `folder` becomes the project shown, its tabs as they were left, if kept. */
-  async function showWithTabs(folder: string, session: ProjectSession | null) {
-    // Not kept until they're back: the tabs shown meanwhile aren't its.
-    setTabsComing(folder);
-    try {
-      if (session) tree.presetExpanded(folder, session.expanded);
-      // Its terminal panel as it was left, with its own terminals
-      // (TerminalPanel), or as it is now for a project that has none kept:
-      // set together, or the panel open on the project left would start a
-      // terminal in this one.
-      batch(() => {
-        if (session?.terminalOpen !== undefined) setTerminalCollapsed(!session.terminalOpen);
-        setTarget({ kind: 'folder', path: folder });
-      });
-      // The project left's tabs go, its browser tabs too.
-      setTabs([]);
-      setActivePath(null);
-      if (!session?.files.length) return;
-      const files = await reopenFiles(session.files);
-      // Another project chosen since, or a file opened meanwhile: leave it.
-      if (rootPath() !== folder || openFiles().length > 0 || files.length === 0) return;
-      setOpenFiles(files);
-      setActivePath(
-        files.some((f) => f.path === session.active) ? session.active : files[files.length - 1].path
-      );
-    } finally {
-      if (tabsComing() === folder) setTabsComing(null);
+  /**
+   * Opens a target in this window — a folder, or a workspace's folders — and
+   * says what happened (lib/switchTarget.ts, 3.3): another window with it
+   * keeps it and comes to the front, and the tabs with unsaved text are
+   * settled before anything changes.
+   */
+  async function switchTo(next: WindowTarget | null) {
+    await switchTarget(next, {
+      check: (target) => checkProject(claimTargetOf(target)),
+      settle: () => settleUnsavedTabs('project'),
+      keepTabs: () => void keepTabsNow(),
+      claim: (target) => claimProject(claimTargetOf(target)),
+      show: (target) => showTarget(target),
+      // Each folder that's there is its own project, with its own chats; a
+      // missing one isn't resolved, and asks nothing (D20).
+      resolve: (open) => resolveFolders(open),
+      exists: (path) => pathExists(path),
+    });
+  }
+
+  /**
+   * The window's folders as they are now, resolved in the one place that
+   * does it: each that's there is its own project, with its own chats, and a
+   * missing one is shown as missing and asks nothing (D20). A new generation
+   * first, so an answer for a folder the window has left since is dropped
+   * (lib/projects.ts).
+   */
+  function resolveFolders(open: readonly OpenFolder[]) {
+    newFoldersGeneration();
+    setMissingFolders(new Set(open.filter((folder) => folder.missing).map((f) => f.path)));
+    if (open.length === 0) {
+      void resolveProject(null);
+      return;
+    }
+    for (const folder of resolvable(open)) void resolveProject(folder.path, [...open]);
+  }
+
+  /**
+   * The tree's saved open folders, registered on the folder each is in: the
+   * tree's roots are the window's folders, never the key its session is kept
+   * under (`workspace:<id>` is no folder's path), so a workspace's saved
+   * expansion would otherwise be dropped (B04).
+   */
+  function presetTreeExpansion(target: WindowTarget | null, expanded: readonly string[]) {
+    const roots = openFolders(target).map((folder) => folder.path);
+    for (const { folder, paths } of pathsByFolder(expanded, roots)) {
+      tree.presetExpanded(folder, paths);
     }
   }
 
-  /** A folder asked for at the start that wasn't the last project: its own tabs. */
-  async function openWithItsTabs(folder: string) {
-    await showWithTabs(folder, await savedProjectSession(folder).catch(() => null));
+  /** `next` becomes what the window shows, its tabs as they were left here
+   *  or in the window that had it last (lib/projectSessions.ts). */
+  async function showTarget(next: WindowTarget | null) {
+    const key = sessionKey(next);
+    // Not kept until they're back: the tabs shown meanwhile aren't its.
+    setTabsComing(key);
+    try {
+      const session = key ? await savedProjectSession(key) : null;
+      presetTreeExpansion(next, session?.expanded ?? []);
+      // Its terminal panel as it was left, with its own terminals
+      // (TerminalPanel), or as it is now for a target that has none kept:
+      // set together, or the panel open on the target left would start a
+      // terminal in this one.
+      batch(() => {
+        if (session?.terminalOpen !== undefined) setTerminalCollapsed(!session.terminalOpen);
+        setTarget(next);
+      });
+      // The target left's tabs go, its browser tabs too; so do its models
+      // and the old folder's change marks.
+      setTabs([]);
+      setActivePath(null);
+      for (const m of monaco.editor.getModels()) m.dispose();
+      for (const { absPath } of markedFiles()) clearGitBase(absPath);
+      setSelectedFileIds(new Set<string>());
+      setLastSelectedId(null);
+      // A tab of a folder that has left the workspace isn't reopened (3.11).
+      const kept =
+        session &&
+        sessionInFolders(
+          session,
+          openFolders(next).map((f) => f.path)
+        );
+      if (!kept?.files.length) return;
+      const files = await reopenFiles(kept.files);
+      // Another target chosen since, or a file opened meanwhile: leave it.
+      if (sessionKey(target()) !== key || openFiles().length > 0 || files.length === 0) return;
+      setOpenFiles(files);
+      setActivePath(
+        files.some((f) => f.path === kept.active) ? kept.active : files[files.length - 1].path
+      );
+    } finally {
+      if (tabsComing() === key) setTabsComing(null);
+    }
   }
 
-  // Which project the open folder is, and so whose chats are shown: once
-  // the start has chosen the folder, so no other's chats are claimed first.
-  createEffect(
-    on([rootPath, restoringProject], ([root, restoring]) => {
-      if (!restoring) void resolveProject(root);
-    })
-  );
+  // Which project each open folder is, and so whose chats are shown, is
+  // `resolveFolders`'s: each switch, and the start, resolves the folders the
+  // target has (3.3). Nothing else resolves them, so nothing resolves a
+  // folder that isn't there.
+
   // The chats without a project were another window's: maybe they're free
-  // now, when this one comes to the front.
+  // now, when this one comes to the front. A folder that was missing is
+  // tried again too: its drive may be mounted (D20).
   onMount(() => {
     const again = () => {
       if (!rootPath() && chatsBlocked()?.kind === 'no-project-elsewhere') {
         void resolveProject(null);
       }
+      for (const path of missingFolders()) void tryFolderAgain(path);
     };
     window.addEventListener('focus', again);
     onCleanup(() => window.removeEventListener('focus', again));
   });
+
+  /**
+   * A folder that was missing is tried again (its row's **Try again**, or
+   * the window coming to the front): resolved once it's there, and still
+   * shown as missing until then.
+   */
+  async function tryFolderAgain(path: string) {
+    const there = await pathExists(path).catch(() => false);
+    if (!there) return;
+    setMissingFolders((was) => new Set([...was].filter((missing) => missing !== path)));
+    void resolveProject(path, folders());
+  }
   onMount(() => onCleanup(rereadAiSettingsOnFocus()));
 
   /** A project whose folder is gone: point it at its folder (lib/projects.ts). */
@@ -2001,28 +2150,31 @@ export default function App() {
   });
 
   createEffect(() => {
-    const root = rootPath();
+    const at = target();
     const expandedPaths = Array.from(tree.expanded());
     // Read-only preview tabs (stash content) live only for this session.
     const files = openFiles().filter((f) => !f.readOnly);
     const collapsedTerminal = terminalCollapsed();
-    if (!root) return;
-    saveLastProject(root, files, expandedPaths, collapsedTerminal).catch((err) => {
+    if (!at) return;
+    // A workspace has no path of its own: its ID opens it again (D17).
+    const path = at.kind === 'folder' ? at.path : '';
+    const workspace = at.kind === 'workspace' ? at.id : null;
+    saveLastProject(path, workspace, files, expandedPaths, collapsedTerminal).catch((err) => {
       console.error('Failed to save last project:', err);
     });
   });
 
-  /** The project's tabs shown now, as kept for coming back to it; none
+  /** The target's tabs shown now, as kept for coming back to it; none
    *  while they're being opened. Text: it changes when they do, not as
    *  their files are typed in. */
   const tabsNow = createMemo((): string | null => {
-    const root = rootPath();
-    if (!root || restoringProject() || tabsComing() === root) return null;
+    const key = sessionKey(target());
+    if (!key || restoringProject() || tabsComing() === key) return null;
     const files: SessionFile[] = openFiles()
       .filter((f) => !f.readOnly)
       .map(({ id, path, name, language }) => ({ id, path, name, language }));
     return JSON.stringify({
-      root,
+      root: key,
       files,
       active: activePath(),
       expanded: [...tree.expanded()],
@@ -2253,6 +2405,7 @@ export default function App() {
                     <div class="files-empty-heading">Recent projects</div>
                     <ProjectList
                       projects={projectList()}
+                      openIds={openProjectIds()}
                       onOpen={(p) => openProjectAt(p.path)}
                       onRelink={(p) => void relinkProject(p)}
                       onDelete={(p) => void deleteProject(p)}

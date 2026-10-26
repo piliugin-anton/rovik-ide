@@ -101,6 +101,24 @@ export const chatApi = {
     invoke<Relinked>('chat_relink_project', { projectId, root, merge }),
   deleteProject: (projectId: string) => invoke<void>('chat_delete_project', { projectId }),
 
+  /* Workspaces (src-tauri/src/chat_db/workspaces.rs) */
+  /** Every workspace, most recently opened first. */
+  listWorkspaces: () => invoke<WorkspaceSummary[]>('workspace_list'),
+  /** Makes a workspace holding these folders, in this order; then switchTarget opens it. */
+  createWorkspace: (name: string, folders: string[]) =>
+    invoke<Workspace>('workspace_create', { name, folders }),
+  addWorkspaceFolders: (workspaceId: string, folders: string[]) =>
+    invoke<Workspace>('workspace_add_folders', { workspaceId, folders }),
+  /** Refused for the workspace's last folder. */
+  removeWorkspaceFolder: (workspaceId: string, name: string) =>
+    invoke<void>('workspace_remove_folder', { workspaceId, name }),
+  /** Locate…: the folder named `name` is at `to` from now on, by its name. */
+  relocateWorkspaceFolder: (workspaceId: string, name: string, to: string) =>
+    invoke<Workspace>('workspace_relocate_folder', { workspaceId, name, to }),
+  /** Why `folder` can't join the workspace; null when it can. */
+  checkWorkspaceFolder: (workspaceId: string | null, folder: string) =>
+    invoke<FolderProblem | null>('workspace_check_folder', { workspaceId, folder }),
+
   getMessages: (dialogId: string, beforeSeq?: number, limit = 50): Promise<MessagePage> =>
     page(invoke('chat_get_messages', { dialogId, beforeSeq, limit })),
 
@@ -260,3 +278,53 @@ export interface OpenedProject {
 
 export type Relinked =
   { kind: 'done'; project: ProjectInfo } | { kind: 'isOtherProject'; other: ProjectSummary };
+
+/* Workspaces (src-tauri/src/chat_db/workspaces.rs, D8) */
+
+/** A folder of a workspace: the name its chats write, and the path it was opened as. */
+export interface WorkspaceFolder {
+  name: string;
+  path: string;
+  /** The folder isn't there (deleted, or a drive that isn't mounted). */
+  missing: boolean;
+}
+
+/** A workspace, as the window opens it. */
+export interface Workspace {
+  id: string;
+  name: string;
+  folders: WorkspaceFolder[];
+}
+
+/** A workspace as the project list offers it. */
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  folders: WorkspaceFolder[];
+  chatCount: number;
+  lastOpenedAt: number;
+}
+
+/** Why a folder can't join a workspace (D5), naming the folder it's about. */
+export type FolderProblem =
+  | { kind: 'duplicate'; other: string }
+  | { kind: 'inside'; other: string }
+  | { kind: 'contains'; other: string }
+  | { kind: 'sameProject'; other: string }
+  | { kind: 'notAFolder' };
+
+/** What to tell the user about a folder that can't join. */
+export function folderProblemMessage(problem: FolderProblem): string {
+  switch (problem.kind) {
+    case 'duplicate':
+      return `It's a folder of this workspace already, as ${problem.other}.`;
+    case 'inside':
+      return `It's inside ${problem.other}, another folder of this workspace: a workspace holds folders side by side.`;
+    case 'contains':
+      return `It holds ${problem.other}, another folder of this workspace: a workspace holds folders side by side.`;
+    case 'sameProject':
+      return `It's a copy of ${problem.other}: the two share their chats, and a workspace holds that project once.`;
+    case 'notAFolder':
+      return `That isn't a folder.`;
+  }
+}

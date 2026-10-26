@@ -8,6 +8,7 @@ import {
   folderOf,
   innermostFolder,
   openFolders,
+  pathsByFolder,
   sessionKey,
   type OpenFolder,
 } from './openFolders';
@@ -76,4 +77,26 @@ test('a session is kept under its folder, or under the workspace', () => {
     'workspace:w1'
   );
   assert.equal(sessionKey(null), null);
+});
+
+test("a session's open tree folders are registered on the folder each is in", () => {
+  // The tree's roots are the window's folders, whatever key the window's
+  // session is kept under: a workspace's is `workspace:<id>`, which is no
+  // root's path, so what it saved is split folder by folder (B04).
+  assert.deepEqual(pathsByFolder(['/work/api/src', '/work/web/src'], ['/work/api', '/work/web']), [
+    { folder: '/work/api', paths: ['/work/api/src'] },
+    { folder: '/work/web', paths: ['/work/web/src'] },
+  ]);
+  // A folder with nothing open in it, and a path in none of them, which
+  // isn't restored.
+  assert.deepEqual(pathsByFolder(['/elsewhere/src'], ['/work/api', '/work/web']), [
+    { folder: '/work/api', paths: [] },
+    { folder: '/work/web', paths: [] },
+  ]);
+  // A folder inside another decides for its own paths.
+  assert.deepEqual(pathsByFolder(['/work/packages/web/src'], ['/work', '/work/packages/web']), [
+    { folder: '/work', paths: [] },
+    { folder: '/work/packages/web', paths: ['/work/packages/web/src'] },
+  ]);
+  assert.deepEqual(pathsByFolder([], []), []);
 });

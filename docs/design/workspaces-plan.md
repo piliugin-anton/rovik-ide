@@ -2054,3 +2054,161 @@ with a default export only, so `monaco.editor.getModelMarkers` and the editor's
 events aren't there to call. The choice it makes is `innermostFolder`'s, which
 `openFolders.test.ts` covers; `fileFormatters.test.ts` and
 `markdownPreview.test.ts` cover theirs.
+
+**B01 — schema 11, `workspaces.rs`.** The schema is 3.1's, to the letter:
+`projects.kind` (`folder`/`workspace`, rows from before a folder's),
+`workspace_folders` (key, name, path, position, `removed_at`, the unique
+per-workspace name index), and `dialogs.folders`. `upgrades_a_version_10_database`
+covers it: a project stays a folder, a chat has no folders of its own, a
+workspace's rows and its chat's folders read back, the name index folds ASCII
+case, and deleting the workspace takes its folder rows while its projects stay.
+`chat_db/workspaces.rs` has `prepare` (canonical path, whether it's a folder,
+its ID file: the file system read before a write transaction), `check_folder`
+(pure over prepared folders: Duplicate, Inside, Contains, SameProject,
+NotAFolder), `folder_name` (pure over the names given), `create`,
+`add_folders`, `remove_folder`, `relocate_folder`, `opened`, `list`, `members`
+and `get`. `add_folders` and `relocate_folder` take the workspace's folders as
+`api.rs` prepared them (`prepared_members`, on the blocking pool), so D5's check
+against them holds inside the write transaction without the database thread
+waiting on a slow share; Locate… checks the new place the same way (a place
+that isn't a folder, inside another member, holding one, or another member's
+project is refused). Names: a drive root is its drive (`D:\` gives `D`), a name the agent's
+walkers skip takes its parent's (`app-build`), another member's takes the
+parent's name then a number, and uniqueness folds case in Rust (`Ä` against
+`ä`), the index's `NOCASE` being ASCII only. A removed folder's row stays (its
+name is taken, D8), so a folder re-added comes back by its name, at the end of
+the order. `remove_folder` takes the folder out of the `folders` of the
+workspace's chats that had it (`[]` when it was the only one) and leaves
+`"all"` as it is. The list is by `last_opened_at` and then `rowid`, so two made
+in one millisecond still come in the order they were made.
+`store.rs`'s `DialogSummary` gains `projectId` and `folders` (each left out
+when absent), `NewDialog` gains `folders` (serde default) written by
+`create_dialog`, and `set_dialog_folders` changes them (the rev trigger bumps
+the chat's revision, which `rev_tests.rs` covers). `projects::list` and
+`summary` take `kind = 'folder'` only, so a workspace is never a missing project
+with **Relink**. `workspaces_tests.rs` covers D5's rules (a trailing separator,
+a link, a copy's ID, nested folders, what isn't a folder), D8's names, the last
+folder staying, a folder leaving the chats that had it, a removed name, a
+re-added folder's name, locating, and the list's order and missing folders;
+`projects_tests.rs` adds the workspace that isn't listed or summarised and the
+deleted workspace that leaves its folders' projects; `chat_db/tests.rs` reads a
+chat's project and folders back, `"all"` and names alike. A chat's folders are
+the chat's across a mirror too: `sync.rs`'s dialog columns, row and apply carry
+`folders` (`StoredDialog.folders`, with a serde default, so an older peer's row
+still parses and reads as no folders), and `sync_tests.rs` has "a workspace
+chat's folders reach the mirror".
+Departure: `NewDialog`'s new field needed `folders: None` at every construction
+in the other crates (agentd, client, headless, core's tests); a stored field
+still has a serde default, which is what an older peer's message needs (G).
+
+**B02 — the commands.** `chat_db/api.rs` adds `workspace_list`, `_create`,
+`_add_folders`, `_remove_folder`, `_relocate_folder`, `_check_folder`, each
+reading folders off the database thread (`rt::spawn_blocking`) before the write.
+`commands/workspace.rs` wraps them; `lib.rs` registers them; `chatApi.ts` wraps
+them with `Workspace`, `WorkspaceFolder`, `WorkspaceSummary`, `FolderProblem`
+and `folderProblemMessage` (the core's `FolderProblem::message` in the UI's
+words, one copy each side, as the protocol has no such type). The api tests use
+a `DbState` of their own: the calls reach `workspaces.rs`, and removing a
+workspace's last folder is refused.
+
+**B03 — the claims.** `instances.rs` keeps a target (`Target::Folder`,
+`Target::Workspace { id, name, folders }`) and a record per owner
+(`Owner { project, folder, workspace }`), not one folder and one project:
+`claim(target, focus_other, at_work)` takes the project IDs at work here (the
+window's owners whose chats are, asked of the database by `project_claim`),
+locks the target's keys under the claims' lock without duplicates, keeps the
+owners at work with their keys and lets the rest go. A workspace whose own
+chats are at work keeps every folder of it (D19). `reclaim(root, project)` is
+what `chat_open_project` and a copy or a move answer call: it records that
+folder's project and claims its key, and a folder the window has left takes
+nothing back; it replaces `claim` + `opened`, and `owners()` replaces
+`open_project()`. Holders name their own folder and their workspace, so a
+notice reads "api is open in another window, in Shop" or "Shop is open in
+another window", and `elsewhere()` reports a copy only for a key with a folder:
+another window's workspace isn't a copy. An `Owner` keeps the workspace as
+`WorkspaceRef { id, name }`: a folder is kept at work for its own workspace by
+that ID (two workspaces may be named alike; `instances.rs` tests one of each
+name), and the name is only what a holder's file says for a notice. `lib.rs`'s
+`project_claim` and
+`project_check` take a `ClaimTarget` (`{ kind: "folder", path }` or
+`{ kind: "workspace", id }`, null for no project), whose workspace's folders
+`claim_target` reads from the database; `commands/chat.rs`'s `reclaim` is the
+new call. `src/lib/instances.ts` wraps the target and words a workspace's
+notice. Claiming a workspace also records `workspaces.opened(id)`: the plan's
+step 6 of 3.3 has no command of its own, and claiming it is the moment the
+window opens it. `instances.rs`'s tests cover a workspace's key and its
+folders' or none, a target's keys without duplicates, a folder another process
+has stopping all of it, adding and removing folders, two folders resolved at
+once, a late answer, a workspace at work keeping its folders, two folders' chats
+at work, a folder opened alone kept for a workspace chat, and a workspace that
+isn't a copy; `instances.test.ts` covers the notices.
+
+**B04 — switching.** `src/lib/switchTarget.ts` has the steps of 3.3 in order —
+check, settle unsaved tabs, keep the tabs left, claim, show, resolve each folder
+that's there — as calls the window gives it, so a switch that doesn't happen
+changes nothing and the order is tested on its own (`switchTarget.test.ts`:
+the order, a refused check, a claim taken meanwhile, a cancelled tab, the tabs
+kept before the claim, a missing folder left out and resolved once it's back,
+no folder open, `presentFolders`'s marks, `claimTargetOf`). App.tsx's
+`openProjectAt` becomes `switchTo`, `showWithTabs` becomes `showTarget`, keyed
+by `sessionKey` for the target's tabs and tree. The tree's saved open folders
+are registered on the folder each is in (`openFolders.ts`'s `pathsByFolder`,
+App's `presetTreeExpansion`): the tree applies expansion per root, and its
+roots are the window's folders, never `workspace:<id>`, which would have
+dropped a workspace's expansion. The start is `openAtStart`
+(shown, then resolved), which resolves in every case, including a window that
+opens with nothing — a first start, a fresh **New window**, or a last project
+another window has: resolving no folders is what claims the chats without a
+project for it (D6), and `switchTarget.test.ts`'s "a window that opens with
+nothing resolves" says so. Folders are resolved in one
+place, `resolveFolders` (the switch's `resolve` step, and the start), which
+marks the folders that aren't there and resolves those that are
+(`switchTarget.ts`'s `resolvable`, D20): the effect that resolved on every
+change of folders is gone, so nothing resolves a folder that isn't there, and
+nothing resolves a folder twice on a switch. Each call makes a new generation
+(`newFoldersGeneration`), and `resolveProject` drops an answer asked in an
+earlier one: a folder the window has left since can't take the window's chats
+back, even though that folder itself asked only once. A missing folder is
+retried as the window comes
+to the front (`tryFolderAgain`, which checks it with `path_exists` first); its
+row's **Try again** is C01's. `projects.ts` counts runs per folder and ids its
+notifications `project-copy:<root>` and `project-moved:<root>`, naming the
+folder in the message, so two folders' copy questions are both asked; when the
+original is another folder of the window the question offers **Separate
+history** only (D5). `projects.test.ts` covers both.
+
+**B05 — what's saved.** `last-project.json` gains `workspace` (serde default;
+a file without it reads as before), `save_last_project` writes it, and
+`startup_workspace()` reads `--workspace <id>`; the backend claims the
+workspace's own key before the window exists, as it claims a command line's
+folder, and its folders are claimed when the window opens it (3.3).
+`restart_args(current, folder, workspace)` passes `--workspace <id>`, a
+workspace being the target even when a folder is open (a folder of it), and
+`update_restart` takes the workspace; `lib/updates.ts`'s hook is optional, so a
+window without one (the tests, another host) is as it was. App.tsx starts from
+`startup_info`'s workspace or folder, else the last project: its tabs from
+`last-project.json` when it's the one last left, else from `project-sessions`
+under `sessionKey`. `projectSessions.ts`'s `sessionInFolders` leaves out a tab
+(and a tree folder) of a folder that has left the workspace, as a file that's
+gone is left out (`projectSessions.test.ts`: a workspace's entry under its own
+key, and the tabs of a folder that left).
+Departure: the claim made before the window's database is open has no name for
+its holder file, so a notice for that first moment reads "api is open in
+another window" without "in Shop"; the claim the window makes as it opens the
+workspace writes the name.
+
+**B06 — Delete and open projects.** `ProjectList` takes `openIds` and hides
+**Delete** for every project the window has open, not only the one shown; App
+passes the workspace's ID and the resolved folder's project
+(`openProjectIds`). `chat_db`'s `chat_delete_project(core, id, open)` refuses a
+project among `open` (the window's own), with a message saying to open another
+first; `commands/chat.rs` passes `Instances::owners()`. `ProjectList.test.tsx`
+(new) has no Delete on any open project; the api test
+`a_project_the_window_has_open_isnt_deleted` sees the refusal and its chats
+kept, then the delete once another project is the open one.
+Departure: the guard is in the core's api, not the command, so it can be tested
+with a `TestCore`; the command only tells it which projects are the window's.
+
+Before H, a user of a project sees none of this: no menu makes a workspace, and
+a window still has one folder (A's note stands). The visible changes are still
+the fixed bugs of section 12 and the README's Git panel section.

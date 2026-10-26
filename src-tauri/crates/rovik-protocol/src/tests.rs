@@ -44,6 +44,7 @@ fn changes_page() -> ChangesPage {
                 model_provider: Some("p".into()),
                 model_id: Some("m".into()),
                 effort: None,
+                folders: Some(r#"["api","web"]"#.into()),
             }],
             clm_states: vec![StoredClmState {
                 dialog_id: "d".into(),

@@ -253,6 +253,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             project_id: None,
+            folders: None,
         };
         let d = id.clone();
         test.core
