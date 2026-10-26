@@ -726,10 +726,12 @@ newest version; it needs `curl` on the server. A user can also install it
 for themselves alone: **Set up** in Settings → Connectors, with the host
 chosen, runs OpenAI's installer as that user, which puts `codex` in their
 `~/.local/bin` and its releases in their `~/.codex`. **Update to …** runs
-`codex update` as that user: it updates their own installation, while the
-shared one is updated by the administrator with `admin codex`. However it
-was installed, the host's page in Settings → Cloud hosts then lists Codex
-among the connectors installed.
+`codex update` as that user, which updates their own installation (from
+the folder it was installed in, whatever settings folder the connector
+names); on the shared one, Rovik says instead that the administrator
+updates it, with `admin codex`. However it was installed, the host's page
+in Settings → Cloud hosts then lists Codex among the connectors
+installed.
 
 Each user signs in as their own. The access token or API key of the
 connector's settings travels with the chat's model, kept by the daemon as

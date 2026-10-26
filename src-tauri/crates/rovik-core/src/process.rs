@@ -116,9 +116,13 @@ pub fn refresh_login_path() -> bool {
 /// Whether `program` (a name, as a command line starts with it) is a file
 /// in a folder of the PATH the app's programs get ([`child_var`]).
 pub fn on_path(program: &str) -> bool {
-    let Some(path) = child_var("PATH") else {
-        return false;
-    };
+    find_on_path(program).is_some()
+}
+
+/// The file `program` (a name, as a command line starts with it) runs: the
+/// first of that name in a folder of the PATH the app's programs get.
+pub fn find_on_path(program: &str) -> Option<std::path::PathBuf> {
+    let path = child_var("PATH")?;
     let names: Vec<String> = if cfg!(windows) {
         ["", ".exe", ".cmd", ".bat"]
             .iter()
@@ -127,7 +131,12 @@ pub fn on_path(program: &str) -> bool {
     } else {
         vec![program.to_string()]
     };
-    std::env::split_paths(&path).any(|dir| names.iter().any(|name| dir.join(name).is_file()))
+    std::env::split_paths(&path).find_map(|dir| {
+        names
+            .iter()
+            .map(|name| dir.join(name))
+            .find(|file| file.is_file())
+    })
 }
 
 /// `key` as a program the app starts gets it ([`child_env`]): the PATH to
@@ -563,11 +572,14 @@ mod tests {
     }
 
     /// A program is on the PATH the app's programs get when a folder of it
-    /// has the file: `sh` is, a name nothing has isn't.
+    /// has the file: `sh` is, found as that file; a name nothing has isn't.
     #[test]
     fn a_program_is_found_on_the_path() {
         assert!(on_path("sh"));
+        let sh = find_on_path("sh").unwrap();
+        assert!(sh.is_absolute() && sh.ends_with("sh"), "{}", sh.display());
         assert!(!on_path("rovik-no-such-program"));
+        assert_eq!(find_on_path("rovik-no-such-program"), None);
     }
 
     /// The shell is asked and its PATH read. Not how quickly: in a full

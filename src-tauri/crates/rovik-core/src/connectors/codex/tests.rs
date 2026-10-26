@@ -442,6 +442,77 @@ fn set_up_installs_with_openai_s_installer_and_signs_in_as_the_settings_say() {
     assert!(token.unwrap_err().contains("access token"));
 }
 
+/// `codex update` finds its installation by the settings folder OpenAI's
+/// installer ran with: the update runs with that one, whatever the
+/// connector's own, and without its sign-in. A package manager's
+/// installation needs none.
+#[cfg(unix)]
+#[test]
+fn an_update_runs_with_the_settings_folder_codex_was_installed_with() {
+    use std::os::unix::fs::symlink;
+    let dir = crate::testing::temp_dir();
+    // The installer's layout: the program a link into the current release.
+    let home = dir.0.join("home");
+    let release = home.join(RELEASES).join("0.1.0-x86_64-unknown-linux-musl");
+    std::fs::create_dir_all(release.join("bin")).unwrap();
+    std::fs::write(release.join("bin/codex"), "").unwrap();
+    let standalone = home.join("packages/standalone");
+    symlink(&release, standalone.join("current")).unwrap();
+    std::fs::create_dir_all(dir.0.join("bin")).unwrap();
+    let program = dir.0.join("bin/codex");
+    symlink(standalone.join("current/bin/codex"), &program).unwrap();
+    let home = std::fs::canonicalize(&home).unwrap();
+    assert_eq!(install_home(&program.to_string_lossy()), Some(home.clone()));
+
+    let args = ProbeRequestArgs {
+        kind: ConnectorKind::Codex,
+        settings: json!({
+            "program": program,
+            "auth": "token",
+            "configDir": dir.0.join("work"),
+        }),
+        api_key: "the-token".into(),
+        request: false,
+    };
+    let update = Codex
+        .setup_command(SetupAction::Update, &args)
+        .unwrap()
+        .unwrap();
+    assert_eq!(update.args, ["update"]);
+    let home = home.to_string_lossy().into_owned();
+    assert_eq!(update.env, [("CODEX_HOME".to_string(), home)]);
+
+    // npm's, or one of the user's own making: no folder of the installer's.
+    let npm = dir.0.join("npm/codex");
+    std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
+    std::fs::write(&npm, "").unwrap();
+    assert_eq!(install_home(&npm.to_string_lossy()), None);
+}
+
+/// A user's update of Codex installed for everyone (`admin codex`) isn't
+/// run: it's an administrator's, and the user is told how.
+#[test]
+fn an_installation_for_everyone_is_an_administrators_to_update() {
+    let shared = Path::new("/opt/codex");
+    let refused = update_env(Some(shared), false).unwrap_err();
+    assert!(refused.contains("/opt/codex"), "{refused}");
+    assert!(refused.contains("rovik-agentd admin codex"), "{refused}");
+    assert_eq!(
+        update_env(Some(shared), true).unwrap(),
+        [("CODEX_HOME".to_string(), "/opt/codex".to_string())]
+    );
+    assert_eq!(update_env(None, false).unwrap(), []);
+}
+
+/// What a user may change: a folder of their own; not one that isn't there.
+#[cfg(unix)]
+#[test]
+fn a_users_own_folder_is_writable_and_a_missing_one_is_not() {
+    let dir = crate::testing::temp_dir();
+    assert!(writable(&dir.0));
+    assert!(!writable(&dir.0.join("missing")));
+}
+
 #[test]
 fn a_missing_program_says_how_to_install_it() {
     let error = resolve_program("/nowhere/codex").unwrap_err();

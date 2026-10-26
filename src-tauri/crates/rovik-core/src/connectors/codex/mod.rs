@@ -1166,6 +1166,62 @@ fn latest_of(body: &str) -> Option<String> {
     is_version.then(|| version.to_string())
 }
 
+/// Where OpenAI's installer keeps its releases, in the settings folder
+/// (`CODEX_HOME`) it ran with: `codex update` finds its installation there.
+const RELEASES: &str = "packages/standalone/releases";
+
+/// The settings folder OpenAI's installer put `program` under, which
+/// `codex update` has to run with to find its installation; none for a
+/// package manager's (npm's, Homebrew's), whose updater doesn't read it.
+fn install_home(program: &str) -> Option<PathBuf> {
+    let path = match program.contains('/') || program.contains('\\') {
+        true => PathBuf::from(program),
+        false => crate::process::find_on_path(program)?,
+    };
+    let exe = std::fs::canonicalize(path).ok()?;
+    exe.ancestors()
+        .skip(1)
+        .find(|dir| exe.starts_with(dir.join(RELEASES)))
+        .map(Path::to_path_buf)
+}
+
+/// What `codex update` runs with, for an installation in the settings
+/// folder `home` (none: a package manager's) that this user may change or
+/// not: that folder, whatever the connector's own, and none of its
+/// sign-in. One installed for everyone (a cloud host's `admin codex`) is
+/// an administrator's to update.
+fn update_env(home: Option<&Path>, writable: bool) -> Result<Vec<(String, String)>, String> {
+    match home {
+        None => Ok(Vec::new()),
+        Some(home) if writable => Ok(vec![(
+            "CODEX_HOME".into(),
+            home.to_string_lossy().into_owned(),
+        )]),
+        Some(home) => Err(format!(
+            "This Codex is installed for everyone on this computer ({}), so an administrator \
+             updates it: on a Rovik server, with sudo /opt/rovik/bin/rovik-agentd admin codex.",
+            home.display()
+        )),
+    }
+}
+
+/// Whether this user may change what's in `dir`.
+#[cfg(unix)]
+fn writable(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is a NUL-terminated string that outlives the call.
+    unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+}
+
+/// Off Unix, a user's installation is theirs.
+#[cfg(not(unix))]
+fn writable(_dir: &Path) -> bool {
+    true
+}
+
 /// Whether the sign-in page should show a code to enter, rather than
 /// open in a browser here: a computer with no screen (a cloud host), where
 /// the browser the user signs in with can't reach `codex login`'s local
@@ -1318,7 +1374,8 @@ impl Connector for Codex {
     /// settings folder. The login opens the browser where it runs; on a
     /// computer with no screen it prints a page and a code to enter there
     /// (`--device-auth`). A token or an API key isn't signed in with: it's
-    /// pasted in the connector's settings.
+    /// pasted in the connector's settings. `codex update` runs as its
+    /// installation needs ([`update_env`]).
     fn setup_command(
         &self,
         action: SetupAction,
@@ -1348,7 +1405,13 @@ impl Connector for Codex {
             SetupAction::Login => run("login")?,
             SetupAction::Logout => run("logout")?,
             // Its own updater: the installer's, or the package manager's.
-            SetupAction::Update => run("update")?,
+            SetupAction::Update => {
+                let program = resolve_program(&settings.program)?;
+                let home = install_home(&program);
+                let releases = home.as_ref().map(|home| home.join(RELEASES));
+                let env = update_env(home.as_deref(), releases.as_deref().is_some_and(writable))?;
+                SetupCommand::program(program, &["update"]).with_env(env)
+            }
         }))
     }
 

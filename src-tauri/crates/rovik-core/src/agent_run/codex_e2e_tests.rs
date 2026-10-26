@@ -945,3 +945,86 @@ async fn real_codex_latest_version_is_published() {
     let latest = codex.latest_version().await.expect("a version");
     assert!(latest.starts_with(|c: char| c.is_ascii_digit()), "{latest}");
 }
+
+/// An older release of Codex's, for an update to have something to do.
+#[cfg(unix)]
+const OLDER_CODEX: &str = "0.163.0";
+
+/// Runs a Set up step's command as Set up does, with `home` as the user's
+/// home and `more` in its environment; fails with what it printed.
+#[cfg(unix)]
+async fn run_step(
+    command: &crate::connectors::SetupCommand,
+    home: &std::path::Path,
+    more: &[(&str, &str)],
+) {
+    let out = tokio::process::Command::new(&command.program)
+        .args(&command.args)
+        .envs(command.env.iter().map(|(key, value)| (key, value)))
+        .env("HOME", home)
+        .envs(more.iter().copied())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}:\n{}{}",
+        command.shown,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// What `program --version` says.
+#[cfg(unix)]
+fn version_of(program: &std::path::Path) -> String {
+    let out = std::process::Command::new(program)
+        .arg("--version")
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// OpenAI's installer, as Set up runs it, installs Codex for the user, and
+/// Update brings it to the newest version, which Rovik then no longer
+/// offers, though the connector keeps its login in a settings folder of
+/// its own.
+///   ROVIK_REAL_CODEX=1 cargo test -p rovik-core real_codex -- --ignored
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "downloads Codex twice: set ROVIK_REAL_CODEX=1 and pass --ignored"]
+async fn real_codex_is_installed_by_set_up_and_updated_to_the_newest() {
+    if std::env::var("ROVIK_REAL_CODEX").is_err() {
+        return;
+    }
+    use crate::connectors::{connector, is_newer, ConnectorKind, ProbeRequestArgs, SetupAction};
+    let codex = connector(ConnectorKind::Codex);
+    let home = crate::testing::temp_dir();
+    let program = home.0.join(".local/bin/codex");
+    let args = ProbeRequestArgs {
+        kind: ConnectorKind::Codex,
+        settings: json!({ "program": program, "configDir": home.0.join("work") }),
+        api_key: String::new(),
+        request: false,
+    };
+    let install = codex
+        .setup_command(SetupAction::Install, &args)
+        .unwrap()
+        .unwrap();
+    run_step(&install, &home.0, &[("CODEX_RELEASE", OLDER_CODEX)]).await;
+    assert_eq!(version_of(&program), format!("codex-cli {OLDER_CODEX}"));
+
+    let update = codex
+        .setup_command(SetupAction::Update, &args)
+        .unwrap()
+        .unwrap();
+    run_step(&update, &home.0, &[]).await;
+    let updated = version_of(&program);
+    assert!(is_newer(&updated, OLDER_CODEX), "{updated}");
+    let latest = codex.latest_version().await.expect("a version");
+    assert!(
+        !is_newer(&latest, &updated),
+        "{updated}; {latest} is published"
+    );
+}
