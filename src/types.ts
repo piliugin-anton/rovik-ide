@@ -476,6 +476,8 @@ export type ChatStreamEvent =
 export type WatchOperation = 'create' | 'modify' | 'remove' | 'unknown';
 
 export interface FileWatchPayload {
+  /** The window's folder the change is in, as the window spells it. */
+  folder: string;
   path: string;
   operation: WatchOperation;
   is_dir: boolean;

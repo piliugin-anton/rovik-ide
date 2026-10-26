@@ -246,6 +246,22 @@ test('chat links: web pages, project files at a line, nothing else', () => {
   assert.deepEqual(resolveChatLink(''), { kind: 'none' });
 });
 
+test("a document's `/` links resolve in the folder the document is in", () => {
+  // A workspace's second folder: its own `/`, not the first's (D14).
+  const doc = '/work/web/docs/guide.md';
+  assert.equal(resolveDocumentPath('/src/app.ts', doc, '/work/web'), '/work/web/src/app.ts');
+  assert.deepEqual(resolvePreviewLink('/src/app.ts#L12', doc, '/work/web'), {
+    kind: 'file',
+    path: '/work/web/src/app.ts',
+    line: 12,
+  });
+  assert.deepEqual(resolvePreviewImage('/img/a.png', doc, '/work/web'), {
+    kind: 'local',
+    path: '/work/web/img/a.png',
+    type: 'image/png',
+  });
+});
+
 test('images: local ones with their type, remote ones never fetched', () => {
   const doc = '/p/README.md';
   assert.deepEqual(resolvePreviewImage('docs/shot.PNG?raw=true', doc, '/p'), {

@@ -338,6 +338,7 @@ pub fn run() {
             git::git_branches,
             git::git_head,
             git::git_status,
+            git::git_repos,
             git::git_base_content,
             git::git_revert_file,
             git::git_revert_folder,

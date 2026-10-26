@@ -26,6 +26,14 @@ export async function readDirEntries(rootPath: string, path: string): Promise<Di
   return invoke<DirEntryInfo[]>('read_dir_entries', { rootPath, path });
 }
 
+/**
+ * Watches the window's folders, in place of those watched before: a project's
+ * one, or a workspace's (their changes come back as `fs-changes`).
+ */
+export async function startFileWatch(paths: string[]): Promise<void> {
+  return invoke<void>('start_file_watch', { paths });
+}
+
 export async function readFileContent(path: string): Promise<string> {
   return invoke<string>('read_file_content', { path });
 }

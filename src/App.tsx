@@ -24,6 +24,7 @@ import {
   pickProjectFolder,
   readFileContent,
   writeFileContent,
+  startFileWatch,
   CHANGED_ON_DISK,
   pathExists,
   dirEntryCount,
@@ -106,7 +107,14 @@ import {
 } from './lib/editorTabs';
 import { closeTabsOfClosedPorts, frameUrl, onPageWanted, setPageOpener } from './lib/browserTabs';
 import { isMarkdownLanguage } from './lib/markdownView';
-import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
+import {
+  clearGitBase,
+  createWorkdirReads,
+  markedFiles,
+  refreshableFiles,
+  repoFileOf,
+  setGitBase,
+} from './lib/gitMarks';
 import { diffLines, splitLines, type DiffHunk } from './lib/lineDiff';
 import {
   isProjectSource,
@@ -118,7 +126,8 @@ import {
 } from './lib/intellisense';
 import { followDisk, scheduleModelPrune, syncTabModels, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
-import { movedPath, toAbsolutePath, toRelativePath } from './lib/fileTools';
+import { movedPath, toAbsolutePath, toRelativePath, isAtOrUnder, parentOf } from './lib/fileTools';
+import { activeFolder, folderOf, openFolders, type WindowTarget } from './lib/openFolders';
 import { contextRealPath, isContextPath, remoteContextText } from './lib/contextMode';
 import { isLiveContextPath } from './lib/contextDoc';
 import { chatStore } from './lib/chatStore';
@@ -156,7 +165,67 @@ import { dismissBootSplash } from './lib/bootSplash';
 let unlistenFSChanges: (() => void) | undefined;
 
 export default function App() {
-  const [rootPath, setRootPath] = createSignal<string | null>(null);
+  /** What the window has open: a folder (a project), or a workspace (D1). */
+  const [target, setTarget] = createSignal<WindowTarget | null>(null);
+  /** The folders it has open; a project is the list of one. */
+  const folders = createMemo(() => openFolders(target()));
+  /**
+   * The window's one folder, for the parts that still take a folder and not
+   * a list (the tree, the watcher, search and the Git panel take folders
+   * next). With one folder it is that folder.
+   */
+  const rootPath = () => {
+    const open = folders();
+    return open.length > 0 ? open[0].path : null;
+  };
+  /** The open folder `path` is in, or null when it's in none of them. */
+  const folderAt = (path: string) => folderOf(folders(), path);
+
+  /**
+   * The working folders of the window's repositories: git takes a file's
+   * path relative to its repository, not to the project (D10). Read per set
+   * of folders, and again when git's state changes (`forget`), and waited on
+   * by a file's marks — a tab opened as the window opens gets them too.
+   */
+  const repoWorkdirs = createWorkdirReads(async () => {
+    const open = folders();
+    if (open.length === 0) return [];
+    try {
+      const found = await invoke<{ repos: { workdir: string }[] }>('git_repos', {
+        folders: open.map((folder) => ({ path: folder.path, name: folder.name })),
+      });
+      return found.repos.map((repo) => repo.workdir);
+    } catch (err) {
+      console.error('Failed to read the window’s repositories:', err);
+      return [];
+    }
+  });
+  /** The folders the repositories are read for, as a key. */
+  const foldersKey = () =>
+    folders()
+      .map((folder) => folder.path)
+      .join('\n');
+
+  /** The window's repositories, for the folders it shows. */
+  async function workdirsNow(): Promise<string[]> {
+    const key = foldersKey();
+    const workdirs = await repoWorkdirs.of(key);
+    // The window switched folders while the read was out: that answer is for
+    // the folders it left.
+    return key === foldersKey() ? workdirs : repoWorkdirs.of(foldersKey());
+  }
+
+  // A folder became a repository of its own, or its repository went (a `git
+  // init`, a `.git` taken away): the repositories are read again when next
+  // asked. A commit, a checkout or a save leaves every folder where it was.
+  onMount(() => {
+    let stop: (() => void) | undefined;
+    void listen<{ folder: string; repositories?: boolean }>('git-changed', ({ payload }) => {
+      if (payload.repositories) repoWorkdirs.forget();
+    }).then((unlisten) => (stop = unlisten));
+    onCleanup(() => stop?.());
+  });
+
   /** Until the last project is restored, the Files tab shows no empty state. */
   const [restoringProject, setRestoringProject] = createSignal(true);
   /** The project whose tabs are being opened again: until they are, the
@@ -196,7 +265,7 @@ export default function App() {
       const [path, openFiles, expandedPaths, terminalCollapsed] = projectData;
       for (const m of monaco.editor.getModels()) m.dispose();
       tree.presetExpanded(path, expandedPaths);
-      setRootPath(path);
+      setTarget({ kind: 'folder', path });
       setOpenFiles(openFiles);
       setTerminalCollapsed(terminalCollapsed);
       if (openFiles.length > 0) {
@@ -207,7 +276,8 @@ export default function App() {
       dismissBootSplash();
     }
   });
-  const [rootId, setRootId] = createSignal<string | null>(null);
+  /** Each open folder's backend id, once resolved: what a file made or dropped at its top goes in. */
+  const [rootIds, setRootIds] = createSignal<Record<string, string>>({});
   /** The editor's tabs, files and browser tabs, in order (lib/editorTabs.ts). */
   const [tabs, setTabs] = createSignal<EditorTab[]>([]);
   /** The file tabs among them: a new list only when one of them changed. */
@@ -301,7 +371,16 @@ export default function App() {
   const [terminalCollapsed, setTerminalCollapsed] = createSignal(true);
   const [pendingOpenPath, setPendingOpenPath] = createSignal<string | null>(null);
 
-  const tree = createFileTreeController(rootPath);
+  const tree = createFileTreeController(() =>
+    folders().map((folder) => ({
+      path: folder.path,
+      name: folder.name,
+      // A workspace shows each folder as a row; a project's one root is the
+      // tree itself (D9).
+      row: target()?.kind === 'workspace',
+      id: rootIds()[folder.path],
+    }))
+  );
 
   const displayRows = createMemo<TreeRow[]>(() => {
     const rows = tree.rows();
@@ -365,6 +444,15 @@ export default function App() {
     const rows = effectiveSelectedRows();
     return rows.length > 0 ? rows[0] : null;
   });
+
+  /**
+   * The folder a drop on the tree's empty space, or a new file at the top,
+   * lands in: the active folder's (D15's rule, as a terminal starts in it).
+   */
+  const rootId = () => {
+    const at = activeFolder(folders(), activePath(), firstSelectedRow()?.path ?? null);
+    return at ? (rootIds()[at.path] ?? null) : null;
+  };
 
   /** The last project, as it was left, if this window may open it; only
    *  `folder` when given (its tabs come back if it was the last). */
@@ -517,7 +605,7 @@ export default function App() {
       // terminal in this one.
       batch(() => {
         if (session?.terminalOpen !== undefined) setTerminalCollapsed(!session.terminalOpen);
-        setRootPath(folder);
+        setTarget({ kind: 'folder', path: folder });
       });
       // The project left's tabs go, its browser tabs too.
       setTabs([]);
@@ -767,7 +855,7 @@ export default function App() {
       ...(compare.stash ? { stash: compare.stash } : {}),
       ...(compare.commit ? { commit: compare.commit } : {}),
     };
-    setGitBase(id, compare.fileName, compare.before);
+    setGitBase(id, '', compare.fileName, compare.before);
     setOpenFiles((prev) => (existed ? prev.map((f) => (f.path === id ? tab : f)) : [...prev, tab]));
     if (activate) setActivePath(id);
     if (focus) showEditor();
@@ -1028,7 +1116,7 @@ export default function App() {
       language: file.language,
       readOnly: true,
     };
-    setGitBase(virtualPath, file.name, current.content);
+    setGitBase(virtualPath, '', file.name, current.content);
     // The user has now seen the version on disk: the tab is checked against
     // it from here on, so a save after merging by hand isn't refused again
     // (and saving the tab untouched replaces it, as Overwrite would).
@@ -1041,12 +1129,6 @@ export default function App() {
       tab,
     ]);
     setActivePath(virtualPath);
-  }
-
-  function isAtOrUnder(path: string, base: string) {
-    if (path === base) return true;
-    const trimmed = base.replace(/[\\/]+$/, '');
-    return path.startsWith(`${trimmed}/`) || path.startsWith(`${trimmed}\\`);
   }
 
   /**
@@ -1105,18 +1187,17 @@ export default function App() {
    * Loads the version of a project file that a revert would restore and
    * marks the file's changes against it (lib/gitMarks.ts). Null for a file
    * git doesn't have (everything is a change); undefined, with no marks,
-   * for a file outside the project, a binary, or git trouble.
+   * for a file in none of the window's repositories, a binary, or git
+   * trouble.
    */
-  async function loadGitBase(
-    abs: string,
-    file: string = toRelativePath(abs, rootPath())
-  ): Promise<string | null | undefined> {
-    const root = rootPath();
-    if (!root || file === abs) return undefined;
-    const base = await invoke<string | null>('git_base_content', { path: root, file }).catch(
-      () => undefined
-    );
-    if (base !== undefined) setGitBase(abs, file, base);
+  async function loadGitBase(abs: string): Promise<string | null | undefined> {
+    const at = repoFileOf(abs, await workdirsNow());
+    if (!at) return undefined;
+    const base = await invoke<string | null>('git_base_content', {
+      path: at.workdir,
+      file: at.file,
+    }).catch(() => undefined);
+    if (base !== undefined) setGitBase(abs, at.workdir, at.file, base);
     return base;
   }
 
@@ -1244,15 +1325,15 @@ export default function App() {
   /** Git's state changed: the marked files' bases may have too. */
   let gitRefresh = 0;
   function refreshGitBases() {
-    const root = rootPath();
-    if (!root) return;
     const run = ++gitRefresh;
-    for (const { absPath, file } of markedFiles()) {
-      // Stash/commit preview tabs keep their own base commit, not HEAD.
-      if (absPath.startsWith('stash@') || absPath.startsWith('commit@')) continue;
-      void invoke<string | null>('git_base_content', { path: root, file })
+    // A base is asked of the file's own repository: in one checkout, a
+    // workspace's folders may be in one repository or in several (D10). A
+    // tab of a version of a file (disk:, chat:, a stash's, a commit's) keeps
+    // its base: git has nothing newer to say about it.
+    for (const { absPath, workdir, file } of refreshableFiles()) {
+      void invoke<string | null>('git_base_content', { path: workdir, file })
         .then((base) => {
-          if (run === gitRefresh) setGitBase(absPath, file, base);
+          if (run === gitRefresh) setGitBase(absPath, workdir, file, base);
         })
         .catch(() => clearGitBase(absPath));
     }
@@ -1581,7 +1662,7 @@ export default function App() {
         failures.push(`${src.name}: can't move a folder into itself`);
         continue;
       }
-      if (parentPathOf(src.path) === destPath) continue;
+      if (parentOf(src.path) === destPath) continue;
       try {
         const to = await movePathOnDisk(id, destDirId);
         moved.push({ id, from: src.path, to });
@@ -1628,16 +1709,8 @@ export default function App() {
     if (next) setActivePath(next);
   }
 
-  function parentPathOf(path: string): string | null {
-    const trimmed = path.replace(/[\\/]+$/, '');
-    const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
-    if (idx < 0) return null;
-    return idx === 0 ? trimmed.slice(0, 1) : trimmed.slice(0, idx);
-  }
-
   /**
    * The folder a new file or folder goes in: the clicked folder itself, the
-
    * folder a clicked file is in, or the project root. With several items
    * selected, the topmost one decides.
    */
@@ -1909,7 +1982,8 @@ export default function App() {
       // be a folder that went (renamed away, removed): its sources go too.
       // A folder that came is reported with what's in it.
       if (everything) updateWholeProject();
-      else if (!is_dir && isProjectSource(path, rootPath())) updateProjectSource(path);
+      else if (!is_dir && isProjectSource(path, folderAt(path)?.path ?? null))
+        updateProjectSource(path);
       else if (!is_dir) updateProjectPath(path);
       // A manifest write (package.json, lockfiles) means node_modules may
       // have changed (node_modules itself is watcher-ignored); a tsconfig
@@ -1977,10 +2051,10 @@ export default function App() {
   onCleanup(() => clearTimeout(tabsTimer));
 
   createEffect(async () => {
-    const currentPath = rootPath();
-    if (!currentPath) return;
+    const open = folders().map((folder) => folder.path);
+    if (open.length === 0) return;
     try {
-      await invoke('start_file_watch', { pathStr: currentPath });
+      await startFileWatch(open);
     } catch (error) {
       console.error('Failed to start file watcher:', error);
     }
@@ -1999,18 +2073,34 @@ export default function App() {
     setPendingOpenPath(null);
   });
 
+  /**
+   * Each folder's backend id, read again as the folders change. Only the
+   * newest read sets them: a reply for a folder the window has left must not
+   * outlive the one for the folders it shows.
+   */
+  let rootIdsRead = 0;
   createEffect(() => {
-    const path = rootPath();
-    if (!path) {
-      setRootId(null);
+    const open = folders().map((folder) => folder.path);
+    const read = ++rootIdsRead;
+    if (open.length === 0) {
+      setRootIds({});
       return;
     }
-    getPathId(path)
-      .then(setRootId)
-      .catch((err) => {
-        console.error('Failed to resolve root id:', err);
-        setRootId(null);
-      });
+    void Promise.all(
+      open.map((path) =>
+        getPathId(path)
+          .then((id) => [path, id] as const)
+          .catch((err) => {
+            console.error(`Failed to resolve ${path}'s id:`, err);
+            return null;
+          })
+      )
+    ).then((found) => {
+      if (read !== rootIdsRead) return; // a newer read is out
+      const ids: Record<string, string> = {};
+      for (const one of found) if (one) ids[one[0]] = one[1];
+      setRootIds(ids);
+    });
   });
 
   createEffect(() => {
@@ -2325,6 +2415,7 @@ export default function App() {
             {(path) => (
               <Editor
                 projectDir={rootPath}
+                folders={() => folders().map((folder) => folder.path)}
                 currentFilePath={path}
                 content={() => openFiles().find((f) => f.path === path)?.content}
                 language={() => openFiles().find((f) => f.path === path)?.language ?? 'plaintext'}

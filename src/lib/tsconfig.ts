@@ -24,6 +24,8 @@
 //
 // Pure (file access is injected) so it can be unit-tested without Tauri.
 
+import { isAtOrUnder, pathsIgnoreCase, samePath } from './fileTools';
+
 /** Reads a file; throws (or rejects) when it doesn't exist. */
 export type ReadFile = (path: string) => Promise<string>;
 /** File names directly in a folder; used only when no tsconfig.json exists. */
@@ -258,9 +260,7 @@ export function typesFor(
  * matches everything under it (a folder).
  */
 function matchesPattern(pattern: string, file: string): boolean {
-  if (!/[*?]/.test(pattern)) {
-    return samePath(pattern, file) || startsWithPath(file, `${pattern}/`);
-  }
+  if (!/[*?]/.test(pattern)) return isAtOrUnder(file, pattern);
   let re = '';
   const parts = pattern.split('/');
   parts.forEach((part, i) => {
@@ -275,22 +275,7 @@ function matchesPattern(pattern: string, file: string): boolean {
         .replace(/\*/g, '[^/]*')
         .replace(/\?/g, '[^/]') + sep;
   });
-  return new RegExp(`^${re}$`, caseInsensitive(file) ? 'i' : '').test(file);
-}
-
-/** Windows paths (drive letter) compare case-insensitively. */
-function caseInsensitive(path: string): boolean {
-  return /^[A-Za-z]:\//.test(path);
-}
-
-function samePath(a: string, b: string): boolean {
-  return caseInsensitive(b) ? a.toLowerCase() === b.toLowerCase() : a === b;
-}
-
-function startsWithPath(path: string, prefix: string): boolean {
-  return caseInsensitive(path)
-    ? path.toLowerCase().startsWith(prefix.toLowerCase())
-    : path.startsWith(prefix);
+  return new RegExp(`^${re}$`, pathsIgnoreCase() ? 'i' : '').test(file);
 }
 
 /**

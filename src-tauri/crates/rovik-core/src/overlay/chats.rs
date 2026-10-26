@@ -1311,11 +1311,16 @@ pub fn project_busy(project: &Path) {
 }
 
 /// Whether isolated chats on the project should wait: many files changed
-/// in the last moments, or a git operation is still going.
+/// in the last moments, or a git operation is still going. A git operation
+/// holds the repository's working folder, and a checkout there rewrites every
+/// folder in it: a hold counts for the folder itself, for one above it and for
+/// one below it (D10).
 pub fn is_busy(project: &Path) -> bool {
+    let key = busy_key(project);
     let busy = BUSY.lock().unwrap_or_else(|e| e.into_inner());
-    busy.get(&busy_key(project))
-        .is_some_and(|(at, held)| *held > 0 || at.elapsed() < QUIET)
+    busy.iter().any(|(held, (at, count))| {
+        (*count > 0 || at.elapsed() < QUIET) && (key.starts_with(held) || held.starts_with(&key))
+    })
 }
 
 /// Held while one of the app's git operations rewrites the working tree.
@@ -3959,6 +3964,36 @@ mod conflict_tests {
         claim_direct_writes(&dir, "chat-two").unwrap();
         release_direct_writes("chat-two");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_hold_counts_above_and_below_its_folder() {
+        let repo = std::env::temp_dir().join(format!("busy-repo-{}", std::process::id()));
+        let beside = std::env::temp_dir().join(format!("busy-beside-{}", std::process::id()));
+        for dir in [repo.join("app"), repo.join("web"), beside.clone()] {
+            std::fs::create_dir_all(&dir).unwrap();
+        }
+        // A git operation holds the repository's working folder: every folder
+        // in it waits, and a folder beside it doesn't.
+        let held = hold_busy(&repo);
+        assert!(is_busy(&repo));
+        assert!(is_busy(&repo.join("app")), "a folder inside it");
+        assert!(is_busy(&repo.join("web")));
+        assert!(!is_busy(&beside), "another folder isn't in the repository");
+        drop(held);
+        // The hold's aftermath is the repository's alone.
+        BUSY.lock().unwrap().remove(&busy_key(&repo));
+        assert!(!is_busy(&beside));
+        // A hold on a folder in a repository covers the folders above it too:
+        // what's rewritten there may be beside it.
+        let held = hold_busy(&repo.join("app"));
+        assert!(is_busy(&repo.join("app")));
+        assert!(is_busy(&repo), "a hold below the folder counts");
+        assert!(!is_busy(&repo.join("web")), "a folder beside it doesn't");
+        drop(held);
+        BUSY.lock().unwrap().remove(&busy_key(&repo.join("app")));
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&beside);
     }
 
     #[test]

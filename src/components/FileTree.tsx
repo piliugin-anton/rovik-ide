@@ -11,6 +11,7 @@ import {
   type Accessor,
 } from 'solid-js';
 import type { TreeRow } from '../types';
+import { isAtOrUnder } from '../lib/fileTools';
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
 
 const ROW_HEIGHT = 22;
@@ -74,12 +75,6 @@ export default function FileTree(props: FileTreeProps) {
 
   function rowById(id: string): TreeRow | undefined {
     return props.rows().find((r) => r.id === id);
-  }
-
-  function isAtOrUnder(path: string, base: string): boolean {
-    if (path === base) return true;
-    const trimmed = base.replace(/[\\/]+$/, '');
-    return path.startsWith(`${trimmed}/`) || path.startsWith(`${trimmed}\\`);
   }
 
   /**

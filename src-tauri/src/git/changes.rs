@@ -3,8 +3,9 @@
 
 use super::hooks::{not_committed, Hooks};
 use super::{
-    head_commit, inside_repo, open_repo, project_scope, signature, stage_all, status_options,
-    status_options_in, workdir, ErrText,
+    head_commit, inside_repo, inside_repository_of_its_own, is_submodule, open_repo,
+    scope_pathspec, scopes_in, signature, stage_all, status_options, status_options_in_scopes,
+    workdir, ErrText,
 };
 use crate::util::{blocking, rewriting};
 use git2::{Repository, ResetType, Status};
@@ -16,12 +17,13 @@ pub async fn git_commit(
     path: String,
     message: String,
     no_verify: Option<bool>,
+    scopes: Option<Vec<String>>,
 ) -> Result<(), String> {
     // A pre-commit hook may rewrite files (a formatter's fixes).
     let repo = path.clone();
     let no_verify = no_verify.unwrap_or(false);
     rewriting(&path, move || {
-        git_commit_blocking_with(repo, message, no_verify)
+        git_commit_in(repo, message, no_verify, scopes)
     })
     .await
 }
@@ -29,11 +31,21 @@ pub async fn git_commit(
 /// With the hooks, as the tests run it.
 #[cfg(test)]
 pub fn git_commit_blocking(path: String, message: String) -> Result<(), String> {
-    git_commit_blocking_with(path, message, false)
+    git_commit_in(path, message, false, None)
 }
 
-/// Commits every change in the project's folder (`project_scope`: all of
-/// the repository's when the project is its working folder), as
+/// A commit of the folder in `path` alone: what a project's panel makes.
+#[cfg(test)]
+pub fn git_commit_blocking_with(
+    path: String,
+    message: String,
+    no_verify: bool,
+) -> Result<(), String> {
+    git_commit_in(path, message, no_verify, None)
+}
+
+/// Commits every change in the repository's folders the window has open
+/// (`scopes`: the folder in `path` when none are given), as
 /// `git add -A <folder> && git commit` would, with the
 /// repository's commit hooks: pre-commit, prepare-commit-msg and commit-msg
 /// can stop it (or change what's staged, the message), post-commit comes
@@ -41,10 +53,11 @@ pub fn git_commit_blocking(path: String, message: String) -> Result<(), String> 
 /// `git_operation_continue`'s), and not with conflicts: staged, their
 /// markers would be committed as text. `no_verify`: as git's
 /// `--no-verify`, without pre-commit and commit-msg.
-pub fn git_commit_blocking_with(
+pub fn git_commit_in(
     path: String,
     message: String,
     no_verify: bool,
+    scopes: Option<Vec<String>>,
 ) -> Result<(), String> {
     let repo = open_repo(&path)?;
     crate::git_sync::nothing_in_progress(&repo)?;
@@ -52,7 +65,24 @@ pub fn git_commit_blocking_with(
     if index.has_conflicts() {
         return Err("Resolve the conflicts first.".to_string());
     }
-    stage_all(&mut index, &project_scope(&repo, &path))?;
+    let scopes = scopes_in(&repo, &path, scopes);
+    let outside = staged_outside(&repo, &scopes)?;
+    if !outside.is_empty() {
+        // A terminal's `git add` beside the window's folders: what's staged
+        // stays staged, and nothing is committed or staged (D12).
+        let workdir = workdir(&repo)?;
+        let named = workdir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| workdir.to_string_lossy().into_owned());
+        return Err(format!(
+            "{named} has changes staged outside this window's folders: {}. Commit or unstage them in a terminal first.",
+            outside.join(", ")
+        ));
+    }
+    for scope in &scopes {
+        stage_all(&mut index, &repo, scope)?;
+    }
     let hooks = Hooks::of(&repo).no_verify(no_verify);
     if hooks.has("pre-commit") {
         hooks.run("pre-commit", &[], None).map_err(not_committed)?;
@@ -66,6 +96,12 @@ pub fn git_commit_blocking_with(
         .commit_message(&repo, &message, "message")
         .map_err(not_committed)?;
     let tree = repo.find_tree(index.write_tree().err_text()?).err_text()?;
+    // Nothing to commit (a submodule whose only change is inside its own
+    // working tree, say): an empty commit isn't made (D12).
+    let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+    if head_tree.is_some_and(|head| head.id() == tree.id()) {
+        return Err("Nothing to commit.".to_string());
+    }
     let signature = signature(&repo)?;
     let parent = head_commit(&repo).ok();
     let parents: Vec<&git2::Commit> = parent.iter().collect();
@@ -82,31 +118,74 @@ pub fn git_commit_blocking_with(
     Ok(())
 }
 
-/// Throws away every change in the project's folder (`project_scope`: the
-/// whole working tree when the project is the repository's working
-/// folder): tracked files go back to HEAD, and new files, untracked or
-/// staged, go to the trash (as with reverting one file, so the action can
-/// be undone from there).
-#[tauri::command]
-pub async fn git_discard_all(path: String) -> Result<(), String> {
-    let repo = path.clone();
-    rewriting(&path, move || git_discard_all_blocking(repo)).await
+/// The changes staged outside `scopes` (the window's folders in the
+/// repository): a commit would take them in, though they're the user's other
+/// work — a terminal's `git add` beside the folders (D12). Empty when a scope
+/// is the whole working folder, or nothing is staged.
+fn staged_outside(repo: &Repository, scopes: &[String]) -> Result<Vec<String>, String> {
+    if scopes.iter().any(String::is_empty) {
+        return Ok(Vec::new());
+    }
+    let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+    let index = repo.index().err_text()?;
+    let diff = repo
+        .diff_tree_to_index(head_tree.as_ref(), Some(&index), None)
+        .err_text()?;
+    if diff.deltas().len() == 0 {
+        return Ok(Vec::new());
+    }
+    let specs: Vec<String> = scopes.iter().map(|scope| scope_pathspec(scope)).collect();
+    let pathspec = git2::Pathspec::new(specs.iter().map(String::as_str)).err_text()?;
+    let mut outside = Vec::new();
+    for delta in diff.deltas() {
+        let path = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(Path::to_path_buf);
+        let Some(path) = path else { continue };
+        if pathspec.matches_path(&path, git2::PathspecFlags::empty()) {
+            continue;
+        }
+        outside.push(path.to_string_lossy().into_owned());
+    }
+    outside.sort();
+    Ok(outside)
 }
 
+/// Throws away every change in the repository's folders the window has open
+/// (`scopes`: the folder in `path` when none are given; all of the working
+/// tree when a folder is it): tracked files go back to HEAD, and new files,
+/// untracked or staged, go to the trash (as with reverting one file, so the
+/// action can be undone from there).
+#[tauri::command]
+pub async fn git_discard_all(path: String, scopes: Option<Vec<String>>) -> Result<(), String> {
+    let repo = path.clone();
+    rewriting(&path, move || git_discard_all_in(repo, scopes)).await
+}
+
+/// Throws away every change in the folder in `path`: what a project's panel
+/// does.
+#[cfg(test)]
 pub fn git_discard_all_blocking(path: String) -> Result<(), String> {
+    git_discard_all_in(path, None)
+}
+
+pub fn git_discard_all_in(path: String, scopes: Option<Vec<String>>) -> Result<(), String> {
     let repo = open_repo(&path)?;
     // A rebase's hard reset would drop the rebase's state, leaving HEAD
     // detached in the middle of it: the operation is finished or aborted
     // first.
     crate::git_sync::nothing_in_progress(&repo)?;
     let workdir = workdir(&repo)?;
-    let scope = project_scope(&repo, &path);
+    let scopes = scopes_in(&repo, &path, scopes);
+    let everything = scopes.iter().all(String::is_empty);
 
     // New files go to the trash first: untracked ones, which a reset leaves
     // on disk, and staged-new ones, which a hard reset deletes for good
     // (HEAD doesn't have them).
     let statuses = repo
-        .statuses(Some(&mut status_options_in(&scope)))
+        .statuses(Some(&mut status_options_in_scopes(&scopes)))
         .err_text()?;
     for entry in statuses.iter() {
         let s = entry.status();
@@ -122,28 +201,33 @@ pub fn git_discard_all_blocking(path: String) -> Result<(), String> {
     }
     drop(statuses);
 
+    let specs: Vec<String> = scopes.iter().map(|scope| scope_pathspec(scope)).collect();
     match head_commit(&repo).ok() {
         // Tracked changes (staged or not) back to the last commit.
-        Some(head) if scope.is_empty() => repo
+        Some(head) if everything => repo
             .reset(head.as_object(), ResetType::Hard, None)
             .err_text()?,
-        // Only the project's folder: its index entries back to HEAD's
-        // (`git reset -- <folder>`), then its files back to those.
+        // Only the window's folders: their index entries back to HEAD's
+        // (`git reset -- <folder>`), then their files back to those.
         Some(head) => {
-            repo.reset_default(Some(head.as_object()), [scope.as_str()])
+            repo.reset_default(Some(head.as_object()), specs.iter().map(String::as_str))
                 .err_text()?;
-            let mut checkout = git2::build::CheckoutBuilder::new();
-            checkout.force().path(&scope);
-            repo.checkout_head(Some(&mut checkout)).err_text()?;
+            for spec in &specs {
+                let mut checkout = git2::build::CheckoutBuilder::new();
+                checkout.force().path(spec);
+                repo.checkout_head(Some(&mut checkout)).err_text()?;
+            }
         }
         // No commits yet: nothing to reset to, so the index is emptied (of
-        // the folder's entries) instead; their files went to the trash.
+        // the folders' entries) instead; their files went to the trash.
         None => {
             let mut index = repo.index().err_text()?;
-            if scope.is_empty() {
+            if everything {
                 index.clear().err_text()?;
             } else {
-                index.remove_all([scope.as_str()], None).err_text()?;
+                index
+                    .remove_all(specs.iter().map(String::as_str), None)
+                    .err_text()?;
             }
             index.write().err_text()?;
         }
@@ -262,6 +346,18 @@ pub fn git_revert_file_blocking(path: String, file: String) -> Result<RevertOutc
 fn revert_in(repo: &Repository, workdir: &Path, file: &str) -> Result<RevertOutcome, String> {
     let rel = Path::new(file);
     let abs = workdir.join(rel);
+    // Another repository's business: a folder that is a repository of its own,
+    // or a submodule (D12).
+    if inside_repository_of_its_own(workdir, rel) {
+        return Err(format!(
+            "{file} is a repository of its own: commit or revert it there"
+        ));
+    }
+    if is_submodule(repo, rel) {
+        return Err(format!(
+            "{file} is a submodule: revert it in its own repository"
+        ));
+    }
     let status = repo.status_file(rel).err_text()?;
     if status.is_conflicted() {
         return Err(format!("{file} has merge conflicts: resolve them first"));

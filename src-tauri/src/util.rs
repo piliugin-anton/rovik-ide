@@ -42,14 +42,27 @@ pub async fn blocking_in<T: Send + 'static>(
     blocking(move || Ok(load(&root))).await
 }
 
-/// `work` off the main thread while the project's isolated chats wait: the
+/// `work` off the main thread while the repository's folders wait: the
 /// working tree at `path` is being rewritten (rovik_core::overlay::chats).
+/// The hold is on the repository's working folder, not on `path` alone: a
+/// checkout, a pull or a discard rewrites every folder the repository holds,
+/// so the isolated chats of a workspace's folders beside it hold off too.
 pub async fn rewriting<T: Send + 'static>(
     path: &str,
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    let _busy = rovik_core::overlay::chats::hold_busy(Path::new(path));
+    let held = working_folder_of(Path::new(path));
+    let _busy = rovik_core::overlay::chats::hold_busy(&held);
     blocking(work).await
+}
+
+/// The working folder of the repository `folder` is in, or `folder` itself
+/// outside one: what a rewrite of the working tree touches.
+fn working_folder_of(folder: &Path) -> PathBuf {
+    git2::Repository::discover(folder)
+        .ok()
+        .and_then(|repo| repo.workdir().map(Path::to_path_buf))
+        .unwrap_or_else(|| folder.to_path_buf())
 }
 
 /// Live things by id, each shared with the threads that serve it. The lock

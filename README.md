@@ -77,7 +77,13 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   A project that is a folder of a larger repository (a monorepo's
   package, a home folder kept in git) lists, commits and discards only
   the changes in its own folder; Discard all sends new files, staged or
-  not, to the trash.
+  not, to the trash. A commit is refused while changes are staged outside
+  that folder (a terminal's `git add` beside it), naming them. A folder
+  that is a repository of its own is committed and reverted in that
+  repository, never by the one around it; a submodule's edits are its own
+  repository's too, while the commit it has checked out is listed and
+  committed in the repository around it, as git records it. A commit with
+  nothing in it isn't made.
 
 **AI agent**
 

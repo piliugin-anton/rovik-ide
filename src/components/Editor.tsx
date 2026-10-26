@@ -44,6 +44,7 @@ import { applyTheme, hasSemanticRules } from '../lib/monacoThemes';
 import { renderEditReview, renderReviewUnavailable, reviewMatchesModel } from './editorReview';
 import MarkdownPreview from './MarkdownPreview';
 import { headingLine } from '../lib/markdownPreview';
+import { innermostFolder } from '../lib/openFolders';
 import { addMarkdownEditing } from '../lib/markdownEditing';
 import {
   clearHeadingRequest,
@@ -62,6 +63,8 @@ import { recallViewState, rememberViewState } from '../lib/viewStates';
 
 interface EditorProps {
   projectDir: Accessor<string | null>;
+  /** The window's folders: a file's formatter, preview links and diagnostics are its folder's (D14). */
+  folders: Accessor<readonly string[]>;
   currentFilePath: string;
   /** The file's text as the app holds it; undefined once its tab is closed. */
   content: Accessor<string | undefined>;
@@ -274,12 +277,13 @@ export default function Editor(props: EditorProps) {
       applyIndentation(m, s, ec);
     });
 
-    // The project's command-line formatter for this file, if it has one.
-    // Looked up again when the language, the project or the setting changes.
+    // The project's command-line formatter for this file, if it has one, in
+    // the folder the file is in. Looked up again when the language, the
+    // window's folders or the setting changes.
     const useProjectFormatters = createMemo(() => editorSettings().projectFormatters);
     createEffect(() => {
       const language = props.language();
-      const root = props.projectDir();
+      const folders = props.folders();
       const m = editor?.getModel();
       if (!useProjectFormatters() || !m) return;
       let registered: monaco.IDisposable | null = null;
@@ -288,7 +292,7 @@ export default function Editor(props: EditorProps) {
         stale = true;
         registered?.dispose();
       });
-      registerFileFormatter(m, props.currentFilePath, language, root)
+      registerFileFormatter(m, props.currentFilePath, language, folders)
         .then((r) => {
           if (stale || disposed) r?.disposable.dispose();
           else registered = r?.disposable ?? null;
@@ -482,8 +486,9 @@ export default function Editor(props: EditorProps) {
     ensureOutlineIntelliSense();
 
     // Editor markers (TS worker, rust-analyzer) to the backend, so the
-    // agent's `diagnostics` tool sees what the editor shows.
-    ensureDiagnosticsReporting(props.projectDir());
+    // agent's `diagnostics` tool sees what the editor shows, each file's
+    // under the folder the file is in.
+    ensureDiagnosticsReporting(props.folders());
 
     // Rust: rust-analyzer, started with the project's first Rust file.
     if (props.language() === 'rust') {
@@ -636,7 +641,7 @@ export default function Editor(props: EditorProps) {
         </Show>
         <MarkdownPreview
           path={props.currentFilePath}
-          root={props.projectDir}
+          root={() => innermostFolder(props.folders(), props.currentFilePath) ?? props.projectDir()}
           content={() => props.content() ?? ''}
           editor={instance}
           beside={() => view() === 'split'}

@@ -1,6 +1,19 @@
 import { createMemo, createSignal, createEffect } from 'solid-js';
 import { readDirEntries } from './commands';
+import { isAtOrUnder, parentOf } from './fileTools';
+import { innermostFolder } from './openFolders';
 import type { DirEntryInfo, TreeRow } from '../types';
+
+/** A folder the tree shows. */
+export interface TreeRoot {
+  path: string;
+  /** The row's name, when it has one (the folder's stored name). */
+  name: string;
+  /** Shown as a row at the top: a workspace's folders are, a project's one root isn't. */
+  row: boolean;
+  /** The backend's id for the folder, once resolved: the id of its row. */
+  id?: string;
+}
 
 /**
  * Lazy, cache-backed file tree.
@@ -10,17 +23,22 @@ import type { DirEntryInfo, TreeRow } from '../types';
  * virtualization in <FileTree>, this is what keeps the UI responsive on
  * large projects (tens of thousands of files): work scales with what's
  * expanded and visible, not with total project size.
+ *
+ * It takes the window's folders, each read with its own root (a listing is
+ * read through the folder it's in), and with one folder shown as no row the
+ * rows are a single project's.
  */
-export function createFileTreeController(rootPath: () => string | null) {
+export function createFileTreeController(roots: () => readonly TreeRoot[]) {
   // path -> children, or undefined if never fetched
   const [cache, setCache] = createSignal<Map<string, DirEntryInfo[]>>(new Map());
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
   const [loading, setLoading] = createSignal<Set<string>>(new Set());
-  const [lastRootPath, setLastRootPath] = createSignal<string | null>(null);
-  const [pendingExpanded, setPendingExpandedState] = createSignal<{
-    root: string;
-    paths: string[];
-  } | null>(null);
+  const [lastRoots, setLastRoots] = createSignal<string | null>(null);
+  // Saved expansions, per folder, applied the next time that folder is one of
+  // the tree's roots.
+  const [pendingExpanded, setPendingExpandedState] = createSignal<
+    { root: string; paths: string[] }[]
+  >([]);
 
   const files = createMemo<TreeRow[]>(() => {
     const currentCache = cache();
@@ -49,8 +67,21 @@ export function createFileTreeController(rootPath: () => string | null) {
   // read never showed up until something else touched that folder.
   const reloadQueued = new Set<string>();
 
+  /** The folder that holds `path`: the innermost of the tree's roots. */
+  function rootOf(path: string): string | null {
+    return innermostFolder(
+      roots().map((root) => root.path),
+      path
+    );
+  }
+
+  /** Whether `path` is one of the tree's roots, which are never collapsed. */
+  function isRoot(path: string): boolean {
+    return roots().some((root) => root.path === path);
+  }
+
   async function loadDir(path: string) {
-    const root = rootPath();
+    const root = rootOf(path);
     if (!root) return;
     if (loading().has(path)) {
       reloadQueued.add(path);
@@ -86,38 +117,44 @@ export function createFileTreeController(rootPath: () => string | null) {
     }
   }
 
-  // Register a saved expansion set to apply the next time `root` becomes
-  // the active root. Call this *before* setRootPath so it's in place when
-  // the reset effect below runs.
+  // Register saved expansion sets to apply the next time their folders are
+  // the tree's roots. Call this *before* the folders change, so they're in
+  // place when the reset effect below runs.
   function presetExpanded(root: string, paths: string[]) {
-    setPendingExpandedState({ root, paths });
+    setPendingExpandedState((prev) => [...prev.filter((p) => p.root !== root), { root, paths }]);
   }
 
-  // (Re)load the root whenever the project folder changes, and reset state.
+  // (Re)load the roots whenever the window's folders change, and reset state.
   createEffect(() => {
-    const root = rootPath();
-    if (root !== lastRootPath()) {
+    const current = roots();
+    const key = current.map((root) => root.path).join('\n');
+    if (key !== lastRoots()) {
       setCache(new Map<string, DirEntryInfo[]>());
       const pending = pendingExpanded();
-      if (pending && pending.root === root) {
-        setExpanded(new Set([root, ...pending.paths]));
-        setPendingExpandedState(null);
-      } else if (root) {
-        setExpanded(new Set([root]));
-      }
-      setLastRootPath(root);
-    }
-    if (root) {
-      if (!cache().has(root)) {
-        void loadDir(root);
-      }
-      // Fetch any expanded directory that isn't cached yet — covers both
-      // manual toggling and a restored expansion set, with no ordering
-      // requirement between parent/child.
-      for (const p of expanded()) {
-        if (p !== root && !cache().has(p) && !loading().has(p)) {
-          void loadDir(p);
+      const next = new Set<string>();
+      for (const root of current) {
+        // A root's own listing is always read: its row shows it open, and a
+        // project's root has no row to open.
+        next.add(root.path);
+        for (const saved of pending.filter((p) => p.root === root.path)) {
+          for (const path of saved.paths) next.add(path);
         }
+      }
+      setExpanded(next);
+      setPendingExpandedState([]);
+      setLastRoots(key);
+    }
+    for (const root of current) {
+      if (!cache().has(root.path)) {
+        void loadDir(root.path);
+      }
+    }
+    // Fetch any expanded directory that isn't cached yet — covers both
+    // manual toggling and a restored expansion set, with no ordering
+    // requirement between parent/child.
+    for (const p of expanded()) {
+      if (!cache().has(p) && !loading().has(p)) {
+        void loadDir(p);
       }
     }
   });
@@ -165,16 +202,9 @@ export function createFileTreeController(rootPath: () => string | null) {
     });
   }
 
-  /** Whether `path` is `base` or inside it. */
-  function isAtOrUnder(path: string, base: string) {
-    if (path === base) return true;
-    const trimmed = base.replace(/[\\/]+$/, '');
-    return path.startsWith(`${trimmed}/`) || path.startsWith(`${trimmed}\\`);
-  }
-
   /** Drops a folder and everything under it from the expanded set and the cache. */
   function forget(path: string) {
-    if (path === rootPath()) return; // the root is never collapsed
+    if (isRoot(path)) return; // a folder of the window is never collapsed
     setExpanded((prev) => {
       const doomed = [...prev].filter((p) => isAtOrUnder(p, path));
       if (doomed.length === 0) return prev;
@@ -192,18 +222,8 @@ export function createFileTreeController(rootPath: () => string | null) {
     reloadQueued.delete(path);
   }
 
-  // path.dirname-equivalent for both '/' and '\' separators, since Tauri
-  // paths can be POSIX or Windows depending on platform.
-  function parentOf(path: string): string | null {
-    const trimmed = path.replace(/[\\/]+$/, '');
-    const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
-    if (idx < 0) return null;
-    return idx === 0 ? trimmed.slice(0, 1) : trimmed.slice(0, idx);
-  }
-
   function refresh(changedPath?: string) {
-    const root = rootPath();
-    if (!root) return;
+    if (roots().length === 0) return;
 
     if (!changedPath) {
       for (const dirPath of cache().keys()) void loadDir(dirPath);
@@ -225,16 +245,16 @@ export function createFileTreeController(rootPath: () => string | null) {
   }
 
   /**
-   * Reloads every loaded directory on the way from `path` up to the root.
-   * For a path whose parent folders were just (re)created, e.g. by saving a
-   * tab whose folder had been deleted: each level gains an entry.
+   * Reloads every loaded directory on the way from `path` up to the folder
+   * it's in. For a path whose parent folders were just (re)created, e.g. by
+   * saving a tab whose folder had been deleted: each level gains an entry.
    */
   function refreshAncestors(path: string) {
-    const root = rootPath();
+    const root = rootOf(path);
     if (!root) return;
     const rootTrimmed = root.replace(/[\\/]+$/, '');
     let dir = parentOf(path);
-    while (dir && dir.length >= rootTrimmed.length) {
+    while (dir && dir.replace(/[\\/]+$/, '').length >= rootTrimmed.length) {
       if (cache().has(dir)) void loadDir(dir);
       if (dir === rootTrimmed) break;
       dir = parentOf(dir);
@@ -242,8 +262,8 @@ export function createFileTreeController(rootPath: () => string | null) {
   }
 
   const rows = createMemo<TreeRow[]>(() => {
-    const root = rootPath();
-    if (!root) return [];
+    const current = roots();
+    if (current.length === 0) return [];
     const out: TreeRow[] = [];
     const currentCache = cache();
     const currentExpanded = expanded();
@@ -279,9 +299,36 @@ export function createFileTreeController(rootPath: () => string | null) {
       }
     }
 
-    walk(root, 0);
+    for (const root of current) {
+      if (!root.row) {
+        walk(root.path, 0);
+        continue;
+      }
+      // A folder row, keyed by its path: rows of the same file seen through
+      // two folders (a link) keep their own, and a folder's row is never
+      // renamed, deleted or moved (D9), so its path is its id.
+      out.push({
+        id: root.id ?? root.path,
+        path: root.path,
+        name: root.name,
+        isDir: true,
+        depth: 0,
+      });
+      if (currentExpanded.has(root.path)) walk(root.path, 1);
+    }
     return out;
   });
 
-  return { rows, expanded, toggle, refresh, refreshAncestors, files, presetExpanded, moved };
+  return {
+    rows,
+    expanded,
+    toggle,
+    refresh,
+    refreshAncestors,
+    files,
+    presetExpanded,
+    moved,
+    /** The folder that holds `path`, among the tree's. */
+    rootOf,
+  };
 }

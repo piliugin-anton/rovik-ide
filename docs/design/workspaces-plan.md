@@ -706,6 +706,14 @@ pub struct Repo {
   on a folder above it, or on one below it (today only on the same folder,
   `overlay/chats.rs:1294-1340`). So a checkout holds the isolated chats of
   every folder in the repository, those left at work included, with no list.
+  The hold is deliberately the working folder and not the folder a command
+  was asked from: a checkout rewrites every tracked file in the repository,
+  so the folders beside it in it must wait too. The price is that in a home
+  folder kept in git (`~/.git`), an operation in a project under `~` that
+  isn't a repository of its own holds `~`, and so makes the isolated chats of
+  the other projects under it wait for the operation and 2 s (`QUIET`) after
+  it; holding the folder alone would leave their files unwatched while a
+  checkout rewrites them, which is the failure this rule prevents.
 
 **What a commit takes (D12).**
 
@@ -1943,3 +1951,106 @@ Left as they are, for issues of their own:
 ---
 
 ## Notes from implementation
+
+A project (one folder) behaves after every task as it did before. What reaches a
+user before H is the fixed bugs of section 12 and the README's Git panel
+section (A06). Each note says what the task changed, the tests that prove it,
+and where the code departs from its row.
+
+**A01 — one set of path helpers.** `src/lib/fileTools.ts` holds `isAtOrUnder`,
+`parentOf`, `normalizePath` and `samePath`, with one case rule (ignored on
+Windows and macOS, exact on Linux), drive roots (`D:\x`'s parent is `D:\`) and
+UNC roots (`\\server\share` is a root, `\\server` isn't). `tsconfig.ts`'s
+`samePath` and `startsWithPath`, and the private copies of `isAtOrUnder` and of
+"a path's parent" in `fileTree.ts` and `App.tsx`, are gone. `fileTools.test.ts`
+covers POSIX, Windows and UNC paths and the case rule; `fileTree.test.ts` has "a
+change at the top of a drive refreshes the drive root"; `tsconfig.test.ts`
+passes unchanged.
+
+**A02 — `openFolders.ts`.** `WindowTarget` (a folder, or a workspace's named
+folders), `target()`, `openFolders(target)`, `folderOf`, `activeFolder`,
+`innermostFolder` and `sessionKey`. App's `rootPath()` is a shim
+derived from `folders()` — a project is a list of one — and its callers stayed
+as they were: each has to name a folder of its own, which is milestone C's work
+(C01–C07). `openFolders.test.ts` covers a project as one folder, a workspace's
+folders under its stored names, and the session key.
+
+**A03 — the watcher.** `start_file_watch` takes `StartedFolder`s: a watch and
+its own `.gitignore` files per folder, one folder's error leaving the others
+watched, `fs-changes` naming the folder the change is in and spelling the path
+as that folder is spelled (a folder opened through a link reports under the
+link), `unknown` naming its folder for a flood, and `git-changed { folder,
+repositories }` — `repositories` true when a change makes or removes a
+boundary of the folder's repository (its own `.git`, the `HEAD` that comes or
+goes with it, or the git folder watched for it above), so the window reads
+which repositories its folders are in again; a commit, a checkout or a save is
+false.
+`folder_of` answers the innermost folder, and a folder's own path with no
+separator joined onto nothing — the event a folder's removal sends. A repository
+above a folder is watched at its git folder, at the `refs/` it shares
+(`common_dir/refs`: a linked worktree's branches live there) and at its own
+`refs/`, each of them credited to the folder it serves (a worktree's push is
+seen); a moved `HEAD` or `ORIG_HEAD` calls `project_busy` on that repository's
+working folder, so a checkout from a terminal in `repo/` holds the chats of
+`repo/app`. Switching folders empties the ignore cache. `watch.rs` covers two
+folders at once, an unwatchable folder, a watched folder that went, a flood
+naming each folder, a change under the innermost folder, a link's own spelling,
+a commit or a push from a terminal in a repository above a folder, a worktree's
+push in the shared refs, and which paths may change a folder's repository.
+
+**A04 — the tree's controller.** `createFileTreeController(roots)` takes
+`TreeRoot { path, name, row, id }`: a folder with `row` is a row of its own (a
+project's one root isn't), each listing is read through its own folder, and
+`refresh(path)` walks up to that folder's root only. With one root and no row
+the rows are what they were. `fileTree.test.ts` has "a workspace lists each
+folder as a row, each read from its own folder" and "a link in one folder to
+another lists rows of its own", beside the one-root tests.
+Departure from the row: a row's id is the backend's file id, and a folder row's
+is its `root.id` (else its path), not a folder-and-id pair. Two rows showing one
+file (a link to a file in another folder) are the same file on disk and share
+an id, which is what the editor wants; the visible quirk is that selecting one
+highlights both. Keying by folder would rename the identity the tabs, the
+selection and drag-and-drop share, so it stays as it is until something needs
+it.
+
+**A05 — the repositories.** `git/repos.rs`: `repos_of(folders)` → `Repos
+{ repos, without }`, with `Repo { key, workdir, name, scopes }` — one entry per
+repository, whose `scopes` are the window's folders in it relative to its
+working folder ("" for the working folder itself), a folder in no repository in
+`without`, and its stored name for a repository that is exactly one folder (else
+the working folder's name, with the parent's when two clash). `git_repos`
+exposes it. `git_status`, `git_commit` and `git_discard_all` take the scopes as
+pathspecs (today's one folder when none is given), so `app2` isn't taken with
+`app`; line counts are read per scope and count that scope only. A repository's
+rewrite holds its working folder, and `is_busy` counts holds above and below
+it: a folder inside a held repository is busy, one beside it isn't.
+
+**A06 — commits that keep outsiders out.** Before anything is staged, the index
+is compared with HEAD: an entry outside the scopes refuses the commit, naming
+it, and what's staged stays staged. Status leaves out an untracked folder that
+is a repository of its own, and a submodule whose only change is inside its own
+working tree (`other_repository`); revert refuses both (D12). A submodule moved
+to another commit is listed and committed here, as git records it (the gitlink);
+the status can't tell the two apart, so `workdir_id` against `index_id` decides.
+An empty commit isn't made. The README's Git panel section says all of this.
+
+**A07 — the editor's marks.** `repoFileOf(absPath, workdirs)` asks a file of
+`repo/app` as `app/package.json` in `repo`, the deepest of the window's working
+folders, and a tab holding a version of a file (`disk:`, `chat:`) keeps its base
+across a refresh. GitPanel's `onOpenFile` hands on the absolute path and the file
+it was given rather than a path re-made from one project. `gitMarks.test.ts`: a
+file of a project inside a repository is asked as its path in the repository, a
+file in no repository has no base, a tab holding a version is never refreshed, a
+base with no repository is never asked for, a tab opened before the read gets
+its marks, and the repositories are read once per set of folders.
+
+**A08 — the editor's services.** `formatterRoot(folders, path)` is the file's
+own folder, so a file of the second folder is formatted with the second's
+config; the Markdown preview's `/` links resolve in the file's folder; and the
+diagnostics' `rootOf` is `innermostFolder` over the window's folders, so a
+file's markers are reported for the folder that holds them.
+No `diagnostics.test.ts`: the node harness stubs `monaco-editor` as a namespace
+with a default export only, so `monaco.editor.getModelMarkers` and the editor's
+events aren't there to call. The choice it makes is `innermostFolder`'s, which
+`openFolders.test.ts` covers; `fileFormatters.test.ts` and
+`markdownPreview.test.ts` cover theirs.
