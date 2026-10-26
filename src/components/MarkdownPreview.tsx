@@ -39,6 +39,7 @@ import { resolveProjectFile } from '../lib/editorBridge';
 import { openInEditor } from '../lib/openInEditor';
 import { toRelativePath } from '../lib/fileTools';
 import { notify } from '../lib/notifications';
+import { shortcutKey } from '../lib/shortcutKeys';
 
 const isMac = navigator.platform.toUpperCase().includes('MAC');
 
@@ -609,11 +610,12 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
     editor.focus();
   }
 
-  // Ctrl+S saves, Ctrl+Shift+V and Ctrl+K V switch views, as in the editor.
+  // Ctrl+S saves, Ctrl+Shift+V and Ctrl+K V switch views, as in the editor,
+  // whatever the keyboard layout (a Russian one types "ы" for Ctrl+S).
   let chordUntil = 0;
   function onKeyDown(e: KeyboardEvent) {
     const mod = isMac ? e.metaKey : e.ctrlKey;
-    const key = e.key.toLowerCase();
+    const key = shortcutKey(e);
     const chord = chordUntil > Date.now();
     chordUntil = 0;
     if (chord && !mod && !e.altKey && key === 'v') {
