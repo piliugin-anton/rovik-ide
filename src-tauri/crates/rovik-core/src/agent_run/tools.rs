@@ -1914,7 +1914,7 @@ fn command_meta(result: &str) -> Map<String, Value> {
 /// chat works in its overlay, and a chat on a server in its own worktree
 /// (D8). Both change the project by landing, not through git, so git
 /// commands that change the repository are refused there. For Rovik's
-/// `bash`, and for a harness's shell commands it asks about.
+/// `bash`, and for a harness's shell commands, before they run.
 pub(super) fn copy_command_problem(owner: &str, on_server: bool, command: &str) -> Option<String> {
     match crate::overlay::chats::get(owner) {
         Some(o) => o.command_problem(command),

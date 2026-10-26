@@ -1486,8 +1486,10 @@ impl Run {
     /// (environment.rs), noted on its call's line while something
     /// installs. The model is told what was done, and, after a failure,
     /// that the command can run again.
-    /// Before it runs, one that would read or change a restricted file is
-    /// refused, whatever the harness's own permissions.
+    /// Before it runs, whatever the harness's own permissions, one is
+    /// refused that would read or change a restricted file, or that can't
+    /// run where the chat works (git that changes the repository, in a
+    /// chat's copy of the project).
     pub(super) async fn answer_command_check(&self, check: crate::connectors::CommandCheck) {
         use crate::connectors::{CommandAnswer, HarnessCall};
         let Some(root) = self.root.clone() else {
@@ -1514,6 +1516,13 @@ impl Run {
             if let Some(reason) = self
                 .harness_restricted_problem("bash", args, check.cwd)
                 .await
+            {
+                let _ = check.reply.send(CommandAnswer::Deny(reason));
+                return;
+            }
+            let owner = self.overlay_owner();
+            if let Some(reason) =
+                tools::copy_command_problem(&owner, self.core.agents.on_server(), &command)
             {
                 let _ = check.reply.send(CommandAnswer::Deny(reason));
                 return;
