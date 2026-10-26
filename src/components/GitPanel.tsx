@@ -300,22 +300,27 @@ function RevertIcon() {
   );
 }
 
-/** `+3 −3` line counts, green for additions and red for deletions. */
+/**
+ * `+3 −3` line counts, green for additions and red for deletions. Read as
+ * they're drawn: a changes row stays while the status refreshes, so counts
+ * read once kept a file's first save and hid every save after it.
+ */
 function DiffStats(props: { additions?: number; deletions?: number }) {
-  const additions = props.additions ?? 0;
-  const deletions = props.deletions ?? 0;
-  if (additions <= 0 && deletions <= 0) return null;
-  const title =
-    additions > 0 && deletions > 0
-      ? `${additions} added line${additions === 1 ? '' : 's'}, ${deletions} removed`
-      : additions > 0
-        ? `${additions} added line${additions === 1 ? '' : 's'}`
-        : `${deletions} removed line${deletions === 1 ? '' : 's'}`;
+  const additions = () => props.additions ?? 0;
+  const deletions = () => props.deletions ?? 0;
+  const title = () =>
+    additions() > 0 && deletions() > 0
+      ? `${additions()} added line${additions() === 1 ? '' : 's'}, ${deletions()} removed`
+      : additions() > 0
+        ? `${additions()} added line${additions() === 1 ? '' : 's'}`
+        : `${deletions()} removed line${deletions() === 1 ? '' : 's'}`;
   return (
-    <span class="git-diff-stats" title={title}>
-      {additions > 0 && <span class="git-diff-add">+{additions}</span>}
-      {deletions > 0 && <span class="git-diff-del">−{deletions}</span>}
-    </span>
+    <Show when={additions() > 0 || deletions() > 0}>
+      <span class="git-diff-stats" title={title()}>
+        {additions() > 0 && <span class="git-diff-add">+{additions()}</span>}
+        {deletions() > 0 && <span class="git-diff-del">−{deletions()}</span>}
+      </span>
+    </Show>
   );
 }
 
