@@ -2,8 +2,8 @@
 //! server, connectors::fake_codex) that plays a scripted turn and calls
 //! Rovik's hooks and tools as Codex does: under Rovik's permissions, its
 //! commands and patches are put to them; whatever its mode, they're
-//! checked against the project's restricted files; in Plan mode it plans
-//! in its own; with Rovik's tools it's the model behind Rovik's agent.
+//! checked against the project's restricted files; in Plan mode and
+//! Autopilot, with Rovik's tools, it's the model behind Rovik's agent.
 //! Tests that run the real `codex` are `#[ignore]`d, and run with
 //! `ROVIK_REAL_CODEX=1`.
 
@@ -12,7 +12,8 @@ use super::permissions::{ApprovalRule, Approver};
 use super::*;
 
 /// A send in `mode` on Codex's model, its connector's `settings` with the
-/// stand-in as its program.
+/// stand-in as its program. Whose tools it runs is the run's to decide, by
+/// the mode (`run::lead_profile`).
 #[cfg(unix)]
 pub(super) fn codex_send(
     h: &Harness,
@@ -34,8 +35,6 @@ pub(super) fn codex_send(
     request.profile.id = "cx::gpt-6.1-sol".into();
     request.profile.label = "Codex/gpt-6.1-sol".into();
     request.profile.model = "gpt-6.1-sol".into();
-    // As the app resolves a connector: no tools of Rovik's with its own.
-    request.profile.no_tools = settings["tools"] != "rovik";
     let mut connector = settings;
     connector["program"] = json!(program);
     request.profile.connector = Some(connector);
@@ -312,74 +311,14 @@ async fn codex_s_own_commands_are_checked_whatever_its_mode() {
     assert_eq!(steps["exec-4"]["ok"], false);
 }
 
-/// Plan mode with Codex's own tools: it plans in its own plan mode, in a
-/// read-only sandbox where it asks nothing, whatever its mode, and Rovik
-/// refuses its patch as Rovik's own edit would be in Plan mode. Its plan
-/// is the reply.
+/// Plan mode on Codex, whatever its permission mode: it's the model behind
+/// Rovik's agent. Its call is the reply's, Rovik runs it and stores its
+/// result, and Codex, waiting on it over MCP, gets it and writes its reply.
+/// Rovik's prompt replaces Codex's, the project's part apart, and Codex's
+/// own tools are off.
 #[cfg(unix)]
 #[tokio::test]
-async fn codex_in_plan_mode_plans_in_its_own_and_changes_nothing() {
-    let h = harness(&[("src/a.txt", "one\n")]).await;
-    let patch = "*** Begin Patch\n*** Update File: src/a.txt\n@@\n-one\n+ONE\n*** End Patch";
-    let scenario = json!({ "steps": [
-        { "command": "cat src/a.txt", "id": "exec-1", "output": "one\n" },
-        { "patch": patch, "id": "exec-2", "paths": ["src/a.txt"] },
-        { "text": "Here's the plan." },
-        { "plan": "# Plan\n1. Make it loud.\n" },
-    ] });
-    let Some(program) = crate::connectors::fake_codex(&h._dir.0, &scenario) else {
-        eprintln!("no python3 with tomllib: skipped");
-        return;
-    };
-    let settings = json!({ "permissionMode": "fullAccess" });
-    h.start(codex_send(
-        &h,
-        &program,
-        "plan",
-        "Plan the change",
-        settings,
-        quiet_permissions(),
-    ))
-    .await
-    .unwrap();
-    assert_eq!(h.run_end().await, "done");
-
-    let record = record(&h);
-    let refused = &hook_answer(&record, "PreToolUse", "exec-2")["hookSpecificOutput"];
-    assert_eq!(refused["permissionDecision"], "deny");
-    assert!(refused["permissionDecisionReason"]
-        .as_str()
-        .unwrap()
-        .contains("Plan mode"));
-    assert_eq!(hook_answer(&record, "PreToolUse", "exec-1"), json!({}));
-    assert!(record["applied"].as_array().unwrap().is_empty());
-    let thread = request_of(&record, "thread/start");
-    assert_eq!(
-        (
-            thread["approvalPolicy"].as_str(),
-            thread["sandbox"].as_str()
-        ),
-        (Some("never"), Some("read-only"))
-    );
-    let turn = request_of(&record, "turn/start");
-    assert_eq!(turn["collaborationMode"]["mode"], "plan");
-    let initialize = request_of(&record, "initialize");
-    assert_eq!(initialize["capabilities"]["experimentalApi"], true);
-    let reply = h.messages().await.last().unwrap().content.clone();
-    assert!(
-        reply.starts_with("Here's the plan.") && reply.ends_with("# Plan\n1. Make it loud.\n"),
-        "{reply}"
-    );
-    assert_eq!(h.file("src/a.txt").as_deref(), Some("one\n"));
-}
-
-/// Codex with Rovik's tools: the model behind Rovik's agent. Its call is
-/// the reply's, Rovik runs it and stores its result, and Codex, waiting on
-/// it over MCP, gets it and writes its reply. Rovik's prompt replaces
-/// Codex's, the project's part apart, and Codex's own tools are off.
-#[cfg(unix)]
-#[tokio::test]
-async fn codex_with_rovik_tools_runs_its_calls_through_rovik() {
+async fn in_plan_mode_codex_is_rovik_s_agent_and_rovik_runs_its_calls() {
     let h = harness(&[("src/alpha.rs", "pub fn alpha() -> u32 {\n    42\n}\n")]).await;
     let scenario = json!({ "steps": [
         { "text": "Reading it." },
@@ -391,11 +330,11 @@ async fn codex_with_rovik_tools_runs_its_calls_through_rovik() {
         eprintln!("no python3 with tomllib: skipped");
         return;
     };
-    let settings = json!({ "tools": "rovik" });
+    let settings = json!({ "permissionMode": "fullAccess" });
     let request = codex_send(
         &h,
         &program,
-        "agent",
+        "plan",
         "What does alpha return?",
         settings,
         quiet_permissions(),
@@ -462,19 +401,19 @@ async fn codex_with_rovik_tools_runs_its_calls_through_rovik() {
     assert_eq!(record["env"]["ROVIK_MCP_TOKEN"], true);
 }
 
-/// Rovik's agent on Codex in Plan mode (as an Autopilot task's plan stage
-/// runs too): the plan mode is Rovik's, in its prompt, and none of Codex's
-/// own, which Codex refuses from a client without its experimental API.
+/// Codex in Plan mode (as an Autopilot task's plan stage runs too): the
+/// plan mode is Rovik's, in its prompt, and none of Codex's own, which
+/// Codex refuses from a client without its experimental API.
 #[cfg(unix)]
 #[tokio::test]
-async fn codex_with_rovik_tools_plans_in_rovik_s_plan_mode() {
+async fn codex_plans_in_rovik_s_plan_mode() {
     let h = harness(&[("src/alpha.rs", "pub fn alpha() -> u32 {\n    42\n}\n")]).await;
     let scenario = json!({ "steps": [{ "text": "# Plan\n1. Make alpha return 43." }] });
     let Some(program) = crate::connectors::fake_codex(&h._dir.0, &scenario) else {
         eprintln!("no python3 with tomllib: skipped");
         return;
     };
-    let settings = json!({ "tools": "rovik" });
+    let settings = json!({});
     let request = codex_send(
         &h,
         &program,
@@ -491,6 +430,8 @@ async fn codex_with_rovik_tools_plans_in_rovik_s_plan_mode() {
     assert!(request_of(&record, "turn/start")
         .get("collaborationMode")
         .is_none());
+    let initialize = request_of(&record, "initialize");
+    assert_eq!(initialize["capabilities"]["experimentalApi"], false);
     // Rovik's plan mode is told with the project's part of its prompt.
     let developer = request_of(&record, "thread/start")["developerInstructions"]
         .as_str()
@@ -874,9 +815,9 @@ async fn real_codex_asks_rovik_before_its_own_commands_and_patches() {
     assert_eq!(h.messages().await.last().unwrap().content, "Done.");
 }
 
-/// The real `codex` as the model behind Rovik's agent: its call of
-/// Rovik's `read` is the reply's, Rovik runs it, and Codex sends the
-/// model its result.
+/// The real `codex` as the model behind Rovik's agent, in Plan mode: its
+/// call of Rovik's `read` is the reply's, Rovik runs it, and Codex sends
+/// the model its result.
 ///   ROVIK_REAL_CODEX=1 cargo test -p rovik-core real_codex -- --ignored
 #[cfg(unix)]
 #[tokio::test]
@@ -890,11 +831,11 @@ async fn real_codex_runs_rovik_tools() {
                        "arguments": "{\"path\":\"src/alpha.rs\"}", "call_id": "call_read_1" });
     let (url, seen) = responses_api(vec![response("r1", call), says("r2", "It returns 42.")]).await;
     let home = crate::testing::temp_dir();
-    let settings = real_codex(&url, &home.0, json!({ "tools": "rovik" }));
+    let settings = real_codex(&url, &home.0, json!({}));
     let mut request = codex_send(
         &h,
         "codex",
-        "agent",
+        "plan",
         "What does alpha return?",
         settings,
         quiet_permissions(),
@@ -923,21 +864,21 @@ async fn real_codex_runs_rovik_tools() {
     );
 }
 
-/// The real `codex` as the model behind Rovik's agent, in Plan mode (as
-/// an Autopilot task's plan stage runs too): the plan mode is Rovik's, its
-/// prompt and its tools, not Codex's own, and the plan is the reply.
+/// The real `codex` in Plan mode (as an Autopilot task's plan stage runs
+/// too): the plan mode is Rovik's, its prompt and its tools, not Codex's
+/// own, and the plan is the reply.
 ///   ROVIK_REAL_CODEX=1 cargo test -p rovik-core real_codex -- --ignored
 #[cfg(unix)]
 #[tokio::test]
 #[ignore = "runs the real codex: set ROVIK_REAL_CODEX=1 and pass --ignored"]
-async fn real_codex_with_rovik_tools_plans_in_rovik_s_plan_mode() {
+async fn real_codex_plans_in_rovik_s_plan_mode() {
     if std::env::var("ROVIK_REAL_CODEX").is_err() {
         return;
     }
     let h = harness(&[("src/alpha.rs", "pub fn alpha() -> u32 {\n    42\n}\n")]).await;
     let (url, seen) = responses_api(vec![says("r1", "# Plan\n1. Make alpha return 43.")]).await;
     let home = crate::testing::temp_dir();
-    let settings = real_codex(&url, &home.0, json!({ "tools": "rovik" }));
+    let settings = real_codex(&url, &home.0, json!({}));
     let mut request = codex_send(
         &h,
         "codex",
@@ -955,57 +896,6 @@ async fn real_codex_with_rovik_tools_plans_in_rovik_s_plan_mode() {
     assert!(
         first.contains("The user chose Plan mode"),
         "Rovik's plan mode: {first}"
-    );
-}
-
-/// The real `codex` in Plan mode, whatever its mode: its read-only
-/// sandbox keeps its commands from changing anything, Rovik refuses its
-/// patch, and its plan is the reply.
-///   ROVIK_REAL_CODEX=1 cargo test -p rovik-core real_codex -- --ignored
-#[cfg(unix)]
-#[tokio::test]
-#[ignore = "runs the real codex: set ROVIK_REAL_CODEX=1 and pass --ignored"]
-async fn real_codex_in_plan_mode_changes_nothing() {
-    if std::env::var("ROVIK_REAL_CODEX").is_err() {
-        return;
-    }
-    let h = harness(&[("src/a.txt", "one\n")]).await;
-    let patch = r#"tools.apply_patch("*** Begin Patch\n*** Update File: src/a.txt\n@@\n-one\n+ONE\n*** End Patch")"#;
-    let plan = "Looked.\n<proposed_plan>\n# Plan\n1. Make it loud.\n</proposed_plan>";
-    let (url, seen) = responses_api(vec![
-        runs(
-            "r1",
-            &[
-                ("A", r#"tools.exec_command({cmd: "touch made.txt"})"#),
-                ("B", patch),
-            ],
-        ),
-        says("r2", plan),
-    ])
-    .await;
-    let home = crate::testing::temp_dir();
-    let settings = real_codex(&url, &home.0, json!({ "permissionMode": "fullAccess" }));
-    let mut request = codex_send(
-        &h,
-        "codex",
-        "plan",
-        "Plan it",
-        settings,
-        quiet_permissions(),
-    );
-    request.profile.connector.as_mut().unwrap()["program"] = json!("");
-    h.start(request).await.unwrap();
-    assert_eq!(h.run_end_within(Duration::from_secs(120)).await, "done");
-    assert!(!h.project.join("made.txt").exists(), "read-only");
-    assert_eq!(h.file("src/a.txt").as_deref(), Some("one\n"));
-    assert!(
-        sent(&seen).contains("Plan mode"),
-        "the model is told why its patch didn't apply"
-    );
-    let reply = h.messages().await.last().unwrap().content.clone();
-    assert!(
-        reply.contains("# Plan") && reply.contains("Make it loud."),
-        "{reply}"
     );
 }
 

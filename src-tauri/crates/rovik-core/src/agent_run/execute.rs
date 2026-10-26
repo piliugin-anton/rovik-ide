@@ -1436,10 +1436,10 @@ impl Run {
     /// of the same kind is, by `authorize`: refused by the settings, run,
     /// or put to the user or the AI reviewer, an edit as its changes.
     ///
-    /// Refused first, as Rovik's own calls are: in Plan mode, a tool that
-    /// would change something; and a shell command that can't run where the
-    /// chat works (git that changes the repository, in a chat's copy of the
-    /// project).
+    /// Refused first, as Rovik's own calls are: a shell command that can't
+    /// run where the chat works (git that changes the repository, in a
+    /// chat's copy of the project). A harness asks only in Agent mode: in
+    /// Plan mode and Autopilot it runs Rovik's tools (`run::lead_profile`).
     pub(super) async fn answer_tool_ask(&self, ask: crate::connectors::ToolAsk) {
         let call = ToolCall {
             id: ask.call_id,
@@ -1447,16 +1447,6 @@ impl Run {
             arguments: ask.arguments,
             extra_content: None,
         };
-        // Plan mode changes nothing, whoever's tool would: the harness plans
-        // in a mode of its own, and what it asks to change is refused here,
-        // as Rovik's own call would be.
-        if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&call.name.as_str()) {
-            let reason = plan::blocked_in_plan_mode(&call.name, self.autopilot);
-            let _ = ask
-                .reply
-                .send(crate::connectors::ToolAnswer::Deny { reason });
-            return;
-        }
         if call.name == "bash" {
             let args = permissions::parse_args(&call.arguments);
             let command = args.get("command").and_then(Value::as_str).unwrap_or("");

@@ -18,12 +18,23 @@ import type { ChatMessage, ChatPlace } from '../types';
 
 test('Enter: the answer to a question, a message, a message to the run, or nothing', () => {
   const at = (questionWaits: boolean, running: boolean, steerable: boolean) =>
-    sendAction({ questionWaits, running, steerable });
+    sendAction({ questionWaits, running, steerable, command: false });
   assert.equal(at(true, true, true), 'answer');
   assert.equal(at(false, false, false), 'send');
   assert.equal(at(false, true, true), 'steer');
   // Plan mode, an Autopilot task's run, one still starting: the text stays.
   assert.equal(at(false, true, false), 'hold');
+});
+
+test('Enter on a command picked from the / menu: never to the run, which can’t run it mid-turn', () => {
+  const at = (running: boolean, steerable: boolean) =>
+    sendAction({ questionWaits: false, running, steerable, command: true });
+  // Nothing runs: the command is the request of a new run.
+  assert.equal(at(false, false), 'send');
+  // A run that takes messages goes: it waits, and goes once the run has ended.
+  assert.equal(at(true, true), 'after');
+  // One that takes none: the text stays, as a message's does.
+  assert.equal(at(true, false), 'hold');
 });
 
 test('a queued message says what the run is busy with', () => {

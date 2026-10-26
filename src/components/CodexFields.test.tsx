@@ -1,7 +1,7 @@
 // Component test: Codex's part of a connector's form, its `ConnectorFields`
-// (CodexFields.tsx). How it signs in is in the Connection section; how
-// chats use it comes first among its options, and its permission mode
-// shows only when it runs its own tools.
+// (CodexFields.tsx). How it signs in is in the Connection section; its
+// permission mode (for its own tools, in Agent mode) comes first among its
+// options. Whose tools it runs is the chat's mode's, not a setting.
 // Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
@@ -63,24 +63,23 @@ test('a new Codex connector follows Rovik’s permissions with its own tools', (
   assert.equal(codex.name, 'Codex');
   assert.deepEqual(codex.settings, CODEX_DEFAULTS);
   const { root, dispose } = mount(Options);
-  assert.equal(select(root, 'Runs as')!.value, 'own');
   assert.equal(select(root, 'Mode')!.value, 'rovik');
   dispose();
 });
 
-test('its permission mode shows only when it runs its own tools', () => {
-  const { root, connector, dispose } = mount(Options);
-  assert.deepEqual(sections(root), ['How chats use it', 'Permissions', 'Advanced']);
+test('its permission mode comes first, and a change saves it without the tools choice it had', () => {
+  // Saved by an earlier version: Rovik's tools, which hid its permission mode.
+  const { root, connector, dispose } = mount(Options, { tools: 'rovik' });
+  assert.deepEqual(sections(root), ['Permissions', 'Advanced']);
+  assert.equal(select(root, 'Runs as'), undefined);
   assert.deepEqual(
     [...select(root, 'Mode')!.options].map((o) => o.value),
     CODEX_PERMISSION_MODES.map((m) => m.value)
   );
   choose(select(root, 'Mode')!, 'workspace');
-  assert.equal(connector().settings?.permissionMode, 'workspace');
-  choose(select(root, 'Runs as')!, 'rovik');
-  assert.equal(connector().settings?.tools, 'rovik');
-  assert.deepEqual(sections(root), ['How chats use it', 'Advanced'], 'Rovik’s permissions decide');
-  assert.equal(select(root, 'Mode'), undefined);
+  const saved = connector().settings ?? {};
+  assert.equal(saved.permissionMode, 'workspace');
+  assert.ok(!('tools' in saved), 'whose tools it runs is the chat’s mode’s');
   dispose();
 });
 

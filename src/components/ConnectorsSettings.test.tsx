@@ -116,7 +116,6 @@ test('a connector’s form: its name, how it connects, its kind’s options, its
   assert.deepEqual([...form.children].map(partName), [
     'Name',
     'Connection',
-    'How chats use it',
     'Permissions',
     'Limits',
     'Advanced',

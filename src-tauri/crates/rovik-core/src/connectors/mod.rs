@@ -7,10 +7,15 @@
 //! The chat request path is the same as a provider's: `agent::run_chat`
 //! sees a connector's base URL (`connector://claude-code`) and hands the
 //! request to [`run_chat`] here, which turns the stored chat into one turn
-//! for the harness and reports it through the same `ChatStreamEvent`s. The
-//! run loop offers such a model no tools of the IDE's (the frontend marks
-//! connector models `noTools`): the harness runs its own, and each shows as
-//! a step the IDE never ran (`ChatStreamEvent::HarnessStep`).
+//! for the harness and reports it through the same `ChatStreamEvent`s.
+//!
+//! Whose tools the harness works with is the run's mode's: a lead's run in
+//! Agent mode offers such a model no tools of the IDE's (agent_run marks
+//! its profile `no_tools`), and the harness runs its own, each shown as a
+//! step the IDE never ran (`ChatStreamEvent::HarnessStep`). Every other run
+//! (Plan mode, Autopilot's stages, a subagent) offers Rovik's: the harness
+//! is the model behind Rovik's agent, with Rovik's prompt, and its calls of
+//! Rovik's tools (over MCP, mcp.rs) are the reply's own (`Turn::rovik_tools`).
 //!
 //! A harness keeps its own conversation: the session it opens for a chat
 //! is remembered (sessions.rs), and later turns continue it, so it keeps
@@ -20,8 +25,8 @@
 //! Every connector implements [`Connector`]: a probe for "Test & refresh
 //! models", its sign-in check, whether its program is installed, a turn,
 //! and, where it has them, what its "Set up" steps run (setup.rs runs
-//! them, the same for every connector), its commands, its newest version
-//! and its plan mode. A new harness is one more module here implementing
+//! them, the same for every connector), its commands and its newest
+//! version. A new harness is one more module here implementing
 //! it (claude_code.rs, codex/), one more `ConnectorKind`, and its line in
 //! [`connector`]; nothing else here or in the run changes. The app's side
 //! is its `ConnectorSpec` and its `ConnectorFields` (src/lib/connectors.ts).
@@ -57,6 +62,16 @@ use tokio::sync::{mpsc, oneshot, watch};
 const RECAP_CHARS: usize = 24_000;
 /// How many stored messages are read to build a turn.
 const RECENT_MESSAGES: usize = 400;
+
+/// What a message says first when it changes the harness's tools in the
+/// middle of its session (`prompt_for`): the tools it called before stay in
+/// its conversation, and it would call them again. Its own tools now (Agent
+/// mode), or Rovik's (Plan mode, Autopilot).
+const NOW_ITS_OWN_TOOLS: &str = "Rovik IDE: you work with your own tools from this message on. \
+     Rovik's tools, which you called earlier in this conversation, aren't available any more.";
+const NOW_ROVIK_TOOLS: &str = "Rovik IDE: you work with Rovik's tools from this message on, as \
+     your system prompt lists them. Your own tools, which you used earlier in this conversation, \
+     aren't available any more.";
 
 /// A step the harness ran itself (a tool of its own), or a stretch of its
 /// thinking between them (`thinking`), as the chat shows it.
@@ -110,9 +125,11 @@ pub struct Turn {
     /// worktree): it changes the project by landing, so git that changes
     /// the repository is denied to the harness's own tools.
     pub isolated: bool,
-    /// The run is in Plan mode: a harness running its own tools plans in
-    /// its own plan mode, changing nothing (Claude Code's `plan`).
-    pub plan_mode: bool,
+    /// The run offers its tools (`tools`): Plan mode, Autopilot's stages, a
+    /// subagent. The harness runs as Rovik's agent, with Rovik's prompt and
+    /// those tools over MCP, which Rovik runs. Otherwise (a lead's run in
+    /// Agent mode, a one-off request) it runs its own, or none.
+    pub rovik_tools: bool,
     /// The harness's conversation for this chat, to continue; none starts one.
     pub session: Option<String>,
     /// The prompt for a new session when the one to continue is gone: the
@@ -125,7 +142,7 @@ pub struct Turn {
     /// The chat it's for.
     pub dialog_id: Option<String>,
     /// The tools of the run's request (OpenAI function schemas): what a
-    /// harness offers the model as Rovik's, in that mode.
+    /// harness offers the model as Rovik's (`rovik_tools`).
     pub tools: Vec<Value>,
     /// Rovik's tools mode: the calls of the chat's last reply and their
     /// stored results, which a harness waiting on them is given.
@@ -348,14 +365,6 @@ pub trait Connector: Send + Sync {
     fn latest_version(&self) -> BoxFuture<'_, Option<String>> {
         Box::pin(async { None })
     }
-
-    /// Whether, running its own tools, it plans in a mode of its own when
-    /// the run is in Plan mode (`Turn::plan_mode`): it reads, changes
-    /// nothing, and its plan is the reply. Without one (the default), Plan
-    /// mode refuses its own tools, which would carry the plan out.
-    fn plan_mode(&self) -> bool {
-        false
-    }
 }
 
 /// The connector of a kind.
@@ -453,15 +462,15 @@ pub async fn run_chat(
     };
     let settings = params.connector.clone().unwrap_or(Value::Null);
     let tools = params.tools.clone().unwrap_or_default();
-    // Rovik's tools mode: the harness takes the run's tools over MCP.
-    let rovik_tools =
-        has_history && settings.get("tools").and_then(|t| t.as_str()) == Some("rovik");
+    // Rovik's tools mode: the run offers its tools (it doesn't in Agent
+    // mode, agent_run), which the harness takes over MCP.
+    let rovik_tools = has_history && !tools.is_empty();
     // The system prompt: a one-off request's own, the run's (a subagent's,
     // Autopilot's), or the coding agent's with the project's section apart.
     let (system_prompt, system_context) = match (messages_system, params.system_prompt.clone()) {
         (Some(system), _) | (None, Some(system)) => (system, None),
         (None, None) => (
-            crate::agent::lead_system_prompt(rovik_tools && !tools.is_empty(), None, false),
+            crate::agent::lead_system_prompt(rovik_tools, None, false),
             params
                 .project_context
                 .clone()
@@ -484,6 +493,12 @@ pub async fn run_chat(
                 false => None,
             };
             let session = sessions::get(&data_dir, kind, dialog_id);
+            // The chat's mode changed whose tools the session works with
+            // since its last turn (Claude Code keeps one session for both).
+            let tools_changed = session
+                .as_deref()
+                .and_then(|s| worked_with_rovik_tools(&rows, s))
+                .is_some_and(|had| had != rovik_tools);
             let current = params.current_user_content.as_deref();
             let ask = |new_session| {
                 prompt_for(
@@ -492,6 +507,7 @@ pub async fn run_chat(
                     continuing,
                     new_session,
                     rovik_tools,
+                    tools_changed,
                     answers.as_ref(),
                 )
             };
@@ -524,7 +540,7 @@ pub async fn run_chat(
         prompt,
         cwd: params.cwd.clone(),
         isolated: params.isolated,
-        plan_mode: params.plan_mode,
+        rovik_tools,
         session,
         recap,
         one_shot: !has_history,
@@ -610,13 +626,16 @@ fn sent_text(m: &MessageRow) -> String {
 /// In Rovik's tools mode (`rovik_tools`) every message of the harness's is
 /// a reply, its tool calls' too, and when the last one made calls whose
 /// results its session never got (`answers`: the run ended while it
-/// waited), they're given first.
+/// waited), they're given first. When the session it goes on with last
+/// worked with the other tools (`tools_changed`), it's told which it has
+/// now before anything else.
 pub fn prompt_for(
     rows: &[MessageRow],
     current_user_content: Option<&str>,
     continue_reply: bool,
     new_session: bool,
     rovik_tools: bool,
+    tools_changed: bool,
     answers: Option<&Answers>,
 ) -> String {
     // Rows up to the pending reply this turn fills (unfinished, at the end).
@@ -687,6 +706,12 @@ pub fn prompt_for(
                  project is in your working folder as it is now):\n\n{recap}\n\n---\n\n{prompt}"
             );
         }
+    } else if tools_changed {
+        let now = match rovik_tools {
+            true => NOW_ROVIK_TOOLS,
+            false => NOW_ITS_OWN_TOOLS,
+        };
+        prompt = format!("{now}\n\n{prompt}");
     }
     // Not a command the user picked, but it starts like one: a harness runs
     // a message that starts with `/name` as its command (`/compact` typed by
@@ -695,6 +720,17 @@ pub fn prompt_for(
         prompt.insert(0, ' ');
     }
     prompt
+}
+
+/// Whether the harness's `session` worked with Rovik's tools on its last
+/// turn in the chat, as the latest reply naming it records
+/// (`meta.connector`, agent_run); none when no reply does.
+fn worked_with_rovik_tools(rows: &[MessageRow], session: &str) -> Option<bool> {
+    rows.iter().rev().find_map(|m| {
+        let connector = m.meta.as_ref()?.get("connector")?;
+        (connector.get("session")?.as_str()? == session)
+            .then(|| connector.get("rovikTools").and_then(Value::as_bool) == Some(true))
+    })
 }
 
 /// The user's own request, not the IDE's notes (`harness`) or what the
@@ -925,9 +961,14 @@ pub fn trimmed_text(text: &str, max: usize) -> String {
 }
 
 /// A stand-in for `claude` in Rovik's tools mode: Python, speaking MCP
-/// to Rovik's server as Claude Code does, printing what a run prints.
+/// to Rovik's server as Claude Code does, printing what a run prints. It
+/// calls Rovik's `tool` with `arguments`, then replies with the result.
 #[cfg(all(test, unix))]
-pub(crate) fn fake_claude_with_mcp(dir: &std::path::Path, read_path: &str) -> Option<String> {
+pub(crate) fn fake_claude_with_mcp(
+    dir: &std::path::Path,
+    tool: &str,
+    arguments: &Value,
+) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
     if !crate::process::on_path("python3") {
         return None;
@@ -957,16 +998,17 @@ def out(value):
     print(json.dumps(value), flush=True)
 def event(e):
     out({'type': 'stream_event', 'event': e, 'parent_tool_use_id': None})
+tool, arguments = __TOOL__, json.loads(__ARGUMENTS__)
 post({'jsonrpc': '2.0', 'id': 0, 'method': 'initialize', 'params': {'protocolVersion': '2025-11-25'}})
 tools = post({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})['result']['tools']
 out({'type': 'system', 'subtype': 'init', 'session_id': 's-9', 'model': 'claude-sonnet-5', 'tools': ['mcp__rovik__' + t['name'] for t in tools]})
 event({'type': 'message_start', 'message': {'id': 'm1', 'usage': {'input_tokens': 4}}})
-event({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'tool_use', 'id': 'toolu_1', 'name': 'mcp__rovik__read', 'input': {}}})
-event({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': '{"path": "READ_PATH"}'}})
+event({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'tool_use', 'id': 'toolu_1', 'name': 'mcp__rovik__' + tool, 'input': {}}})
+event({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(arguments)}})
 event({'type': 'content_block_stop', 'index': 0})
 event({'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}, 'usage': {'output_tokens': 9}})
 event({'type': 'message_stop'})
-result = post({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'read', 'arguments': {'path': 'READ_PATH'}, '_meta': {'claudecode/toolUseId': 'toolu_1'}}})
+result = post({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': tool, 'arguments': arguments, '_meta': {'claudecode/toolUseId': 'toolu_1'}}})
 text = result['result']['content'][0]['text']
 event({'type': 'message_start', 'message': {'id': 'm2'}})
 event({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': 'Got: ' + text}})
@@ -975,7 +1017,12 @@ event({'type': 'message_stop'})
 out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Got: ' + text, 'usage': {}, 'total_cost_usd': 0.01, 'num_turns': 2})
 "#;
     let path = dir.join("claude");
-    std::fs::write(&path, script.replace("READ_PATH", read_path)).unwrap();
+    // Python string literals, as JSON writes them.
+    let literal = |text: &str| Value::String(text.into()).to_string();
+    let script = script
+        .replace("__TOOL__", &literal(tool))
+        .replace("__ARGUMENTS__", &literal(&arguments.to_string()));
+    std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     Some(path.to_string_lossy().into_owned())
 }
@@ -1198,7 +1245,7 @@ mod tests {
             ),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, false, false, false, None);
+        let prompt = prompt_for(&rows, None, false, false, false, false, None);
         assert_eq!(
             prompt,
             "Checks failed:\n- lint\n\nAlso rename it\n\n[editor: foo.rs]"
@@ -1206,6 +1253,7 @@ mod tests {
         let prompt = prompt_for(
             &rows,
             Some("Also rename it (sent)"),
+            false,
             false,
             false,
             false,
@@ -1229,7 +1277,7 @@ mod tests {
         ];
         // No editor context before it, and no recap even for a new session.
         let sent = Some("[editor: foo.rs]\n\n/compact keep the API");
-        let prompt = prompt_for(&rows, sent, false, true, false, None);
+        let prompt = prompt_for(&rows, sent, false, true, false, false, None);
         assert_eq!(prompt, "/compact keep the API");
 
         // Not one of the harness's commands: a message like any other.
@@ -1238,7 +1286,7 @@ mod tests {
             row("assistant", "", None, false),
         ];
         let sent = Some("[editor: foo.rs]\n\n/etc/passwd has a typo");
-        let prompt = prompt_for(&rows, sent, false, false, false, None);
+        let prompt = prompt_for(&rows, sent, false, false, false, false, None);
         assert_eq!(prompt, "[editor: foo.rs]\n\n/etc/passwd has a typo");
 
         // Typed by hand, not picked: a message, though nothing comes before
@@ -1247,7 +1295,7 @@ mod tests {
             row("user", "/compact keep the API", None, true),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, false, false, false, None);
+        let prompt = prompt_for(&rows, None, false, false, false, false, None);
         assert_eq!(prompt, " /compact keep the API");
     }
 
@@ -1259,7 +1307,7 @@ mod tests {
             row("user", "Next", None, true),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, false, true, false, None);
+        let prompt = prompt_for(&rows, None, false, true, false, false, None);
         assert!(
             prompt.starts_with("Earlier in this conversation"),
             "{prompt}"
@@ -1272,7 +1320,63 @@ mod tests {
             row("user", "Hello", None, true),
             row("assistant", "", None, false),
         ];
-        assert_eq!(prompt_for(&first, None, false, true, false, None), "Hello");
+        assert_eq!(
+            prompt_for(&first, None, false, true, false, false, None),
+            "Hello"
+        );
+    }
+
+    #[test]
+    fn a_message_that_changes_the_tools_mid_session_says_which_it_has_now() {
+        let rows = vec![
+            row("user", "Plan it", None, true),
+            row("assistant", "Saved the plan.", None, true),
+            row("user", "Implement it", None, true),
+            row("assistant", "", None, false),
+        ];
+        let own = prompt_for(&rows, None, false, false, false, true, None);
+        assert_eq!(own, format!("{NOW_ITS_OWN_TOOLS}\n\nImplement it"));
+        let rovik = prompt_for(&rows, None, false, false, true, true, None);
+        assert_eq!(rovik, format!("{NOW_ROVIK_TOOLS}\n\nImplement it"));
+        // The same tools: nothing to say. A new session has none it called.
+        assert_eq!(
+            prompt_for(&rows, None, false, false, false, false, None),
+            "Implement it"
+        );
+        let fresh = prompt_for(&rows, None, false, true, false, true, None);
+        assert!(!fresh.contains(NOW_ITS_OWN_TOOLS), "{fresh}");
+        // A picked command goes alone, as typed.
+        let command = Some(json!({ "command": true }));
+        let rows = vec![
+            row("user", "/compact", command, true),
+            row("assistant", "", None, false),
+        ];
+        assert_eq!(
+            prompt_for(&rows, None, false, false, false, true, None),
+            "/compact"
+        );
+    }
+
+    #[test]
+    fn whose_tools_a_session_last_worked_with_is_its_latest_reply_s() {
+        let reply = |connector: Value| {
+            row(
+                "assistant",
+                "x",
+                Some(json!({ "connector": connector })),
+                true,
+            )
+        };
+        let rows = vec![
+            reply(json!({ "session": "s-1", "rovikTools": true })),
+            reply(json!({ "session": "s-2" })),
+            row("assistant", "a provider's", None, true),
+            reply(json!({ "session": "s-1" })),
+        ];
+        assert_eq!(worked_with_rovik_tools(&rows, "s-1"), Some(false));
+        assert_eq!(worked_with_rovik_tools(&rows[..1], "s-1"), Some(true));
+        assert_eq!(worked_with_rovik_tools(&rows, "s-2"), Some(false));
+        assert_eq!(worked_with_rovik_tools(&rows, "s-3"), None);
     }
 
     #[test]
@@ -1282,7 +1386,7 @@ mod tests {
             row("assistant", "Half a re", None, true),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, true, false, false, None);
+        let prompt = prompt_for(&rows, None, true, false, false, false, None);
         assert!(prompt.contains("interrupted"), "{prompt}");
     }
 
@@ -1296,7 +1400,7 @@ mod tests {
             row("assistant", "recent reply", None, true),
             row("user", "Now", None, true),
         ];
-        let prompt = prompt_for(&rows, None, false, true, false, None);
+        let prompt = prompt_for(&rows, None, false, true, false, false, None);
         assert!(prompt.contains("[earlier turns left out]"));
         assert!(prompt.contains("recent reply"));
         assert!(!prompt.contains(&long));

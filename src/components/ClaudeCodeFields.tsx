@@ -1,8 +1,8 @@
 // ClaudeCodeFields.tsx
 //
 // Claude Code's part of a connector's form (ConnectorsSettings.tsx), its
-// `ConnectorFields`: how it signs in, in the Connection section; then how
-// chats use it, its permissions (with its own tools), its limits, and the
+// `ConnectorFields`: how it signs in, in the Connection section; then its
+// permissions (for its own tools, in Agent mode), its limits, and the
 // advanced ones (the program, its config folder, more arguments, bare
 // mode), each a labelled row as on the other Settings pages. The same
 // fields as claude_code.rs `Settings` (lib/claudeCode.ts).
@@ -12,7 +12,6 @@ import {
   CLAUDE_CODE_INSTALL,
   claudeCodeSettings,
   PERMISSION_MODES,
-  USE_MODES,
   type ClaudeCodeSettings,
 } from '../lib/claudeCode';
 import { ChoiceSelect, TextRow } from './ConnectorControls';
@@ -78,7 +77,7 @@ function Connection(props: ConnectorFieldsProps) {
   );
 }
 
-/** How chats use it, its permissions, its limits, and the advanced ones. */
+/** Its permissions, its limits, and the advanced ones. */
 function Options(props: ConnectorFieldsProps) {
   const { settings, patch } = useSettings(props);
   /** Rovik's permissions decide: Claude Code's allowed-tools rules would pass them by. */
@@ -87,44 +86,36 @@ function Options(props: ConnectorFieldsProps) {
   return (
     <>
       <section class="settings-section">
-        <div class="settings-section-title">How chats use it</div>
+        <div class="settings-section-title">Permissions</div>
+        <p class="settings-hint">
+          For its own tools, in Agent mode. In Plan mode and Autopilot it runs Rovik’s tools, under
+          Permissions & approval.
+        </p>
         <ChoiceSelect
-          label="Runs as"
-          choices={USE_MODES}
-          value={settings().tools}
-          onChange={(tools) => patch({ tools })}
+          label="Mode"
+          choices={PERMISSION_MODES}
+          value={settings().permissionMode}
+          onChange={(permissionMode) => patch({ permissionMode })}
+        />
+        <Show when={!followsRovik()}>
+          <RulesRow
+            label="Allowed tools"
+            rows={2}
+            value={settings().allowedTools}
+            onInput={(allowedTools) => patch({ allowedTools })}
+            placeholder={'Bash(npm test *)\nBash(git diff *)'}
+            explain="Rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`)."
+          />
+        </Show>
+        <RulesRow
+          label="Denied tools"
+          rows={1}
+          value={settings().disallowedTools}
+          onInput={(disallowedTools) => patch({ disallowedTools })}
+          placeholder="Bash(rm *)"
+          explain="Rules that never run, one per line (`Bash(rm *)`, `WebFetch`)."
         />
       </section>
-
-      <Show when={settings().tools === 'own'}>
-        <section class="settings-section">
-          <div class="settings-section-title">Permissions</div>
-          <ChoiceSelect
-            label="Mode"
-            choices={PERMISSION_MODES}
-            value={settings().permissionMode}
-            onChange={(permissionMode) => patch({ permissionMode })}
-          />
-          <Show when={!followsRovik()}>
-            <RulesRow
-              label="Allowed tools"
-              rows={2}
-              value={settings().allowedTools}
-              onInput={(allowedTools) => patch({ allowedTools })}
-              placeholder={'Bash(npm test *)\nBash(git diff *)'}
-              explain="Rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`)."
-            />
-          </Show>
-          <RulesRow
-            label="Denied tools"
-            rows={1}
-            value={settings().disallowedTools}
-            onInput={(disallowedTools) => patch({ disallowedTools })}
-            placeholder="Bash(rm *)"
-            explain="Rules that never run, one per line (`Bash(rm *)`, `WebFetch`)."
-          />
-        </section>
-      </Show>
 
       <section class="settings-section">
         <div class="settings-section-title">Limits</div>

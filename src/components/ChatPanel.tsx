@@ -673,6 +673,13 @@ export default function ChatPanel(props: ChatProps) {
       startsWithCommand(text, picked.name)
     );
   }
+
+  /** Whether what the open chat's composer holds goes as a command (`sendsAsCommand`). */
+  function typedCommand(): boolean {
+    const dialog = activeDialog();
+    const withMore = composerReferences().length + attachmentIds(serializeComposer()).length > 0;
+    return !!dialog && sendsAsCommand(dialog.id, input().trim(), withMore);
+  }
   const activeChat = () => {
     const id = store.state.activeId;
     return id ? store.state.open[id] : undefined;
@@ -3509,10 +3516,12 @@ export default function ChatPanel(props: ChatProps) {
       questionWaits: !!waiting,
       running: sending(),
       steerable: steerable(),
+      command: typedCommand(),
     });
-    // A run that takes messages: this one goes to it. Any other run: the
-    // text stays until it has ended.
+    // A run that takes messages: this one goes to it, but a command waits
+    // for the run to end. Any other run: the text stays until it has ended.
     if (action === 'steer') return handleSteer();
+    if (action === 'after') return queueCommandAfterRun();
     if (action === 'hold') return;
     if (waiting) {
       const segments = serializeComposer();
@@ -3588,14 +3597,10 @@ export default function ChatPanel(props: ChatProps) {
     // text stays, and the notice says why.
     const unavailable = modeUnavailable(chatMode(), profile);
     if (unavailable) {
-      const connector = connectorKindOf(profile.baseUrl);
       notify({
         kind: 'warning',
-        title: `${chatMode() === 'plan' ? 'Plan mode' : 'Autopilot'} isn’t available with this model`,
+        title: 'Autopilot isn’t available with this model',
         message: unavailable,
-        actions: connector
-          ? [{ label: 'Open Connectors', run: () => openAppSettings('connectors') }]
-          : [],
         timeout: 15_000,
       });
       return;
@@ -3626,7 +3631,7 @@ export default function ChatPanel(props: ChatProps) {
      * attachments, the PDFs named in the meta.
      */
     // A connector's command (`/compact`) goes as typed, alone.
-    const command = sendsAsCommand(dialog.id, text, selectedFiles.length + attachments.length > 0);
+    const command = typedCommand();
     const wireContent = command ? text : buildWireContent(text, selectedFiles);
     const pdfs = pdfsOf(segments);
     const message = {
@@ -3737,25 +3742,7 @@ export default function ChatPanel(props: ChatProps) {
       ...(attachments.length > 0 ? { attachments } : {}),
     };
     const dialogId = dialog.id;
-    saveSteerDraft({
-      dialogId,
-      messageId: message.id,
-      segments,
-      createdAt: new Date().toISOString(),
-    });
-    store.queueSteer(dialogId, {
-      message: queuedMessage(message),
-      queuedAt: Date.now(),
-      mode: runModeFor(dialogId),
-    });
-    setFocusMessageId(null);
-    clearChatInput();
-    setFileSuggestionsOpen(false);
-    setFileTriggerStart(null);
-    setFileQuery('');
-    setSelectedSuggestionIndex(0);
-    clearComposerDraft(dialogId);
-    listController?.followLatest();
+    queueTyped(dialogId, message, segments, false);
 
     let reply;
     try {
@@ -3777,6 +3764,62 @@ export default function ChatPanel(props: ChatProps) {
       store.markSteerLate(dialogId, message.id);
       if (!isRunning(dialogId)) void sendLateSteer(dialogId);
     }
+  }
+
+  /**
+   * Shows `message`, typed while the chat's run works, at the end of the
+   * chat as queued, its draft kept (a crash brings it back), and clears the
+   * composer: for the run to read, or, `late`, to go as a new message once
+   * the run has ended (`sendLateSteer`).
+   */
+  function queueTyped(
+    dialogId: string,
+    message: UserMessage,
+    segments: DraftSegment[],
+    late: boolean
+  ) {
+    saveSteerDraft({
+      dialogId,
+      messageId: message.id,
+      segments,
+      createdAt: new Date().toISOString(),
+    });
+    store.queueSteer(dialogId, {
+      message: queuedMessage(message),
+      queuedAt: Date.now(),
+      mode: runModeFor(dialogId),
+      ...(late ? { late } : {}),
+    });
+    setFocusMessageId(null);
+    clearChatInput();
+    setFileSuggestionsOpen(false);
+    setFileTriggerStart(null);
+    setFileQuery('');
+    setSelectedSuggestionIndex(0);
+    clearComposerDraft(dialogId);
+    listController?.followLatest();
+  }
+
+  /**
+   * A connector's command picked from the `/` menu (`/compact`) while the
+   * chat's run works. The harness runs a command only as a message of its
+   * own: sent to the run, it would reach the harness inside the run's next
+   * turn, as words it answers instead of running them. So it waits, queued,
+   * and goes as a new message, a command, once the run has ended, as
+   * Claude Code's own terminal runs a command typed while it works.
+   */
+  function queueCommandAfterRun() {
+    const dialog = activeDialog();
+    const text = input().trim();
+    if (!dialog || !text) return;
+    const message: UserMessage = {
+      id: crypto.randomUUID(),
+      content: text,
+      meta: { command: true },
+    };
+    queueTyped(dialog.id, message, serializeComposer(), true);
+    // The run ended meanwhile: it goes now.
+    if (!isRunning(dialog.id)) void sendLateSteer(dialog.id);
   }
 
   /**
