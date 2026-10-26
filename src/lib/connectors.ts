@@ -2,7 +2,7 @@
 //
 // Connectors: coding harnesses a chat can use in place of a model
 // provider (Settings → Connectors). A connector is a program on the
-// computer the chat runs on, Claude Code first: it brings its own model
+// computer the chat runs on, Claude Code or Codex: it brings its own model
 // loop, tools and prompt, so the IDE hands it the model, the message and
 // the project folder, follows what it does, and shows its steps, its
 // tokens and its cost with the reply
@@ -18,7 +18,7 @@
 // This module is the same for every kind. A kind of connector brings its
 // own: in the core, its `Connector` (connectors/mod.rs); here, its
 // `ConnectorSpec` in `CONNECTOR_CATALOG`, in a module of its own
-// (claudeCode.ts); and its form's `ConnectorFields`
+// (claudeCode.ts, codex.ts); and its form's `ConnectorFields`
 // (components/connectorFields.ts).
 import { invoke } from '@tauri-apps/api/core';
 import { createSignal } from 'solid-js';
@@ -35,6 +35,7 @@ import { isErrorResult } from './toolArgs';
 import type { RemoteModel } from './aiSettings';
 import { notify } from './notifications';
 import { CLAUDE_CODE } from './claudeCode';
+import { CODEX } from './codex';
 
 export const CONNECTOR_SCHEME = 'connector://';
 
@@ -45,7 +46,7 @@ export function usesRovikTools(p: Pick<Provider, 'baseUrl' | 'connector' | 'sett
 
 /**
  * What Rovik knows of a kind of connector, the same for every kind: each
- * kind's is in a module of its own (claudeCode.ts), one entry of
+ * kind's is in a module of its own (claudeCode.ts, codex.ts), one entry of
  * `CONNECTOR_CATALOG`.
  */
 export interface ConnectorSpec {
@@ -68,6 +69,8 @@ export interface ConnectorSpec {
    * mode isn't offered with its own tools, which would carry the plan out.
    */
   planMode: boolean;
+  /** Under its models' table while it has none: how to get them. */
+  modelsHint: string;
   /**
    * One of its own tool calls as the chat shows it: as the call of Rovik's
    * tool of the same kind, its arguments as that one takes them, so its
@@ -83,8 +86,23 @@ export interface ChatCall {
   arguments: Record<string, unknown>;
 }
 
+/**
+ * One of a setting's choices in a connector's form: the line shown under
+ * its control (`hint`, also its option's tooltip) and, where there's more
+ * to say, all of it as that line's tooltip (`detail`). On Linux, WebKitGTK
+ * shows an open <select>'s tooltips as GTK markup, in which `&`, `<` and
+ * `>` break the text ("Entity did not end with a semicolon"), so hints are
+ * written without them (connectors.test.ts checks).
+ */
+export interface Choice<T extends string> {
+  value: T;
+  label: string;
+  hint: string;
+  detail?: string;
+}
+
 /** What can be connected: each kind, for the "Add connector" menu. */
-export const CONNECTOR_CATALOG: ConnectorSpec[] = [CLAUDE_CODE];
+export const CONNECTOR_CATALOG: ConnectorSpec[] = [CLAUDE_CODE, CODEX];
 
 export function connectorSpec(kind: ConnectorKind | undefined): ConnectorSpec | undefined {
   return CONNECTOR_CATALOG.find((c) => c.kind === kind);
@@ -246,7 +264,8 @@ export function connectorsSummary(
   states: Record<string, AuthState> = authStates()
 ): string {
   const connectors = splitSources(providers).connectors;
-  if (connectors.length === 0) return 'None yet: connect Claude Code to use it in place of a model';
+  if (connectors.length === 0)
+    return 'None yet: connect Claude Code or Codex to use one in place of a model';
   const models = connectors.reduce((n, c) => n + c.models.filter((m) => m.enabled).length, 0);
   const line = `${plural(connectors.length, 'connector')}, ${plural(models, 'model')} enabled`;
   const out = connectors.filter((c) => cantRun(states[c.id])).length;
@@ -358,12 +377,16 @@ export async function checkConnector(
   return state;
 }
 
+/** Each program's sign-in methods, as its sign-in check names them. */
 const METHODS: Record<string, string> = {
   'claude.ai': 'claude.ai login',
   oauth_token: 'token',
   api_key: 'API key',
   api_key_helper: 'API key helper',
   third_party: 'cloud provider',
+  chatgpt: 'ChatGPT login',
+  access_token: 'access token',
+  personal_access_token: 'personal access token',
 };
 
 /** "Signed in (claude.ai login)", "Not signed in: …", for a row or a form. */

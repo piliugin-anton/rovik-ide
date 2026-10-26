@@ -113,7 +113,7 @@ export interface Provider {
 }
 
 /** The harnesses that can be connected (rovik_protocol::connectors). */
-export type ConnectorKind = 'claude-code';
+export type ConnectorKind = 'claude-code' | 'codex';
 
 export interface ModelSelection {
   providerId: string;

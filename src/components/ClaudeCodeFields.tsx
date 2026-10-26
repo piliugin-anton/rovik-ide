@@ -6,16 +6,16 @@
 // advanced ones (the program, its config folder, more arguments, bare
 // mode), each a labelled row as on the other Settings pages. The same
 // fields as claude_code.rs `Settings` (lib/claudeCode.ts).
-import { For, Show } from 'solid-js';
+import { Show } from 'solid-js';
 import {
   AUTH_KINDS,
   CLAUDE_CODE_INSTALL,
   claudeCodeSettings,
   PERMISSION_MODES,
   USE_MODES,
-  type Choice,
   type ClaudeCodeSettings,
 } from '../lib/claudeCode';
+import { ChoiceSelect, TextRow } from './ConnectorControls';
 import { NumberField, SettingRow } from './SettingsControls';
 import type { ConnectorFields, ConnectorFieldsProps } from './connectorFields';
 
@@ -25,76 +25,6 @@ function useSettings(props: ConnectorFieldsProps) {
   const patch = (changes: Partial<ClaudeCodeSettings>) =>
     props.update({ settings: { ...settings(), ...changes } });
   return { settings, patch };
-}
-
-/** A select of `choices`; under it, the chosen one's line, all of it as its tooltip. */
-function ChoiceSelect<T extends string>(props: {
-  label: string;
-  choices: Choice<T>[];
-  value: T;
-  onChange: (value: T) => void;
-}) {
-  const chosen = () => props.choices.find((c) => c.value === props.value);
-  return (
-    <>
-      <SettingRow label={props.label}>
-        <select
-          class="settings-select"
-          aria-label={props.label}
-          value={props.value}
-          onChange={(e) => props.onChange(e.currentTarget.value as T)}
-        >
-          <For each={props.choices}>
-            {(c) => (
-              <option value={c.value} title={c.hint}>
-                {c.label}
-              </option>
-            )}
-          </For>
-        </select>
-      </SettingRow>
-      <Show when={chosen()}>
-        {(c) => (
-          <p class="settings-hint setting-explain" title={c().detail ?? c().hint}>
-            {c().hint}
-          </p>
-        )}
-      </Show>
-    </>
-  );
-}
-
-/** A text field on its own row, with its line under it when it has one. */
-function TextRow(props: {
-  label: string;
-  value: string;
-  placeholder: string;
-  onInput: (value: string) => void;
-  /** Its line, under it, and that line's tooltip. */
-  explain?: string;
-  title?: string;
-  type?: 'text' | 'password';
-}) {
-  return (
-    <>
-      <SettingRow label={props.label}>
-        <input
-          type={props.type ?? 'text'}
-          class="settings-input"
-          aria-label={props.label}
-          value={props.value}
-          onInput={(e) => props.onInput(e.currentTarget.value)}
-          placeholder={props.placeholder}
-          spellcheck={false}
-        />
-      </SettingRow>
-      <Show when={props.explain}>
-        <p class="settings-hint setting-explain" title={props.title}>
-          {props.explain}
-        </p>
-      </Show>
-    </>
-  );
 }
 
 /** Tool rules, one per line, on their own row, with what they do under them. */

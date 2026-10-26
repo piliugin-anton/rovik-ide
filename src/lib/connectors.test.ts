@@ -41,6 +41,7 @@ import {
   PERMISSION_MODES,
   USE_MODES,
 } from './claudeCode';
+import { CODEX_AUTH_KINDS, CODEX_PERMISSION_MODES, CODEX_USE_MODES } from './codex';
 import { providersSummary, resolveProfile } from './aiSettings';
 import { EFFORTS } from './reasoning';
 import { dismiss, notifications } from './notifications';
@@ -67,7 +68,8 @@ test('a connector is a provider entry with a connector:// base URL', () => {
   assert.ok(!isConnector(openai));
   // An entry saved by the base URL alone still counts.
   assert.ok(isConnector({ baseUrl: 'connector://claude-code/' }));
-  assert.equal(connectorKindOf('connector://codex'), undefined);
+  assert.equal(connectorKindOf('connector://codex'), 'codex');
+  assert.equal(connectorKindOf('connector://aider'), undefined, 'a kind this app doesn’t know');
   assert.equal(connectorKindOf('http://localhost:11434/v1'), undefined);
   const { providers, connectors } = splitSources([openai, claude]);
   assert.deepEqual(
@@ -155,7 +157,7 @@ test('the menu lines count providers and connectors apart', () => {
   ];
   assert.equal(
     connectorsSummary([openai]),
-    'None yet: connect Claude Code to use it in place of a model'
+    'None yet: connect Claude Code or Codex to use one in place of a model'
   );
   assert.equal(connectorsSummary([openai, claude]), '1 connector, 1 model enabled');
   assert.equal(providersSummary([openai, claude]), '1 provider, 1 model enabled');
@@ -448,7 +450,14 @@ test('with Rovik’s tools, a connector’s model is offered the run’s tools',
 });
 
 test('the choices’ tooltips have no markup characters, which WebKitGTK can’t show', () => {
-  const choices = [...AUTH_KINDS, ...PERMISSION_MODES, ...USE_MODES];
+  const choices = [
+    ...AUTH_KINDS,
+    ...PERMISSION_MODES,
+    ...USE_MODES,
+    ...CODEX_AUTH_KINDS,
+    ...CODEX_PERMISSION_MODES,
+    ...CODEX_USE_MODES,
+  ];
   const tips = [...choices.flatMap((c) => [c.hint, c.detail ?? '']), ...EFFORTS.map((c) => c.hint)];
   for (const tip of tips) assert.doesNotMatch(tip, /[&<>]/, tip);
 });

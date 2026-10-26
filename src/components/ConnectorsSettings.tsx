@@ -1,7 +1,7 @@
 // ConnectorsSettings.tsx
 //
 // Settings → Connectors: the coding harnesses chats can use in place of a
-// model provider (lib/connectors.ts), Claude Code first. Each connector is
+// model provider (lib/connectors.ts), Claude Code or Codex. Each connector is
 // a program on the computer the chat runs on. Its form is the same for
 // every kind: its name; Connection, how it signs in (the kind's own
 // fields) with its test and Set up; the kind's options (connectorFields.ts);
@@ -281,7 +281,7 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
             each={connectors()}
             fallback={
               <div class="empty-state">
-                No connectors yet. Connect Claude Code to use it in chats.
+                No connectors yet. Connect Claude Code or Codex to use it in chats.
               </div>
             }
           >
@@ -485,7 +485,7 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
             onChange={(models) => patch({ models })}
             columns={CONNECTOR_COLUMNS}
             describe={describe}
-            emptyHint="Test the connection to list its models (aliases such as sonnet and opus, and full names), or add one by ID below."
+            emptyHint={specOf(d())?.modelsHint}
           />
 
           <Show when={formError()}>

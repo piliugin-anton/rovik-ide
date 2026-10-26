@@ -352,9 +352,10 @@ test('deployed: one line names the connectors installed there, comma separated, 
     return root.querySelector('.host-connectors')?.textContent ?? null;
   };
   assert.equal(await line(['claude-code']), 'Connectors installed: Claude Code.');
+  assert.equal(await line(['claude-code', 'codex']), 'Connectors installed: Claude Code, Codex.');
   assert.equal(
-    await line(['claude-code', 'codex']),
-    'Connectors installed: Claude Code, codex.',
+    await line(['claude-code', 'aider']),
+    'Connectors installed: Claude Code, aider.',
     'a newer daemon’s kind, by its id'
   );
   assert.equal(await line([]), 'Connectors installed: none.');

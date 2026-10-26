@@ -4,7 +4,7 @@
 // choices its form offers, and its `ConnectorSpec`. Its form's fields are
 // ClaudeCodeFields.tsx; its harness is the core's connectors/claude_code.rs.
 import type { Provider } from '../types';
-import type { ChatCall, ConnectorSpec } from './connectors';
+import type { ChatCall, Choice, ConnectorSpec } from './connectors';
 
 /** Claude Code's settings (claude_code.rs `Settings`, the same fields and defaults). */
 export type ClaudeCodeSettings = {
@@ -51,21 +51,6 @@ export const CLAUDE_CODE_DEFAULTS: ClaudeCodeSettings = {
   bare: false,
   tools: 'own',
 };
-
-/**
- * One of a setting's choices: the line shown under its control (`hint`,
- * also its option's tooltip) and, where there's more to say, all of it as
- * that line's tooltip (`detail`). On Linux, WebKitGTK shows an open
- * <select>'s tooltips as GTK markup, in which `&`, `<` and `>` break the
- * text ("Entity did not end with a semicolon"), so hints are written
- * without them (connectors.test.ts checks).
- */
-export interface Choice<T extends string> {
-  value: T;
-  label: string;
-  hint: string;
-  detail?: string;
-}
 
 export const USE_MODES: Choice<ClaudeCodeSettings['tools']>[] = [
   {
@@ -249,5 +234,7 @@ export const CLAUDE_CODE: ConnectorSpec = {
   },
   titleModel: CLAUDE_CODE_TITLE_MODEL,
   planMode: true,
+  modelsHint:
+    'Test the connection to list its models (aliases such as sonnet and opus, and full names), or add one by ID below.',
   chatCall: claudeCodeChatCall,
 };

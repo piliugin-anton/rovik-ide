@@ -172,7 +172,7 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
     { label: 'Model providers', state: '1 provider, 2 models enabled', warning: false },
     {
       label: 'Connectors',
-      state: 'None yet: connect Claude Code to use it in place of a model',
+      state: 'None yet: connect Claude Code or Codex to use one in place of a model',
       warning: false,
     },
     {
