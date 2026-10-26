@@ -679,7 +679,9 @@ port, copies the address here that leads to it; **Background tasks: 1,
 open ports:** while the agent has a server running there. A dev server
 the agent leaves running in the background serves its page until it's
 stopped; one it starts with `&` ends with its command, and its page with
-it. A page at any other address is refused. See
+it. Once nothing listens on a server's port any more, as when its command
+timed out or was stopped, the port leaves that row and the tabs showing
+its pages close. A page at any other address is refused. See
 [Rovik on a team server](docs/cloud-hosts.md#each-users-own-network).
 
 ---

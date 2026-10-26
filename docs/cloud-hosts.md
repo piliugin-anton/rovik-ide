@@ -446,7 +446,9 @@ own port on a button that opens its page in a tab, or copies the address
 on the computer that leads to it (`localhost:5174` where 5173 was taken
 there), as its ▾ chooses; "Background tasks: 1, open ports: 5173" while
 the agent has commands running in the background there. A port stays
-forwarded until nothing listens on it in the network any more. What a
+forwarded until nothing listens on it in the network any more, as once
+its server's command finished, timed out or was stopped; the editor's
+tabs showing its pages close then. What a
 command starts with `&` ends with it, so a dev server the agent keeps runs
 as a background command (bash's `background`): it serves its page after
 the agent's turn, until the agent stops it or the user does with its Stop
