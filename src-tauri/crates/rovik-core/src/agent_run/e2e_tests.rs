@@ -49,6 +49,10 @@ mod restricted_tests;
 #[path = "background_e2e_tests.rs"]
 mod background_tests;
 
+#[cfg(test)]
+#[path = "workspace_e2e_tests.rs"]
+mod workspace_tests;
+
 /*
  * The operations, as the app and the daemon call them: through `dispatch`.
  * These stand in for agent_run's functions of the same names, so every

@@ -2731,6 +2731,23 @@ F09 points them at the view; a folder located to another project keeps what the
 chat's commands built there (it has no changes there, D19); the run still opens folder
 chats only until F07.
 
+**F07 — a workspace chat's run in its view.** `prepare` opens a workspace chat's view
+for every run, Plan mode included (`workspace_view`): the view is matched to the
+chat's folders as `check_project` gives them, and the run's root is the view.
+Without the driver (the view can't be mounted) the run is refused with "A chat across
+folders needs the virtual files driver (Settings → Virtual files), or start a chat in
+one folder.", the mount's own reason after it; with isolation off it's refused saying
+so; any other reason the view doesn't open (its store a folder chat's, a folder left
+with changes) is named. It never works in a folder instead. Landing through `Folders`
+and the busy wait over every folder came with F06 and F01. Tests:
+`workspace_e2e_tests.rs` with `workspace_harness` (a workspace of folders by name and
+a chat of it, its folders checked or all): a workspace chat reads and edits two
+folders by their names and lands in each, nothing elsewhere; a folder not checked for
+it isn't in its view; Plan mode works in the view and changes nothing; it's refused
+without the driver (a file where its view would mount) or with isolation off, and
+works in no folder instead; Land and Undo are refused while a folder is missing.
+Departure: isolation off has a message of its own, as the driver's would mislead.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

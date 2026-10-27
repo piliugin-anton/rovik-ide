@@ -540,6 +540,31 @@ pub(super) struct TurnOutput {
     pub(super) connector: Option<Value>,
 }
 
+/// Why a workspace chat's run doesn't start without its view
+/// (workspaces-plan.md, D23): the driver mounts it.
+pub(super) const NEEDS_VIEW: &str = "A chat across folders needs the virtual files driver (Settings → Virtual files), or start a chat in one folder.";
+
+/// A workspace chat's view of `folders` (each run's start matches it to
+/// them), where its run works: the view's path. Refused when isolation is
+/// off, or the view can't be opened: it never works in a folder instead.
+fn workspace_view(
+    dialog_id: &str,
+    folders: &Folders,
+    isolate: bool,
+    on_warn: crate::overlay::fs::OnWarn,
+) -> Result<String, String> {
+    if !isolate {
+        return Err("A chat across folders works isolated, in its own view of them, and isolation is off for this run (ROVIK_ISOLATE_CHATS=0): turn it on, or start a chat in one folder.".into());
+    }
+    match crate::overlay::chats::open(dialog_id, folders, on_warn) {
+        Ok(o) => Ok(o.view.to_string_lossy().into_owned()),
+        Err(e) if e.contains("couldn't mount") => Err(format!("{NEEDS_VIEW} ({e})")),
+        Err(e) => Err(format!(
+            "This chat's view of its folders couldn't be opened: {e}."
+        )),
+    }
+}
+
 /// Whether a run goes on with a message waiting where it would end with
 /// this outcome (3.3). The ends that can't hand it back instead: a stop,
 /// an error, a reply that kept repeating itself, checks waiting for the
@@ -775,23 +800,33 @@ impl Run {
         let isolate = request
             .isolate
             .unwrap_or_else(crate::overlay::chats::enabled);
-        let root = match &project_root {
-            Some(r) if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) => {
-                let (core_, chat) = (core.clone(), dialog_id.clone());
-                let on_warn = Box::new(move |used: u64, limit: u64| {
-                    core_.emit(AgentEvent::Notice {
-                        dialog_id: Some(chat.clone()),
-                        kind: "warning".into(),
-                        title: "This chat's changes are near their limit".into(),
-                        message: format!(
-                            "{} MB of {} MB. Past the limit, its writes fail until its changes land or are discarded.",
-                            used >> 20,
-                            limit >> 20
-                        ),
-                    })
-                });
+        let near_limit = || -> crate::overlay::fs::OnWarn {
+            let (core, chat) = (core.clone(), dialog_id.clone());
+            Box::new(move |used: u64, limit: u64| {
+                core.emit(AgentEvent::Notice {
+                    dialog_id: Some(chat.clone()),
+                    kind: "warning".into(),
+                    title: "This chat's changes are near their limit".into(),
+                    message: format!(
+                        "{} MB of {} MB. Past the limit, its writes fail until its changes land or are discarded.",
+                        used >> 20,
+                        limit >> 20
+                    ),
+                })
+            })
+        };
+        let root = match (&folders, &project_root) {
+            // A workspace chat works in its view of its folders, every run,
+            // Plan mode too (D23): there's no one folder it could work in
+            // instead.
+            (Some(folders), None) => {
+                Some(workspace_view(&dialog_id, folders, isolate, near_limit())?)
+            }
+            (_, Some(r))
+                if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) =>
+            {
                 let folders = Folders::one(std::path::PathBuf::from(r));
-                match crate::overlay::chats::open(&dialog_id, &folders, on_warn) {
+                match crate::overlay::chats::open(&dialog_id, &folders, near_limit()) {
                     Ok(o) => Some(o.view.to_string_lossy().into_owned()),
                     Err(e) => {
                         isolation_problem = Some(e);
