@@ -581,14 +581,19 @@ pub fn mark_step_done(
 
 /// The plan file an implementation request names ("Implement the plan in
 /// `…`"), as an absolute path: a chat path read through the chat's
-/// `folders` (`api/.rovik/plans/a.md`). None for another request.
+/// `folders` (`api/.rovik/plans/a.md`), joined as it's written, so it's
+/// shown back so (on Windows a name written with `/` keeps it). None for
+/// another request, or a path that leaves the chat's folders.
 pub fn plan_file_named(request: &str, folders: Option<&Folders>) -> Option<String> {
     let rest = request.strip_prefix("Implement the plan in `")?;
     let named = &rest[..rest.find('`')?];
     if Path::new(named).is_absolute() {
         return Some(named.to_string());
     }
-    plan::plan_file_in(folders?, named)
+    let folders = folders?;
+    folders.abs(named)?;
+    let (folder, rest) = folders.split(named)?;
+    Some(folder.path.join(rest).to_string_lossy().into_owned())
 }
 
 /*

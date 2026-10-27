@@ -758,16 +758,6 @@ pub fn plan_path_in(path: &str, folders: Option<&Folders>) -> String {
     }
 }
 
-/// The file a chat path names in the chat's folders (`api/.rovik/plans/a.md`
-/// is api's `.rovik/plans/a.md`), joined as the path is written, so it's
-/// shown back as written (on Windows, a name written with `/` keeps it).
-/// None for a path that leaves the chat's folders.
-pub fn plan_file_in(folders: &Folders, named: &str) -> Option<String> {
-    folders.abs(named)?;
-    let (folder, rest) = folders.split(named)?;
-    Some(folder.path.join(rest).to_string_lossy().into_owned())
-}
-
 /// The plan's path for display: relative to the project.
 pub fn relative_plan_path(path: &str, root: Option<&str>) -> String {
     let Some(root) = root else {
@@ -854,8 +844,8 @@ pub fn expand_implementation(
         return Ok(());
     };
     let file = match folders {
-        Some(folders) if !Path::new(&path).is_absolute() => match plan_file_in(folders, &path) {
-            Some(file) => file,
+        Some(folders) if !Path::new(&path).is_absolute() => match folders.abs(&path) {
+            Some(file) => file.to_string_lossy().into_owned(),
             None => return Err(format!("The plan in {path} isn't in this chat's folders.")),
         },
         _ => path,
