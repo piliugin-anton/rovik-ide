@@ -7356,7 +7356,8 @@ async fn a_round_never_picked_leaves_no_copies() {
     let (main, kept) = (h.dialog_id.clone(), stale.clone());
     let project = h.project.clone();
     crate::rt::spawn_blocking(move || {
-        crate::overlay::chats::open(&main, &project, Box::new(|_, _| {}))?;
+        let folders = crate::folders::Folders::one(project);
+        crate::overlay::chats::open(&main, &folders, Box::new(|_, _| {}))?;
         crate::overlay::chats::open_child_shared(&main, &kept, 2).map(drop)
     })
     .await

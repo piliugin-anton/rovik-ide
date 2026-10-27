@@ -1304,8 +1304,9 @@ pub fn agent_configure(core: &Core, config: AgentConfig) {
 enum Checked {
     /// A folder chat's folder, or none with no folder open.
     Folder(Option<String>),
-    /// A workspace chat's folders, as the database has them now.
-    Workspace(Vec<crate::chat_db::workspaces::Folder>),
+    /// A workspace chat's workspace and folders, as the database has them
+    /// now.
+    Workspace(String, Vec<crate::chat_db::workspaces::Folder>),
     /// The folder is another project's.
     Elsewhere,
 }
@@ -1332,7 +1333,8 @@ pub async fn check_project(
                 return Ok(Checked::Folder(asked));
             }
             if let Some(folders) = crate::chat_db::workspaces::chat_folders(c, &id)? {
-                return Ok(Checked::Workspace(folders));
+                let workspace = store::dialog_project(c, &id)?.unwrap_or_default();
+                return Ok(Checked::Workspace(workspace, folders));
             }
             let Some(root) = asked else {
                 return Ok(Checked::Folder(None));
@@ -1354,17 +1356,21 @@ pub async fn check_project(
         Checked::Elsewhere => {
             Err("This chat belongs to another project. Open that project to continue it.".into())
         }
-        Checked::Workspace(_) if root.is_some() => Err(
+        Checked::Workspace(..) if root.is_some() => Err(
             "This chat works across a workspace's folders, not in one folder: open its workspace to continue it."
                 .into(),
         ),
-        Checked::Workspace(folders) => workspace_folders(folders).map(Some),
+        Checked::Workspace(workspace, folders) => workspace_folders(&workspace, folders).map(Some),
     }
 }
 
-/// A workspace chat's folders as its run takes them: refused while one is
-/// missing (D20), naming it, and when none is left (D19).
-fn workspace_folders(folders: Vec<crate::chat_db::workspaces::Folder>) -> Result<Folders, String> {
+/// A workspace chat's folders as its run takes them, of its `workspace`:
+/// refused while one is missing (D20), naming it, and when none is left
+/// (D19).
+fn workspace_folders(
+    workspace: &str,
+    folders: Vec<crate::chat_db::workspaces::Folder>,
+) -> Result<Folders, String> {
     if folders.is_empty() {
         return Err(
             "This chat has no folders: check one for it (the label by its message box) to go on with it."
@@ -1396,6 +1402,7 @@ fn workspace_folders(folders: Vec<crate::chat_db::workspaces::Folder>) -> Result
             })
             .collect(),
     )
+    .map(|named| named.in_workspace(workspace))
 }
 
 /// A message's files, once each, and only ones that are stored.
@@ -2410,6 +2417,12 @@ mod check_project_tests {
             names,
             ["api", "web", "docs"],
             "All folders: the workspace's"
+        );
+        let folders = check_project(&t.core.db, "two", None).await.unwrap();
+        assert_eq!(
+            folders.unwrap().workspace(),
+            Some(workspace.as_str()),
+            "its builds and commands' history are kept by workspace"
         );
 
         // The next run has the folders as they are then.

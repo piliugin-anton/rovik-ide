@@ -366,6 +366,68 @@ pub fn chat_folders(conn: &Connection, dialog_id: &str) -> DbResult<Option<Vec<F
     ))
 }
 
+/// The workspace's chats that work in its folder `name` (those set to All
+/// folders, and those that checked it), each with its title: what D19's
+/// guard asks before the folder leaves or moves.
+pub fn chats_in_folder(conn: &Connection, id: &str, name: &str) -> DbResult<Vec<(String, String)>> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT id, title, folders FROM dialogs
+             WHERE project_id = ?1 AND parent_id IS NULL ORDER BY created_at, id",
+        )
+        .map_err(err)?;
+    let rows = stmt
+        .query_map(params![id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(err)?;
+    let mut chats = Vec::new();
+    for (chat, title, folders) in rows {
+        let works_in = match folders.as_deref() {
+            None | Some("all") => true,
+            Some(names) => serde_json::from_str::<Vec<String>>(names)
+                .map_err(|e| format!("The folders of “{title}” can't be read ({e})."))?
+                .iter()
+                .any(|n| n == name),
+        };
+        if works_in {
+            chats.push((chat, title));
+        }
+    }
+    Ok(chats)
+}
+
+/// The project last opened where the workspace's folder `name` is, by its
+/// path: what Locate… compares the folder found with (D19).
+pub fn folder_project(conn: &Connection, id: &str, name: &str) -> DbResult<Option<String>> {
+    let key: Option<String> = conn
+        .query_row(
+            "SELECT key FROM workspace_folders
+             WHERE project_id = ?1 AND name = ?2 AND removed_at IS NULL",
+            params![id, name],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(err)?;
+    let Some(key) = key else {
+        return Ok(None);
+    };
+    conn.query_row(
+        "SELECT project_id FROM project_paths WHERE path = ?1
+         ORDER BY last_opened_at DESC LIMIT 1",
+        params![key],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(err)
+}
+
 /// Every workspace, most recently opened first, each folder marked when it's
 /// missing.
 pub fn list(conn: &Connection) -> DbResult<Vec<Summary>> {

@@ -19,15 +19,24 @@ pub struct Folder {
 /// The folders a chat works in: one named "" (a folder chat), or a
 /// workspace chat's, each by its stored name, in the workspace's order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Folders(Vec<Folder>);
+pub struct Folders {
+    list: Vec<Folder>,
+    /// A workspace chat's workspace (its project's ID), whose chats share
+    /// their build folder and their commands' history. None for a folder
+    /// chat's folder, and where only the folders matter (a landing's).
+    workspace: Option<String>,
+}
 
 impl Folders {
     /// A folder chat's folder.
     pub fn one(path: PathBuf) -> Self {
-        Folders(vec![Folder {
-            name: String::new(),
-            path,
-        }])
+        Folders {
+            list: vec![Folder {
+                name: String::new(),
+                path,
+            }],
+            workspace: None,
+        }
     }
 
     /// A workspace chat's folders: at least one, each named by one plain
@@ -53,12 +62,26 @@ impl Folders {
             }
             seen.push(folded);
         }
-        Ok(Folders(list))
+        Ok(Folders {
+            list,
+            workspace: None,
+        })
+    }
+
+    /// The same folders, of the workspace `id`.
+    pub fn in_workspace(mut self, id: &str) -> Self {
+        self.workspace = Some(id.to_string());
+        self
+    }
+
+    /// The workspace a workspace chat's folders are of, when it's known.
+    pub fn workspace(&self) -> Option<&str> {
+        self.workspace.as_deref()
     }
 
     /// A folder chat's folder; None for a workspace chat's.
     pub fn single(&self) -> Option<&Path> {
-        match self.0.as_slice() {
+        match self.list.as_slice() {
             [only] if only.name.is_empty() => Some(&only.path),
             _ => None,
         }
@@ -66,12 +89,12 @@ impl Folders {
 
     /// Where plans go (D28): the first folder.
     pub fn first(&self) -> &Folder {
-        &self.0[0]
+        &self.list[0]
     }
 
     /// The folders, in the workspace's order.
     pub fn iter(&self) -> std::slice::Iter<'_, Folder> {
-        self.0.iter()
+        self.list.iter()
     }
 
     /// The folder a chat path is in, and the path in it: `api/src/x.ts` is
@@ -80,17 +103,17 @@ impl Folders {
     /// system ignores case, the name is matched as it does.
     pub fn split<'a>(&self, path: &'a str) -> Option<(&Folder, &'a str)> {
         if self.single().is_some() {
-            return Some((&self.0[0], path));
+            return Some((&self.list[0], path));
         }
         let path = path.trim_start_matches("./");
         let (name, rest) = match path.find(separator) {
             Some(at) => (&path[..at], &path[at + 1..]),
             None => (path, ""),
         };
-        let folder = self.0.iter().find(|f| f.name == name).or_else(|| {
+        let folder = self.list.iter().find(|f| f.name == name).or_else(|| {
             cfg!(any(target_os = "macos", windows))
                 .then(|| {
-                    self.0
+                    self.list
                         .iter()
                         .find(|f| f.name.to_lowercase() == name.to_lowercase())
                 })
@@ -119,7 +142,7 @@ impl Folders {
     /// another). Its folder may be spelled with links resolved. None outside
     /// the chat's folders.
     pub fn chat_path(&self, abs: &Path) -> Option<String> {
-        let mut by_depth: Vec<&Folder> = self.0.iter().collect();
+        let mut by_depth: Vec<&Folder> = self.list.iter().collect();
         by_depth.sort_by_key(|f| std::cmp::Reverse(f.path.components().count()));
         let found = by_depth
             .iter()
@@ -157,7 +180,7 @@ impl Folders {
         let views: Vec<PathBuf> = std::iter::once(view.to_path_buf())
             .chain(view.canonicalize().ok())
             .collect();
-        for folder in &self.0 {
+        for folder in &self.list {
             let prefix = match folder.name.is_empty() {
                 true => String::new(),
                 false => format!("{}/", folder.name),
@@ -263,13 +286,16 @@ mod tests {
             Some("src/x.ts".into())
         );
         assert_eq!(folders.first().path, PathBuf::from("/w/api"));
+        assert_eq!(folders.workspace(), None);
         // A workspace chat of one folder is still a workspace chat's.
         let named = Folders::named(vec![Folder {
             name: "api".into(),
             path: "/w/api".into(),
         }])
-        .unwrap();
+        .unwrap()
+        .in_workspace("w1");
         assert_eq!(named.single(), None);
+        assert_eq!(named.workspace(), Some("w1"));
         assert_eq!(
             named.abs("api/src/x.ts"),
             Some(Path::new("/w/api").join("src").join("x.ts"))

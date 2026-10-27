@@ -206,8 +206,9 @@ impl Run {
         }
 
         let plan = {
-            let project = overlay.project.clone();
-            match crate::rt::spawn_blocking(move || land::plan(&project, &changes, false)).await {
+            let folders = overlay.folders();
+            match crate::rt::spawn_blocking(move || land::plan_in(&folders, &changes, false)).await
+            {
                 Ok(plan) => plan,
                 Err(e) => {
                     self.notice(
@@ -416,7 +417,7 @@ impl Run {
         let (o, id) = (overlay.clone(), self.dialog_id.clone());
         let files = crate::rt::spawn_blocking(move || {
             o.fs.flush();
-            let plan = land::plan(&o.project, &chats::changes(&id), false);
+            let plan = land::plan_in(&o.folders(), &chats::changes(&id), false);
             // Conflicts are the user's (or the chat's, if it's handed them).
             if !plan.merged || !plan.conflicts.is_empty() {
                 return Ok(Vec::new());

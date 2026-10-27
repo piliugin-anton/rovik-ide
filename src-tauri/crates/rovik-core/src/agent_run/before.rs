@@ -32,6 +32,7 @@ use super::command_output::{cap_keys, environment_failure, failed_in, split_by_b
 use super::run::Run;
 use super::verify::{check_timeout_ms, CheckResult};
 use crate::command_tool::CommandOutput;
+use crate::folders::Folders;
 use crate::overlay::chats::{self, ChatOverlay};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -184,7 +185,7 @@ impl BeforeCopy {
     /// A copy of `project` as it is, mounted; None where it can't be.
     async fn open(project: &Path) -> Option<BeforeCopy> {
         let id = format!("{}{}", chats::SCRATCH_PREFIX, uuid::Uuid::new_v4());
-        let (open_id, base) = (id.clone(), project.to_path_buf());
+        let (open_id, base) = (id.clone(), Folders::one(project.to_path_buf()));
         let opened = crate::rt::spawn_blocking(move || chats::open_scratch(&open_id, &base)).await;
         match opened {
             Ok(Ok(overlay)) => Some(BeforeCopy {

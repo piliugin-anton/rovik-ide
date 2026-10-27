@@ -127,7 +127,8 @@ impl Copies for OverlayCopies {
                 use crate::overlay::chats;
                 if chats::get(&main).is_none() {
                     let project = project.ok_or("the chat has no project folder")?;
-                    chats::open(&main, Path::new(&project), Box::new(|_, _| {}))?;
+                    let folders = crate::folders::Folders::one(project.into());
+                    chats::open(&main, &folders, Box::new(|_, _| {}))?;
                 }
                 // A restart forgot them: the candidates share the room again.
                 let overlay = match chats::reopen_child(&main, &chat, LETTERS.len()) {
@@ -145,6 +146,11 @@ impl Copies for OverlayCopies {
             let read = crate::rt::spawn_blocking(move || {
                 use crate::overlay::chats;
                 let overlay = chats::get(&chat).ok_or("the candidate's copy isn't open")?;
+                // Its chat's view, which it's a copy of.
+                let under = overlay
+                    .folder()
+                    .ok_or("the candidate's copy isn't over one folder")?
+                    .to_path_buf();
                 overlay.fs.flush();
                 let text = |root: &Path, path: &str| {
                     std::fs::read(root.join(path))
@@ -155,8 +161,7 @@ impl Copies for OverlayCopies {
                 for change in chats::changes(&chat) {
                     let path = change.path().replace('\\', "/");
                     // Under it, the chat's own view: what it changes there.
-                    let (before, after) =
-                        (text(&overlay.project, &path), text(&overlay.view, &path));
+                    let (before, after) = (text(&under, &path), text(&overlay.view, &path));
                     if before != after {
                         files.push(FileChange {
                             path,

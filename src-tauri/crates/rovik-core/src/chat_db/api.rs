@@ -21,9 +21,6 @@ pub async fn chat_list_dialogs(
     .await
 }
 
-/// The project a folder is (chat_db/projects.rs), with a suggestion when it
-/// looks like a copy or a moved project. In two steps around the git
-/// fingerprint, which walks the history: off the database thread.
 /// One chat's summary as the list shows it, as it is now.
 pub async fn chat_get_dialog(
     db: &DbState,
@@ -32,21 +29,51 @@ pub async fn chat_get_dialog(
     db.read(move |c| store::get_dialog(c, &dialog_id)).await
 }
 
+/// The project a folder is (chat_db/projects.rs), with a suggestion when it
+/// looks like a copy or a moved project. In two steps around the git
+/// fingerprint, which walks the history: off the database thread. A
+/// landing a crash cut in the folder while it was away (a drive not
+/// mounted) is finished, now that it's there (workspaces-plan.md, 4.6).
 pub async fn chat_open_project(db: &DbState, root: String) -> Result<projects::Opened, String> {
     let path = std::path::PathBuf::from(&root);
     let resolve_path = path.clone();
     let resolved = db
         .write(move |c| projects::resolve(c, &resolve_path))
         .await?;
-    if !resolved.needs_fingerprint {
-        return Ok(resolved.opened);
+    let opened = match resolved.needs_fingerprint {
+        false => resolved.opened,
+        true => {
+            let fp_path = path.clone();
+            let fp = crate::rt::spawn_blocking(move || projects::fingerprint(&fp_path))
+                .await
+                .map_err(|e| e.to_string())?;
+            let at = path.clone();
+            db.write(move |c| projects::finish_open(c, resolved, fp, &at))
+                .await?
+        }
+    };
+    finish_landings_in(path).await;
+    Ok(opened)
+}
+
+/// Finishes the landings a crash cut in `folder` while it was away, now
+/// that it's there: found again, or located (4.6).
+async fn finish_landings_in(folder: std::path::PathBuf) {
+    let Some(data) = crate::overlay::chats::data_dir() else {
+        return;
+    };
+    let finished =
+        crate::rt::spawn_blocking(move || crate::overlay::land::recover_in(&data, &folder)).await;
+    match finished {
+        Ok(paths) if !paths.is_empty() => {
+            log::info!(
+                "overlay: finished an interrupted landing: {}",
+                paths.join(", ")
+            )
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("overlay: interrupted landings weren't looked at: {e}"),
     }
-    let fp_path = path.clone();
-    let fp = crate::rt::spawn_blocking(move || projects::fingerprint(&fp_path))
-        .await
-        .map_err(|e| e.to_string())?;
-    db.write(move |c| projects::finish_open(c, resolved, fp, &path))
-        .await
 }
 
 /// "Looks like a copy": share the chats, or a separate history.
@@ -179,19 +206,27 @@ pub async fn workspace_add_folders(
 }
 
 /// Removes a folder from the workspace: refused for the last one, and while
-/// a workspace chat that works in it has changes there or is at work
-/// (D19, with workspace chats).
+/// a workspace chat that works in it is at work, has commands running or has
+/// changes there that haven't landed (D19). The chats that had it let it go
+/// at their next runs.
 pub async fn workspace_remove_folder(
     db: &DbState,
     workspace_id: String,
     name: String,
 ) -> Result<(), String> {
+    if let Some(why) = folder_held(db, &workspace_id, &name, "removed", true).await? {
+        return Err(why);
+    }
     db.write(move |c| workspaces::remove_folder(c, &workspace_id, &name))
         .await
 }
 
 /// Locate…: the folder named `name` is at `to` from now on, by its name, and
-/// D5 holds for the new place too.
+/// D5 holds for the new place too. Refused while a workspace chat that works
+/// in it is at work or has commands running, and, when the folder found is
+/// another project than the one that was there, while one has changes there
+/// (D19). Its chats' changes there go with it, and a landing a crash cut
+/// there is finished.
 pub async fn workspace_relocate_folder(
     db: &DbState,
     workspace_id: String,
@@ -200,8 +235,92 @@ pub async fn workspace_relocate_folder(
 ) -> Result<workspaces::Workspace, String> {
     let known = prepared_members(db, &workspace_id).await?;
     let prepared = prepare(vec![to]).await?.remove(0);
-    db.write(move |c| workspaces::relocate_folder(c, &workspace_id, &name, &known, &prepared))
-        .await
+    let (id, folder) = (workspace_id.clone(), name.clone());
+    let was = db
+        .read(move |c| workspaces::folder_project(c, &id, &folder))
+        .await?;
+    // The same project: the folder found has the ID file of the one last
+    // opened there.
+    let same = was.is_some() && prepared.project == was;
+    if let Some(why) = folder_held(db, &workspace_id, &name, "located elsewhere", !same).await? {
+        return Err(why);
+    }
+    let (id, folder) = (workspace_id.clone(), name.clone());
+    let chats = db
+        .read(move |c| workspaces::chats_in_folder(c, &id, &folder))
+        .await?;
+    let path = std::path::PathBuf::from(&prepared.path);
+    let folder = name.clone();
+    let located = db
+        .write(move |c| workspaces::relocate_folder(c, &workspace_id, &name, &known, &prepared))
+        .await?;
+    let moved = path.clone();
+    let followed = crate::rt::spawn_blocking(move || {
+        chats
+            .iter()
+            .filter_map(|(chat, title)| {
+                crate::overlay::chats::relocate(chat, &folder, &moved)
+                    .err()
+                    .map(|e| format!("“{title}”: {e}"))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    // Its run opens the folder's view there all the same: what's left
+    // behind is where its landings say they wrote, for Undo.
+    if !followed.is_empty() {
+        log::warn!(
+            "workspace: chats' records of {} weren't moved: {}",
+            path.display(),
+            followed.join("; ")
+        );
+    }
+    finish_landings_in(path).await;
+    Ok(located)
+}
+
+/// D19: why the workspace's folder `name` can't be `removed` or `located
+/// elsewhere` now, naming the chats that use it: one at work on this
+/// computer, one with commands left running, and (`changes`) one with
+/// changes there that haven't landed. None when none holds it.
+async fn folder_held(
+    db: &DbState,
+    workspace_id: &str,
+    name: &str,
+    verb: &str,
+    changes: bool,
+) -> Result<Option<String>, String> {
+    let (id, folder) = (workspace_id.to_string(), name.to_string());
+    let chats = db
+        .read(move |c| workspaces::chats_in_folder(c, &id, &folder))
+        .await?;
+    let folder = name.to_string();
+    let why = crate::rt::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let here = crate::chat_hold::held_here();
+        let mut why = Vec::new();
+        for (chat, title) in chats {
+            if here.contains(&chat) || crate::chat_hold::elsewhere(&chat) {
+                why.push(format!(
+                    "“{title}” is at work in it (wait for it, or stop it)"
+                ));
+            } else if !crate::command_tool::background::tasks(&chat).is_empty() {
+                why.push(format!(
+                    "“{title}” has commands running in it (stop them in its background tasks)"
+                ));
+            } else if changes
+                && !crate::overlay::chats::changes_in_folder(&chat, &folder)?.is_empty()
+            {
+                why.push(format!(
+                    "“{title}” has changes in it that haven't landed (land or discard them)"
+                ));
+            }
+        }
+        Ok(why)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok((!why.is_empty()).then(|| format!("{name} can't be {verb} now: {}.", why.join("; "))))
 }
 
 /// The workspace's folders as they are now, prepared off the database
@@ -580,5 +699,263 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    /// D19's guard: a workspace `Shop` of `api` and `web` (each with
+    /// `b.txt`), the overlays' data folder this test's, and chats of it.
+    struct Guarded {
+        test: crate::testing::TestCore,
+        workspace: String,
+        _data: tokio::sync::OwnedMutexGuard<()>,
+    }
+
+    impl Guarded {
+        async fn new() -> Guarded {
+            let test = crate::testing::TestCore::new();
+            let _data = crate::overlay::chats::TEST_DATA.clone().lock_owned().await;
+            crate::overlay::chats::init(&test.dir.0.join("overlays"));
+            let base = test.dir.0.join("shop");
+            let folders = vec![folder(&base, "api"), folder(&base, "web")];
+            fs::write(base.join("web/b.txt"), "b\n").unwrap();
+            let workspace = workspace_create(&test.core.db, "Shop".into(), folders)
+                .await
+                .unwrap()
+                .id;
+            Guarded {
+                test,
+                workspace,
+                _data,
+            }
+        }
+
+        fn path(&self, rel: &str) -> std::path::PathBuf {
+            self.test.dir.0.join("shop").join(rel)
+        }
+
+        fn db(&self) -> &DbState {
+            &self.test.core.db
+        }
+
+        /// A chat of the workspace titled `title`, working in `folders`.
+        async fn chat(&self, id: &str, title: &str, folders: &str) {
+            let dialog = NewDialog {
+                id: id.into(),
+                title: title.into(),
+                created_at: 1,
+                updated_at: 1,
+                project_id: Some(self.workspace.clone()),
+                folders: Some(folders.into()),
+            };
+            self.db()
+                .write(move |c| store::create_dialog(c, &dialog))
+                .await
+                .unwrap();
+        }
+
+        /// The chat's change to web: `n.txt`, saved in web's part of its
+        /// store, as between its runs.
+        fn changed_in_web(&self, id: &str) {
+            use crate::vfs::backend::Backend;
+            let part = self
+                .test
+                .dir
+                .0
+                .join("overlays/overlays")
+                .join(id)
+                .join("parts/web");
+            let fs =
+                crate::overlay::fs::OverlayFs::open(&self.path("web"), &part, 1 << 30).unwrap();
+            let file = fs
+                .create(
+                    crate::vfs::store::ROOT,
+                    "n.txt",
+                    crate::vfs::store::Kind::File,
+                    0o644,
+                    0,
+                    0,
+                    None,
+                )
+                .unwrap();
+            fs.write(file.ino, 0, b"new\n").unwrap();
+            fs.save();
+        }
+
+        async fn remove(&self, name: &str) -> Result<(), String> {
+            workspace_remove_folder(self.db(), self.workspace.clone(), name.into()).await
+        }
+
+        async fn locate(&self, name: &str, to: &str) -> Result<workspaces::Workspace, String> {
+            let to = self.path(to).to_string_lossy().into_owned();
+            workspace_relocate_folder(self.db(), self.workspace.clone(), name.into(), to).await
+        }
+
+        async fn folders_of(&self, id: &str) -> Option<String> {
+            let id = id.to_string();
+            self.db()
+                .read(move |c| store::dialog_folders(c, &id))
+                .await
+                .unwrap()
+        }
+    }
+
+    /// D19: a folder a workspace chat is at work in, runs a command in or has
+    /// changes in isn't removed, the chat named; once none holds it, it goes,
+    /// and leaves the folders of the chats that had it.
+    #[tokio::test]
+    async fn removing_a_folder_a_workspace_chat_uses_is_refused_naming_the_chat() {
+        let g = Guarded::new().await;
+        g.chat("rm-busy", "Fix login", "all").await;
+        g.chat("rm-changed", "Docs", r#"["web"]"#).await;
+        g.chat("rm-running", "Server", r#"["api","web"]"#).await;
+
+        let hold = crate::chat_hold::take("rm-busy").unwrap();
+        let refused = g.remove("web").await.unwrap_err();
+        assert!(refused.contains("“Fix login” is at work"), "{refused}");
+        drop(hold);
+
+        let root = g.path("web").to_string_lossy().into_owned();
+        let queued = crate::command_tool::Queued::of(
+            crate::workload::JobKind::Agent {
+                owner: "rm-running".into(),
+            },
+            None,
+        );
+        let beat = crate::testing::beating("up");
+        crate::command_tool::background::start(
+            "rm-running",
+            &root,
+            &beat,
+            &|| false,
+            queued,
+            std::sync::Arc::new(|| {}),
+        )
+        .unwrap();
+        let refused = g.remove("web").await.unwrap_err();
+        crate::command_tool::background::stop_chat("rm-running");
+        assert!(
+            refused.contains("“Server” has commands running"),
+            "{refused}"
+        );
+
+        g.changed_in_web("rm-changed");
+        let refused = g.remove("web").await.unwrap_err();
+        assert!(refused.contains("“Docs” has changes in it"), "{refused}");
+        crate::overlay::chats::discard("rm-changed").unwrap();
+
+        g.remove("web").await.unwrap();
+        assert_eq!(g.folders_of("rm-changed").await.as_deref(), Some("[]"));
+        assert_eq!(
+            g.folders_of("rm-running").await.as_deref(),
+            Some(r#"["api"]"#)
+        );
+        assert_eq!(g.folders_of("rm-busy").await.as_deref(), Some("all"));
+    }
+
+    /// D19: Locate… waits for a chat at work in the folder, and isn't to
+    /// another project while a chat has changes there; to the same project
+    /// (its ID file), the changes go with the folder.
+    #[tokio::test]
+    async fn locate_is_refused_while_a_chat_is_at_work_and_to_another_project_while_it_has_changes()
+    {
+        let g = Guarded::new().await;
+        // web is a project, with its ID file.
+        chat_open_project(g.db(), g.path("web").to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        g.chat("loc-busy", "Fix login", "all").await;
+        g.chat("loc-changed", "Docs", r#"["web"]"#).await;
+        g.changed_in_web("loc-changed");
+
+        let hold = crate::chat_hold::take("loc-busy").unwrap();
+        fs::rename(g.path("web"), g.path("web-moved")).unwrap();
+        let refused = g.locate("web", "web-moved").await.unwrap_err();
+        assert!(refused.contains("“Fix login” is at work"), "{refused}");
+        drop(hold);
+
+        folder(&g.path(""), "elsewhere");
+        let refused = g.locate("web", "elsewhere").await.unwrap_err();
+        assert!(refused.contains("“Docs” has changes in it"), "{refused}");
+
+        let located = g.locate("web", "web-moved").await.unwrap();
+        assert!(located.folders[1].path.ends_with("web-moved"));
+        assert_eq!(
+            crate::overlay::chats::changes_in_folder("loc-changed", "web").unwrap(),
+            ["web/n.txt"],
+            "its changes went with it"
+        );
+        crate::overlay::chats::discard("loc-changed").unwrap();
+    }
+
+    /// A landing of a workspace chat that a crash cut while the chat's
+    /// folder `web` was away and moved, for the next test.
+    fn cut_landing(g: &Guarded, chat: &str) -> std::path::PathBuf {
+        use crate::folders::{Folder, Folders};
+        let data = g.test.dir.0.join("overlays");
+        let store = g.test.dir.0.join("web-store");
+        let web = crate::overlay::fs::OverlayFs::open(&g.path("web"), &store, 1 << 30).unwrap();
+        {
+            use crate::vfs::backend::Backend;
+            let ino = web.resolve("b.txt").unwrap();
+            let size = crate::vfs::store::SetAttr {
+                size: Some(0),
+                ..Default::default()
+            };
+            web.setattr(ino, &size).unwrap();
+            web.write(ino, 0, b"B\n").unwrap();
+        }
+        let folders = Folders::named(vec![
+            Folder {
+                name: "api".into(),
+                path: g.path("api"),
+            },
+            Folder {
+                name: "web".into(),
+                path: g.path("web"),
+            },
+        ])
+        .unwrap();
+        let changes: Vec<_> = web.changes().into_iter().map(|c| c.under("web")).collect();
+        let landed = crate::overlay::land::land_in(&data, chat, &folders, &changes, false)
+            .unwrap()
+            .unwrap();
+        // As a crash leaves it: the file as before, the journal applying.
+        fs::write(g.path("web/b.txt"), "b\n").unwrap();
+        let journal = data
+            .join("landings")
+            .join(chat)
+            .join(&landed.id)
+            .join("journal.json");
+        let text = fs::read_to_string(&journal).unwrap();
+        fs::write(&journal, text.replace("\"done\"", "\"applying\"")).unwrap();
+        journal
+    }
+
+    /// 4.6: located, the folder gets the landing a crash cut there.
+    #[tokio::test]
+    async fn after_locate_a_landing_a_crash_interrupted_in_that_folder_is_finished() {
+        let g = Guarded::new().await;
+        g.chat("landed", "Docs", "all").await;
+        let journal = cut_landing(&g, "landed");
+        fs::rename(g.path("web"), g.path("web-moved")).unwrap();
+        g.locate("web", "web-moved").await.unwrap();
+        assert_eq!(
+            fs::read_to_string(g.path("web-moved/b.txt")).unwrap(),
+            "B\n"
+        );
+        assert!(fs::read_to_string(&journal).unwrap().contains("\"done\""));
+    }
+
+    /// 4.6: a folder found again (Try again, a drive mounted back) gets the
+    /// landing a crash cut there while it was away.
+    #[tokio::test]
+    async fn a_folder_found_again_gets_the_landing_a_crash_cut_there() {
+        let g = Guarded::new().await;
+        g.chat("landed-again", "Docs", "all").await;
+        let journal = cut_landing(&g, "landed-again");
+        chat_open_project(g.db(), g.path("web").to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(g.path("web/b.txt")).unwrap(), "B\n");
+        assert!(fs::read_to_string(&journal).unwrap().contains("\"done\""));
     }
 }

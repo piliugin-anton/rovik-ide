@@ -303,11 +303,7 @@ pub struct Job {
 pub fn begin(kind: JobKind, command: &str, project: Option<&Path>) -> Job {
     let fingerprint = history::fingerprint(command);
     // An isolated chat runs in its view: history belongs to the project.
-    let project_key = project.map(|p| {
-        crate::overlay::chats::project_for(p)
-            .to_string_lossy()
-            .into_owned()
-    });
+    let project_key = project.map(crate::overlay::chats::project_for);
     let mut class = classify(command, project);
     let mut expected_peak = 0;
     if kind == JobKind::Terminal {

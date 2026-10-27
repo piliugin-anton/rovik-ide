@@ -6690,7 +6690,8 @@ async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
     )
     .await;
     // P1.4: an earlier run of the chat changed src/util.rs (new in its view).
-    let chat = crate::overlay::chats::open(&h.dialog_id, &h.project, Box::new(|_, _| {})).unwrap();
+    let folders = crate::folders::Folders::one(h.project.clone());
+    let chat = crate::overlay::chats::open(&h.dialog_id, &folders, Box::new(|_, _| {})).unwrap();
     std::fs::write(chat.view.join("src/util.rs"), "util from run 1\n").unwrap();
     chat.fs.flush();
     h.start(h.implement_isolated(&url, true)).await;

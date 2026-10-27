@@ -790,7 +790,8 @@ impl Run {
                         ),
                     })
                 });
-                match crate::overlay::chats::open(&dialog_id, std::path::Path::new(r), on_warn) {
+                let folders = Folders::one(std::path::PathBuf::from(r));
+                match crate::overlay::chats::open(&dialog_id, &folders, on_warn) {
                     Ok(o) => Some(o.view.to_string_lossy().into_owned()),
                     Err(e) => {
                         isolation_problem = Some(e);

@@ -294,7 +294,8 @@ impl Remote {
         if self.pull_now(host, dialog_id).await.is_err() {
             return;
         }
-        self.pick_up(dialog_id, start, running, None, "stayed there").await;
+        self.pick_up(dialog_id, start, running, None, "stayed there")
+            .await;
     }
 
     /// Steps 5 and 6: the last pull, then the flip back, in the database
@@ -343,7 +344,8 @@ impl Remote {
             let chat = dialog_id.to_string();
             // The run opens the view again, with its own warnings.
             let viewed = rt::spawn_blocking(move || {
-                let opened = chats::open(&chat, &root, Box::new(|_, _| {}));
+                let folders = rovik_core::folders::Folders::one(root);
+                let opened = chats::open(&chat, &folders, Box::new(|_, _| {}));
                 chats::close(&chat);
                 opened.map(drop)
             });

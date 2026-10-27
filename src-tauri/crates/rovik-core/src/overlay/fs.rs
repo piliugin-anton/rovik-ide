@@ -369,6 +369,34 @@ pub(super) fn write_manifest(
     crate::atomic_file::write_atomic(&store.join("manifest.json"), &bytes)
 }
 
+/// A store's saved list (None: nothing saved yet). One that can't be read
+/// is an error, never taken for an empty one: the sweep would delete every
+/// file it names.
+fn read_manifest(store: &Path) -> io::Result<Option<Manifest>> {
+    let invalid = |why: String| io::Error::new(io::ErrorKind::InvalidData, why);
+    let bytes = match fs::read(store.join("manifest.json")) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let manifest: Manifest =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(format!("manifest.json: {e}")))?;
+    if manifest.version != 1 {
+        return Err(invalid(format!(
+            "manifest.json: version {} is a newer Rovik's",
+            manifest.version
+        )));
+    }
+    Ok(Some(manifest))
+}
+
+/// The changes a store's list held when it was last saved, read without
+/// opening its overlay, which needs its project folder there: what a
+/// workspace chat has in a folder that's missing (D19).
+pub fn saved_changes(store: &Path) -> io::Result<Vec<OverlayChange>> {
+    Ok(read_manifest(store)?.map_or_else(Vec::new, |m| m.changes))
+}
+
 /// What a chat's overlay calls as its changes near their limit: the bytes
 /// used, and the limit.
 pub type OnWarn = Box<dyn Fn(u64, u64) + Send + Sync>;
@@ -636,24 +664,9 @@ impl OverlayFs {
         {
             let mut inner = fs_.inner.lock().unwrap();
             inner.nodes = nodes;
-            // A saved list that can't be read isn't an empty one: opened
-            // as empty, the sweep would delete every file it names.
-            let invalid = |why: String| io::Error::new(io::ErrorKind::InvalidData, why);
-            match fs::read(store.join("manifest.json")) {
-                Ok(bytes) => {
-                    let manifest: Manifest = serde_json::from_slice(&bytes)
-                        .map_err(|e| invalid(format!("manifest.json: {e}")))?;
-                    if manifest.version != 1 {
-                        return Err(invalid(format!(
-                            "manifest.json: version {} is a newer Rovik's",
-                            manifest.version
-                        )));
-                    }
-                    inner.next_file = manifest.next_file;
-                    fs_.replay(&mut inner, &manifest.changes);
-                }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
+            if let Some(manifest) = read_manifest(store)? {
+                inner.next_file = manifest.next_file;
+                fs_.replay(&mut inner, &manifest.changes);
             }
         }
         Ok(fs_)

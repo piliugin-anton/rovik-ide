@@ -2672,6 +2672,65 @@ generation moves. `OverlayFs::base` names a part's project; the separator rule
 (`/`, and `\` on Windows only) is the overlay's in the view and in `Folders` too.
 Tests: `composite_tests.rs`, the plan's eleven.
 
+**F06 — a workspace chat's overlay.** `chats::open(chat, &Folders, on_warn)` opens
+either kind: a folder chat's store as before (`project.txt`, one `OverlayFs`), a
+workspace chat's with `folders.json` (its workspace's ID and its folders at its last
+run) and a part per folder (`parts/<name>/`), its view a `CompositeFs`. `Folders`
+carries the workspace's ID (`in_workspace`), which `check_project` sets. An open view
+is matched to the folders at every `open` (each run's start) and at Apply
+(`set_folders`): a folder that joined is opened, one located elsewhere is opened
+there from its saved list (saved first), and one that left goes with its store,
+refused while the chat has changes there; the folders that left while the view was
+closed lose their stores at its next opening, under the same rule, all or none. A
+store of the other kind is refused before anything is written, and a view is
+recorded only once it's mounted, so one that couldn't be leaves no workspace store
+behind (`exists`: `manifest.json` or `folders.json`). `ChatOverlay.fs` is an
+`Arc<dyn ChatFs>`, and `project` gave way to `folders()` (a child's: its parent's
+view) and `folder()`. `folders_of` (the open view's, else the store's record) replaces
+`project_of`, `saved_project` and `project.txt`'s other readers: `with_fs` opens a
+closed workspace chat's parts whose folders are there in an unmounted view, a closed
+chat's bar reads each part (a missing folder's from its saved list,
+`fs::saved_changes`), and the project's version of a chat path is read through
+`Folders::abs`. The watcher's `project_changed(folder, …)` reaches each open chat's
+part on that folder and names what it notes and marks by chat paths; clashes are kept
+per (chat, folder), compared by path in the folder, and refreshing one folder keeps
+the chat's others (and what it was told of them). Children stay one `OverlayFs` over
+the parent's view and land through it, scratch views take `&Folders`, `project_for`
+keys a workspace chat's commands' history by `workspace:<id>`, and `CARGO_TARGET_DIR`
+is shared by a workspace's chats. `changes_in_folder(chat, name)` reads the open
+view's part, else that part's saved list; `relocate` moves one chat's record of a
+located folder (its open view matched, its closed store's record, its landings'
+`folders.json`). D19's guard is in `chat_db::api`, which the commands call:
+`workspace_remove_folder` and `workspace_relocate_folder` are refused while a chat
+working in the folder (All folders, or checked) is at work on this computer, has
+background commands running, or (Remove, or Locate… to another project: the folder
+found's ID file isn't the project last opened where it was) has changes there, naming
+each chat and what to do. After Locate… each chat follows, and landings a crash cut in
+the folder are finished (`land::recover_in`), as `chat_open_project` (Try again) does
+for a folder found again. Tests: `overlay/workspace_chat_tests.rs` (common tools
+across the folders of one view; `mv` between folders lands as an add and a delete;
+the view's root is read-only to commands; a workspace chat reopens with each folder's
+changes, and its bar lists them while it's closed; opening its store as a folder
+chat's is refused and leaves the store as it was, and the other way; the view gains a
+folder checked and drops one unchecked with its store, but not one with changes; the
+project changing under one folder notes paths with its name; a folder chat and a
+workspace chat see each other's clashes; refreshing one folder keeps the other's
+clashes; `changes_in_folder` answers while the folder is missing; locating it as the
+same project keeps the changes, open and closed; a worker lands into the right
+folders; `CARGO_TARGET_DIR` and the commands' history are the workspace's for each of
+its chats), `chat_db::api` (removing a folder a workspace chat is at work in, runs
+commands in or has changes in is refused, naming it, and otherwise allowed, leaving
+the chats' folders; Locate… while a chat is at work is refused, and to another project
+while one has changes there, and to the same project the changes go with the folder;
+after Locate…, and when a folder is found again, a landing a crash cut there is
+finished), `check_project_tests` and `folders.rs` (the workspace's ID). Departures:
+the guard and its tests are the core's, beside the other workspace commands, and the
+app's commands stay wrappers (G05 asks the hosts there); a workspace chat's commands
+see its folders' own paths as they are, read-only, and naming one is refused, until
+F09 points them at the view; a folder located to another project keeps what the
+chat's commands built there (it has no changes there, D19); the run still opens folder
+chats only until F07.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

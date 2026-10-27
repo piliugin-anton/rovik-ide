@@ -386,7 +386,10 @@ impl super::run::Run {
             crate::overlay::chats::SCRATCH_PREFIX,
             uuid::Uuid::new_v4()
         );
-        let (scratch_id, base) = (id.clone(), std::path::PathBuf::from(&project));
+        let (scratch_id, base) = (
+            id.clone(),
+            crate::folders::Folders::one(std::path::PathBuf::from(&project)),
+        );
         let scratch = crate::rt::spawn_blocking(move || {
             crate::overlay::chats::open_scratch(&scratch_id, &base)
         })

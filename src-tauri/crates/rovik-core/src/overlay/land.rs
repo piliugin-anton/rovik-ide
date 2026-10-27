@@ -1007,11 +1007,12 @@ fn same_tree(a: &Path, b: &Path) -> bool {
 pub(super) const APPLYING: &str = "applying.lock";
 
 /// A workspace chat's folder as its landings keep it
-/// (`landings/<chat>/folders.json`): its name, and where it was.
+/// (`landings/<chat>/folders.json`), and its view's store: its name, and
+/// where it was.
 #[derive(Serialize, Deserialize)]
-struct SavedFolder {
-    name: String,
-    path: PathBuf,
+pub(super) struct SavedFolder {
+    pub(super) name: String,
+    pub(super) path: PathBuf,
 }
 
 const FOLDERS_FILE: &str = "folders.json";
@@ -1183,13 +1184,35 @@ fn into_chat(data_dir: &Path, dialog_id: &str) -> Option<String> {
 /// Finishes landings a crash interrupted: their journals say "applying".
 /// Returns the paths written.
 pub fn recover(data_dir: &Path) -> Vec<String> {
-    // A child chat's landing went into its parent's view, which isn't
-    // mounted yet: it's finished when the parent's view is (F01). Older
-    // records without the parent's id: by the path's look.
     recover_where(data_dir, |id, folders| {
-        let into_view = folders.iter().any(|f| super::chats::is_chat_view(&f.path));
-        (into_chat(data_dir, id).is_none() && !into_view).then(|| folders.clone())
+        into_folders(data_dir, id, folders).then(|| folders.clone())
     })
+}
+
+/// Finishes the interrupted landings that wrote in `folder`, now that it's
+/// there again: found, or located (workspaces-plan.md, 4.6). Returns the
+/// paths written.
+pub fn recover_in(data_dir: &Path, folder: &Path) -> Vec<String> {
+    let found = folder.canonicalize().ok();
+    let is_it = |path: &Path| {
+        path == folder
+            || found
+                .as_deref()
+                .is_some_and(|found| path.canonicalize().is_ok_and(|p| p == found))
+    };
+    recover_where(data_dir, |id, folders| {
+        let wrote_there = folders.iter().any(|f| is_it(&f.path));
+        (wrote_there && into_folders(data_dir, id, folders)).then(|| folders.clone())
+    })
+}
+
+/// Whether a chat's landings went into project folders. A child chat's went
+/// into its parent's view, which isn't mounted yet at start: they're
+/// finished when the parent's view is (F01). Older records without the
+/// parent's id: by the path's look.
+fn into_folders(data_dir: &Path, dialog_id: &str, folders: &Folders) -> bool {
+    let into_view = folders.iter().any(|f| super::chats::is_chat_view(&f.path));
+    into_chat(data_dir, dialog_id).is_none() && !into_view
 }
 
 /// Finishes the interrupted landings into one chat's view (its children's),
