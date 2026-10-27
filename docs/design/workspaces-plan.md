@@ -2975,6 +2975,89 @@ folder chat's turn has none). Departures: a file rather than `--append-system-pr
 text, as Rovik's own prompt goes: the section can be long, and Windows' command line
 would overflow.
 
+**F14 — workspace chats in the UI.** A chat's root is `ChatRoot { kind, folders }`:
+a folder chat's folder, or a workspace chat's folders in the workspace's order (every
+one of them for All folders, else those checked that it still holds), a missing one
+among them. `chatRootOf(dialog, folders, workspace)` takes the window's workspace's
+ID, so a chat of another workspace works nowhere here; the chat panel gets it as a
+prop from the window's target, so a workspace chat's root doesn't come and go while a
+folder resolves. `chatPathToAbsolute` finds `api/src/x.ts` in the folder named `api`
+(an unknown name names no file), and `chatPathOf` names a file of any of its folders
+under that folder's name. `runPlace(dialog, root)` is what a run is sent: a folder
+chat's folder; no root for a workspace chat, whose folders the backend reads, or for
+a chat with no folder; or why it can't run here: its folder or workspace isn't open,
+or a workspace chat's folder is missing, named as the backend names it. The run, the
+estimate, a move's start and the connector's commands' folder go through it. `@`
+lists each of the chat's folders' files (`list_project_files` per folder), and the
+editor context, Add to chat and the note above the input name files as the chat
+does; `chatPlanPath` gave way to `chatPathOf`. New chat's menu has All folders, a
+separator and the folders' boxes: several checked, or All folders, make a workspace
+chat (`startChatOf` with the names or `"all"`, an empty chat reused). Checking All
+folders checks every box, unchecking a box unchecks it, unchecking All folders leaves
+the boxes, and every box checked by hand isn't All folders. `acrossFoldersBlocked`
+(`virtualFiles.ts`) says when a chat across folders can't start: without the driver
+here ("Needs FUSE: Settings → Virtual files", the driver's own name), or on Windows
+while WSL isn't connected or its Rovik doesn't serve `folders`, which the UI learns
+from `HostSummary.features` (`Remote::features`, from the daemon's `Welcome`, read
+again whenever a host is ready). A workspace chat's label is a button: it opens the
+same menu with the chat's folders checked and Apply. `chat_set_folders` is
+`chat_db::api::chat_set_folders`: refused for a folder chat and for no folder of the
+workspace checked; while the chat is at work (held here or in another window, or its
+Autopilot task's latest stage waiting out a rate limit, armed or not) or has
+background commands running; and when a folder it would leave has changes that
+haven't landed, naming the folders. It writes the folders, then matches the view
+(`overlay::chats::set_folders`), and puts the folders back if the view refuses. In the
+menu, Apply is off while the chat is at work, has commands running (named, with Stop
+its commands), or has no folder checked; a missing folder the chat has can be
+unchecked but not checked again; a refusal is shown and the chat keeps its folders.
+`workspaces::checked` is the filter `chat_folders` used, shared with Apply. The branch
+offer (D29) takes the chat's folders: one folder is its own repository, several are
+grouped by `git_repos`, and the repositories of the folders new to the chat (all of a
+new chat's; else those not among its folders at its last run, which its run records
+on its message, `meta.folders`) on their main branch are named in one question with
+one name, those on another branch said to stay. Yes makes the branch in each in turn;
+one that fails says which have it, and Yes again makes it in the rest. Tests:
+`openFolders.test.ts` (a workspace chat works in its folders checked or all of them,
+and nowhere outside its workspace; its path is found in the folder its first part
+names, and an unknown name names no file; a file is named under its folder's name, on
+Windows too; its run is sent no root and no folders, and a missing folder stops it,
+naming it; rows say its folders), `virtualFiles.test.ts` (new: a second folder needs
+the driver and says how to get it; on Windows, Rovik in WSL connected and serving
+`folders`), `cloud.test.ts` (a host ready again is read again, with its features),
+`hosts_page.rs` (a host's summary carries what its daemon serves), `chat_db::api`
+(Apply sets a workspace chat's folders and All folders, refuses none checked and a
+folder chat; it's refused while the chat is at work, its task waits out a rate limit,
+or it runs a command, and when a folder it leaves has changes, named, and a missing
+folder without changes is unchecked), `workspaceChat.test.tsx` (checking api and web
+makes a workspace chat across them; All folders checks every box, unchecking one
+unchecks it, and every box by hand isn't All folders; without the driver a second box
+can't be checked, and All folders says why and opens Settings; it's off while a
+folder is missing; a workspace chat's run is sent no root, and doesn't start with a
+folder missing; `@` lists its folders' files under their names; Add to chat from
+either folder names the file under its folder's name, and another folder's stays out;
+rows; the label opens its menu, whose Apply changes the folders and is off with none
+checked, with a command running, named and stopped from the menu, and while the chat
+is at work; a refusal is shown; a missing folder the chat has can be unchecked; a new
+workspace chat asks once about its repositories; a folder that joined on its main
+branch is offered the chat's branch at the next send), `isolationBar.test.tsx` (a
+workspace chat's changed file opens from the folder its path names),
+`chatBranch.test.ts` (repositories on their main branch are offered one branch, named
+once, one on another branch keeping it; two folders of one repository are asked about
+once; a branch that fails in one says which have it, and Yes again makes it in the
+rest; a folder that joined is offered the branch the chat's other repositories are
+on) and `NewBranchDialog.test.tsx` (the repositories it's made in, and those that
+stay). Departures: without the driver a second box isn't off: checking a folder moves
+the check, as in E02, and All folders carries the reason and the way to Settings,
+since every other folder's row saying "Needs FUSE" would read as if no chat could
+start in it; in the label's menu neither the driver nor a copy's shared history keeps
+a box from being checked, as the chat exists and names its folders. The guard and its
+tests are the core's, beside D19's, and the app's command is a wrapper. The branch a
+joined folder is offered is the one the chat's other repositories are on when they
+agree on one off their main branch, else a new name: nothing is stored for it. Found
+on the way, not changed: no TypeScript config checks the component tests
+(`*.test.tsx`: `tsconfig.json` excludes them and `tsconfig.test.json` takes
+`*.test.ts`), so those changed here were checked by hand.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where
