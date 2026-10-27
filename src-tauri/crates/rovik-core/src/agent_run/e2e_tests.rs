@@ -5284,6 +5284,41 @@ async fn a_project_without_checks_is_unverified_and_disallowed_checks_are_skippe
     );
 }
 
+/// A check in one of the project's folders, as detection writes it
+/// (`cd web && …`, project.rs `in_folder`), runs when the allowed commands
+/// cover what it runs there: the `cd` needs no entry of its own.
+#[tokio::test]
+async fn a_check_in_a_folder_runs_when_what_it_runs_there_is_allowed() {
+    let h = harness(&[("web/ok.txt", "ok\n")]).await;
+    std::fs::create_dir_all(&h.core.paths.config_dir).unwrap();
+    let check = format!("cd web && {}", list(""));
+    crate::project_profile::save_project_settings(
+        &h.core.paths.config_dir,
+        h.project.to_string_lossy().into_owned(),
+        json!({ "checks": [{ "kind": "test", "command": check, "enabled": true }] }),
+    )
+    .unwrap();
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allowed_commands: vec![list("")],
+        ..Permissions::default()
+    };
+    h.start(h.request(&url, Harness::send("Write"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let record = messages.last().unwrap().meta.as_ref().unwrap()["verification"].clone();
+    assert_eq!(record["checks"][0]["status"], "passed", "{record:#}");
+}
+
 /// A check found in the project's files doesn't run until the user turns
 /// it on (Settings → Project checks): until then a run is unverified, as in
 /// a project without checks, and the agent isn't told of it. Once the user

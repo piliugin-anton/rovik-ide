@@ -219,6 +219,8 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
         <div class="settings-section-title">Commands</div>
         <p class="settings-hint">
           Shell commands the agent runs in the project folder, and the project’s checks after a run.
+          One may start with a <code>cd</code> into a folder of the project: only what runs there
+          needs to be listed.
         </p>
 
         <SettingRow label="Can run">

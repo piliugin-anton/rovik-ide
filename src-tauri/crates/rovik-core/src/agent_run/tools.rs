@@ -207,7 +207,8 @@ fn run_command_schema(permissions: &Permissions) -> Value {
         String::new()
     } else {
         format!(
-            " Only these commands (and their arguments) are allowed: {}. Others are refused.",
+            " Only these commands (and their arguments) are allowed: {}. Others are refused. \
+             A `cd` into one of the project's folders may come before them (`cd web && npm test`).",
             permissions.allowed_commands.join(", ")
         )
     };
@@ -2150,6 +2151,27 @@ mod tests {
             !names(tools_for(true, false, false, &none, false, false, false))
                 .contains(&"bash".to_string())
         );
+    }
+
+    #[test]
+    fn an_agent_held_to_the_allowed_commands_hears_that_a_cd_into_a_folder_may_lead_them() {
+        let description = |p: &Permissions| {
+            run_command_schema(p)["function"]["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let held = description(&Permissions::default());
+        assert!(held.contains("Only these commands"), "{held}");
+        assert!(
+            held.contains("A `cd` into one of the project's folders may come before them"),
+            "{held}"
+        );
+        let any = description(&Permissions {
+            allow_any_command: true,
+            ..Permissions::default()
+        });
+        assert!(!any.contains("Only these commands"), "{any}");
     }
 
     #[test]

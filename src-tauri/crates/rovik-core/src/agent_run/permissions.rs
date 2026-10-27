@@ -846,6 +846,36 @@ fn matches_allowed(segment: &[String], allowed: &[Vec<String>]) -> bool {
     })
 }
 
+/// A `cd` into one of the project's folders (`cd web`, `cd packages/api`):
+/// it runs nothing, so the allowed list doesn't need it, and what follows
+/// it is checked as usual. The project's checks in a folder are written so
+/// (project.rs `in_folder`). Not a folder outside the project (absolute,
+/// `~`, a drive, `..` past the root), one the shell would expand (`$HOME`,
+/// `*`), or `cd`'s options (`cd -`, `cd /d`).
+fn enters_project_folder(segment: &[String]) -> bool {
+    let [cd, folder] = segment else {
+        return false;
+    };
+    if cd != "cd" || folder.is_empty() || folder.starts_with(['-', '~', '/', '\\']) {
+        return false;
+    }
+    if folder.contains(['$', '%', '`', '*', '?', '[', '{', ':']) {
+        return false;
+    }
+    let mut depth = 0usize;
+    for part in folder.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return false,
+            },
+            _ => depth += 1,
+        }
+    }
+    true
+}
+
 /// A wrapper's or program's name: the file name, lower case, without
 /// `.exe`/`.cmd`/`.bat`.
 pub(super) fn program_name(word: &str) -> String {
@@ -1209,6 +1239,7 @@ pub fn split_words(entry: &str) -> Vec<String> {
 }
 
 const READ_ONLY_COMMANDS: &[&str] = &[
+    "cd",
     "ls",
     "ll",
     "dir",
@@ -1501,7 +1532,7 @@ pub(crate) fn check_command_in(command: &str, permissions: &Permissions, shell: 
     let refused: Vec<&Vec<String>> = parsed
         .segments
         .iter()
-        .filter(|seg| !matches_allowed(seg, &allowed))
+        .filter(|seg| !matches_allowed(seg, &allowed) && !enters_project_folder(seg))
         .collect();
     if !refused.is_empty() {
         let names = refused
@@ -2145,6 +2176,72 @@ mod tests {
             }
         );
         assert!(matches!(check_command("   ", &any), Verdict::Refused(_)));
+    }
+
+    #[test]
+    fn a_cd_into_a_project_folder_needs_no_entry_and_changes_no_files() {
+        let p = Permissions::default();
+        for command in [
+            "cd web && npm test",
+            "cd packages/api && cargo test",
+            "cd ./web/ && npm run lint",
+            "cd 'my app' && npm test",
+            "cd web/../api && npm test",
+            "cd web; npm test",
+        ] {
+            assert_eq!(
+                check_command_in(command, &p, Shell::Posix),
+                Verdict::Permitted {
+                    modifies_files: false
+                },
+                "{command}"
+            );
+        }
+        for command in [
+            "cd .. && npm test",
+            "cd web/../.. && npm test",
+            "cd /tmp && npm test",
+            "cd ~ && npm test",
+            "cd ~/x && npm test",
+            "cd $HOME && npm test",
+            "cd \"$HOME\" && npm test",
+            "cd * && npm test",
+            "cd C:/x && npm test",
+            "cd - && npm test",
+            "cd -P web && npm test",
+            "cd && npm test",
+            "cd web api && npm test",
+            "cd web && npm publish",
+        ] {
+            assert!(
+                matches!(
+                    check_command_in(command, &p, Shell::Posix),
+                    Verdict::Refused(_)
+                ),
+                "{command}"
+            );
+        }
+        // As cmd.exe reads them, which Windows checks too: `cd /d` changes
+        // the drive, and `\` is a separator there, not an escape.
+        assert_eq!(
+            check_command_in("cd web && npm test", &p, Shell::Cmd),
+            Verdict::Permitted {
+                modifies_files: false
+            }
+        );
+        for command in [
+            r"cd /d D:\x && npm test",
+            r"cd \ && npm test",
+            r"cd ..\x && npm test",
+        ] {
+            assert!(
+                matches!(
+                    check_command_in(command, &p, Shell::Cmd),
+                    Verdict::Refused(_)
+                ),
+                "{command}"
+            );
+        }
     }
 
     #[test]

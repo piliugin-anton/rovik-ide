@@ -392,11 +392,34 @@ function matchesAllowed(segment: string[], allowed: string[][]): boolean {
   );
 }
 
+/**
+ * A `cd` into one of the project's folders (`cd web`, `cd packages/api`): it
+ * runs nothing, so the allowed list doesn't need it. Not a folder outside the
+ * project, one the shell would expand, or `cd`'s options. Mirrors
+ * `enters_project_folder` in permissions.rs.
+ */
+function entersProjectFolder(segment: string[]): boolean {
+  const [cd, folder] = segment;
+  if (segment.length !== 2 || cd !== 'cd' || !folder) return false;
+  if (/^[-~/\\]/.test(folder) || /[$%`*?[{:]/.test(folder)) return false;
+  let depth = 0;
+  for (const part of folder.split(/[/\\]/)) {
+    if (part === '..') {
+      if (depth === 0) return false;
+      depth--;
+    } else if (part !== '' && part !== '.') {
+      depth++;
+    }
+  }
+  return true;
+}
+
 export function splitWords(entry: string): string[] {
   return entry.trim().split(/\s+/).filter(Boolean);
 }
 
 const READ_ONLY_COMMANDS = new Set([
+  'cd',
   'ls',
   'll',
   'dir',
@@ -547,6 +570,23 @@ function segmentIsReadOnly(seg: string[]): boolean {
 export type CommandVerdict =
   { permitted: true; modifiesFiles: boolean } | { permitted: false; reason: string };
 
+/** The simple commands the allowed list doesn't cover: no entry of it, nor a `cd` into a project folder. */
+function unallowed(segments: string[][], permissions: AgentPermissions): string[][] {
+  const allowed = permissions.allowedCommands.map(splitWords).filter((w) => w.length > 0);
+  return segments.filter((seg) => !matchesAllowed(seg, allowed) && !entersProjectFolder(seg));
+}
+
+/**
+ * What the allowed list lacks for `command` to run: each simple command of it
+ * that no entry covers yet, as an entry of its own. An entry permits one
+ * simple command, so a check in a folder (`cd api && go test ./...`) needs
+ * `go test ./...`, not its whole line.
+ */
+export function entriesToAllow(command: string, permissions: AgentPermissions): string[] {
+  const parts = unallowed(parseCommand(command).segments, permissions).map((seg) => seg.join(' '));
+  return [...new Set(parts)];
+}
+
 export function checkCommand(command: string, permissions: AgentPermissions): CommandVerdict {
   const parsed = parseCommand(command);
   if (parsed.segments.length === 0) return { permitted: false, reason: 'The command is empty.' };
@@ -564,8 +604,7 @@ export function checkCommand(command: string, permissions: AgentPermissions): Co
     };
   }
 
-  const allowed = permissions.allowedCommands.map(splitWords).filter((w) => w.length > 0);
-  const refused = parsed.segments.filter((seg) => !matchesAllowed(seg, allowed));
+  const refused = unallowed(parsed.segments, permissions);
   if (refused.length > 0) {
     const names = refused.map((seg) => `"${seg.join(' ')}"`).join(', ');
     return {
