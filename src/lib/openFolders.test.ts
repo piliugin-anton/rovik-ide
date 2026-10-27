@@ -250,6 +250,23 @@ test('a Windows file is named with / and found again', () => {
   assert.equal(chatPathOf(drive, 'D:\\notes\\todo.md'), 'notes/todo.md');
 });
 
+test('on Windows a file whose folder is spelled in another case is named from it', () => {
+  // The file system ignores case there: an editor's path with `c:\Work\WEB`
+  // is a file of the folder opened as `C:\work\web`.
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { platform: 'Win32' },
+    configurable: true,
+  });
+  try {
+    const root = resolved({ path: 'C:\\work\\web', name: 'web', missing: false }, 'p-web');
+    assert.equal(chatPathOf(root, 'c:\\Work\\WEB\\src\\Cart.ts'), 'src/Cart.ts');
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'navigator', saved);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  }
+});
+
 test("a chat's row says its folder, a workspace chat's the folders checked or all of them", () => {
   const folders = [resolved(api, 'p-api'), resolved(web, 'p-web')];
   assert.deepEqual(chatFolderNames({ projectId: 'p-web' }, folders), ['web']);

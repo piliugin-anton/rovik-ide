@@ -247,7 +247,8 @@ export default function IsolationBar(props: Props) {
     if (!versions) return;
     // The change is in the project now (it landed since the list was read):
     // nothing to compare, the file itself opens, from the chat's folder.
-    const own = versions.chat === versions.project && chatPathToAbsolute(props.root, file.path);
+    const landed = versions.chat !== null && versions.chat === versions.project;
+    const own = landed && chatPathToAbsolute(props.root, file.path);
     if (own) {
       await openInEditor({ path: own, focus: true });
       return;

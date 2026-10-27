@@ -352,5 +352,11 @@ test('a changed file of the second folder’s chat opens from the second folder'
   (root.querySelector('.isolation-bar-file') as HTMLButtonElement).click();
   await settle();
   assert.equal(opened[1].path, 'chat:c1:src/cart.ts');
+
+  // One whose deletion landed: there's no file to open, so it's compared.
+  answers = { overlay_file: () => ({ project: null, chat: null }) };
+  (root.querySelector('.isolation-bar-file') as HTMLButtonElement).click();
+  await settle();
+  assert.equal(opened[2].path, 'chat:c1:src/cart.ts');
   answers = {};
 });
