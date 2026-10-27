@@ -125,6 +125,11 @@ pub struct Turn {
     /// worktree): it changes the project by landing, so git that changes
     /// the repository is denied to the harness's own tools.
     pub isolated: bool,
+    /// The chat's section of the prompt for a harness running its own
+    /// tools, which reads no instructions at the top of a workspace chat's
+    /// view (4.10): Claude Code's appended prompt, Codex's developer
+    /// instructions. None in a folder, whose own it reads.
+    pub own_tools_context: Option<String>,
     /// The run offers its tools (`tools`): Plan mode, Autopilot's stages, a
     /// subagent. The harness runs as Rovik's agent, with Rovik's prompt and
     /// those tools over MCP, which Rovik runs. Otherwise (a lead's run in
@@ -531,6 +536,12 @@ pub async fn run_chat(
         }
         _ => Default::default(),
     };
+    // A workspace chat's view has no instructions at its top: a harness
+    // with its own tools is given the chat's section instead.
+    let own_tools_context = (params.folders_view && has_history && !rovik_tools)
+        .then(|| params.project_context.clone())
+        .flatten()
+        .filter(|c| !c.trim().is_empty());
     let turn = Turn {
         settings,
         api_key: params.api_key.clone(),
@@ -540,6 +551,7 @@ pub async fn run_chat(
         prompt,
         cwd: params.cwd.clone(),
         isolated: params.isolated,
+        own_tools_context,
         rovik_tools,
         session,
         recap,

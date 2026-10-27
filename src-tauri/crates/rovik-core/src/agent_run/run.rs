@@ -2362,6 +2362,7 @@ impl Run {
                     &self.overlay_owner(),
                     self.core.agents.on_server(),
                 ),
+                folders_view: self.folders.as_ref().is_some_and(|f| f.single().is_none()),
                 tool_asks,
                 command_checks,
                 restricted: Some(self.restricted.clone()),

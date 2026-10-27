@@ -2957,6 +2957,24 @@ workspace chat's folders' stacks aren't. Reopening a workspace chat's view from
 tests); the Autopilot and subagent test helpers it uses are shared with the workspace
 tests.
 
+**F13 — connectors told the chat's section.** A workspace chat's run marks its request
+as made in a view of its folders (`ChatParams.folders_view`), and the connector's turn
+then carries the chat's section of the prompt for a harness with its own tools
+(`Turn.own_tools_context`), which finds no AGENTS.md or CLAUDE.md at the view's top to
+read: Claude Code keeps its own prompt with the section appended from a file
+(`--append-system-prompt-file`), and Codex gets it as its thread's developer
+instructions. A folder chat's turn gets nothing appended: the harness reads its
+folder's own instructions, as before; with Rovik's tools the section went already, in
+Rovik's prompt. The harness works in the view, the run's root, and resumes its session
+there, the view's path being the chat's own on every run. Tests:
+`workspace_e2e_tests.rs` (Claude Code works in the view, its change landing in its
+folder, keeps its session across two sends from the same path, and is told the
+folders; Codex is told them as its developer instructions) and `claude_code.rs` (a
+workspace chat's section is appended to Claude Code's own prompt from a file, and a
+folder chat's turn has none). Departures: a file rather than `--append-system-prompt`'s
+text, as Rovik's own prompt goes: the section can be long, and Windows' command line
+would overflow.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

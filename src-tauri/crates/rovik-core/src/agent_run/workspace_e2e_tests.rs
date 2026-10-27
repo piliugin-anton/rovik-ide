@@ -1677,3 +1677,115 @@ async fn a_thorough_tasks_pick_runs_each_test_written_first_in_its_folder() {
     assert_eq!((tests(0), tests(1)), (json!(1), json!(0)), "{pick}");
     assert_eq!(h.file("api/extra.txt").as_deref(), Some("yes\n"));
 }
+
+/*
+ * Connectors (4.10)
+ */
+
+/// The words of a workspace chat's section that say what its paths are.
+const FOLDERS_SAID: &str = "every path starts with one (`api/src/main.rs`)";
+
+/// 4.10: Claude Code with its own tools works in a workspace chat's view
+/// (its change there lands in its folder), is told the chat's section, as
+/// the view's top has no instructions of its own, and keeps its session:
+/// the view's path is the chat's own on every run.
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_code_works_in_the_view_keeps_its_session_and_is_told_the_folders() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(SHOP, "all").await;
+    let program = crate::connectors::fake_claude(
+        &h._dir.0,
+        r#"
+here="$(dirname "$0")"
+echo "$@" >> "$here/args.txt"
+pwd >> "$here/cwd.txt"
+cat > /dev/null
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--append-system-prompt-file" ]; then cat "$arg" > "$here/appended.txt"; fi
+  prev="$arg"
+done
+echo 'export const a = 2;' > api/src/a.ts
+echo '{"type":"system","subtype":"init","session_id":"s-1","model":"claude-sonnet-5","claude_code_version":"2.1.309"}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Done"}},"parent_tool_use_id":null}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Done","usage":{"input_tokens":3,"output_tokens":2},"total_cost_usd":0.001,"num_turns":1}'
+"#,
+    );
+    let send = |text: &str| {
+        let send = StartKind::Send {
+            message: UserMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                content: text.into(),
+                meta: Some(json!({ "mode": "agent" })),
+                attachments: Vec::new(),
+            },
+        };
+        let mut request = h.workspace_request("connector://claude-code", send, any_command());
+        request.profile.id = "cc::sonnet".into();
+        request.profile.model = "sonnet".into();
+        request.profile.connector =
+            Some(json!({ "program": program, "permissionMode": "bypassPermissions" }));
+        request
+    };
+    h.start(send("Change a")).await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+    h.events.lock().unwrap().clear();
+    h.start(send("Once more")).await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(
+        h.file("api/src/a.ts").as_deref(),
+        Some("export const a = 2;\n")
+    );
+    let read = |name: &str| std::fs::read_to_string(h._dir.0.join(name)).unwrap();
+    let view = crate::overlay::chats::mountpoint(&h.dialog_id);
+    let cwds = read("cwd.txt");
+    let cwds: Vec<&str> = cwds.lines().collect();
+    assert_eq!(cwds, [view.to_string_lossy(), view.to_string_lossy()]);
+    let args = read("args.txt");
+    let args: Vec<&str> = args.lines().collect();
+    assert!(args[0].contains("--session-id"), "{}", args[0]);
+    assert!(args[1].contains("--resume s-1"), "{}", args[1]);
+    let appended = read("appended.txt");
+    assert!(appended.contains(FOLDERS_SAID), "{appended}");
+}
+
+/// 4.10: Codex with its own tools is given a workspace chat's section as
+/// its developer instructions, as the view's top has no AGENTS.md.
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_with_its_own_tools_is_told_the_folders() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(SHOP, "all").await;
+    let scenario = json!({ "steps": [{ "text": "Sure." }] });
+    let Some(program) = crate::connectors::fake_codex(&h._dir.0, &scenario) else {
+        eprintln!("no python3 with tomllib: skipped");
+        return;
+    };
+    let mut request = super::codex_tests::codex_send(
+        &h,
+        &program,
+        "agent",
+        "Look",
+        json!({ "permissionMode": "fullAccess" }),
+        quiet_permissions(),
+    );
+    request.root = None;
+    request.isolate = None;
+    h.start(request).await.unwrap();
+    assert_eq!(h.run_end().await, "done");
+    let text = std::fs::read_to_string(h._dir.0.join("requests.jsonl")).unwrap();
+    let started: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|r| r["method"] == "thread/start")
+        .collect();
+    let told = started[0]["params"]["developerInstructions"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(told.contains(FOLDERS_SAID), "{started:#?}");
+}
