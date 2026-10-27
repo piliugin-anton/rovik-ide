@@ -100,6 +100,11 @@ pub struct HarnessStep {
     /// How long that thinking took, once it's over (ms).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ms: Option<u64>,
+    /// Where in the reply's text it came: the text's length then, in UTF-16
+    /// code units (as the chat slices strings), so the chat shows the text
+    /// and the steps in the order they went. The run sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<usize>,
 }
 
 /// One turn for a harness: what `run_chat` makes of a chat request.

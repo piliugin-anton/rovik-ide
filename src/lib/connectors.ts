@@ -63,8 +63,10 @@ export interface ConnectorSpec {
   /**
    * One of its own tool calls as the chat shows it: as the call of Rovik's
    * tool of the same kind, its arguments as that one takes them, so its
-   * line and block read as Rovik's do (`connectorSegments`). None for a
-   * tool Rovik has none like: shown by its own name and input.
+   * line and block read as Rovik's do (`connectorSegments`). A skill it
+   * uses is a `skill` call (`{ skill, args }`), which Rovik's agent has
+   * none of. None for a tool Rovik has none like: shown by its own name
+   * and input.
    */
   chatCall: (name: string, input: Record<string, unknown>) => ChatCall | undefined;
 }
@@ -524,6 +526,8 @@ export interface HarnessStep {
   thinking?: string | null;
   /** How long that thinking took, once it's over (ms). */
   ms?: number | null;
+  /** Where in the reply's text it came: the text's length then (UTF-16 code units). */
+  at?: number | null;
 }
 
 /** A stretch of the harness's thinking, among its steps but not one it ran. */
@@ -580,8 +584,11 @@ export interface ChatStep {
   result?: ChatMessage;
 }
 
-/** What a reply's harness did, in order: a stretch of its thinking, or the tool calls between two. */
-export type ConnectorSegment = { thought: HarnessStep } | { calls: ChatStep[] };
+/**
+ * What a reply's harness did, in order: a stretch of its thinking, the
+ * tool calls between two, or the text it wrote before a step.
+ */
+export type ConnectorSegment = { thought: HarnessStep } | { calls: ChatStep[] } | { text: string };
 
 /** A step's chat form as last made, to give it back while the step doesn't change. */
 export interface KeptStep {
@@ -598,15 +605,25 @@ export interface KeptStep {
  * steps aren't the reply's: the call that started one has its report.
  * With `kept`, a step that hasn't changed gives the same objects as
  * before, so the chat's blocks keep their state while the reply goes on.
+ * With the reply's `text`, what it wrote before a step that says where it
+ * came (`at`) is in its place before that step; what it wrote after its
+ * last step is `textAfterSteps`.
  */
 export function connectorSegments(
   meta: ConnectorMeta,
-  kept: Map<string, KeptStep> = new Map()
+  kept: Map<string, KeptStep> = new Map(),
+  text = ''
 ): ConnectorSegment[] {
   const spec = connectorSpec(meta.kind as ConnectorKind);
   const segments: ConnectorSegment[] = [];
+  let shown = 0;
   for (const step of meta.steps ?? []) {
     if (step.parent) continue;
+    if (typeof step.at === 'number' && step.at > shown) {
+      const before = text.slice(shown, step.at);
+      shown = step.at;
+      if (before.trim()) segments.push({ text: before });
+    }
     if (isThought(step)) {
       segments.push({ thought: step });
       continue;
@@ -617,6 +634,19 @@ export function connectorSegments(
     else segments.push({ calls: [chat] });
   }
   return segments;
+}
+
+/**
+ * The reply's text after its last step, which shows as its own; what came
+ * before shows among its steps (`connectorSegments`). All of it when its
+ * steps don't say where they came (a reply stored before they did).
+ */
+export function textAfterSteps(meta: ConnectorMeta, text: string): string {
+  let at = 0;
+  for (const step of meta.steps ?? []) {
+    if (!step.parent && typeof step.at === 'number') at = Math.max(at, step.at);
+  }
+  return text.slice(at);
 }
 
 /** A tool step as Rovik's call, and its result once it has one ("Error: …" when it failed). */

@@ -967,7 +967,8 @@ async fn a_fix_that_breaks_one_check_keeps_its_other_fixes() {
     .await;
     h.start(h.request(&url, Harness::send("Fix the checks"), checks_on()))
         .await;
-    assert_eq!(h.run_end().await, "verified");
+    // Three rounds of three checks each: a busy runner takes past 15 s.
+    assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
     assert_eq!(h.file("users.txt").as_deref(), Some("good\n"), "kept");
     assert_eq!(h.file("posts.txt").as_deref(), Some("good\n"), "kept");
     assert_eq!(h.file("tags.txt").as_deref(), Some("fine\n"), "put back");

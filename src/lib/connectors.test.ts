@@ -28,6 +28,7 @@ import {
   probeModels,
   probeSummary,
   splitSources,
+  textAfterSteps,
   titleProfile,
   specOf,
   versionLine,
@@ -244,6 +245,60 @@ test('a reply’s steps show as Rovik’s work does: its thoughts apart, its cal
   assert.equal(calls[0].result?.tool_call_id, 't1');
   assert.equal(calls[1].result?.content, 'Error: boom', 'a failed step reads as a failed call');
   assert.equal(calls[2].result, undefined, 'still running');
+});
+
+test('a reply’s text shows in its place among its steps, as it went', () => {
+  // "Let’s read 📄 a.txt…", a read, "Now b.", a read, then its answer; each
+  // step says where in the text it came (UTF-16 code units).
+  const text = 'Let’s read 📄 a.txt…\n\nNow b.\n\nAlpha, beta.';
+  const meta: ConnectorMeta = {
+    kind: 'claude-code',
+    steps: [
+      { id: 'thinking-1', name: '', input: null, thinking: 'Read both.', ms: 900, at: 0 },
+      { id: 't1', name: 'Read', input: { file_path: 'a.txt' }, result: 'alpha', ok: true, at: 20 },
+      // Its subagent's steps aren't the reply's, wherever they came.
+      { id: 't9', name: 'Grep', input: { pattern: 'x' }, parent: 't1', at: 24 },
+      { id: 't2', name: 'Read', input: { file_path: 'b.txt' }, result: 'beta', ok: true, at: 28 },
+      // Right after the one before: the two calls share a line.
+      { id: 't3', name: 'Read', input: { file_path: 'c.txt' }, result: 'gamma', ok: true, at: 28 },
+    ],
+  };
+  const segments = connectorSegments(meta, new Map(), text);
+  assert.deepEqual(
+    segments.map((s) =>
+      'text' in s
+        ? `text:${s.text}`
+        : 'thought' in s
+          ? `thought:${s.thought.id}`
+          : `calls:${s.calls.map((c) => c.call.id).join(',')}`
+    ),
+    [
+      'thought:thinking-1',
+      'text:Let’s read 📄 a.txt…',
+      'calls:t1',
+      'text:\n\nNow b.',
+      'calls:t2,t3',
+    ]
+  );
+  // What came after its last step is the reply's own text.
+  assert.equal(textAfterSteps(meta, text), '\n\nAlpha, beta.');
+});
+
+test('steps that don’t say where they came show before the whole text', () => {
+  // A reply stored before steps said so.
+  const meta: ConnectorMeta = {
+    kind: 'claude-code',
+    steps: [{ id: 't1', name: 'Read', input: { file_path: 'a.txt' }, result: 'alpha', ok: true }],
+  };
+  const segments = connectorSegments(meta, new Map(), 'Let me look.\n\nIt says alpha.');
+  assert.deepEqual(
+    segments.map((s) => ('calls' in s ? 'calls' : 'other')),
+    ['calls']
+  );
+  assert.equal(
+    textAfterSteps(meta, 'Let me look.\n\nIt says alpha.'),
+    'Let me look.\n\nIt says alpha.'
+  );
 });
 
 test('a step that hasn’t changed is the same call, so its block keeps its state', () => {

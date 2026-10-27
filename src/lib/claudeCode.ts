@@ -148,8 +148,9 @@ const TODO_STATUS: Record<string, string> = {
  * kind (`ConnectorSpec.chatCall`): its file tools as `read` and `write`
  * (an edit as a partial write), its shell as `bash`, its searches as
  * `search_code`, its web tools as `browse_url` and `web_search`, its
- * checklist as `todo`. The paths are the project's (the core makes them
- * relative to the folder it ran in). Its other tools have no like.
+ * checklist as `todo`, and a skill it uses as `skill`, for its line to name
+ * it. The paths are the project's (the core makes them relative to the
+ * folder it ran in). Its other tools have no like.
  */
 export function claudeCodeChatCall(
   name: string,
@@ -195,6 +196,10 @@ export function claudeCodeChatCall(
         status: TODO_STATUS[String(t?.status)] ?? 'pending',
       }));
       return { name: 'todo', arguments: { items } };
+    }
+    case 'Skill': {
+      const args = text('args');
+      return { name: 'skill', arguments: { skill: text('skill'), ...(args ? { args } : {}) } };
     }
     default:
       return undefined;

@@ -679,6 +679,204 @@ async fn claude_code_s_thinking_shows_in_its_place_among_its_steps() {
     assert!(args.contains("--thinking-display summarized"), "{args}");
 }
 
+/// The patches of the chat's reply, in the order they came.
+#[cfg(unix)]
+fn reply_patches(h: &Harness) -> Vec<Value> {
+    let reply = h
+        .events_of("messagesAdded")
+        .iter()
+        .flat_map(|e| e["messages"].as_array().cloned().unwrap_or_default())
+        .find(|m| m["role"] == "assistant")
+        .expect("a reply");
+    h.events_of("messagePatched")
+        .into_iter()
+        .filter(|e| e["messageId"] == reply["id"])
+        .map(|e| e["patch"].clone())
+        .collect()
+}
+
+/// A fake `claude` printing each of `parts` (lines of its output), silent
+/// for a second between one part and the next: far longer than the run
+/// waits before it says a reply is late or stalled (`run::STILL_WAITING`,
+/// `run::REPLY_IDLE`).
+#[cfg(unix)]
+fn claude_in_parts(h: &Harness, parts: &[&[Value]]) -> String {
+    let printed: Vec<String> = parts
+        .iter()
+        .map(|lines| {
+            let lines: Vec<String> = lines.iter().map(Value::to_string).collect();
+            format!("cat <<'EOF'\n{}\nEOF\n", lines.join("\n"))
+        })
+        .collect();
+    let script = format!("cat > /dev/null\n{}", printed.join("sleep 1\n"));
+    crate::connectors::fake_claude(&h._dir.0, &script)
+}
+
+/// A skill the user runs that works in a forked context (`/name` of one
+/// with `context: fork`): Claude Code prints nothing of its work until it's
+/// done. Its step shows from the start, at work, and no line says the
+/// reply is late or stalled meanwhile; its reply follows once it's done.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_forked_skill_the_user_runs_shows_as_its_step_while_it_works() {
+    let h = harness(&[("a.txt", "alpha\n")]).await;
+    let fork = "forked-command-census";
+    let started = json!({"type":"system","subtype":"task_started","task_id":"a1","description":"/census","task_type":"local_agent"});
+    let done = [
+        json!({"type":"system","subtype":"task_notification","task_id":"a1","status":"completed","summary":"/census"}),
+        json!({"type":"system","subtype":"init","session_id":"s-6","model":"claude-haiku-5-5"}),
+        json!({"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.txt"}}]},"parent_tool_use_id":fork}),
+        json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"alpha"}]},"parent_tool_use_id":fork}),
+        json!({"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"a.txt says alpha."}]},"parent_tool_use_id":null}),
+        json!({"type":"result","subtype":"success","is_error":false,"result":"a.txt says alpha.","num_turns":0,"usage":{}}),
+    ];
+    // The skill works for a second.
+    let program = claude_in_parts(&h, &[&[started], &done]);
+    h.start(claude_code_send(&h, &program, "agent", "/census"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    let mut running = false;
+    let mut shown_running = false;
+    for patch in reply_patches(&h) {
+        if let Some(steps) = patch["meta"]["connector"]["steps"].as_array() {
+            running = steps.first().is_some_and(|s| s["ok"].is_null());
+            shown_running |= running;
+            // Named before Claude Code says anything of itself, for the
+            // chat to show the step as Claude Code's ("Using skill census").
+            assert_eq!(patch["meta"]["connector"]["kind"], "claude-code");
+        }
+        if running {
+            assert!(
+                patch.get("status").is_none_or(Value::is_null),
+                "a status while the skill works: {patch:#}"
+            );
+        }
+    }
+    assert!(shown_running, "{:#?}", reply_patches(&h));
+
+    let messages = h.messages().await;
+    let reply = messages.last().unwrap();
+    assert_eq!(reply.content, "a.txt says alpha.");
+    let meta = reply.meta.clone().unwrap();
+    let steps = meta["connector"]["steps"].as_array().unwrap();
+    assert_eq!(steps[0]["name"], "Skill");
+    assert_eq!(steps[0]["input"], json!({ "skill": "census" }));
+    assert_eq!(steps[0]["ok"], true);
+    // What it did, as its subagent's steps.
+    assert_eq!(steps[1]["name"], "Read");
+    assert_eq!(steps[1]["parent"], fork);
+}
+
+/// Claude Code writes, runs a tool, writes again: its reply's text is one,
+/// so each step says where in it the step came (the text's length then, as
+/// the chat's strings count it), for the chat to show the text and the
+/// steps in the order they went.
+#[cfg(unix)]
+#[tokio::test]
+async fn each_step_says_where_in_the_reply_s_text_it_came() {
+    let h = harness(&[("a.txt", "alpha\n"), ("b.txt", "beta\n")]).await;
+    let event = |message: &str, e: Value| json!({"type":"stream_event","event":e,"parent_tool_use_id":null,"api_message_id":message});
+    let start = |message: &str| {
+        event(
+            message,
+            json!({"type":"message_start","message":{"id":message}}),
+        )
+    };
+    let text = |message: &str, text: &str| {
+        event(
+            message,
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}),
+        )
+    };
+    let read = |message: &str, id: &str, path: &str| json!({"type":"assistant","message":{"id":message,"content":[{"type":"tool_use","id":id,"name":"Read","input":{"file_path":path}}]},"parent_tool_use_id":null});
+    let result = |id: &str, content: &str| json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":id,"content":content}]},"parent_tool_use_id":null});
+    let lines = [
+        json!({"type":"system","subtype":"init","session_id":"s-3","model":"claude-haiku-5-5"}),
+        start("m1"),
+        text("m1", "Let’s read 📄 a.txt…"),
+        read("m1", "t1", "a.txt"),
+        result("t1", "alpha"),
+        start("m2"),
+        text("m2", "Now b."),
+        read("m2", "t2", "b.txt"),
+        result("t2", "beta"),
+        start("m3"),
+        text("m3", "Alpha, beta."),
+        json!({"type":"result","subtype":"success","is_error":false,"result":"Alpha, beta.","num_turns":3,"usage":{}}),
+    ];
+    let program = claude_in_parts(&h, &[&lines]);
+    h.start(claude_code_send(&h, &program, "agent", "Read a and b"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    let reply = h.messages().await.last().unwrap().clone();
+    assert_eq!(
+        reply.content,
+        "Let’s read 📄 a.txt…\n\nNow b.\n\nAlpha, beta."
+    );
+    let meta = reply.meta.unwrap();
+    let steps = meta["connector"]["steps"].as_array().unwrap();
+    // In UTF-16 code units, as JavaScript slices strings: the emoji is two.
+    let at: Vec<&Value> = steps.iter().map(|s| &s["at"]).collect();
+    assert_eq!(at, [&json!(20), &json!(28)]);
+    // Kept once each had its result.
+    assert_eq!(steps[1]["ok"], true);
+}
+
+/// While Claude Code runs a tool of its own it prints nothing: that's the
+/// tool's time, which its step shows at work, not the reply stalling. Once
+/// the tool is done, a silence is the reply's again: "Still generating".
+#[cfg(unix)]
+#[tokio::test]
+async fn while_claude_code_runs_a_tool_its_reply_is_not_said_to_be_generating() {
+    let h = harness(&[]).await;
+    let event = |e: Value| json!({"type":"stream_event","event":e,"parent_tool_use_id":null});
+    let call = [
+        json!({"type":"system","subtype":"init","session_id":"s-8","model":"claude-haiku-5-5"}),
+        json!({"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"sleep 1"}}]},"parent_tool_use_id":null}),
+    ];
+    let result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":""}]},"parent_tool_use_id":null});
+    let reply = [
+        event(json!({"type":"message_start","message":{"id":"m2"}})),
+        event(
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Slept."}}),
+        ),
+        json!({"type":"result","subtype":"success","is_error":false,"result":"Slept.","num_turns":2,"usage":{}}),
+    ];
+    // The command runs for a second; then the model takes a second to answer.
+    let program = claude_in_parts(&h, &[&call, &[result], &reply]);
+    h.start(claude_code_send(&h, &program, "agent", "Sleep a second"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    // The step's state as the patches went: none, running, done.
+    let mut step = "none";
+    let mut generating_after_it = false;
+    for patch in reply_patches(&h) {
+        if let Some(steps) = patch["meta"]["connector"]["steps"].as_array() {
+            if let Some(first) = steps.first() {
+                step = if first["ok"].is_null() {
+                    "running"
+                } else {
+                    "done"
+                };
+            }
+        }
+        let generating = patch["status"]["text"] == "Still generating";
+        assert!(
+            !(generating && step == "running"),
+            "said to be generating while the command runs: {patch:#}"
+        );
+        generating_after_it |= generating && step == "done";
+    }
+    assert!(generating_after_it, "{:#?}", reply_patches(&h));
+    assert_eq!(h.messages().await.last().unwrap().content, "Slept.");
+}
+
 /// The real Claude Code with its own tools: its thinking comes back, as a
 /// summary, among the steps of its reply.
 ///   ROVIK_REAL_CLAUDE=1 cargo test -p rovik-core real_claude -- --ignored --nocapture

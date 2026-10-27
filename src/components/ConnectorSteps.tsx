@@ -4,9 +4,10 @@
 // with the chat's own parts as Rovik's agent's work is: each stretch of its
 // thinking a ThinkingBlock, its tool calls the lines and blocks of Rovik's
 // tools of the same kind (ToolCallGroup; the kind's ConnectorSpec says
-// which), in the order it went (lib/connectors.ts connectorSegments). A
-// call waiting for the user's approval shows the request, as Rovik's do,
-// and one waiting on what Rovik installs for it says so on its line.
+// which), and what it wrote before each as the reply's words show, in the
+// order it went (lib/connectors.ts connectorSegments). A call waiting for
+// the user's approval shows the request, as Rovik's do, and one waiting on
+// what Rovik installs for it says so on its line.
 import { createMemo, Index, Match, Switch } from 'solid-js';
 import type { ChatMessage, ChatToolCall } from '../types';
 import {
@@ -16,15 +17,19 @@ import {
   type KeptStep,
 } from '../lib/connectors';
 import { groupToolCalls } from '../lib/toolGroups';
+import MessageContent from './MessageContent';
 import ThinkingBlock from './ThinkingBlock';
 import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
 
 const thoughtOf = (s: ConnectorSegment) => ('thought' in s ? s.thought : undefined);
 const callsOf = (s: ConnectorSegment) => ('calls' in s ? s.calls : undefined);
+const textOf = (s: ConnectorSegment) => ('text' in s ? s.text : undefined);
 
 export default function ConnectorSteps(props: {
   meta: ConnectorMeta;
+  /** The reply's text: what it wrote before a step shows in its place. */
+  text?: string;
   /** The reply is still coming: its last thought may go on, a call may run. */
   running: boolean;
   /** The chat it's in: its calls' approvals wait there. */
@@ -33,7 +38,7 @@ export default function ConnectorSteps(props: {
   notes?: Record<string, string>;
 }) {
   const kept = new Map<string, KeptStep>();
-  const segments = createMemo(() => connectorSegments(props.meta, kept));
+  const segments = createMemo(() => connectorSegments(props.meta, kept, props.text));
   const results = createMemo(() => {
     const byCall = new Map<ChatToolCall, ChatMessage | undefined>();
     for (const segment of segments()) {
@@ -63,6 +68,13 @@ export default function ConnectorSteps(props: {
                 ms={step().ms}
                 thinking={props.running && i === segments().length - 1 && step().ms == null}
               />
+            )}
+          </Match>
+          <Match when={textOf(segment())}>
+            {(text) => (
+              <div class="chat-message assistant">
+                <MessageContent content={text()} />
+              </div>
             )}
           </Match>
           <Match when={callsOf(segment())}>

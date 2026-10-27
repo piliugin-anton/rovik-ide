@@ -67,6 +67,17 @@ test('its checklist is Rovik’s, its finished items done', () => {
   });
 });
 
+test('a skill it uses is a skill call, by the skill’s name', () => {
+  assert.deepEqual(claudeCodeChatCall('Skill', { skill: 'pdf', args: 'report.pdf' }), {
+    name: 'skill',
+    arguments: { skill: 'pdf', args: 'report.pdf' },
+  });
+  assert.deepEqual(claudeCodeChatCall('Skill', { skill: 'slow-census' }), {
+    name: 'skill',
+    arguments: { skill: 'slow-census' },
+  });
+});
+
 test('a tool Rovik has none like keeps its own name', () => {
   assert.equal(claudeCodeChatCall('Task', { description: 'Look around' }), undefined);
   assert.equal(claudeCodeChatCall('mcp__github__search', { q: 'x' }), undefined);

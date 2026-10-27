@@ -27,6 +27,20 @@ describe('groupToolCalls', () => {
     );
   });
 
+  it('keeps each skill on a line of its own', () => {
+    const runs = groupToolCalls([
+      call('skill', { skill: 'pdf' }),
+      call('skill', { skill: 'docx' }),
+    ]);
+    assert.deepEqual(
+      runs.map((r) => [r.calls.length, !!r.alone]),
+      [
+        [1, true],
+        [1, true],
+      ]
+    );
+  });
+
   it('keeps questions, checklists and context edits apart', () => {
     const runs = groupToolCalls([
       call('todo', { items: [] }),
@@ -215,6 +229,13 @@ describe('describeGroup', () => {
       false
     );
     assert.deepEqual([context.verb, context.items.length], ['Edited its context', 0]);
+  });
+
+  it('names the skill a connector uses', () => {
+    const using = describeGroup('skill', [{ skill: 'slow-census' }], true);
+    assert.deepEqual([using.verb, using.items[0].text], ['Using skill', 'slow-census']);
+    const used = describeGroup('skill', [{ skill: 'slow-census', args: '--all' }], false);
+    assert.deepEqual([used.verb, used.items[0].text], ['Used skill', 'slow-census']);
   });
 
   it('names commands by their program and pages by their site', () => {
