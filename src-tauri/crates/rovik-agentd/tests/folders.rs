@@ -542,6 +542,21 @@ async fn set_folders(core: &rovik_core::Core, folders: &str) {
     panic!("the chat stayed at work");
 }
 
+/// What holds the chat on the daemon from working in `folders` (D32), once
+/// the app has heard its last run end: until then the chat is at work for
+/// the app, whatever the daemon's status says.
+async fn held_there(app: &App, folders: &str) -> Result<Option<String>, String> {
+    for _ in 0..400 {
+        match app.remote.leaving_held_there(CHAT, folders).await {
+            Ok(Some(why)) if why.contains("is at work") => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await
+            }
+            held => return held,
+        }
+    }
+    panic!("the chat stayed at work");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_folder_checked_joins_at_the_next_message_and_one_unchecked_leaves() {
     let setup = Setup::new().await;
@@ -579,7 +594,7 @@ async fn a_folder_checked_joins_at_the_next_message_and_one_unchecked_leaves() {
 
     // Checked: in its worktree, and its run's, at its next message.
     let both = r#"["api","web"]"#;
-    assert_eq!(app.remote.leaving_held_there(CHAT, both).await, Ok(None));
+    assert_eq!(held_there(&app, both).await, Ok(None));
     set_folders(core, both).await;
     app.remote
         .start(message_of(&setup, &url, CHAT, "u2"))
@@ -595,10 +610,7 @@ async fn a_folder_checked_joins_at_the_next_message_and_one_unchecked_leaves() {
 
     // Unchecked: no changes there, so it leaves, ignored files and all.
     let web_only = r#"["web"]"#;
-    assert_eq!(
-        app.remote.leaving_held_there(CHAT, web_only).await,
-        Ok(None)
-    );
+    assert_eq!(held_there(&app, web_only).await, Ok(None));
     set_folders(core, web_only).await;
     app.remote
         .start(message_of(&setup, &url, CHAT, "u3"))
