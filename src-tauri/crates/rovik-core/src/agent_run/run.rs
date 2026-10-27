@@ -3582,6 +3582,14 @@ impl Stream {
         !self.text.is_empty() || !self.tool_calls.is_empty()
     }
 
+    /// A connector's harness is running one of its own tools: a step of its
+    /// work (not a stretch of thinking) with no result yet.
+    fn harness_step_running(&self) -> bool {
+        self.harness_steps
+            .iter()
+            .any(|step| step.thinking.is_none() && step.ok.is_none())
+    }
+
     /// The request stopped answering: no first output past the usual wait,
     /// silent since its last output, or between retries.
     fn stuck(&self) -> bool {
@@ -3669,7 +3677,13 @@ impl Stream {
             // Output that stops mid-reply. Some providers send a tool call only
             // once it's complete, so while the model writes a whole file nothing
             // arrives: say it's still going, with the time since the last output.
-            if self.got_output && !self.idle_shown && self.last_output.elapsed() >= REPLY_IDLE {
+            // A harness running a tool of its own is silent until the tool is
+            // done: that step shows it's at work, and nothing is being generated.
+            if self.got_output
+                && !self.idle_shown
+                && self.last_output.elapsed() >= REPLY_IDLE
+                && !self.harness_step_running()
+            {
                 self.idle_shown = true;
                 self.set_status(Some(Status {
                     text: "Still generating".into(),

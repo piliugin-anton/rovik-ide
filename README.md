@@ -439,7 +439,8 @@ Rovik's agent too.
   stretch of its thinking ("Thought for 3 s", open to the text), and its
   tool calls as the lines of Rovik's tools of the same kind ("Read
   app.ts", "Edited app.ts", "Ran npm", its checklist as Rovik's), then its
-  answer. In a
+  answer. While one of its tools runs, that call's line shows it at work,
+  and the reply isn't said to be "Still generating". In a
   chat's own copy of the project (an isolated chat, or one on a cloud
   host), git commands that change the repository (`checkout`, `switch`,
   `reset`, `commit`, `push`…) are refused in every mode, as they are to

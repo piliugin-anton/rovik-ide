@@ -679,6 +679,90 @@ async fn claude_code_s_thinking_shows_in_its_place_among_its_steps() {
     assert!(args.contains("--thinking-display summarized"), "{args}");
 }
 
+/// The patches of the chat's reply, in the order they came.
+#[cfg(unix)]
+fn reply_patches(h: &Harness) -> Vec<Value> {
+    let reply = h
+        .events_of("messagesAdded")
+        .iter()
+        .flat_map(|e| e["messages"].as_array().cloned().unwrap_or_default())
+        .find(|m| m["role"] == "assistant")
+        .expect("a reply");
+    h.events_of("messagePatched")
+        .into_iter()
+        .filter(|e| e["messageId"] == reply["id"])
+        .map(|e| e["patch"].clone())
+        .collect()
+}
+
+/// A fake `claude` printing each of `parts` (lines of its output), silent
+/// for a second between one part and the next: far longer than the run
+/// waits before it says a reply is late or stalled (`run::STILL_WAITING`,
+/// `run::REPLY_IDLE`).
+#[cfg(unix)]
+fn claude_in_parts(h: &Harness, parts: &[&[Value]]) -> String {
+    let printed: Vec<String> = parts
+        .iter()
+        .map(|lines| {
+            let lines: Vec<String> = lines.iter().map(Value::to_string).collect();
+            format!("cat <<'EOF'\n{}\nEOF\n", lines.join("\n"))
+        })
+        .collect();
+    let script = format!("cat > /dev/null\n{}", printed.join("sleep 1\n"));
+    crate::connectors::fake_claude(&h._dir.0, &script)
+}
+
+/// While Claude Code runs a tool of its own it prints nothing: that's the
+/// tool's time, which its step shows at work, not the reply stalling. Once
+/// the tool is done, a silence is the reply's again: "Still generating".
+#[cfg(unix)]
+#[tokio::test]
+async fn while_claude_code_runs_a_tool_its_reply_is_not_said_to_be_generating() {
+    let h = harness(&[]).await;
+    let event = |e: Value| json!({"type":"stream_event","event":e,"parent_tool_use_id":null});
+    let call = [
+        json!({"type":"system","subtype":"init","session_id":"s-8","model":"claude-haiku-5-5"}),
+        json!({"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"sleep 1"}}]},"parent_tool_use_id":null}),
+    ];
+    let result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":""}]},"parent_tool_use_id":null});
+    let reply = [
+        event(json!({"type":"message_start","message":{"id":"m2"}})),
+        event(
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Slept."}}),
+        ),
+        json!({"type":"result","subtype":"success","is_error":false,"result":"Slept.","num_turns":2,"usage":{}}),
+    ];
+    // The command runs for a second; then the model takes a second to answer.
+    let program = claude_in_parts(&h, &[&call, &[result], &reply]);
+    h.start(claude_code_send(&h, &program, "agent", "Sleep a second"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    // The step's state as the patches went: none, running, done.
+    let mut step = "none";
+    let mut generating_after_it = false;
+    for patch in reply_patches(&h) {
+        if let Some(steps) = patch["meta"]["connector"]["steps"].as_array() {
+            if let Some(first) = steps.first() {
+                step = if first["ok"].is_null() {
+                    "running"
+                } else {
+                    "done"
+                };
+            }
+        }
+        let generating = patch["status"]["text"] == "Still generating";
+        assert!(
+            !(generating && step == "running"),
+            "said to be generating while the command runs: {patch:#}"
+        );
+        generating_after_it |= generating && step == "done";
+    }
+    assert!(generating_after_it, "{:#?}", reply_patches(&h));
+    assert_eq!(h.messages().await.last().unwrap().content, "Slept.");
+}
+
 /// The real Claude Code with its own tools: its thinking comes back, as a
 /// summary, among the steps of its reply.
 ///   ROVIK_REAL_CLAUDE=1 cargo test -p rovik-core real_claude -- --ignored --nocapture
