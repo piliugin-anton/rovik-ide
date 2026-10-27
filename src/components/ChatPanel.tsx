@@ -120,10 +120,15 @@ import {
   settledChecklist,
 } from '../lib/checklist';
 import {
+  chatForPlan,
+  chatPlanPath,
   implementationMessage,
   onImplementPlanRequest,
   peekImplementPlanRequest,
+  planFolders,
+  readPlan,
   takeImplementPlanRequest,
+  type ImplementPlanRequest,
 } from '../lib/plans';
 import QuestionPanel from './QuestionPanel';
 import {
@@ -182,6 +187,7 @@ import {
   folderOf,
   listedBy,
   sameOwners,
+  workspaceIdOf,
   type ChatOwners,
   type OpenFolder,
 } from '../lib/openFolders';
@@ -272,6 +278,12 @@ const resumed = new Set<string>();
  */
 const usageCache = new Map<string, ContextUsage>();
 const clmBudgetCache = new Map<string, number | null>();
+
+/**
+ * Where Implement carries out a plan (D28): `'open'`, the open chat; else how
+ * to start the chat that does, which gives null when none could start.
+ */
+type PlanStart = 'open' | (() => Promise<DialogSummary | null>);
 
 interface ChatProps {
   /**
@@ -1348,14 +1360,25 @@ export default function ChatPanel(props: ChatProps) {
       notify({ kind: 'warning', title: 'No chat started', message: why, timeout: 6000 });
       return null;
     }
-    const owner = folder?.project?.id ?? null;
+    return startChatOf(folder?.project?.id ?? null, null);
+  }
+
+  /**
+   * A new chat of `owner` (a folder's project, null with none open; a
+   * workspace's, working in `folders`: `"all"` or names as JSON), the open
+   * chat reused while it's empty, as `startChatIn` says.
+   */
+  async function startChatOf(
+    owner: string | null,
+    folders: string | null
+  ): Promise<DialogSummary | null> {
     const current = activeDialog();
     if (current && isEmptyChat(current.id)) {
-      const same = (current.projectId ?? null) === owner;
+      const same = (current.projectId ?? null) === owner && (current.folders ?? null) === folders;
       // One on a host stays the project's it is there, and a draft naming
       // files stays with the chat of their folder: another's can't read them.
       const movable = !current.place && composerReferences().length === 0;
-      if (same || (movable && (await store.moveEmpty(current.id, owner)))) {
+      if (same || (movable && (await store.moveEmpty(current.id, owner, folders)))) {
         setHistoryOpen(false);
         setFocusMessageId(null);
         inputTextareaRef?.focus();
@@ -1365,7 +1388,7 @@ export default function ChatPanel(props: ChatProps) {
     const prevId = activeDialogId();
     if (prevId) void flushComposerDom(prevId);
     resetComposerState();
-    const dialog = createNewDialog(owner);
+    const dialog = createNewDialog(owner, folders);
     // The reset cleared `input` while the old chat was still active,
     // scheduling an empty save for it; drop it, the flush kept it.
     if (prevId && prevId !== dialog.id) cancelComposerDraft(prevId);
@@ -1375,9 +1398,12 @@ export default function ChatPanel(props: ChatProps) {
     return dialog;
   }
 
-  /** A new chat of `projectId`: the folder it works in's project (null: none open). */
-  function createNewDialog(projectId: string | null): DialogSummary {
-    const dialog = store.createDialog(NEW_CHAT_TITLE, projectId);
+  /**
+   * A new chat of `projectId`: the folder it works in's project (null: none
+   * open), or a workspace's, working in `folders`.
+   */
+  function createNewDialog(projectId: string | null, folders: string | null = null): DialogSummary {
+    const dialog = store.createDialog(NEW_CHAT_TITLE, projectId, folders);
     setHistoryOpen(false);
     setFocusMessageId(null);
     // References belong to the current composer, not to the new dialog.
@@ -3358,13 +3384,26 @@ export default function ChatPanel(props: ChatProps) {
     return chatMode();
   }
 
-  /** "Implement this plan" under the plan in the chat: its file. */
-  function implementPlan() {
+  /**
+   * "Implement this plan" under the plan in the chat: its file, in this chat.
+   * A workspace chat's plan names the folders it was made across (D28): a
+   * chat that works in each of them carries it out, this one while it does.
+   */
+  async function implementPlan() {
     const dialogId = activeDialogId();
     if (!dialogId) return;
     const last = store.messagesOf(dialogId).find((m) => m.id === planMessageId());
     const file = last?.meta?.planFile;
-    if (file) startImplementation(dialogId, file);
+    if (!file) return;
+    // A plan that can't be read goes to this chat, whose run says why.
+    const named = store.summaryOf(dialogId)?.folders
+      ? planFolders(await readPlan(dialogId, file).catch(() => ''))
+      : null;
+    // Another chat opened meanwhile: the plan was this one's.
+    if (activeDialogId() !== dialogId) return;
+    const start = named ? chatForWorkspacePlan(named) : 'open';
+    const chat = start === 'open' ? dialogId : (await start())?.id;
+    if (chat) startImplementation(chat, file);
   }
 
   /**
@@ -3376,7 +3415,8 @@ export default function ChatPanel(props: ChatProps) {
   function startImplementation(dialogId: string, file: string) {
     if (!activeProfile() || isRunning(dialogId)) return;
     setChatMode('agent');
-    const { content, meta } = implementationMessage(file, rootOf(dialogId)?.path ?? null);
+    const shown = chatPlanPath(file, store.summaryOf(dialogId), props.folders());
+    const { content, meta } = implementationMessage(file, shown);
     void sendMessage(dialogId, { id: crypto.randomUUID(), content, meta }, undefined);
   }
 
@@ -3403,16 +3443,53 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /**
-   * "Implement this plan" on a plan file in the editor (App sends it): in
-   * the open chat when the plan is its folder's, which waits while it's at
-   * work; another folder's plan in a new chat of that folder (D28): a
+   * The chat that carries out a plan from the editor (D28): `'open'`, the
+   * open chat; else how to start the one that does. A plan with a `Folders:`
+   * line goes to a workspace chat (`chatForWorkspacePlan`); one without, to
+   * a chat of its folder, the open chat when the plan is its folder's: a
    * folder's plan names its files as paths in it.
+   */
+  function chatForEditorPlan(request: ImplementPlanRequest): PlanStart {
+    if (request.folders) return chatForWorkspacePlan(request.folders);
+    const folder = severalFolders() ? folderOf(props.folders(), request.path) : null;
+    if (!folder || folder.path === chatRoot()?.path) return 'open';
+    return () => startChatIn(folder);
+  }
+
+  /**
+   * The chat that carries out a plan whose `Folders:` line names `named`
+   * (D28, `chatForPlan`): `'open'`, the open chat, a workspace chat of the
+   * window's that works in each of them; else a new workspace chat across
+   * them, or none, saying why, when the window's workspace lacks one.
+   */
+  function chatForWorkspacePlan(named: readonly string[]): PlanStart {
+    const open = activeDialog();
+    const id = workspaceIdOf(store.owners()?.target);
+    const workspace = id ? { id, names: props.folders().map((folder) => folder.name) } : null;
+    const names = open ? chatFolderNames(open, props.folders()) : null;
+    const choice = chatForPlan(
+      named,
+      workspace,
+      open ? { projectId: open.projectId, names } : null
+    );
+    if (choice.kind === 'open') return 'open';
+    if (choice.kind === 'new') return () => startChatOf(id, JSON.stringify(choice.folders));
+    return async () => {
+      notify({ kind: 'warning', title: 'No chat started', message: choice.why, timeout: 8000 });
+      return null;
+    };
+  }
+
+  /**
+   * "Implement this plan" on a plan file in the editor (App sends it), in the
+   * chat D28 gives it (`chatForEditorPlan`). The open chat waits while it's
+   * at work, and the request with it.
    */
   async function takePlanFromEditor() {
     const request = peekImplementPlanRequest();
     if (!request || loadingHistory()) return;
-    const folder = severalFolders() ? folderOf(props.folders(), request.path) : null;
-    if (!folder || folder.path === chatRoot()?.path) {
+    const start = chatForEditorPlan(request);
+    if (start === 'open') {
       const dialogId = activeDialogId();
       if (!dialogId || sending()) return;
       takeImplementPlanRequest();
@@ -3420,7 +3497,7 @@ export default function ChatPanel(props: ChatProps) {
       return;
     }
     takeImplementPlanRequest();
-    const chat = await startChatIn(folder);
+    const chat = await start();
     if (chat) startImplementation(chat.id, request.path);
   }
   const stopPlanRequests = onImplementPlanRequest(() => void takePlanFromEditor());

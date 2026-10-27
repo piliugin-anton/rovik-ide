@@ -8,8 +8,9 @@
 // with no chat the panel asks the same, the input waiting for the chat
 // started; deleting the open chat shows the next, never the menu meanwhile.
 // A chat names files as paths in its folder, and another folder's file
-// isn't sent. Implement on a folder's plan uses that folder's chat. The
-// panel as the app mounts it, the app answered here, command by command.
+// isn't sent. Implement on a folder's plan uses that folder's chat, and on
+// a plan naming folders a workspace chat across them (D28). The panel as
+// the app mounts it, the app answered here, command by command.
 // Run with: npm test
 import { container } from '../test/dom';
 import { afterEach, test } from 'node:test';
@@ -22,6 +23,7 @@ import type { MessageRow, UnsettledSend } from '../lib/chatApi';
 import type { ActiveFileContext } from '../lib/activeContext';
 import type { ChatOwners, OpenFolder } from '../lib/openFolders';
 import { addToChat } from '../lib/editorBridge';
+import { notifications } from '../lib/notifications';
 import { requestImplementPlan } from '../lib/plans';
 import type { DialogSummary } from '../types';
 
@@ -49,6 +51,8 @@ let unsettled: Record<string, UnsettledSend[]> = {};
 let calls: { cmd: string; args: any }[] = [];
 /** A chat's deletion in the database: held while a test looks (null: done at once). */
 let deletion: Promise<void> | null = null;
+/** The plans' files, by path. */
+let plans: Record<string, string> = {};
 
 (window as any).__TAURI_INTERNALS__ = {
   transformCallback: () => 1,
@@ -79,6 +83,9 @@ let deletion: Promise<void> | null = null;
         return 'run-1';
       case 'chat_delete_dialog':
         return deletion;
+      case 'chat_read_plan':
+        if (args.path in plans) return plans[args.path];
+        throw new Error(`${args.path}: no such file`);
       case 'send_chat_message':
         // The chat's title: no model here, so its first words.
         throw new Error('no model here');
@@ -173,9 +180,13 @@ async function mount(
   calls = [];
   localStorage.clear();
   const [shown, setFolders] = createSignal(folders);
+  // The workspace's own chats are its id's, listed first, as `chatOwners` has them.
   const ownersOf = (list: OpenFolder[]): ChatOwners => ({
     target,
-    projects: [target, ...list.flatMap((f) => (f.project ? [f.project.id] : []))],
+    projects: [
+      target.replace(/^workspace:/, ''),
+      ...list.flatMap((f) => (f.project ? [f.project.id] : [])),
+    ],
   });
   const [owners, setOwners] = createSignal<ChatOwners>(ownersOf(folders));
   const [context, setContext] = createSignal<ActiveFileContext | null>(null);
@@ -525,7 +536,7 @@ test('adding a folder keeps the open chat and its draft', async () => {
   setFolders([api, web]);
   setOwners({
     target: 'workspace:added',
-    projects: ['workspace:added', 'api-project', 'web-project'],
+    projects: ['added', 'api-project', 'web-project'],
   });
   await flush();
   assert.equal(label(root)?.textContent, 'in api');
@@ -546,7 +557,7 @@ test('after a crash, an unanswered send in the second folder’s chat comes back
     assert.equal(input(root).textContent, 'Style the cart');
     assert.deepEqual(
       sent('chat_unsettled_sends').map((a) => a.projectId),
-      ['workspace:crash', 'api-project', 'web-project'],
+      ['crash', 'api-project', 'web-project'],
       'each owner is asked'
     );
     dispose();
@@ -622,4 +633,122 @@ test('Implement on another folder’s plan starts a chat there, and on the open 
   assert.deepEqual(sent('chat_create_dialog'), [], 'no new chat');
   assert.equal(sent('agent_start')[0]?.request.dialogId, 'web-1');
   again.dispose();
+});
+
+/** A workspace chat of `id`, working in `folders` (`"all"`, or names as JSON). */
+const workspaceChat = (dialogId: string, id: string, folders: string): DialogSummary => ({
+  ...chat(dialogId, id, 2),
+  folders,
+});
+
+/** The implementation lines the open chat shows. */
+const implementations = (root: ParentNode) =>
+  [...root.querySelectorAll('.chat-message.user')]
+    .map((m) => m.textContent ?? '')
+    .filter((text) => text.includes('Implement the plan'));
+
+test('Implement on a plan naming folders makes a workspace chat across them, even one, and uses the open one that works in them', async () => {
+  talked(chat('api-1', 'api-project', 2));
+  const { dispose } = await mount('workspace:plan-new', [api, web]);
+  requestImplementPlan({ path: '/w/api/.rovik/plans/cart.md', folders: ['api'] });
+  await flush();
+  assert.deepEqual(
+    sent('chat_create_dialog').map(({ dialog }) => [dialog.projectId, dialog.folders]),
+    [['plan-new', '["api"]']],
+    'a workspace chat in api, not api’s folder chat'
+  );
+  dispose();
+
+  // The open chat is the workspace's, in all its folders: it takes the plan.
+  talked(workspaceChat('ws-1', 'plan-open', 'all'));
+  const again = await mount('workspace:plan-open', [api, web]);
+  requestImplementPlan({ path: '/w/api/.rovik/plans/cart.md', folders: ['api', 'web'] });
+  await flush();
+  assert.deepEqual(sent('chat_create_dialog'), [], 'no new chat');
+  assert.equal(implementations(again.root).length, 1);
+  assert.match(
+    implementations(again.root)[0],
+    /the plan in `?api\/\.rovik\/plans\/cart\.md/,
+    'by its chat path'
+  );
+  again.dispose();
+});
+
+test('an empty chat is reused for a plan naming folders, moved to the workspace and its folders', async () => {
+  talked();
+  const { root, dispose } = await mount('workspace:plan-reuse', [api, web], web);
+  startItem(root)!.click();
+  await flush();
+  const made = sent('chat_create_dialog')[0].dialog.id;
+  requestImplementPlan({ path: '/w/api/.rovik/plans/cart.md', folders: ['api', 'web'] });
+  await flush();
+  assert.equal(sent('chat_create_dialog').length, 1, 'no second chat');
+  assert.deepEqual(sent('chat_move_empty_dialog'), [
+    { dialogId: made, projectId: 'plan-reuse', folders: '["api","web"]' },
+  ]);
+  assert.match(implementations(root)[0] ?? '', /the plan in `?api\/\.rovik\/plans\/cart\.md/);
+  dispose();
+
+  // An empty workspace chat in api alone isn't one in api and web: it moves too.
+  dialogs = [{ ...workspaceChat('ws-empty', 'plan-same', '["api"]'), messageCount: 0 }];
+  rows = {};
+  const same = await mount('workspace:plan-same', [api, web]);
+  requestImplementPlan({ path: '/w/api/.rovik/plans/cart.md', folders: ['api', 'web'] });
+  await flush();
+  assert.deepEqual(sent('chat_create_dialog'), []);
+  assert.deepEqual(sent('chat_move_empty_dialog'), [
+    { dialogId: 'ws-empty', projectId: 'plan-same', folders: '["api","web"]' },
+  ]);
+  same.dispose();
+});
+
+test('Implement on a plan naming a folder this workspace lacks starts no chat, and says which', async () => {
+  talked(chat('api-1', 'api-project', 2));
+  const { root, dispose } = await mount('workspace:plan-lacking', [api, web]);
+  const before = notifications().length;
+  requestImplementPlan({ path: '/w/api/.rovik/plans/cart.md', folders: ['api', 'mobile'] });
+  await flush();
+  assert.deepEqual(sent('chat_create_dialog'), []);
+  assert.deepEqual(implementations(root), [], 'nothing sent');
+  const said = notifications()
+    .slice(before)
+    .map((n) => n.message);
+  assert.deepEqual(said, ['The plan works in mobile, which this workspace doesn’t have.']);
+  dispose();
+});
+
+test('Implement under a workspace chat’s plan carries it out there while the chat works in each folder it names, else in a new chat across them', async () => {
+  const file = '/w/api/.rovik/plans/cart.md';
+  plans[file] = '# Plan: cart\n\nFolders: api, web\n\nSummary.\n';
+  const planned = (dialog: DialogSummary) => {
+    talked(dialog);
+    const [request, reply] = rows[dialog.id];
+    request.meta = { mode: 'plan' };
+    reply.meta = { planFile: file };
+  };
+  const implement = async (root: HTMLElement) => {
+    const button = [...root.querySelectorAll<HTMLButtonElement>('.chat-plan-actions button')].find(
+      (b) => b.textContent === 'Implement this plan'
+    );
+    assert.ok(button, 'Implement this plan');
+    button.click();
+    await flush();
+  };
+
+  planned(workspaceChat('ws-all', 'plan-here', 'all'));
+  const here = await mount('workspace:plan-here', [api, web]);
+  await implement(here.root);
+  assert.deepEqual(sent('chat_create_dialog'), [], 'this chat');
+  assert.match(implementations(here.root)[0] ?? '', /the plan in `?api\/\.rovik\/plans\/cart\.md/);
+  here.dispose();
+
+  // Since the plan, web was unchecked: a chat in both carries it out.
+  planned(workspaceChat('ws-api', 'plan-moved', '["api"]'));
+  const moved = await mount('workspace:plan-moved', [api, web]);
+  await implement(moved.root);
+  assert.deepEqual(
+    sent('chat_create_dialog').map(({ dialog }) => [dialog.projectId, dialog.folders]),
+    [['plan-moved', '["api","web"]']]
+  );
+  moved.dispose();
 });

@@ -196,17 +196,17 @@ pub(super) async fn blocked_review(
 
 /// The IDE's message that starts an implementation of the task whose
 /// records are `records` (in `dialog_id`, the task's chat): the plan the
-/// task saved, as "Implement this plan" sends it, named from `root`, and
-/// the tests written first, which it makes pass (S04). Its `meta`
-/// names the stage record `record` it's for, and a candidate's letter
-/// (T05). Ok(Err): why there's none (the plan isn't saved, or its file
-/// can't be read).
+/// task saved, as "Implement this plan" sends it, named as the chat's
+/// `folders` name it, and the tests written first, which it makes pass
+/// (S04). Its `meta` names the stage record `record` it's for, and a
+/// candidate's letter (T05). Ok(Err): why there's none (the plan isn't
+/// saved, or its file can't be read).
 pub(in crate::agent_run) async fn implementation_message(
     core: &Core,
     dialog_id: &str,
     records: &[Recorded],
     record: &str,
-    root: Option<&str>,
+    folders: Option<&crate::folders::Folders>,
     candidate: Option<&str>,
 ) -> Result<Result<UserMessage, String>, String> {
     let task = &records[0].record.task;
@@ -221,7 +221,7 @@ pub(in crate::agent_run) async fn implementation_message(
     let Ok(text) = std::fs::read_to_string(&file) else {
         return Ok(Err(format!("The plan's file {file} can't be read")));
     };
-    let shown = plan::relative_plan_path(&file, root);
+    let shown = plan::plan_path_in(&file, folders);
     // Autopilot's stages run with Rovik's tools, on any model.
     let mut content = plan::implementation_request(&text, Some(&shown), true);
     // S04: the tests written first, which it makes pass.

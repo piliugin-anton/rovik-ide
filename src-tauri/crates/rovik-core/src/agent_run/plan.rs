@@ -11,6 +11,7 @@
 //!     is the current state; the tool calls are the record.
 
 use crate::chat_db::store::MessageRow;
+use crate::folders::Folders;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -18,6 +19,11 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 pub const PLANS_DIR: &str = ".rovik/plans";
+
+/// Starts the line under a workspace chat's plan's title that names the
+/// chat's folders (`Folders: api, web`), which Implement reads to choose the
+/// chat that carries it out (D28).
+pub const FOLDERS_LINE: &str = "Folders: ";
 
 /// Tools Plan mode doesn't offer (or allow, if a model calls them anyway).
 pub const PLAN_BLOCKED_TOOLS: &[&str] = &["write", "bash", "background"];
@@ -669,12 +675,15 @@ pub fn is_plan_file(path: &str) -> bool {
 
 /// Saves a plan and returns its path. `existing`: the chat's earlier plan
 /// file, which a revision replaces; otherwise a new name that's free.
+/// `folders`: a workspace chat's folders, named on the line under the title
+/// ([`FOLDERS_LINE`]); none for a folder chat's plan.
 pub fn save_plan_file(
     root: &str,
     request: &str,
     plan: &str,
     existing: Option<&str>,
     date: &str,
+    folders: &[String],
 ) -> Result<String, String> {
     let path = match existing {
         Some(p) => p.to_string(),
@@ -705,8 +714,48 @@ pub fn save_plan_file(
             .collect();
         format!("# Plan: {first}\n\n{body}")
     };
+    let titled = with_folders_line(&titled, folders);
     crate::file_guard::write_app_file(Path::new(&path), format!("{titled}\n").as_bytes())?;
     Ok(path)
+}
+
+/// `titled` (a plan, its title first) with `folders` named on the line
+/// under its title, in place of one already there (a revision keeps it).
+/// Without folders, a folder chat's plan, the line is left out: it says a
+/// workspace chat wrote the plan, and Implement goes by it (D28).
+fn with_folders_line(titled: &str, folders: &[String]) -> String {
+    let (title, rest) = titled.split_once('\n').unwrap_or((titled, ""));
+    let rest = match rest.trim_start_matches('\n').strip_prefix(FOLDERS_LINE) {
+        Some(line) => line.split_once('\n').map_or("", |(_, after)| after),
+        None if folders.is_empty() => return titled.to_string(),
+        None => rest,
+    };
+    let line = (!folders.is_empty()).then(|| format!("{FOLDERS_LINE}{}", folders.join(", ")));
+    [
+        Some(title),
+        line.as_deref(),
+        Some(rest.trim_start_matches('\n')),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
+/// A plan's file as the chat names it: a folder chat's relative to its
+/// folder (`relative_plan_path`), a workspace chat's by its chat path
+/// (`api/.rovik/plans/x.md`); outside the chat's folders, as it is.
+pub fn plan_path_in(path: &str, folders: Option<&Folders>) -> String {
+    let Some(folders) = folders else {
+        return path.to_string();
+    };
+    match folders.single() {
+        Some(folder) => relative_plan_path(path, Some(&folder.to_string_lossy())),
+        None => folders
+            .chat_path(Path::new(path))
+            .unwrap_or_else(|| path.to_string()),
+    }
 }
 
 /// The plan's path for display: relative to the project.
@@ -772,14 +821,15 @@ pub fn implementation_request(plan: &str, file: Option<&str>, todo: bool) -> Str
 }
 
 /// "Implement this plan" as the app sends it: `meta.implementsPlan` with
-/// the plan's path (`meta.planPath`). The text the model gets, the plan as
-/// its file is now, goes in `meta.sentContent` before the message is
+/// the plan's path (`meta.planPath`, a chat path or absolute). The text the
+/// model gets, the plan as its file is now, named as the chat names it
+/// (`plan_path_in`), goes in `meta.sentContent` before the message is
 /// stored, so every turn and Retry sends it the same. A message that has
 /// its text already, or isn't one, is left as it is. Err: the file can't
 /// be read. `todo`: the model has Rovik's (`implementation_request`).
 pub fn expand_implementation(
     message: &mut super::UserMessage,
-    root: Option<&str>,
+    folders: Option<&Folders>,
     todo: bool,
 ) -> Result<(), String> {
     let Some(meta) = message.meta.as_mut().and_then(Value::as_object_mut) else {
@@ -793,8 +843,11 @@ pub fn expand_implementation(
     let (Some(path), true, false) = (path, implements, meta.contains_key("sentContent")) else {
         return Ok(());
     };
-    let file = match root {
-        Some(root) if !Path::new(&path).is_absolute() => join(root, &path),
+    let file = match folders {
+        Some(folders) if !Path::new(&path).is_absolute() => match folders.abs(&path) {
+            Some(file) => file.to_string_lossy().into_owned(),
+            None => return Err(format!("The plan in {path} isn't in this chat's folders.")),
+        },
         _ => path,
     };
     if !is_plan_file(&file) {
@@ -804,7 +857,7 @@ pub fn expand_implementation(
     }
     let text = std::fs::read_to_string(&file)
         .map_err(|e| format!("The plan in {file} can't be read: {e}"))?;
-    let shown = relative_plan_path(&file, root);
+    let shown = plan_path_in(&file, folders);
     meta.insert(
         "sentContent".into(),
         Value::String(implementation_request(&text, Some(&shown), todo)),
@@ -812,8 +865,9 @@ pub fn expand_implementation(
     Ok(())
 }
 
-/// Plan mode: the current plan (as the file is now), for the model to revise.
-pub fn current_plan_context(plan_file: Option<&str>, root: Option<&str>) -> String {
+/// Plan mode: the current plan (as the file is now), for the model to
+/// revise, named as the chat names it.
+pub fn current_plan_context(plan_file: Option<&str>, folders: Option<&Folders>) -> String {
     let Some(file) = plan_file else {
         return String::new();
     };
@@ -827,7 +881,7 @@ pub fn current_plan_context(plan_file: Option<&str>, root: Option<&str>) -> Stri
         "## The current plan".to_string(),
         format!(
             "Saved in {}; the user may have edited it. This is the version to revise.",
-            relative_plan_path(file, root)
+            plan_path_in(file, folders)
         ),
         String::new(),
         "<current_plan>".into(),
@@ -2635,7 +2689,8 @@ mod tests {
     #[test]
     fn an_implementation_request_is_written_from_the_plans_file() {
         let dir = crate::testing::temp_dir();
-        let root = dir.0.to_string_lossy().into_owned();
+        let folders = Folders::one(dir.0.clone());
+        let root = Some(&folders);
         let file = dir.0.join(".rovik/plans/p.md");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, "# P\n\nThe plan.\n").unwrap();
@@ -2661,7 +2716,7 @@ mod tests {
             let expected = implementation_request("# P\n\nThe plan.\n", Some(&shown), true);
             let mut m =
                 message(json!({ "mode": "agent", "implementsPlan": true, "planPath": path }));
-            expand_implementation(&mut m, Some(&root), true).unwrap();
+            expand_implementation(&mut m, root, true).unwrap();
             assert_eq!(m.meta.as_ref().unwrap()["sentContent"], expected, "{path}");
             assert_eq!(m.meta.as_ref().unwrap()["implementsPlan"], true);
         }
@@ -2671,18 +2726,24 @@ mod tests {
             json!({ "implementsPlan": true, "planPath": "x.md", "sentContent": "as sent" }),
         ] {
             let mut m = message(meta.clone());
-            expand_implementation(&mut m, Some(&root), true).unwrap();
+            expand_implementation(&mut m, root, true).unwrap();
             assert_eq!(m.meta, Some(meta));
         }
         let mut gone =
             message(json!({ "implementsPlan": true, "planPath": ".rovik/plans/missing.md" }));
-        let err = expand_implementation(&mut gone, Some(&root), true).unwrap_err();
+        let err = expand_implementation(&mut gone, root, true).unwrap_err();
         assert!(err.contains("can't be read"), "{err}");
+        // A path that leaves the chat's folder isn't read, plan or not.
+        let inner = Folders::one(dir.0.join("inner"));
+        let mut away =
+            message(json!({ "implementsPlan": true, "planPath": "../.rovik/plans/p.md" }));
+        let err = expand_implementation(&mut away, Some(&inner), true).unwrap_err();
+        assert!(err.contains("isn't in this chat's folders"), "{err}");
         // A file that's no plan's isn't sent to the model as one: the
         // message may name what a server wrote.
         std::fs::write(dir.0.join("notes.md"), "private\n").unwrap();
         let mut other = message(json!({ "implementsPlan": true, "planPath": "notes.md" }));
-        let err = expand_implementation(&mut other, Some(&root), true).unwrap_err();
+        let err = expand_implementation(&mut other, root, true).unwrap_err();
         assert!(err.contains("isn't a plan's file"), "{err}");
     }
 
@@ -3335,10 +3396,80 @@ mod tests {
             "# P\r\n\r\n## Steps\r\n1. x\r\n",
             None,
             "2026-01-01",
+            &[],
         )
         .unwrap();
         let saved = std::fs::read_to_string(path).unwrap();
         assert_eq!(saved, "# P\n\n## Steps\n1. x\n");
+    }
+
+    /// D28: a workspace chat's plan names the chat's folders on the line
+    /// under its title, which a revision rewrites; a folder chat's plan has
+    /// none, and the line doesn't trouble the plan's checks.
+    #[test]
+    fn a_workspace_plan_names_its_folders_under_its_title() {
+        let tree = Tree::new(&["src/a.rs"]);
+        let root = tree.0.to_string_lossy().into_owned();
+        let folders = ["api".to_string(), "web".to_string()];
+        let path = save_plan_file(&root, "Do it", GOOD_PLAN, None, "2026-01-01", &folders).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let mut lines = saved.lines();
+        assert!(lines.next().unwrap().starts_with("# "), "{saved}");
+        assert_eq!(
+            (lines.next(), lines.next()),
+            (Some(""), Some("Folders: api, web"))
+        );
+        assert!(
+            plan_problems(&saved).is_empty(),
+            "{:?}",
+            plan_problems(&saved)
+        );
+        // A revision that kept the line: it's rewritten, once.
+        let revised =
+            save_plan_file(&root, "Do it", &saved, Some(&path), "x", &folders[..1]).unwrap();
+        let again = std::fs::read_to_string(revised).unwrap();
+        assert_eq!(again.matches("Folders:").count(), 1, "{again}");
+        assert!(again.contains("\n\nFolders: api\n\n"), "{again}");
+        // A folder chat's plan as it's written, without a line its model
+        // wrote: Implement would take it for a workspace chat's.
+        let plain = save_plan_file(&root, "Do it", GOOD_PLAN, None, "2026-01-02", &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&plain).unwrap(),
+            format!("{GOOD_PLAN}\n")
+        );
+        let lined = GOOD_PLAN.replacen('\n', "\n\nFolders: src\n", 1);
+        let kept = save_plan_file(&root, "Do it", &lined, Some(&plain), "x", &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(kept).unwrap(),
+            format!("{GOOD_PLAN}\n")
+        );
+    }
+
+    /// A plan is named as the chat names files: by its folder's name in a
+    /// workspace chat, relative to the folder in a folder chat, and as it
+    /// is outside the chat's folders.
+    #[test]
+    fn a_plan_is_named_by_its_chat_path() {
+        let workspace = Folders::named(vec![
+            crate::folders::Folder {
+                name: "api".into(),
+                path: "/w/api".into(),
+            },
+            crate::folders::Folder {
+                name: "web".into(),
+                path: "/w/web".into(),
+            },
+        ])
+        .unwrap();
+        let named = |path: &str, folders: &Folders| plan_path_in(path, Some(folders));
+        assert_eq!(
+            named("/w/web/.rovik/plans/a.md", &workspace),
+            "web/.rovik/plans/a.md"
+        );
+        assert_eq!(named("/elsewhere/a.md", &workspace), "/elsewhere/a.md");
+        let one = Folders::one("/w/api".into());
+        assert_eq!(named("/w/api/.rovik/plans/a.md", &one), ".rovik/plans/a.md");
+        assert_eq!(plan_path_in("/w/api/a.md", None), "/w/api/a.md");
     }
 
     #[test]

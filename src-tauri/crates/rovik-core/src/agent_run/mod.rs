@@ -1541,7 +1541,7 @@ pub(super) async fn start_run(
         state.set_config(config);
     }
     let dialog_id = request.dialog_id.clone();
-    check_project(db, &dialog_id, request.root.as_deref()).await?;
+    let folders = check_project(db, &dialog_id, request.root.as_deref()).await?;
     // A message that starts an Autopilot task: its plan's record is written
     // before its run's start is told (`Run::prepare`), the driver at work
     // meanwhile.
@@ -1556,9 +1556,9 @@ pub(super) async fn start_run(
         check_attachments(db, message).await?;
         // "Implement this plan": the plan's text, from its file (A04), in
         // Agent mode, where a connector's harness has its own tools, not
-        // Rovik's `todo` (`run::lead_profile`).
+        // Rovik's `todo` (`run::lead_profile`); named as the chat names it.
         let todo = !run::lead_profile(request.profile.clone(), true).no_tools;
-        plan::expand_implementation(message, request.root.as_deref(), todo)?;
+        plan::expand_implementation(message, folders.as_ref(), todo)?;
     }
     // A change to the chat's files outside any run (a server's merge)
     // ends first: the run starts on them as they're left.

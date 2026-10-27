@@ -143,6 +143,8 @@ export const chatApi = {
     createdAt: number;
     updatedAt: number;
     projectId: string | null;
+    /** A workspace chat's folders: `"all"`, or the names checked as JSON. */
+    folders?: string | null;
   }) => invoke<void>('chat_create_dialog', { dialog }),
 
   /**

@@ -5,7 +5,7 @@
 use super::*;
 
 /// A message sent in Autopilot mode: a task.
-fn autopilot_send(text: &str) -> StartKind {
+pub(super) fn autopilot_send(text: &str) -> StartKind {
     StartKind::Send {
         message: UserMessage {
             id: uuid::Uuid::new_v4().to_string(),
@@ -195,7 +195,7 @@ const TASK_PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt say
     ## Validation\n- `npm test`\n";
 
 /// The plan reviewer's brief starts so (plan_review.rs).
-const PLAN_REVIEW: &str = "# Review this plan";
+pub(super) const PLAN_REVIEW: &str = "# Review this plan";
 
 /// The Tests stage's test writer's brief starts so (S04).
 const TESTS_FIRST: &str = super::test_writer::FIRST_HEADING;
@@ -261,7 +261,7 @@ const NO_TESTS: &str = "## Blocked\n\nThe request gives nothing to test.";
 /// (`NO_CRITERIA`), its planners (`NO_PLAN`), its judge (`NO_JUDGMENT`)
 /// and its adversarial tester (`NO_BREAK`) answered apart unless the test
 /// routes them: a task's other runs get the replies they're written for.
-async fn model_routed(
+pub(super) async fn model_routed(
     mut routes: Vec<(&'static str, Vec<Reply>)>,
     default: Vec<Reply>,
 ) -> (String, Arc<Mutex<Vec<Value>>>) {
@@ -372,7 +372,7 @@ async fn stages(h: &Harness) -> Vec<StageRecord> {
 
 /// The stage records once `done` says they're as awaited; once the task is
 /// over (`delivered`), its chat quiet too (`quiet`).
-async fn stages_until(
+pub(super) async fn stages_until(
     h: &Harness,
     what: &str,
     done: impl Fn(&[StageRecord]) -> bool,
@@ -393,7 +393,7 @@ async fn stages_until(
 /// Waits until nothing goes on in the chat: no run, its driver not at
 /// work. A delivery's record ends inside its run, before that run's own end
 /// (its line in the log, `runEnded`), and the driver's turn ends after it.
-async fn quiet(h: &Harness) {
+pub(super) async fn quiet(h: &Harness) {
     let agents = &h.core.agents;
     for _ in 0..1200 {
         if !agents.is_running(&h.dialog_id) && !agents.is_driving(&h.dialog_id) {
@@ -430,7 +430,7 @@ const BALANCED_OK: &[(Stage, Status)] = &[
 ];
 
 /// The IDE's messages that started an implementation, in order.
-fn implement_messages(messages: &[MessageRow]) -> Vec<&MessageRow> {
+pub(super) fn implement_messages(messages: &[MessageRow]) -> Vec<&MessageRow> {
     messages
         .iter()
         .filter(|m| {

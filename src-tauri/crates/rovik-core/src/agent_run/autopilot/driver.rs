@@ -383,6 +383,16 @@ pub(in crate::agent_run) async fn driver_turn(
         .map_err(|_| DRIVER_BUSY.to_string())
 }
 
+/// The folders the chat's runs work in with `settings` (`check_project`),
+/// which name the task's plan as the chat names its files.
+async fn chat_folders(
+    core: &Core,
+    dialog_id: &str,
+    settings: &Settings,
+) -> Result<Option<crate::folders::Folders>, String> {
+    crate::agent_run::check_project(&core.db, dialog_id, settings.root.as_deref()).await
+}
+
 /// Ends the stage a run carried out. A plan's is done once a plan was
 /// saved; the implementation's once the run finished, whatever its checks
 /// said (the checks' stage says that). Either keeps its run's outcome.
@@ -461,15 +471,20 @@ pub(super) async fn end_run_stage(
             None,
         ),
         None if run.stage == Stage::Plan => match saved_plan(core, dialog_id, plan_since).await? {
-            Some((row, file)) => (
-                Status::Done,
-                outcome.to_string(),
-                format!(
-                    "Saved the plan to {}",
-                    plan::relative_plan_path(&file, settings.root.as_deref())
-                ),
-                Some(row),
-            ),
+            Some((row, file)) => {
+                // Named as the chat names its files; in full while its
+                // folders can't be had (one is missing): its next run says why.
+                let folders = chat_folders(core, dialog_id, settings).await.ok().flatten();
+                (
+                    Status::Done,
+                    outcome.to_string(),
+                    format!(
+                        "Saved the plan to {}",
+                        plan::plan_path_in(&file, folders.as_ref())
+                    ),
+                    Some(row),
+                )
+            }
             // S02: written, and held back by its last review: the review's
             // stage ends the task.
             None => match blocked_review(core, dialog_id, record.seq).await? {
@@ -859,12 +874,16 @@ pub(super) async fn start_implement(
         true => None,
         false => current_task(core, &chat).await?.map(|(_, records)| records),
     };
+    let folders = match chat_folders(core, dialog_id, settings).await {
+        Ok(folders) => folders,
+        Err(why) => return not_started(core, dialog_id, &record, &why).await,
+    };
     let built = implementation_message(
         core,
         &chat,
         theirs.as_deref().unwrap_or(records),
         &record,
-        settings.root.as_deref(),
+        folders.as_ref(),
         first.candidate.as_deref(),
     )
     .await?;

@@ -1643,18 +1643,17 @@ impl Run {
     /// The plan this run implements: its path and text.
     pub(super) async fn implementing_plan(&self) -> Option<(String, String)> {
         let recent = self.recent().await.ok()?;
-        let project = self.project_root();
-        let base = project.as_deref().or(self.root.as_deref());
+        let folders = self.folders.as_ref();
         // The latest request that named a plan (a follow-up in the chat
         // still works on it), else the chat's own plan file.
         let path = recent
             .iter()
             .rev()
             .filter(|m| super::plan::is_request(m))
-            .find_map(|m| worker::plan_file_named(&m.content, base))
+            .find_map(|m| worker::plan_file_named(&m.content, folders))
             .or_else(|| super::run::chat_plan_file(&recent))?;
         let text = std::fs::read_to_string(&path).ok()?;
-        let shown = super::plan::relative_plan_path(&path, base);
+        let shown = super::plan::plan_path_in(&path, folders);
         Some((shown, text))
     }
 

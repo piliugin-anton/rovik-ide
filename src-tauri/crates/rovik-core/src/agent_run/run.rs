@@ -1064,9 +1064,9 @@ impl Run {
         // starts, and show in the chat.
         if implements_plan && !plan_mode {
             if let Some((file, problems)) =
-                plan_check_at_start(&recent, root.as_deref(), project_root.as_deref())
+                plan_check_at_start(&recent, root.as_deref(), folders.as_ref())
             {
-                let shown = plan::relative_plan_path(&file, project_root.as_deref());
+                let shown = plan::plan_path_in(&file, folders.as_ref());
                 append_carry_note(
                     core,
                     &dialog_id,
@@ -1149,7 +1149,7 @@ impl Run {
             None => checks,
         };
         let plan_context = if plan_mode {
-            plan::current_plan_context(chat_plan_file(&recent).as_deref(), root.as_deref())
+            plan::current_plan_context(chat_plan_file(&recent).as_deref(), folders.as_ref())
         } else {
             String::new()
         };
@@ -4037,33 +4037,16 @@ pub(super) fn lead_profile(mut profile: ModelProfile, agent_mode: bool) -> Model
 }
 
 /// B07b: the plan file a "Implement the plan in `…`" request names (or the
-/// chat's own), and what the checker finds in it as it is now.
+/// chat's own), read through the chat's `folders`, and what the checker
+/// finds in it as it is now, its files against the run's `root`.
 fn plan_check_at_start(
     recent: &[MessageRow],
     root: Option<&str>,
-    project_root: Option<&str>,
+    folders: Option<&Folders>,
 ) -> Option<(String, Vec<String>)> {
-    let named = recent
-        .iter()
-        .rev()
-        .find(|m| plan::is_request(m))
-        .and_then(|m| {
-            let rest = m.content.strip_prefix("Implement the plan in `")?;
-            Some(rest[..rest.find('`')?].to_string())
-        });
-    let file = match named {
-        Some(rel) => {
-            let base = project_root.or(root)?;
-            let p = std::path::Path::new(&rel);
-            if p.is_absolute() {
-                rel
-            } else {
-                std::path::Path::new(base)
-                    .join(p)
-                    .to_string_lossy()
-                    .into_owned()
-            }
-        }
+    let request = recent.iter().rev().find(|m| plan::is_request(m));
+    let file = match request.filter(|m| m.content.starts_with("Implement the plan in `")) {
+        Some(m) => super::worker::plan_file_named(&m.content, folders)?,
         None => chat_plan_file(recent)?,
     };
     if !plan::is_plan_file(&file) {

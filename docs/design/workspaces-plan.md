@@ -2857,6 +2857,61 @@ only when the project changes a file in between; the mid-run check's locations k
 `causes::resolve`'s tail matching; Thorough's candidates run a file alone at their
 copy's root until F12.
 
+**F11 — plans of workspace chats.** `submit_plan` saves a plan in the chat's first
+folder (`Folders::first`; a folder chat's is its folder, as before), and a workspace
+chat's with `Folders: api, web` under its title (`FOLDERS_LINE`, `with_folders_line`),
+which a revision rewrites; a folder chat's plan is saved without the line, even one its
+model wrote, as Implement goes by it. A revision replaces the chat's plan file while
+that's in one of the chat's folders; once its folder has left the chat, the next plan
+is a new one in the new first folder, and the earlier one stays where it was written.
+`plan_path_in` names a plan as the chat names files: a folder chat's relative to its
+folder (`relative_plan_path`, with the system's separators, as before), a workspace
+chat's by its chat path (`Folders::chat_path`). It replaces `relative_plan_path` with
+the request's root or the view in "Saved the plan to", the Plan-mode "Saved in" line
+(through the chat's folders, not the view: section 12, item 14), the implementation
+request (`expand_implementation`, which finds a relative `planPath` with
+`Folders::abs` and refuses one that leaves the chat's folders, which it used to join
+to the root as it was), the plan check at the start (`plan_file_named`, through `Folders::abs`
+too), the change reviewer's, the test writer's and a worker's plan, and Autopilot's
+Plan stage summary and the implementation it starts, through the chat's folders
+(`chat_folders`: `check_project`; a summary names the plan in full while a folder is
+missing, and an implementation that can't have them doesn't start, saying why); a
+candidate's names it from its task's project. `Files:` lines were already checked
+against the view. In the app, `planFolders` reads the line, App sends its folders with
+the editor's **Implement this plan**, and `chatForPlan` chooses (D28): the open chat
+when it's a workspace chat of this workspace that works in each folder named, else a
+new workspace chat across them, even one folder (an empty open chat is reused, moved to
+the workspace with them: `createDialog` and `moveEmpty` take folders), or none, saying
+which folders this workspace lacks, or that a folder's window has no workspace for it.
+**Implement this plan** under a workspace chat's plan reads its line, so a chat that no
+longer works in each of them hands the plan to one that does. `chatPlanPath` names the
+plan in the message as the chat does (`chatPathOf`, after the folder's name in a
+workspace chat), in place of `relativePlanPath`, which went. Tests:
+`workspace_e2e_tests.rs` (a workspace chat's plan is saved in its first folder's plans
+under its `Folders:` line, after one naming `src/a.ts` is sent back; the Plan-mode
+line, the implementation request and its plan check name the plan by its chat path, the
+check finding `web/src/gone.ts` by its folder; after the first folder is unchecked
+with `store::set_dialog_folders` the next plan goes to the new first folder, and the
+earlier stays; Autopilot's Plan stage summary and the implementation it starts name the
+plan by its chat path), `plan.rs` (the line under the title, rewritten once, a folder
+chat's left out; a plan named by its chat path; a relative `planPath` that leaves the
+folder refused), `worker.rs` (a workspace plan's chat
+path found in its folder), `plans.test.ts` (a plan named as the chat names files, on
+Windows too; the line read only under the title; the choice of chat, even for one
+folder; a lacking folder named, and a window without a workspace) and
+`workspaceChat.test.tsx` (Implement on a plan naming folders makes a workspace chat
+across them, even one, or uses the open one that works in them; an empty chat moves to
+the workspace with them, an empty workspace chat in other folders too; a lacking folder
+starts nothing and says which; Implement under a workspace chat's plan uses it while it
+works in each folder, else a new chat across them).
+Departures: a workspace chat started by Implement doesn't run until F14's `runPlace`:
+until then the panel refuses a run of a chat with no folder of its own open here, as it
+did (`beginRun`). The app names a folder chat's plan with `/` on every system
+(`chatPathOf`, 3.2), while the backend's keeps the system's separators (P4.9). The
+workspaceChat tests' window lists the workspace's own chats under its id, as
+`chatOwners` does (two tests that expected the harness's `workspace:` key changed with
+it), and Autopilot's test helpers are shared with the workspace tests.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

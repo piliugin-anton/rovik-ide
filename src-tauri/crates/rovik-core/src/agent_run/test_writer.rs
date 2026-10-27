@@ -642,7 +642,7 @@ impl super::run::Run {
             self.end_own_stage(Status::Skipped, why, None).await?;
             return Ok("done".into());
         };
-        let shown = super::plan::relative_plan_path(&file, self.project_root().as_deref());
+        let shown = super::plan::plan_path_in(&file, self.folders.as_ref());
         let criteria = super::plan::criteria(&plan)
             .map(|c| c.items)
             .unwrap_or_default();

@@ -103,7 +103,7 @@ import {
   type Marks,
   type OpenInEditor,
 } from './lib/openInEditor';
-import { isPlanFile, requestImplementPlan } from './lib/plans';
+import { isPlanFile, planFolders, requestImplementPlan } from './lib/plans';
 import {
   isBrowserTab,
   isFileTab,
@@ -1625,14 +1625,15 @@ export default function App() {
 
   /**
    * "Implement this plan" over a plan file: saves it, then hands it to the
-   * chat, which starts the run in Agent mode (lib/plans.ts).
+   * chat, which starts the run in Agent mode (lib/plans.ts), with the
+   * folders its `Folders:` line names, which choose the chat (D28).
    */
   async function implementOpenPlan() {
     const file = activeFile();
     if (!file || !isPlanFile(file.path)) return;
     if (file.dirty) await saveActiveFile();
     setSidebarTab('chat');
-    requestImplementPlan({ path: file.path });
+    requestImplementPlan({ path: file.path, folders: planFolders(file.content) });
   }
 
   /** A reverted file: its tab shows the restored text (unless it has unsaved edits). */

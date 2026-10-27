@@ -698,9 +698,17 @@ async fn start_candidate(
     if autopilot::crashes(main, autopilot::Crash::BeforeCandidate) {
         return Ok(true);
     }
-    let built =
-        autopilot::implementation_message(core, main, records, &id, project, Some(&state.letter))
-            .await?;
+    // The plan named from the task's project, where the plan is.
+    let folders = project.map(|p| crate::folders::Folders::one(p.into()));
+    let built = autopilot::implementation_message(
+        core,
+        main,
+        records,
+        &id,
+        folders.as_ref(),
+        Some(&state.letter),
+    )
+    .await?;
     let why = match built {
         Ok(message) => {
             let request = settings.request(&state.chat, StartKind::Send { message });

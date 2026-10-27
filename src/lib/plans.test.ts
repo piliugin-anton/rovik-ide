@@ -1,9 +1,19 @@
 // plans.ts tests (node:test): a remote chat's plan is read from its host
-// and opens read-only; a local chat's opens in the editor (K09).
+// and opens read-only; a local chat's opens in the editor (K09). A
+// workspace chat's plan names its folders, which choose the chat that
+// carries it out (D28), and a chat names a plan as it names its files.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { implementationMessage, openPlan, readPlan } from './plans';
+import {
+  chatForPlan,
+  chatPlanPath,
+  implementationMessage,
+  openPlan,
+  planFolders,
+  readPlan,
+} from './plans';
 import { chatStore } from './chatStore';
+import type { OpenFolder } from './openFolders';
 import { setEditorOpener, type Compare, type OpenInEditor } from './openInEditor';
 
 const PLAN = '# Fix the build\n\n1. Pin the toolchain\n';
@@ -54,15 +64,97 @@ test('a plan is read through chat_read_plan, for a chat of either kind', async (
 
 test('implementing a plan sends its path; the backend writes what the model gets (A04)', () => {
   calls.length = 0;
-  const message = implementationMessage('/p/.rovik/plans/a.md', '/p');
+  const message = implementationMessage('/p/.rovik/plans/a.md', '.rovik/plans/a.md');
   assert.deepEqual(message, {
     content: 'Implement the plan in `.rovik/plans/a.md`.',
     meta: { mode: 'agent', implementsPlan: true, planPath: '/p/.rovik/plans/a.md' },
   });
   assert.equal(reads().length, 0, 'not read here');
+});
+
+/** A folder of the window, resolved as its own project (`<name>-project`). */
+const folder = (name: string, path = `/w/${name}`): OpenFolder => ({
+  path,
+  name,
+  missing: false,
+  project: { id: `${name}-project`, name, path, idFile: true },
+});
+
+test('a chat names its plan as it names files: by its folder’s name in a workspace chat', () => {
+  const folders = [folder('api'), folder('web')];
+  const workspaceChat = { projectId: 'w', folders: 'all' };
+  const folderChat = { projectId: 'api-project' };
   assert.equal(
-    implementationMessage('/srv/w/.rovik/plans/a.md', '/p').content,
-    'Implement the plan in `/srv/w/.rovik/plans/a.md`.',
-    'a path outside the project, as it is'
+    chatPlanPath('/w/web/.rovik/plans/a.md', workspaceChat, folders),
+    'web/.rovik/plans/a.md'
   );
+  assert.equal(chatPlanPath('/w/api/.rovik/plans/a.md', folderChat, folders), '.rovik/plans/a.md');
+  // A host's worktree, or no chat: the path as it is.
+  for (const dialog of [workspaceChat, folderChat, undefined]) {
+    assert.equal(
+      chatPlanPath('/srv/w/.rovik/plans/a.md', dialog, folders),
+      '/srv/w/.rovik/plans/a.md'
+    );
+  }
+  // On Windows too, with `/` between its parts.
+  const windows = [folder('api', 'C:\\w\\api'), folder('web', 'C:\\w\\web')];
+  assert.equal(
+    chatPlanPath('C:\\w\\web\\.rovik\\plans\\a.md', workspaceChat, windows),
+    'web/.rovik/plans/a.md'
+  );
+  assert.equal(
+    chatPlanPath('C:\\w\\api\\.rovik\\plans\\a.md', folderChat, windows),
+    '.rovik/plans/a.md'
+  );
+});
+
+test('a plan’s Folders line, right under its title, names the folders its workspace chat had', () => {
+  assert.deepEqual(planFolders('# Plan: cart\n\nFolders: api, web\n\nSummary.\n'), ['api', 'web']);
+  assert.deepEqual(planFolders('# Plan: cart\r\n\r\nFolders: api\r\n'), ['api']);
+  // A folder chat's plan, and lines that aren't the plan's own.
+  for (const text of [
+    '# Plan: cart\n\nSummary.\n',
+    '# Plan: cart\n\nSummary.\n\nFolders: api\n',
+    'Folders: api\n',
+    '# Plan: cart\n\nFolders: \n',
+  ]) {
+    assert.equal(planFolders(text), null, text);
+  }
+});
+
+test('a plan with a Folders line goes to a workspace chat with each folder: the open one if it has them, else a new one, even for one folder', () => {
+  const workspace = { id: 'w', names: ['api', 'web', 'docs'] };
+  const both = ['api', 'web'];
+  // The open chat works in each folder named.
+  assert.deepEqual(chatForPlan(both, workspace, { projectId: 'w', names: 'all' }), {
+    kind: 'open',
+  });
+  assert.deepEqual(chatForPlan(both, workspace, { projectId: 'w', names: ['web', 'api'] }), {
+    kind: 'open',
+  });
+  // It lacks one, it's another workspace's, or there's none: a new one across them.
+  for (const open of [
+    { projectId: 'w', names: ['api'] },
+    { projectId: 'other', names: 'all' as const },
+    null,
+  ]) {
+    assert.deepEqual(chatForPlan(both, workspace, open), { kind: 'new', folders: both });
+  }
+  // `Folders: api` gives a workspace chat in api, not api's folder chat:
+  // that one would read `api/src/x.ts` as `api/api/src/x.ts`.
+  assert.deepEqual(chatForPlan(['api'], workspace, { projectId: 'api-project', names: ['api'] }), {
+    kind: 'new',
+    folders: ['api'],
+  });
+});
+
+test('a plan naming a folder this workspace lacks starts nothing, and says which', () => {
+  const workspace = { id: 'w', names: ['api', 'web'] };
+  const lacking = chatForPlan(['api', 'mobile'], workspace, { projectId: 'w', names: 'all' });
+  assert.equal(lacking.kind, 'none');
+  assert.match(lacking.kind === 'none' ? lacking.why : '', /^The plan works in mobile, which/);
+  // A folder's window has no workspace to carry it out.
+  const noWorkspace = chatForPlan(['api'], null, { projectId: 'api-project', names: ['api'] });
+  assert.equal(noWorkspace.kind, 'none');
+  assert.match(noWorkspace.kind === 'none' ? noWorkspace.why : '', /open the workspace/);
 });

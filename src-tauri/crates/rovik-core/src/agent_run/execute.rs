@@ -2075,8 +2075,9 @@ impl Run {
                 )
                 .await;
         }
-        // Plans are the project's, not a chat's change.
-        let Some(root) = self.project_root() else {
+        // Plans are the project's, not a chat's change: in the chat's first
+        // folder (D28), a workspace chat's naming its folders.
+        let Some(folders) = self.folders.clone() else {
             return self
                 .add_tool_result(
                     &tc.id,
@@ -2087,7 +2088,11 @@ impl Run {
                 .await;
         };
         let request = request.unwrap_or_else(|| "plan".into());
-        let existing = chat_plan_file(&recent);
+        // A revision replaces the chat's plan, unless that's in a folder the
+        // chat no longer works in: new plans go to its first folder, and
+        // earlier ones stay where they were written (D28).
+        let existing = chat_plan_file(&recent)
+            .filter(|file| folders.chat_path(std::path::Path::new(file)).is_some());
         // The plan a revision is small against: in Autopilot the task's own
         // saved plan (S02), never an earlier task's, which a short first
         // plan would otherwise pass as a small revision of.
@@ -2116,17 +2121,24 @@ impl Run {
             }
             super::plan_review::Decision::Save { plan, note } => (plan, note),
         };
+        let root = folders.first().path.to_string_lossy().into_owned();
+        let names: Vec<String> = folders
+            .iter()
+            .map(|f| f.name.clone())
+            .filter(|name| !name.is_empty())
+            .collect();
         match plan::save_plan_file(
             &root,
             &request,
             &plan_text,
             existing.as_deref(),
             &self.local_date,
+            &names,
         ) {
             Ok(path) => {
                 let mut content = format!(
                     "Saved the plan to {}.",
-                    plan::relative_plan_path(&path, Some(&root))
+                    plan::plan_path_in(&path, Some(&folders))
                 );
                 if let Some(note) = note {
                     content.push(' ');

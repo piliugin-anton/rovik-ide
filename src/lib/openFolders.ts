@@ -137,6 +137,11 @@ export function sessionKey(target: WindowTarget | null): string | null {
   return target.kind === 'folder' ? target.path : `workspace:${target.id}`;
 }
 
+/** The workspace a window's `sessionKey` names; null for a folder's (an absolute path) or none. */
+export function workspaceIdOf(key: string | null | undefined): string | null {
+  return key?.startsWith('workspace:') ? key.slice('workspace:'.length) : null;
+}
+
 /**
  * Whose chats a window lists and searches (docs/design/workspaces-plan.md,
  * 3.8): its owners.

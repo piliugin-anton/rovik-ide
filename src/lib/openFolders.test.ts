@@ -20,6 +20,7 @@ import {
   sessionKey,
   withoutFolder,
   workspaceAsTarget,
+  workspaceIdOf,
   type OpenFolder,
   type WindowTarget,
 } from './openFolders';
@@ -88,6 +89,13 @@ test('a session is kept under its folder, or under the workspace', () => {
     'workspace:w1'
   );
   assert.equal(sessionKey(null), null);
+});
+
+test('a session key names its workspace, and a folder’s names none', () => {
+  const key = sessionKey({ kind: 'workspace', id: 'w1', name: 'Shop', folders: [] });
+  assert.equal(workspaceIdOf(key), 'w1');
+  assert.equal(workspaceIdOf(sessionKey({ kind: 'folder', path: '/work/api' })), null);
+  assert.equal(workspaceIdOf(null), null);
 });
 
 test("a session's open tree folders are registered on the folder each is in", () => {

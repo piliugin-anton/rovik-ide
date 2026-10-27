@@ -561,9 +561,14 @@ export function createChatStore() {
 
   /**
    * A new chat, open and active, of `projectId`: the folder it works in's
-   * project, or null with no folder open (workspaces-plan.md, 3.8).
+   * project, or null with no folder open (workspaces-plan.md, 3.8); a
+   * workspace's, with the `folders` it works in (`"all"`, or names as JSON).
    */
-  function createDialog(title: string, projectId: string | null): DialogSummary {
+  function createDialog(
+    title: string,
+    projectId: string | null,
+    folders: string | null = null
+  ): DialogSummary {
     const now = Date.now();
     const summary: DialogSummary = {
       id: crypto.randomUUID(),
@@ -573,6 +578,7 @@ export function createChatStore() {
       messageCount: 0,
       preview: null,
       projectId,
+      folders,
     };
     setState(
       produce((s) => {
@@ -588,22 +594,27 @@ export function createChatStore() {
         s.active = { ...summary };
       })
     );
-    void persist(() => chatApi.createDialog({ ...summary, projectId }));
+    void persist(() => chatApi.createDialog({ ...summary, projectId, folders }));
     evictIfNeeded();
     return summary;
   }
 
   /**
    * The empty chat `dialogId` works in the folder of `projectId` from now on
-   * (New chat reusing it for another folder, workspaces-plan.md 3.8), once
-   * the writes queued before it are in. False when the database refused it
-   * (it has a message by now): the chat stays where it was.
+   * (New chat reusing it for another folder, workspaces-plan.md 3.8), or in a
+   * workspace's `folders` when `projectId` is a workspace's, once the writes
+   * queued before it are in. False when the database refused it (it has a
+   * message by now): the chat stays where it was.
    */
-  async function moveEmpty(dialogId: string, projectId: string | null): Promise<boolean> {
+  async function moveEmpty(
+    dialogId: string,
+    projectId: string | null,
+    folders: string | null = null
+  ): Promise<boolean> {
     let moved = false;
     await persist(async () => {
       try {
-        await chatApi.moveEmptyDialog(dialogId, projectId);
+        await chatApi.moveEmptyDialog(dialogId, projectId, folders);
         moved = true;
       } catch (err) {
         console.warn('The empty chat stays where it is:', err);
@@ -612,6 +623,7 @@ export function createChatStore() {
     if (moved) {
       updateSummary(dialogId, (d) => {
         d.projectId = projectId;
+        d.folders = folders;
       });
     }
     return moved;

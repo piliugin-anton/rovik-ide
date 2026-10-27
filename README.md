@@ -219,7 +219,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   list and the label by the
   message box say each chat's folder, and the chats of every folder are
   listed together. **Implement this plan** on a folder's plan starts in a
-  chat of that folder.
+  chat of that folder. A chat across several folders saves its plans in
+  its first folder, with a line under the title naming its folders
+  (`Folders: api, web`); **Implement this plan** carries such a plan out
+  in a chat across them, the open one if it works in each, else a new
+  one, and in a workspace without one of them starts none and says which.
 
 ---
 

@@ -919,3 +919,273 @@ async fn the_red_check_runs_a_new_test_in_its_own_folder() {
     );
     assert!(!r.contains("`web/b/b_test.go` already"), "{r}");
 }
+
+/*
+ * Plans (4.8, D28)
+ */
+
+/// A plan of SHOP's two folders, its files named by their folders.
+const SHOP_PLAN: &str = "# Change both\n\nBoth constants become 2.\n\n## Steps\n\
+    1. **API**\n   - Files: `api/src/a.ts`\n   - Change `a` in `api/src/a.ts` to 2.\n\
+    2. **Web**\n   - Files: `web/src/b.ts`\n   - Change `b` in `web/src/b.ts` to 2.\n\n\
+    ## Validation\n- `npm test`\n";
+
+/// The plan file a `submit_plan` call saved.
+fn plan_file(messages: &[MessageRow], call: &str) -> String {
+    let meta = result_of(messages, call).meta.as_ref().expect("its meta");
+    meta["planFile"].as_str().expect("a plan file").to_string()
+}
+
+/// A plan run of SHOP's chat that saves `SHOP_PLAN`: its file.
+async fn planned(h: &Harness) -> String {
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": SHOP_PLAN }),
+        },
+        Reply::Text("Saved."),
+    ])
+    .await;
+    h.start(h.workspace_request(&url, plan_send("Plan both"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    plan_file(&h.messages().await, "p1")
+}
+
+/// Its chat path: `api/.rovik/plans/<its name>`.
+fn in_api(file: &str) -> String {
+    let name = std::path::Path::new(file).file_name().unwrap();
+    format!("api/.rovik/plans/{}", name.to_string_lossy())
+}
+
+#[tokio::test]
+async fn a_workspace_chats_plan_is_saved_in_its_first_folder_under_a_line_naming_its_folders() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(SHOP, "all").await;
+    let (url, _) = model(vec![
+        // A file named as a folder chat names it is in none of the folders.
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": SHOP_PLAN.replace("`api/src/a.ts`", "`src/a.ts`") }),
+        },
+        Reply::Call {
+            id: "p2",
+            name: "submit_plan",
+            args: json!({ "plan": SHOP_PLAN }),
+        },
+        Reply::Text("Saved."),
+    ])
+    .await;
+    h.start(h.workspace_request(&url, plan_send("Plan both"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let refused = &result_of(&messages, "p1").content;
+    assert!(
+        refused.starts_with("Error: the plan wasn't saved.") && refused.contains("`src/a.ts`"),
+        "{refused}"
+    );
+    assert!(!refused.contains("`web/src/b.ts`"), "{refused}");
+    let file = plan_file(&messages, "p2");
+    let saved = &result_of(&messages, "p2").content;
+    assert!(
+        saved.starts_with(&format!("Saved the plan to {}.", in_api(&file))),
+        "{saved}"
+    );
+    assert_eq!(
+        std::path::Path::new(&file).parent(),
+        Some(h.project.join("api/.rovik/plans").as_path())
+    );
+    assert!(!h.project.join("web/.rovik").exists());
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.starts_with("# Change both\n\nFolders: api, web\n\nBoth constants become 2.\n"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn the_plan_mode_line_and_the_implementation_name_a_workspace_plan_by_its_chat_path() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(SHOP, "all").await;
+    let file = planned(&h).await;
+    let shown = in_api(&file);
+
+    // Planning again: the current plan, by its chat path.
+    let (url, seen) = model(vec![Reply::Text("It holds.")]).await;
+    h.events.lock().unwrap().clear();
+    h.start(h.workspace_request(&url, plan_send("Look again"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let sent = seen.lock().unwrap()[0].to_string();
+    assert!(sent.contains(&format!("Saved in {shown};")), "{sent}");
+    assert!(!sent.contains(&file), "{sent}");
+
+    // Implemented as the app sends it: the request names it so, and its
+    // files are checked in the folders by their names.
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, text.replace("`web/src/b.ts`", "`web/src/gone.ts`")).unwrap();
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "API", "status": "done" }] }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: format!("Implement the plan in `{shown}`."),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true, "planPath": file })),
+        attachments: Vec::new(),
+    };
+    h.events.lock().unwrap().clear();
+    h.start(h.workspace_request(&url, StartKind::Send { message }, quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let first = seen.lock().unwrap()[0]["messages"].to_string();
+    assert!(
+        first.contains(&format!("It's saved in {shown};")),
+        "{first}"
+    );
+    let messages = h.messages().await;
+    let note = messages
+        .iter()
+        .find_map(|m| m.meta.as_ref().filter(|m| m["harness"] == "planCheck"))
+        .expect("a plan check note");
+    assert_eq!(note["planCheck"]["file"], json!(shown));
+    let problems = note["planCheck"]["problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0]
+            .as_str()
+            .unwrap()
+            .starts_with("Step 2 names `web/src/gone.ts`"),
+        "{problems:?}"
+    );
+}
+
+/// A plan of web alone.
+const WEB_PLAN: &str = "# Web only\n\nThe constant becomes 2.\n\n## Steps\n\
+    1. **Web**\n   - Files: `web/src/b.ts`\n   - Change `b` in `web/src/b.ts` to 2.\n\
+    2. **Check**\n   - Files: `web/src/b.ts` (read)\n   - Read `b` in `web/src/b.ts` to confirm it is 2.\n\n\
+    ## Validation\n- `npm test`\n";
+
+#[tokio::test]
+async fn after_its_first_folder_is_unchecked_a_chats_next_plan_goes_to_its_new_first_folder() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(SHOP, "all").await;
+    let first = planned(&h).await;
+    let id = h.dialog_id.clone();
+    h.core
+        .db
+        .write(move |c| store::set_dialog_folders(c, &id, Some(r#"["web"]"#)))
+        .await
+        .unwrap();
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "p2",
+            name: "submit_plan",
+            args: json!({ "plan": WEB_PLAN }),
+        },
+        Reply::Text("Saved."),
+    ])
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.workspace_request(&url, plan_send("Only web now"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let file = plan_file(&messages, "p2");
+    assert_eq!(
+        std::path::Path::new(&file).parent(),
+        Some(h.project.join("web/.rovik/plans").as_path())
+    );
+    let saved = &result_of(&messages, "p2").content;
+    assert!(
+        saved.starts_with("Saved the plan to web/.rovik/plans/"),
+        "{saved}"
+    );
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.starts_with("# Web only\n\nFolders: web\n\n"), "{text}");
+    // The earlier plan stays where it was written.
+    let earlier = std::fs::read_to_string(&first).unwrap();
+    assert!(
+        earlier.starts_with("# Change both\n\nFolders: api, web\n\n"),
+        "{earlier}"
+    );
+}
+
+/// What an Autopilot task's plan says done means (S01), for SHOP.
+const SHOP_TASK_PLAN: &str = "# Change both\n\nBoth constants become 2.\n\n## Criteria\n\n\
+    1. `api/src/a.ts` exports `a` as 2, and `web/src/b.ts` exports `b` as 2.\n\n\
+    **Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
+    1. **API**\n   - Files: `api/src/a.ts`\n   - Change `a` in `api/src/a.ts` to 2.\n\
+    2. **Web**\n   - Files: `web/src/b.ts`\n   - Change `b` in `web/src/b.ts` to 2.\n\n\
+    ## Validation\n- `npm test`\n";
+
+#[tokio::test]
+async fn autopilots_report_and_implementation_name_a_workspace_plan_by_its_chat_path() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    use super::autopilot::Stage;
+    use super::autopilot_tests::{
+        autopilot_send, implement_messages, model_routed, quiet, stages_until, PLAN_REVIEW,
+    };
+    let h = workspace_harness(SHOP, "all").await;
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": SHOP_TASK_PLAN }),
+            },
+            Reply::Text("Saved the plan."),
+            // The implementation: stopped once it has its request.
+            Reply::Hang(None),
+        ],
+    )
+    .await;
+    let mut request =
+        h.workspace_request(&url, autopilot_send("Change both"), Permissions::default());
+    request.mode = Some("autopilot".into());
+    h.start(request).await;
+    let records = stages_until(&h, "the implementation", |records| {
+        records.iter().any(|r| r.name == Stage::Implement)
+    })
+    .await;
+    let messages = within("the implementation's request", async {
+        loop {
+            let messages = h.messages().await;
+            if !implement_messages(&messages).is_empty() {
+                return messages;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    agent_stop(&h.core, h.dialog_id.clone()).await;
+    quiet(&h).await;
+    let file = plan_file(&messages, "p1");
+    let shown = in_api(&file);
+    assert_eq!(
+        records[0].summary.as_deref(),
+        Some(format!("Saved the plan to {shown}").as_str())
+    );
+    let request = &implement_messages(&messages)[0].content;
+    assert!(
+        request.contains(&format!("It's saved in {shown};")),
+        "{request}"
+    );
+}
