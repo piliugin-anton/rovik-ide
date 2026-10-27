@@ -696,6 +696,159 @@ test('review_record_stop_enablement', () => {
   assert.ok(gone.firstElementChild!.classList.contains('stopped'));
 });
 
+test('a change review shows each finding’s rank, its score and the guide that ran after it', () => {
+  const finding = (
+    severity: 'high' | 'low',
+    confidence: 'confirmed' | 'plausible',
+    rank: number,
+    title: string
+  ) => ({
+    severity,
+    location: 'a.ts:1',
+    path: 'a.ts',
+    line: 1,
+    title,
+    scenario: 's',
+    fix: 'f',
+    confidence,
+    rank,
+  });
+  const meta: ReviewMeta = {
+    kind: 'change',
+    status: 'findings',
+    round: 2,
+    maxRounds: 3,
+    score: 1.125,
+    findings: [
+      finding('high', 'confirmed', 1, 'Token not refreshed'),
+      finding('low', 'plausible', 0.125, 'Log line leaks the user id'),
+    ],
+    guide: {
+      status: 'done',
+      childDialogId: 'kid-g1',
+      result: {
+        whereWrong: 'Finding 1: the refresh runs after the request.',
+        why: 'It fixed the call site, not the client.',
+        steps: '1. Refresh in the client before sending.',
+      },
+    },
+  };
+  const root = container();
+  render(() => <ReviewRecord meta={meta} dialogId="d-g" recordId="g1" live={false} />, root);
+  assert.deepEqual(
+    [...root.querySelectorAll('.review-rank')].map((r) => r.textContent),
+    ['rank 1', 'rank 0.125']
+  );
+  assert.match(
+    root.querySelector('.chat-verify-files')?.textContent ?? '',
+    /^Review 2 of at most 3 · score 1\.125/
+  );
+  const guide = root.querySelector('.review-guide.done')!;
+  assert.ok(guide, 'the guide shows in its review');
+  assert.match(
+    guide.textContent ?? '',
+    /Where it goes wrong: Finding 1: the refresh runs after the request\.Why: It fixed the call site, not the client\.Guidance: 1\. Refresh in the client before sending\./
+  );
+  assert.ok(button(guide, 'Show its work'));
+
+  // While it runs, what it does; saved as running with no run going, it didn't finish.
+  noteSubagentStarted({
+    dialogId: 'd-g',
+    toolCallId: 'g2:guide',
+    childDialogId: 'kid-g2',
+    kind: 'guide',
+    model: 'Test/m',
+    goal: 'Guide the agent',
+  });
+  const running = container();
+  render(
+    () => (
+      <ReviewRecord
+        meta={{ ...meta, guide: { status: 'running' } }}
+        dialogId="d-g"
+        recordId="g2"
+        live={true}
+      />
+    ),
+    running
+  );
+  assert.ok(running.querySelector('.review-guide.running'));
+  assert.match(
+    running.querySelector('.review-guide')?.textContent ?? '',
+    /a guide is reading the reviews/
+  );
+  const gone = container();
+  render(
+    () => (
+      <ReviewRecord
+        meta={{ ...meta, guide: { status: 'running' } }}
+        dialogId="d-g"
+        recordId="g3"
+        live={false}
+      />
+    ),
+    gone
+  );
+  assert.ok(gone.querySelector('.review-guide.stopped'));
+  assert.match(gone.querySelector('.review-guide')?.textContent ?? '', /didn’t finish/);
+
+  // Its lighter findings: the optional ones, and the minor ones for the user.
+  const lighter = container();
+  render(
+    () => (
+      <ReviewRecord
+        meta={{
+          ...meta,
+          guide: undefined,
+          optional: [{ ...finding('high', 'plausible', 0.25, 'Elsewhere, unsure'), outside: true }],
+          noted: [finding('low', 'plausible', 0.125, 'A nit, maybe')],
+        }}
+        dialogId="d-g"
+        recordId="g5"
+        live={false}
+      />
+    ),
+    lighter
+  );
+  const optional = lighter.querySelector('details.review-optional')!;
+  assert.equal(
+    optional.querySelector('summary')?.textContent,
+    '1 optional, sent to the agent without holding the change back'
+  );
+  assert.equal(optional.querySelector('.review-outside')?.textContent, 'outside the change');
+  assert.equal(optional.querySelector('.review-rank')?.textContent, 'rank 0.25');
+  const noted = lighter.querySelector('details.review-noted')!;
+  assert.match(noted.querySelector('summary')?.textContent ?? '', /^1 minor, .*for you only/);
+  assert.ok(noted.querySelector('.review-finding.dropped'), 'shown dimmed');
+  // Blocking findings on the change have no "outside" mark.
+  assert.equal(
+    lighter.querySelector('ul.review-findings > li .review-outside')?.closest('details'),
+    optional
+  );
+
+  // A plan review's findings have no rank, and a review without a guide shows none.
+  const plan = container();
+  render(
+    () => (
+      <ReviewRecord
+        meta={{
+          ...meta,
+          kind: 'plan',
+          score: undefined,
+          guide: undefined,
+          findings: [{ ...meta.findings![0], rank: undefined }],
+        }}
+        dialogId="d-g"
+        recordId="g4"
+        live={false}
+      />
+    ),
+    plan
+  );
+  assert.equal(plan.querySelector('.review-rank'), null);
+  assert.equal(plan.querySelector('.review-guide'), null);
+});
+
 test('verification_record_triage_states', () => {
   const base: VerificationMeta = {
     status: 'failed',

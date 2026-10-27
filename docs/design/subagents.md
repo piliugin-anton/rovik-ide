@@ -124,6 +124,43 @@ Rovik already has most of the pieces a subagent system needs:
   to the verification gate.
 - **Difference from `review.rs`:** that reviewer decides whether one
   action may run. This one judges the whole change.
+- **Ranks (`change_review.rs`):** each finding is ranked by what it
+  weighs: its severity (high 1, medium 0.5, low 0.25), halved when the
+  reviewer found it only plausible, and halved again when it's about code
+  the change didn't touch (not on or within 3 lines of a changed line, in
+  either the old or the new numbering). The rank decides what a finding
+  does, as research on review loops recommends: agents act on what
+  they're told, so a wrong finding sent as a must-fix breaks correct code.
+  - **0.5 or more blocks:** any high finding on the change, a confirmed
+    high one elsewhere, a confirmed medium one on the change. The lead
+    fixes it or answers it with evidence, and a follow-up checks it, as
+    before; they're numbered highest first. This replaces S06's "every
+    finding counts, whatever its severity".
+  - **0.25 is optional:** at most three go to the lead, unnumbered, to
+    act on only once it has confirmed them in the code; nothing follows
+    them up. A later review drops a repeat unless it brings new evidence
+    or weighs more: traced this time, or the change touches it now, it
+    weighs 0.5 or more and blocks.
+  - **Below 0.25** stays in the record, for the user.
+  - A review's **score** adds up its blocking findings' ranks.
+  - **Confidence comes from the follow-up, not only the label:** an
+    earlier finding a follow-up keeps open by its own word, after the
+    lead's fix or answer, is confirmed. Disputes (`not-a-problem` answers)
+    are counted by the follow-up's word, upheld or rejected, in the
+    record and the run log: what a reviewer's precision is measured by.
+  - The reviewer is told that only what the change brings counts: a
+    finding outside the changed lines says how the change causes it.
+- **The guide (`guide.rs`):** from the run's second review with blocking
+  findings on, a read-only **guide** reads every such review: each
+  blocking finding with its rank, the lead's answer and the next review's
+  verdict, how many fix attempts each open finding has survived, the
+  scores, and the diff, never the lead's conversation. It tells the lead
+  where and why it goes wrong, highest ranks first, and what to do
+  differently: a finding still open after a fix attempt needs another
+  approach, not another version of the same fix, or an answer with
+  evidence when the reviewer is wrong. Its guidance goes to the lead with
+  that review's findings; the follow-up review still decides. With three
+  reviews a run, it runs at most once, after the second.
 - **Plan reviewer (Plan mode):** the same idea, applied to a plan before
   the user sees it. Code checks run first: the files a step names must
   exist, and steps in a parallel group must not share files. Then a
@@ -305,8 +342,8 @@ result.
 `step` is for a worker (the plan step it carries out) and `group` for
 `workers` (a plan group, one worker per step). The harness, not the brief,
 sets each kind's tools and budget: `max_tool_calls` can only lower it.
-The reviewer, triage and the plan reviewer are started by the harness,
-not through `task`.
+The reviewer, the guide, triage and the plan reviewer are started by the
+harness, not through `task`.
 
 **Result** (returned as the tool's output). Each kind has its own `## `
 sections (`subagent.rs` `KindSpec`); a report must have the first ones
@@ -319,6 +356,7 @@ sections (`subagent.rs` `KindSpec`); a report must have the first ones
 | test writer   | `Summary`; `Test files`, `Assumptions`                                                                                                                                                                                                            |
 | triage        | `Root cause`, `Files to fix`, `Next step`, `Confidence`                                                                                                                                                                                           |
 | reviewer      | `Findings`: a numbered list (`change_review.rs`), or None.                                                                                                                                                                                        |
+| guide         | `Where it goes wrong`, `Why`, `Guidance` (after the second change review that found problems, `guide.rs`)                                                                                                                                         |
 | plan reviewer | `Findings`, the same list, with `Step N` for a location.                                                                                                                                                                                          |
 | acceptance    | `Verdicts`; `Evidence`, `Unmet` (Autopilot's, `acceptance.rs`)                                                                                                                                                                                    |
 | planner       | `Plan`, `Criteria`: one of them, as the brief asks: the whole plan under `Plan`, or the criteria alone (Thorough's, `planning.rs`)                                                                                                                |

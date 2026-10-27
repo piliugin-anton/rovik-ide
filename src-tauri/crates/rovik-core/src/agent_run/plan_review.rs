@@ -1229,6 +1229,9 @@ pub struct FollowUp {
     /// Each earlier finding with the agent's answer and the verdict, for
     /// the record.
     pub earlier: Vec<Value>,
+    /// The verdict on each earlier finding, by its number: as `earlier`
+    /// has it, for the change review's guide (guide.rs).
+    pub verdicts: Vec<Verdict>,
     /// How many of `open`, at its start, are earlier findings.
     pub kept: usize,
     /// New findings about steps the revision didn't change (`changed`),
@@ -1290,8 +1293,19 @@ pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
             if said && !reason.is_empty() {
                 f.new_evidence = Some(reason.clone());
             }
+            // Kept open by the reviewer's own word, on a second reading of
+            // the code, after the agent's fix or answer: it's confirmed,
+            // whatever the first review was sure of.
+            if said {
+                f.confidence = "confirmed".into();
+            }
             out.open.push(f);
         }
+        out.verdicts.push(Verdict {
+            finding: n,
+            resolved,
+            reason: reason.clone(),
+        });
         out.earlier.push(json!({
             "finding": n,
             "severity": e.severity,
@@ -3275,6 +3289,33 @@ mod tests {
         .remove(0)
     }
 
+    /// An earlier finding a follow-up keeps open by its own word was read
+    /// twice, the second time after the agent's fix or answer: it's
+    /// confirmed. One kept open by the IDE's default (the plan came back
+    /// unchanged, with nothing said) stays as sure as it was.
+    #[test]
+    fn a_finding_kept_open_by_the_follow_ups_word_is_confirmed() {
+        let mut unsure = finding("high", "Step 2", "Wrong order");
+        unsure.confidence = "plausible".into();
+        let facts = |verdicts: &[Verdict], unchanged_and_silent: bool| {
+            follow_up(
+                &Facts {
+                    earlier: std::slice::from_ref(&unsure),
+                    responses: &[],
+                    verdicts,
+                    unchanged_and_silent,
+                    changed: &[],
+                },
+                Vec::new(),
+            )
+        };
+        let said = parse_verdicts(
+            "## Earlier findings\n\n- Earlier 1: not resolved — step 2 still runs first.",
+        );
+        assert_eq!(facts(&said, false).open[0].confidence, "confirmed");
+        assert_eq!(facts(&[], true).open[0].confidence, "plausible");
+    }
+
     /// B13: what a follow-up review leaves open: the earlier findings it
     /// didn't find resolved, and new ones that are high, about the whole
     /// plan, or about a step the revision changed.
@@ -3365,6 +3406,14 @@ mod tests {
         );
         // Each was the review's word: a verdict, or a repeat with evidence.
         assert!(e.iter().all(|e| e["checked"] == true), "{e:?}");
+        // The same verdicts, typed, for the change review's guide.
+        let verdicts: Vec<(usize, bool)> = follow
+            .verdicts
+            .iter()
+            .map(|v| (v.finding, v.resolved))
+            .collect();
+        assert_eq!(verdicts, [(1, true), (2, false), (3, false)]);
+        assert_eq!(follow.verdicts[0].reason, "step 5 updates the CLI.");
 
         // Not mentioned: settled, and not checked. The plan back unchanged
         // with nothing said: everything stays open, whatever the review says.

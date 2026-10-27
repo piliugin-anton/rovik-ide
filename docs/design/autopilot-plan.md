@@ -1321,6 +1321,10 @@ T05 depends most on the environment it meets.
   still finds a high problem in it"). Medium findings at the last review
   go to the agent with no review to follow: the checks decide.
 - Agent mode's review stays advice, as it was (D20).
+- **Later:** a finding's weight decides whether it blocks. Only those that
+  weigh 0.5 or more do (any high finding on the change, a confirmed medium
+  one); lighter ones go to the agent as optional or stay in the record
+  (subagents.md, "Ranks").
 
 ### S07: the test-exists rule
 

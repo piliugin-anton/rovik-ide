@@ -114,8 +114,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   Project checks. If anything fails, the agent is sent back to fix it.
   It's told when a fix made no progress, a fix that breaks
   something that passed before is rolled back, and tests weakened to pass
-  (skipped, deleted, fewer assertions) are flagged for you instead of
-  counting as verified. A check that fails runs once more on the code
+  (skipped, deleted, fewer assertions) and new suppressions of what the
+  checks report (`eslint-disable`, `@ts-ignore`, `as any`, `#[allow]`,
+  `# noqa`, `//nolint`) are flagged for you instead of counting as
+  verified. A check that fails runs once more on the code
   before the change (in an isolated chat): what fails there too, such as
   the type errors many React Native apps have, isn't the agent's to fix and
   doesn't hold its change back. A test script that runs Jest in watch
@@ -152,9 +154,17 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   read-only helpers that explore one question about the code in a fresh
   context and hand back a short report, so long explorations don't fill
   the agent's own context. A change reviewer can read each finished
-  change with fresh eyes before the checks run; the agent fixes or
-  answers what it finds. When a check fails with a long output, or fails
-  again, a triage helper reads all of it and tells the agent the root
+  change with fresh eyes before the checks run. Each finding is ranked
+  by its severity, how sure the reviewer is and whether it's about code
+  the change touched: the agent fixes or answers the ones that weigh
+  most, which hold the change back until they're resolved; lighter ones
+  go to it as optional, and the lightest are listed only for you, since
+  fixing what isn't broken is how correct code gets broken. When the
+  reviewer finds blocking problems a second time in a run, a guide reads
+  every review, the agent's answers and the change, and tells the agent
+  where and why it goes wrong before its next attempt. When a check fails
+  with a long output, or fails again, a triage helper reads all of it and
+  tells the agent the root
   cause, instead of the agent getting pages of compiler output. In Plan
   mode, a plan reviewer checks each plan against the code before it's
   saved. When the agent implements a long plan, step workers can carry it

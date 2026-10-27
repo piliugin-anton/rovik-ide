@@ -1445,6 +1445,68 @@ async fn first_write_is_a_test_file_keeps_a_reference() {
     assert_eq!(end, "verify-flagged");
 }
 
+/// R05: a suppression the run adds of what the checks report (an
+/// `eslint-disable` in plain code): the checks pass, the agent is asked
+/// once, and keeping it leaves the run flagged, not verified; taking it
+/// out leaves it verified.
+#[tokio::test]
+async fn a_new_suppression_is_asked_about_and_flagged_if_kept() {
+    if !has_node() {
+        return;
+    }
+    let files = [
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/ok.test.js", "test('ok', () => assert(true));\n"),
+        ("add.js", "module.exports = (a, b) => a + b;\n"),
+    ];
+    let silenced = "// eslint-disable-next-line no-unused-vars\nconst unused = 1;\nmodule.exports = (a, b) => a + b;\n";
+    let h = harness(&files).await;
+    let (url, _) = model(vec![
+        write("w1", "add.js", silenced),
+        Reply::Text("Done."),
+        // Asked about it, it keeps it.
+        Reply::Text("The lint rule is wrong here."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Tidy add"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-flagged");
+    let messages = h.messages().await;
+    let asked = harness_texts(&messages, "integrity");
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(
+        asked[0].contains(
+            "add.js: adds suppressions that hide what the checks report (`eslint-disable` 0 → 1)"
+        ),
+        "{}",
+        asked[0]
+    );
+    assert!(
+        asked[0].contains("what a check reports is fixed in the code, not silenced"),
+        "{}",
+        asked[0]
+    );
+    assert_eq!(records(&messages).last().unwrap()["status"], "flagged");
+
+    // Taken out once asked: nothing weakens the checks, and it's verified.
+    let h = harness(&files).await;
+    let (url, _) = model(vec![
+        write("w1", "add.js", silenced),
+        Reply::Text("Done."),
+        write(
+            "w2",
+            "add.js",
+            "// Adds two numbers.\nmodule.exports = (a, b) => a + b;\n",
+        ),
+        Reply::Text("Took the suppression out."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Tidy add"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+}
+
 /// Round 2 (§4.2): a test file in a language the IDE can't read the tests
 /// of (a Ruby spec), changed by the run: the checks pass, the agent is
 /// asked once, and keeping the change leaves the run flagged, not verified.
