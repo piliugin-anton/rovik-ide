@@ -2858,21 +2858,39 @@ mod tests {
     /// D26: a `cd` into a folder of the project runs nothing, so the
     /// default allowed commands let `cd api && npm test` by, checking
     /// `npm test` as alone; a `cd` that could leave the project, and what
-    /// follows any `cd`, are checked as before.
+    /// follows any `cd`, are checked as before. Read as the POSIX shells
+    /// that run such commands do; cmd.exe, which takes no single quotes,
+    /// lets a plain name by too, and refuses a variable as it does anywhere.
     #[test]
     fn a_cd_into_the_project_passes_the_allowed_commands() {
         let p = Permissions::default();
+        let posix = |command: &str| check_command_in(command, &p, Shell::Posix);
         for allowed in [
             "cd api && npm test",
             "cd 'my app' && npm test",
             "cd api/src && ls",
         ] {
             assert_eq!(
-                check_command(allowed, &p),
+                posix(allowed),
                 Verdict::Permitted {
                     modifies_files: false
                 },
                 "{allowed}"
+            );
+        }
+        assert_eq!(
+            check_command_in("cd api && npm test", &p, Shell::Cmd),
+            Verdict::Permitted {
+                modifies_files: false
+            }
+        );
+        for refused in ["cd %USERPROFILE% && npm test", "cd .. && npm test"] {
+            assert!(
+                matches!(
+                    check_command_in(refused, &p, Shell::Cmd),
+                    Verdict::Refused(_)
+                ),
+                "{refused}"
             );
         }
         for refused in [
@@ -2888,15 +2906,12 @@ mod tests {
             "cd api && rm x",
             "cd",
         ] {
-            assert!(
-                matches!(check_command(refused, &p), Verdict::Refused(_)),
-                "{refused}"
-            );
+            assert!(matches!(posix(refused), Verdict::Refused(_)), "{refused}");
         }
     }
 
     /// Every name a workspace gives a folder (D8) passes the `cd` rule, as
-    /// `in_folder` writes it.
+    /// `in_folder` writes it for the POSIX shell its commands run in.
     #[test]
     fn every_folder_name_passes_the_cd_rule() {
         let p = Permissions::default();
@@ -2916,7 +2931,7 @@ mod tests {
             let name = crate::chat_db::workspaces::folder_name(folder, &[]);
             let command = super::super::project::in_folder(&name, "npm test");
             assert_eq!(
-                check_command(&command, &p),
+                check_command_in(&command, &p, Shell::Posix),
                 Verdict::Permitted {
                     modifies_files: false
                 },

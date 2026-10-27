@@ -820,9 +820,10 @@ mod tests {
             },
             None,
         );
-        // Runs until it's stopped, in either shell (cmd.exe on Windows).
+        // Runs until it's stopped, in either shell: cmd.exe's own loop on
+        // Windows, which needs no program from the PATH.
         let command = match cfg!(windows) {
-            true => "ping -n 60 127.0.0.1 >NUL",
+            true => "for /L %i in (1,1,2000000000) do @rem",
             false => "sleep 60",
         };
         crate::command_tool::background::start(
