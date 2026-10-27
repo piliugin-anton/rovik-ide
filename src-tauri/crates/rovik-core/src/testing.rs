@@ -23,6 +23,13 @@ pub enum Reply {
         name: &'static str,
         args: Value,
     },
+    /// A call the output limit cut off: its arguments as far as they got,
+    /// then `finish_reason: "length"`.
+    CutOff {
+        id: &'static str,
+        name: &'static str,
+        args: &'static str,
+    },
     /// Some text (or nothing), then silence: the model stopped answering.
     Hang(Option<&'static str>),
     /// Several tool calls in one reply.
@@ -58,14 +65,9 @@ impl Reply {
             Reply::Call { id, name, args } => {
                 // A string is the arguments' raw text (to send broken JSON).
                 let arguments = args.as_str().map(str::to_string).unwrap_or_else(|| args.to_string());
-                let delta = json!({ "tool_calls": [{
-                    "index": 0, "id": id, "type": "function",
-                    "function": { "name": name, "arguments": arguments }
-                }]});
-                chunk(json!({ "choices": [{ "delta": delta, "finish_reason": null }] }))
-                    + &chunk(json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }))
-                    + "data: [DONE]\n\n"
+                Reply::call_sse(id, name, &arguments, "tool_calls")
             }
+            Reply::CutOff { id, name, args } => Reply::call_sse(id, name, args, "length"),
             Reply::Hang(text) => text
                 .map(|t| chunk(json!({ "choices": [{ "delta": { "content": t }, "finish_reason": null }] })))
                 .unwrap_or_default(),
@@ -180,6 +182,18 @@ impl Reply {
         }
         then.sse()
             .replace("data: [DONE]\n\n", &format!("{usage}data: [DONE]\n\n"))
+    }
+
+    /// One call with these arguments (raw text), ended by `finish_reason`.
+    fn call_sse(id: &str, name: &str, arguments: &str, finish_reason: &str) -> String {
+        let chunk = |v: Value| format!("data: {v}\n\n");
+        let delta = json!({ "tool_calls": [{
+            "index": 0, "id": id, "type": "function",
+            "function": { "name": name, "arguments": arguments }
+        }]});
+        chunk(json!({ "choices": [{ "delta": delta, "finish_reason": null }] }))
+            + &chunk(json!({ "choices": [{ "delta": {}, "finish_reason": finish_reason }] }))
+            + "data: [DONE]\n\n"
     }
 }
 

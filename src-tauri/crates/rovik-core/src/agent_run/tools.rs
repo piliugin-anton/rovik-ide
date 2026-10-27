@@ -716,6 +716,8 @@ const ERROR_CLASSES: &[(&str, &[&str])] = &[
         ],
     ),
     ("subagent", &["subagent", "worker"]),
+    // A reply cut off by the output limit (`unparsed_arguments`).
+    ("output limit", &["reached the model's output limit"]),
     (
         "bad arguments",
         &[
@@ -910,6 +912,34 @@ pub struct CallContext {
     /// background (bash's `background`, the background tool): the lead's
     /// own. None for a subagent, whose commands end with its work.
     pub background_chat: Option<String>,
+    /// The reply the call came in reached the model's output limit: when
+    /// its arguments don't parse, that's where they were cut off.
+    pub reply_cut_off: bool,
+}
+
+/// How much of arguments that don't parse their error shows: enough to
+/// tell which call it was, not all of a long file's content.
+const UNPARSED_SHOWN_CHARS: usize = 300;
+
+/// The result of a call whose arguments aren't JSON. A reply that reached
+/// the model's output limit (`cut_off`) ends in the middle of its last call:
+/// the model is told so, and how to make the call fit, instead of being
+/// left to send the same oversized call again.
+fn unparsed_arguments(args_json: &str, cut_off: bool) -> String {
+    let mut start: String = args_json.chars().take(UNPARSED_SHOWN_CHARS).collect();
+    if start.len() < args_json.len() {
+        start.push('…');
+    }
+    if cut_off {
+        format!(
+            "Error: your reply reached the model's output limit in the middle of this call, so its \
+             arguments were cut off and it didn't run. Make the call again with less in it: write a \
+             long file in parts (its first part, then each next part with write, old_text quoting the \
+             file's last lines), and keep your reasoning before a call short. Its arguments began: {start}"
+        )
+    } else {
+        format!("Error: could not parse arguments as JSON: {start}")
+    }
 }
 
 /// Runs one tool call. Never fails: problems come back as an "Error: ..."
@@ -929,11 +959,7 @@ pub async fn execute(
         match serde_json::from_str::<Value>(args_json) {
             Ok(Value::Object(map)) => map,
             Ok(_) => Map::new(),
-            Err(_) => {
-                return ToolResult::text(format!(
-                    "Error: could not parse arguments as JSON: {args_json}"
-                ))
-            }
+            Err(_) => return ToolResult::text(unparsed_arguments(args_json, ctx.reply_cut_off)),
         }
     };
     match run(core, root, name, &args, stop, ctx).await {
@@ -2091,6 +2117,7 @@ mod tests {
             hidden: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: None,
+            reply_cut_off: false,
         };
         let stop = Arc::new(StopSignal::new());
         let write =
@@ -2936,6 +2963,34 @@ a.rs (3 matches)
     }
 
     #[test]
+    fn arguments_cut_off_by_the_output_limit_are_told_so_and_shown_in_part() {
+        let args = format!(
+            "{{\"path\":\"big.txt\",\"content\":\"{}",
+            "x".repeat(10_000)
+        );
+        let cut = unparsed_arguments(&args, true);
+        assert!(
+            cut.starts_with("Error: your reply reached the model's output limit"),
+            "{cut}"
+        );
+        assert!(
+            cut.contains("Its arguments began: {\"path\":\"big.txt\""),
+            "{cut}"
+        );
+        assert!(cut.ends_with('…') && cut.chars().count() < 1_000, "{cut}");
+        assert_eq!(error_class(&cut), Some("output limit"));
+
+        let broken = unparsed_arguments("{not json", false);
+        assert_eq!(
+            broken,
+            "Error: could not parse arguments as JSON: {not json"
+        );
+        assert_eq!(error_class(&broken), Some("bad arguments"));
+        let long = unparsed_arguments(&args, false);
+        assert!(long.ends_with('…') && long.chars().count() < 400, "{long}");
+    }
+
+    #[test]
     fn a_shortened_commands_whole_output_keeps_its_middle_laid_out_as_shown() {
         let lines: String = (1..=3_000).map(|i| format!("line {i}\n")).collect();
         let warning = "\x1b[33mwarning: slow\x1b[0m\n".to_string();
@@ -3148,6 +3203,7 @@ a.rs (3 matches)
             hidden: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: None,
+            reply_cut_off: false,
         };
         let stop = Arc::new(StopSignal::new());
         let call = |name: &'static str, args: &'static str| {

@@ -2487,6 +2487,37 @@ async fn arguments_that_arent_json_are_an_error_for_the_model() {
         .starts_with("Error: could not parse arguments as JSON"));
 }
 
+/// A reply the output limit cut off in the middle of a call: the call
+/// doesn't run, and the model hears why and how to make it fit, with the
+/// start of its arguments rather than all of them.
+#[tokio::test]
+async fn a_call_cut_off_by_the_output_limit_is_told_why_it_did_not_run() {
+    let h = harness(&[]).await;
+    let args: &'static str = Box::leak(
+        format!("{{\"path\":\"big.txt\",\"content\":\"{}", "x".repeat(5_000)).into_boxed_str(),
+    );
+    let (url, _) = model(vec![
+        Reply::CutOff {
+            id: "c1",
+            name: "write",
+            args,
+        },
+        Reply::Text("I'll write it in parts."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Write it"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let result = &result_of(&messages, "c1").content;
+    assert!(
+        result.starts_with("Error: your reply reached the model's output limit"),
+        "{result}"
+    );
+    assert!(!result.contains(&"x".repeat(1_000)), "{result}");
+    assert!(!h.project.join("big.txt").exists());
+}
+
 #[tokio::test]
 async fn without_a_project_only_web_tools_are_offered() {
     let h = harness(&[]).await;

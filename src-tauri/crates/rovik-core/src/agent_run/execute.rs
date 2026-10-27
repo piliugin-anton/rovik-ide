@@ -1739,6 +1739,7 @@ impl Run {
             checks_owner: self.checks_owner(),
             hidden: self.sub().map(|s| s.hidden.clone()).unwrap_or_default(),
             background_chat: self.sub().is_none().then(|| self.dialog_id.clone()),
+            reply_cut_off: self.reply_cut_off,
             note: std::sync::Arc::new(move |note| {
                 app.emit(AgentEvent::ToolNote {
                     dialog_id: dialog_id.clone(),
