@@ -23,6 +23,8 @@ pub struct Repo {
     /// Its canonical git folder (`Repository::path()`): two folders in one
     /// repository share it; a linked worktree has its own.
     pub key: String,
+    /// Its working folder, as the window spells its folders: the window finds
+    /// a tab's file in it (`repoFileOf`) by its path.
     pub workdir: String,
     /// The folder's stored name when the repository is exactly one of the
     /// window's folders; else the working folder's name, with its parent's
@@ -91,13 +93,33 @@ pub fn repos_of(folders: &[Folder]) -> Repos {
 /// None for a folder in no repository.
 fn find_repo(folder: &Folder) -> Option<Found> {
     let repo = open_repo(&folder.path).ok()?;
-    let workdir = repo.workdir()?.to_path_buf();
+    let workdir = repo.workdir()?;
     let key = fs::canonicalize(repo.path()).unwrap_or_else(|_| repo.path().to_path_buf());
+    let path = Path::new(&folder.path);
+    let scope = relative_to(workdir, path);
     Some(Found {
         key: display_path(&key),
-        scope: relative_to(&workdir, Path::new(&folder.path)),
-        workdir,
+        workdir: spelled_as(path, &scope, workdir),
+        scope,
     })
+}
+
+/// `workdir` spelled as the window spells `folder`, the folder `scope` names
+/// in it: the folder's path with the scope's parts taken off. Git names the
+/// working folder as the disk does, links resolved (macOS's temp folders are
+/// under `/private`, Windows expands short names like `RUNNER~1`), and the
+/// window's paths of the folder's files are found in it only under the
+/// window's spelling. `workdir` itself when the folder's path doesn't lead
+/// there (it was opened through a link inside the repository).
+fn spelled_as(folder: &Path, scope: &str, workdir: &Path) -> PathBuf {
+    let mut spelled = folder.to_path_buf();
+    for _ in scope.split('/').filter(|part| !part.is_empty()) {
+        spelled.pop();
+    }
+    match (spelled.canonicalize(), workdir.canonicalize()) {
+        (Ok(spelled_at), Ok(workdir_at)) if spelled_at == workdir_at => spelled,
+        _ => workdir.to_path_buf(),
+    }
 }
 
 /// `folder` inside `workdir`, "/"-separated: "" for the working folder itself
@@ -245,6 +267,31 @@ mod tests {
             "each folder as the window gave it, in its order"
         );
         assert_eq!(repos.repos[0].workdir, display_path(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_working_folder_is_spelled_as_the_window_spells_its_folder() {
+        let dir = temp("spelled");
+        let real = dir.join("real");
+        fs::create_dir_all(real.join("app")).unwrap();
+        git2::Repository::init(&real).unwrap();
+        std::os::unix::fs::symlink(&real, dir.join("link")).unwrap();
+        // Opened through a link above the repository: the tabs' paths are
+        // under the link, and so is the working folder they're found in.
+        let repos = repos_of(&[folder(&dir.join("link/app"), "app")]);
+        assert_eq!(repos.repos[0].scopes, ["app"]);
+        assert_eq!(repos.repos[0].workdir, display_path(&dir.join("link")));
+        // Opened through a link inside it: no path of the window's leads to
+        // the working folder, which keeps the disk's own.
+        std::os::unix::fs::symlink(real.join("app"), dir.join("app-link")).unwrap();
+        let repos = repos_of(&[folder(&dir.join("app-link"), "app")]);
+        assert_eq!(repos.repos[0].scopes, ["app"]);
+        assert_eq!(
+            repos.repos[0].workdir,
+            display_path(&fs::canonicalize(&real).unwrap())
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

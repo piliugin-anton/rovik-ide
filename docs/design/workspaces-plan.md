@@ -2023,7 +2023,12 @@ exposes it. `git_status`, `git_commit` and `git_discard_all` take the scopes as
 pathspecs (today's one folder when none is given), so `app2` isn't taken with
 `app`; line counts are read per scope and count that scope only. A repository's
 rewrite holds its working folder, and `is_busy` counts holds above and below
-it: a folder inside a held repository is busy, one beside it isn't.
+it: a folder inside a held repository is busy, one beside it isn't. `workdir`
+is spelled as the window spells the folder (its path with the scope's parts
+taken off, when that leads to the same folder): git resolves links (macOS's temp
+folders are under `/private`, Windows expands short names like `RUNNER~1`), and
+`repoFileOf` (A07) finds a tab's file in it by the window's path. A folder opened
+through a link inside the repository keeps git's spelling.
 
 **A06 — commits that keep outsiders out.** Before anything is staged, the index
 is compared with HEAD: an entry outside the scopes refuses the commit, naming

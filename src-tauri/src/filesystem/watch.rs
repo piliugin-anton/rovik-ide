@@ -250,7 +250,7 @@ fn repo_dirs_of(folder: &Path) -> Option<RepoDirs> {
 /// folder (`HEAD`, `index`, `packed-refs`), and the `refs/` a branch push
 /// writes in — the shared one, which a linked worktree's own git folder
 /// doesn't hold. None when the git folder is inside the folder, whose own
-/// watch sees it.
+/// watch sees it. `folder` is named as the disk names it, as `dirs` are.
 fn git_dirs_beside(folder: &Path, dirs: &RepoDirs) -> Vec<(PathBuf, RecursiveMode)> {
     if dirs.git_dir.starts_with(folder) {
         return Vec::new();
@@ -1462,9 +1462,11 @@ mod tests {
         std::fs::create_dir_all(base.join("real/src")).unwrap();
         std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
         let folders = vec![open_folder(&base.join("link"))];
-        // The disk names the change through the link's target; the window
+        // The disk names the change through the link's target, links
+        // resolved (macOS's temp folder is under `/private`); the window
         // knows the folder as the link.
-        let (at, path) = folder_of(&folders, &base.join("real/src/a.ts")).unwrap();
+        let real = std::fs::canonicalize(base.join("real")).unwrap();
+        let (at, path) = folder_of(&folders, &real.join("src/a.ts")).unwrap();
         assert_eq!((at, path), (0, base.join("link/src/a.ts")));
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1483,23 +1485,32 @@ mod tests {
         }
         let (tx, _rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
         let mut watcher = notify::recommended_watcher(tx).expect("watcher");
+        // Those that can't be watched come first: the one after them is
+        // watched still.
         let watched = watch_folders(
             &mut watcher,
-            vec![base.join("locked"), base.join("ok"), base.join("gone")],
+            vec![base.join("gone"), base.join("locked"), base.join("ok")],
         );
         let roots: Vec<PathBuf> = watched.into_iter().map(|(root, _)| root).collect();
+        // inotify can't watch a folder it can't read (root reads any);
+        // macOS's FSEvents watches any path.
+        #[cfg(target_os = "linux")]
+        let unreadable = fs::read_dir(base.join("locked")).is_err();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(base.join("locked"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
         assert!(
             roots.contains(&base.join("ok")),
             "the readable one is watched"
         );
-        // A folder that isn't there can't be watched, and the others are.
+        // A folder that isn't there can't be watched.
         assert!(!roots.contains(&base.join("gone")));
-        #[cfg(unix)]
-        if fs::read_dir(base.join("locked")).is_err() {
+        #[cfg(target_os = "linux")]
+        if unreadable {
             assert!(!roots.contains(&base.join("locked")));
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(base.join("locked"), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
         }
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1595,6 +1606,8 @@ mod tests {
         std::fs::create_dir_all(repo.join("app/src")).unwrap();
         std::fs::create_dir_all(base.join("loose")).unwrap();
         git2::Repository::init(&repo).expect("a repository");
+        // The folders as `start_folder` has them: as the disk names them.
+        let repo = std::fs::canonicalize(&repo).unwrap();
         let app = repo.join("app");
         let dirs = repo_dirs_of(&app).expect("the repository above it");
         let git_dir = std::fs::canonicalize(repo.join(".git")).unwrap();
@@ -1839,10 +1852,12 @@ mod tests {
         // folder inside it would answer first, and that folder would never
         // see the checkout hold its isolated chats.
         assert!(watched_git_dirs(&started, &folders).is_empty());
-        let (at, _) = folder_of(&folders, &git_dir.join("HEAD")).unwrap();
+        // The disk names the change as git does; the folder's own spelling
+        // is what's classified.
+        let (at, head) = folder_of(&folders, &git_dir.join("HEAD")).unwrap();
         assert_eq!(at, 0, "the folder that holds the repository");
         assert_eq!(
-            watch_path_kind(&folders[0].root, &folders[0].ignores, &git_dir.join("HEAD")),
+            watch_path_kind(&folders[0].root, &folders[0].ignores, &head),
             WatchPath::Git,
             "git's own bookkeeping, where the checkout hold is taken"
         );
