@@ -3414,11 +3414,19 @@ impl Stream {
                 }
                 self.dirty_harness = true;
             }
-            ChatStreamEvent::HarnessStep { step } => {
+            ChatStreamEvent::HarnessStep { mut step } => {
                 self.mark_output();
                 match self.harness_steps.iter_mut().find(|s| s.id == step.id) {
-                    Some(existing) => *existing = step,
-                    None => self.harness_steps.push(step),
+                    Some(existing) => {
+                        step.at = existing.at;
+                        *existing = step;
+                    }
+                    // Its place in the reply's text: what's there now came
+                    // before it (HarnessStep::at).
+                    None => {
+                        step.at = Some(self.text.encode_utf16().count());
+                        self.harness_steps.push(step);
+                    }
                 }
                 let kind = self.connector.map(|k| k.id());
                 self.harness.get_or_insert_with(|| json!({ "kind": kind }));

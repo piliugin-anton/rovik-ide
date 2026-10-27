@@ -769,6 +769,63 @@ async fn a_forked_skill_the_user_runs_shows_as_its_step_while_it_works() {
     assert_eq!(steps[1]["parent"], fork);
 }
 
+/// Claude Code writes, runs a tool, writes again: its reply's text is one,
+/// so each step says where in it the step came (the text's length then, as
+/// the chat's strings count it), for the chat to show the text and the
+/// steps in the order they went.
+#[cfg(unix)]
+#[tokio::test]
+async fn each_step_says_where_in_the_reply_s_text_it_came() {
+    let h = harness(&[("a.txt", "alpha\n"), ("b.txt", "beta\n")]).await;
+    let event = |message: &str, e: Value| json!({"type":"stream_event","event":e,"parent_tool_use_id":null,"api_message_id":message});
+    let start = |message: &str| {
+        event(
+            message,
+            json!({"type":"message_start","message":{"id":message}}),
+        )
+    };
+    let text = |message: &str, text: &str| {
+        event(
+            message,
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}),
+        )
+    };
+    let read = |message: &str, id: &str, path: &str| json!({"type":"assistant","message":{"id":message,"content":[{"type":"tool_use","id":id,"name":"Read","input":{"file_path":path}}]},"parent_tool_use_id":null});
+    let result = |id: &str, content: &str| json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":id,"content":content}]},"parent_tool_use_id":null});
+    let lines = [
+        json!({"type":"system","subtype":"init","session_id":"s-3","model":"claude-haiku-5-5"}),
+        start("m1"),
+        text("m1", "Let’s read 📄 a.txt…"),
+        read("m1", "t1", "a.txt"),
+        result("t1", "alpha"),
+        start("m2"),
+        text("m2", "Now b."),
+        read("m2", "t2", "b.txt"),
+        result("t2", "beta"),
+        start("m3"),
+        text("m3", "Alpha, beta."),
+        json!({"type":"result","subtype":"success","is_error":false,"result":"Alpha, beta.","num_turns":3,"usage":{}}),
+    ];
+    let program = claude_in_parts(&h, &[&lines]);
+    h.start(claude_code_send(&h, &program, "agent", "Read a and b"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    let reply = h.messages().await.last().unwrap().clone();
+    assert_eq!(
+        reply.content,
+        "Let’s read 📄 a.txt…\n\nNow b.\n\nAlpha, beta."
+    );
+    let meta = reply.meta.unwrap();
+    let steps = meta["connector"]["steps"].as_array().unwrap();
+    // In UTF-16 code units, as JavaScript slices strings: the emoji is two.
+    let at: Vec<&Value> = steps.iter().map(|s| &s["at"]).collect();
+    assert_eq!(at, [&json!(20), &json!(28)]);
+    // Kept once each had its result.
+    assert_eq!(steps[1]["ok"], true);
+}
+
 /// While Claude Code runs a tool of its own it prints nothing: that's the
 /// tool's time, which its step shows at work, not the reply stalling. Once
 /// the tool is done, a silence is the reply's again: "Still generating".
