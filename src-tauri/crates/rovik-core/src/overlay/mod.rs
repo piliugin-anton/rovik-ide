@@ -2,6 +2,7 @@
 //! and only the changes are stored. See docs/design/chat-isolation-plan.md.
 
 pub mod chats;
+pub mod composite;
 pub mod confine;
 pub mod fs;
 pub mod import;

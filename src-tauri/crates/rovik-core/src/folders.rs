@@ -83,7 +83,7 @@ impl Folders {
             return Some((&self.0[0], path));
         }
         let path = path.trim_start_matches("./");
-        let (name, rest) = match path.find(['/', '\\']) {
+        let (name, rest) = match path.find(separator) {
             Some(at) => (&path[..at], &path[at + 1..]),
             None => (path, ""),
         };
@@ -105,10 +105,7 @@ impl Folders {
     pub fn abs(&self, path: &str) -> Option<PathBuf> {
         let (folder, rest) = self.split(path)?;
         let mut abs = folder.path.clone();
-        for part in rest
-            .split(['/', '\\'])
-            .filter(|p| !p.is_empty() && *p != ".")
-        {
+        for part in rest.split(separator).filter(|p| !p.is_empty() && *p != ".") {
             match Path::new(part).components().next() {
                 Some(Component::Normal(_)) => abs.push(part),
                 _ => return None,
@@ -181,6 +178,12 @@ impl Folders {
         roots.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_os_str().len()));
         roots
     }
+}
+
+/// Whether `c` separates a chat path's parts: `/`, and on Windows `\\` too
+/// (elsewhere a file's name may hold one).
+fn separator(c: char) -> bool {
+    c == '/' || (cfg!(windows) && c == '\\')
 }
 
 /// A chat path: the folder's name, then the path in it (`api/src/x.ts`);

@@ -154,7 +154,9 @@ pub enum DeletedBase {
 /// Whether `c` separates a path's parts here: `/`, and on Windows `\`
 /// too. Elsewhere a backslash is part of a name, as `check_name` lets it
 /// be: split there, `a\b` would resolve to another file.
-fn separator(c: char) -> bool {
+/// Whether `c` separates a path's parts: `/`, and on Windows `\\` too (a
+/// file's name elsewhere may hold one).
+pub(super) fn separator(c: char) -> bool {
     c == '/' || (cfg!(windows) && c == '\\')
 }
 
@@ -301,6 +303,45 @@ impl OverlayChange {
             OverlayChange::Delete { by_product, .. } | OverlayChange::Write { by_product, .. } => {
                 *by_product
             }
+        }
+    }
+
+    /// The change as a workspace chat's view names it: its path, and where
+    /// it came from, under the folder's name (`src/x.ts` in api is
+    /// `api/src/x.ts`).
+    pub fn under(self, folder: &str) -> OverlayChange {
+        let named = |path: String| format!("{folder}/{path}");
+        match self {
+            OverlayChange::Delete {
+                path,
+                by_product,
+                base,
+            } => OverlayChange::Delete {
+                path: named(path),
+                by_product,
+                base,
+            },
+            OverlayChange::Write {
+                path,
+                kind,
+                origin,
+                upper,
+                base_copy,
+                perm,
+                perm_changed,
+                target,
+                by_product,
+            } => OverlayChange::Write {
+                path: named(path),
+                kind,
+                origin: origin.map(named),
+                upper,
+                base_copy,
+                perm,
+                perm_changed,
+                target,
+                by_product,
+            },
         }
     }
 }
@@ -616,6 +657,11 @@ impl OverlayFs {
             }
         }
         Ok(fs_)
+    }
+
+    /// The project this overlay is of.
+    pub fn base(&self) -> &Path {
+        &self.base
     }
 
     /// Called once when the chat's changes pass WARN_AT of its limit:

@@ -1796,42 +1796,10 @@ mod across_folders {
 
     /// One folder's changes as the chat's view names them: its name first.
     fn named(name: &str, changes: Vec<OverlayChange>) -> Vec<OverlayChange> {
-        let prefix = |p: &str| format!("{name}/{p}");
         changes
             .into_iter()
             .filter(|c| !c.by_product())
-            .map(|c| match c {
-                OverlayChange::Delete {
-                    path,
-                    by_product,
-                    base,
-                } => OverlayChange::Delete {
-                    path: prefix(&path),
-                    by_product,
-                    base,
-                },
-                OverlayChange::Write {
-                    path,
-                    kind,
-                    origin,
-                    upper,
-                    base_copy,
-                    perm,
-                    perm_changed,
-                    target,
-                    by_product,
-                } => OverlayChange::Write {
-                    path: prefix(&path),
-                    kind,
-                    origin: origin.map(|o| prefix(&o)),
-                    upper,
-                    base_copy,
-                    perm,
-                    perm_changed,
-                    target,
-                    by_product,
-                },
-            })
+            .map(|c| c.under(name))
             .collect()
     }
 

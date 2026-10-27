@@ -2652,6 +2652,26 @@ missing; three chats landing at once, two workspace chats listing the folders in
 opposite orders and a folder chat, all finish; a folder chat's journal has no
 folders).
 
+**F05 — the view.** `overlay/composite.rs`'s `CompositeFs` is a `Backend` and a
+`ChatFs` over the chat's folders' `OverlayFs`s, its parts. A part's inode `n` is
+`(n << 16) | slot`; the root keeps 1, and is checked for before a number is
+decoded. The root (0o555) lists the folders by name, looks a name up as the
+overlays do (folding case on macOS and Windows), and refuses creating, linking,
+removing and renaming there and setting its attributes or extended attributes
+(EPERM); a rename or a link between two parts is `CrossDevice`. Calls hold the
+view's lock only to find their part. `changes` names each part's from the view's
+root (`OverlayChange::under`, which the land tests use too); `versions`,
+`rebase_file` and `revert_file` go by a path's first part; `usage` and `used` are
+the shared budget's. A part's notifications reach the kernel renumbered through
+the view's listener, a part added later's too. `matched(folders, open)` matches
+the view to a list of folders: one at the same name and place stays, one new or
+located elsewhere is opened (before the view changes, so one that can't be
+leaves it as it was) and gets a new slot, and one gone leaves, its part handed
+back for its store to go; the kernel is told of each name at the root, and the
+generation moves. `OverlayFs::base` names a part's project; the separator rule
+(`/`, and `\` on Windows only) is the overlay's in the view and in `Folders` too.
+Tests: `composite_tests.rs`, the plan's eleven.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where
