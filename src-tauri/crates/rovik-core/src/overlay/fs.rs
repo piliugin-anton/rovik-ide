@@ -101,9 +101,9 @@ struct Inner {
     nodes: HashMap<Ino, Node>,
     next_ino: Ino,
     next_file: u64,
-    /// Bytes of changed files, by-products not counted.
+    /// Bytes of changed files, by-products not counted: this overlay's
+    /// share of its chat's budget.
     used: u64,
-    warned: bool,
     /// Project entries the chat deleted, replaced or moved away: what each
     /// was then, by its project path.
     deleted: HashMap<String, DeletedBase>,
@@ -332,16 +332,118 @@ pub(super) fn write_manifest(
 /// used, and the limit.
 pub type OnWarn = Box<dyn Fn(u64, u64) + Send + Sync>;
 
+/// A chat's room for its changes (workspaces-plan.md, 4.2): the limit, the
+/// bytes its folders' overlays use together (build output not counted), and
+/// the warning at WARN_AT of it, given once. A workspace chat's folders share
+/// one; each check and charge holds its lock, so two folders writing at once
+/// can't both pass the limit.
+pub struct Budget {
+    limit: u64,
+    spent: Mutex<Spent>,
+    on_warn: Mutex<Option<OnWarn>>,
+}
+
+struct Spent {
+    used: u64,
+    warned: bool,
+}
+
+impl Budget {
+    pub fn new(limit: u64) -> std::sync::Arc<Budget> {
+        std::sync::Arc::new(Budget {
+            limit,
+            spent: Mutex::new(Spent {
+                used: 0,
+                warned: false,
+            }),
+            on_warn: Mutex::new(None),
+        })
+    }
+
+    pub fn limit(&self) -> u64 {
+        self.limit
+    }
+
+    /// Bytes the chat's changes use.
+    pub fn used(&self) -> u64 {
+        self.spent().used
+    }
+
+    /// Called once when the chat's changes pass WARN_AT of its limit:
+    /// (used, limit). Until it's there, the warning waits for the next
+    /// charge.
+    pub fn on_warn(&self, f: OnWarn) {
+        *self.on_warn.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    fn spent(&self) -> std::sync::MutexGuard<'_, Spent> {
+        self.spent.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether `more` bytes would fit now.
+    fn fits(&self, more: u64) -> bool {
+        self.spent().used + more <= self.limit
+    }
+
+    /// Counts `more` bytes, or refuses them; warns once past WARN_AT.
+    fn charge(&self, more: u64) -> VfsResult<()> {
+        let (used, due) = {
+            let mut spent = self.spent();
+            let used = spent.used + more;
+            if used > self.limit {
+                return Err(VfsError::NoSpace);
+            }
+            spent.used = used;
+            (
+                used,
+                !spent.warned && used as f64 >= self.limit as f64 * WARN_AT,
+            )
+        };
+        if due {
+            self.warn(used);
+        }
+        Ok(())
+    }
+
+    /// The warning, given once, when there's someone to give it to.
+    fn warn(&self, used: u64) {
+        let on_warn = self.on_warn.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(f) = on_warn.as_ref() else {
+            return;
+        };
+        {
+            let mut spent = self.spent();
+            if spent.warned {
+                return;
+            }
+            spent.warned = true;
+        }
+        f(used, self.limit);
+    }
+
+    /// Counts bytes that are there already (changes saved before, a file
+    /// that stopped being build output), whatever the limit.
+    fn count(&self, more: u64) {
+        self.spent().used += more;
+    }
+
+    /// Gives `less` bytes back.
+    fn release(&self, less: u64) {
+        let mut spent = self.spent();
+        spent.used = spent.used.saturating_sub(less);
+    }
+}
+
 pub struct OverlayFs {
     base: PathBuf,
     store: PathBuf,
     tiers: Tiers,
-    limit: u64,
+    /// The chat's room, shared by a workspace chat's folders.
+    budget: std::sync::Arc<Budget>,
     uid: u32,
     gid: u32,
     inner: Mutex<Inner>,
     listener: Mutex<Option<Listener>>,
-    on_warn: Mutex<Option<OnWarn>>,
     /// One save at a time, so an older list is never written after a
     /// newer one.
     saving: Mutex<()>,
@@ -426,8 +528,19 @@ fn write_at(file: &fs::File, offset: u64, data: &[u8]) -> io::Result<()> {
 
 impl OverlayFs {
     /// The overlay of `base` (the project) kept in `store` (its own folder),
-    /// with what was saved there before, if anything.
+    /// with what was saved there before, if anything, and a budget of its
+    /// own of `limit` bytes.
     pub fn open(base: &Path, store: &Path, limit: u64) -> io::Result<OverlayFs> {
+        Self::open_in(base, store, Budget::new(limit))
+    }
+
+    /// `open`, its changes counted in `budget`: one folder of a workspace
+    /// chat, whose folders share their chat's room.
+    pub fn open_in(
+        base: &Path,
+        store: &Path,
+        budget: std::sync::Arc<Budget>,
+    ) -> io::Result<OverlayFs> {
         fs::create_dir_all(store.join("upper"))?;
         fs::create_dir_all(store.join("base"))?;
         #[cfg(unix)]
@@ -440,7 +553,7 @@ impl OverlayFs {
             base: base.to_path_buf(),
             store: store.to_path_buf(),
             tiers: Tiers::new(base),
-            limit,
+            budget,
             uid,
             gid,
             inner: Mutex::new(Inner {
@@ -448,7 +561,6 @@ impl OverlayFs {
                 next_ino: ROOT + 1,
                 next_file: 1,
                 used: 0,
-                warned: false,
                 deleted: HashMap::new(),
                 trash: Vec::new(),
                 copying: std::collections::HashSet::new(),
@@ -461,7 +573,6 @@ impl OverlayFs {
             generation: std::sync::atomic::AtomicU64::new(0),
             copied: std::sync::Condvar::new(),
             handles: Mutex::new(HashMap::new()),
-            on_warn: Mutex::new(None),
         };
         nodes.insert(
             ROOT,
@@ -510,12 +621,13 @@ impl OverlayFs {
     /// Called once when the chat's changes pass WARN_AT of its limit:
     /// (used, limit).
     pub fn on_warn(&self, f: OnWarn) {
-        *self.on_warn.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+        self.budget.on_warn(f);
     }
 
-    /// Bytes of the chat's changes, and its limit.
+    /// Bytes of the chat's changes (every folder's, in a workspace chat),
+    /// and its limit.
     pub fn used(&self) -> (u64, u64) {
-        (self.lock().used, self.limit)
+        (self.budget.used(), self.budget.limit())
     }
 
     /// Bytes of build output and dependencies the chat's commands wrote
@@ -912,7 +1024,7 @@ impl OverlayFs {
         } else {
             0
         };
-        if !by_product && inner.used + expected > self.limit {
+        if !by_product && !self.budget.fits(expected) {
             return Err(VfsError::NoSpace);
         }
         let n = inner.next_file;
@@ -1002,28 +1114,27 @@ impl OverlayFs {
 
     /// Counts `more` bytes against the chat's limit, or refuses them.
     fn charge(&self, inner: &mut Inner, more: u64) -> VfsResult<()> {
-        let used = inner.used + more;
-        if used > self.limit {
-            return Err(VfsError::NoSpace);
-        }
-        inner.used = used;
-        if !inner.warned && used as f64 >= self.limit as f64 * WARN_AT {
-            inner.warned = true;
-            if let Some(f) = self
-                .on_warn
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-            {
-                f(used, self.limit);
-            }
-        }
+        self.budget.charge(more)?;
+        inner.used += more;
         Ok(())
     }
 
-    fn release_space(inner: &mut Inner, node: &Node) {
+    /// Counts bytes that are there already, whatever the limit.
+    fn count(&self, inner: &mut Inner, more: u64) {
+        self.budget.count(more);
+        inner.used += more;
+    }
+
+    /// Gives back `less` of this overlay's bytes.
+    fn uncount(&self, inner: &mut Inner, less: u64) {
+        let less = less.min(inner.used);
+        inner.used -= less;
+        self.budget.release(less);
+    }
+
+    fn release_space(&self, inner: &mut Inner, node: &Node) {
         if let (Data::Upper { size, .. }, false) = (&node.data, node.by_product) {
-            inner.used = inner.used.saturating_sub(*size);
+            self.uncount(inner, *size);
         }
     }
 
@@ -1035,7 +1146,7 @@ impl OverlayFs {
             .is_some_and(|n| n.links.is_empty() && n.open == 0);
         if gone {
             let node = inner.nodes.remove(&ino).unwrap();
-            Self::release_space(inner, &node);
+            self.release_space(inner, &node);
             // Deleted once the list of changes no longer names them: a
             // crash before the next save must find them still there.
             if let Data::Upper {
@@ -1226,9 +1337,9 @@ impl OverlayFs {
                 _ => 0,
             };
             if by_product {
-                inner.used = inner.used.saturating_sub(size);
+                self.uncount(inner, size);
             } else {
-                inner.used += size;
+                self.count(inner, size);
             }
             inner.nodes.get_mut(&ino).unwrap().by_product = by_product;
         }
@@ -1471,11 +1582,11 @@ impl OverlayFs {
                 inner.trash.push(file);
                 inner.trash.extend(base_copy);
                 if !by_product {
-                    inner.used = inner.used.saturating_sub(old_size);
+                    self.uncount(&mut inner, old_size);
                 }
             }
             if !by_product {
-                inner.used += size;
+                self.count(&mut inner, size);
             }
             if restored {
                 inner.deleted.remove(rel);
@@ -1533,7 +1644,7 @@ impl OverlayFs {
                 inner.trash.push(file);
                 inner.trash.extend(base_copy);
                 if !by_product {
-                    inner.used = inner.used.saturating_sub(size);
+                    self.uncount(&mut inner, size);
                 }
             }
             inner.deleted.remove(rel);
@@ -1747,7 +1858,7 @@ impl OverlayFs {
                     ..
                 } = change
                 {
-                    inner.used += fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+                    self.count(inner, fs::metadata(file).map(|m| m.len()).unwrap_or(0));
                 }
                 inner.parked.push(change.clone());
                 continue;
@@ -1810,7 +1921,7 @@ impl OverlayFs {
                         (Kind::File, Some(file)) => {
                             let size = fs::metadata(file).map(|m| m.len()).unwrap_or(0);
                             if !by_product {
-                                inner.used += size;
+                                self.count(inner, size);
                             }
                             Data::Upper {
                                 file: file.clone(),
@@ -1912,6 +2023,75 @@ impl OverlayFs {
             ino = self.find(inner, ino, part)?;
         }
         Ok(ino)
+    }
+}
+
+impl Drop for OverlayFs {
+    /// Its share leaves its chat's budget: a folder that leaves a workspace
+    /// chat's view, or is opened again elsewhere, isn't counted twice.
+    fn drop(&mut self) {
+        let used = match self.inner.get_mut() {
+            Ok(inner) => inner.used,
+            Err(poisoned) => poisoned.into_inner().used,
+        };
+        self.budget.release(used);
+    }
+}
+
+/// What a chat's overlay does beyond a file system (workspaces-plan.md,
+/// 4.2): its changes and their versions, settling or dropping one, saving
+/// its list, its room and how often it changed. A folder chat's is one
+/// `OverlayFs`; a workspace chat's, its folders' under one view, each call
+/// routed by a path's first part. Paths are the chat's.
+pub trait ChatFs: Backend {
+    /// Everything the chat changed, in the order to apply it.
+    fn changes(&self) -> Vec<OverlayChange>;
+    /// The chat's version of a file it changed and the base it changed it
+    /// from.
+    fn versions(&self, rel: &str) -> Option<(PathBuf, PathBuf)>;
+    /// Settles a file the chat and the project both changed.
+    fn rebase_file(&self, rel: &str, content: Option<&[u8]>, base: Option<&[u8]>) -> VfsResult<()>;
+    /// Drops the chat's own version of a file the project has.
+    fn revert_file(&self, rel: &str) -> VfsResult<bool>;
+    /// Saves the list of changes now if anything changed since it was.
+    fn flush(&self);
+    /// Closes the files kept open.
+    fn close_handles(&self);
+    /// Bytes of the chat's changes, and its limit.
+    fn used(&self) -> (u64, u64);
+    /// Bytes of build output and dependencies the chat's commands wrote.
+    fn by_product_bytes(&self) -> u64;
+    /// Changes so far: different whenever anything changed.
+    fn generation(&self) -> u64;
+}
+
+impl ChatFs for OverlayFs {
+    fn changes(&self) -> Vec<OverlayChange> {
+        OverlayFs::changes(self)
+    }
+    fn versions(&self, rel: &str) -> Option<(PathBuf, PathBuf)> {
+        OverlayFs::versions(self, rel)
+    }
+    fn rebase_file(&self, rel: &str, content: Option<&[u8]>, base: Option<&[u8]>) -> VfsResult<()> {
+        OverlayFs::rebase_file(self, rel, content, base)
+    }
+    fn revert_file(&self, rel: &str) -> VfsResult<bool> {
+        OverlayFs::revert_file(self, rel)
+    }
+    fn flush(&self) {
+        OverlayFs::flush(self)
+    }
+    fn close_handles(&self) {
+        OverlayFs::close_handles(self)
+    }
+    fn used(&self) -> (u64, u64) {
+        OverlayFs::used(self)
+    }
+    fn by_product_bytes(&self) -> u64 {
+        OverlayFs::by_product_bytes(self)
+    }
+    fn generation(&self) -> u64 {
+        OverlayFs::generation(self)
     }
 }
 
@@ -2271,7 +2451,7 @@ impl Backend for OverlayFs {
         }
         if let Err(e) = self.handle(&file).and_then(|f| write_at(&f, offset, data)) {
             // Nothing was added: the charge goes back.
-            inner.used = inner.used.saturating_sub(grows);
+            self.uncount(&mut inner, grows);
             return Err(io_err(e));
         }
         let node = inner.nodes.get_mut(&ino).unwrap();
@@ -2296,7 +2476,7 @@ impl Backend for OverlayFs {
                 if new_size > size && !by_product {
                     self.charge(&mut inner, new_size - size)?;
                 } else if new_size < size && !by_product {
-                    inner.used = inner.used.saturating_sub(size - new_size);
+                    self.uncount(&mut inner, size - new_size);
                 }
                 fs::OpenOptions::new()
                     .write(true)
@@ -2464,8 +2644,8 @@ impl Backend for OverlayFs {
     }
 
     fn usage(&self) -> (u64, u64, u64) {
-        let inner = self.lock();
-        (self.limit, inner.used, inner.nodes.len() as u64)
+        let nodes = self.lock().nodes.len() as u64;
+        (self.budget.limit(), self.budget.used(), nodes)
     }
 
     fn set_listener(&self, listener: Option<Listener>) {

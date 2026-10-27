@@ -2608,6 +2608,23 @@ after the folders changed gets the new ones) and `workspaces_tests.rs` "a worksp
 chat's folders are those checked in the workspace's order". Departure: a workspace
 chat's run has no root until F07 opens its view.
 
+**F03 — what the view needs of the overlay.** `VfsError::CrossDevice` ("can't
+move or link across folders") reaches the kernel as EXDEV. `overlay/fs.rs`'s
+`Budget` holds a chat's limit, what its folders use together and the warning; each
+`OverlayFs` keeps its own share as well (`charge` checks the limit under the
+budget's lock, `count` adds what's there already, `uncount` gives back, never more
+than the share), and an overlay dropped gives its share back, so a folder that
+leaves the view or is opened again elsewhere isn't counted twice. The warning is
+marked given only once someone is there to give it to: before, one passed before
+`on_warn` was set was lost. `open(base, store, limit)` keeps its signature with a
+budget of its own; `open_in(base, store, budget)` shares one. `trait ChatFs:
+Backend` names what F05's view and F06 call besides the file system, implemented
+by `OverlayFs` through its own methods. Tests: `overlay/tests.rs` (parts of one
+chat share its limit; two writing at once can't both pass it, twenty times over;
+the warning comes once, from whichever part reaches 80%; a part that goes gives
+its share back) and `vfs/fuse.rs` "a cross-device error reaches the kernel as
+EXDEV".
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

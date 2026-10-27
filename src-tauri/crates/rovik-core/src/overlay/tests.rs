@@ -1,4 +1,4 @@
-use super::fs::{OverlayChange, OverlayFs};
+use super::fs::{Budget, OverlayChange, OverlayFs};
 use crate::vfs::backend::Backend;
 use crate::vfs::store::{Kind, RenameMode, SetAttr, VfsError, ROOT};
 use std::fs;
@@ -282,6 +282,87 @@ fn the_limit_counts_changes_but_not_build_output() {
         panic!()
     };
     assert!(by_product);
+}
+
+/// Two folders of one workspace chat, each with its file `a.txt`, sharing
+/// one budget of `limit` bytes (workspaces-plan.md, 4.2).
+fn two_parts(limit: u64) -> (Dirs, Dirs, OverlayFs, OverlayFs) {
+    let (one, two) = (setup(&[("a.txt", "")]), setup(&[("a.txt", "")]));
+    let budget = Budget::new(limit);
+    let api = OverlayFs::open_in(&one.project(), &one.store(), budget.clone()).unwrap();
+    let web = OverlayFs::open_in(&two.project(), &two.store(), budget).unwrap();
+    (one, two, api, web)
+}
+
+#[test]
+fn parts_of_one_chat_share_its_limit() {
+    let (_one, _two, api, web) = two_parts(1000);
+    api.write(ino(&api, "a.txt"), 0, &[b'x'; 600]).unwrap();
+    assert_eq!(
+        web.write(ino(&web, "a.txt"), 0, &[b'x'; 600]).unwrap_err(),
+        VfsError::NoSpace,
+        "the chat's room, not each folder's"
+    );
+    web.write(ino(&web, "a.txt"), 0, &[b'x'; 400]).unwrap();
+    assert_eq!(api.used(), (1000, 1000));
+    assert_eq!(web.used(), (1000, 1000));
+}
+
+#[test]
+fn two_parts_writing_at_once_cant_both_pass_the_limit() {
+    for _ in 0..20 {
+        let (_one, _two, api, web) = two_parts(1000);
+        let start = std::sync::Barrier::new(2);
+        let (start, parts) = (&start, [&api, &web]);
+        let (first, second) = std::thread::scope(|s| {
+            let write = move |part: &OverlayFs| {
+                let at = ino(part, "a.txt");
+                start.wait();
+                part.write(at, 0, &[b'x'; 600])
+            };
+            let first = s.spawn(move || write(parts[0]));
+            let second = s.spawn(move || write(parts[1]));
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_eq!(
+            [first.is_ok(), second.is_ok()]
+                .iter()
+                .filter(|ok| **ok)
+                .count(),
+            1,
+            "one of them fits: {first:?}, {second:?}"
+        );
+        assert_eq!(api.used().0, 600);
+    }
+}
+
+#[test]
+fn the_warning_comes_once_per_chat_from_whichever_part_reaches_80_percent() {
+    let (_one, _two, api, web) = two_parts(1000);
+    let warned = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let w = warned.clone();
+    api.on_warn(Box::new(move |used, limit| {
+        w.lock().unwrap().push((used, limit))
+    }));
+    api.write(ino(&api, "a.txt"), 0, &[b'x'; 500]).unwrap();
+    assert!(warned.lock().unwrap().is_empty());
+    web.write(ino(&web, "a.txt"), 0, &[b'x'; 350]).unwrap();
+    assert_eq!(
+        *warned.lock().unwrap(),
+        [(850, 1000)],
+        "web's write reached it"
+    );
+    api.write(ino(&api, "a.txt"), 500, &[b'x'; 50]).unwrap();
+    assert_eq!(warned.lock().unwrap().len(), 1, "once per chat");
+}
+
+#[test]
+fn a_part_that_goes_gives_its_share_back() {
+    let (_one, _two, api, web) = two_parts(1000);
+    api.write(ino(&api, "a.txt"), 0, &[b'x'; 300]).unwrap();
+    web.write(ino(&web, "a.txt"), 0, &[b'x'; 200]).unwrap();
+    drop(web);
+    assert_eq!(api.used().0, 300, "a folder that left isn't counted");
 }
 
 #[test]

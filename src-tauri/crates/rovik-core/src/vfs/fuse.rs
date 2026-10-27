@@ -48,6 +48,7 @@ fn errno(e: VfsError) -> Errno {
         VfsError::Loop => Errno::ELOOP,
         VfsError::NoAttr => Errno::NO_XATTR,
         VfsError::Range => Errno::ERANGE,
+        VfsError::CrossDevice => Errno::EXDEV,
     }
 }
 
@@ -1033,5 +1034,17 @@ pub fn mount(
             },
             mountpoint,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rename between two folders of a chat's view is across file
+    /// systems: `mv` copies and deletes when the kernel says EXDEV.
+    #[test]
+    fn a_cross_device_error_reaches_the_kernel_as_exdev() {
+        assert_eq!(errno(VfsError::CrossDevice), Errno::EXDEV);
     }
 }
