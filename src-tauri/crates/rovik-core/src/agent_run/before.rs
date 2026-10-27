@@ -225,14 +225,15 @@ impl Run {
         if !self.isolated() || self.merged_from_project.is_some() {
             return None;
         }
-        self.project_root.as_deref().map(PathBuf::from)
+        self.project_root().map(PathBuf::from)
     }
 
     /// Where this run's checks run, as paths in their output may name it:
     /// its root (an isolated chat's view) and the project, which its
     /// sandbox may show the view at.
     pub(super) fn check_roots(&self) -> Vec<String> {
-        let paths: Vec<&Path> = [self.root.as_deref(), self.project_root.as_deref()]
+        let project = self.project_root();
+        let paths: Vec<&Path> = [self.root.as_deref(), project.as_deref()]
             .into_iter()
             .flatten()
             .map(Path::new)

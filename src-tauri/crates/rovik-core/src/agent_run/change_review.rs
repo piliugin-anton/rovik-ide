@@ -1265,7 +1265,7 @@ impl Run {
         let recent = self.recent().await?;
         let plan_text = chat_plan_file(&recent).and_then(|path| {
             let text = std::fs::read_to_string(&path).ok()?;
-            let shown = plan::relative_plan_path(&path, self.project_root.as_deref());
+            let shown = plan::relative_plan_path(&path, self.project_root().as_deref());
             Some((shown, text))
         });
         let checklist = plan::current_checklist(&recent)

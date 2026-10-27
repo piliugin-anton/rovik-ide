@@ -749,7 +749,7 @@ impl Run {
             return;
         };
         let root = self.root.clone().unwrap_or_default();
-        let project = self.project_root.clone().filter(|_| self.isolated());
+        let isolated = self.isolated();
         for e in entries {
             let Some(path) = e["path"].as_str() else {
                 continue;
@@ -761,7 +761,7 @@ impl Run {
                 )),
                 Some(want) => {
                     let copies = [
-                        project.as_ref().map(|p| std::path::Path::new(p).join(path)),
+                        self.project_file(path).filter(|_| isolated),
                         Some(std::path::PathBuf::from(super::tools::to_absolute_path(
                             path, &root,
                         ))),
@@ -997,7 +997,7 @@ impl Run {
         // P3.2: an error in what the round wrote is a slip, not a regression.
         // This round's: the checkpoint's files that differ from it now (it
         // also holds what earlier rounds changed).
-        let project = self.project_root.clone().unwrap_or_default();
+        let project = self.project_root().unwrap_or_default();
         let mut written: Vec<String> = Vec::new();
         if let Some(cp) = &self.checkpoint {
             written = cp

@@ -446,7 +446,7 @@ impl Run {
         owners: &[(String, usize, WriteScope)],
     ) -> (Vec<String>, Vec<String>) {
         let root = self.root.clone().unwrap_or_default();
-        let roots: Vec<String> = [self.root.clone(), self.project_root.clone()]
+        let roots: Vec<String> = [self.root.clone(), self.project_root()]
             .into_iter()
             .flatten()
             .collect();

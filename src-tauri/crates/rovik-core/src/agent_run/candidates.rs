@@ -786,7 +786,7 @@ impl Run {
                     &main,
                     &records,
                     record.record.round,
-                    self.project_root.clone(),
+                    self.project_root(),
                     || copies_for(&core, &settings),
                 )
                 .await?;
@@ -839,7 +839,7 @@ impl Run {
                 }
             }
             let opened = copies
-                .open(main.clone(), state.chat.clone(), self.project_root.clone())
+                .open(main.clone(), state.chat.clone(), self.project_root())
                 .await;
             let folder = match opened {
                 Ok(folder) => folder,
@@ -863,13 +863,8 @@ impl Run {
             // write leaves no candidate the record doesn't know of.
             row.candidates[i].status = "running".into();
             save_row(&core, &main, &row_id, "candidates", json!(row)).await?;
-            core.agents.add_candidate(
-                &state.chat,
-                &main,
-                self.project_root.clone(),
-                &call,
-                info.clone(),
-            );
+            core.agents
+                .add_candidate(&state.chat, &main, self.project_root(), &call, info.clone());
             core.emit(AgentEvent::SubagentStarted {
                 dialog_id: main.clone(),
                 tool_call_id: call.clone(),
@@ -959,7 +954,7 @@ impl Run {
             profile: self.profile.clone(),
             options: self.options.clone(),
             context_mode: Some(self.context_mode.clone()),
-            root: self.project_root.clone(),
+            root: self.project_root(),
             local_date: Some(self.local_date.clone()),
             isolate: Some(crate::overlay::chats::get(&self.dialog_id).is_some()),
         }
@@ -1002,7 +997,7 @@ impl Run {
                 if self.stopped() {
                     return Ok(Driven::Over);
                 }
-                let project = self.project_root.clone();
+                let project = self.project_root();
                 if !start_candidate(
                     &core,
                     &self.dialog_id,
@@ -1553,7 +1548,7 @@ impl Run {
             // thrown away (R03).
             let folder = match started {
                 true => match (copies)
-                    .open(main.clone(), c.chat.clone(), self.project_root.clone())
+                    .open(main.clone(), c.chat.clone(), self.project_root())
                     .await
                 {
                     Ok(folder) => Some(folder),

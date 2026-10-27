@@ -1643,7 +1643,8 @@ impl Run {
     /// The plan this run implements: its path and text.
     pub(super) async fn implementing_plan(&self) -> Option<(String, String)> {
         let recent = self.recent().await.ok()?;
-        let base = self.project_root.as_deref().or(self.root.as_deref());
+        let project = self.project_root();
+        let base = project.as_deref().or(self.root.as_deref());
         // The latest request that named a plan (a follow-up in the chat
         // still works on it), else the chat's own plan file.
         let path = recent

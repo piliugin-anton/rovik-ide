@@ -2549,10 +2549,10 @@ window's open projects, a list (`set_open_projects`), each with its folder: the
 claims' record (`Instances::give_open_projects`, the target's folders whose
 project is known), which the app hands over after each claim (`project_claim`)
 and each `reclaim` (`commands/chat.rs`'s `follow_claims`), while the claims are
-held: two commands following them at once can't hand over the older list last. `chat_open_project` no longer
-sets it, and `folder_answered` is gone: an answer about a folder renames its
-project in the record, which the client follows, and an answer for a folder the
-window has left is in no record. `handled_elsewhere`, `land_waiting`,
+held: two commands following them at once can't hand over the older list last.
+`chat_open_project` no longer sets it, and `folder_answered` is gone: an answer
+about a folder renames its project in the record, which the client follows, and
+an answer for a folder the window has left is in no record. `handled_elsewhere`, `land_waiting`,
 `project_of` and `is_open` look among them; a steering message's paths are made
 relative to its chat's own folder (`project_of`), and a steer whose chat's folder
 can't be read fails rather than send local paths; Test delivery pushes to the
@@ -2568,6 +2568,24 @@ moved on isn't the client's open project".
 Departures: the client test of `folder_answered` went with it, its case covered
 by the app crate's two; the daemon's tests call `set_open_projects`, and
 `landing.rs`'s answered folder is the list the claims give after the answer.
+
+**F01 — `Folders`.** `rovik-core/src/folders.rs` is 4.1's type: `one`, `named`
+(at least one folder, each a plain part, no two alike in any case), `single`,
+`first`, `iter`, `split`, `abs`, `chat_path` and `output_roots`. `split` matches
+a name as the file system does (folding case on macOS and Windows), `abs` refuses
+a path that leaves its folder, `chat_path` tries the folder's path with links
+resolved when the plain one doesn't hold the file, and `output_roots` lists the
+longest first, so a folder's place in the view reads before the view's root.
+`Run.project_root` is `Run.folders`; `isolated()` is the view always for a
+workspace chat and today's test for a folder chat, `project_file(key)` reads the
+project's copy through `abs` (the baselines, the rollback's targets and the
+originals), the busy wait loops over the folders, and the uses that F04 and F10
+to F12 give folders (plans, the code before a change, check roots, candidates)
+read the folder chat's folder through `project_root()`, None for a workspace
+chat's. Tests: `folders.rs` five (a chat path splits by its first part; `abs` and
+`chat_path` go and come back; a folder chat's paths are its folder's; a workspace
+chat's names are plain and none alike; `output_roots`), and every `agent_run`
+suite unchanged.
 
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look

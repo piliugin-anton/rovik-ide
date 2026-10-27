@@ -31,7 +31,7 @@ use super::tools;
 use regex::Regex;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 /// A checkpoint isn't taken of more than this (rollback then isn't offered).
@@ -924,9 +924,29 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, std::io::Error> {
 
 impl Run {
     /// Whether the run works in its chat's own copy (an overlay), where
-    /// nobody else writes.
+    /// nobody else writes: a workspace chat's view always, and a folder
+    /// chat's when its root isn't its folder.
     pub(super) fn isolated(&self) -> bool {
-        self.root.is_some() && self.root != self.project_root
+        let Some(root) = self.root.as_deref() else {
+            return false;
+        };
+        match &self.folders {
+            Some(folders) => folders.single() != Some(Path::new(root)),
+            None => true,
+        }
+    }
+
+    /// A folder chat's folder, as text; None for a workspace chat's, and
+    /// with no folder open.
+    pub(super) fn project_root(&self) -> Option<String> {
+        let folder = self.folders.as_ref()?.single()?;
+        Some(folder.to_string_lossy().into_owned())
+    }
+
+    /// The project's own copy of the file at chat path `key`, in whichever
+    /// of the chat's folders it is.
+    pub(super) fn project_file(&self, key: &str) -> Option<PathBuf> {
+        self.folders.as_ref()?.abs(key)
     }
 
     /// The files the chat's overlay changed (project-relative), when it has one.
@@ -976,11 +996,10 @@ impl Run {
             // In an isolated chat, the project's copy is what the file was
             // before the chat (an earlier run may have changed the view).
             // A subagent runs within one round of its lead's.
-            let original = match (&self.project_root, self.isolated()) {
-                (Some(project), true) => Original::new(
-                    read(&Path::new(project).join(&key)).ok().flatten(),
-                    Source::ProjectCopy,
-                ),
+            let original = match (self.project_file(&key), self.isolated()) {
+                (Some(file), true) => {
+                    Original::new(read(&file).ok().flatten(), Source::ProjectCopy)
+                }
                 _ if self.sub().is_some() => {
                     Original::new(before.clone(), Source::ViewAtRoundStart)
                 }
@@ -1049,9 +1068,8 @@ impl Run {
         for key in self.overlay_paths() {
             if let std::collections::btree_map::Entry::Vacant(slot) = targets.entry(key) {
                 let original = self
-                    .project_root
-                    .as_ref()
-                    .and_then(|p| read(&Path::new(p).join(slot.key())).ok().flatten());
+                    .project_file(slot.key())
+                    .and_then(|file| read(&file).ok().flatten());
                 slot.insert(original);
             }
         }
@@ -1238,11 +1256,10 @@ impl Run {
         }
         // An overlay change the write tool didn't make: the project's copy
         // is what it was.
-        match (&self.project_root, self.isolated()) {
-            (Some(project), true) => Some(Original::new(
-                std::fs::read(Path::new(project).join(key)).ok(),
-                Source::ProjectCopy,
-            )),
+        match (self.project_file(key), self.isolated()) {
+            (Some(file), true) => {
+                Some(Original::new(std::fs::read(file).ok(), Source::ProjectCopy))
+            }
             _ => None,
         }
     }

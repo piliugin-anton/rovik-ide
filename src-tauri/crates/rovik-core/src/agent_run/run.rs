@@ -25,6 +25,7 @@ use crate::chat_db::store::{self, MessagePatch, MessageRow, NewMessage, ToolCall
 use crate::chat_db::DbState;
 use crate::chat_request::{ChatError, ErrorKind};
 use crate::core::Core;
+use crate::folders::Folders;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -147,9 +148,11 @@ pub struct Run {
     pub(super) history_window: Option<crate::chat_db::history::Window>,
     pub(super) context_mode: String,
     pub(super) root: Option<String>,
-    /// The project folder itself. Differs from `root` in an isolated chat,
-    /// whose tools and commands work in its overlay's view.
-    pub(super) project_root: Option<String>,
+    /// The folders the chat works in (folders.rs): a folder chat's one, or a
+    /// workspace chat's; None with no folder open. `root` differs from a
+    /// folder chat's folder in an isolated chat, whose tools and commands
+    /// work in its overlay's view.
+    pub(super) folders: Option<Folders>,
     /// An isolated chat's changes landed at the end of this run.
     pub(super) landed: bool,
     /// Files the project's newer changes were just merged into, for the
@@ -1172,7 +1175,7 @@ impl Run {
                 .context_mode
                 .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
             root,
-            project_root,
+            folders: project_root.map(|r| Folders::one(r.into())),
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),
@@ -1239,7 +1242,7 @@ impl Run {
             history_window: None,
             context_mode: crate::clm::MODE_TRIMMING.into(),
             root: None,
-            project_root: None,
+            folders: None,
             merged_from_project: None,
             marker_reminders: 0,
             landed: false,
@@ -1390,7 +1393,7 @@ impl Run {
         };
         Run {
             root: parent.root.clone(),
-            project_root: parent.project_root.clone(),
+            folders: parent.folders.clone(),
             local_date: parent.local_date.clone(),
             project_context: parent.project_context.clone(),
             restricted: parent.restricted.clone(),

@@ -375,7 +375,7 @@ impl super::run::Run {
         if files.is_empty() {
             return None;
         }
-        let (Some(root), Some(project)) = (self.root.clone(), self.project_root.clone()) else {
+        let (Some(root), Some(project)) = (self.root.clone(), self.project_root()) else {
             return None;
         };
         if !self.isolated() {
@@ -619,7 +619,7 @@ impl super::run::Run {
             self.end_own_stage(Status::Skipped, why, None).await?;
             return Ok("done".into());
         };
-        let shown = super::plan::relative_plan_path(&file, self.project_root.as_deref());
+        let shown = super::plan::relative_plan_path(&file, self.project_root().as_deref());
         let criteria = super::plan::criteria(&plan)
             .map(|c| c.items)
             .unwrap_or_default();

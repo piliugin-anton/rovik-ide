@@ -131,7 +131,7 @@ impl Run {
         // S04) land nothing yet: what they did lands with it; a Thorough
         // task's lands at its Pick, the winner's change taken (T06).
         let lands_nothing = self.harness_stage() && !self.picks();
-        if self.root == self.project_root || self.plan_mode || lands_nothing {
+        if !self.isolated() || self.plan_mode || lands_nothing {
             return None;
         }
         let overlay = chats::get(&self.dialog_id)?;
@@ -406,10 +406,7 @@ impl Run {
         &mut self,
         outcome: &str,
     ) -> Result<Option<String>, String> {
-        if !lands_after(outcome, self.in_autopilot())
-            || self.root == self.project_root
-            || self.plan_mode
-        {
+        if !lands_after(outcome, self.in_autopilot()) || !self.isolated() || self.plan_mode {
             return Ok(None);
         }
         let Some(overlay) = chats::get(&self.dialog_id) else {
@@ -453,7 +450,7 @@ impl Run {
         let id = self.dialog_id.clone();
         let left = match self.core.agents.markers_resolver() {
             Some(left) => crate::rt::spawn_blocking(move || left(&id)).await,
-            None if self.root != self.project_root => {
+            None if self.isolated() => {
                 crate::rt::spawn_blocking(move || chats::markers_left(&id)).await
             }
             None => return Ok(false),
@@ -479,15 +476,11 @@ impl Run {
     /// switch, a pull): the chat's view would show a half-switched project.
     /// Says so, once, if it has to wait.
     pub(super) async fn wait_while_project_busy(&self) {
-        let Some(project) = self
-            .project_root
-            .as_deref()
-            .filter(|_| self.root != self.project_root)
-        else {
+        let Some(folders) = self.folders.as_ref().filter(|_| self.isolated()) else {
             return;
         };
-        let project = std::path::Path::new(project);
-        if !chats::is_busy(project) {
+        let busy = || folders.iter().any(|folder| chats::is_busy(&folder.path));
+        if !busy() {
             return;
         }
         let started = std::time::Instant::now();
@@ -497,7 +490,7 @@ impl Run {
             "Many files are changing in the project (a branch switch or a pull?). This chat goes on once they settle.",
         );
         // Not forever: a watcher that keeps reporting must not hang the run.
-        while chats::is_busy(project) && !self.stopped() && started.elapsed() < MAX_BUSY_WAIT {
+        while busy() && !self.stopped() && started.elapsed() < MAX_BUSY_WAIT {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
         super::log::write(

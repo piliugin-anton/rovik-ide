@@ -2075,7 +2075,7 @@ impl Run {
                 .await;
         }
         // Plans are the project's, not a chat's change.
-        let Some(root) = self.project_root.clone() else {
+        let Some(root) = self.project_root() else {
             return self
                 .add_tool_result(
                     &tc.id,
