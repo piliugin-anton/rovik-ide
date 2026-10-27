@@ -21,7 +21,7 @@ import ChatPanel from './ChatPanel';
 import { ConfirmDialogHost } from './ConfirmDialog';
 import type { MessageRow, UnsettledSend } from '../lib/chatApi';
 import type { ActiveFileContext } from '../lib/activeContext';
-import type { ChatOwners, OpenFolder } from '../lib/openFolders';
+import { workspaceIdOf, type ChatOwners, type OpenFolder } from '../lib/openFolders';
 import { addToChat } from '../lib/editorBridge';
 import { notifications } from '../lib/notifications';
 import { requestImplementPlan } from '../lib/plans';
@@ -53,6 +53,8 @@ let calls: { cmd: string; args: any }[] = [];
 let deletion: Promise<void> | null = null;
 /** The plans' files, by path. */
 let plans: Record<string, string> = {};
+/** The files `list_project_files` lists, by folder. */
+let projectFiles: Record<string, string[]> = {};
 
 (window as any).__TAURI_INTERNALS__ = {
   transformCallback: () => 1,
@@ -86,6 +88,8 @@ let plans: Record<string, string> = {};
       case 'chat_read_plan':
         if (args.path in plans) return plans[args.path];
         throw new Error(`${args.path}: no such file`);
+      case 'list_project_files':
+        return { files: projectFiles[args.root] ?? [], truncated: false };
       case 'send_chat_message':
         // The chat's title: no model here, so its first words.
         throw new Error('no model here');
@@ -195,6 +199,7 @@ async function mount(
     () => (
       <ChatPanel
         folders={shown}
+        workspace={() => workspaceIdOf(target)}
         activeFolder={() => active}
         activeFileContext={context}
         files={() => []}
@@ -751,4 +756,99 @@ test('Implement under a workspace chat’s plan carries it out there while the c
     [['plan-moved', '["api","web"]']]
   );
   moved.dispose();
+});
+
+test('a workspace chat’s run is sent no root, and the editor context names its file under its folder’s name', async () => {
+  talked(workspaceChat('ws-run', 'run', '["api","web"]'));
+  const { root, dispose, setContext } = await mount('workspace:run', [api, web]);
+  setContext({
+    path: '/w/web/src/cart.ts',
+    language: 'typescript',
+    line: 3,
+    column: 1,
+    enclosingSymbol: null,
+    selection: null,
+  });
+  await sendText(root, 'Why is this slow?');
+  const [first] = sent('agent_start');
+  assert.ok(first, 'the run started');
+  assert.equal(first.request.root, null, 'the backend reads its folders itself');
+  assert.match(first.request.currentUserContent, /file web\/src\/cart\.ts \(typescript\)/);
+  dispose();
+});
+
+test('a workspace chat with one of its folders missing doesn’t run, and says which', async () => {
+  talked(workspaceChat('ws-missing', 'missing', '["api","web"]'));
+  const { root, dispose } = await mount('workspace:missing', [api, { ...web, missing: true }]);
+  const before = notifications().length;
+  await sendText(root, 'Add the cart');
+  assert.deepEqual(sent('agent_start'), []);
+  assert.deepEqual(
+    notifications()
+      .slice(before)
+      .map((n) => n.message),
+    ['web isn’t there: locate it, or remove it from the workspace, to go on with this chat.']
+  );
+  dispose();
+});
+
+test('@ lists the files of each of a workspace chat’s folders, under their names', async () => {
+  talked(workspaceChat('ws-at', 'at', '["api","web"]'));
+  projectFiles = {
+    '/w/api': ['/w/api/routes.ts'],
+    '/w/web': ['/w/web/src/cart.ts'],
+    '/w/docs': ['/w/docs/readme.md'],
+  };
+  try {
+    const { root, dispose } = await mount('workspace:at', [api, web, folder('docs')]);
+    await type(root, '@');
+    const shown = [...root.querySelectorAll('.file-suggestion-path')].map((p) => p.textContent);
+    assert.deepEqual(shown, ['./api/routes.ts', './web/src/cart.ts']);
+    assert.deepEqual(
+      sent('list_project_files').map((a) => a.root),
+      ['/w/api', '/w/web'],
+      'not docs: the chat doesn’t work there'
+    );
+    dispose();
+  } finally {
+    projectFiles = {};
+  }
+});
+
+test('Add to chat from either of a workspace chat’s folders names the file under its folder’s name, and another folder’s stays out', async () => {
+  talked(workspaceChat('ws-add', 'add', '["api","web"]'));
+  const { root, dispose } = await mount('workspace:add', [api, web, folder('docs')]);
+  addToChat(reference('/w/web/src/cart.ts'));
+  addToChat(reference('/w/api/routes.ts'));
+  await flush();
+  const chips = () =>
+    [...root.querySelectorAll<HTMLElement>('.chat-file-reference')].map(
+      (chip) => JSON.parse(chip.dataset.file!).relativePath
+    );
+  assert.deepEqual(chips(), ['web/src/cart.ts', 'api/routes.ts']);
+
+  addToChat(reference('/w/docs/readme.md'));
+  await flush();
+  assert.deepEqual(chips(), ['web/src/cart.ts', 'api/routes.ts'], 'docs’ file stays out');
+  assert.equal(note(root), 'docs/readme.md is in docs; this chat works in api, web.');
+  dispose();
+});
+
+test('a workspace chat’s row says the folders checked, or All folders', async () => {
+  talked(workspaceChat('ws-some', 'ws-rows', '["web","api"]'), {
+    ...workspaceChat('ws-all', 'ws-rows', 'all'),
+    updatedAt: 1,
+  });
+  const { root, dispose } = await mount('workspace:ws-rows', [api, web]);
+  (root.querySelector('.chat-history-button') as HTMLButtonElement).click();
+  await flush();
+  const listed = [...root.querySelectorAll('.chat-history-item')].map((item) => [
+    item.querySelector('.chat-history-item-title')?.textContent,
+    item.querySelector('.chat-history-item-folders')?.textContent,
+  ]);
+  assert.deepEqual(listed, [
+    ['ws-some', 'api, web'],
+    ['ws-all', 'All folders'],
+  ]);
+  dispose();
 });

@@ -123,6 +123,7 @@ test('a command picked while the run works waits for it to end, then goes as a c
     () => (
       <ChatPanel
         folders={() => [project]}
+        workspace={() => null}
         activeFolder={() => project}
         activeFileContext={() => null}
         files={() => []}

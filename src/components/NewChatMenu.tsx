@@ -39,7 +39,7 @@ export function cantChatIn(folder: OpenFolder, folders: readonly OpenFolder[]): 
   if (!folder.project) return `${folder.name} is still being opened`;
   // A copy has its original's chats until its history is separated: a chat
   // started in either works in the one listed first, which has them.
-  const first = chatRootOf({ projectId: folder.project.id }, folders);
+  const first = chatRootOf({ projectId: folder.project.id }, folders, null)?.folders[0];
   if (first && first.path !== folder.path)
     return `${folder.name} shares its chats with ${first.name} until the copy’s history is separated`;
   return null;

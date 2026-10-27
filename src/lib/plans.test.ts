@@ -1,19 +1,11 @@
 // plans.ts tests (node:test): a remote chat's plan is read from its host
 // and opens read-only; a local chat's opens in the editor (K09). A
 // workspace chat's plan names its folders, which choose the chat that
-// carries it out (D28), and a chat names a plan as it names its files.
+// carries it out (D28).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  chatForPlan,
-  chatPlanPath,
-  implementationMessage,
-  openPlan,
-  planFolders,
-  readPlan,
-} from './plans';
+import { chatForPlan, implementationMessage, openPlan, planFolders, readPlan } from './plans';
 import { chatStore } from './chatStore';
-import type { OpenFolder } from './openFolders';
 import { setEditorOpener, type Compare, type OpenInEditor } from './openInEditor';
 
 const PLAN = '# Fix the build\n\n1. Pin the toolchain\n';
@@ -70,42 +62,6 @@ test('implementing a plan sends its path; the backend writes what the model gets
     meta: { mode: 'agent', implementsPlan: true, planPath: '/p/.rovik/plans/a.md' },
   });
   assert.equal(reads().length, 0, 'not read here');
-});
-
-/** A folder of the window, resolved as its own project (`<name>-project`). */
-const folder = (name: string, path = `/w/${name}`): OpenFolder => ({
-  path,
-  name,
-  missing: false,
-  project: { id: `${name}-project`, name, path, idFile: true },
-});
-
-test('a chat names its plan as it names files: by its folder’s name in a workspace chat', () => {
-  const folders = [folder('api'), folder('web')];
-  const workspaceChat = { projectId: 'w', folders: 'all' };
-  const folderChat = { projectId: 'api-project' };
-  assert.equal(
-    chatPlanPath('/w/web/.rovik/plans/a.md', workspaceChat, folders),
-    'web/.rovik/plans/a.md'
-  );
-  assert.equal(chatPlanPath('/w/api/.rovik/plans/a.md', folderChat, folders), '.rovik/plans/a.md');
-  // A host's worktree, or no chat: the path as it is.
-  for (const dialog of [workspaceChat, folderChat, undefined]) {
-    assert.equal(
-      chatPlanPath('/srv/w/.rovik/plans/a.md', dialog, folders),
-      '/srv/w/.rovik/plans/a.md'
-    );
-  }
-  // On Windows too, with `/` between its parts.
-  const windows = [folder('api', 'C:\\w\\api'), folder('web', 'C:\\w\\web')];
-  assert.equal(
-    chatPlanPath('C:\\w\\web\\.rovik\\plans\\a.md', workspaceChat, windows),
-    'web/.rovik/plans/a.md'
-  );
-  assert.equal(
-    chatPlanPath('C:\\w\\api\\.rovik\\plans\\a.md', folderChat, windows),
-    '.rovik/plans/a.md'
-  );
 });
 
 test('a plan’s Folders line, right under its title, names the folders its workspace chat had', () => {

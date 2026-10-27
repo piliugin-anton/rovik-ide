@@ -14,7 +14,7 @@ import IsolationBar from './IsolationBar';
 import { ConfirmDialogHost } from './ConfirmDialog';
 import { notifications } from '../lib/notifications';
 import type { ChatSync, OverlayStatus } from '../lib/overlay';
-import type { OpenFolder } from '../lib/openFolders';
+import type { ChatRoot, OpenFolder } from '../lib/openFolders';
 import { setEditorOpener, type OpenInEditor } from '../lib/openInEditor';
 
 /** What `overlay_status` answers now, and what the other commands do. */
@@ -61,8 +61,8 @@ interface Options {
   canAskChat?: boolean;
   /** Whether asking the chat starts its run. */
   askStarts?: boolean;
-  /** The folder the chat works in. */
-  root?: OpenFolder;
+  /** Where the chat works. */
+  root?: ChatRoot;
 }
 
 let disposeLast = () => {};
@@ -340,7 +340,7 @@ test('a changed file of the second folder’s chat opens from the second folder'
   status = remoteStatus({ files: [{ path: 'src/cart.ts', change: 'changed' }] });
   answers = { overlay_file: () => ({ project: 'same\n', chat: 'same\n' }) };
   const web: OpenFolder = { path: '/w/web', name: 'web', missing: false };
-  const { root } = await bar({ remote: false, root: web });
+  const { root } = await bar({ remote: false, root: { kind: 'folder', folders: [web] } });
   (root.querySelector('.isolation-bar-toggle') as HTMLButtonElement).click();
   await settle();
   (root.querySelector('.isolation-bar-file') as HTMLButtonElement).click();
@@ -358,5 +358,25 @@ test('a changed file of the second folder’s chat opens from the second folder'
   (root.querySelector('.isolation-bar-file') as HTMLButtonElement).click();
   await settle();
   assert.equal(opened[2].path, 'chat:c1:src/cart.ts');
+  answers = {};
+});
+
+test('a workspace chat’s changed file opens from the folder its path names', async () => {
+  const opened: OpenInEditor[] = [];
+  setEditorOpener(async (request) => {
+    opened.push(request);
+  });
+  status = remoteStatus({ files: [{ path: 'web/src/cart.ts', change: 'changed' }] });
+  answers = { overlay_file: () => ({ project: 'same\n', chat: 'same\n' }) };
+  const folders: OpenFolder[] = [
+    { path: '/w/api', name: 'api', missing: false },
+    { path: '/w/web', name: 'web', missing: false },
+  ];
+  const { root } = await bar({ remote: false, root: { kind: 'workspace', folders } });
+  (root.querySelector('.isolation-bar-toggle') as HTMLButtonElement).click();
+  await settle();
+  (root.querySelector('.isolation-bar-file') as HTMLButtonElement).click();
+  await settle();
+  assert.deepEqual(opened, [{ path: '/w/web/src/cart.ts', focus: true }]);
   answers = {};
 });

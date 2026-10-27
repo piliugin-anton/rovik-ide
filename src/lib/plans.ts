@@ -24,7 +24,6 @@ import { chatStore } from './chatStore';
 import { cloud, hostName } from './cloud';
 import { openInEditor } from './openInEditor';
 import { notify } from './notifications';
-import { chatPathOf, chatRootOf, folderOf, type OpenFolder } from './openFolders';
 
 /**
  * Starts the line under a workspace chat's plan's title that names its
@@ -94,25 +93,8 @@ export function isPlanFile(path: string): boolean {
 }
 
 /**
- * A plan's path as chat `dialog` names it (3.2): a folder chat's, its path in
- * the chat's folder (`.rovik/plans/a.md`); a workspace chat's, after the name
- * of the window's folder it's in (`api/.rovik/plans/a.md`). Outside them (a
- * host's worktree), as it is.
- */
-export function chatPlanPath(
-  path: string,
-  dialog: { projectId?: string | null; folders?: string | null } | undefined,
-  folders: readonly OpenFolder[]
-): string {
-  if (!dialog?.folders) return chatPathOf(chatRootOf(dialog, folders), path) ?? path;
-  const folder = folderOf(folders, path);
-  const inFolder = chatPathOf(folder, path);
-  return folder && inFolder !== null ? `${folder.name}/${inFolder}` : path;
-}
-
-/**
  * The message that implements a saved plan, in Agent mode: a short line for
- * the chat, naming it as the chat does (`shown`, `chatPlanPath`), and the
+ * the chat, naming it as the chat does (`shown`, `chatPathOf`), and the
  * plan's path, from which the backend sends the model the plan in full.
  */
 export function implementationMessage(

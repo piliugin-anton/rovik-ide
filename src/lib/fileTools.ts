@@ -86,12 +86,17 @@ export function toRelativePath(path: string, root: string | null): string {
   return path;
 }
 
+/** Whether `path` is absolute (`/x`, `\x`, `C:\x`) rather than relative to a folder. */
+export function isAbsolutePath(path: string): boolean {
+  return /^([a-zA-Z]:[\\/]|[\\/])/.test(path);
+}
+
 /**
  * A path the model gave (relative to the project, or already absolute)
  * as the absolute path the editor tabs and file tree use.
  */
 export function toAbsolutePath(path: string, root: string): string {
-  if (/^([a-zA-Z]:[\\/]|[\\/])/.test(path)) return path;
+  if (isAbsolutePath(path)) return path;
   const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/';
   const relative = path
     .replace(/^\.[\\/]/, '')

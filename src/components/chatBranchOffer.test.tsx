@@ -11,7 +11,7 @@ import { render } from 'solid-js/web';
 import ChatPanel from './ChatPanel';
 import { NewBranchDialogHost } from './NewBranchDialog';
 import type { MessageRow } from '../lib/chatApi';
-import type { ChatOwners, OpenFolder } from '../lib/openFolders';
+import { workspaceIdOf, type ChatOwners, type OpenFolder } from '../lib/openFolders';
 import type { DialogSummary, GitHead } from '../types';
 
 const SETTINGS = {
@@ -102,6 +102,7 @@ async function mount(folders: OpenFolder[], owners: ChatOwners) {
       <>
         <ChatPanel
           folders={() => folders}
+          workspace={() => workspaceIdOf(owners.target)}
           activeFolder={() => folders[0]}
           activeFileContext={() => null}
           files={() => []}

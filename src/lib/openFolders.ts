@@ -5,7 +5,7 @@
 // the watcher, search, the Git panel and the chats take these folders, so a
 // project is the list of one and everything built for a project works for a
 // folder of a workspace.
-import { isAtOrUnder, toAbsolutePath } from './fileTools';
+import { isAbsolutePath, isAtOrUnder, toAbsolutePath } from './fileTools';
 import { fileName } from './toolGroups';
 import type { ProjectInfo, Workspace } from './chatApi';
 
@@ -200,81 +200,153 @@ export function sameOwners(a: ChatOwners | undefined, b: ChatOwners | undefined)
 }
 
 /**
- * Where a chat works (3.2): a folder chat's folder, as the window has it. A
- * project's chats are its folder's, and so are a workspace folder's own.
+ * Where a chat works (3.2), as the window has it: a folder chat's folder,
+ * or a workspace chat's folders (every one of the workspace's for All
+ * folders) in the workspace's order, a missing one among them (D20). A
+ * folder chat names its files as paths in its folder (`src/x.ts`), a
+ * workspace chat as paths under its folders' names (`api/src/x.ts`).
  */
-export type ChatRoot = OpenFolder;
-
-/**
- * The folder `dialog` works in: the window's folder whose project the chat
- * is. Null when that folder isn't open here (it left the window, it's
- * missing, it isn't resolved yet), or when the chat has no project (no
- * folder open).
- */
-export function chatRootOf(
-  dialog: { projectId?: string | null } | null | undefined,
-  folders: readonly OpenFolder[]
-): ChatRoot | null {
-  const id = dialog?.projectId;
-  if (!id) return null;
-  return folders.find((folder) => !folder.missing && folder.project?.id === id) ?? null;
+export interface ChatRoot {
+  kind: 'folder' | 'workspace';
+  folders: OpenFolder[];
 }
 
 /**
- * The folder a request about chat `dialog`'s files names them in (a file it
+ * The folders a workspace chat checked, as the database keeps them (3.1):
+ * `"all"`, or their names as JSON. A workspace's chat that names none
+ * follows the workspace, as the backend reads it (`chat_folders`); names
+ * that can't be read name no folder, and its run says why.
+ */
+function checkedNames(stored: string | null | undefined): string[] | 'all' {
+  if (!stored || stored === 'all') return 'all';
+  try {
+    const names: unknown = JSON.parse(stored);
+    if (Array.isArray(names) && names.every((name) => typeof name === 'string')) return names;
+  } catch {
+    // Not a list of names: no folder.
+  }
+  return [];
+}
+
+/**
+ * Where `dialog` works (3.2). A chat of `workspace`, the window's (null: a
+ * folder's window), works in the folders checked for it that the workspace
+ * still has, or in each of them for All folders; any other chat in the
+ * window's folder whose project it is. Null when that folder isn't open here
+ * (it left the window, it's missing, it isn't resolved yet), or when the
+ * chat has no project (no folder open).
+ */
+export function chatRootOf(
+  dialog: { projectId?: string | null; folders?: string | null } | null | undefined,
+  folders: readonly OpenFolder[],
+  workspace: string | null
+): ChatRoot | null {
+  const id = dialog?.projectId;
+  if (!id) return null;
+  if (id === workspace) {
+    const names = checkedNames(dialog.folders);
+    return {
+      kind: 'workspace',
+      folders: folders.filter((folder) => names === 'all' || names.includes(folder.name)),
+    };
+  }
+  const folder = folders.find((at) => !at.missing && at.project?.id === id);
+  return folder ? { kind: 'folder', folders: [folder] } : null;
+}
+
+/**
+ * The place a request about chat `dialog`'s files names them in (a file it
  * wrote, opened from its tool call): the chat's own. A chat the list doesn't
  * have (a subagent's, `undefined` here) is shown inside the open chat,
- * `open`, and works in its folder. The window's first folder when neither's
- * folder is open here; null with no folder open.
+ * `open`, and works where it does. The window's first folder when neither
+ * works here; null with no folder open.
  */
 export function chatFolderFor(
-  dialog: { projectId?: string | null } | undefined,
-  open: { projectId?: string | null } | null | undefined,
-  folders: readonly OpenFolder[]
+  dialog: { projectId?: string | null; folders?: string | null } | undefined,
+  open: { projectId?: string | null; folders?: string | null } | null | undefined,
+  folders: readonly OpenFolder[],
+  workspace: string | null
 ): ChatRoot | null {
-  return chatRootOf(dialog ?? open, folders) ?? folders[0] ?? null;
+  const root = chatRootOf(dialog ?? open, folders, workspace);
+  if (root) return root;
+  return folders.length > 0 ? { kind: 'folder', folders: [folders[0]] } : null;
 }
 
 /**
  * Which folders a chat works in, as its row and the label by its input say
  * them (3.8): its folder's name, a workspace chat's names checked, or "all"
  * for one that follows the workspace. Null when that can't be said: the
- * chat has no project, or its folder isn't open here.
+ * chat has no project, or doesn't work here.
  */
 export function chatFolderNames(
   dialog: { projectId?: string | null; folders?: string | null },
-  folders: readonly OpenFolder[]
+  folders: readonly OpenFolder[],
+  workspace: string | null
 ): string[] | 'all' | null {
-  if (dialog.folders === 'all') return 'all';
-  if (dialog.folders) {
-    try {
-      const names: unknown = JSON.parse(dialog.folders);
-      if (Array.isArray(names) && names.every((name) => typeof name === 'string')) return names;
-    } catch {
-      // Not a list of names: nothing to say.
-    }
-    return null;
-  }
-  const root = chatRootOf(dialog, folders);
-  return root ? [root.name] : null;
+  const root = chatRootOf(dialog, folders, workspace);
+  if (!root) return null;
+  if (root.kind === 'workspace' && checkedNames(dialog.folders) === 'all') return 'all';
+  return root.folders.map((folder) => folder.name);
 }
 
 /**
  * The file a chat's path names (3.2): a folder chat's `src/x.ts` is in its
- * folder, an absolute path is itself. Null when the chat has no folder here.
+ * folder, a workspace chat's `api/src/x.ts` in its folder named `api`, and
+ * an absolute path is itself. Null when the chat has no folder here, and
+ * for a workspace chat's path whose first part names none of its folders.
  */
 export function chatPathToAbsolute(root: ChatRoot | null, path: string): string | null {
-  return root ? toAbsolutePath(path, root.path) : null;
+  if (!root) return null;
+  if (isAbsolutePath(path)) return path;
+  if (root.kind === 'folder') return toAbsolutePath(path, root.folders[0].path);
+  const [name, ...rest] = path.replace(/^\.[\\/]/, '').split(/[\\/]+/);
+  const folder = root.folders.find((at) => at.name === name);
+  return folder ? toAbsolutePath(rest.join('/'), folder.path) : null;
 }
 
 /**
  * The name a chat gives the file at `abs` (3.2): its path in the chat's
- * folder, with `/` between its parts on every system, as the chat's tools
- * take it. Null for a file outside the chat's folder: the chat can't read
- * it, so nothing names it to the chat.
+ * folder, under that folder's name in a workspace chat, with `/` between
+ * its parts on every system, as the chat's tools take it. Null for a file
+ * outside the chat's folders: the chat can't read it, so nothing names it
+ * to the chat.
  */
 export function chatPathOf(root: ChatRoot | null, abs: string): string | null {
-  if (!root || !isAtOrUnder(abs, root.path)) return null;
+  if (!root) return null;
+  const folder = folderOf(root.folders, abs);
+  if (!folder) return null;
   const slashed = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '');
-  return slashed(abs).slice(slashed(root.path).length).replace(/^\/+/, '');
+  const inFolder = slashed(abs).slice(slashed(folder.path).length).replace(/^\/+/, '');
+  if (root.kind === 'folder') return inFolder;
+  return inFolder ? `${folder.name}/${inFolder}` : folder.name;
+}
+
+/**
+ * What a chat's run is sent (3.2): a folder chat's folder as its root; no
+ * root for a workspace chat, whose folders the backend reads itself (4.1),
+ * nor for a chat with no folder (none open). Why it can't run here instead:
+ * its folder isn't open in this window, or one of a workspace chat's
+ * folders is missing (D20).
+ */
+export function runPlace(
+  dialog: { projectId?: string | null; folders?: string | null } | null | undefined,
+  root: ChatRoot | null
+): { root: string | null } | { why: string } {
+  if (!root) {
+    if (!dialog?.projectId) return { root: null };
+    return {
+      why: dialog.folders
+        ? 'This chat’s workspace isn’t open here: open it to go on with the chat.'
+        : 'This chat’s folder isn’t open here: open the folder it works in to go on with it.',
+    };
+  }
+  if (root.kind === 'folder') return { root: root.folders[0].path };
+  const missing = root.folders.filter((folder) => folder.missing).map((folder) => folder.name);
+  const last = missing.pop();
+  if (last === undefined) return { root: null };
+  return {
+    why: missing.length
+      ? `${missing.join(', ')} and ${last} aren’t there: locate them, or remove them from the workspace, to go on with this chat.`
+      : `${last} isn’t there: locate it, or remove it from the workspace, to go on with this chat.`,
+  };
 }

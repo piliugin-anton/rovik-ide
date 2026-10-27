@@ -17,10 +17,12 @@ import {
   openFolders,
   pathsByFolder,
   sameOwners,
+  runPlace,
   sessionKey,
   withoutFolder,
   workspaceAsTarget,
   workspaceIdOf,
+  type ChatRoot,
   type OpenFolder,
   type WindowTarget,
 } from './openFolders';
@@ -218,56 +220,113 @@ test('owners list their own projects’ chats, and the chats with no project onl
 
 test("a folder chat works in the window's folder whose project it is", () => {
   const folders = [resolved(api, 'p-api'), resolved(web, 'p-web')];
-  assert.equal(chatRootOf({ projectId: 'p-web' }, folders)?.path, '/work/web');
+  assert.deepEqual(chatRootOf({ projectId: 'p-web' }, folders, 'shop'), {
+    kind: 'folder',
+    folders: [folders[1]],
+  });
   // Its folder left the window, or is missing: nowhere to work here.
-  assert.equal(chatRootOf({ projectId: 'p-gone' }, folders), null);
+  assert.equal(chatRootOf({ projectId: 'p-gone' }, folders, 'shop'), null);
   assert.equal(
-    chatRootOf({ projectId: 'p-web' }, [folders[0], { ...folders[1], missing: true }]),
+    chatRootOf({ projectId: 'p-web' }, [folders[0], { ...folders[1], missing: true }], 'shop'),
     null
   );
   // With no folder open a chat has no project, and no folder.
-  assert.equal(chatRootOf({ projectId: null }, folders), null);
+  assert.equal(chatRootOf({ projectId: null }, folders, null), null);
+});
+
+test('a workspace chat works in the folders checked for it, or in each of the workspace’s for All folders', () => {
+  const docs: OpenFolder = { path: '/work/docs', name: 'docs', missing: true };
+  const folders = [resolved(api, 'p-api'), resolved(web, 'p-web'), docs];
+  const root = (folders_: string | null) =>
+    chatRootOf({ projectId: 'shop', folders: folders_ }, folders, 'shop');
+  // In the workspace's order, whatever order they were checked in.
+  assert.deepEqual(root('["web","api"]'), { kind: 'workspace', folders: folders.slice(0, 2) });
+  // All folders: a missing one among them, which its run asks for (D20).
+  assert.deepEqual(root('all'), { kind: 'workspace', folders });
+  assert.deepEqual(root(null), { kind: 'workspace', folders }, 'one that names none follows it');
+  // A name the workspace no longer has is no folder of the chat's.
+  assert.deepEqual(root('["api","infra"]'), { kind: 'workspace', folders: [folders[0]] });
+  assert.deepEqual(root('{"not":"names"}'), { kind: 'workspace', folders: [] });
+  // Another workspace's chat doesn't work in this window's folders.
+  assert.equal(chatRootOf({ projectId: 'other', folders: '["api"]' }, folders, 'shop'), null);
+  assert.equal(chatRootOf({ projectId: 'shop', folders: '["api"]' }, folders, null), null);
 });
 
 test("a file of a chat the list doesn't have, a subagent's, is in the open chat's folder", () => {
   const folders = [resolved(api, 'p-api'), resolved(web, 'p-web')];
   const open = { projectId: 'p-web' };
-  assert.equal(chatFolderFor(undefined, open, folders)?.name, 'web');
+  assert.deepEqual(chatFolderFor(undefined, open, folders, 'shop')?.folders, [folders[1]]);
   // A listed chat's own folder, whichever chat is open.
-  assert.equal(chatFolderFor({ projectId: 'p-api' }, open, folders)?.name, 'api');
-  // Neither's folder is open here: the window's first; no folder open: none.
-  assert.equal(chatFolderFor(undefined, null, folders)?.name, 'api');
-  assert.equal(chatFolderFor(undefined, null, []), null);
+  assert.deepEqual(chatFolderFor({ projectId: 'p-api' }, open, folders, 'shop')?.folders, [
+    folders[0],
+  ]);
+  // A workspace chat's subagent works across its folders, as it does.
+  const across = { projectId: 'shop', folders: 'all' };
+  assert.deepEqual(chatFolderFor(undefined, across, folders, 'shop'), {
+    kind: 'workspace',
+    folders,
+  });
+  // Neither works here: the window's first folder; no folder open: none.
+  assert.deepEqual(chatFolderFor(undefined, null, folders, 'shop'), {
+    kind: 'folder',
+    folders: [folders[0]],
+  });
+  assert.equal(chatFolderFor(undefined, null, [], null), null);
 });
 
+/** A folder chat's root: `folder`. */
+const inFolder = (folder: OpenFolder): ChatRoot => ({ kind: 'folder', folders: [folder] });
+/** A workspace chat's root: `folders`. */
+const across = (...folders: OpenFolder[]): ChatRoot => ({ kind: 'workspace', folders });
+
 test("a folder chat's path is joined to its folder", () => {
-  const root = resolved(web, 'p-web');
+  const root = inFolder(resolved(web, 'p-web'));
   assert.equal(chatPathToAbsolute(root, 'src/cart.ts'), '/work/web/src/cart.ts');
   assert.equal(chatPathToAbsolute(root, './src/cart.ts'), '/work/web/src/cart.ts');
   assert.equal(chatPathToAbsolute(root, '/work/web/src/cart.ts'), '/work/web/src/cart.ts');
   assert.equal(chatPathToAbsolute(null, 'src/cart.ts'), null, 'no folder here: no file');
 });
 
+test("a workspace chat's path is found in the folder its first part names, and an unknown name names no file", () => {
+  const root = across(resolved(api, 'p-api'), resolved(web, 'p-web'));
+  assert.equal(chatPathToAbsolute(root, 'web/src/cart.ts'), '/work/web/src/cart.ts');
+  assert.equal(chatPathToAbsolute(root, './api/routes.ts'), '/work/api/routes.ts');
+  assert.equal(chatPathToAbsolute(root, '/work/web/src/cart.ts'), '/work/web/src/cart.ts');
+  assert.equal(chatPathToAbsolute(root, 'docs/readme.md'), null, 'no folder of the chat’s');
+  assert.equal(chatPathToAbsolute(root, 'src/cart.ts'), null, 'a folder chat’s path');
+  assert.equal(chatPathToAbsolute(across(), 'web/src/cart.ts'), null, 'no folder left');
+});
+
 test("a file is named from its folder, and one outside the chat's folder has no name", () => {
-  const root = resolved(web, 'p-web');
+  const root = inFolder(resolved(web, 'p-web'));
   assert.equal(chatPathOf(root, '/work/web/src/cart.ts'), 'src/cart.ts');
   assert.equal(chatPathOf(root, '/work/api/src/routes.ts'), null, "another folder's");
   assert.equal(chatPathOf(root, '/work/web2/x.ts'), null, 'a folder beside it with a longer name');
   assert.equal(chatPathOf(null, '/work/web/src/cart.ts'), null);
 });
 
+test("a workspace chat names a file under its folder's name, and one of a folder it doesn't work in not at all", () => {
+  const root = across(resolved(api, 'p-api'), resolved(web, 'p-web'));
+  assert.equal(chatPathOf(root, '/work/web/src/cart.ts'), 'web/src/cart.ts');
+  assert.equal(chatPathOf(root, '/work/api/routes.ts'), 'api/routes.ts');
+  assert.equal(chatPathOf(root, '/work/api'), 'api', 'the folder itself');
+  assert.equal(chatPathOf(across(resolved(api, 'p-api')), '/work/web/src/cart.ts'), null);
+  assert.equal(chatPathOf(root, '/work/docs/readme.md'), null, 'in none of the window’s');
+});
+
 test('a Windows file is named with / and found again', () => {
-  const root: OpenFolder = resolved(
-    { path: 'C:\\work\\web', name: 'web', missing: false },
-    'p-web'
-  );
+  const folder = resolved({ path: 'C:\\work\\web', name: 'web', missing: false }, 'p-web');
   const file = 'C:\\work\\web\\src\\cart.ts';
-  const named = chatPathOf(root, file);
+  const named = chatPathOf(inFolder(folder), file);
   assert.equal(named, 'src/cart.ts');
-  assert.equal(chatPathToAbsolute(root, named!), file);
+  assert.equal(chatPathToAbsolute(inFolder(folder), named!), file);
+  // A workspace chat's too, under its folder's name.
+  const workspaceNamed = chatPathOf(across(folder), file);
+  assert.equal(workspaceNamed, 'web/src/cart.ts');
+  assert.equal(chatPathToAbsolute(across(folder), workspaceNamed!), file);
   // A drive root holds its files too.
   const drive = resolved({ path: 'D:\\', name: 'D', missing: false }, 'p-d');
-  assert.equal(chatPathOf(drive, 'D:\\notes\\todo.md'), 'notes/todo.md');
+  assert.equal(chatPathOf(inFolder(drive), 'D:\\notes\\todo.md'), 'notes/todo.md');
 });
 
 test('on Windows a file whose folder is spelled in another case is named from it', () => {
@@ -279,7 +338,9 @@ test('on Windows a file whose folder is spelled in another case is named from it
     configurable: true,
   });
   try {
-    const root = resolved({ path: 'C:\\work\\web', name: 'web', missing: false }, 'p-web');
+    const root = inFolder(
+      resolved({ path: 'C:\\work\\web', name: 'web', missing: false }, 'p-web')
+    );
     assert.equal(chatPathOf(root, 'c:\\Work\\WEB\\src\\Cart.ts'), 'src/Cart.ts');
   } finally {
     if (saved) Object.defineProperty(globalThis, 'navigator', saved);
@@ -289,12 +350,47 @@ test('on Windows a file whose folder is spelled in another case is named from it
 
 test("a chat's row says its folder, a workspace chat's the folders checked or all of them", () => {
   const folders = [resolved(api, 'p-api'), resolved(web, 'p-web')];
-  assert.deepEqual(chatFolderNames({ projectId: 'p-web' }, folders), ['web']);
-  assert.deepEqual(chatFolderNames({ projectId: 'shop', folders: '["api","web"]' }, folders), [
-    'api',
-    'web',
-  ]);
-  assert.equal(chatFolderNames({ projectId: 'shop', folders: 'all' }, folders), 'all');
-  assert.equal(chatFolderNames({ projectId: 'p-gone' }, folders), null);
-  assert.equal(chatFolderNames({ projectId: 'shop', folders: '{"not":"names"}' }, folders), null);
+  const names = (dialog: { projectId: string; folders?: string }) =>
+    chatFolderNames(dialog, folders, 'shop');
+  assert.deepEqual(names({ projectId: 'p-web' }), ['web']);
+  assert.deepEqual(names({ projectId: 'shop', folders: '["web","api"]' }), ['api', 'web']);
+  assert.equal(names({ projectId: 'shop', folders: 'all' }), 'all');
+  assert.equal(names({ projectId: 'p-gone' }), null);
+  assert.deepEqual(names({ projectId: 'shop', folders: '["api","infra"]' }), ['api']);
+  assert.deepEqual(names({ projectId: 'shop', folders: '{"not":"names"}' }), []);
+});
+
+test("a folder chat's run is sent its folder, and a chat with none open here doesn't run", () => {
+  const folders = [resolved(api, 'p-api'), resolved(web, 'p-web')];
+  const place = (dialog: { projectId: string | null; folders?: string }) =>
+    runPlace(dialog, chatRootOf(dialog, folders, 'shop'));
+  assert.deepEqual(place({ projectId: 'p-web' }), { root: '/work/web' });
+  // With no folder open, a chat works in none.
+  assert.deepEqual(place({ projectId: null }), { root: null });
+  assert.match(
+    (place({ projectId: 'p-gone' }) as { why: string }).why,
+    /^This chat’s folder isn’t open here/
+  );
+  assert.match(
+    (place({ projectId: 'other', folders: 'all' }) as { why: string }).why,
+    /^This chat’s workspace isn’t open here/
+  );
+});
+
+test("a workspace chat's run is sent no root and no folders, and a missing folder stops it, naming it", () => {
+  const docs: OpenFolder = { path: '/work/docs', name: 'docs', missing: true };
+  const infra: OpenFolder = { path: '/work/infra', name: 'infra', missing: true };
+  const folders = [resolved(api, 'p-api'), resolved(web, 'p-web'), docs, infra];
+  const place = (checked: string) => {
+    const dialog = { projectId: 'shop', folders: checked };
+    return runPlace(dialog, chatRootOf(dialog, folders, 'shop'));
+  };
+  // The backend reads its folders itself (4.1).
+  assert.deepEqual(place('["api","web"]'), { root: null });
+  assert.deepEqual(place('["api","docs"]'), {
+    why: 'docs isn’t there: locate it, or remove it from the workspace, to go on with this chat.',
+  });
+  assert.deepEqual(place('all'), {
+    why: 'docs and infra aren’t there: locate them, or remove them from the workspace, to go on with this chat.',
+  });
 });

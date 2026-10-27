@@ -211,6 +211,11 @@ export default function App() {
   };
   /** The open folder `path` is in, or null when it's in none of them. */
   const folderAt = (path: string) => folderOf(folders(), path);
+  /** The workspace the window has open; null for a folder's window or none. */
+  const workspaceId = () => {
+    const at = target();
+    return at?.kind === 'workspace' ? at.id : null;
+  };
   /** The folders the Git panel shows: those that are there (D20). */
   const gitFolders = createMemo(() => resolvable(folders()));
   /**
@@ -683,10 +688,7 @@ export default function App() {
   onMount(() => {
     void startUpdates({
       folder: () => rootPath(),
-      workspace: () => {
-        const at = target();
-        return at?.kind === 'workspace' ? at.id : null;
-      },
+      workspace: workspaceId,
       settle: async () => {
         if (!(await settleUnsavedTabs('app'))) return false;
         await keepTabsNow();
@@ -1101,7 +1103,9 @@ export default function App() {
     // Before the project's file is looked for: an isolated chat's new file
     // isn't there at all.
     if (request.dialogId && folder && marks !== 'none' && !isContextPath(path)) {
-      const rel = chatPathOf(folder, chatPathToAbsolute(folder, path)!);
+      // A workspace chat's path whose first part names none of its folders names no file.
+      const abs = chatPathToAbsolute(folder, path);
+      const rel = abs === null ? null : chatPathOf(folder, abs);
       if (rel !== null && (await openChatVersion(request.dialogId, rel, request))) return;
     }
     const abs = await resolveOpenPath(path, folder);
@@ -1301,14 +1305,14 @@ export default function App() {
     return true;
   }
   /**
-   * The folder a path from the chat `dialogId` (else the open chat) is in
+   * Where a path from the chat `dialogId` (else the open chat) is
    * (docs/design/workspaces-plan.md, 3.8): the chat names its files in its
-   * own folder, and a subagent's chat, which isn't listed, in the open
+   * own folders, and a subagent's chat, which isn't listed, in the open
    * chat's (`chatFolderFor`).
    */
   function folderForChat(dialogId?: string | null): ChatRoot | null {
     const listed = dialogId ? chatStore.summaryOf(dialogId) : undefined;
-    return chatFolderFor(listed, chatStore.state.active, resolvedFolders());
+    return chatFolderFor(listed, chatStore.state.active, resolvedFolders(), workspaceId());
   }
 
   /**
@@ -2688,6 +2692,7 @@ export default function App() {
           >
             <ChatPanel
               folders={resolvedFolders}
+              workspace={workspaceId}
               activeFolder={activeFolderNow}
               activeFileContext={activeFileContext}
               files={tree.files}

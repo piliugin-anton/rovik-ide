@@ -121,7 +121,6 @@ import {
 } from '../lib/checklist';
 import {
   chatForPlan,
-  chatPlanPath,
   implementationMessage,
   onImplementPlanRequest,
   peekImplementPlanRequest,
@@ -186,8 +185,8 @@ import {
   chatRootOf,
   folderOf,
   listedBy,
+  runPlace,
   sameOwners,
-  workspaceIdOf,
   type ChatOwners,
   type OpenFolder,
 } from '../lib/openFolders';
@@ -292,6 +291,11 @@ interface ChatProps {
    * and names its files as paths in it (docs/design/workspaces-plan.md, 3.8).
    */
   folders: Accessor<readonly OpenFolder[]>;
+  /**
+   * The window's workspace's id; null in a folder's window. Its chats work
+   * across its folders, and name their files under the folders' names (D2).
+   */
+  workspace: Accessor<string | null>;
   /** The folder the user is working in: New chat's choice to begin with (D2). */
   activeFolder: Accessor<OpenFolder | null>;
   activeFileContext: Accessor<ActiveFileContext | null>;
@@ -626,31 +630,44 @@ export default function ChatPanel(props: ChatProps) {
   const activeDialog = () => store.state.active;
 
   /**
-   * The folder a chat works in (lib/openFolders.ts, 3.8): the window's folder
-   * whose project it is. Null when it isn't open here, and for a chat with
-   * no project (no folder open).
+   * Where a chat works (lib/openFolders.ts, 3.8): the window's folder whose
+   * project it is, or a workspace chat's folders. Null when it doesn't work
+   * here, and for a chat with no project (no folder open).
    */
   const rootOf = (dialogId: string | null | undefined) =>
-    dialogId ? chatRootOf(store.summaryOf(dialogId), props.folders()) : null;
-  /** The open chat's folder. */
+    dialogId ? chatRootOf(store.summaryOf(dialogId), props.folders(), props.workspace()) : null;
+  /** Where the open chat works. */
   const chatRoot = () => rootOf(activeDialogId());
+  /**
+   * What `dialogId`'s run is sent (`runPlace`): its folder, none for a
+   * workspace chat; or why it can't run here.
+   */
+  const placeOf = (dialogId: string) => runPlace(store.summaryOf(dialogId), rootOf(dialogId));
+  /**
+   * The root `dialogId`'s run is sent: its folder; none for a workspace
+   * chat, or for one that can't run here.
+   */
+  const runRootOf = (dialogId: string) => {
+    const place = placeOf(dialogId);
+    return 'root' in place ? place.root : null;
+  };
   /** Several folders: New chat asks which a chat works in, and a chat says which (D2). */
   const severalFolders = () => props.folders().length > 1;
   /** A chat's folders for its row in the list: "api", "api, web", "All folders". */
   const rowFolders = (dialog: DialogSummary) => {
-    const names = chatFolderNames(dialog, props.folders());
+    const names = chatFolderNames(dialog, props.folders(), props.workspace());
     return names === 'all' ? 'All folders' : (names?.join(', ') ?? null);
   };
   /** The open chat's folders for the label by the input: "api", "all folders". */
   const activeFolders = () => {
     const dialog = activeDialog();
-    const names = dialog ? chatFolderNames(dialog, props.folders()) : null;
+    const names = dialog ? chatFolderNames(dialog, props.folders(), props.workspace()) : null;
     return names === 'all' ? 'all folders' : (names?.join(', ') ?? null);
   };
-  /** The label's tooltip: where the open chat's folder is. */
+  /** The label's tooltip: where the open chat's folders are. */
   const activeFoldersTitle = () => {
     const root = chatRoot();
-    return root ? `This chat works in ${root.path}` : undefined;
+    return root ? `This chat works in ${root.folders.map((f) => f.path).join(', ')}` : undefined;
   };
   /**
    * No chat to show, in a window with folders, once its chats are loaded:
@@ -678,7 +695,8 @@ export default function ChatPanel(props: ChatProps) {
       const args = profileConnectorArgs(activeProfile());
       if (!args) return null;
       const place = activeDialog()?.place;
-      return { args, cwd: place ? null : (chatRoot()?.path ?? null), host: place?.host ?? null };
+      const id = activeDialogId();
+      return { args, cwd: place || !id ? null : runRootOf(id), host: place?.host ?? null };
     },
     null,
     { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) }
@@ -801,7 +819,9 @@ export default function ChatPanel(props: ChatProps) {
           list.length,
           list[list.length - 1]?.finalized,
           sending(),
-          chatRoot()?.path,
+          chatRoot()
+            ?.folders.map((folder) => folder.path)
+            .join('\n'),
           efforts(),
           chatMode(),
           permissions(),
@@ -845,7 +865,7 @@ export default function ChatPanel(props: ChatProps) {
             const estimate = await estimateContext({
               profile,
               dialogId,
-              root: rootOf(dialogId)?.path ?? null,
+              root: runRootOf(dialogId),
               mode: chatMode(),
               reasoningEffort: reasoningOptions(profile)?.reasoning_effort,
             });
@@ -952,9 +972,9 @@ export default function ChatPanel(props: ChatProps) {
 
   /**
    * How the open chat names the file at `path` (3.8): its path in the
-   * chat's folder. With no folder open the chat has none, and the path is
-   * as it is; a file outside the chat's folder has no name: the chat can't
-   * read it.
+   * chat's folder, or under its folder's name in a workspace chat. With no
+   * folder open the chat has none, and the path is as it is; a file outside
+   * the chat's folders has no name: the chat can't read it.
    */
   function chatName(path: string): string | null {
     if (props.folders().length === 0) return path;
@@ -998,11 +1018,15 @@ export default function ChatPanel(props: ChatProps) {
    * folder, or in none of the window's.
    */
   function notTheChats(path: string): string {
-    const root = chatRoot();
+    const names = chatRoot()?.folders.map((folder) => folder.name);
     const at = folderOf(props.folders(), path);
-    const where = root ? `this chat works in ${root.name}` : 'this chat has no folder open here';
-    if (at) return `${at.name}/${chatPathOf(at, path)} is in ${at.name}; ${where}.`;
-    return `${path} isn’t in this window’s folders; ${where}.`;
+    const where = names?.length
+      ? `this chat works in ${names.join(', ')}`
+      : 'this chat has no folder open here';
+    if (!at) return `${path} isn’t in this window’s folders; ${where}.`;
+    // Named as a chat across the window's folders would: under its folder's name.
+    const named = chatPathOf({ kind: 'workspace', folders: [at] }, path);
+    return `${named} is in ${at.name}; ${where}.`;
   }
 
   const fileSuggestions = createMemo<FileSuggestion[]>(() => {
@@ -1040,27 +1064,42 @@ export default function ChatPanel(props: ChatProps) {
   });
 
   /*
-   * Every file in the project, for "@": the backend lists them all
-   * (.gitignore respected, but .rovik/plans/ always: a plan is there to be
-   * referenced, even when the project ignores .rovik/). The file tree only
-   * knows folders it has loaded, so in a newly opened project it offered
-   * just the root's files. Fetched when "@" opens, at most every few
-   * seconds, merged with the tree's.
+   * Every file in the chat's folders, for "@": the backend lists each
+   * folder's (.gitignore respected, but .rovik/plans/ always: a plan is
+   * there to be referenced, even when the project ignores .rovik/). The
+   * file tree only knows folders it has loaded, so in a newly opened project
+   * it offered just the root's files. Fetched when "@" opens, at most every
+   * few seconds, merged with the tree's.
    */
   const [projectFiles, setProjectFiles] = createSignal<{
-    root: string;
+    /** The folders listed, one path a line. */
+    roots: string;
     files: string[];
     at: number;
   } | null>(null);
   let projectFilesLoading = false;
+  /** The open chat's folders that are there (D20), one path a line: what "@" lists. */
+  const listedRoots = () =>
+    (chatRoot()?.folders ?? [])
+      .filter((folder) => !folder.missing)
+      .map((folder) => folder.path)
+      .join('\n');
   function refreshProjectFiles() {
-    const root = chatRoot()?.path;
+    const roots = listedRoots();
     const cached = projectFiles();
-    if (!root || projectFilesLoading) return;
-    if (cached && cached.root === root && Date.now() - cached.at < 5000) return;
+    if (!roots || projectFilesLoading) return;
+    if (cached && cached.roots === roots && Date.now() - cached.at < 5000) return;
     projectFilesLoading = true;
-    invoke<{ files: string[]; truncated: boolean }>('list_project_files', { root })
-      .then((r) => setProjectFiles({ root, files: r.files, at: Date.now() }))
+    Promise.all(
+      roots
+        .split('\n')
+        .map((root) =>
+          invoke<{ files: string[]; truncated: boolean }>('list_project_files', { root })
+        )
+    )
+      .then((lists) =>
+        setProjectFiles({ roots, files: lists.flatMap((list) => list.files), at: Date.now() })
+      )
       .catch((err) => console.error('Listing project files failed:', err))
       .finally(() => (projectFilesLoading = false));
   }
@@ -1068,9 +1107,9 @@ export default function ChatPanel(props: ChatProps) {
     if (fileSuggestionsOpen()) refreshProjectFiles();
   });
 
-  // The open chat's folder's files only (D13): it can't read the others.
+  // The open chat's folders' files only (D13): it can't read the others.
   const referenceableFiles = createMemo<FileSuggestion[]>(() => {
-    const root = chatRoot()?.path;
+    const roots = listedRoots();
     const byPath = new Map<string, FileSuggestion>();
     // The tree's rows first: they carry the ids the rest of the app uses.
     for (const file of props.files()) {
@@ -1080,7 +1119,7 @@ export default function ChatPanel(props: ChatProps) {
       byPath.set(file.path, { id: file.id, path: file.path, name: file.name, relativePath });
     }
     const listed = projectFiles();
-    if (listed && listed.root === root) {
+    if (listed && listed.roots === roots) {
       for (const path of listed.files) {
         const relativePath = chatName(path);
         if (byPath.has(path) || relativePath === null) continue;
@@ -3278,14 +3317,14 @@ export default function ChatPanel(props: ChatProps) {
       notify({ title: 'This chat can’t change now', message: readOnly, timeout: 6000 });
       return false;
     }
-    // A chat works in its own folder (3.8): one whose folder isn't open in
-    // this window has nowhere to work here.
-    const root = rootOf(dialogId);
-    if (!root && store.summaryOf(dialogId)?.projectId) {
+    // A chat works in its own folders (3.8): one whose folder isn't open in
+    // this window, or is missing, has nowhere to work here.
+    const place = placeOf(dialogId);
+    if ('why' in place) {
       notify({
         kind: 'warning',
-        title: 'This chat’s folder isn’t open here',
-        message: 'Open the folder this chat works in to go on with it.',
+        title: 'This chat can’t run now',
+        message: place.why,
         timeout: 8000,
       });
       return false;
@@ -3301,7 +3340,7 @@ export default function ChatPanel(props: ChatProps) {
         options: reasoningOptions(profile),
         mode: chatMode(),
         contextMode: ensureContextMode(dialogId),
-        root: root?.path ?? null,
+        root: place.root,
         currentUserContent,
         localDate: localDate(),
         config: agentConfig(),
@@ -3347,7 +3386,7 @@ export default function ChatPanel(props: ChatProps) {
       options: reasoningOptions(profile),
       mode: chatMode(),
       contextMode: ensureContextMode(dialogId),
-      root: rootOf(dialogId)?.path ?? null,
+      root: runRootOf(dialogId),
       currentUserContent: lastUserWireContent(dialogId),
       localDate: localDate(),
       config: agentConfig(),
@@ -3363,9 +3402,7 @@ export default function ChatPanel(props: ChatProps) {
     // A new chat's first message, on this computer: before its run starts,
     // its folder on its main branch offers the chat a branch of its own.
     const root =
-      isEmptyChat(dialogId) && !store.summaryOf(dialogId)?.place
-        ? (rootOf(dialogId)?.path ?? null)
-        : null;
+      isEmptyChat(dialogId) && !store.summaryOf(dialogId)?.place ? runRootOf(dialogId) : null;
     store.addLocal(dialogId, { ...message, role: 'user', finalized: true });
     if (root) await offerChatBranch(root, askForChatBranch);
     const started = await beginRun(dialogId, { kind: 'send', message }, wireContent);
@@ -3415,7 +3452,8 @@ export default function ChatPanel(props: ChatProps) {
   function startImplementation(dialogId: string, file: string) {
     if (!activeProfile() || isRunning(dialogId)) return;
     setChatMode('agent');
-    const shown = chatPlanPath(file, store.summaryOf(dialogId), props.folders());
+    // Named as the chat names files; a host's worktree's, as it is.
+    const shown = chatPathOf(rootOf(dialogId), file) ?? file;
     const { content, meta } = implementationMessage(file, shown);
     void sendMessage(dialogId, { id: crypto.randomUUID(), content, meta }, undefined);
   }
@@ -3452,7 +3490,8 @@ export default function ChatPanel(props: ChatProps) {
   function chatForEditorPlan(request: ImplementPlanRequest): PlanStart {
     if (request.folders) return chatForWorkspacePlan(request.folders);
     const folder = severalFolders() ? folderOf(props.folders(), request.path) : null;
-    if (!folder || folder.path === chatRoot()?.path) return 'open';
+    const root = chatRoot();
+    if (!folder || (root?.kind === 'folder' && root.folders[0].path === folder.path)) return 'open';
     return () => startChatIn(folder);
   }
 
@@ -3464,9 +3503,9 @@ export default function ChatPanel(props: ChatProps) {
    */
   function chatForWorkspacePlan(named: readonly string[]): PlanStart {
     const open = activeDialog();
-    const id = workspaceIdOf(store.owners()?.target);
+    const id = props.workspace();
     const workspace = id ? { id, names: props.folders().map((folder) => folder.name) } : null;
-    const names = open ? chatFolderNames(open, props.folders()) : null;
+    const names = open ? chatFolderNames(open, props.folders(), id) : null;
     const choice = chatForPlan(
       named,
       workspace,
