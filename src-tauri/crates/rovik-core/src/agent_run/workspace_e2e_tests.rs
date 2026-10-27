@@ -543,3 +543,379 @@ async fn a_command_in_each_folder_runs_there_and_sees_the_chats_changes() {
     );
     assert_eq!(h.file("api/a.txt").as_deref(), Some("A\n"), "landed");
 }
+
+/*
+ * F10: the checks of the folders a workspace chat changed, each in its
+ * folder (workspaces-plan.md, 4.7).
+ */
+
+/// Each of `checks` (kind, command) on for the folder at `path` (under the
+/// harness's `project`), as the user turns them on in its own settings.
+fn set_checks(h: &Harness, path: &str, checks: &[(&str, &str)]) {
+    let checks: Vec<Value> = checks
+        .iter()
+        .map(|(kind, command)| json!({ "kind": kind, "command": command, "enabled": true }))
+        .collect();
+    let folder = h.project.join(path).to_string_lossy().into_owned();
+    std::fs::create_dir_all(&h.core.paths.config_dir).unwrap();
+    crate::project_profile::save_project_settings(
+        &h.core.paths.config_dir,
+        folder,
+        json!({ "checks": checks }),
+    )
+    .unwrap();
+}
+
+/// The checks on, any command allowed, no checklist.
+fn checked() -> Permissions {
+    Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    }
+}
+
+/// The run's verification records, oldest first.
+fn verifications(messages: &[MessageRow]) -> Vec<Value> {
+    messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .collect()
+}
+
+/// A record's check run as `command`.
+fn check_in<'a>(record: &'a Value, command: &str) -> &'a Value {
+    record["checks"]
+        .as_array()
+        .and_then(|checks| checks.iter().find(|c| c["command"] == command))
+        .unwrap_or_else(|| panic!("no `{command}` in {record:#}"))
+}
+
+/// A type check as tsc prints one: a TODO or a FIXME left in `src/*.ts`,
+/// each by its path as `print` writes it (`$f`, relative to where it runs;
+/// `$PWD/$f`, absolute).
+fn todo_check(print: &str) -> String {
+    format!(
+        "status=0\nfor f in src/*.ts; do\n  if grep -q TODO \"$f\"; then echo \"{print}(1,1): error TS1000: A TODO is left.\"; status=1; fi\n  if grep -q FIXME \"$f\"; then echo \"{print}(1,1): error TS2000: A FIXME is left.\"; status=1; fi\ndone\nexit $status\n"
+    )
+}
+
+fn write(id: &'static str, path: &str, content: &str) -> Reply {
+    Reply::Call {
+        id,
+        name: "write",
+        args: json!({ "path": path, "content": content }),
+    }
+}
+
+/// D27: the checks of the folder the chat changed run, in it (`sh
+/// check.sh` is found there alone); another folder's don't.
+#[tokio::test]
+async fn only_the_changed_folders_checks_run_in_it() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let check = todo_check("$f");
+    let h = workspace_harness(
+        &[
+            ("api", &[("check.sh", &check), ("src/a.ts", "a\n")]),
+            ("web", &[("check.sh", &check), ("src/b.ts", "b\n")]),
+        ],
+        "all",
+    )
+    .await;
+    for name in ["api", "web"] {
+        set_checks(&h, name, &[("typecheck", "sh check.sh")]);
+    }
+    let (url, _) = model(vec![
+        write("w1", "web/src/b.ts", "b2\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.workspace_request(&url, Harness::send("Change web"), checked()))
+        .await;
+    assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
+    let records = verifications(&h.messages().await);
+    let commands: Vec<&Value> = records[0]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| &c["command"])
+        .collect();
+    assert_eq!(commands, [&json!("cd web && sh check.sh")]);
+    assert_eq!(
+        check_in(&records[0], "cd web && sh check.sh")["status"],
+        "passed"
+    );
+}
+
+/// D27: the folder the chat changed has no checks (another has): none
+/// runs, and the record says why.
+#[tokio::test]
+async fn with_no_checks_in_the_changed_folders_none_runs() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(
+        &[
+            ("api", &[("check.sh", "exit 0\n")]),
+            ("web", &[("b.txt", "b\n")]),
+        ],
+        "all",
+    )
+    .await;
+    set_checks(&h, "api", &[("typecheck", "sh check.sh")]);
+    let (url, _) = model(vec![write("w1", "web/b.txt", "b2\n"), Reply::Text("Done.")]).await;
+    h.start(h.workspace_request(&url, Harness::send("Edit web"), checked()))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let records = verifications(&h.messages().await);
+    assert_eq!(
+        records[0]["reason"],
+        "no checks are set up for the folders it changed"
+    );
+    assert_eq!(h.file("web/b.txt").as_deref(), Some("b2\n"), "landed");
+}
+
+/// A folder's failed type check skips that folder's tests, not another's;
+/// its failure names the folder's file as the chat does (tsc printed it
+/// relative to the folder).
+#[tokio::test]
+async fn a_failed_type_check_in_one_folder_doesnt_skip_the_others_tests() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let check = todo_check("$f");
+    let h = workspace_harness(
+        &[
+            (
+                "api",
+                &[
+                    ("check.sh", &check),
+                    ("test.sh", "exit 0\n"),
+                    ("src/a.ts", "a\n"),
+                ],
+            ),
+            ("web", &[("test.sh", "exit 0\n"), ("src/b.ts", "b\n")]),
+        ],
+        "all",
+    )
+    .await;
+    set_checks(
+        &h,
+        "api",
+        &[("typecheck", "sh check.sh"), ("test", "sh test.sh")],
+    );
+    set_checks(&h, "web", &[("test", "sh test.sh")]);
+    let (url, _) = model(vec![
+        write("w1", "api/src/a.ts", "a // TODO\n"),
+        write("w2", "web/src/b.ts", "b2\n"),
+        Reply::Text("Done."),
+        write("w3", "api/src/a.ts", "a2\n"),
+        Reply::Text("Fixed."),
+    ])
+    .await;
+    h.start(h.workspace_request(&url, Harness::send("Change both"), checked()))
+        .await;
+    assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
+    let records = verifications(&h.messages().await);
+    let typecheck = check_in(&records[0], "cd api && sh check.sh");
+    assert_eq!(typecheck["status"], "failed");
+    assert_eq!(
+        typecheck["failures"],
+        json!(["typecheck|api/src/a.ts|TS1000|A TODO is left."])
+    );
+    let api_tests = check_in(&records[0], "cd api && sh test.sh");
+    assert_eq!(api_tests["status"], "skipped", "{api_tests:#}");
+    assert_eq!(
+        check_in(&records[0], "cd web && sh test.sh")["status"],
+        "passed"
+    );
+}
+
+/// Each folder's check fails only as it did before the change: it runs on
+/// a copy of the chat's folders under the same names, and its failures are
+/// set apart by the chat's paths, whether the check printed them relative
+/// to its folder (web) or absolute (api: the view's, then the copy's).
+#[tokio::test]
+async fn a_check_failing_as_before_the_change_is_set_apart_per_folder() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let (absolute, relative) = (todo_check("$PWD/$f"), todo_check("$f"));
+    let h = workspace_harness(
+        &[
+            (
+                "api",
+                &[
+                    ("check.sh", &absolute),
+                    ("src/old.ts", "// TODO\n"),
+                    ("src/a.ts", "a\n"),
+                ],
+            ),
+            (
+                "web",
+                &[
+                    ("check.sh", &relative),
+                    ("src/old.ts", "// TODO\n"),
+                    ("src/b.ts", "b\n"),
+                ],
+            ),
+        ],
+        "all",
+    )
+    .await;
+    for name in ["api", "web"] {
+        set_checks(&h, name, &[("typecheck", "sh check.sh")]);
+    }
+    let (url, _) = model(vec![
+        write("w1", "api/src/a.ts", "a2\n"),
+        write("w2", "web/src/b.ts", "b2\n"),
+        Reply::Text("Done."),
+        Reply::Text("The TODOs were there before: I left them."),
+    ])
+    .await;
+    h.start(h.workspace_request(&url, Harness::send("Change both"), checked()))
+        .await;
+    assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
+    let records = verifications(&h.messages().await);
+    for name in ["api", "web"] {
+        let check = check_in(&records[0], &format!("cd {name} && sh check.sh"));
+        assert_eq!(check["status"], "preexisting", "{check:#}");
+        assert_eq!(
+            check["preexisting"],
+            json!([format!(
+                "typecheck|{name}/src/old.ts|TS1000|A TODO is left."
+            )])
+        );
+    }
+}
+
+/// P3.2: a new error in the file the fix wrote is a slip in it, not a
+/// regression to undo, though the check prints it by its folder's real
+/// path, whose last part isn't the folder's name (`y/app` is `y-app`).
+#[tokio::test]
+async fn a_slip_printed_with_a_folders_real_path_is_the_rounds_own() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(
+        &[
+            ("x/app", &[("src/a.ts", "a\n")]),
+            ("y/app", &[("src/b.ts", "b\n")]),
+        ],
+        "all",
+    )
+    .await;
+    let real = h.project.join("y/app");
+    let check = todo_check(&format!("{}/$f", real.display()));
+    std::fs::write(real.join("check.sh"), check).unwrap();
+    set_checks(&h, "y/app", &[("typecheck", "sh check.sh")]);
+    let (url, _) = model(vec![
+        write("w1", "y-app/src/b.ts", "b // TODO\n"),
+        Reply::Text("Done."),
+        write("w2", "y-app/src/b.ts", "b // FIXME\n"),
+        Reply::Text("Fixed."),
+        write("w3", "y-app/src/b.ts", "b2\n"),
+        Reply::Text("Fixed again."),
+    ])
+    .await;
+    h.start(h.workspace_request(&url, Harness::send("Change b"), checked()))
+        .await;
+    assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
+    let records = verifications(&h.messages().await);
+    let statuses: Vec<&Value> = records.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses,
+        [&json!("failed"), &json!("failed"), &json!("passed")],
+        "{records:#?}"
+    );
+    assert_eq!(records[1]["rolledBack"], Value::Null, "{:#}", records[1]);
+    assert_eq!(
+        records[1]["checks"][0]["failures"],
+        json!(["typecheck|y-app/src/b.ts|TS2000|A FIXME is left."])
+    );
+    assert_eq!(h.file("y/app/src/b.ts").as_deref(), Some("b2\n"));
+}
+
+/// E04: the test writer's new tests run on a copy of the chat's folders as
+/// they were, each in its folder (`cd api && go test ./a`): one that passes
+/// there already is flagged, one that fails there isn't.
+#[tokio::test]
+async fn the_red_check_runs_a_new_test_in_its_own_folder() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    if std::process::Command::new("go")
+        .arg("version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = workspace_harness(
+        &[
+            (
+                "api",
+                &[
+                    ("go.mod", "module api\n\ngo 1.21\n"),
+                    ("a/a.go", "package a\n\nfunc A() int { return 1 }\n"),
+                ],
+            ),
+            (
+                "web",
+                &[
+                    ("go.mod", "module web\n\ngo 1.21\n"),
+                    ("b/b.go", "package b\n\nfunc B() int { return 1 }\n"),
+                ],
+            ),
+        ],
+        "all",
+    )
+    .await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![
+                write("t1", "api/a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) { if A() != 1 { t.Fatal(A()) } }\n"),
+                write("t2", "web/b/b_test.go", "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) { if B() != 2 { t.Fatal(B()) } }\n"),
+                Reply::Text("## Summary\nTests.\n\n## Test files\n- `api/a/a_test.go`\n- `web/b/b_test.go`\n\n## Assumptions\nNone"),
+            ],
+        )],
+        vec![
+            write("w1", "web/b/b.go", "package b\n\nfunc B() int { return 2 }\n"),
+            Reply::Call {
+                id: "tw",
+                name: "task",
+                args: json!({ "kind": "testWriter" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let config: subagent::SubagentConfig = serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "testWriter": { "enabled": true } },
+        "redCheck": true,
+    }))
+    .unwrap();
+    let mut request = h.workspace_request(
+        &url,
+        Harness::send("Make B return 2"),
+        Permissions {
+            allow_any_command: true,
+            checklist: ChecklistMode::Off,
+            ..quiet_permissions()
+        },
+    );
+    request.config.as_mut().unwrap().subagents = config;
+    h.start(request).await;
+    // `go test` builds Go's standard library first on a fresh machine.
+    h.run_end_within(Duration::from_secs(120)).await;
+    let r = result_of(&h.messages().await, "tw").content.clone();
+    assert!(
+        r.contains("Red check: `api/a/a_test.go` already passes on the code before the change"),
+        "{r}"
+    );
+    assert!(!r.contains("`web/b/b_test.go` already"), "{r}");
+}

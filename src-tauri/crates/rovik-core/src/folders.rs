@@ -165,41 +165,105 @@ impl Folders {
         Some(join(&folder.name, &parts.join("/")))
     }
 
-    /// For reading paths in commands' output: each folder's path, its
-    /// spelling with links resolved and its place in the view at `view`,
-    /// each with what it reads as (`name/`, or "" for a folder chat's), and
-    /// the view's root as "". Longest first, so a folder's place in the view
-    /// is matched before the view's root.
-    pub fn output_roots(&self, view: &Path) -> Vec<(PathBuf, String)> {
-        let mut roots: Vec<(PathBuf, String)> = Vec::new();
-        let mut add = |path: PathBuf, prefix: &str| {
-            if !roots.iter().any(|(p, _)| *p == path) {
-                roots.push((path, prefix.to_string()));
-            }
-        };
+    /// For reading paths in commands' output run at `view` ([`OutputRoots`]):
+    /// each folder's path, its spelling with links resolved and its place in
+    /// the view, each read as `name/` (a folder chat's as its own paths), and
+    /// the view's root as the chat's.
+    pub fn output_roots(&self, view: &Path) -> OutputRoots {
         let views: Vec<PathBuf> = std::iter::once(view.to_path_buf())
             .chain(view.canonicalize().ok())
             .collect();
+        let mut roots: Vec<(PathBuf, String)> = Vec::new();
         for folder in &self.list {
             let prefix = match folder.name.is_empty() {
                 true => String::new(),
                 false => format!("{}/", folder.name),
             };
-            add(folder.path.clone(), &prefix);
+            roots.push((folder.path.clone(), prefix.clone()));
             if let Ok(resolved) = folder.path.canonicalize() {
-                add(resolved, &prefix);
+                roots.push((resolved, prefix.clone()));
             }
             if !folder.name.is_empty() {
                 for view in &views {
-                    add(view.join(&folder.name), &prefix);
+                    roots.push((view.join(&folder.name), prefix.clone()));
                 }
             }
         }
-        for view in views {
-            add(view, "");
+        for view in &views {
+            roots.push((view.clone(), String::new()));
         }
-        roots.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_os_str().len()));
-        roots
+        OutputRoots::new(roots, view)
+    }
+}
+
+/// How a chat's commands' output names its files ([`Folders::output_roots`]):
+/// an absolute path in one of the chat's folders, in their places in its
+/// view or in the view itself is a chat path (`/home/me/api/src/x.ts` is
+/// `api/src/x.ts`; in a folder chat of `/home/me/api`, `src/x.ts`), and a path
+/// a command printed relative to the folder it ran in is that folder's file.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OutputRoots {
+    /// Each folder, `/`-separated, and what a path in it reads as: the
+    /// longest first, so a folder's place in the view is matched before the
+    /// view's root.
+    roots: Vec<(String, String)>,
+    /// Where the commands ran: the chat's view, or its folder.
+    view: Option<PathBuf>,
+}
+
+impl OutputRoots {
+    fn new(roots: Vec<(PathBuf, String)>, view: &Path) -> OutputRoots {
+        let mut list: Vec<(String, String)> = Vec::new();
+        for (path, prefix) in roots {
+            let path = path.to_string_lossy().replace('\\', "/");
+            let path = path.trim_end_matches('/');
+            // `/` alone would read every absolute path as the chat's.
+            if path.len() > 1 && !list.iter().any(|(p, _)| p == path) {
+                list.push((path.to_string(), prefix));
+            }
+        }
+        list.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
+        OutputRoots {
+            roots: list,
+            view: Some(view.to_path_buf()),
+        }
+    }
+
+    /// The folders, for looking in (a Python module of the project's own).
+    pub fn paths(&self) -> Vec<String> {
+        self.roots.iter().map(|(path, _)| path.clone()).collect()
+    }
+
+    /// An absolute `path` as a chat path, when it's in one of the folders.
+    pub fn chat_path(&self, path: &str) -> Option<String> {
+        let path = path.replace('\\', "/");
+        self.roots.iter().find_map(|(root, prefix)| {
+            let rest = path.strip_prefix(root.as_str())?.strip_prefix('/')?;
+            Some(format!("{prefix}{rest}"))
+        })
+    }
+
+    /// `text` with every path in one of the folders written as a chat path.
+    pub fn in_text(&self, text: &str) -> String {
+        self.roots
+            .iter()
+            .fold(text.to_string(), |text, (root, prefix)| {
+                text.replace(&format!("{root}/"), prefix)
+            })
+    }
+
+    /// `path` as a command run in `folder` of the view printed it
+    /// (`cd api && …`): relative to that folder, so its file there when
+    /// there is one (`src/a.ts` is `api/src/a.ts`). Otherwise, an absolute
+    /// path or one already the chat's, as it is.
+    pub fn from_folder(&self, folder: &str, path: &str) -> String {
+        let Some(view) = self.view.as_ref().filter(|_| !folder.is_empty()) else {
+            return path.to_string();
+        };
+        match crate::agent_run::paths::norm_rel(&format!("{folder}/{path}")) {
+            Some(in_folder) if view.join(&in_folder).exists() => in_folder,
+            _ => path.to_string(),
+        }
     }
 }
 
@@ -317,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn output_roots_map_a_folders_path_its_resolved_spelling_and_its_place_in_the_view() {
+    fn output_roots_read_a_folders_path_its_resolved_spelling_and_its_place_in_the_view() {
         let base = crate::testing::temp_dir();
         std::fs::create_dir_all(base.0.join("api")).unwrap();
         std::fs::create_dir_all(base.0.join("shop/web")).unwrap();
@@ -325,29 +389,60 @@ mod tests {
         let folders = workspace(&base.0);
         let view = base.0.join("view");
         let roots = folders.output_roots(&view);
-        let reads_as = |path: &Path| {
-            roots
-                .iter()
-                .find(|(root, _)| root == path)
-                .map(|(_, prefix)| prefix.as_str())
-        };
-        assert_eq!(reads_as(&base.0.join("api")), Some("api/"));
-        assert_eq!(reads_as(&base.0.join("shop").join("web")), Some("web/"));
-        assert_eq!(reads_as(&view.join("web")), Some("web/"));
-        assert_eq!(reads_as(&view), Some(""), "the view's root");
+        let read = |path: &Path| roots.chat_path(&format!("{}/x.ts", path.display()));
+        assert_eq!(read(&base.0.join("api")).as_deref(), Some("api/x.ts"));
+        let web = base.0.join("shop").join("web");
+        assert_eq!(read(&web).as_deref(), Some("web/x.ts"));
         let resolved = base.0.join("api").canonicalize().unwrap();
-        assert_eq!(reads_as(&resolved), Some("api/"));
-        // A folder's place in the view is tried before the view's root.
-        let at = |path: &Path| roots.iter().position(|(root, _)| root == path).unwrap();
-        assert!(at(&view.join("api")) < at(&view));
+        assert_eq!(read(&resolved).as_deref(), Some("api/x.ts"));
+        // A folder's place in the view is read before the view's root.
+        assert_eq!(read(&view.join("web")).as_deref(), Some("web/x.ts"));
+        assert_eq!(read(&view).as_deref(), Some("x.ts"), "the view's root");
+        assert_eq!(read(&base.0.join("elsewhere")), None);
+        let printed = format!(
+            "{0}/src/a.ts: error\n{1}/b.ts",
+            web.display(),
+            view.display()
+        );
+        assert_eq!(roots.in_text(&printed), "web/src/a.ts: error\nb.ts");
 
         // A folder chat's folder and view both read as its own paths.
         let one = Folders::one(base.0.join("api"));
         let roots = one.output_roots(&view);
-        assert!(
-            roots.iter().all(|(_, prefix)| prefix.is_empty()),
-            "{roots:?}"
+        let read = |path: &Path| roots.chat_path(&format!("{}/x.ts", path.display()));
+        assert_eq!(read(&base.0.join("api")).as_deref(), Some("x.ts"));
+        assert_eq!(read(&view).as_deref(), Some("x.ts"));
+        // The longest root first: one inside another goes whole. `/` reads
+        // no path as the chat's.
+        let nested = Folders::one(PathBuf::from("/a/b")).output_roots(Path::new("/a/b/c"));
+        assert_eq!(
+            nested.in_text("/a/b/c/x.ts /a/b/y.ts /a/bc/z.ts"),
+            "x.ts y.ts /a/bc/z.ts"
         );
-        assert!(roots.iter().any(|(root, _)| *root == base.0.join("api")));
+        let all = Folders::one(PathBuf::from("/")).output_roots(Path::new("/"));
+        assert_eq!(all.in_text("/x.ts"), "/x.ts");
+        assert_eq!(all.chat_path("/x.ts"), None);
+    }
+
+    /// A path a command printed relative to the folder it ran in (`cd api &&
+    /// …`) is that folder's file, where there's one; else as it was.
+    #[test]
+    fn a_path_printed_in_a_folder_is_tried_as_that_folders_first() {
+        let base = crate::testing::temp_dir();
+        let view = base.0.join("view");
+        std::fs::create_dir_all(view.join("api/src")).unwrap();
+        std::fs::write(view.join("api/src/a.ts"), "").unwrap();
+        let roots = workspace(&base.0).output_roots(&view);
+        assert_eq!(roots.from_folder("api", "src/a.ts"), "api/src/a.ts");
+        assert_eq!(roots.from_folder("api", "./src/a.ts"), "api/src/a.ts");
+        // Already the chat's (an absolute path, read), or no file there.
+        assert_eq!(roots.from_folder("api", "api/src/a.ts"), "api/src/a.ts");
+        assert_eq!(roots.from_folder("web", "src/a.ts"), "src/a.ts");
+        assert_eq!(roots.from_folder("api", "../web/a.ts"), "../web/a.ts");
+        assert_eq!(roots.from_folder("", "src/a.ts"), "src/a.ts");
+        assert_eq!(
+            OutputRoots::default().from_folder("api", "src/a.ts"),
+            "src/a.ts"
+        );
     }
 }

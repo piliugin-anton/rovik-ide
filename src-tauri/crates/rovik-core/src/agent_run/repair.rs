@@ -28,6 +28,7 @@
 use super::run::Run;
 use super::subagent::{Original, Source};
 use super::tools;
+use crate::folders::OutputRoots;
 use regex::Regex;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -250,7 +251,7 @@ pub fn judge(history: &[RoundFailures], now: &RoundFailures) -> Judgement {
 /// tool run from the project prints, or from a subfolder (cargo in
 /// src-tauri/ prints `src/x.rs` for `src-tauri/src/x.rs`): never the other
 /// way round, so `crates/x/src/lib.rs` isn't the written `src/lib.rs`.
-fn printed_is_written(printed: &str, written: &str, roots: &[&str]) -> bool {
+fn printed_is_written(printed: &str, written: &str, roots: &OutputRoots) -> bool {
     let p = printed.replace('\\', "/");
     let p = p.strip_prefix("./").unwrap_or(&p);
     let Some(w) = super::paths::norm_rel(written) else {
@@ -258,12 +259,8 @@ fn printed_is_written(printed: &str, written: &str, roots: &[&str]) -> bool {
     };
     let absolute = p.starts_with('/') || p.as_bytes().get(1) == Some(&b':');
     if absolute {
-        for root in roots.iter().filter(|r| !r.is_empty()) {
-            let root = root.replace('\\', "/");
-            let root = root.trim_end_matches('/');
-            if let Some(rel) = p.strip_prefix(root).and_then(|r| r.strip_prefix('/')) {
-                return super::paths::same(rel, &w);
-            }
+        if let Some(in_chat) = roots.chat_path(p) {
+            return super::paths::same(&in_chat, &w);
         }
         return p.ends_with(&format!("/{w}"));
     }
@@ -276,10 +273,10 @@ impl Judgement {
     /// fix stays. A regression is a test that fails now, or an error in a
     /// file the round didn't touch. Tools print paths their own way
     /// (absolute, from a subfolder): compared by their tail (round 2).
-    /// `roots` (round 3): the folders tools print absolute paths under
-    /// (the chat's view, the project), so `/p/packages/ui/src/a.ts` is
+    /// `roots` (round 3): how the absolute paths tools print read as the
+    /// chat's (its view, its folders), so `/p/packages/ui/src/a.ts` is
     /// `packages/ui/src/a.ts`, not the written `src/a.ts`.
-    pub fn keeping_slips_in(mut self, written: &[String], roots: &[&str]) -> Judgement {
+    pub fn keeping_slips_in(mut self, written: &[String], roots: &OutputRoots) -> Judgement {
         self.broke.retain(|k| {
             is_test_key(k)
                 || k.split('|')
@@ -949,6 +946,16 @@ impl Run {
         self.folders.as_ref()?.abs(key)
     }
 
+    /// How this run's commands' output names its files ([`OutputRoots`]):
+    /// the chat's folders and their places in its root (an isolated chat's
+    /// view) read as chat paths.
+    pub(super) fn output_roots(&self) -> OutputRoots {
+        match (&self.folders, &self.root) {
+            (Some(folders), Some(root)) => folders.output_roots(Path::new(root)),
+            _ => OutputRoots::default(),
+        }
+    }
+
     /// The files the chat's overlay changed (project-relative), when it has one.
     pub(super) fn overlay_paths(&self) -> Vec<String> {
         if !self.isolated() {
@@ -1305,6 +1312,12 @@ impl Run {
 mod tests {
     use super::*;
 
+    /// How a folder chat of `folder`, working in it, reads its commands'
+    /// paths.
+    fn roots_of(folder: &str) -> OutputRoots {
+        crate::folders::Folders::one(folder.into()).output_roots(Path::new(folder))
+    }
+
     /// A link under the tests to the code leads where it leads: the real
     /// key is the code's, which the test writer's rule refuses.
     #[cfg(unix)]
@@ -1395,11 +1408,12 @@ mod tests {
             judge(std::slice::from_ref(&r1), &r2).verdict,
             Verdict::Regression
         );
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["./src/a.ts".into()], &[]);
+        let j = judge(std::slice::from_ref(&r1), &r2)
+            .keeping_slips_in(&["./src/a.ts".into()], &OutputRoots::default());
         assert_eq!(j.verdict, Verdict::Progress);
         assert!(j.broke.is_empty() && j.new.len() == 1);
         // In a file it didn't write: still a regression.
-        let j = judge(&[r1], &r2).keeping_slips_in(&["src/b.ts".into()], &[]);
+        let j = judge(&[r1], &r2).keeping_slips_in(&["src/b.ts".into()], &OutputRoots::default());
         assert_eq!(j.verdict, Verdict::Regression);
     }
 
@@ -1429,12 +1443,13 @@ mod tests {
             ("lint|.\\src\\a.ts|rule|m", "src/a.ts"),
         ] {
             let r2 = round(&[key], &ran);
-            let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&[written.into()], &[]);
+            let j = judge(std::slice::from_ref(&r1), &r2)
+                .keeping_slips_in(&[written.into()], &OutputRoots::default());
             assert_eq!(j.verdict, Verdict::Progress, "{key}: {j:?}");
             assert!(j.broke.is_empty(), "{key}");
             // Another file of the same name elsewhere isn't the one written.
-            let j =
-                judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["lib/b.ts".into()], &[]);
+            let j = judge(std::slice::from_ref(&r1), &r2)
+                .keeping_slips_in(&["lib/b.ts".into()], &OutputRoots::default());
             assert_eq!(j.verdict, Verdict::Regression, "{key}");
         }
     }
@@ -1448,22 +1463,35 @@ mod tests {
         let ran = ["test", "lint", "build"];
         let r1 = round(&["test|test|t::one"], &ran);
         let r2 = round(&["build|crates/x/src/lib.rs|E0308|m"], &ran);
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/lib.rs".into()], &[]);
+        let j = judge(std::slice::from_ref(&r1), &r2)
+            .keeping_slips_in(&["src/lib.rs".into()], &OutputRoots::default());
         assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
         assert_eq!(j.broke, ["build|crates/x/src/lib.rs|E0308|m"]);
         let r2 = round(&["lint|/p/packages/ui/src/a.ts|rule|m"], &ran);
-        let j =
-            judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &["/p"]);
+        let j = judge(std::slice::from_ref(&r1), &r2)
+            .keeping_slips_in(&["src/a.ts".into()], &roots_of("/p"));
         assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
         // The written file under the root is the slip it was.
         let r2 = round(&["lint|/p/src/a.ts|rule|m"], &ran);
-        let j =
-            judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &["/p"]);
+        let j = judge(std::slice::from_ref(&r1), &r2)
+            .keeping_slips_in(&["src/a.ts".into()], &roots_of("/p"));
         assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
         // A Windows view root, printed with backslashes.
         let r2 = round(&["lint|C:\\v\\src\\a.ts|rule|m"], &ran);
         let j = judge(std::slice::from_ref(&r1), &r2)
-            .keeping_slips_in(&["src/a.ts".into()], &["C:\\v"]);
+            .keeping_slips_in(&["src/a.ts".into()], &roots_of("C:\\v"));
+        assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
+        // A workspace chat's folder `y-app` at `/w/y/app`, printed by its
+        // real path: the written file it is.
+        let roots = crate::folders::Folders::named(vec![crate::folders::Folder {
+            name: "y-app".into(),
+            path: "/w/y/app".into(),
+        }])
+        .unwrap()
+        .output_roots(Path::new("/run/chats/c1"));
+        let r2 = round(&["lint|/w/y/app/src/a.ts|rule|m"], &ran);
+        let j = judge(std::slice::from_ref(&r1), &r2)
+            .keeping_slips_in(&["y-app/src/a.ts".into()], &roots);
         assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
     }
 
@@ -1475,13 +1503,15 @@ mod tests {
         let ran = ["test", "lint"];
         let r1 = round(&["test|test|t::one"], &ran);
         let r2 = round(&["lint|src/old.ts|rule|m"], &ran);
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/new.ts".into()], &[]);
+        let j = judge(std::slice::from_ref(&r1), &r2)
+            .keeping_slips_in(&["src/new.ts".into()], &OutputRoots::default());
         assert_eq!(j.verdict, Verdict::Regression);
         let r2 = round(
             &["lint|src/new.ts|rule|m", "lint|src/other.ts|rule|m"],
             &ran,
         );
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/new.ts".into()], &[]);
+        let j = judge(std::slice::from_ref(&r1), &r2)
+            .keeping_slips_in(&["src/new.ts".into()], &OutputRoots::default());
         assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
         assert_eq!(j.broke, ["lint|src/other.ts|rule|m"]);
     }
@@ -1504,8 +1534,8 @@ mod tests {
                 (format!("lint|{other}|rule|m"), true),
             ] {
                 let r2 = round(&[key.as_str()], &ran);
-                let j =
-                    judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&[written.into()], &[]);
+                let j = judge(std::slice::from_ref(&r1), &r2)
+                    .keeping_slips_in(&[written.into()], &OutputRoots::default());
                 assert_eq!(j.broke.contains(&key), broken, "{written} / {key}: {j:?}");
             }
         }
@@ -1518,7 +1548,8 @@ mod tests {
         let ran = ["test", "lint"];
         let r1 = round(&["test|test|t::one"], &ran);
         let r2 = round(&["lint|src/a.ts|rule|m", "lint|src/b.ts|rule|m"], &ran);
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &[]);
+        let j = judge(std::slice::from_ref(&r1), &r2)
+            .keeping_slips_in(&["src/a.ts".into()], &OutputRoots::default());
         assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
         assert_eq!(j.broke, ["lint|src/b.ts|rule|m"]);
     }

@@ -2123,7 +2123,7 @@ impl Run {
     /// S05: the light check of a step's files as its worker ends: their
     /// syntax (where a file parsed before the step, or is new: V04's
     /// rule), then the stack's light commands on them
-    /// (`project::light_check_for`: a linter on a file, `go vet` on a
+    /// (`project::light_checks`: a linter on a file, `go vet` on a
     /// package; never a build or a test run). None: it found nothing.
     async fn light_check_step(&self, n: usize, writes: &[ChildWrite]) -> Option<String> {
         let root = self.root.clone()?;
@@ -2163,7 +2163,12 @@ impl Run {
             found.push(lines.join("\n"));
         }
         let permissions = self.config().permissions;
-        let commands = super::project::light_check_for(std::path::Path::new(&root), &files);
+        let commands = match &self.folders {
+            Some(folders) => {
+                super::project::light_checks(std::path::Path::new(&root), folders, &files)
+            }
+            None => Vec::new(),
+        };
         let mut ran = 0;
         for command in commands {
             if self.stopped() {

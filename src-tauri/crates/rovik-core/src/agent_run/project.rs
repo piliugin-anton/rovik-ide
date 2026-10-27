@@ -372,8 +372,12 @@ pub fn load_for(
     (checks, context)
 }
 
-/// V09: `command` run in `folder` of the project: `cd api && go test ./...`.
+/// V09: `command` run in `folder` of the project: `cd api && go test ./...`;
+/// in the project's own folder (""), as it is.
 pub fn in_folder(folder: &str, command: &str) -> String {
+    if folder.is_empty() {
+        return command.to_string();
+    }
     let folder = if folder
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
@@ -399,6 +403,40 @@ pub fn folder_of(command: &str) -> String {
         Some(quoted) => quoted.replace("'\\''", "'"),
         None => folder.to_string(),
     }
+}
+
+/// A chat's `files` (chat paths) by the folder they're in, each by its path
+/// there, in the order they come: a workspace chat's by their first part
+/// (`api/src/a.ts` is `src/a.ts` in `api`), a folder chat's all in "" as
+/// they are. A file in none of the chat's folders is left out.
+fn by_folder(folders: &Folders, files: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for file in files {
+        let Some((folder, path)) = folders.split(file) else {
+            continue;
+        };
+        match groups.iter_mut().find(|(name, _)| *name == folder.name) {
+            Some((_, paths)) => paths.push(path.to_string()),
+            None => groups.push((folder.name.clone(), vec![path.to_string()])),
+        }
+    }
+    groups
+}
+
+/// The command `command_for` gives a chat's `file` (a chat path) in the
+/// folder it's in, at its place in `root` (the chat's view) and by its path
+/// there, run in that folder (`cd api && npx vitest run src/a.test.ts`); a
+/// folder chat's at `root` as it is. None for a file in none of the chat's
+/// folders, or one `command_for` has none for.
+pub fn in_files_folder(
+    root: &Path,
+    folders: &Folders,
+    file: &str,
+    command_for: impl FnOnce(&Path, &str) -> Option<String>,
+) -> Option<String> {
+    let (folder, path) = folders.split(file)?;
+    let command = command_for(&root.join(&folder.name), path)?;
+    Some(in_folder(&folder.name, &command))
 }
 
 /// The project section for estimates (the context meter), re-detected at
@@ -662,11 +700,26 @@ pub fn ran_no_tests(output: &str) -> bool {
     none && !some
 }
 
+/// F05b's light checks of a chat's `files` at `root` (its view), each
+/// folder's run in it with its own tools (`cd api && npx eslint src/a.ts`).
+pub fn light_checks(root: &Path, folders: &Folders, files: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (folder, files) in by_folder(folders, files) {
+        for check in light_check_for(&root.join(&folder), &files) {
+            let check = in_folder(&folder, &check);
+            if !out.contains(&check) {
+                out.push(check);
+            }
+        }
+    }
+    out
+}
+
 /// F05b: light checks a parallel worker may run on its files, per stack:
 /// a file or a package at a time, never a build or a test run. Tools that
 /// aren't installed are left out; a stack with nothing gets only the
 /// language server's diagnostics.
-pub fn light_check_for(root: &Path, files: &[String]) -> Vec<String> {
+fn light_check_for(root: &Path, files: &[String]) -> Vec<String> {
     let installed = |tool: &str| {
         root.join("node_modules/.bin").join(tool).is_file()
             || crate::process::child_var("PATH").is_some_and(|path| {
@@ -1071,6 +1124,69 @@ mod tests {
         assert_eq!(in_folder("my app", "npm test"), "cd 'my app' && npm test");
         assert_eq!(folder_of("npm test"), "");
         assert_eq!(folder_of("cd api"), "");
+        // The project's own folder: the command as it is.
+        assert_eq!(in_folder("", "npm test"), "npm test");
+    }
+
+    /// `api` (eslint installed) and `web` (none) of a workspace chat at
+    /// `view`.
+    fn shop_view() -> (crate::testing::TempDir, std::path::PathBuf, Folders) {
+        let dir = crate::testing::temp_dir();
+        let view = dir.0.join("view");
+        std::fs::create_dir_all(view.join("api/node_modules/.bin")).unwrap();
+        std::fs::write(view.join("api/node_modules/.bin/eslint"), "").unwrap();
+        std::fs::create_dir_all(view.join("web")).unwrap();
+        let folders = Folders::named(
+            ["api", "web"]
+                .map(|name| crate::folders::Folder {
+                    name: name.into(),
+                    path: dir.0.join(name),
+                })
+                .to_vec(),
+        )
+        .unwrap();
+        (dir, view, folders)
+    }
+
+    /// F05b in a workspace chat: each folder's files are checked in it, with
+    /// its own tools; a folder without them gets none.
+    #[test]
+    fn a_workspace_chats_light_checks_run_in_each_folder() {
+        let (_dir, view, folders) = shop_view();
+        let files = [
+            "api/src/a.ts".to_string(),
+            "web/src/b.ts".to_string(),
+            "web/pkg/c.go".to_string(),
+        ];
+        assert_eq!(
+            light_checks(&view, &folders, &files),
+            ["cd api && npx eslint src/a.ts", "cd web && go vet ./pkg"]
+        );
+        // A folder chat's, at its root as before.
+        let one = Folders::one(view.join("api"));
+        assert_eq!(
+            light_checks(&view.join("api"), &one, &["src/a.ts".to_string()]),
+            ["npx eslint src/a.ts"]
+        );
+    }
+
+    /// A file's command runs in its folder, by the file's path there; a
+    /// file in none of the chat's folders has none.
+    #[test]
+    fn a_files_command_runs_in_its_folder() {
+        let (_dir, view, folders) = shop_view();
+        let go_test = |dir: &Path, file: &str| {
+            assert!(dir.ends_with("web"), "{}", dir.display());
+            Some(format!("go test ./{file}"))
+        };
+        assert_eq!(
+            in_files_folder(&view, &folders, "web/pkg/c_test.go", go_test).as_deref(),
+            Some("cd web && go test ./pkg/c_test.go")
+        );
+        assert_eq!(
+            in_files_folder(&view, &folders, "docs/a.md", |_, _| Some("x".into())),
+            None
+        );
     }
 
     #[test]

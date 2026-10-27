@@ -622,7 +622,12 @@ impl Run {
         // F05b: the light checks it may run on its files.
         let root = self.root.clone().unwrap_or_default();
         let files: Vec<String> = member.step.files.iter().map(|f| f.path.clone()).collect();
-        let light = super::project::light_check_for(std::path::Path::new(&root), &files);
+        let light = match &self.folders {
+            Some(folders) => {
+                super::project::light_checks(std::path::Path::new(&root), folders, &files)
+            }
+            None => Vec::new(),
+        };
         note.push_str(&if light.is_empty() {
             "\nNo light checks were found for your files: use diagnostics.".to_string()
         } else {

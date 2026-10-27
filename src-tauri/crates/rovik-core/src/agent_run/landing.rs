@@ -100,9 +100,10 @@ fn running_in_view(dialog_id: &str) -> Option<String> {
 }
 
 /// Whether checks would run on a result merged with the project's newer
-/// changes: set up, enabled, and allowed by the command rules. Without
-/// them, a merge lands as it is, for a local chat and for a daemon's
-/// result alike (6.5).
+/// changes: set up, enabled, and allowed by the command rules (a
+/// workspace chat's, those of the folders it changed: `Run::enabled_checks`).
+/// Without them, a merge lands as it is, for a local chat and for a
+/// daemon's result alike (6.5).
 pub fn checks_would_run(permissions: &Permissions, checks: &[ProjectCheck]) -> bool {
     permissions.verify_changes
         && checks.iter().any(|c| {
@@ -240,7 +241,7 @@ impl Run {
             return Some(("waits: conflicts", count));
         }
         let p = self.config().permissions;
-        let has_checks = checks_would_run(&p, &self.checks);
+        let has_checks = checks_would_run(&p, &self.enabled_checks());
         if plan.merged && has_checks && p.command_approval.required && !self.in_autopilot() {
             // The merged result's checks are commands too: not without the
             // user's go. Land (in the bar) lands it as it is. In Autopilot

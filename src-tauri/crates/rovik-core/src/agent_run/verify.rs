@@ -9,8 +9,7 @@
 //! reads the same after a restart.
 
 use super::command_output::{
-    environment_failure, error_locations, failure_keys, focus_failures, split_by_changed,
-    tests_ran, without_roots,
+    check_keys, environment_failure, error_locations, focus_failures, split_by_changed, tests_ran,
 };
 use super::log;
 use super::permissions::{check_command, denied_entry, Permissions, Verdict};
@@ -361,6 +360,16 @@ fn clear(r: &CheckResult) -> bool {
     matches!(r.status, "passed" | "preexisting")
 }
 
+/// D27: whether a check's `command` checks a workspace chat that changed
+/// the folders `changed` (None: a folder chat, whose checks all do): run in
+/// a changed folder (`cd api && …`, `cd api/ui && …`), or in none (a plan's
+/// own commands).
+fn checks_changed(command: &str, changed: Option<&std::collections::BTreeSet<String>>) -> bool {
+    let folder = super::project::folder_of(command);
+    let name = folder.split('/').next().unwrap_or_default();
+    name.is_empty() || changed.is_none_or(|names| names.contains(name))
+}
+
 /// This round's failures, for comparing rounds (repair.rs).
 fn round_failures(results: &[CheckResult]) -> RoundFailures {
     RoundFailures {
@@ -599,13 +608,32 @@ pub fn failure_report(
 }
 
 impl Run {
-    /// The project's checks that run: on, and with a command.
-    fn enabled_checks(&self) -> Vec<ProjectCheck> {
+    /// The checks that run: on, and with a command. A workspace chat's are
+    /// those of the folders it changed (`cd api && …`), and those in no
+    /// folder (a plan's own commands, V02), which run whatever changed
+    /// (D27): the prompt lists every folder's, so the agent can run the
+    /// others itself.
+    pub(super) fn enabled_checks(&self) -> Vec<ProjectCheck> {
+        let changed = self.changed_folders();
         self.checks
             .iter()
             .filter(|c| c.enabled && !c.command.trim().is_empty())
+            .filter(|c| checks_changed(&c.command, changed.as_ref()))
             .cloned()
             .collect()
+    }
+
+    /// The names of the folders a workspace chat changed: its changed
+    /// files' first parts, earlier runs' and commands' too. None for a
+    /// folder chat, whose checks all run.
+    fn changed_folders(&self) -> Option<std::collections::BTreeSet<String>> {
+        let folders = self.folders.as_ref().filter(|f| f.single().is_none())?;
+        let keys = self.touched_keys();
+        let names = keys
+            .iter()
+            .filter_map(|key| folders.split(key))
+            .map(|(folder, _)| folder.name.clone());
+        Some(names.collect())
     }
 
     /// Appends a verification record; returns its id.
@@ -886,12 +914,16 @@ impl Run {
 
         let checks = self.enabled_checks();
         if checks.is_empty() {
+            let reason = match self.changed_folders() {
+                Some(_) => "no checks are set up for the folders it changed",
+                None => "no checks are set up for this project",
+            };
             self.add_record(record(
                 "unverified",
                 self.verify_rounds,
                 &[],
                 &changed,
-                Some("no checks are set up for this project"),
+                Some(reason),
             ))
             .await?;
             self.writes_since_verify = false;
@@ -997,7 +1029,7 @@ impl Run {
         // P3.2: an error in what the round wrote is a slip, not a regression.
         // This round's: the checkpoint's files that differ from it now (it
         // also holds what earlier rounds changed).
-        let project = self.project_root().unwrap_or_default();
+        let roots = self.output_roots();
         let mut written: Vec<String> = Vec::new();
         if let Some(cp) = &self.checkpoint {
             written = cp
@@ -1008,7 +1040,7 @@ impl Run {
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
-            judgement = judgement.keeping_slips_in(&written, &[root.as_str(), project.as_str()]);
+            judgement = judgement.keeping_slips_in(&written, &roots);
         }
         // V05: the checks of what a partial rollback kept (below): the same
         // round's, counted once.
@@ -1069,7 +1101,6 @@ impl Run {
         // failures name them and a round is left to check the rest of the
         // fix; when that round still finds it broken, everything does.
         if failed && judgement.verdict == Progress::Regression && !self.stopped() {
-            let roots = [root.clone(), project.clone()];
             let only = (!after_partial && round < max_rounds && !stalled)
                 .then(|| super::causes::files_behind(&judgement.broke, &written, &roots))
                 .flatten();
@@ -1501,7 +1532,7 @@ impl Run {
             let mut seen: Vec<String> = Vec::new();
             let (roots, known) = self.path_context(owners);
             for loc in error_locations(&output) {
-                // As a project-relative path (absolute, or from a subfolder).
+                // As a chat path (absolute, or from a subfolder).
                 let loc = super::causes::resolve(&loc, &roots, &known);
                 if seen.contains(&loc) || seen.len() >= 30 {
                     continue;
@@ -1610,8 +1641,8 @@ impl Run {
     /// Runs the enabled checks in order (type check, lint, tests, build),
     /// updating the record as each finishes. A check the user's command
     /// permissions don't allow is skipped, not run: the gate is held to the
-    /// same rules as the agent. Tests are skipped when the type check
-    /// failed: its errors would only reappear as test failures. A check
+    /// same rules as the agent. Tests are skipped when their folder's type
+    /// check failed: its errors would only reappear as test failures. A check
     /// that fails is compared with the code before the change, where there
     /// is a copy of it, and what fails there too is set apart (before.rs).
     #[allow(clippy::too_many_arguments)]
@@ -1631,9 +1662,9 @@ impl Run {
             .collect();
         let progress = |results: &[CheckResult]| record("running", round, results, changed, None);
         self.update_meta(record_id, progress(&results)).await?;
-        // Where the checks run, as their output names it: failure keys are
-        // relative to it, the same in a copy of the project elsewhere.
-        let roots = self.check_roots();
+        // How the checks' output names files: failure keys name them by
+        // their chat paths, the same in a copy of the folders elsewhere.
+        let roots = self.output_roots();
         // The code before the change, for the checks that fail (before.rs):
         // opened for the first, gone after the last.
         let mut copy: Option<super::before::BeforeCopy> = None;
@@ -1658,15 +1689,14 @@ impl Run {
                     self.update_meta(record_id, progress(&results)).await?;
                     break 'check;
                 }
-                // V09: in Autopilot, only the type check of the tests' own
-                // folder (`cd web && …`): another stack's errors aren't theirs.
+                // V09: only the type check of the tests' own folder (`cd web
+                // && …`), in every chat: another folder's errors aren't theirs.
                 let folder = super::project::folder_of(&results[i].command);
                 if results[i].kind == "test"
                     && results.iter().any(|r| {
                         r.kind == "typecheck"
                             && r.status == "failed"
-                            && (!self.in_autopilot()
-                                || super::project::folder_of(&r.command) == folder)
+                            && super::project::folder_of(&r.command) == folder
                     })
                 {
                     results[i].skip("the type check failed");
@@ -1736,7 +1766,9 @@ impl Run {
                         } else {
                             r.status = "failed";
                             let environment = (!out.timed_out)
-                                .then(|| environment_failure(out.exit_code, &combined, &roots))
+                                .then(|| {
+                                    environment_failure(out.exit_code, &combined, &roots.paths())
+                                })
                                 .flatten();
                             // V03: in Autopilot, whether its environment failed.
                             if self.in_autopilot() {
@@ -1746,11 +1778,8 @@ impl Run {
                             // the start and end kept to show: every failure
                             // counts when rounds are compared (V07).
                             let whole = out.whole_text().unwrap_or_else(|| combined.clone());
-                            r.failures = Some(failure_keys(
-                                &r.kind,
-                                &without_roots(&whole, &roots),
-                                out.timed_out,
-                            ));
+                            r.failures =
+                                Some(check_keys(&r.kind, &whole, out.timed_out, &roots, &folder));
                             // A timeout says nothing of what it didn't reach,
                             // and an environment's failure nothing of the code.
                             if !out.timed_out && environment.is_none() {
@@ -1793,7 +1822,7 @@ impl Run {
                 self.update_meta(record_id, progress(&results)).await?;
                 // What fails on the code before the change too isn't the
                 // change's: the check runs there, once a run (before.rs).
-                if let (Some(output), Some(project)) = (compare, self.code_before()) {
+                if let (Some(output), Some(folders)) = (compare, self.code_before()) {
                     let command = results[i].command.clone();
                     if self.befores.get(&command).is_none() {
                         let note = results[i]
@@ -1801,7 +1830,7 @@ impl Run {
                             .replace(super::before::RUNNING_BEFORE.into());
                         results[i].status = "running";
                         self.update_meta(record_id, progress(&results)).await?;
-                        let before = self.check_before(&results[i], &project, &mut copy).await;
+                        let before = self.check_before(&results[i], &folders, &mut copy).await;
                         // Stopped, it's asked again next time.
                         if !self.stopped() {
                             self.befores.insert(&command, before);
@@ -1859,28 +1888,84 @@ impl Run {
     }
 }
 
-/// V06: the command that runs the tests of the changed files
-/// (`project::test_command_for`): the test files among them, and those by
-/// their stack's conventions beside the others. None when there are none,
-/// the stack has no way to run some, or it's the whole suite again.
+/// V06: the command that runs the tests of the changed files in the
+/// suite's folder (`cd web && …`; `project::test_command_for`), run there:
+/// the test files among them, and those by their stack's conventions beside
+/// the others. None when there are none, the stack has no way to run some,
+/// or it's the whole suite again.
 fn scoped_tests(root: &str, changed: &[String], suite: &str) -> Option<String> {
-    let dir = std::path::Path::new(root);
+    let folder = super::project::folder_of(suite);
+    let dir = std::path::Path::new(root).join(&folder);
     let mut files: Vec<String> = Vec::new();
     for f in changed {
         let key = super::repair::rel_key(root, f);
-        for test in super::project::test_paths_for(&key) {
+        // The suite's folder's files, by their paths in it.
+        let key = match folder.as_str() {
+            "" => key.as_str(),
+            folder => match key.strip_prefix(folder).and_then(|k| k.strip_prefix('/')) {
+                Some(in_folder) => in_folder,
+                None => continue,
+            },
+        };
+        for test in super::project::test_paths_for(key) {
             if dir.join(&test).is_file() && !files.contains(&test) {
                 files.push(test);
             }
         }
     }
-    let command = super::project::test_command_for(dir, &files, None)?;
+    let command = super::project::test_command_for(&dir, &files, None)?;
+    let command = super::project::in_folder(&folder, &command);
     (command.trim() != suite.trim()).then_some(command)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D27: a workspace chat's checks are those of the folders it changed,
+    /// one level down too, and those in no folder (a plan's own commands);
+    /// a folder chat's all run.
+    #[test]
+    fn a_workspace_chats_checks_are_its_changed_folders_and_those_in_none() {
+        let changed: std::collections::BTreeSet<String> = ["web".to_string()].into();
+        let changed = Some(&changed);
+        assert!(checks_changed("cd web && npm test", changed));
+        assert!(checks_changed("cd web/ui && npm test", changed));
+        assert!(!checks_changed("cd api && npm test", changed));
+        assert!(checks_changed("node check.js", changed), "a plan's own");
+        assert!(
+            checks_changed("cd api && npm test", None),
+            "a folder chat's"
+        );
+    }
+
+    /// V06: the tests of the changed files in the timed-out suite's folder,
+    /// run there; another folder's changes aren't its.
+    #[test]
+    fn a_suites_scoped_tests_are_its_folders_run_in_it() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.to_string_lossy().into_owned();
+        for (path, content) in [
+            ("web/package.json", r#"{"devDependencies":{"vitest":"1"}}"#),
+            ("web/src/a.ts", ""),
+            ("web/src/a.test.ts", ""),
+            ("api/src/b.ts", ""),
+            ("api/src/b.test.ts", ""),
+        ] {
+            let file = dir.0.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, content).unwrap();
+        }
+        let changed = ["web/src/a.ts".to_string(), "api/src/b.ts".to_string()];
+        assert_eq!(
+            scoped_tests(&root, &changed, "cd web && npm test").as_deref(),
+            Some("cd web && npx vitest run src/a.test.ts")
+        );
+        assert_eq!(
+            scoped_tests(&root, &changed[1..], "cd web && npm test"),
+            None
+        );
+    }
 
     /// What the project changed meanwhile is shown the chat, but not a
     /// restricted file's lines.

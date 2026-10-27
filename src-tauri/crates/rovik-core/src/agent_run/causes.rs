@@ -12,6 +12,7 @@
 
 use super::triage::Triage;
 use super::worker::WriteScope;
+use crate::folders::OutputRoots;
 use serde::Serialize;
 
 /// Who fixes a cause.
@@ -98,9 +99,9 @@ pub struct Owners<'a> {
     pub test_files: &'a [String],
     /// Whether the run created a file (it wasn't there before).
     pub created: &'a dyn Fn(&str) -> bool,
-    /// Folders absolute paths in the output start with (the chat's view,
-    /// the project), for `resolve`.
-    pub roots: &'a [String],
+    /// How the output's absolute paths read as the chat's (its view, its
+    /// folders), for `resolve`.
+    pub roots: &'a OutputRoots,
     /// Project-relative files the run knows (changed, in a scope): a path
     /// relative to a subfolder is the one of them it ends.
     pub known: &'a [String],
@@ -155,20 +156,14 @@ fn tidy(path: &str) -> String {
     super::paths::norm_rel(path).unwrap_or_else(|| path.to_string())
 }
 
-/// A path from a check's output as a project-relative path: an absolute
-/// one without its root (`roots`), and one relative to a subfolder the
-/// check ran in (`cd src-tauri && cargo check` prints `src/x.rs`) as the
-/// one known file it's the end of. Otherwise as it is.
-pub fn resolve(path: &str, roots: &[String], known: &[String]) -> String {
+/// A path from a check's output as a chat path: an absolute one through
+/// `roots` (`/home/me/app/src/x.ts` is `src/x.ts`), and one relative to a
+/// subfolder the check ran in (`cd src-tauri && cargo check` prints
+/// `src/x.rs`) as the one known file it's the end of. Otherwise as it is.
+pub fn resolve(path: &str, roots: &OutputRoots, known: &[String]) -> String {
     let p = norm(path);
-    for root in roots {
-        let root = root.replace('\\', "/");
-        let root = root.trim_end_matches('/');
-        if !root.is_empty() {
-            if let Some(rest) = p.strip_prefix(&format!("{root}/")) {
-                return tidy(rest);
-            }
-        }
+    if let Some(in_chat) = roots.chat_path(&p) {
+        return tidy(&in_chat);
     }
     let p = tidy(&p);
     if let Some(k) = known.iter().find(|k| super::paths::same(k, &p)) {
@@ -450,7 +445,11 @@ pub fn group(keys: &[String], owners: &Owners, triage: Option<&Triage>) -> Vec<C
 /// names no file the round changed (a compiler's error in a file it didn't
 /// touch, a test named after none, "test|failed"): what's behind it isn't
 /// known, so everything goes back.
-pub fn files_behind(broke: &[String], changed: &[String], roots: &[String]) -> Option<Vec<String>> {
+pub fn files_behind(
+    broke: &[String],
+    changed: &[String],
+    roots: &OutputRoots,
+) -> Option<Vec<String>> {
     let mut files: Vec<String> = Vec::new();
     for key in broke {
         let failure = parse_key(key);
@@ -556,7 +555,7 @@ mod tests {
             contract: &contract,
             test_files: &[],
             created: &not_created,
-            roots: &[],
+            roots: &OutputRoots::default(),
             known: &[],
         };
         // `loadPost` gained an argument: twenty call sites, in both folders.
@@ -578,9 +577,39 @@ mod tests {
         assert!(causes[0].summary.starts_with("TS2554 Expected 2 arguments"));
     }
 
+    /// A workspace chat whose folders are named apart from their last
+    /// parts (`/w/x/app` is `app`, `/w/y/app` `y-app`).
+    fn two_apps() -> OutputRoots {
+        let folder = |name: &str, path: &str| crate::folders::Folder {
+            name: name.into(),
+            path: path.into(),
+        };
+        crate::folders::Folders::named(vec![folder("app", "/w/x/app"), folder("y-app", "/w/y/app")])
+            .unwrap()
+            .output_roots(std::path::Path::new("/run/chats/c1"))
+    }
+
+    /// A failure printed by a folder's real path, or by its place in the
+    /// chat's view, is the chat's file by its folder's name: a cause's and
+    /// the files behind a regression (V05).
+    #[test]
+    fn a_folders_real_path_reads_as_its_name() {
+        let roots = two_apps();
+        let changed = vec!["app/src/b.ts".to_string(), "y-app/src/b.ts".to_string()];
+        let r = |p: &str| resolve(p, &roots, &changed);
+        assert_eq!(r("/w/y/app/src/b.ts:3:1"), "y-app/src/b.ts");
+        assert_eq!(r("/run/chats/c1/app/src/b.ts"), "app/src/b.ts");
+        let key = "typecheck|/w/y/app/src/b.ts|TS2322|m".to_string();
+        assert_eq!(
+            files_behind(&[key], &changed, &roots),
+            Some(vec!["y-app/src/b.ts".to_string()])
+        );
+    }
+
     #[test]
     fn absolute_and_subfolder_paths_are_read_as_the_projects() {
-        let roots = vec!["/home/u/proj".to_string(), "/run/chats/abc".to_string()];
+        let roots = crate::folders::Folders::one("/home/u/proj".into())
+            .output_roots(std::path::Path::new("/run/chats/abc"));
         let known = vec![
             "src-tauri/src/posts.rs".to_string(),
             "src/posts.ts".to_string(),
@@ -626,7 +655,7 @@ mod tests {
             contract: &[],
             test_files: &[],
             created: &not_created,
-            roots: &[],
+            roots: &OutputRoots::default(),
             known: &[],
         };
         let keys = vec![
@@ -656,7 +685,7 @@ mod tests {
             contract: &[],
             test_files: &[],
             created: &not_created,
-            roots: &[],
+            roots: &OutputRoots::default(),
             known: &[],
         };
         let keys = vec![
@@ -685,7 +714,7 @@ mod tests {
             contract: &[],
             test_files: &[],
             created: &not_created,
-            roots: &[],
+            roots: &OutputRoots::default(),
             known: &[],
         };
         let keys = vec![
@@ -711,7 +740,7 @@ mod tests {
             contract: &[],
             test_files: &tests,
             created: &not_created,
-            roots: &[],
+            roots: &OutputRoots::default(),
             known: &[],
         };
         let keys = vec![
@@ -748,7 +777,7 @@ mod tests {
             contract: &[],
             test_files: &[],
             created: &created,
-            roots: &[],
+            roots: &OutputRoots::default(),
             known: &[],
         };
         let keys = vec!["typecheck|src/posts/new.ts|TS2322|x".to_string()];
@@ -764,7 +793,7 @@ mod tests {
             contract: &[],
             test_files: &[],
             created: &not_created,
-            roots: &[],
+            roots: &OutputRoots::default(),
             known: &[],
         };
         let triage = Triage {
@@ -812,7 +841,8 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        let roots = vec!["/p".to_string()];
+        let roots =
+            crate::folders::Folders::one("/p".into()).output_roots(std::path::Path::new("/p"));
         let behind = |keys: &[&str]| {
             let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
             files_behind(&keys, &changed, &roots)

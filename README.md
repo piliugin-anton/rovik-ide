@@ -1165,7 +1165,11 @@ check, lint, tests) and sends what fails back to it. Detection only
 suggests them: each check found is off until the user ticks it in
 Settings → Project checks, which saves the project's list
 (`agent_run/project.rs`, `effective_checks`). An Autopilot task with no
-check on runs its plan's validation commands instead. What the checks know
+check on runs its plan's validation commands instead. A chat across a
+workspace's folders runs the checks of the folders it changed, each in its
+folder (`cd api && npm test`), and a plan's own commands; it's told every
+folder's checks, so it can run the others itself. A folder's failed type
+check skips that folder's tests only, in any chat. What the checks know
 lives in tables (paths under `src-tauri/crates/rovik-core/src/`), so
 teaching them a new tool is usually one row:
 
@@ -1178,9 +1182,11 @@ teaching them a new tool is usually one row:
 | a cache or home folder a tool must write to              | `TOOL_DIRS` or `TOOL_HOMES` in `overlay/confine.rs`                                                       |
 
 A check that fails runs once more on the code before the change
-(`agent_run/before.rs`): in an isolated chat, the project as it is, in a
-throwaway overlay. Failures are compared by key (an error's file, code and
-message, or a test's name, with paths relative to where each run was), and
+(`agent_run/before.rs`): in an isolated chat, the project as it is (a
+workspace chat's folders, under the same names), in a throwaway overlay.
+Failures are compared by key (an error's file, code and message, or a
+test's name, with each path as the chat names it: `api/src/a.ts`, whether
+the check printed it relative to its folder or by the folder's own path), and
 those that fail there too are set apart: a check that fails only as it did
 before is `preexisting` in its record and doesn't hold the change back.
 React Native apps, whose bundler never type-checks, often have such

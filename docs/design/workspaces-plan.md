@@ -2815,6 +2815,48 @@ plain (`a{b,c}` is `a-b,c-`) and every name still passes; the refusal of a folde
 path is tested beside the overlay that makes it (`workspace_chat_tests.rs`), not in
 `confine.rs`.
 
+**F10 — the checks of the folders a workspace chat changed.** `Run::enabled_checks`
+gives a workspace chat the checks of the folders it changed (the first parts of
+`touched_keys()`) and those in no folder, a plan's own commands (D27,
+`checks_changed`); a folder chat's all run, and the landing's `checks_would_run` gets
+the same list. With none, the record says "no checks are set up for the folders it
+changed". A folder's failed type check skips only that folder's tests, in every chat.
+Paths in output read through `OutputRoots` (folders.rs), which `Folders::output_roots`
+now gives: an absolute path in a folder, in its resolved spelling, in its place in the
+view or in the view itself is a chat path (`chat_path`, `in_text`), and `from_folder`
+tries a path a `cd api && …` check printed relative to its folder as `api/<path>` when
+that's in the view. `check_keys` and `failed_in` use both, so a check's keys name files
+by their chat paths. `Run::output_roots` replaces `check_roots` and the `[root,
+project]` lists in P3.2's slips (`printed_is_written`), V05's files behind and a
+failure's causes (`causes::resolve`, `path_context`); `without_roots` and `roots_of`
+went. The before-run opens a scratch view of the chat's folders under the same names
+(`code_before` gives `Folders`), its output read through that view's roots, and so does
+the red check, which was skipped in a workspace chat. File-to-command helpers:
+`in_folder("")` is the command as it is; `light_checks` groups a chat's files by folder
+and runs each folder's light checks in it; `in_files_folder` runs one file's command
+(the breaker's, the red check's) in its folder; the red check's fallback is the test
+check of the file's folder; V06's scoped tests are the timed-out suite's folder's, run
+there. Tests: `workspace_e2e_tests.rs` (only the changed folder's checks run, in it;
+with none in the folder it changed, none runs and the record says why; a failed type
+check in one folder doesn't skip the other's tests, and its failure names
+the folder's file; a check failing as before the change is set apart per folder,
+printing paths relative to its folder or absolute, the view's and then the copy's; a
+slip printed by a folder's real path, whose last part isn't its name (`y/app` is
+`y-app`), is the round's own; the red check runs each new test in its folder, Go's),
+`folders.rs` (a folder's path, its resolved spelling and its place in the view read as
+its name, the longest first; a path printed in a folder is tried as that folder's
+first), `command_output.rs` (a folder's check names its files by their chat paths),
+`causes.rs` and `repair.rs` (a folder's real path reads as its name for a cause, the
+files behind and a slip), `project.rs` (light checks and a file's command in each
+folder) and `verify.rs` (D27's filter; V06's scoped tests by the suite's folder).
+Departures: a plan's own commands running whatever changed, and `checks_would_run`'s
+filter, are tested on `checks_changed`, not through a run: a plan's commands are an
+Autopilot task's (F11, F12), and a local run merges the project's changes into its
+view and checks them before it lands (`take_project_changes`), so the landing merges
+only when the project changes a file in between; the mid-run check's locations keep
+`causes::resolve`'s tail matching; Thorough's candidates run a file alone at their
+copy's root until F12.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where
