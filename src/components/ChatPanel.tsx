@@ -163,7 +163,7 @@ import { chatsAtWorkElsewhere } from '../lib/instances';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
 import { askForChatBranch } from './NewBranchDialog';
-import { offerChatBranch } from '../lib/chatBranch';
+import { foldersAtLastRun, offerChatBranch, type BranchFolder } from '../lib/chatBranch';
 import ChatList, { type ChatListRow } from './ChatList';
 import MessageList, { type MessageListController } from './MessageList';
 import {
@@ -3451,18 +3451,39 @@ export default function ChatPanel(props: ChatProps) {
     };
   }
 
+  /**
+   * What a send of `dialogId` asks about for the branch offer (D29): the
+   * chat's folders that are there, and its folders at its last run, whose
+   * repositories it was asked about then. A new chat's all; a workspace
+   * chat's when folders joined it since. Null when there's none to ask.
+   */
+  function branchOffer(
+    dialogId: string
+  ): { folders: BranchFolder[]; since: string[] | null } | null {
+    const root = rootOf(dialogId);
+    const folders = (root?.folders ?? [])
+      .filter((folder) => !folder.missing)
+      .map(({ path, name }) => ({ path, name }));
+    if (folders.length === 0) return null;
+    if (isEmptyChat(dialogId)) return { folders, since: null };
+    if (root?.kind !== 'workspace') return null;
+    const since = foldersAtLastRun(store.messagesOf(dialogId));
+    const joined = since && folders.some((folder) => !since.includes(folder.name));
+    return joined ? { folders, since } : null;
+  }
+
   /** Sends a user message (shown at once; the run stores it first thing). */
   async function sendMessage(
     dialogId: string,
     message: { id: string; content: string; meta: ChatMessage['meta']; attachments?: string[] },
     wireContent: string | undefined
   ): Promise<boolean> {
-    // A new chat's first message, on this computer: before its run starts,
-    // its folder on its main branch offers the chat a branch of its own.
-    const root =
-      isEmptyChat(dialogId) && !store.summaryOf(dialogId)?.place ? runRootOf(dialogId) : null;
+    // On this computer, before the run starts: a new chat's folders, or those
+    // that joined a workspace chat, on their main branch, are offered a
+    // branch for the chat's work (D29).
+    const offer = store.summaryOf(dialogId)?.place ? null : branchOffer(dialogId);
     store.addLocal(dialogId, { ...message, role: 'user', finalized: true });
-    if (root) await offerChatBranch(root, askForChatBranch);
+    if (offer) await offerChatBranch(offer.folders, askForChatBranch, offer.since);
     const started = await beginRun(dialogId, { kind: 'send', message }, wireContent);
     // Never stored: shown as failed.
     if (!started) store.applyPatch(dialogId, message.id, { failed: true });

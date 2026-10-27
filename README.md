@@ -161,7 +161,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   switch to it. Its name is made up for it, and you can change it:
   `rovik-`, an adjective, a programmer's last name and 8 random letters
   and digits, such as `rovik-kind-torvalds-x7k2m9qa`. Your uncommitted
-  changes come along. **Don't ask again** turns the question
+  changes come along. A chat across a workspace's folders is asked once
+  about every repository of its folders on its main branch, with one name
+  for all, and told which stay on another branch; a folder that joins it
+  later is asked about at its next send, offered the branch the chat's
+  other repositories are on. **Don't ask again** turns the question
   off; Settings → Agent runs turns it back on.
 - **Long tasks stay on track.** Older history is trimmed automatically, or
   the agent can manage its own context (see

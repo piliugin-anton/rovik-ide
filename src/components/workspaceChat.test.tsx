@@ -27,7 +27,8 @@ import { notifications } from '../lib/notifications';
 import { requestImplementPlan } from '../lib/plans';
 import { appSettingsPage, closeAppSettings } from '../lib/appSettings';
 import { noteBackgroundTasks } from '../lib/backgroundTasks';
-import type { DialogSummary } from '../types';
+import type { DialogSummary, GitHead } from '../types';
+import { NewBranchDialogHost } from './NewBranchDialog';
 
 const SETTINGS = {
   version: 2,
@@ -64,6 +65,8 @@ let projectFiles: Record<string, string[]> = {};
 let driverInstalled = false;
 /** Why `chat_set_folders` refuses now; null: it takes them. */
 let foldersRefused: string | null = null;
+/** Where HEAD is in each folder's repository; else on a branch of its own: no offer. */
+let heads: Record<string, GitHead> = {};
 
 /** The app's event handlers, by id, and what each listens to. */
 const callbacks = new Map<number, (event: unknown) => void>();
@@ -99,8 +102,20 @@ const listeners: { event: string; handler: number }[] = [];
       case 'chats_at_work_elsewhere':
         return [];
       case 'git_head':
-        // Not on its main branch: no branch is offered.
-        return { branch: 'feature', main_branch: 'main' };
+        // Not on its main branch unless a test says: no branch is offered.
+        return heads[args.path] ?? { branch: 'feature', main_branch: 'main' };
+      case 'git_repos':
+        // Each folder a repository of its own.
+        return {
+          repos: args.folders.map((f: { path: string; name: string }) => ({
+            key: `${f.path}/.git`,
+            workdir: f.path,
+            name: f.name,
+            scopes: [''],
+            folders: [f.path],
+          })),
+          without: [],
+        };
       case 'agent_start':
         return 'run-1';
       case 'chat_delete_dialog':
@@ -237,14 +252,17 @@ async function mount(
   const root = container();
   const dispose = render(
     () => (
-      <ChatPanel
-        folders={shown}
-        workspace={() => workspaceIdOf(target)}
-        activeFolder={() => active}
-        activeFileContext={context}
-        files={() => []}
-        owners={owners}
-      />
+      <>
+        <ChatPanel
+          folders={shown}
+          workspace={() => workspaceIdOf(target)}
+          activeFolder={() => active}
+          activeFileContext={context}
+          files={() => []}
+          owners={owners}
+        />
+        <NewBranchDialogHost />
+      </>
     ),
     root
   );
@@ -1164,4 +1182,86 @@ test('a missing folder the chat has can be unchecked, and then not checked again
   await flush();
   assert.deepEqual(sent('chat_set_folders'), [{ dialogId: 'ws-gone', folders: '["api"]' }]);
   dispose();
+});
+
+/** The branch dialog's text and its name field, while it asks. */
+const branchDialog = () => {
+  const asked = document.querySelector<HTMLElement>('.confirm-dialog');
+  return (
+    asked && {
+      text: asked.textContent?.replace(/\s+/g, ' ') ?? '',
+      name: asked.querySelector<HTMLInputElement>('input.new-project-input')!.value,
+      yes: () =>
+        [...asked.querySelectorAll<HTMLButtonElement>('button')]
+          .find((b) => b.textContent === 'Yes')!
+          .click(),
+    }
+  );
+};
+
+test('a new workspace chat asks once about its repositories on their main branch', async () => {
+  dialogs = [{ ...workspaceChat('ws-new', 'branch-new', '["api","web"]'), messageCount: 0 }];
+  rows = {};
+  heads = {
+    '/w/api': { branch: 'main', main_branch: 'main' },
+    '/w/web': { branch: 'master', main_branch: 'master' },
+  };
+  try {
+    const { root, dispose } = await mount('workspace:branch-new', [api, web]);
+    await sendText(root, 'Add the cart');
+    const asked = branchDialog();
+    assert.ok(asked, 'asked');
+    assert.match(asked.text, /api \(main\) and web \(master\) are on their main branches/);
+    assert.deepEqual(sent('agent_start'), [], 'the run waits');
+    asked.yes();
+    await flush();
+    assert.deepEqual(
+      sent('git_create_branch').map((a) => [a.path, a.name]),
+      [
+        ['/w/api', asked.name],
+        ['/w/web', asked.name],
+      ],
+      'one name in each'
+    );
+    assert.equal(sent('agent_start').length, 1, 'then the run starts');
+    dispose();
+  } finally {
+    heads = {};
+  }
+});
+
+test('a folder checked on its repository’s main branch is offered the chat’s branch at the next send', async () => {
+  talked(workspaceChat('ws-joined', 'branch-joined', '["api","web"]'));
+  // Its last run worked in api alone, on the chat's branch; web joined since.
+  rows['ws-joined'][0].meta = { mode: 'agent', folders: ['api'] };
+  heads = {
+    '/w/api': { branch: 'rovik-cart', main_branch: 'main' },
+    '/w/web': { branch: 'main', main_branch: 'main' },
+  };
+  try {
+    const { root, dispose } = await mount('workspace:branch-joined', [api, web]);
+    await sendText(root, 'And the checkout');
+    const asked = branchDialog();
+    assert.ok(asked, 'asked');
+    assert.match(asked.text, /web \(main\) is on its main branch/);
+    assert.match(asked.text, /api stays on rovik-cart/);
+    assert.equal(asked.name, 'rovik-cart', 'the chat’s branch');
+    asked.yes();
+    await flush();
+    assert.deepEqual(sent('git_create_branch'), [
+      { path: '/w/web', name: 'rovik-cart', checkout: true, from: null },
+    ]);
+    dispose();
+  } finally {
+    heads = {};
+  }
+
+  // Its folders as at its last run: no question.
+  talked(workspaceChat('ws-same', 'branch-same', '["api","web"]'));
+  rows['ws-same'][0].meta = { mode: 'agent', folders: ['api', 'web'] };
+  const same = await mount('workspace:branch-same', [api, web]);
+  await sendText(same.root, 'And the checkout');
+  assert.equal(branchDialog(), null);
+  assert.deepEqual(sent('git_head'), []);
+  same.dispose();
 });

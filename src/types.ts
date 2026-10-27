@@ -354,6 +354,11 @@ export interface ToolMeta {
   implementsPlan?: boolean;
   /** Its plan's file: the backend sends the model the plan from it (lib/plans.ts). */
   planPath?: string;
+  /**
+   * A workspace chat's user message: its folders' names as its run started
+   * (the backend records them; workspaces-plan.md, D32).
+   */
+  folders?: string[];
   /** The change reviewer's record (lib/changeReview.ts). */
   review?: import('./lib/changeReview').ReviewMeta;
   /** The plan checker's problems with a plan Agent mode was asked to implement (B07b). */
