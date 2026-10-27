@@ -361,7 +361,7 @@ fn resume_request(h: &Harness, url: &str) -> StartRequest {
 }
 
 /// The chat's stage records, oldest first.
-async fn stages(h: &Harness) -> Vec<StageRecord> {
+pub(super) async fn stages(h: &Harness) -> Vec<StageRecord> {
     super::autopilot::load(&h.core, &h.dialog_id)
         .await
         .unwrap()
@@ -405,19 +405,19 @@ pub(super) async fn quiet(h: &Harness) {
 }
 
 /// Over: delivered (or ended), nothing running.
-fn delivered(records: &[StageRecord]) -> bool {
+pub(super) fn delivered(records: &[StageRecord]) -> bool {
     records
         .last()
         .is_some_and(|r| r.name == Stage::Deliver && r.status != Status::Running)
 }
 
-fn names(records: &[StageRecord]) -> Vec<(Stage, Status)> {
+pub(super) fn names(records: &[StageRecord]) -> Vec<(Stage, Status)> {
     records.iter().map(|r| (r.name, r.status)).collect()
 }
 
 /// What a Balanced task records once it went well: every stage, those not
 /// built yet skipped.
-const BALANCED_OK: &[(Stage, Status)] = &[
+pub(super) const BALANCED_OK: &[(Stage, Status)] = &[
     (Stage::Plan, Status::Done),
     (Stage::PlanReview, Status::Done),
     (Stage::Prepare, Status::Skipped),
@@ -3525,7 +3525,7 @@ async fn with_nothing_to_install_the_agent_hears_whats_missing() {
 }
 
 /// The change reviewer's and the triage's briefs start so.
-const CHANGE_REVIEW: &str = "# Review this change";
+pub(super) const CHANGE_REVIEW: &str = "# Review this change";
 const TRIAGE: &str = "# Triage this failure";
 
 /// Two checks: a type check (`tc.js`, a.txt must say "typed") and tests
@@ -6667,7 +6667,7 @@ const JUDGING_CANDIDATES: &str = super::judge::JUDGE_CANDIDATES_HEADING;
 
 /// A candidate's implementation: its checklist, the files it writes, its
 /// last word.
-fn candidate_script(writes: &[(&'static str, &'static str)]) -> Vec<Reply> {
+pub(super) fn candidate_script(writes: &[(&'static str, &'static str)]) -> Vec<Reply> {
     let mut script = vec![Reply::Call {
         id: "t1",
         name: "todo",
@@ -6761,7 +6761,7 @@ async fn candidates_start(
 
 /// The task's records once it's delivered: two implementations take a
 /// while.
-async fn delivered_slowly(h: &Harness) -> Vec<StageRecord> {
+pub(super) async fn delivered_slowly(h: &Harness) -> Vec<StageRecord> {
     for _ in 0..3000 {
         let records = stages(h).await;
         if delivered(&records) {
@@ -6774,7 +6774,7 @@ async fn delivered_slowly(h: &Harness) -> Vec<StageRecord> {
 }
 
 /// The task chat's record of its candidates (`meta.candidates`).
-fn candidates_row(messages: &[MessageRow]) -> &Value {
+pub(super) fn candidates_row(messages: &[MessageRow]) -> &Value {
     messages
         .iter()
         .find_map(|m| m.meta.as_ref()?.get("candidates"))
@@ -6790,7 +6790,7 @@ fn pick_row(messages: &[MessageRow]) -> &Value {
 }
 
 /// A chat's stage records.
-async fn theirs_records(h: &Harness, chat: &str) -> Vec<StageRecord> {
+pub(super) async fn theirs_records(h: &Harness, chat: &str) -> Vec<StageRecord> {
     super::autopilot::load(&h.core, chat)
         .await
         .unwrap()
@@ -6807,7 +6807,7 @@ fn theirs_spent(records: &[StageRecord]) -> Spent {
         .fold(Spent::default(), Spent::plus)
 }
 
-async fn chat_messages(h: &Harness, chat: &str) -> Vec<MessageRow> {
+pub(super) async fn chat_messages(h: &Harness, chat: &str) -> Vec<MessageRow> {
     let id = chat.to_string();
     h.core
         .db

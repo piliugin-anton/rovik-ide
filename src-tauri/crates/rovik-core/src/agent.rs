@@ -1923,20 +1923,14 @@ pub async fn chat_context_estimate(
         ));
         sent_chars(tools)
     });
-    // The project section of the prompt: each folder's.
+    // The project section of the prompt, as the chat's run is told it.
     let project_chars = match folders {
         Some(folders) => {
             let (config_dir, verify) = (core.paths.config_dir.clone(), permissions.verify_changes);
             crate::rt::spawn_blocking(move || {
-                folders
-                    .iter()
-                    .map(|folder| {
-                        let root = folder.path.to_string_lossy();
-                        crate::agent_run::project::cached_context(&config_dir, &root, verify)
-                            .chars()
-                            .count()
-                    })
-                    .sum::<usize>()
+                crate::agent_run::project::cached_context(&config_dir, &folders, verify)
+                    .chars()
+                    .count()
             })
             .await
             .unwrap_or_default()

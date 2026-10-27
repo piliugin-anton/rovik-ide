@@ -37,7 +37,7 @@ impl Copies for Worktrees {
         &self,
         main: String,
         chat: String,
-        _project: Option<String>,
+        _folders: Option<rovik_core::folders::Folders>,
     ) -> Copying<Result<String, String>> {
         let daemon = self.0.clone();
         Box::pin(async move {

@@ -292,9 +292,9 @@ struct Inner {
 struct Candidacy {
     /// The chat whose task it implements.
     main: String,
-    /// That chat's project folder, whose settings its runs follow (its own
-    /// folder is a copy).
-    project: Option<String>,
+    /// That chat's folders, whose settings its runs follow (its own folder
+    /// is a copy of them, under the same names).
+    folders: Option<Folders>,
     /// The call id its events and transcript go by in that chat.
     call: String,
     /// What its line in that chat shows, as a subagent's block does (P1.5).
@@ -855,20 +855,20 @@ impl AgentState {
     }
 
     /// T05: `candidate` is a chat implementing `main`'s task, in a copy of
-    /// `main`'s project folder `project`: it follows `main`'s configuration
-    /// and its Stop, and the project's settings; `call` is the id its
-    /// events go by in `main`, and `info` what its line there shows.
+    /// `main`'s `folders`: it follows `main`'s configuration and its Stop,
+    /// and the folders' settings; `call` is the id its events go by in
+    /// `main`, and `info` what its line there shows.
     pub(super) fn add_candidate(
         &self,
         candidate: &str,
         main: &str,
-        project: Option<String>,
+        folders: Option<Folders>,
         call: &str,
         info: ChildInfo,
     ) {
         let candidacy = Candidacy {
             main: main.to_string(),
-            project,
+            folders,
             call: call.to_string(),
             info,
         };
@@ -890,10 +890,11 @@ impl AgentState {
         Some((c.main.clone(), c.call.clone()))
     }
 
-    /// T05: the project folder whose settings a candidate's runs follow.
-    pub(super) fn candidate_project(&self, candidate: &str) -> Option<String> {
+    /// T05: the folders whose settings a candidate's runs follow: its task
+    /// chat's.
+    pub(super) fn candidate_folders(&self, candidate: &str) -> Option<Folders> {
         let inner = self.lock();
-        inner.candidates.get(candidate)?.project.clone()
+        inner.candidates.get(candidate)?.folders.clone()
     }
 
     /// T05: where a server's candidates implement, set by the daemon.

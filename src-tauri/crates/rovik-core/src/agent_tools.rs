@@ -26,6 +26,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
 use crate::file_guard::{Seen, WriteError};
+use crate::folders::Folders;
 use crate::restricted_files::RestrictedFiles;
 
 const DENYLIST_DIRS: &[&str] = &[
@@ -551,26 +552,77 @@ fn resolve_project_file(root: &str, path: &str, verb: &str) -> Result<(PathBuf, 
 /// Errors and warnings for one file (its editor markers plus a fresh syntax
 /// check), or, without a path, a summary of the files with reported
 /// problems. Typed cross-file errors need the project's type checker;
-/// the result says which command that is.
-pub fn tool_diagnostics(root: String, path: Option<String>) -> Result<String, String> {
+/// the result says which command that is. `folders`: the chat's, by which
+/// the editor's markers are found (it reports them by its folders), given
+/// only for files the run sees as the project has them (4.10); without
+/// them, the root's own.
+pub fn tool_diagnostics(
+    root: String,
+    path: Option<String>,
+    folders: Option<&Folders>,
+) -> Result<String, String> {
     let root_canon = canonicalize_or_err(Path::new(&root))?;
     match path.filter(|p| !p.trim().is_empty()) {
-        Some(p) => file_diagnostics(&root, &root_canon, &p),
-        None => diagnostics_summary(&root, &root_canon),
+        Some(p) => file_diagnostics(&root, &root_canon, &p, folders),
+        None => diagnostics_summary(&root, &root_canon, folders),
     }
 }
 
-fn file_diagnostics(root: &str, root_canon: &Path, path: &str) -> Result<String, String> {
+/// Where the editor keeps the markers of chat path `rel`: its folder's
+/// path and its path there (a workspace chat's `api/src/a.ts` is api's
+/// `src/a.ts`), or the root's own without the chat's folders. None for a
+/// path in none of them.
+fn editor_key(
+    root_canon: &Path,
+    rel: &str,
+    folders: Option<&Folders>,
+) -> Option<(PathBuf, String)> {
+    let Some(folders) = folders else {
+        return Some((root_canon.to_path_buf(), rel.to_string()));
+    };
+    let (folder, rest) = folders.split(rel)?;
+    let folder = canonicalize_or_err(&folder.path).ok()?;
+    Some((folder, rest.replace('\\', "/")))
+}
+
+/// Whether the run sees the project's own version of chat path `rel` (at
+/// `abs`, in its root): the version the editor's markers are for. A file
+/// the chat changed or made in its view isn't (4.10).
+fn as_in_project(abs: &Path, rel: &str, folders: Option<&Folders>) -> bool {
+    let Some(folders) = folders else {
+        return true;
+    };
+    let Some(project) = folders.abs(rel) else {
+        return false;
+    };
+    project == abs
+        || matches!((fs::read(&project), fs::read(abs)), (Ok(theirs), Ok(ours)) if theirs == ours)
+}
+
+fn file_diagnostics(
+    root: &str,
+    root_canon: &Path,
+    path: &str,
+    folders: Option<&Folders>,
+) -> Result<String, String> {
     let (abs, rel) = resolve_project_file(root, path, "check")?;
     let mut out = vec![format!("## Diagnostics for {rel}")];
 
-    // What the editor shows (possibly newer or older than the file on disk).
-    let editor = EDITOR_DIAGS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&(root_canon.to_path_buf(), rel.clone()))
-        .map(|r| (r.markers.clone(), r.reported_at));
+    // What the editor shows (possibly newer or older than the file on
+    // disk), for the project's version of the file.
+    let changed = !as_in_project(&abs, &rel, folders);
+    let editor = match editor_key(root_canon, &rel, folders) {
+        Some(key) if !changed => EDITOR_DIAGS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .map(|r| (r.markers.clone(), r.reported_at)),
+        _ => None,
+    };
     match editor {
+        _ if changed => out.push(
+            "Editor: not given: the editor shows the project's version of this file, which this chat has changed.".into(),
+        ),
         // Reported, and the editor shows nothing for it.
         Some((markers, at)) if markers.is_empty() => {
             let stale = fs::metadata(&abs)
@@ -682,13 +734,26 @@ fn typecheck_hint(root: &str) -> Option<String> {
     ))
 }
 
-fn diagnostics_summary(root: &str, root_canon: &Path) -> Result<String, String> {
+fn diagnostics_summary(
+    root: &str,
+    root_canon: &Path,
+    folders: Option<&Folders>,
+) -> Result<String, String> {
+    // Where the editor keeps the chat's files' markers: each folder's path,
+    // and the folder's name before a path there.
+    let places: Vec<(PathBuf, &str)> = match folders {
+        Some(folders) => folders
+            .iter()
+            .filter_map(|f| Some((canonicalize_or_err(&f.path).ok()?, f.name.as_str())))
+            .collect(),
+        None => vec![(root_canon.to_path_buf(), "")],
+    };
     let diags = EDITOR_DIAGS.lock().unwrap_or_else(|e| e.into_inner());
-    let mut files: Vec<(String, usize, usize, String)> = Vec::new(); // rel, errors, warnings, age/stale
+    let mut reported: Vec<(String, usize, usize, SystemTime)> = Vec::new(); // rel, errors, warnings, at
     for ((r, rel), report) in diags.iter() {
-        if r != root_canon {
+        let Some((_, name)) = places.iter().find(|(place, _)| place == r) else {
             continue;
-        }
+        };
         let errors = report
             .markers
             .iter()
@@ -702,24 +767,33 @@ fn diagnostics_summary(root: &str, root_canon: &Path) -> Result<String, String> 
         if errors == 0 && warnings == 0 {
             continue;
         }
-        let stale = Path::new(root)
-            .join(rel)
+        let rel = match name.is_empty() {
+            true => rel.clone(),
+            false => format!("{name}/{rel}"),
+        };
+        reported.push((rel, errors, warnings, report.reported_at));
+    }
+    drop(diags);
+    // The files the run sees as the project has them: the editor's
+    // markers aren't for the chat's own versions.
+    let mut files: Vec<(String, usize, usize, String)> = Vec::new(); // rel, errors, warnings, age/stale
+    for (rel, errors, warnings, at) in reported {
+        let abs = Path::new(root).join(&rel);
+        if !as_in_project(&abs, &rel, folders) {
+            continue;
+        }
+        let stale = abs
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
-            .is_some_and(|m| m > report.reported_at);
+            .is_some_and(|m| m > at);
         files.push((
-            rel.clone(),
+            rel,
             errors,
             warnings,
-            format!(
-                "{}{}",
-                ago(report.reported_at),
-                if stale { ", stale" } else { "" }
-            ),
+            format!("{}{}", ago(at), if stale { ", stale" } else { "" }),
         ));
     }
-    drop(diags);
     if files.is_empty() {
         return Ok("## Diagnostics summary\n(no editor diagnostics reported for this project yet — open files in the editor, or query one file for its syntax check.)".into());
     }
@@ -1196,10 +1270,10 @@ mod tests {
                 ("ok.rs", "pub fn fine() {}\n"),
             ],
         );
-        let broken = tool_diagnostics(root_s.clone(), Some("a.rs".into())).unwrap();
+        let broken = tool_diagnostics(root_s.clone(), Some("a.rs".into()), None).unwrap();
         assert!(broken.contains("## Diagnostics for a.rs"), "{broken}");
         assert!(broken.contains("Syntax (current):"), "{broken}");
-        let clean = tool_diagnostics(root_s, Some("ok.rs".into())).unwrap();
+        let clean = tool_diagnostics(root_s, Some("ok.rs".into()), None).unwrap();
         assert!(clean.contains("parses clean"), "{clean}");
         let _ = fs::remove_dir_all(&base);
     }
@@ -1223,11 +1297,11 @@ mod tests {
             }],
         )
         .unwrap();
-        let out = tool_diagnostics(root_s.clone(), Some("a.ts".into())).unwrap();
+        let out = tool_diagnostics(root_s.clone(), Some("a.ts".into()), None).unwrap();
         assert!(out.contains("Cannot find name 'y'"), "{out}");
         assert!(out.contains("[2304]"), "{out}");
         assert!(out.contains("(typescript)"), "{out}");
-        let summary = tool_diagnostics(root_s, None).unwrap();
+        let summary = tool_diagnostics(root_s, None, None).unwrap();
         assert!(
             summary.contains("a.ts") && summary.contains("1 error"),
             "{summary}"
@@ -1248,6 +1322,70 @@ mod tests {
         }
     }
 
+    /// F12 (4.10): a run in a view finds the editor's markers by the
+    /// chat's folders (a workspace chat's `api/a.ts` is api's `a.ts`; an
+    /// isolated folder chat's `a.ts` its folder's), for the files it sees as
+    /// the project has them: one the chat changed or made gets none, in its
+    /// diagnostics and in the summary.
+    #[test]
+    fn a_views_file_has_its_folders_markers_unless_the_chat_changed_it() {
+        let (base, api, api_s) = outline_project(
+            "diagview",
+            &[("a.ts", "const a = 1;\n"), ("b.ts", "const b = 1;\n")],
+        );
+        let view = base.join("view");
+        for (path, content) in [
+            ("api/a.ts", "const a = 1;\n"),
+            ("api/b.ts", "const b = 2;\n"),
+            ("api/c.ts", "const c = 1;\n"),
+        ] {
+            fs::create_dir_all(view.join(path).parent().unwrap()).unwrap();
+            fs::write(view.join(path), content).unwrap();
+        }
+        for (file, message) in [
+            ("a.ts", "a is wrong"),
+            ("b.ts", "b is wrong"),
+            ("c.ts", "c"),
+        ] {
+            let message = message.to_string();
+            report_editor_diagnostics(api_s.clone(), file.into(), vec![marker("error", message)])
+                .unwrap();
+        }
+        let workspace = Folders::named(vec![crate::folders::Folder {
+            name: "api".into(),
+            path: api.clone(),
+        }])
+        .unwrap();
+        let view_s = view.to_string_lossy().into_owned();
+        let of = |path: &str| {
+            tool_diagnostics(view_s.clone(), Some(path.into()), Some(&workspace)).unwrap()
+        };
+        assert!(
+            of("api/a.ts").contains("error: a is wrong"),
+            "{}",
+            of("api/a.ts")
+        );
+        for changed in ["api/b.ts", "api/c.ts"] {
+            let out = of(changed);
+            assert!(
+                !out.contains("is wrong") && out.contains("which this chat has changed"),
+                "{out}"
+            );
+        }
+        let summary = tool_diagnostics(view_s, None, Some(&workspace)).unwrap();
+        assert!(summary.contains("- api/a.ts: 1 error"), "{summary}");
+        assert!(
+            !summary.contains("b.ts") && !summary.contains("c.ts"),
+            "{summary}"
+        );
+        // An isolated folder chat's view: its folder's markers, by its paths.
+        let one = Folders::one(api.clone());
+        let in_view = view.join("api").to_string_lossy().into_owned();
+        let out = tool_diagnostics(in_view, Some("a.ts".into()), Some(&one)).unwrap();
+        assert!(out.contains("error: a is wrong"), "{out}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn long_multibyte_marker_messages_are_cut_on_a_character() {
         let (base, root, root_s) = outline_project("diagutf8", &[("a.ts", "const x = 1;\n")]);
@@ -1255,7 +1393,7 @@ mod tests {
         // Byte 1,000 falls inside a 2-byte character: cutting there panicked.
         let message = format!("a{}", "ж".repeat(600));
         report_editor_diagnostics(root_s.clone(), abs, vec![marker("error", message)]).unwrap();
-        let out = tool_diagnostics(root_s, Some("a.ts".into())).unwrap();
+        let out = tool_diagnostics(root_s, Some("a.ts".into()), None).unwrap();
         let line = out
             .lines()
             .find(|l| l.contains("error: a"))
@@ -1274,7 +1412,7 @@ mod tests {
         let (base, root, root_s) = outline_project("diagclean", &[("a.ts", "const x = 1;\n")]);
         let abs = root.join("a.ts").to_string_lossy().to_string();
         report_editor_diagnostics(root_s.clone(), abs, Vec::new()).unwrap();
-        let out = tool_diagnostics(root_s.clone(), Some("a.ts".into())).unwrap();
+        let out = tool_diagnostics(root_s.clone(), Some("a.ts".into()), None).unwrap();
         assert!(
             out.contains("Editor: no problems (reported 0s ago)"),
             "{out}"
@@ -1282,7 +1420,7 @@ mod tests {
         assert!(!out.contains("may not be open"), "{out}");
         // Never reported: that one may really not be open.
         fs::write(root.join("b.ts"), "const y = 2;\n").unwrap();
-        let out = tool_diagnostics(root_s, Some("b.ts".into())).unwrap();
+        let out = tool_diagnostics(root_s, Some("b.ts".into()), None).unwrap();
         assert!(out.contains("may not be open"), "{out}");
         let _ = fs::remove_dir_all(&base);
     }
@@ -1297,7 +1435,7 @@ mod tests {
             vec![marker("warning", "unused".into())],
         )
         .unwrap();
-        let summary = tool_diagnostics(root_s, None).unwrap();
+        let summary = tool_diagnostics(root_s, None, None).unwrap();
         assert!(summary.contains("a.ts: 1 warning (0s ago)"), "{summary}");
         let _ = fs::remove_dir_all(&base);
     }

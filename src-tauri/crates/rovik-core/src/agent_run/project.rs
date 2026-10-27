@@ -439,23 +439,36 @@ pub fn in_files_folder(
     Some(in_folder(&folder.name, &command))
 }
 
-/// The project section for estimates (the context meter), re-detected at
-/// most every few seconds: estimates follow every message of a run.
-pub fn cached_context(config_dir: &Path, root: &str, verify_on: bool) -> String {
+/// The project section for estimates (the context meter): a folder chat's
+/// folder's, or what a workspace chat's run is told of its folders
+/// ([`load_folders`]), re-detected at most every few seconds for the same
+/// folders: estimates follow every message of a run.
+pub fn cached_context(config_dir: &Path, folders: &Folders, verify_on: bool) -> String {
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::{LazyLock, Mutex};
     use std::time::{Duration, Instant};
-    type Cache = HashMap<(String, bool), (Instant, String)>;
+    type Cache = HashMap<(Vec<(String, PathBuf)>, bool), (Instant, String)>;
     static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Default::default);
     const FRESH: Duration = Duration::from_secs(5);
 
-    let key = (root.to_string(), verify_on);
+    let listed = folders
+        .iter()
+        .map(|folder| (folder.name.clone(), folder.path.clone()))
+        .collect();
+    let key = (listed, verify_on);
     if let Some((at, text)) = CACHE.lock().ok().and_then(|c| c.get(&key).cloned()) {
         if at.elapsed() < FRESH {
             return text;
         }
     }
-    let (_, text) = load(config_dir, root, root, verify_on);
+    let text = match folders.single() {
+        Some(root) => {
+            let root = root.to_string_lossy();
+            load(config_dir, &root, &root, verify_on).1
+        }
+        None => load_folders(config_dir, None, folders, verify_on, false, None).1,
+    };
     if let Ok(mut cache) = CACHE.lock() {
         cache.retain(|_, (at, _)| at.elapsed() < FRESH);
         cache.insert(key, (Instant::now(), text.clone()));
@@ -1209,6 +1222,45 @@ mod tests {
             })
             .collect();
         Folders::named(list).unwrap()
+    }
+
+    /// F12: the estimate's project section is what the chat's run is told:
+    /// a workspace chat's folders together (`load_folders`), not each one's
+    /// section alone, kept by the folder list, so a list with one of them
+    /// is its own; a folder chat's, its folder's.
+    #[test]
+    fn the_estimates_section_is_the_chats_folders_as_its_run_is_told_them() {
+        let dir = crate::testing::temp_dir();
+        let config = dir.0.join("config");
+        for (path, content) in [
+            ("api/AGENTS.md", "Use pnpm in api.\n"),
+            ("web/AGENTS.md", "Keep web small.\n"),
+        ] {
+            let p = dir.0.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        }
+        let (api, web) = (dir.0.join("api"), dir.0.join("web"));
+        let both = named(&[("api", &api), ("web", &web)]);
+        let together = cached_context(&config, &both, true);
+        assert_eq!(
+            together,
+            load_folders(&config, None, &both, true, false, None).1
+        );
+        assert!(
+            together.contains("Use pnpm in api.") && together.contains("Keep web small."),
+            "{together}"
+        );
+        let api_alone = cached_context(&config, &named(&[("api", &api)]), true);
+        assert!(
+            api_alone.contains("Use pnpm in api.") && !api_alone.contains("Keep web small."),
+            "{api_alone}"
+        );
+        let root = api.to_string_lossy().into_owned();
+        assert_eq!(
+            cached_context(&config, &Folders::one(api.clone()), true),
+            load(&config, &root, &root, true).1
+        );
     }
 
     /// 4.4: each of a workspace chat's folders is read as when it's open

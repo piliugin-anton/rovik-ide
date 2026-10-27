@@ -863,6 +863,9 @@ pub struct CallContext {
     /// background (bash's `background`, the background tool): the lead's
     /// own. None for a subagent, whose commands end with its work.
     pub background_chat: Option<String>,
+    /// The chat's folders, by which the editor's diagnostics are found
+    /// (`agent_tools::tool_diagnostics`). None: the root's own.
+    pub folders: Option<crate::folders::Folders>,
 }
 
 /// Runs one tool call. Never fails: problems come back as an "Error: ..."
@@ -1360,6 +1363,7 @@ async fn run(
             text(args, "path")
                 .filter(|p| !p.trim().is_empty())
                 .map(str::to_string),
+            ctx.folders.as_ref(),
         )?,
         _ => format!("Error: unknown tool \"{name}\"."),
     };
@@ -2022,6 +2026,7 @@ mod tests {
             hidden: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: None,
+            folders: None,
         };
         let stop = Arc::new(StopSignal::new());
         let write =
@@ -2993,6 +2998,7 @@ a.rs (3 matches)
             hidden: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: None,
+            folders: None,
         };
         let stop = Arc::new(StopSignal::new());
         let call = |name: &'static str, args: &'static str| {

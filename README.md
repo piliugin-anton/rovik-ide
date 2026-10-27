@@ -224,6 +224,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   (`Folders: api, web`); **Implement this plan** carries such a plan out
   in a chat across them, the open one if it works in each, else a new
   one, and in a workspace without one of them starts none and says which.
+  Its scouts, step workers, Autopilot tasks and Thorough's two
+  implementers work across its folders too.
 
 ---
 

@@ -4,7 +4,7 @@
 
 use super::*;
 
-const REPORT: &str = "## Answer\nIt is in a.txt.\n\n## Evidence\n- `a.txt:1`: the line\n\n## Open questions\nNone\n\n## Web sources\nNone";
+pub(super) const REPORT: &str = "## Answer\nIt is in a.txt.\n\n## Evidence\n- `a.txt:1`: the line\n\n## Open questions\nNone\n\n## Web sources\nNone";
 
 fn scouts_on(extra: Value) -> subagent::SubagentConfig {
     let mut scout = json!({ "enabled": true });
@@ -14,7 +14,7 @@ fn scouts_on(extra: Value) -> subagent::SubagentConfig {
     serde_json::from_value(json!({ "enabled": true, "kinds": { "scout": scout } })).unwrap()
 }
 
-fn task(id: &'static str, goal: &str) -> Reply {
+pub(super) fn task(id: &'static str, goal: &str) -> Reply {
     Reply::Call {
         id,
         name: "task",
@@ -47,7 +47,7 @@ impl Harness {
         request
     }
 
-    async fn child_of(&self, call_id: &str) -> store::ChildDialog {
+    pub(super) async fn child_of(&self, call_id: &str) -> store::ChildDialog {
         let (id, call) = (self.dialog_id.clone(), call_id.to_string());
         let db = self.core.db.clone();
         db.read(move |c| store::child_for_call(c, &id, &call, None))
@@ -56,7 +56,7 @@ impl Harness {
             .unwrap_or_else(|| panic!("no subagent chat for {call_id}"))
     }
 
-    async fn messages_of(&self, dialog_id: &str) -> Vec<MessageRow> {
+    pub(super) async fn messages_of(&self, dialog_id: &str) -> Vec<MessageRow> {
         let id = dialog_id.to_string();
         let db = self.core.db.clone();
         db.read(move |c| store::get_messages(c, &id, None, 500))
@@ -3754,7 +3754,7 @@ fn workers_on(extra: Value) -> subagent::SubagentConfig {
     .unwrap()
 }
 
-fn step(id: &'static str, n: usize) -> Reply {
+pub(super) fn step(id: &'static str, n: usize) -> Reply {
     Reply::Call {
         id,
         name: "task",
@@ -3762,7 +3762,7 @@ fn step(id: &'static str, n: usize) -> Reply {
     }
 }
 
-fn worker_report(summary: &str, files: &[&str]) -> Reply {
+pub(super) fn worker_report(summary: &str, files: &[&str]) -> Reply {
     let list = if files.is_empty() {
         "None".to_string()
     } else {

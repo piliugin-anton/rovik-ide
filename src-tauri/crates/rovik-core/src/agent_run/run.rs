@@ -1082,7 +1082,13 @@ impl Run {
         // A workspace chat's folders at its last run, for those that joined
         // or left since.
         let since = folders_at_last_run(&recent);
-        let (checks, project_context, restricted) = match (&root, &folders) {
+        // A candidate follows its task chat's folders' settings (T05): its
+        // own folder is a copy of them, under the same names.
+        let settings_of = core
+            .agents
+            .candidate_folders(&dialog_id)
+            .or_else(|| folders.clone());
+        let (checks, project_context, restricted) = match (&root, &settings_of) {
             (Some(view), Some(chat_folders)) if chat_folders.single().is_none() => {
                 let (config_dir, view) = (
                     core.paths.config_dir.clone(),
@@ -1105,10 +1111,10 @@ impl Run {
             (Some(r), _) => {
                 // Settings are kept by the project's folder, not the view's;
                 // a candidate's, by its task chat's (T05).
-                let settings_root = core
-                    .agents
-                    .candidate_project(&dialog_id)
-                    .or_else(|| project_root.clone())
+                let settings_root = settings_of
+                    .as_ref()
+                    .and_then(Folders::single)
+                    .map(|folder| folder.to_string_lossy().into_owned())
                     .unwrap_or_else(|| r.clone());
                 let config_dir = core.paths.config_dir.clone();
                 let (r, verify) = (r.clone(), config.permissions.verify_changes);

@@ -2912,6 +2912,51 @@ workspaceChat tests' window lists the workspace's own chats under its id, as
 `chatOwners` does (two tests that expected the harness's `workspace:` key changed with
 it), and Autopilot's test helpers are shared with the workspace tests.
 
+**F12 — Thorough, Autopilot, diagnostics and the estimate with folders.** Thorough's
+candidates take the task chat's `Folders` where they took its project: `copies_for`
+needs the chat's folders rather than a root (a workspace chat is always isolated, D23),
+`Copies::open` takes them to open the chat's view where it isn't open (the server's
+worktrees ignore them, as they did the project), `make` and the Pick open the copies
+so, and a candidate's record keeps the task chat's folders (`add_candidate`,
+`candidate_folders` in place of `candidate_project`), from which its run loads every
+folder's context, checks and restricted files (`load_folders` over its copy, which has
+the folders under their names); a folder chat's candidate loads its folder's as before.
+A candidate's implementation request names the plan as the task chat does
+(`api/.rovik/plans/…`, which its copy has at the same path), and the Pick runs each
+test written first alone in its folder of the copy (`in_files_folder`). Autopilot
+needed no change of its own: each stage's run takes the chat's folders from the chat
+(F02), and the delivery reads a closed chat's store of either kind (`pending`,
+`exists`). The diagnostics tool finds the editor's markers through the chat's folders
+(`CallContext.folders`): a workspace chat's `api/src/a.ts` as api's `src/a.ts`, a
+folder chat's path in its folder, so an isolated chat finds them (section 12, item
+10); they're given only for a file the run sees as the project has it (its bytes in the
+view are the folder's), and one the chat changed or made says so, in its diagnostics
+and the summary. The estimate's project section is what the chat's run is told
+(`cached_context` over `Folders`: `load_folders` for a workspace chat, no longer each
+folder's own section added up), kept for a few seconds by the folder list. Tests:
+`workspace_e2e_tests.rs` (a scout reads both folders, and a step's worker writes its
+step's folder and is refused the other's; an Autopilot task runs to its delivery, its
+check run in its folder, and, cut between two stages with its view closed as a restart
+leaves it, gets the chat's folders again; a Thorough task's candidates each work over
+the whole view, told every folder's instructions, checked by api's own check and given
+the plan by its chat path, and the smaller change lands while the other's file in web
+doesn't; the Pick runs a test written first in its folder, so the candidate that makes
+it pass wins over a smaller change that doesn't; the diagnostics tool finds the editor's
+markers through the view and none for a file the chat changed, and an isolated folder
+chat finds its folder's), `agent_tools.rs` (a view's file has its folder's markers
+unless the chat changed or made it) and `project.rs` (the estimate's section is the
+folders as the run is told them, by the folder list). Departures: 4.9's `folders` in
+Autopilot's `Settings` isn't needed, as a stage's run takes them from the chat (F02).
+A candidate's own folders stay its copy's (`Folders::one`), so D27's filter doesn't
+apply in it: it runs every folder's checks. "Hasn't changed" is read by content, which
+also covers a subagent's view over its lead's and a file changed back. The estimate
+leaves out the line on folders that joined or left (it has no last run to compare
+with), and the diagnostics' type-check hint still looks at the view's root, where a
+workspace chat's folders' stacks aren't. Reopening a workspace chat's view from
+`Copies::open` after a restart is tested for folder chats only (the candidates' restart
+tests); the Autopilot and subagent test helpers it uses are shared with the workspace
+tests.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

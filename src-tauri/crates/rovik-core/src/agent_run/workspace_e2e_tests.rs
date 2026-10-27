@@ -1189,3 +1189,491 @@ async fn autopilots_report_and_implementation_name_a_workspace_plan_by_its_chat_
         "{request}"
     );
 }
+
+/*
+ * Subagents, Thorough, Autopilot, diagnostics (4.9, 4.10)
+ */
+
+fn read(id: &'static str, path: &str) -> Reply {
+    Reply::Call {
+        id,
+        name: "read",
+        args: json!({ "path": path }),
+    }
+}
+
+/// A plan of a step in each of SHOP's folders, for workers.
+const SHOP_STEPS: &str = "# Change both\n\nBoth constants become 2.\n\n## Steps\n\n\
+    1. **API**\n   - Files: `api/src/a.ts`\n   - Change `a` in `api/src/a.ts` to 2.\n\
+    2. **Web**\n   - Files: `web/src/b.ts`\n   - Change `b` in `web/src/b.ts` to 2.\n\n\
+    ## Validation\n- read both files\n";
+
+/// 4.9: a workspace chat's subagents work in its view: a scout reads both
+/// folders by their names, and a step's worker writes its step's file, in
+/// its folder, and none of the other folder's.
+#[tokio::test]
+async fn a_scout_reads_both_folders_and_a_worker_writes_only_its_steps_folder() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    use super::subagent_tests::{step, task, worker_report, REPORT};
+    let h = workspace_harness(
+        &[
+            (
+                "api",
+                &[
+                    ("src/a.ts", "export const a = 1;\n"),
+                    (".rovik/plans/shop.md", SHOP_STEPS),
+                ],
+            ),
+            ("web", &[("src/b.ts", "export const b = 1;\n")]),
+        ],
+        "all",
+    )
+    .await;
+    let checklist = |api: &str, web: &str| Reply::Call {
+        id: "t0",
+        name: "todo",
+        args: json!({ "items": [
+            { "title": "API", "status": api },
+            { "title": "Web", "status": web },
+        ] }),
+    };
+    let (url, _) = model_routed(
+        vec![
+            (
+                "MARK-SHOP",
+                vec![
+                    read("r1", "api/src/a.ts"),
+                    read("r2", "web/src/b.ts"),
+                    Reply::Text(REPORT),
+                ],
+            ),
+            (
+                "# Your step: 1.",
+                vec![
+                    write("w1", "api/src/a.ts", "export const a = 2;\n"),
+                    write("w2", "web/src/b.ts", "export const b = 9;\n"),
+                    worker_report("Changed a.", &["api/src/a.ts"]),
+                ],
+            ),
+        ],
+        vec![
+            checklist("pending", "pending"),
+            task("t1", "MARK-SHOP: where are a and b?"),
+            step("t2", 1),
+            checklist("done", "skipped"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let file = h.project.join("api/.rovik/plans/shop.md");
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `api/.rovik/plans/shop.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true, "planPath": file })),
+        attachments: Vec::new(),
+    };
+    let mut request = h.workspace_request(&url, StartKind::Send { message }, any_command());
+    request.config.as_mut().unwrap().subagents = serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "scout": { "enabled": true }, "worker": { "enabled": true } },
+        "workerMinSteps": 2,
+    }))
+    .unwrap();
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    let scout = h.child_of("t1").await;
+    let seen = h.messages_of(&scout.id).await;
+    for (call, text) in [("r1", "export const a = 1;"), ("r2", "export const b = 1;")] {
+        let read = &result_of(&seen, call).content;
+        assert!(read.contains(text), "{read}");
+    }
+    let worker = h.child_of("t2").await;
+    let wrote = h.messages_of(&worker.id).await;
+    let own = &result_of(&wrote, "w1").content;
+    assert!(!own.starts_with("Error"), "{own}");
+    let other = &result_of(&wrote, "w2").content;
+    assert!(
+        other.contains("`web/src/b.ts` is outside your write scope"),
+        "{other}"
+    );
+    assert_eq!(
+        h.file("api/src/a.ts").as_deref(),
+        Some("export const a = 2;\n")
+    );
+    assert_eq!(
+        h.file("web/src/b.ts").as_deref(),
+        Some("export const b = 1;\n")
+    );
+}
+
+/// What api's check needs: its ok.txt saying ok.
+const OK_CHECK: &str =
+    "if [ \"$(cat ok.txt)\" = ok ]; then exit 0; fi\necho 'ok.txt:1: error: not ok'\nexit 1\n";
+
+/// An Autopilot task's plan for api's check, its files named by their
+/// folders, and what done means (S01).
+const API_TASK_PLAN: &str = "# Make the check pass\n\napi's check passes once api/ok.txt says ok.\n\n## Criteria\n\n\
+    1. `cd api && sh check.sh` passes: `api/check.sh` finds `api/ok.txt` saying ok.\n\n\
+    **Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
+    1. **Write ok**\n   - Files: `api/ok.txt`\n   - Replace the text of `api/ok.txt` with `ok`, which `api/check.sh` checks.\n\
+    2. **Check**\n   - Files: `api/check.sh` (read)\n   - Read `api/check.sh` to confirm it checks `api/ok.txt`; it keeps its code.\n\n\
+    ## Validation\n- `cd api && sh check.sh`\n";
+
+/// A workspace for a task: api's check (`sh check.sh`, on) passes once
+/// its ok.txt says ok; web has instructions of its own.
+async fn task_shop() -> Harness {
+    let h = workspace_harness(
+        &[
+            ("api", &[("check.sh", OK_CHECK), ("ok.txt", "no\n")]),
+            (
+                "web",
+                &[
+                    ("AGENTS.md", "MARK-WEB: web keeps its own rules.\n"),
+                    ("src/b.ts", "export const b = 1;\n"),
+                ],
+            ),
+        ],
+        "all",
+    )
+    .await;
+    set_checks(&h, "api", &[("test", "sh check.sh")]);
+    h
+}
+
+/// A task's start in the workspace chat, in Autopilot, the plan reviewer on.
+fn shop_task(h: &Harness, url: &str) -> StartRequest {
+    let send = super::autopilot_tests::autopilot_send("Make the check pass");
+    let mut request = h.workspace_request(url, send, Permissions::default());
+    request.mode = Some("autopilot".into());
+    request.config.as_mut().unwrap().subagents = serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "planReviewer": { "enabled": true } },
+        "reviewMinLines": 1,
+    }))
+    .unwrap();
+    request
+}
+
+fn submit_task_plan() -> Reply {
+    Reply::Call {
+        id: "p1",
+        name: "submit_plan",
+        args: json!({ "plan": API_TASK_PLAN }),
+    }
+}
+
+/// 4.9: an Autopilot task in a workspace chat runs to its delivery, its
+/// check run in its folder and its change landed there. Cut between two
+/// stages and its view closed, as a restart leaves it, it gets the chat's
+/// folders again from the chat when it goes on: nothing else keeps them.
+#[tokio::test]
+async fn an_autopilot_task_in_a_workspace_chat_runs_to_its_delivery_and_gets_its_folders_again_after_a_restart(
+) {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    use super::autopilot::{crash_at, Crash, Status};
+    use super::autopilot_tests::{
+        candidate_script, delivered, model_routed as task_model, names, stages_until, BALANCED_OK,
+        PLAN_REVIEW,
+    };
+    let h = task_shop().await;
+    let mut script = vec![submit_task_plan(), Reply::Text("Saved the plan.")];
+    script.extend(candidate_script(&[("api/ok.txt", "ok\n")]));
+    let (url, _) = task_model(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    crash_at(&h.dialog_id, Crash::AfterEnd);
+    h.start(shop_task(&h, &url)).await;
+    stages_until(&h, "the plan's end", |r| {
+        r.first().is_some_and(|p| p.status == Status::Done)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!h.core.agents.is_running(&h.dialog_id));
+    // The restart: the view is unmounted, its changes kept on disk.
+    let id = h.dialog_id.clone();
+    crate::rt::spawn_blocking(move || crate::overlay::chats::close(&id))
+        .await
+        .unwrap();
+    assert!(crate::overlay::chats::get(&h.dialog_id).is_none());
+    let mut resume = h.workspace_request(&url, StartKind::Resume, Permissions::default());
+    resume.mode = Some("autopilot".into());
+    resume.config = None;
+    h.start(resume).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
+    assert_eq!(
+        records.last().unwrap().summary.as_deref(),
+        Some("Delivered: the changes are in the project")
+    );
+    assert_eq!(h.file("api/ok.txt").as_deref(), Some("ok\n"));
+    let record = verifications(&h.messages().await)
+        .pop()
+        .expect("the checks' record");
+    assert_eq!(
+        check_in(&record, "cd api && sh check.sh")["status"],
+        "passed"
+    );
+}
+
+/// T05 (4.9): a Thorough task in a workspace chat has two candidates,
+/// each in a copy of the whole view, told every folder's instructions and
+/// checked by api's own check; the smaller change lands in its folder, and
+/// the other's file in web never does.
+#[tokio::test]
+async fn a_thorough_task_makes_candidates_over_the_whole_view_each_following_every_folders_settings(
+) {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    use super::autopilot::{Effort, Stage};
+    use super::autopilot_tests::{
+        candidate_script, candidates_row, chat_messages, delivered_slowly,
+        model_routed as task_model, CHANGE_REVIEW, PLAN_REVIEW,
+    };
+    let h = task_shop().await;
+    let mut script = vec![submit_task_plan(), Reply::Text("Saved the plan.")];
+    script.extend(candidate_script(&[("api/ok.txt", "ok\n")]));
+    script.extend(candidate_script(&[
+        ("api/ok.txt", "ok\n"),
+        ("web/notes.txt", "Wrote ok.\n"),
+    ]));
+    let clean = || vec![Reply::Text("## Findings\n\nNone.")];
+    let (url, seen) = task_model(
+        vec![(PLAN_REVIEW, clean()), (CHANGE_REVIEW, clean())],
+        script,
+    )
+    .await;
+    let mut request = shop_task(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = delivered_slowly(&h).await;
+    let implement = records.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert_eq!(implement.candidates, ["a", "b"], "{records:#?}");
+    assert_eq!(implement.summary.as_deref(), Some("Candidate a's, picked"));
+    assert_eq!(h.file("api/ok.txt").as_deref(), Some("ok\n"));
+    assert_eq!(h.file("web/notes.txt"), None);
+    // Each candidate's check was api's, run in it, and passed.
+    let messages = h.messages().await;
+    let row = candidates_row(&messages);
+    for candidate in row["candidates"].as_array().unwrap() {
+        let chat = candidate["chat"].as_str().unwrap();
+        let record = verifications(&chat_messages(&h, chat).await)
+            .pop()
+            .expect("its checks' record");
+        assert_eq!(
+            check_in(&record, "cd api && sh check.sh")["status"],
+            "passed"
+        );
+    }
+    // Each implementer was told web's instructions too.
+    let requests = seen.lock().unwrap().clone();
+    let implementing: Vec<&Value> = requests
+        .iter()
+        .filter(|r| {
+            r["messages"]
+                .to_string()
+                .contains("Implement this plan. It's saved in")
+        })
+        .filter(|r| r["tools"].to_string().contains("\"write\""))
+        .collect();
+    assert!(implementing.len() >= 2, "{}", implementing.len());
+    for request in implementing {
+        let system = request["messages"][0]["content"].as_str().unwrap_or("");
+        assert!(system.contains("MARK-WEB"), "{system}");
+        // Its plan named as the chat names it, which its copy has the same.
+        let asked = request["messages"].to_string();
+        assert!(asked.contains("It's saved in api/.rovik/plans/"), "{asked}");
+    }
+}
+
+/// An editor marker on line 1, an error saying `message`.
+fn marker(message: &str) -> crate::agent_tools::EditorMarker {
+    crate::agent_tools::EditorMarker {
+        start_line: 1,
+        start_col: 1,
+        end_line: 1,
+        end_col: 2,
+        severity: "error".into(),
+        message: message.into(),
+        source: None,
+        code: None,
+    }
+}
+
+/// 4.10: the editor's markers, reported by each folder, are found through
+/// the view by the folder of the file, for the project's version only: a
+/// file the chat changed gets none, in its diagnostics and the summary.
+#[tokio::test]
+async fn the_diagnostics_tool_finds_the_editors_markers_through_the_view_and_none_for_a_changed_file(
+) {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(SHOP, "all").await;
+    for (folder, file, message) in [
+        ("api", "src/a.ts", "MARK-A is wrong"),
+        ("web", "src/b.ts", "MARK-B is wrong"),
+    ] {
+        let root = h.project.join(folder).to_string_lossy().into_owned();
+        crate::agent_tools::report_editor_diagnostics(root, file.into(), vec![marker(message)])
+            .unwrap();
+    }
+    let diagnostics = |id: &'static str, args: Value| Reply::Call {
+        id,
+        name: "diagnostics",
+        args,
+    };
+    let (url, _) = model(vec![
+        diagnostics("d1", json!({ "path": "api/src/a.ts" })),
+        write("w1", "web/src/b.ts", "export const b = 2;\n"),
+        diagnostics("d2", json!({ "path": "web/src/b.ts" })),
+        diagnostics("d3", json!({})),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.workspace_request(&url, Harness::send("Look"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let result = |id: &str| result_of(&messages, id).content.clone();
+    assert!(
+        result("d1").contains("error: MARK-A is wrong"),
+        "{}",
+        result("d1")
+    );
+    let changed = result("d2");
+    assert!(
+        !changed.contains("MARK-B") && changed.contains("which this chat has changed"),
+        "{changed}"
+    );
+    let summary = result("d3");
+    assert!(summary.contains("- api/src/a.ts: 1 error"), "{summary}");
+    assert!(!summary.contains("web/src/b.ts"), "{summary}");
+}
+
+/// 4.10, section 12 item 10: an isolated folder chat, which works in its
+/// view, finds the editor's markers its folder reported.
+#[tokio::test]
+async fn an_isolated_folder_chat_finds_the_editors_markers_through_its_view() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = harness(&[("src/a.ts", "export const a = 1;\n")]).await;
+    h.isolate().await;
+    let root = h.project.to_string_lossy().into_owned();
+    crate::agent_tools::report_editor_diagnostics(root, "src/a.ts".into(), vec![marker("MARK-F")])
+        .unwrap();
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "d1",
+            name: "diagnostics",
+            args: json!({ "path": "src/a.ts" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Look"), quiet_permissions());
+    request.isolate = Some(true);
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let found = &result_of(&messages, "d1").content;
+    assert!(found.contains("error: MARK-F"), "{found}");
+}
+
+/// A plan whose test written first (`api/extra.test.js`) needs a file only
+/// one of the candidates writes.
+const EXTRA_TASK_PLAN: &str = "# Make the check and the test pass\n\napi's check passes once api/ok.txt says ok, and its test once api/extra.txt says yes.\n\n## Criteria\n\n\
+    1. `cd api && sh check.sh` passes: `api/check.sh` finds `api/ok.txt` saying ok.\n\
+    2. `api/extra.test.js` passes: `api/extra.txt` says yes.\n\n\
+    **Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
+    1. **Write ok**\n   - Files: `api/ok.txt`, `api/extra.txt` (new)\n   - Replace the text of `api/ok.txt` with `ok`, and write `yes` to `api/extra.txt`.\n\
+    2. **Check**\n   - Files: `api/check.sh` (read)\n   - Read `api/check.sh` to confirm it checks `api/ok.txt`; it keeps its code.\n\n\
+    ## Validation\n- `cd api && sh check.sh`\n";
+
+const EXTRA_TEST: &str = "const test = require('node:test');\nconst assert = require('assert');\nconst fs = require('fs');\ntest('extra.txt says yes', () => assert.strictEqual(fs.readFileSync(__dirname + '/extra.txt', 'utf8').trim(), 'yes'));\n";
+
+/// T06 (4.9): the pick runs each test written first alone in its folder
+/// of a candidate's copy (`cd api && node --test extra.test.js`): the
+/// candidate whose change makes it pass wins, though the other's change is
+/// smaller and its checks pass too.
+#[tokio::test]
+async fn a_thorough_tasks_pick_runs_each_test_written_first_in_its_folder() {
+    if !crate::vfs::mount_works() || !has_npm() {
+        return;
+    }
+    use super::autopilot::{Effort, Stage};
+    use super::autopilot_tests::{
+        candidate_script, delivered_slowly, model_routed as task_model, CHANGE_REVIEW, PLAN_REVIEW,
+    };
+    let h = workspace_harness(
+        &[
+            (
+                "api",
+                &[
+                    (
+                        "package.json",
+                        r#"{ "name": "api", "scripts": { "test": "node --test" } }"#,
+                    ),
+                    ("check.sh", OK_CHECK),
+                    ("ok.txt", "no\n"),
+                ],
+            ),
+            ("web", &[("src/b.ts", "export const b = 1;\n")]),
+        ],
+        "all",
+    )
+    .await;
+    set_checks(&h, "api", &[("test", "sh check.sh")]);
+    let mut script = vec![
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": EXTRA_TASK_PLAN }),
+        },
+        Reply::Text("Saved the plan."),
+    ];
+    script.extend(candidate_script(&[
+        ("api/ok.txt", "ok\n"),
+        ("api/extra.txt", "yes\n"),
+    ]));
+    script.extend(candidate_script(&[("api/ok.txt", "ok\n")]));
+    let clean = || vec![Reply::Text("## Findings\n\nNone.")];
+    let tests_first = vec![
+        write("tw1", "api/extra.test.js", EXTRA_TEST),
+        Reply::Text("## Summary\n\nChecks that extra.txt says yes (criterion 2).\n\n## Test files\n\n- `api/extra.test.js`: extra.txt says yes\n\n## Assumptions\n\nNone."),
+    ];
+    let (url, _) = task_model(
+        vec![
+            (PLAN_REVIEW, clean()),
+            (CHANGE_REVIEW, clean()),
+            (super::test_writer::FIRST_HEADING, tests_first),
+        ],
+        script,
+    )
+    .await;
+    let mut request = shop_task(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = delivered_slowly(&h).await;
+    let implement = records.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert_eq!(
+        implement.summary.as_deref(),
+        Some("Candidate a's, picked"),
+        "{records:#?}"
+    );
+    let messages = h.messages().await;
+    let pick = messages
+        .iter()
+        .find_map(|m| m.meta.as_ref()?.get("pick"))
+        .expect("the pick's record");
+    let tests = |i: usize| pick["candidates"][i]["score"]["testsPassed"].clone();
+    assert_eq!((tests(0), tests(1)), (json!(1), json!(0)), "{pick}");
+    assert_eq!(h.file("api/extra.txt").as_deref(), Some("yes\n"));
+}
