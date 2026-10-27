@@ -1867,6 +1867,12 @@ impl Harness {
 #[tokio::test]
 async fn on_a_daemon_a_workspace_chat_works_in_its_worktree_by_its_folders_names() {
     let h = daemon_harness(SHOP).await;
+    // In the system's shell: cmd's `type` on Windows.
+    let print = if cfg!(windows) {
+        "type src\\b.ts"
+    } else {
+        "cat src/b.ts"
+    };
     let (url, _) = model(vec![
         Reply::Call {
             id: "r1",
@@ -1877,7 +1883,7 @@ async fn on_a_daemon_a_workspace_chat_works_in_its_worktree_by_its_folders_names
         Reply::Call {
             id: "c1",
             name: "bash",
-            args: json!({ "command": "cd web && cat src/b.ts" }),
+            args: json!({ "command": format!("cd web && {print}") }),
         },
         Reply::Text("Done."),
     ])
