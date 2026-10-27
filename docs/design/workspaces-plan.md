@@ -2625,6 +2625,33 @@ the warning comes once, from whichever part reaches 80%; a part that goes gives
 its share back) and `vfs/fuse.rs` "a cross-device error reaches the kernel as
 EXDEV".
 
+**F04 — landing across folders.** `land.rs` works on `Folders`: `plan_in`,
+`land_in`, `land_checked_in` and `undo_in`, with today's `plan`, `land`,
+`land_checked` and `undo` as one-folder wrappers. An action keeps its chat path
+and the folder and path it resolves to (a moved file's origin too); a path in no
+folder, or a folder's own name, is a conflict. Land and Undo are refused while a
+folder is missing, naming every one (a folder chat's too: landing made its folder
+anew with only the chat's files in it). The folders' locks are taken by
+`file_guard::key`, sorted, before any file's. A workspace landing writes
+`landings/<chat>/folders.json` (names and paths) in place of `project.txt`, its
+journal names its folders (`folders`, empty and left out for a folder chat), and
+a write that fails puts back every folder written before it. `folders_of` reads
+either file in place of `project_of`; `relocate` points a workspace chat's
+landings at a located folder (F06 calls it). Recovery resolves each entry
+through the chat's folders and writes nothing into one that isn't there, its
+entries waiting with the landing still applying ("not finished: its folder isn't
+there"), for every landing. Undo after the chat's store is gone works from
+`folders.json`; `overlay_undo` tells each folder's other chats of their files.
+Tests: `overlay/tests.rs`'s `across_folders` (changes in two folders land under
+one landing, with `folders.json` and no `project.txt`; a conflict in one folder
+lands nothing in either; a move within a folder; a failed write in the second
+folder puts the first back; an interrupted two-folder landing is finished at
+start; one whose folder is missing waits for it and is finished where it's
+located; undo once the store is gone; Land and Undo refused while a folder is
+missing; three chats landing at once, two workspace chats listing the folders in
+opposite orders and a folder chat, all finish; a folder chat's journal has no
+folders).
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

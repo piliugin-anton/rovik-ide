@@ -2288,15 +2288,21 @@ pub async fn overlay_undo(
             return Err("bad chat id".to_string());
         }
         let data = data_dir().ok_or("the app's data folder isn't known yet")?;
-        let project = super::land::project_of(&data, &dialog_id).ok_or("no landing to undo")?;
+        let folders = super::land::folders_of(&data, &dialog_id).ok_or("no landing to undo")?;
         let paths = super::land::latest(&data, &dialog_id)
             .filter(|(l, _, _)| *l == id)
             .map(|(_, p, _)| p)
             .unwrap_or_default();
-        let kept = super::land::undo(&data, &dialog_id, &project, &id)?;
-        // Other chats on the project see the files as they are again.
-        let abs: Vec<PathBuf> = paths.iter().map(|p| project.join(p)).collect();
-        project_changed(&project, &abs, false);
+        let kept = super::land::undo_in(&data, &dialog_id, &folders, &id)?;
+        // Other chats on each folder see its files as they are again.
+        for folder in folders.iter() {
+            let abs: Vec<PathBuf> = paths
+                .iter()
+                .filter(|p| folders.split(p).is_some_and(|(f, _)| f.name == folder.name))
+                .filter_map(|p| folders.abs(p))
+                .collect();
+            project_changed(&folder.path, &abs, false);
+        }
         Ok(kept)
     })
     .await
