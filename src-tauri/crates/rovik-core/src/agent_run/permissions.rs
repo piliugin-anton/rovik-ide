@@ -837,6 +837,24 @@ fn drop_assignments(words: Vec<String>) -> Vec<String> {
     words.into_iter().skip(skip).collect()
 }
 
+/// D26: a `cd` into a folder of the project runs nothing, so it needs no
+/// allowed command, and changes no file: one argument, a relative path that
+/// stays in the project (no `..` part, no drive), and isn't an option
+/// (`-`), the home folder (`~`), a variable (`$`), a command's output, a
+/// glob or a brace expansion (`{..,x}` is `cd .. x`, which some shells take
+/// as `cd ..`). A workspace chat's `cd api && npm test` is checked as
+/// `npm test` is. Every folder name a workspace gives passes (D8).
+fn cd_into_project(segment: &[String]) -> bool {
+    let [program, dir] = segment else {
+        return false;
+    };
+    program == "cd"
+        && !dir.is_empty()
+        && !dir.starts_with(['-', '~', '/', '\\'])
+        && !dir.contains(['$', '`', '*', '?', '[', '{', ':'])
+        && dir.split(['/', '\\']).all(|part| part != "..")
+}
+
 /// "git status" permits "git status -s", not "git stash".
 fn matches_allowed(segment: &[String], allowed: &[Vec<String>]) -> bool {
     allowed.iter().any(|entry| {
@@ -1332,6 +1350,9 @@ pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
     if elevated(seg) {
         return false;
     }
+    if cd_into_project(seg) {
+        return true;
+    }
     let seg = unwrap_wrappers(seg);
     let Some((cmd, rest)) = seg.split_first() else {
         return true;
@@ -1501,7 +1522,7 @@ pub(crate) fn check_command_in(command: &str, permissions: &Permissions, shell: 
     let refused: Vec<&Vec<String>> = parsed
         .segments
         .iter()
-        .filter(|seg| !matches_allowed(seg, &allowed))
+        .filter(|seg| !matches_allowed(seg, &allowed) && !cd_into_project(seg))
         .collect();
     if !refused.is_empty() {
         let names = refused
@@ -2832,5 +2853,75 @@ mod tests {
         }
         // cmd.exe has no background: its `&` only separates.
         assert!(!parse_command_in("a & b", Shell::Cmd).backgrounds);
+    }
+
+    /// D26: a `cd` into a folder of the project runs nothing, so the
+    /// default allowed commands let `cd api && npm test` by, checking
+    /// `npm test` as alone; a `cd` that could leave the project, and what
+    /// follows any `cd`, are checked as before.
+    #[test]
+    fn a_cd_into_the_project_passes_the_allowed_commands() {
+        let p = Permissions::default();
+        for allowed in [
+            "cd api && npm test",
+            "cd 'my app' && npm test",
+            "cd api/src && ls",
+        ] {
+            assert_eq!(
+                check_command(allowed, &p),
+                Verdict::Permitted {
+                    modifies_files: false
+                },
+                "{allowed}"
+            );
+        }
+        for refused in [
+            "cd .. && npm test",
+            "cd api/../.. && ls",
+            "cd /tmp && ls",
+            "cd ~ && ls",
+            "cd $X && ls",
+            "cd - && ls",
+            "cd * && ls",
+            "cd {..,x} && npm test",
+            "cd {/tmp,x} && ls",
+            "cd api && rm x",
+            "cd",
+        ] {
+            assert!(
+                matches!(check_command(refused, &p), Verdict::Refused(_)),
+                "{refused}"
+            );
+        }
+    }
+
+    /// Every name a workspace gives a folder (D8) passes the `cd` rule, as
+    /// `in_folder` writes it.
+    #[test]
+    fn every_folder_name_passes_the_cd_rule() {
+        let p = Permissions::default();
+        for folder in [
+            "/w/api",
+            "/w/my app",
+            "/w/build",
+            "/w/.hidden",
+            "/w/@scope",
+            "/w/a:b$c`d*e?[f]{g}",
+            "/w/{..,x}",
+            "/w/-dash",
+            "/w/~tilde",
+            "/w/ünïcødé",
+            "/",
+        ] {
+            let name = crate::chat_db::workspaces::folder_name(folder, &[]);
+            let command = super::super::project::in_folder(&name, "npm test");
+            assert_eq!(
+                check_command(&command, &p),
+                Verdict::Permitted {
+                    modifies_files: false
+                },
+                "{folder}: {command}"
+            );
+        }
     }
 }

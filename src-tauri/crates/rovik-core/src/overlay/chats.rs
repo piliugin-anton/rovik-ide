@@ -149,19 +149,28 @@ impl ChatOverlay {
         shared.unwrap_or_else(|| self.store.join("out").join("target"))
     }
 
-    /// The sandbox the chat's commands run in: they may write to the view
-    /// and the build folder, which is made here since they couldn't
-    /// (confine.rs). A folder chat's project path shows its view to them; a
-    /// workspace chat's folders' own paths show the folders as they are,
-    /// read-only. None where that isn't possible.
+    /// The sandbox the chat's commands run in: each of its folders' paths
+    /// shows the folder in its view to them (a folder chat's project, the
+    /// whole view), and they may write to the view and the build folder,
+    /// which is made here since they couldn't (confine.rs). None where that
+    /// isn't possible.
     pub fn confine(&self) -> Option<super::confine::Confine> {
+        use super::confine::{Confine, Redirect};
         let target = self.target_dir();
         let _ = std::fs::create_dir_all(&target);
         let c = match &self.under {
-            Under::Folder(fs) => {
-                super::confine::Confine::redirecting(self.view.clone(), fs.base().to_path_buf())
+            Under::Folder(fs) => Confine::redirecting(self.view.clone(), fs.base().to_path_buf()),
+            Under::Workspace { .. } => {
+                let redirects = self
+                    .folders()
+                    .iter()
+                    .map(|f| Redirect {
+                        from: self.view.join(&f.name),
+                        to: f.path.clone(),
+                    })
+                    .collect();
+                Confine::redirecting_all(self.view.clone(), redirects)
             }
-            Under::Workspace { .. } => super::confine::Confine::hiding(self.view.clone()),
         }
         .also_writable(target);
         super::confine::available(&c).then_some(c)
@@ -171,9 +180,11 @@ impl ChatOverlay {
     /// Changes reach the project by landing, so git commands that change
     /// the repository are refused (reading it works: status, diff, log,
     /// show, blame). So is a folder of the chat named by its full path
-    /// where its commands don't see the view there, which would reach past
-    /// the chat's view.
-    pub fn command_problem(&self, command: &str) -> Option<String> {
+    /// where the command doesn't see the view there, which would reach past
+    /// the chat's view: where its sandbox can't redirect a path (Seatbelt,
+    /// Landlock), or for a command that isn't run in it (`confined` false:
+    /// a harness's).
+    pub fn command_problem(&self, command: &str, confined: bool) -> Option<String> {
         let parsed = crate::agent_run::permissions::parse_command(command);
         for segment in &parsed.segments {
             if let Some(what) = git_changes_repo(segment) {
@@ -182,7 +193,7 @@ impl ChatOverlay {
                 ));
             }
         }
-        let confine = self.confine();
+        let confine = confined.then(|| self.confine()).flatten();
         let what = match self.under {
             Under::Folder(_) => "the project",
             Under::Workspace { .. } => "its folders",
@@ -191,7 +202,7 @@ impl ChatOverlay {
             let path = folder.path.to_string_lossy();
             let redirected = confine
                 .as_ref()
-                .is_some_and(|c| c.redirects() && c.project == folder.path);
+                .is_some_and(|c| c.redirects_path(&folder.path));
             if names_path(command, &path) && !redirected {
                 return Some(format!(
                     "Error: this chat works in its own view of {what} (the current folder, {}), not in {path} itself. Use paths relative to the current folder.",

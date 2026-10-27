@@ -573,3 +573,32 @@ fn the_views_root_is_read_only_to_commands() {
     assert!(changes(id).is_empty(), "{:?}", changes(id));
     discard(id).unwrap();
 }
+
+#[test]
+fn a_command_naming_a_folders_own_path_is_refused_where_it_wouldnt_see_the_view_there() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let shop = Shop::new();
+    let id = "ws-real-path";
+    let o = opened(id, &shop.folders(&["api", "web"]));
+    let web = o
+        .folders()
+        .iter()
+        .find(|f| f.name == "web")
+        .map(|f| f.path.clone())
+        .unwrap();
+    let command = format!("cat {}/b.txt", web.display());
+    // Rovik's own command: fine where its sandbox shows the view there.
+    let redirected = o.confine().is_some_and(|c| c.redirects_path(&web));
+    assert_eq!(o.command_problem(&command, true).is_none(), redirected);
+    // A harness's, which runs outside the sandbox: refused either way.
+    let refused = o.command_problem(&command, false).unwrap();
+    assert!(
+        refused.contains("its own view of its folders")
+            && refused.contains(&*web.to_string_lossy()),
+        "{refused}"
+    );
+    assert!(o.command_problem("cat web/b.txt", false).is_none());
+    discard(id).unwrap();
+}

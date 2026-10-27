@@ -490,3 +490,56 @@ async fn after_the_chats_folders_change_the_next_prompt_says_which_joined_and_wh
         "{system}"
     );
 }
+
+#[tokio::test]
+async fn a_command_in_each_folder_runs_there_and_sees_the_chats_changes() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(
+        &[("api", &[("a.txt", "a\n")]), ("web", &[("b.txt", "b\n")])],
+        "all",
+    )
+    .await;
+    let api = h.project.join("api").canonicalize().unwrap();
+    let bash = |id: &'static str, command: String| Reply::Call {
+        id,
+        name: "bash",
+        args: json!({ "command": command }),
+    };
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "api/a.txt", "content": "A\n" }),
+        },
+        bash("b1", "cd api && cat a.txt".into()),
+        bash("b2", "cd web && pwd && cat b.txt".into()),
+        bash("b3", format!("cat {}/a.txt", api.display())),
+        Reply::Text("Done."),
+    ])
+    .await;
+    // The default allowed commands: `cd` into a folder needs none.
+    h.start(h.workspace_request(&url, Harness::send("Look"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let result = |id: &str| result_of(&messages, id).content.clone();
+    let printed = |out: &str, line: &str| out.lines().any(|l| l == line);
+    let b1 = result("b1");
+    assert!(printed(&b1, "A"), "the chat's change: {b1}");
+    let b2 = result("b2");
+    assert!(
+        b2.lines().any(|l| l.ends_with("/web")) && printed(&b2, "b"),
+        "{b2}"
+    );
+    // A folder's own path: the chat's view where the sandbox shows it
+    // there, refused where it can't.
+    let b3 = result("b3");
+    assert!(
+        printed(&b3, "A")
+            || b3.starts_with("Error: this chat works in its own view of its folders"),
+        "{b3}"
+    );
+    assert_eq!(h.file("api/a.txt").as_deref(), Some("A\n"), "landed");
+}

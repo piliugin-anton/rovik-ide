@@ -1451,9 +1451,9 @@ impl Run {
             let args = permissions::parse_args(&call.arguments);
             let command = args.get("command").and_then(Value::as_str).unwrap_or("");
             let owner = self.overlay_owner();
-            if let Some(reason) =
-                tools::copy_command_problem(&owner, self.core.agents.on_server(), command)
-            {
+            // The harness runs it, outside the chat's sandbox.
+            let on_server = self.core.agents.on_server();
+            if let Some(reason) = tools::copy_command_problem(&owner, on_server, command, false) {
                 let _ = ask
                     .reply
                     .send(crate::connectors::ToolAnswer::Deny { reason });
@@ -1511,9 +1511,10 @@ impl Run {
                 return;
             }
             let owner = self.overlay_owner();
-            if let Some(reason) =
-                tools::copy_command_problem(&owner, self.core.agents.on_server(), &command)
-            {
+            // Its commands don't run in the chat's sandbox: a folder's real
+            // path is its real path to them.
+            let on_server = self.core.agents.on_server();
+            if let Some(reason) = tools::copy_command_problem(&owner, on_server, &command, false) {
                 let _ = check.reply.send(CommandAnswer::Deny(reason));
                 return;
             }

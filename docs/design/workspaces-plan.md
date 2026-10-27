@@ -2781,6 +2781,40 @@ Compose of the test's, an Autopilot task's `below`), not through a run; the cont
 estimate keeps adding each folder's own section until F12 caches `load_folders` by
 the chat's folders.
 
+**F09 — commands in a workspace chat's view.** A `cd` into the project passes the
+allowed commands, in every chat (D26, `permissions::cd_into_project`): a `cd` part
+with one relative argument, no `..` part, not starting with `-`, `~` or a separator,
+and with no `$`, backtick, `*`, `?`, `[`, `{` or `:` in it runs nothing, so it's let
+by and counts as read-only, and the command's other parts are checked as before;
+the README's Getting started, step 3, says so. `Confine` takes a list of `Redirect`s
+(a place in the view, shown at a real path) in place of its `project`: a folder
+chat's view at its project's path, a workspace chat's `<view>/<name>` at each
+folder's own path (`redirecting_all`), each a bubblewrap bind; `redirects_path`
+says whether a path is one. `command_problem(command, confined)` refuses a folder's
+real path in a command unless the chat's sandbox shows the view there, so always
+in a harness's commands (`execute.rs` passes `confined` false, as they run
+unconfined) and where the sandbox can't redirect (Seatbelt, Landlock: `confine()` is
+None, and the hiding-only policy applies). After a command fails for a missing package,
+`install_dependencies` keeps the installs of the folder the command `cd`s into
+(`project::folder_of`), of the project's own and of the folders below it: `cd web &&
+npm test` installs web's dependencies, not api's, and a command at the top every
+folder's, as before. Tests: `permissions.rs` (with the default allowed commands,
+`cd api && npm test`, `cd 'my app' && npm test` and `cd api/src && ls` are
+permitted, and `cd .. && npm test`, `cd api/../..`, `cd /tmp`, `cd ~`, `cd $X`,
+`cd -`, `cd *`, `cd {..,x}`, `cd {/tmp,x}`, `cd api && rm x` and a bare `cd` aren't;
+every name `folder_name` gives, as `in_folder` writes it, passes), `confine.rs`
+(each folder's path shows its place in the view, under bubblewrap),
+`workspace_chat_tests.rs` (a command naming a folder's own path is refused where it
+wouldn't see the view there, and a harness's always), `environment.rs` (a command in
+a folder needs that folder's install, one at the top every folder's) and
+`workspace_e2e_tests.rs` (a command in each folder runs there and sees the chat's
+changes; one naming a folder's real path sees the view or is refused). Departures:
+the rule refuses `{` too, since a brace expansion gets past the others (`cd {..,x}`
+is `cd .. x`, which some shells run as `cd ..`), so `folder_name` makes braces
+plain (`a{b,c}` is `a-b,c-`) and every name still passes; the refusal of a folder's
+path is tested beside the overlay that makes it (`workspace_chat_tests.rs`), not in
+`confine.rs`.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

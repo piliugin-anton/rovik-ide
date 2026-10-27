@@ -1123,7 +1123,7 @@ async fn run(
             };
             let stop = stop.clone();
             if let Some(problem) =
-                copy_command_problem(&ctx.owner, core.agents.on_server(), command)
+                copy_command_problem(&ctx.owner, core.agents.on_server(), command, true)
             {
                 return Ok(ToolResult::text(problem));
             }
@@ -1914,10 +1914,16 @@ fn command_meta(result: &str) -> Map<String, Value> {
 /// chat works in its overlay, and a chat on a server in its own worktree
 /// (D8). Both change the project by landing, not through git, so git
 /// commands that change the repository are refused there. For Rovik's
-/// `bash`, and for a harness's shell commands, before they run.
-pub(super) fn copy_command_problem(owner: &str, on_server: bool, command: &str) -> Option<String> {
+/// `bash`, run in the chat's sandbox (`confined`), and for a harness's
+/// shell commands, which aren't, before they run.
+pub(super) fn copy_command_problem(
+    owner: &str,
+    on_server: bool,
+    command: &str,
+    confined: bool,
+) -> Option<String> {
     match crate::overlay::chats::get(owner) {
-        Some(o) => o.command_problem(command),
+        Some(o) => o.command_problem(command, confined),
         None if on_server => super::server::command_problem(command),
         None => None,
     }

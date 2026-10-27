@@ -346,6 +346,9 @@ is brought to the app's version by itself.
    default the agent may only run a short list of safe commands (`ls`,
    `cat`, `cargo clippy`, …), and it edits files without asking. Turn
    approvals on here if you want to review its edits and commands first.
+   A `cd` into a folder of the project, as in `cd api && npm test`, needs
+   no allowed command of its own: it runs nothing, and the rest of the
+   command is checked as usual.
 4. **Chat:** open the AI Chat tab, pick a model and a mode (Agent, Plan or
    Autopilot), and describe what you want. In Agent mode you can keep
    sending it messages while it works.
@@ -598,7 +601,9 @@ hooks, whatever their permission mode):
   stage runs it: once, at a workspace's root, only where Permissions &
   approval would let that install run without asking (in an Autopilot task,
   where its Prepare setting is on too), and never in Plan mode. Otherwise
-  the agent is told which install to run.
+  the agent is told which install to run. A command run in one folder
+  (`cd web && npm test`) needs that folder's install and the project's
+  own, not the other folders'.
 - **Services.** A project whose compose file (`compose.yaml`,
   `docker-compose.yml`) declares the databases, caches and queues its code
   needs gets them named in the agent's prompt, read with Docker Compose
