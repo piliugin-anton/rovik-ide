@@ -114,8 +114,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   Project checks. If anything fails, the agent is sent back to fix it.
   It's told when a fix made no progress, a fix that breaks
   something that passed before is rolled back, and tests weakened to pass
-  (skipped, deleted, fewer assertions) are flagged for you instead of
-  counting as verified. A check that fails runs once more on the code
+  (skipped, deleted, fewer assertions) and new suppressions of what the
+  checks report (`eslint-disable`, `@ts-ignore`, `as any`, `#[allow]`,
+  `# noqa`, `//nolint`) are flagged for you instead of counting as
+  verified. A check that fails runs once more on the code
   before the change (in an isolated chat): what fails there too, such as
   the type errors many React Native apps have, isn't the agent's to fix and
   doesn't hold its change back. A test script that runs Jest in watch

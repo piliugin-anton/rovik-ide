@@ -14,8 +14,10 @@
 //!     overwritten: it's left as it is and listed (K15).
 //!   - R05, test integrity: the test files and the check setup are compared
 //!     with what they were when the run first touched them. Removed tests,
-//!     new skip or `only` markers, fewer assertions, fewer tests run, and
-//!     changes to what the checks run are flagged: the agent is asked to
+//!     new skip or `only` markers, fewer assertions, fewer tests run,
+//!     changes to what the checks run, and new suppressions of what they
+//!     report in any code file (`#[allow]`, `eslint-disable`, `@ts-ignore`,
+//!     `as any`, `# noqa`, `//nolint`, …) are flagged: the agent is asked to
 //!     undo them or say why, and a run that keeps them isn't reported as
 //!     verified (it waits for the user).
 //!
@@ -578,6 +580,86 @@ fn patterns_for(path: &str) -> Option<&'static Patterns> {
     }
 }
 
+/// What silences a check's report in code, by language, each with the name
+/// a flag gives it: lint and type checks' own markers. TypeScript's `as
+/// any` counts where it ends an expression or casts again, not in prose
+/// ("as any other").
+type Markers = Vec<(&'static str, Regex)>;
+
+fn js_markers() -> Markers {
+    vec![
+        ("eslint-disable", re(r"eslint-disable")),
+        ("@ts-ignore", re(r"@ts-ignore\b")),
+        ("@ts-expect-error", re(r"@ts-expect-error\b")),
+        ("@ts-nocheck", re(r"@ts-nocheck\b")),
+        ("biome-ignore", re(r"biome-ignore")),
+    ]
+}
+
+static JS_SUPPRESSIONS: LazyLock<Markers> = LazyLock::new(js_markers);
+static TS_SUPPRESSIONS: LazyLock<Markers> = LazyLock::new(|| {
+    let mut markers = js_markers();
+    markers.push(("as any", re(r"(?m)\bas\s+any\b(?:\s*[^\s\w]|\s*$|\s+as\b)")));
+    markers
+});
+static RUST_SUPPRESSIONS: LazyLock<Markers> = LazyLock::new(|| {
+    vec![
+        ("#[allow]", re(r"#!?\[\s*allow\s*\(")),
+        ("#[expect]", re(r"#!?\[\s*expect\s*\(")),
+    ]
+});
+static PYTHON_SUPPRESSIONS: LazyLock<Markers> = LazyLock::new(|| {
+    vec![
+        ("# noqa", re(r"#\s*noqa\b")),
+        ("# type: ignore", re(r"#\s*type:\s*ignore\b")),
+        ("# pyright: ignore", re(r"#\s*pyright:\s*ignore\b")),
+        ("# pylint: disable", re(r"#\s*pylint:\s*disable\b")),
+    ]
+});
+static GO_SUPPRESSIONS: LazyLock<Markers> = LazyLock::new(|| {
+    vec![
+        ("//nolint", re(r"//\s*nolint\b")),
+        ("//lint:ignore", re(r"//\s*lint:ignore\b")),
+    ]
+});
+
+/// The suppression markers of `path`'s language; None for other files.
+fn suppression_markers(path: &str) -> Option<&'static Markers> {
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "ts" | "tsx" | "mts" | "cts" => Some(&TS_SUPPRESSIONS),
+        "js" | "jsx" | "mjs" | "cjs" => Some(&JS_SUPPRESSIONS),
+        "rs" => Some(&RUST_SUPPRESSIONS),
+        "py" => Some(&PYTHON_SUPPRESSIONS),
+        "go" => Some(&GO_SUPPRESSIONS),
+        _ => None,
+    }
+}
+
+/// What silences a check's report that the run added to `path`, from what
+/// it was (`before`, None: it didn't exist) to now (`after`, None:
+/// deleted): each marker with its count then and now. A suppression hides
+/// from the checks what they'd report, as a skipped test hides what it
+/// tests, whether or not a reason is written beside it. None: none added.
+fn suppression_flag(path: &str, before: Option<&str>, after: Option<&str>) -> Option<String> {
+    let markers = suppression_markers(path)?;
+    let after = after?;
+    let added: Vec<String> = markers
+        .iter()
+        .filter_map(|(name, pattern)| {
+            let was = before.map_or(0, |b| pattern.find_iter(b).count());
+            let now = pattern.find_iter(after).count();
+            (now > was).then(|| format!("`{name}` {was} → {now}"))
+        })
+        .collect();
+    (!added.is_empty()).then(|| {
+        format!(
+            "{path}: adds suppressions that hide what the checks report ({})",
+            added.join(", ")
+        )
+    })
+}
+
 pub fn count_tests(path: &str, content: &str) -> Option<TestCounts> {
     let p = patterns_for(path)?;
     Some(TestCounts {
@@ -636,9 +718,10 @@ fn package_scripts(text: &str) -> Option<serde_json::Value> {
 /// run first touched it (`before`, None: it didn't exist) to now (`after`,
 /// None: deleted). Test files are counted whole; other source files only by
 /// their tests and skip markers (inline test modules), since their
-/// assertions may be the program's own.
+/// assertions may be the program's own. Any code file's new suppressions
+/// of what the checks report are flagged too.
 pub fn integrity_flags(path: &str, before: Option<&str>, after: Option<&str>) -> Vec<String> {
-    let mut flags = Vec::new();
+    let mut flags: Vec<String> = suppression_flag(path, before, after).into_iter().collect();
     if is_check_setup(path) {
         let changed = match (before, after) {
             (Some(b), Some(a)) => check_relevant(path, b) != check_relevant(path, a),
@@ -742,14 +825,15 @@ pub fn integrity_note(flags: &[String], checks_pass: bool) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     let head = if checks_pass {
-        "[Automatic check by the IDE, not written by the user]\nThe checks pass, but these changes weaken the existing tests or change what the checks run:"
+        "[Automatic check by the IDE, not written by the user]\nThe checks pass, but these changes weaken the existing tests, hide what the checks report, or change what the checks run:"
     } else {
-        "Also, these changes weaken the existing tests or change what the checks run:"
+        "Also, these changes weaken the existing tests, hide what the checks report, or change what the checks run:"
     };
     format!(
-        "{head}\n{list}\n\nA test that existed before this task may change only when the request or the plan needs it. \
-         Undo these changes and fix the code instead. If the request does need one, keep it and say why in your \
-         final reply, citing the request; the user reviews every flagged change before your work counts as verified."
+        "{head}\n{list}\n\nA test that existed before this task may change only when the request or the plan needs it, \
+         and what a check reports is fixed in the code, not silenced. Undo these changes and fix the code instead. \
+         If the request does need one, keep it and say why in your final reply, citing the request; the user reviews \
+         every flagged change before your work counts as verified."
     )
 }
 
@@ -1650,6 +1734,48 @@ mod tests {
             f[0].contains("a test file the IDE can't check was changed"),
             "{f:?}"
         );
+    }
+
+    /// R05: a suppression the run adds of what the checks report is
+    /// flagged, with a reason beside it or not, in a new file too; one that
+    /// was there before, prose, another language's marker, a file of no
+    /// language, or a removal isn't.
+    #[test]
+    fn new_suppressions_are_flagged_with_their_counts() {
+        let ts_before = "// @ts-ignore\nconst a = b;\n";
+        let ts_after = "// @ts-ignore\n// eslint-disable-next-line no-console -- debugging\nconst a = b as any;\nconsole.log(a as any as string);\n";
+        assert_eq!(
+            integrity_flags("src/a.ts", Some(ts_before), Some(ts_after)),
+            ["src/a.ts: adds suppressions that hide what the checks report (`eslint-disable` 0 → 1, `as any` 0 → 2)"]
+        );
+        assert!(
+            integrity_flags("src/a.ts", Some(""), Some("// works as any other button\n"))
+                .is_empty()
+        );
+        assert!(integrity_flags("src/a.js", Some(""), Some("const x = y as any;\n")).is_empty());
+        assert_eq!(
+            integrity_flags(
+                "src/lib.rs",
+                None,
+                Some("#[allow(dead_code, reason = \"later\")]\nfn f() {}\n")
+            ),
+            ["src/lib.rs: adds suppressions that hide what the checks report (`#[allow]` 0 → 1)"]
+        );
+        assert_eq!(
+            integrity_flags(
+                "app/x.py",
+                Some("import os\n"),
+                Some("import os  # noqa: F401\nx = y  # type: ignore[attr-defined]\n")
+            ),
+            ["app/x.py: adds suppressions that hide what the checks report (`# noqa` 0 → 1, `# type: ignore` 0 → 1)"]
+        );
+        assert_eq!(
+            integrity_flags("main.go", Some(""), Some("x := 1 //nolint:ineffassign\n")),
+            ["main.go: adds suppressions that hide what the checks report (`//nolint` 0 → 1)"]
+        );
+        assert!(integrity_flags("src/a.ts", Some(ts_after), Some(ts_before)).is_empty());
+        assert!(integrity_flags("README.md", Some(""), Some("eslint-disable")).is_empty());
+        assert!(integrity_flags("src/a.ts", Some(ts_after), None).is_empty());
     }
 
     /// Round 2, P3.8: ordinary test work isn't flagged: a snapshot, a
