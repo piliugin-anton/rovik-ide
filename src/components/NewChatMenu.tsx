@@ -15,8 +15,12 @@
 // still has its original's chats. Space checks the box in focus, Enter
 // starts the chat, and Escape, Tab or a press elsewhere makes none. Opened
 // from a button it floats there; the chat panel with no chat shows it in
-// place, to start one (3.8).
-import { createEffect, createResource, createSignal, onCleanup, onMount } from 'solid-js';
+// place, to start one (3.8). From a workspace chat's label it changes that
+// chat's folders instead (D32): they're checked as it opens, a missing one
+// among them can be unchecked, and Apply takes Start chat's place, off
+// while the chat is at work, has commands running (with a way to stop
+// them), or has no folder checked.
+import { createEffect, createResource, createSignal, onCleanup, onMount, Show } from 'solid-js';
 import FolderMenu from './FolderMenu';
 import { openAppSettings } from '../lib/appSettings';
 import { cloud } from '../lib/cloud';
@@ -35,6 +39,18 @@ export interface NewChatMenuProps {
   onStart: (folders: OpenFolder[] | 'all') => void;
   /** Escape, Tab, a press elsewhere: no chat. */
   onClose?: () => void;
+  /** A workspace chat's folders to change, in place of a new chat's (D32). */
+  chat?: ChatFolders;
+}
+
+/** A workspace chat's folders, as its label's menu changes them (D32). */
+export interface ChatFolders {
+  /** The names checked, or `'all'`: it follows the workspace. */
+  folders: string[] | 'all';
+  /** Why Apply is off now: the chat is at work, or has commands running. */
+  busy: string | null;
+  /** Stops the chat's running commands, when they're why. */
+  stop?: () => void;
 }
 
 /**
@@ -63,30 +79,48 @@ export default function NewChatMenu(props: NewChatMenuProps) {
       ? at
       : (props.folders.find((folder) => !cantChatIn(folder, props.folders)) ?? null);
   };
+  /** The boxes checked as it opens: the chat's folders, or the folder worked in. */
+  const opening = (): string[] => {
+    const chat = props.chat;
+    if (!chat) return first() ? [first()!.path] : [];
+    return props.folders
+      .filter((folder) => chat.folders === 'all' || chat.folders.includes(folder.name))
+      .map((folder) => folder.path);
+  };
   /** The boxes checked, by path. */
-  const [checked, setChecked] = createSignal<ReadonlySet<string>>(
-    new Set(first() ? [first()!.path] : [])
-  );
+  const [checked, setChecked] = createSignal<ReadonlySet<string>>(new Set(opening()));
   /** All folders is checked: the chat follows the workspace. */
-  const [all, setAll] = createSignal(false);
+  const [all, setAll] = createSignal(props.chat?.folders === 'all');
   /** The driver here, read as the menu opens: null until it's known, or when it can't be. */
   const [driver] = createResource(() =>
     vfsStatus()
       .then((status) => status.driver)
       .catch(() => null)
   );
-  /** Why there's no chat across folders here (null: there can be one). */
+  /**
+   * Why there's no new chat across folders here (null: there can be one).
+   * A workspace chat's folders change wherever it is.
+   */
   const blocked = () =>
-    acrossFoldersBlocked(
-      onWindows(),
-      driver() ?? null,
-      cloud.hosts.find((host) => host.id === WSL_HOST)
-    );
+    props.chat
+      ? null
+      : acrossFoldersBlocked(
+          onWindows(),
+          driver() ?? null,
+          cloud.hosts.find((host) => host.id === WSL_HOST)
+        );
+  /**
+   * Why `folder`'s box can't be checked, or null when it can. A workspace
+   * chat's are named, so only a missing one can't be, and one it has can be
+   * unchecked.
+   */
+  const unavailable = (folder: OpenFolder) => {
+    if (!props.chat) return cantChatIn(folder, props.folders);
+    return folder.missing && !checked().has(folder.path) ? cantChatIn(folder, props.folders) : null;
+  };
   /** The folders checked, in the window's order, while they're still ones a chat can be in. */
   const chosen = () =>
-    props.folders.filter(
-      (folder) => checked().has(folder.path) && !cantChatIn(folder, props.folders)
-    );
+    props.folders.filter((folder) => checked().has(folder.path) && !unavailable(folder));
   const start = () => {
     if (all()) props.onStart('all');
     else if (chosen().length > 0) props.onStart(chosen());
@@ -108,19 +142,27 @@ export default function NewChatMenu(props: NewChatMenuProps) {
     if (!all()) setChecked(new Set(props.folders.map((folder) => folder.path)));
     setAll(!all());
   };
-  /** Why All folders can't be checked: no chat across folders here, or a folder that can't be. */
-  const allUnavailable = () =>
-    blocked() ??
-    props.folders.map((folder) => cantChatIn(folder, props.folders)).find((why) => why) ??
-    null;
-  /** What Start chat says: where the chat will work. */
+  /**
+   * Why All folders can't be checked: no chat across folders here, or a
+   * folder that can't be. Checked, it can always be unchecked.
+   */
+  const allUnavailable = () => {
+    if (all()) return null;
+    const why = props.folders.map((folder) => cantChatIn(folder, props.folders));
+    return blocked() ?? why.find((reason) => reason) ?? null;
+  };
+  /** What Start chat says: where the chat will work; Apply for a chat's folders. */
   const startLabel = () => {
+    if (props.chat) return 'Apply';
     if (all()) return 'Start chat in all folders';
     const folders = chosen();
     if (folders.length === 1) return `Start chat in ${folders[0].name}`;
     return folders.length > 1 ? `Start chat in ${folders.length} folders` : 'Start chat';
   };
-  const canStart = () => all() || chosen().length > 0;
+  /** Why Start chat (Apply) is off, or null when it's on. */
+  const notNow = () =>
+    props.chat?.busy ??
+    (all() || chosen().length > 0 ? null : 'Check a folder for the chat to work in');
 
   let menu: HTMLDivElement | undefined;
   const [at, setAt] = createSignal<{ x: number; y: number } | null>(null);
@@ -168,8 +210,10 @@ export default function NewChatMenu(props: NewChatMenuProps) {
       check={{
         checked: new Set(chosen().map((folder) => folder.path)),
         onToggle: toggle,
-        unavailable: (folder) => cantChatIn(folder, props.folders),
-        onSubmit: start,
+        unavailable,
+        onSubmit: () => {
+          if (!notNow()) start();
+        },
         all: {
           checked: all(),
           onToggle: toggleAll,
@@ -187,18 +231,40 @@ export default function NewChatMenu(props: NewChatMenuProps) {
     >
       <li
         class="context-menu-item new-chat-start"
-        classList={{ disabled: !canStart() }}
+        classList={{ disabled: !!notNow() }}
         role="menuitem"
-        aria-disabled={canStart() ? undefined : true}
+        aria-disabled={notNow() ? true : undefined}
         tabIndex={-1}
-        title={canStart() ? undefined : 'Check a folder for the chat to work in'}
+        title={notNow() ?? undefined}
         onClick={(e) => {
           e.stopPropagation();
-          start();
+          if (!notNow()) start();
         }}
       >
         <span class="context-menu-label">{startLabel()}</span>
       </li>
+      <Show when={props.chat?.busy}>
+        {(why) => (
+          <li class="folder-menu-note" role="none">
+            {why()}
+          </li>
+        )}
+      </Show>
+      <Show when={props.chat?.stop}>
+        {(stop) => (
+          <li
+            class="context-menu-item"
+            role="menuitem"
+            tabIndex={-1}
+            onClick={(e) => {
+              e.stopPropagation();
+              stop()();
+            }}
+          >
+            <span class="context-menu-label">Stop its commands</span>
+          </li>
+        )}
+      </Show>
     </FolderMenu>
   );
 }

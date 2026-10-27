@@ -109,6 +109,7 @@ import {
 import { draftWaits, recoverDrafts, resumesHere, sendKeepingInput } from '../lib/remoteGuards';
 import ChatLocation from './ChatLocation';
 import OpenedPorts from './OpenedPorts';
+import { backgroundTasksOf, stopBackgroundTask } from '../lib/backgroundTasks';
 import UploadProgress from './UploadProgress';
 import { waitingChats } from '../lib/chatBadges';
 import { isSettled, latestChecklist } from '../lib/todo';
@@ -1371,6 +1372,51 @@ export default function ChatPanel(props: ChatProps) {
 
   /** The New chat button whose menu is open: with several folders it asks which (D2). */
   const [newChatFrom, setNewChatFrom] = createSignal<HTMLElement | null>(null);
+  /** The workspace chat's label whose menu is open: its folders change (D32). */
+  const [foldersFrom, setFoldersFrom] = createSignal<HTMLElement | null>(null);
+
+  /**
+   * Why the open chat's folders can't change now (D32): it's at work (a run,
+   * its Autopilot task between two of its runs or waiting out a rate
+   * limit), or has commands running, named. Null when they can.
+   */
+  const foldersBusy = (): string | null => {
+    if (sending() || taskWaits(taskStages())) {
+      return 'This chat is at work: its folders can change once it stops.';
+    }
+    const tasks = backgroundTasksOf(activeDialogId());
+    if (tasks.length === 0) return null;
+    const commands = tasks.map((task) => task.command).join(', ');
+    return tasks.length === 1
+      ? `${commands} is running: stop it to change the chat’s folders.`
+      : `${commands} are running: stop them to change the chat’s folders.`;
+  };
+
+  /** Stops the open chat's running commands, so its folders can change. */
+  function stopChatCommands() {
+    const dialogId = activeDialogId();
+    if (!dialogId) return;
+    for (const task of backgroundTasksOf(dialogId)) {
+      void stopBackgroundTask(dialogId, task.id).catch((err) =>
+        notify({ kind: 'error', title: 'Couldn’t stop the command', message: String(err) })
+      );
+    }
+  }
+
+  /**
+   * Apply in a workspace chat's menu (D32): the open chat works in `folders`
+   * from now on, unless the backend refuses, which says why.
+   */
+  async function applyFolders(folders: OpenFolder[] | 'all') {
+    const dialogId = activeDialogId();
+    setFoldersFrom(null);
+    if (!dialogId) return;
+    const names = folders === 'all' ? 'all' : JSON.stringify(folders.map((f) => f.name));
+    const refused = await store.setFolders(dialogId, names);
+    if (refused) {
+      notify({ kind: 'warning', title: 'Folders not changed', message: refused, timeout: 10_000 });
+    }
+  }
 
   /**
    * New chat, from either of its buttons: with several folders, its menu asks
@@ -4853,6 +4899,24 @@ export default function ChatPanel(props: ChatProps) {
           </button>
         </div>
       </div>
+      {/* Which folders the open workspace chat works in, changed with Apply (D32). */}
+      <Show when={foldersFrom()}>
+        {(anchor) => (
+          <NewChatMenu
+            anchor={anchor()}
+            folders={props.folders()}
+            initial={null}
+            chat={{
+              folders:
+                chatFolderNames(activeDialog() ?? {}, props.folders(), props.workspace()) ?? [],
+              busy: foldersBusy(),
+              stop: backgroundTasksOf(activeDialogId()).length > 0 ? stopChatCommands : undefined,
+            }}
+            onStart={(folders) => void applyFolders(folders)}
+            onClose={() => setFoldersFrom(null)}
+          />
+        )}
+      </Show>
       {/* Which folder a new chat works in, with several (D2). */}
       <Show when={newChatFrom()}>
         {(anchor) => (
@@ -4922,7 +4986,7 @@ export default function ChatPanel(props: ChatProps) {
       {/* No chat to show in folders it would have to guess: New chat's menu, in place (3.8). */}
       <Show when={startsFromMenu()}>
         <div class="chat-start">
-          <p class="chat-start-text">Which folder does the chat work in?</p>
+          <p class="chat-start-text">Which folders does the chat work in?</p>
           <NewChatMenu
             folders={props.folders()}
             initial={props.activeFolder()}
@@ -5270,12 +5334,31 @@ export default function ChatPanel(props: ChatProps) {
       <div class="chat-model-select">
         <div class="chat-model-select-row">
           <ModeSelector unavailable={(mode) => modeUnavailable(mode, activeProfile())} />
-          {/* Where the chat works, with several folders: a label only (3.8). */}
+          {/* Where the chat works, with several folders (3.8): a folder chat's
+              is a label only; a workspace chat's opens its folders' menu (D32). */}
           <Show when={severalFolders() && activeFolders()}>
             {(names) => (
-              <span class="chat-folders-label" title={activeFoldersTitle()}>
-                in {names()}
-              </span>
+              <Show
+                when={chatRoot()?.kind === 'workspace'}
+                fallback={
+                  <span class="chat-folders-label" title={activeFoldersTitle()}>
+                    in {names()}
+                  </span>
+                }
+              >
+                <button
+                  class="chat-folders-label"
+                  title={`${activeFoldersTitle()}: change them`}
+                  aria-haspopup="menu"
+                  aria-expanded={foldersFrom() !== null}
+                  onClick={(e) => {
+                    const label = e.currentTarget;
+                    setFoldersFrom((open) => (open === label ? null : label));
+                  }}
+                >
+                  in {names()} ▾
+                </button>
+              </Show>
             )}
           </Show>
         </div>

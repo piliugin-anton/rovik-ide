@@ -167,6 +167,14 @@ export const chatApi = {
     }
   ) => invoke<void>('chat_update_message', { messageId, patch }),
 
+  /**
+   * Apply (D32): a workspace chat works in `folders` from now on (`"all"`,
+   * or the names checked as JSON); refused, saying why, while it's at work,
+   * has commands running, or would leave changes that haven't landed.
+   */
+  setFolders: (dialogId: string, folders: string) =>
+    invoke<void>('chat_set_folders', { dialogId, folders }),
+
   renameDialog: (dialogId: string, title: string) =>
     invoke<void>('chat_rename_dialog', { dialogId, title }),
 

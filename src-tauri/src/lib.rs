@@ -325,6 +325,7 @@ pub fn run() {
             commands::workspace::workspace_remove_folder,
             commands::workspace::workspace_relocate_folder,
             commands::workspace::workspace_check_folder,
+            commands::workspace::chat_set_folders,
             filesystem::load_last_project,
             filesystem::save_last_project,
             shared_state::shared_state_read,

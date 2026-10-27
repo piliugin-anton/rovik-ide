@@ -353,18 +353,24 @@ pub fn chat_folders(conn: &Connection, dialog_id: &str) -> DbResult<Option<Vec<F
     let Some(workspace) = get(conn, &project)? else {
         return Ok(None);
     };
-    let checked = match crate::chat_db::store::dialog_folders(conn, dialog_id)?.as_deref() {
-        None | Some("all") => return Ok(Some(workspace.folders)),
+    let stored = crate::chat_db::store::dialog_folders(conn, dialog_id)?;
+    checked(workspace.folders, stored.as_deref()).map(Some)
+}
+
+/// Which of a workspace's `folders` a chat that stores `stored` works in
+/// (workspaces-plan.md, 3.1): `"all"`, or none stored, every one; else the
+/// names checked, as JSON, that the workspace still holds. In the
+/// workspace's order.
+pub fn checked(folders: Vec<Folder>, stored: Option<&str>) -> DbResult<Vec<Folder>> {
+    let names = match stored {
+        None | Some("all") => return Ok(folders),
         Some(names) => serde_json::from_str::<Vec<String>>(names)
             .map_err(|e| format!("The chat's folders can't be read ({e})."))?,
     };
-    Ok(Some(
-        workspace
-            .folders
-            .into_iter()
-            .filter(|folder| checked.contains(&folder.name))
-            .collect(),
-    ))
+    Ok(folders
+        .into_iter()
+        .filter(|folder| names.contains(&folder.name))
+        .collect())
 }
 
 /// The workspace's chats that work in its folder `name` (those set to All

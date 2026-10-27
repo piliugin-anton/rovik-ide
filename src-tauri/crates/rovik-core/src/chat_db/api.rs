@@ -402,6 +402,116 @@ pub async fn chat_move_empty_dialog(
     .await
 }
 
+/// Apply (D32): workspace chat `dialog_id` works in `folders` from now on:
+/// `"all"`, following its workspace, or the names checked as JSON. Refused
+/// for a folder chat, which keeps its folder, and for no folder of the
+/// workspace checked; while the chat is at work (a run, or its Autopilot
+/// task between two stages or waiting out a rate limit, here or in another
+/// window) or has commands running; and when a folder it would leave has
+/// changes that haven't landed, naming those folders. Its view takes the
+/// folders at once, as each run's start would.
+pub async fn chat_set_folders(
+    core: &Core,
+    dialog_id: String,
+    folders: String,
+) -> Result<(), String> {
+    let (id, wanted) = (dialog_id.clone(), folders.clone());
+    let found = core
+        .db
+        .read(move |c| {
+            let Some(dialog) = store::get_dialog(c, &id)? else {
+                return Ok(None);
+            };
+            let project = dialog.project_id.clone().unwrap_or_default();
+            let Some(workspace) = workspaces::get(c, &project)? else {
+                return Ok(None);
+            };
+            let had = workspaces::checked(workspace.folders.clone(), dialog.folders.as_deref())?;
+            let next = workspaces::checked(workspace.folders, Some(&wanted))?;
+            Ok(Some((dialog, had, next)))
+        })
+        .await?;
+    let Some((dialog, had, next)) = found else {
+        return Err("This chat works in one folder: it keeps it.".into());
+    };
+    let title = &dialog.title;
+    if next.is_empty() {
+        return Err("Check a folder for the chat to work in.".into());
+    }
+    let held = crate::chat_hold::held_here().contains(&dialog_id)
+        || crate::chat_hold::elsewhere(&dialog_id);
+    if held || task_waits(core, &dialog_id).await? {
+        return Err(format!(
+            "“{title}” is at work: its folders can change once it stops."
+        ));
+    }
+    if !crate::command_tool::background::tasks(&dialog_id).is_empty() {
+        return Err(format!(
+            "“{title}” has commands running: stop them to change its folders."
+        ));
+    }
+    let left: Vec<String> = had
+        .iter()
+        .filter(|f| !next.iter().any(|n| n.name == f.name))
+        .map(|f| f.name.clone())
+        .collect();
+    let chat = dialog_id.clone();
+    let changed = crate::rt::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let mut changed = Vec::new();
+        for name in left {
+            if !crate::overlay::chats::changes_in_folder(&chat, &name)?.is_empty() {
+                changed.push(name);
+            }
+        }
+        Ok(changed)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if !changed.is_empty() {
+        return Err(format!(
+            "“{title}” has changes in {} that aren't landed: land or discard them first.",
+            changed.join(", ")
+        ));
+    }
+    let view = crate::folders::Folders::named(
+        next.into_iter()
+            .map(|f| crate::folders::Folder {
+                name: f.name,
+                path: f.path.into(),
+            })
+            .collect(),
+    )?
+    .in_workspace(dialog.project_id.as_deref().unwrap_or_default());
+    let (id, was) = (dialog_id.clone(), dialog.folders.clone());
+    core.db
+        .write(move |c| store::set_dialog_folders(c, &id, Some(&folders)))
+        .await?;
+    let chat = dialog_id.clone();
+    let set = crate::rt::spawn_blocking(move || crate::overlay::chats::set_folders(&chat, &view))
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Err(e) = set {
+        // As it was: the chat's view didn't take them.
+        core.db
+            .write(move |c| store::set_dialog_folders(c, &dialog_id, was.as_deref()))
+            .await?;
+        return Err(format!("The folders of “{title}” didn't change: {e}."));
+    }
+    Ok(())
+}
+
+/// Whether the chat's Autopilot task waits out the provider's rate limit
+/// (H07): its latest stage's record says so, armed or not yet again after
+/// a restart.
+async fn task_waits(core: &Core, dialog_id: &str) -> Result<bool, String> {
+    let task = crate::agent_run::autopilot::current_task(core, dialog_id).await?;
+    Ok(task.is_some_and(|(_, records)| {
+        records
+            .last()
+            .is_some_and(|r| r.record.waits_until().is_some())
+    }))
+}
+
 pub async fn chat_update_message(
     db: &DbState,
     message_id: String,
@@ -796,6 +906,154 @@ mod tests {
                 .await
                 .unwrap()
         }
+    }
+
+    impl Guarded {
+        /// Apply on chat `id`'s folders (D32).
+        async fn apply(&self, id: &str, folders: &str) -> Result<(), String> {
+            chat_set_folders(&self.test.core, id.into(), folders.into()).await
+        }
+
+        /// The chat's Autopilot task, started by its message `task`, its
+        /// Plan stage waiting out the provider's rate limit (H07).
+        async fn task_waiting(&self, id: &str, task: &str) {
+            use crate::agent_run::autopilot::{
+                add_stage, Effort, RateLimitWait, Stage, StageRecord,
+            };
+            let start = store::NewMessage {
+                id: task.into(),
+                role: "user".into(),
+                content: "Add the cart".into(),
+                tool_calls: None,
+                tool_call_id: None,
+                meta: Some(serde_json::json!({ "mode": "autopilot" })),
+                error: None,
+                failed: false,
+                attachments: Vec::new(),
+                created_at: store::now_ms(),
+                finalized: true,
+            };
+            let chat = id.to_string();
+            self.db()
+                .write(move |c| store::append_messages(c, &chat, &[start]).map(drop))
+                .await
+                .unwrap();
+            let waiting = StageRecord {
+                rate_limit: Some(RateLimitWait {
+                    until: Some(store::now_ms() + 60_000),
+                    waits: 1,
+                    waited_ms: 0,
+                }),
+                ..StageRecord::running(task, Stage::Plan, 1, Effort::Balanced)
+            };
+            add_stage(&self.test.core, id, &waiting).await.unwrap();
+        }
+    }
+
+    /// D32: Apply sets a workspace chat's folders, All folders too, and
+    /// refuses a list with none of the workspace's folders, and a folder
+    /// chat, which keeps its folder.
+    #[tokio::test]
+    async fn apply_sets_a_workspace_chats_folders() {
+        let g = Guarded::new().await;
+        g.chat("ap-set", "Cart", r#"["api","web"]"#).await;
+        g.apply("ap-set", r#"["web"]"#).await.unwrap();
+        assert_eq!(g.folders_of("ap-set").await.as_deref(), Some(r#"["web"]"#));
+        g.apply("ap-set", "all").await.unwrap();
+        assert_eq!(g.folders_of("ap-set").await.as_deref(), Some("all"));
+        for none in [r#"["mobile"]"#, "[]"] {
+            let refused = g.apply("ap-set", none).await.unwrap_err();
+            assert_eq!(refused, "Check a folder for the chat to work in.");
+        }
+        assert_eq!(g.folders_of("ap-set").await.as_deref(), Some("all"));
+
+        // api's own chat, its project's.
+        let api = chat_open_project(g.db(), g.path("api").to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        let folder_chat = NewDialog {
+            id: "ap-folder".into(),
+            title: "Login".into(),
+            created_at: 1,
+            updated_at: 1,
+            project_id: Some(api.project.id),
+            folders: None,
+        };
+        g.db()
+            .write(move |c| store::create_dialog(c, &folder_chat))
+            .await
+            .unwrap();
+        let refused = g.apply("ap-folder", r#"["api"]"#).await.unwrap_err();
+        assert!(refused.contains("works in one folder"), "{refused}");
+        assert_eq!(g.folders_of("ap-folder").await, None);
+    }
+
+    /// D32: a workspace chat's folders don't change while it's at work, has
+    /// commands running or its Autopilot task waits out a rate limit, nor
+    /// when a folder it would leave has changes that haven't landed, which
+    /// is named; a missing folder without changes can be unchecked.
+    #[tokio::test]
+    async fn apply_is_refused_while_the_chat_is_at_work_or_would_leave_changes() {
+        let g = Guarded::new().await;
+        g.chat("ap-busy", "Fix login", r#"["api","web"]"#).await;
+        let hold = crate::chat_hold::take("ap-busy").unwrap();
+        let refused = g.apply("ap-busy", r#"["api"]"#).await.unwrap_err();
+        assert!(refused.contains("“Fix login” is at work"), "{refused}");
+        drop(hold);
+
+        g.chat("ap-waits", "Checkout", "all").await;
+        g.task_waiting("ap-waits", "ap-task").await;
+        let refused = g.apply("ap-waits", r#"["api"]"#).await.unwrap_err();
+        assert!(refused.contains("“Checkout” is at work"), "{refused}");
+
+        g.chat("ap-running", "Server", r#"["api","web"]"#).await;
+        let queued = crate::command_tool::Queued::of(
+            crate::workload::JobKind::Agent {
+                owner: "ap-running".into(),
+            },
+            None,
+        );
+        let command = match cfg!(windows) {
+            true => "for /L %i in (1,1,2000000000) do @rem",
+            false => "sleep 60",
+        };
+        let root = g.path("api").to_string_lossy().into_owned();
+        crate::command_tool::background::start(
+            "ap-running",
+            &root,
+            command,
+            &|| false,
+            queued,
+            std::sync::Arc::new(|| {}),
+        )
+        .unwrap();
+        let refused = g.apply("ap-running", r#"["api"]"#).await.unwrap_err();
+        crate::command_tool::background::stop_chat("ap-running");
+        assert!(
+            refused.contains("“Server” has commands running"),
+            "{refused}"
+        );
+
+        g.chat("ap-changed", "Docs", r#"["api","web"]"#).await;
+        g.changed_in_web("ap-changed");
+        // web goes missing: its changes are still known, and kept.
+        fs::rename(g.path("web"), g.path("web-away")).unwrap();
+        let refused = g.apply("ap-changed", r#"["api"]"#).await.unwrap_err();
+        assert_eq!(
+            refused,
+            "“Docs” has changes in web that aren't landed: land or discard them first."
+        );
+        assert_eq!(
+            g.folders_of("ap-changed").await.as_deref(),
+            Some(r#"["api","web"]"#)
+        );
+        // Without changes there, the missing folder is unchecked.
+        crate::overlay::chats::discard("ap-changed").unwrap();
+        g.apply("ap-changed", r#"["api"]"#).await.unwrap();
+        assert_eq!(
+            g.folders_of("ap-changed").await.as_deref(),
+            Some(r#"["api"]"#)
+        );
     }
 
     /// D19: a folder a workspace chat is at work in, runs a command in or has

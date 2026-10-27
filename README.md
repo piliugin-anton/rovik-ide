@@ -223,10 +223,13 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   (Settings → Virtual files; on Windows, Rovik in WSL working across
   folders): without it a chat works in one folder. The chat list and the
   label by the message box say each chat's folders, and the chats of every
-  folder are listed together. **Implement this plan** on a folder's plan
-  starts in a chat of that folder. A chat across several folders saves its
-  plans in its first folder, with a line under the title naming its
-  folders (`Folders: api, web`); **Implement this plan** carries such a
+  folder are listed together. A chat across folders changes its folders
+  from its label: **Apply** takes them, but not while it's at work or has
+  commands running, nor unchecking a folder it has changes in that haven't
+  landed. **Implement this plan** on a folder's plan starts in a chat of
+  that folder. A chat across several folders saves its plans in its first
+  folder, with a line under the title naming its folders
+  (`Folders: api, web`); **Implement this plan** carries such a
   plan out in a chat across them, the open one if it works in each, else
   a new one, and in a workspace without one of them starts none and says
   which.

@@ -4199,6 +4199,16 @@ body.tree-dragging {
   color: var(--fg-dim);
 }
 
+/* Why Apply is off (NewChatMenu.tsx): the chat is at work, or has commands
+   running. */
+.folder-menu .folder-menu-note {
+  max-width: 260px;
+  padding: 0 8px 4px;
+  white-space: normal;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
 /* The menu shown in place: the chat panel with no chat to show. */
 .folder-menu.folder-menu-inline {
   position: static;
@@ -7843,6 +7853,19 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   white-space: nowrap;
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+/* A workspace chat's label opens its folders' menu (D32). */
+.chat-model-select-row button.chat-folders-label {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.chat-model-select-row button.chat-folders-label:hover {
+  color: var(--fg);
 }
 
 .effort-selector {

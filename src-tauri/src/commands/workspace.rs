@@ -64,3 +64,15 @@ pub async fn workspace_check_folder(
 ) -> Result<Option<workspaces::FolderProblem>, String> {
     api::workspace_check_folder(&core.db, workspace_id, folder).await
 }
+
+/// Apply (D32): a workspace chat works in `folders` from now on (`"all"`, or
+/// the names checked as JSON), refused while it's at work, has commands
+/// running, or would leave changes that haven't landed.
+#[tauri::command]
+pub async fn chat_set_folders(
+    core: State<'_, Core>,
+    dialog_id: String,
+    folders: String,
+) -> Result<(), String> {
+    api::chat_set_folders(&core, dialog_id, folders).await
+}

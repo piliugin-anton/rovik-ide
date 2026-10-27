@@ -26,6 +26,7 @@ import { addToChat } from '../lib/editorBridge';
 import { notifications } from '../lib/notifications';
 import { requestImplementPlan } from '../lib/plans';
 import { appSettingsPage, closeAppSettings } from '../lib/appSettings';
+import { noteBackgroundTasks } from '../lib/backgroundTasks';
 import type { DialogSummary } from '../types';
 
 const SETTINGS = {
@@ -61,12 +62,25 @@ let projectFiles: Record<string, string[]> = {};
  * works in one folder (4.12).
  */
 let driverInstalled = false;
+/** Why `chat_set_folders` refuses now; null: it takes them. */
+let foldersRefused: string | null = null;
+
+/** The app's event handlers, by id, and what each listens to. */
+const callbacks = new Map<number, (event: unknown) => void>();
+const listeners: { event: string; handler: number }[] = [];
 
 (window as any).__TAURI_INTERNALS__ = {
-  transformCallback: () => 1,
+  transformCallback: (callback: (event: unknown) => void) => {
+    const id = callbacks.size + 1;
+    callbacks.set(id, callback);
+    return id;
+  },
   invoke: async (cmd: string, args: any) => {
     calls.push({ cmd, args });
     switch (cmd) {
+      case 'plugin:event|listen':
+        listeners.push({ event: args.event, handler: args.handler });
+        return args.handler;
       case 'load_ai_settings':
         return JSON.stringify(SETTINGS);
       case 'chat_list_dialogs': {
@@ -96,6 +110,9 @@ let driverInstalled = false;
         throw new Error(`${args.path}: no such file`);
       case 'list_project_files':
         return { files: projectFiles[args.root] ?? [], truncated: false };
+      case 'chat_set_folders':
+        if (foldersRefused) throw foldersRefused;
+        return null;
       case 'vfs_status':
         return {
           driver: {
@@ -116,6 +133,13 @@ let driverInstalled = false;
   },
 };
 (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+
+/** The app sends `payload` as an agent event. */
+function emit(payload: unknown) {
+  for (const l of listeners.filter((l) => l.event === 'agent-event')) {
+    callbacks.get(l.handler)!({ event: 'agent-event', id: 1, payload });
+  }
+}
 
 const flush = async () => {
   for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -902,7 +926,7 @@ test('checking api and web makes a workspace chat across them', () =>
       [['across', '["api","web"]']],
       'the workspace’s, with the names checked'
     );
-    assert.equal(label(root)?.textContent, 'in api, web');
+    assert.equal(label(root)?.textContent, 'in api, web ▾');
     dispose();
   }));
 
@@ -952,7 +976,7 @@ test('checking All folders checks every box, and unchecking one unchecks it; che
       sent('chat_create_dialog').map(({ dialog }) => [dialog.projectId, dialog.folders]),
       [['all-again', 'all']]
     );
-    assert.equal(label(again.root)?.textContent, 'in all folders');
+    assert.equal(label(again.root)?.textContent, 'in all folders ▾');
     again.dispose();
   }));
 
@@ -995,3 +1019,149 @@ test('All folders can’t be checked while a folder is missing: its chat couldn�
     assert.equal(all.getAttribute('aria-checked'), 'false');
     dispose();
   }));
+
+/** The menu's Apply. */
+const applyItem = (root: ParentNode) =>
+  [...root.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+    (item) => item.textContent === 'Apply'
+  );
+
+/** Opens the workspace chat's menu from its label. */
+async function openLabel(root: HTMLElement) {
+  (label(root) as HTMLButtonElement).click();
+  await flush();
+}
+
+test('a workspace chat’s label says its folders and opens its menu, whose Apply changes them', async () => {
+  talked(workspaceChat('ws-apply', 'apply', '["api"]'));
+  const { root, dispose } = await mount('workspace:apply', [api, web]);
+  assert.equal(label(root)?.tagName, 'BUTTON');
+  assert.equal(label(root)?.textContent, 'in api ▾');
+  await openLabel(root);
+  assert.deepEqual(
+    boxes(root).map((b) => [b.textContent, b.getAttribute('aria-checked')]),
+    [
+      ['api', 'true'],
+      ['web', 'false'],
+    ]
+  );
+  box(root, 'web').click();
+  await flush();
+  // Every box checked by hand isn't All folders.
+  assert.equal(allBox(root)!.getAttribute('aria-checked'), 'false');
+  applyItem(root)!.click();
+  await flush();
+  assert.deepEqual(sent('chat_set_folders'), [{ dialogId: 'ws-apply', folders: '["api","web"]' }]);
+  assert.equal(boxes(root).length, 0, 'the menu closes');
+  assert.equal(label(root)?.textContent, 'in api, web ▾');
+
+  // All folders: it follows the workspace again.
+  await openLabel(root);
+  allBox(root)!.click();
+  await flush();
+  applyItem(root)!.click();
+  await flush();
+  assert.deepEqual(sent('chat_set_folders')[1], { dialogId: 'ws-apply', folders: 'all' });
+  assert.equal(label(root)?.textContent, 'in all folders ▾');
+  dispose();
+});
+
+test('Apply stays off with no folder checked, and while the chat has a command running, named, with a way to stop it', async () => {
+  talked(workspaceChat('ws-off', 'off', '["api","web"]'));
+  const { root, dispose } = await mount('workspace:off', [api, web]);
+  await openLabel(root);
+  box(root, 'api').click();
+  box(root, 'web').click();
+  await flush();
+  assert.equal(applyItem(root)!.getAttribute('aria-disabled'), 'true');
+  applyItem(root)!.click();
+  await flush();
+  assert.deepEqual(sent('chat_set_folders'), [], 'no folder checked');
+  dispose();
+
+  talked(workspaceChat('ws-bg', 'bg', '["api","web"]'));
+  const running = await mount('workspace:bg', [api, web]);
+  noteBackgroundTasks('ws-bg', [{ id: 'bg1', command: 'npm run dev', startedAt: 1 }]);
+  await flush();
+  await openLabel(running.root);
+  box(running.root, 'web').click();
+  await flush();
+  assert.equal(applyItem(running.root)!.getAttribute('aria-disabled'), 'true');
+  assert.equal(
+    running.root.querySelector('.folder-menu-note')?.textContent,
+    'npm run dev is running: stop it to change the chat’s folders.'
+  );
+  const stop = [...running.root.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+    (item) => item.textContent === 'Stop its commands'
+  );
+  stop!.click();
+  await flush();
+  assert.deepEqual(sent('background_stop'), [{ dialogId: 'ws-bg', id: 'bg1' }]);
+  // Stopped: nothing runs, and Apply is on again.
+  assert.equal(applyItem(running.root)!.getAttribute('aria-disabled'), null);
+  applyItem(running.root)!.click();
+  await flush();
+  assert.deepEqual(sent('chat_set_folders'), [{ dialogId: 'ws-bg', folders: '["api"]' }]);
+  running.dispose();
+});
+
+test('Apply stays off while the chat is at work', async () => {
+  talked(workspaceChat('ws-busy', 'busy', '["api","web"]'));
+  const { root, dispose } = await mount('workspace:busy', [api, web]);
+  await sendText(root, 'Add the cart');
+  emit({ type: 'runStarted', dialogId: 'ws-busy', runId: 'run-1', steerable: true });
+  await flush();
+  await openLabel(root);
+  assert.equal(applyItem(root)!.getAttribute('aria-disabled'), 'true');
+  assert.equal(
+    root.querySelector('.folder-menu-note')?.textContent,
+    'This chat is at work: its folders can change once it stops.'
+  );
+  dispose();
+});
+
+test('unchecking a folder with changes that haven’t landed is refused, saying which', async () => {
+  talked(workspaceChat('ws-changed', 'changed', '["api","web"]'));
+  const { root, dispose } = await mount('workspace:changed', [api, web]);
+  foldersRefused =
+    '“ws-changed” has changes in web that aren’t landed: land or discard them first.';
+  try {
+    await openLabel(root);
+    box(root, 'web').click();
+    await flush();
+    const before = notifications().length;
+    applyItem(root)!.click();
+    await flush();
+    assert.deepEqual(
+      notifications()
+        .slice(before)
+        .map((n) => n.message),
+      [foldersRefused]
+    );
+    assert.equal(label(root)?.textContent, 'in api, web ▾', 'its folders as they were');
+  } finally {
+    foldersRefused = null;
+  }
+  dispose();
+});
+
+test('a missing folder the chat has can be unchecked, and then not checked again', async () => {
+  const gone = { ...folder('docs', false), missing: true };
+  talked(workspaceChat('ws-gone', 'gone', '["api","docs"]'));
+  const { root, dispose } = await mount('workspace:gone', [api, web, gone]);
+  await openLabel(root);
+  const docs = box(root, 'docs');
+  assert.equal(docs.getAttribute('aria-checked'), 'true');
+  assert.equal(docs.getAttribute('aria-disabled'), null);
+  docs.click();
+  await flush();
+  assert.equal(box(root, 'docs').getAttribute('aria-checked'), 'false');
+  assert.equal(box(root, 'docs').getAttribute('aria-disabled'), 'true');
+  box(root, 'docs').click();
+  await flush();
+  assert.equal(box(root, 'docs').getAttribute('aria-checked'), 'false', 'not again');
+  applyItem(root)!.click();
+  await flush();
+  assert.deepEqual(sent('chat_set_folders'), [{ dialogId: 'ws-gone', folders: '["api"]' }]);
+  dispose();
+});

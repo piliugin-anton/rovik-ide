@@ -629,6 +629,25 @@ export function createChatStore() {
     return moved;
   }
 
+  /**
+   * Apply (D32): workspace chat `dialogId` works in `folders` from now on
+   * (`"all"`, or the names checked as JSON), after the writes queued so
+   * far. Null once it does; else the backend's refusal, which says why.
+   */
+  async function setFolders(dialogId: string, folders: string): Promise<string | null> {
+    const refused = await persist(() =>
+      chatApi.setFolders(dialogId, folders).then(
+        () => null,
+        (err: unknown) => String(err)
+      )
+    );
+    if (refused) return refused;
+    updateSummary(dialogId, (d) => {
+      d.folders = folders;
+    });
+    return null;
+  }
+
   function renameDialog(dialogId: string, title: string) {
     updateSummary(dialogId, (d) => {
       d.title = title;
@@ -802,6 +821,7 @@ export function createChatStore() {
     markSteerLate,
     createDialog,
     moveEmpty,
+    setFolders,
     renameDialog,
     deleteDialog,
     summaryOf,
