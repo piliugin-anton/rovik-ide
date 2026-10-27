@@ -7,6 +7,7 @@
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import { GitPanel } from './GitPanel';
 import { ConfirmDialogHost } from './ConfirmDialog';
@@ -502,5 +503,229 @@ test('git panel: git init in a folder without a repository gives it a section of
   assert.equal(sent('git_repos').length, 2, 'the list is read again');
   assert.equal(notes().querySelector('.git-branch-name')!.textContent, 'main');
   assert.doesNotMatch(notes().textContent!, /isn't a Git repository/);
+  dispose();
+});
+
+/** A command's answer that comes when the test says. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => (resolve = done));
+  return { promise, resolve };
+}
+
+/** Types `text` in the commit message box. */
+async function typeMessage(el: HTMLElement, text: string) {
+  const input = el.querySelector('.git-commit-input') as HTMLInputElement;
+  input.value = text;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await flush();
+}
+
+const commitButton = (el: HTMLElement) =>
+  el.querySelector('.git-commit-button') as HTMLButtonElement;
+
+/** A window whose folders and session the test switches, as App does. */
+function mountSwitchable(first: { folders: string[]; session: string }) {
+  const [folders, setFolders] = createSignal(first.folders);
+  const [session, setSession] = createSignal(first.session);
+  const el = container();
+  const dispose = render(
+    () => (
+      <>
+        <GitPanel
+          folders={folders().map((path) => ({ path, name: path.split('/').pop()! }))}
+          session={session()}
+        />
+        <ConfirmDialogHost />
+      </>
+    ),
+    el
+  );
+  const show = async (next: { folders: string[]; session: string }) => {
+    setFolders(next.folders);
+    setSession(next.session);
+    await flush();
+  };
+  return { el, dispose, show };
+}
+
+test('git panel: a commit across repositories keeps to its own workspace when the window switches while it runs', async () => {
+  // Sessions of their own: what a workspace's commit leaves waiting is kept
+  // by session for as long as the app runs.
+  const shop = { folders: ['/a/api', '/a/web'], session: 'workspace:market' };
+  const blog = { folders: ['/b/site', '/b/posts'], session: 'workspace:journal' };
+  statuses = Object.fromEntries(
+    [...shop.folders, ...blog.folders].map((path) => [path, changedIn(path)])
+  );
+  calls = [];
+  const answer = deferred<unknown>();
+  backend = {
+    git_repos: (args) => reposOf(args.folders.map((folder: { path: string }) => folder.path)),
+    git_status: (args) => statuses[args.path],
+    git_commit_many: () => answer.promise,
+    git_push: (args) => {
+      statuses[args.path] = { ...statuses[args.path], ahead: 0 };
+      return { result: 'pushed', message: null };
+    },
+  };
+  const { el, dispose, show } = mountSwitchable(blog);
+  await flush();
+  await typeMessage(el, 'post: draft');
+  await show(shop);
+  await typeAndCommit(el, 'feat: shop');
+  // While shop's hooks run, the window shows the blog again.
+  await show(blog);
+  statuses['/a/api'] = { ...statuses['/a/api'], files: [], ahead: 1 };
+  answer.resolve({
+    result: 'done',
+    committed: ['/a/api'],
+    failed: [{ path: '/a/web', error: 'failed to lock file' }],
+  });
+  await flush();
+  assert.equal(message(el), 'post: draft', "the blog's message is its own");
+  assert.equal(panelError(el), null, "shop's failure isn't the blog's");
+  assert.deepEqual(pushed(), []);
+
+  // Back in shop: its message for the retry, and what stopped it.
+  await show(shop);
+  assert.equal(message(el), 'feat: shop');
+  assert.equal(
+    panelError(el),
+    'Committed in api; nothing is pushed until web is committed too.\nweb: failed to lock file'
+  );
+  dispose();
+});
+
+test("git panel: a hook that stopped one workspace's commit offers no skip in another", async () => {
+  // Sessions of their own: what a workspace's commit leaves waiting is kept
+  // by session for as long as the app runs.
+  const shop = { folders: ['/a/api', '/a/web'], session: 'workspace:store' };
+  const blog = { folders: ['/b/site', '/b/posts'], session: 'workspace:notes' };
+  statuses = Object.fromEntries(
+    [...shop.folders, ...blog.folders].map((path) => [path, changedIn(path)])
+  );
+  calls = [];
+  backend = {
+    git_repos: (args) => reposOf(args.folders.map((folder: { path: string }) => folder.path)),
+    git_status: (args) => statuses[args.path],
+    git_commit_many: (args) =>
+      args.noVerify
+        ? { result: 'done', committed: [], failed: [] }
+        : {
+            result: 'stopped',
+            problems: [
+              {
+                path: '/a/web',
+                error: 'Not committed: the pre-commit hook failed (exit code 1):\nlint',
+              },
+            ],
+          },
+  };
+  const { el, dispose, show } = mountSwitchable(shop);
+  await flush();
+  await typeAndCommit(el, 'feat: shop');
+  assert.ok(button(el, 'Commit without hooks'), 'offered in shop');
+
+  await show(blog);
+  assert.equal(panelError(el), null);
+  assert.equal(button(el, 'Commit without hooks'), undefined, 'not in the blog');
+
+  await show(shop);
+  button(el, 'Commit without hooks')!.click();
+  await flush();
+  assert.deepEqual(
+    sent('git_commit_many').map((a) => [
+      a.noVerify,
+      a.message,
+      a.repos.map((r: { path: string }) => r.path),
+    ]),
+    [
+      [false, 'feat: shop', ['/a/api', '/a/web']],
+      [true, 'feat: shop', ['/a/api', '/a/web']],
+    ],
+    "the retry is shop's own"
+  );
+  dispose();
+});
+
+test('git panel: a retry commits the message only where it is not yet, though a repository that has it changed since', async () => {
+  statuses = { '/w/api': changedIn('/w/api'), '/w/web': changedIn('/w/web') };
+  const failing = new Set(['/w/web']);
+  workspaceApp(['/w/api', '/w/web'], failing);
+  const { el, dispose } = mountWorkspace(['/w/api', '/w/web']);
+  await flush();
+  await typeAndCommit(el, 'feat: both');
+  // A formatter's fix the pre-commit hook left in api after its commit.
+  statuses['/w/api'] = { ...statuses['/w/api'], files: CHANGED.files };
+  gitChanged('/w/api');
+  await flush();
+  failing.clear();
+  commitButton(el).click();
+  await flush();
+  assert.deepEqual(
+    sent('git_commit_many').map((a) => a.repos.map((r: { path: string }) => r.path)),
+    [['/w/api', '/w/web'], ['/w/web']],
+    'api has the message already'
+  );
+  assert.deepEqual(pushed(), ['/w/api', '/w/web']);
+  dispose();
+});
+
+test('git panel: a repository left out of a commit reads what changed in it while the commit ran', async () => {
+  statuses = { '/w/api': changedIn('/w/api'), '/w/docs': changedIn('/w/docs') };
+  workspaceApp(['/w/api', '/w/docs']);
+  const answer = deferred<unknown>();
+  backend.git_commit_many = () => answer.promise;
+  const { el, dispose } = mountWorkspace(['/w/api', '/w/docs']);
+  await flush();
+  box(el, 'docs').click();
+  await flush();
+  assert.equal(box(el, 'docs').checked, false, 'docs is left out');
+  await typeAndCommit(el, 'feat: api');
+  // A terminal switches docs' branch while api's hooks run.
+  statuses['/w/docs'] = { ...statuses['/w/docs'], branch: 'feature/docs' };
+  gitChanged('/w/docs');
+  await flush();
+  const branch = () => section(el, 'docs')!.querySelector('.git-branch-name')!.textContent;
+  assert.equal(branch(), 'main', 'the section waits for the commit');
+  statuses['/w/api'] = { ...statuses['/w/api'], files: [], ahead: 1 };
+  answer.resolve({ result: 'done', committed: ['/w/api'], failed: [] });
+  await flush();
+  assert.equal(branch(), 'feature/docs');
+  dispose();
+});
+
+test('git panel: a push that fails keeps its repository waiting for the rest of its message', async () => {
+  statuses = { '/w/api': changedIn('/w/api'), '/w/web': changedIn('/w/web') };
+  const failing = new Set(['/w/web']);
+  workspaceApp(['/w/api', '/w/web'], failing);
+  let offline = true;
+  backend.git_push = (args) => {
+    if (offline) return refuse('Failed to push: could not reach github.com');
+    statuses[args.path] = { ...statuses[args.path], ahead: 0 };
+    return { result: 'pushed', message: null };
+  };
+  const { el, dispose } = mountWorkspace(['/w/api', '/w/web']);
+  await flush();
+  await typeAndCommit(el, 'feat: both');
+  // web left out for now: the button pushes api, which fails.
+  box(el, 'web').click();
+  await flush();
+  assert.equal(commitButton(el).textContent?.trim(), 'Push');
+  commitButton(el).click();
+  await flush();
+  assert.deepEqual(pushed(), ['/w/api']);
+  // web back in, committed: api, still waiting, goes with it.
+  offline = false;
+  failing.clear();
+  box(el, 'web').click();
+  await flush();
+  commitButton(el).click();
+  await flush();
+  assert.deepEqual(
+    sent('git_commit_many').map((a) => a.repos.map((r: { path: string }) => r.path)),
+    [['/w/api', '/w/web'], ['/w/web']]
+  );
+  assert.deepEqual(pushed(), ['/w/api', '/w/api', '/w/web']);
   dispose();
 });

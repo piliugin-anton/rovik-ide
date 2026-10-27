@@ -2631,6 +2631,31 @@ mod commit_many_tests {
         assert_eq!(head_message(&web_repo), "fix it");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_commit_is_dated_when_it_is_made_after_its_hooks() {
+        let (api, api_repo) = repo("dated-api");
+        // A slow pre-commit, which notes when it finished.
+        hook(&api, "pre-commit", "sleep 1\ndate +%s > .git/hooked");
+        git_commit_many_in(whole(&[&api]), "change".into(), false).unwrap();
+        let hooked: i64 = fs::read_to_string(api.join(".git/hooked"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let head = head_commit(&api_repo).unwrap();
+        for (who, when) in [
+            ("author", head.author().when()),
+            ("committer", head.committer().when()),
+        ] {
+            assert!(
+                when.seconds() >= hooked,
+                "the {who} is dated {}, before its hook finished at {hooked}",
+                when.seconds()
+            );
+        }
+    }
+
     #[test]
     fn each_commit_goes_on_the_branch_its_repository_is_on() {
         let (api, api_repo) = repo("branch-api");

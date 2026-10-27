@@ -2403,20 +2403,31 @@ the included repositories with changes. What stopped it shows above the commit
 bar by repository (`stoppedText`), with **Commit without hooks** when a hook
 did. After a commit that failed in some (`partialText`), the message stays and
 the repositories it was made in wait in `heldPushes` (by session) until a retry
-commits the rest; then each repository the message went to is pushed in its own
-section, where a failed push shows, one that was only ahead isn't, and the
-branches with no remote branch get one question (`publishQuestionAcross`).
+commits the rest — only the rest: a repository with the message already isn't
+given it again, whatever changed in it since; then each repository the message
+went to is pushed in its own section, where a failed push shows, one that was
+only ahead isn't, and the branches with no remote branch get one question
+(`publishQuestionAcross`). A Push that fails leaves its repository waiting with
+the rest. A commit belongs to the session it was made in: its draft, what
+waits for it and what stopped it are that session's, so a window switched to
+another project or workspace while the hooks run keeps its own, and a
+**Commit without hooks** shows only where its commit was. Each commit is dated
+as it's made, after every hook has run.
 Tests: `git/tests.rs`'s `commit_many_tests` — a pre-commit failing in the second
 repository leaves the first uncommitted; without hooks no check runs in any; a
 commit-msg hook changes its own repository's message only; each commit goes on
 its repository's branch; a detached HEAD gets its commit; a repository with no
 commit gets its branch; a held `refs/heads/main.lock` in the third reports the
 first two; every problem a check finds is named and nothing is committed;
-nothing to commit anywhere says so. `gitPublish.test.ts` has four, and
-`GitPanel.test.tsx` four: a repository in a merge is left out, saying why; a
-commit failing in one keeps the message and pushes nothing, and the retry
-pushes all three; a failed push shows in its own section; a repository that was
-only ahead isn't pushed by a commit.
+nothing to commit anywhere says so; a commit is dated when it's made, after its
+hooks. `gitPublish.test.ts` has four, and `GitPanel.test.tsx` eight: a
+repository in a merge is left out, saying why; a commit failing in one keeps
+the message and pushes nothing, and the retry pushes all three; a failed push
+shows in its own section; a repository that was only ahead isn't pushed by a
+commit; a commit keeps to its own workspace when the window switches while it
+runs; a hook that stopped one workspace's commit offers no skip in another; a
+retry commits the message only where it isn't yet; a push that fails keeps its
+repository waiting for the rest of its message.
 Departures: `commitAction` keeps its one-repository signature (its tests
 unchanged), and `commitActionAcross` is the several's. The identity is checked
 with the other checks, before any hook runs, for one repository too: a commit
@@ -2431,9 +2442,11 @@ at most every 2 s, as the panel did for its one folder; the panel reads
 `git_repos` again when an event says a folder's repository came or went
 (`repositories`), and after **Initialize repository**. A section stays as the
 list is read again (keyed by repository), with its history, menus and scroll.
-Tests: `GitPanel.test.tsx` "a folder's change refreshes its own repository's
-section only" and "git init in a folder without a repository gives it a section
-of its own".
+A change that comes while the panel's commit keeps a section waiting is read
+once the commit is done. Tests: `GitPanel.test.tsx` "a folder's change
+refreshes its own repository's section only", "git init in a folder without a
+repository gives it a section of its own" and "a repository left out of a
+commit reads what changed in it while the commit ran".
 
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel looks and works as

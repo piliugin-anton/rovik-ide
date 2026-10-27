@@ -1395,6 +1395,8 @@ export function GitRepoSection(props: GitRepoSectionProps) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let running = false;
     let again = false;
+    /** A change came while the panel's commit kept the section waiting. */
+    let missed = false;
     const requestRefresh = () => {
       if (timer || disposed) return; // one is coming
       const wait = Math.max(0, lastRefresh + GIT_REFRESH_MIN_MS - Date.now());
@@ -1404,7 +1406,12 @@ export function GitRepoSection(props: GitRepoSectionProps) {
           again = true;
           return;
         }
-        if (waiting() || phase() !== 'ready') return;
+        if (waiting() || phase() !== 'ready') {
+          // Its own action reads the status again as it ends; the panel's
+          // commit reads only the repositories it committed in.
+          missed = props.locked;
+          return;
+        }
         running = true;
         lastRefresh = Date.now();
         try {
@@ -1418,6 +1425,19 @@ export function GitRepoSection(props: GitRepoSectionProps) {
         }
       }, wait);
     };
+    // The panel's commit is over: a change it kept the section from reading
+    // is read now.
+    createEffect(
+      on(
+        () => props.locked,
+        (locked) => {
+          if (locked || !missed) return;
+          missed = false;
+          requestRefresh();
+        },
+        { defer: true }
+      )
+    );
     void listen<{ folder: string }>('git-changed', ({ payload }) => {
       if (props.source.folders.some((folder) => samePath(folder, payload.folder))) requestRefresh();
     }).then((unlisten) => {
@@ -1447,7 +1467,9 @@ export function GitRepoSection(props: GitRepoSectionProps) {
     void withBusy(refreshStatus);
   });
 
-  props.handle({
+  // Taken once: the handle goes back through the callback it came by.
+  const handOver = props.handle;
+  handOver({
     status,
     busy,
     run: withBusy,
@@ -1456,7 +1478,7 @@ export function GitRepoSection(props: GitRepoSectionProps) {
     push,
     offerSkip,
   });
-  onCleanup(() => props.handle(null));
+  onCleanup(() => handOver(null));
 
   /** Its box can't change: an action is running, a merge, a rebase or
    *  conflicts keep it out, or it has nothing to commit or push. */

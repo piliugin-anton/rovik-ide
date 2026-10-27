@@ -57,9 +57,9 @@ const commitDrafts = new Map<string, string>();
  *  Publish still does it. */
 const publishPutOff = new Set<string>();
 
-/** The repositories a commit message is in while another of its commit
+/** The repositories a commit message is in while the rest of its commit
  *  failed, by session: they're pushed once every one is committed. */
-const heldPushes = new Map<string, Set<string>>();
+const heldPushes = new Map<string, ReadonlySet<string>>();
 
 interface GitPanelProps extends GitPanelEvents {
   /** The window's folders that are there: a project's one, or a workspace's. */
@@ -183,11 +183,32 @@ export function GitPanel(props: GitPanelProps) {
     if (text) commitDrafts.set(props.session, text);
     else commitDrafts.delete(props.session);
   };
-  // Another project or workspace opened: its own message, if one was being written.
+  /** `session`'s message was committed: its draft goes, and the box empties
+   *  if it still shows that session (the window may have moved on while the
+   *  hooks ran). */
+  const clearDraft = (session: string) => {
+    commitDrafts.delete(session);
+    if (props.session === session) setMessageSignal('');
+  };
+  /** The repositories the shown session's message is in already, waiting
+   *  for the rest of its commit (`heldPushes`). */
+  const [held, setHeldSignal] = createSignal<ReadonlySet<string>>(
+    heldPushes.get(props.session) ?? new Set()
+  );
+  const setHeld = (session: string, keys: ReadonlySet<string>) => {
+    if (keys.size > 0) heldPushes.set(session, keys);
+    else heldPushes.delete(session);
+    if (props.session === session) setHeldSignal(keys);
+  };
+  // Another project or workspace opened: its own message, if one was being
+  // written, and its own commit waiting for the rest.
   createEffect(
     on(
       () => props.session,
-      (session) => setMessageSignal(commitDrafts.get(session) ?? ''),
+      (session) => {
+        setMessageSignal(commitDrafts.get(session) ?? '');
+        setHeldSignal(heldPushes.get(session) ?? new Set<string>());
+      },
       { defer: true }
     )
   );
@@ -213,6 +234,11 @@ export function GitPanel(props: GitPanelProps) {
     })
   );
 
+  /** What this message still has to commit in `one`: nothing in a repository
+   *  it's committed in already, whose changes since are another commit's. */
+  const forMessage = (one: Included, inIt: ReadonlySet<string>): GitStatus =>
+    inIt.has(one.source.key) ? { ...one.status, files: [] } : one.status;
+
   /** A branch's publishing put off, by repository and branch. */
   const putOffKey = (source: GitSectionSource, branch: string) => `${source.key}\n${branch}`;
 
@@ -224,6 +250,7 @@ export function GitPanel(props: GitPanelProps) {
    *  one stopped it); a push that follows still runs pre-push. */
   const commitOne = (source: GitSectionSource, section: GitRepoHandle, noVerify = false) =>
     section.run(async () => {
+      const session = props.session;
       const st = section.status();
       if (!st) return;
       const msg = message().trim();
@@ -261,7 +288,7 @@ export function GitPanel(props: GitPanelProps) {
         // A pre-commit hook may rewrite files (a formatter's fixes).
         props.onFilesChangedOnDisk?.();
       }
-      setMessage('');
+      clearDraft(session);
 
       const updated = await section.refreshStatus();
       try {
@@ -294,28 +321,32 @@ export function GitPanel(props: GitPanelProps) {
   // -------------------------------------------------------------------------
 
   const [committing, setCommitting] = createSignal(false);
-  const [error, setError] = createSignal<string | null>(null);
-  const [skipOffer, setSkipOffer] = createSignal<SkipOffer | null>(null);
+  /** What stopped the last commit across repositories, in the session it
+   *  was made in: shown there only. */
+  const [failure, setFailure] = createSignal<{
+    session: string;
+    text: string;
+    offer: SkipOffer | null;
+  } | null>(null);
+  const failureNow = () => {
+    const shown = failure();
+    return shown && shown.session === props.session ? shown : null;
+  };
 
-  /** Runs the panel's own action across repositories: every section waits,
-   *  and what goes wrong shows above the commit bar. */
-  const across = async (fn: () => Promise<void>) => {
+  /** Runs the panel's own action across repositories for the session shown
+   *  now: every section waits, and what goes wrong shows above the commit bar
+   *  of that session. */
+  const across = async (fn: (session: string) => Promise<void>) => {
+    const session = props.session;
     setCommitting(true);
-    setError(null);
-    setSkipOffer(null);
+    setFailure(null);
     try {
-      await fn();
+      await fn(session);
     } catch (e) {
-      setError(errorText(e));
+      setFailure({ session, text: errorText(e), offer: null });
     } finally {
       setCommitting(false);
     }
-  };
-
-  const heldNow = () => {
-    let held = heldPushes.get(props.session);
-    if (!held) heldPushes.set(props.session, (held = new Set()));
-    return held;
   };
 
   /** Pushes a repository in its own section: what goes wrong shows there,
@@ -330,11 +361,17 @@ export function GitPanel(props: GitPanelProps) {
       }
     });
 
-  const pushEach = async (list: readonly Included[]) => {
-    for (const one of list) {
-      await pushIn(one.handle);
-      heldNow().delete(one.source.key);
-    }
+  /** Whether `s` has nothing left to push: its push went through. */
+  const pushed = (s: GitStatus | null) => !!s && s.ahead === 0 && !unpublished(s);
+
+  /** The Push or Publish button: each one in its own section. A repository
+   *  pushed so stops waiting for the rest of its message's commit; one whose
+   *  push failed still waits. */
+  const pushEach = async (session: string, list: readonly Included[]) => {
+    for (const one of list) await pushIn(one.handle);
+    const waiting = new Set(heldPushes.get(session));
+    for (const one of list) if (pushed(one.handle.status())) waiting.delete(one.source.key);
+    setHeld(session, waiting);
   };
 
   /** One question for every branch the commit left with no remote branch. */
@@ -351,16 +388,30 @@ export function GitPanel(props: GitPanelProps) {
     for (const one of asked) await pushIn(one.handle);
   };
 
-  const commitAcross = async (noVerify: boolean): Promise<void> => {
+  const commitAcross = async (session: string, noVerify: boolean): Promise<void> => {
+    // The sections and the message as they are now: the window may show
+    // another project or workspace by the time the hooks are done, and this
+    // commit is still this session's.
+    const sections = keys().flatMap((key) => {
+      const handle = handles()[key];
+      const source = sourceOf(key);
+      return handle && source ? [{ key, handle, source }] : [];
+    });
     const list = included();
     const msg = message().trim();
+    const inIt = new Set(heldPushes.get(session));
     const action = commitActionAcross(
-      list.map((one) => one.status),
+      list.map((one) => forMessage(one, inIt)),
       msg
     );
-    if (action === 'push') return pushEach(list.filter((one) => one.status.ahead > 0));
-    if (action === 'publish') return pushEach(list.filter((one) => unpublished(one.status)));
-    const targets = list.filter((one) => one.status.files.length > 0);
+    if (action !== 'commit') {
+      const ready = (one: Included) =>
+        action === 'push' ? one.status.ahead > 0 : unpublished(one.status);
+      return pushEach(session, list.filter(ready));
+    }
+    // A retry commits the rest: a repository with the message already isn't
+    // given it again.
+    const targets = list.filter((one) => forMessage(one, inIt).files.length > 0);
     if (!msg || targets.length === 0) return;
 
     let outcome: GitCommitOutcome;
@@ -383,41 +434,45 @@ export function GitPanel(props: GitPanelProps) {
 
     if (outcome.result === 'stopped') {
       const text = stoppedText(problems(outcome.problems));
-      if (outcome.problems.some((problem) => skippableHook(problem.error))) {
-        setSkipOffer({
-          error: text,
-          label: 'Commit without hooks',
-          hint: SKIP_HINTS.commit,
-          run: () => across(() => commitAcross(true)),
-        });
-      }
-      throw new Error(text);
+      const hook = outcome.problems.some((problem) => skippableHook(problem.error));
+      setFailure({
+        session,
+        text,
+        offer: hook
+          ? {
+              error: text,
+              label: 'Commit without hooks',
+              hint: SKIP_HINTS.commit,
+              run: () => across((again) => commitAcross(again, true)),
+            }
+          : null,
+      });
+      return;
     }
 
-    const held = heldNow();
     for (const one of targets) {
       if (outcome.committed.includes(one.source.path)) {
-        held.add(one.source.key);
+        inIt.add(one.source.key);
         one.handle.refreshHistory();
       }
     }
     if (outcome.failed.length > 0) {
       // The message stays for a retry, and nothing is pushed until every
       // repository it's for has it.
-      const done = keys().flatMap((key) => (held.has(key) ? [sourceOf(key)?.name ?? key] : []));
-      throw new Error(partialText(done, problems(outcome.failed)));
+      setHeld(session, inIt);
+      const done = sections.flatMap((one) => (inIt.has(one.key) ? [one.source.name] : []));
+      setFailure({ session, text: partialText(done, problems(outcome.failed)), offer: null });
+      return;
     }
 
-    setMessage('');
-    heldPushes.delete(props.session);
+    clearDraft(session);
+    setHeld(session, new Set());
     // Every repository this message is in is pushed, as a project's commit
     // is; one that was only ahead before it isn't.
     const toPublish: Included[] = [];
-    for (const key of keys().filter((key) => held.has(key))) {
-      const handle = handles()[key];
-      const source = sourceOf(key);
-      const status = handle?.status();
-      if (!handle || !source || !status) continue;
+    for (const { key, handle, source } of sections) {
+      const status = handle.status();
+      if (!inIt.has(key) || !status) continue;
       if (status.ahead > 0) await pushIn(handle);
       else if (unpublished(status)) toPublish.push({ source, handle, status });
     }
@@ -432,7 +487,7 @@ export function GitPanel(props: GitPanelProps) {
     const section = only();
     const source = sourceOf(keys()[0]);
     if (section && source) return commitOne(source, section, noVerify);
-    return across(() => commitAcross(noVerify));
+    return across((session) => commitAcross(session, noVerify));
   };
 
   const action = createMemo(() => {
@@ -442,7 +497,7 @@ export function GitPanel(props: GitPanelProps) {
       return s ? commitAction(s, message()) : 'commit';
     }
     return commitActionAcross(
-      included().map((one) => one.status),
+      included().map((one) => forMessage(one, held())),
       message()
     );
   });
@@ -465,7 +520,7 @@ export function GitPanel(props: GitPanelProps) {
     }
     if (committing() || anyBusy()) return false;
     if (action() !== 'commit') return true;
-    return !!message().trim() && included().some((one) => one.status.files.length > 0);
+    return !!message().trim() && included().some((one) => forMessage(one, held()).files.length > 0);
   });
 
   /** The commit bar shows once a repository's status is read. */
@@ -520,6 +575,8 @@ export function GitPanel(props: GitPanelProps) {
             // while the section goes.
             let last = sourceOf(key)!;
             const source = () => (last = sourceOf(key) ?? last);
+            // Made once: the section gives its handle back through the same one.
+            const handle = handleFor(key);
             return (
               <GitRepoSection
                 {...events}
@@ -529,16 +586,20 @@ export function GitPanel(props: GitPanelProps) {
                 onInclude={(ticked) => include(key, ticked)}
                 locked={committing()}
                 onRepositoriesChanged={() => void readRepos()}
-                handle={handleFor(key)}
+                handle={handle}
               />
             );
           }}
         </For>
       </div>
 
-      <Show when={several() && error()}>
-        {(text) => (
-          <GitInlineError error={text()} offer={skipOffer()} disabled={committing() || anyBusy()} />
+      <Show when={several() && failureNow()}>
+        {(shown) => (
+          <GitInlineError
+            error={shown().text}
+            offer={shown().offer}
+            disabled={committing() || anyBusy()}
+          />
         )}
       </Show>
 

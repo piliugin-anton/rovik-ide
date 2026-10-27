@@ -225,7 +225,6 @@ pub fn git_commit_many_in(
 struct Committing {
     repo: Repository,
     scopes: Vec<String>,
-    signature: git2::Signature<'static>,
     hooks: Hooks,
 }
 
@@ -243,13 +242,15 @@ impl Committing {
         if repo.index().err_text()?.has_conflicts() {
             return Err("Resolve the conflicts first.".to_string());
         }
-        let signature = signature(&repo)?;
+        // Someone to commit as, known before any hook runs. The signature
+        // itself is made with the commit: it's dated, and the hooks before it
+        // can take minutes.
+        signature(&repo)?;
         let scopes = scopes_in(&repo, path, scopes);
         let hooks = Hooks::of(&repo).no_verify(no_verify);
         Ok(Committing {
             repo,
             scopes,
-            signature,
             hooks,
         })
     }
@@ -291,17 +292,11 @@ impl Committing {
         if head_tree.is_some_and(|head| head.id() == tree.id()) {
             return Ok(false);
         }
+        let who = signature(repo)?;
         let parent = head_commit(repo).ok();
         let parents: Vec<&git2::Commit> = parent.iter().collect();
-        repo.commit(
-            Some("HEAD"),
-            &self.signature,
-            &self.signature,
-            message,
-            &tree,
-            &parents,
-        )
-        .err_text()?;
+        repo.commit(Some("HEAD"), &who, &who, message, &tree, &parents)
+            .err_text()?;
         Ok(true)
     }
 
