@@ -5284,6 +5284,63 @@ async fn a_project_without_checks_is_unverified_and_disallowed_checks_are_skippe
     );
 }
 
+/// A command whose result shows only part of its output: the whole of it
+/// is saved where the agent reads it by line range, and the run's checks,
+/// which clear earlier runs' saved output, keep this run's (P4.7).
+#[tokio::test]
+async fn a_long_commands_whole_output_is_saved_for_the_agent_and_outlives_the_checks() {
+    let lines: String = (1..=3_000).map(|i| format!("line {i}\n")).collect();
+    let h = harness(&[("big.txt", lines.as_str())]).await;
+    std::fs::create_dir_all(&h.core.paths.config_dir).unwrap();
+    crate::project_profile::save_project_settings(
+        &h.core.paths.config_dir,
+        h.project.to_string_lossy().into_owned(),
+        json!({ "checks": [{ "kind": "test", "command": list(""), "enabled": true }] }),
+    )
+    .unwrap();
+    let print = if cfg!(windows) { "type" } else { "cat" };
+    // The saved copy's line 1 is the command and line 2 its stream's
+    // heading, so `line 1500` is on line 1502.
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "b1",
+            name: "bash",
+            args: json!({ "command": format!("{print} big.txt") }),
+        },
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({ "path": "@checks/bash-b1.log", "start_line": 1502, "end_line": 1502 }),
+        },
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allowed_commands: vec![print.into(), list("")],
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    h.start(h.request(&url, Harness::send("Look"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let shown = &result_of(&messages, "b1").content;
+    assert!(!shown.contains("\nline 1500\n"), "{shown}");
+    assert!(shown.contains("saved as `@checks/bash-b1.log`"), "{shown}");
+    let read = &result_of(&messages, "r1").content;
+    assert!(read.contains("line 1500"), "{read}");
+    assert!(
+        crate::agent_run::check_output::resolve(&h.dialog_id, "@checks/bash-b1.log").is_ok(),
+        "the run's checks kept it"
+    );
+    crate::agent_run::check_output::clean(&h.dialog_id);
+}
+
 /// A check in one of the project's folders, as detection writes it
 /// (`cd web && …`, project.rs `in_folder`), runs when the allowed commands
 /// cover what it runs there: the `cd` needs no entry of its own.

@@ -577,6 +577,9 @@ pub struct ToolResult {
     /// Facts for the chat's tool block beyond what `result_meta` reads from
     /// the text, merged into the stored result's meta.
     pub meta: Option<Map<String, Value>>,
+    /// A command's whole output, when its result shows only part of it:
+    /// the run saves it where the agent can read it (check_output.rs).
+    pub whole_output: Option<String>,
 }
 
 impl ToolResult {
@@ -1203,6 +1206,7 @@ async fn run(
                 .map(|done| format!("Before it ran: {done}"))
                 .into_iter()
                 .collect();
+            let mut whole_output = None;
             let (mut content, printed) = match background {
                 Some(chat) => {
                     let started =
@@ -1231,7 +1235,11 @@ async fn run(
                     }
                     let lead = ctx.background_chat.is_some();
                     notes.extend(ended_with_it(command, &out, lead));
-                    (format_command_output(command, &out), out.text())
+                    let (shown, shortened) = format_command_output(command, &out);
+                    if shortened {
+                        whole_output = Some(whole_output_text(command, &out));
+                    }
+                    (shown, out.text())
                 }
             };
             for note in notes {
@@ -1240,7 +1248,11 @@ async fn run(
             if let Some(note) = port_note(&printed, &root_owned).await {
                 content.push_str(&note);
             }
-            content
+            return Ok(ToolResult {
+                content,
+                whole_output,
+                ..Default::default()
+            });
         }
         "background" => {
             use crate::command_tool::background;
@@ -1454,7 +1466,8 @@ fn agent_queued(ctx: &CallContext) -> crate::command_tool::Queued {
 }
 
 /// One run of the agent's `command` in `root`, for the chat of `ctx`: as
-/// the agent's heavy work, killed by Stop.
+/// the agent's heavy work, killed by Stop. Its whole output is kept too,
+/// for a result that can show only part of it.
 async fn run_agent_command(
     root: &str,
     command: &str,
@@ -1468,7 +1481,7 @@ async fn run_agent_command(
         command.into(),
         timeout,
         move || stop.is_set(),
-        Some(agent_queued(ctx)),
+        Some(agent_queued(ctx).whole(true)),
     )
     .await
 }
@@ -1626,8 +1639,9 @@ fn format_background_list(listed: &[crate::command_tool::background::Status]) ->
         .join("\n")
 }
 
-/// The text the model sees for a finished command.
-pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
+/// The text the model sees for a finished command, and whether it shows
+/// only part of the command's output.
+pub fn format_command_output(command: &str, out: &CommandOutput) -> (String, bool) {
     let status = if out.stopped {
         "stopped by the user (killed)".to_string()
     } else if out.timed_out {
@@ -1682,7 +1696,24 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
             .into(),
         );
     }
-    parts.join("\n")
+    (parts.join("\n"), shortened)
+}
+
+/// A command's whole output as captured (`CommandOutput::whole`), laid out
+/// as `format_command_output` lays out its part, for reading in pieces.
+fn whole_output_text(command: &str, out: &CommandOutput) -> String {
+    let (stdout, stderr) = match &out.whole {
+        Some((stdout, stderr)) => (stdout.as_str(), stderr.as_str()),
+        None => (out.stdout.as_str(), out.stderr.as_str()),
+    };
+    let mut parts = vec![format!("$ {command}")];
+    for (stream, text) in [("stdout", stdout), ("stderr", stderr)] {
+        let text = clean_output(text);
+        if !text.trim().is_empty() {
+            parts.push(format!("--- {stream} ---\n{}", text.trim_end()));
+        }
+    }
+    parts.join("\n") + "\n"
 }
 
 /// ripgrep-style text: "path:line: text" for matches, "path-line- text" for
@@ -2327,11 +2358,12 @@ mod tests {
             waited: None,
             whole: None,
         };
-        let text = format_command_output("cargo test", &out);
+        let (text, shortened) = format_command_output("cargo test", &out);
         assert_eq!(
             text,
             "$ cargo test\nexit code 1, 1.2 s\n--- stderr ---\nerror: boom"
         );
+        assert!(!shortened);
         assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], json!(1));
         assert!(result_meta("bash", &text).unwrap().get("waited").is_none());
 
@@ -2345,7 +2377,7 @@ mod tests {
             whole: None,
             ..out
         };
-        let text = format_command_output("cargo test", &out);
+        let (text, _) = format_command_output("cargo test", &out);
         assert!(text.starts_with(
             "$ cargo test\nexit code 1, 1.2 s\nWaited 1 min 20 s for a CPU slot (your terminal is running `cargo build`).\n"
         ));
@@ -2692,7 +2724,7 @@ a.rs (3 matches)
             waited: None,
             whole: None,
         };
-        let text = format_command_output("sleep 999", &out);
+        let (text, _) = format_command_output("sleep 999", &out);
         assert_eq!(
             text,
             "$ sleep 999\ntimed out (killed), 120.0 s\n(no output)"
@@ -2710,7 +2742,9 @@ a.rs (3 matches)
             waited: None,
             whole: None,
         };
-        assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read for the rest)"));
+        let (text, shortened) = format_command_output("x", &out);
+        assert!(text.ends_with("(long output: shown are its start and end; use a narrower command or read for the rest)"));
+        assert!(shortened);
         assert_eq!(
             format_search_result(
                 &SearchResult {
@@ -2901,6 +2935,32 @@ a.rs (3 matches)
         }
     }
 
+    #[test]
+    fn a_shortened_commands_whole_output_keeps_its_middle_laid_out_as_shown() {
+        let lines: String = (1..=3_000).map(|i| format!("line {i}\n")).collect();
+        let warning = "\x1b[33mwarning: slow\x1b[0m\n".to_string();
+        let out = CommandOutput {
+            exit_code: Some(0),
+            stdout: lines.clone(),
+            stderr: warning.clone(),
+            timed_out: false,
+            stopped: false,
+            truncated: false,
+            duration_ms: 10,
+            waited: None,
+            whole: Some((lines, warning)),
+        };
+        let (shown, shortened) = format_command_output("seq 3000", &out);
+        assert!(shortened && !shown.contains("\nline 1500\n"), "{shown}");
+        let whole = whole_output_text("seq 3000", &out);
+        assert!(
+            whole.starts_with("$ seq 3000\n--- stdout ---\nline 1\n"),
+            "{whole}"
+        );
+        assert!(whole.contains("\nline 1500\n"));
+        assert!(whole.ends_with("line 3000\n--- stderr ---\nwarning: slow\n"));
+    }
+
     /// G02: how a command that ran ended, from its result; nothing for a
     /// refusal or another tool's result.
     #[test]
@@ -2917,7 +2977,7 @@ a.rs (3 matches)
                 waited: None,
                 whole: None,
             };
-            command_end(&format_command_output("npm test", &out))
+            command_end(&format_command_output("npm test", &out).0)
         };
         assert_eq!(end(Some(0), false, false), Some((Some(0), false)));
         assert_eq!(end(Some(2), false, false), Some((Some(2), false)));
