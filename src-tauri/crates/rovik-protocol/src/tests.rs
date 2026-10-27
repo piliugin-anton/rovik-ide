@@ -313,6 +313,7 @@ fn start() -> StartRequest {
         config: Some(config()),
         isolate: Some(false),
         project_settings: Some(json!({ "checks": [{ "kind": "test", "command": "npm test" }] })),
+        folders: Vec::new(),
     }
 }
 
@@ -448,6 +449,24 @@ fn every_request_round_trips() {
                 },
                 options: None,
                 config: None,
+                ..start()
+            })),
+            // A workspace chat's run on a daemon, with its folders (4.1).
+            Request::AgentStart(Box::new(StartRequest {
+                root: Some("/srv/rovik/chats/d".into()),
+                project_settings: None,
+                folders: vec![
+                    RunFolder {
+                        name: "api".into(),
+                        settings: Some(
+                            json!({ "checks": [{ "kind": "test", "command": "cargo test" }] }),
+                        ),
+                    },
+                    RunFolder {
+                        name: "web".into(),
+                        settings: None,
+                    },
+                ],
                 ..start()
             })),
             Request::AgentStart(Box::new(StartRequest {
@@ -1406,6 +1425,19 @@ fn later_fields_are_optional() {
         .unwrap()
         .get("projectSettings")
         .is_none());
+    // A folder chat's start, or an older app's, has no folders, and none
+    // are written for it; a folder without settings has none.
+    assert_eq!(start.folders, []);
+    assert!(serde_json::to_value(&start)
+        .unwrap()
+        .get("folders")
+        .is_none());
+    let folder: RunFolder = serde_json::from_value(json!({ "name": "web" })).unwrap();
+    assert_eq!(folder.settings, None);
+    assert_eq!(
+        serde_json::to_value(&folder).unwrap(),
+        json!({ "name": "web" })
+    );
 
     let mut approval = serde_json::to_value(approval()).unwrap();
     approval.as_object_mut().unwrap().remove("remote");

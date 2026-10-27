@@ -311,6 +311,7 @@ mod tests {
             config: None,
             isolate: Some(false),
             project_settings: None,
+            folders: Vec::new(),
         }
     }
 

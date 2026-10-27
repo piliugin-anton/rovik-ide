@@ -3058,6 +3058,16 @@ on the way, not changed: no TypeScript config checks the component tests
 (`*.test.tsx`: `tsconfig.json` excludes them and `tsconfig.test.json` takes
 `*.test.ts`), so those changed here were checked by hand.
 
+**G01 — a workspace chat's folders in a start.** `StartRequest.folders` is a list of
+`RunFolder` (its stored name, and its settings as `project_settings` is a folder
+chat's), in the workspace's order, for a daemon that serves `features::FOLDERS`. It's
+empty for a folder chat's start and for a run here, whose folders the app reads
+itself, and then it's left out, so a start without it, an older app's, parses as
+before. Every start built in Rust names it (`Vec::new()`), the Autopilot driver's
+stage requests included until G02 gives them the task's folders. Tests:
+`rovik-protocol` (a workspace chat's start round-trips with its folders; a start
+without them parses with none and writes none; a folder without settings has none).
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

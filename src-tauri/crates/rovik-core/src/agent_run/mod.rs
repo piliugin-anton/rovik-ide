@@ -93,7 +93,7 @@ use tokio::sync::{oneshot, watch};
 
 pub use landing::{checks_would_run, pending_reason, pending_reason_in};
 pub use rovik_protocol::agent::{
-    AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunningRun,
+    AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunFolder, RunningRun,
     RunningSubagent, StartKind, StartRequest, SteerReply, UserMessage,
 };
 pub use run::last_user_wire_content;

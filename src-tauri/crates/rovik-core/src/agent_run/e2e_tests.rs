@@ -283,6 +283,7 @@ impl Harness {
             }),
             isolate: Some(false),
             project_settings: None,
+            folders: Vec::new(),
         }
     }
 

@@ -72,6 +72,7 @@ fn start(dialog: &str, key: &str, config: Option<AgentConfig>) -> StartRequest {
         config,
         isolate: None,
         project_settings: None,
+        folders: Vec::new(),
     }
 }
 

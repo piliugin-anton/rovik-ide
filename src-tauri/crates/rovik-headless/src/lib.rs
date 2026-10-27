@@ -557,6 +557,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         }),
         isolate: Some(false),
         project_settings: None,
+        folders: Vec::new(),
     };
     #[cfg(test)]
     {

@@ -216,6 +216,7 @@ fn start(dialog_id: &str, kind: StartKind, current: Option<&str>) -> StartReques
         config: None,
         isolate: None,
         project_settings: None,
+        folders: Vec::new(),
     }
 }
 
