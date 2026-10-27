@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod folders;
 mod pages;
 
 const HOST: &str = "test-server";

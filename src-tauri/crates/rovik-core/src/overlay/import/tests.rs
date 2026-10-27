@@ -23,13 +23,7 @@ fn fixture(files: &[(&str, &str)], autocrlf: bool) -> Fixture {
     let dir = temp_dir();
     let data = chats::test_data(&dir.0.join("data"));
     let project = dir.0.join("project");
-    let repo = Repository::init(&project).unwrap();
-    let mut config = repo.config().unwrap();
-    config.set_bool("core.autocrlf", autocrlf).unwrap();
-    for (path, content) in files {
-        write(&project.join(path), content);
-    }
-    let base = commit_all(&repo);
+    let (repo, base) = repository(&project, files, autocrlf);
     Fixture {
         project,
         repo,
@@ -39,31 +33,47 @@ fn fixture(files: &[(&str, &str)], autocrlf: bool) -> Fixture {
     }
 }
 
+/// A repository at `project` with `files` committed, `HEAD` the landing
+/// base, and `autocrlf` its own setting.
+fn repository(project: &Path, files: &[(&str, &str)], autocrlf: bool) -> (Repository, Oid) {
+    let repo = Repository::init(project).unwrap();
+    let mut config = repo.config().unwrap();
+    config.set_bool("core.autocrlf", autocrlf).unwrap();
+    for (path, content) in files {
+        write(&project.join(path), content);
+    }
+    let base = commit_all(&repo);
+    (repo, base)
+}
+
+/// A result on `base` in `repo`: each path with its new content and mode,
+/// or deleted. The project's files stay as they are.
+fn result_on(repo: &Repository, base: Oid, changes: &[(&str, Option<&str>, FileMode)]) -> Oid {
+    let base = repo.find_commit(base).unwrap();
+    let mut update = TreeUpdateBuilder::new();
+    for (path, content, mode) in changes {
+        match content {
+            Some(content) => {
+                let blob = repo.blob(content.as_bytes()).unwrap();
+                update.upsert(*path, blob, *mode);
+            }
+            None => {
+                update.remove(*path);
+            }
+        }
+    }
+    let tree = update.create_updated(repo, &base.tree().unwrap()).unwrap();
+    let tree = repo.find_tree(tree).unwrap();
+    let me = Signature::now("Rovik", "results@rovik.invalid").unwrap();
+    repo.commit(None, &me, &me, "result", &tree, &[&base])
+        .unwrap()
+}
+
 impl Fixture {
     /// A result on the landing base: each path with its new content and
     /// mode, or deleted. The project's files stay as they are.
     fn result(&self, changes: &[(&str, Option<&str>, FileMode)]) -> Oid {
-        let base = self.repo.find_commit(self.base).unwrap();
-        let mut update = TreeUpdateBuilder::new();
-        for (path, content, mode) in changes {
-            match content {
-                Some(content) => {
-                    let blob = self.repo.blob(content.as_bytes()).unwrap();
-                    update.upsert(*path, blob, *mode);
-                }
-                None => {
-                    update.remove(*path);
-                }
-            }
-        }
-        let tree = update
-            .create_updated(&self.repo, &base.tree().unwrap())
-            .unwrap();
-        let tree = self.repo.find_tree(tree).unwrap();
-        let me = Signature::now("Rovik", "results@rovik.invalid").unwrap();
-        (self.repo)
-            .commit(None, &me, &me, "result", &tree, &[&base])
-            .unwrap()
+        result_on(&self.repo, self.base, changes)
     }
 
     fn import(&self, result: Oid) -> Result<Imported, ImportError> {
@@ -494,4 +504,179 @@ fn whether_case_counts_is_the_file_systems_answer() {
     fs::write(dir.0.join("a.txt"), "a\n").unwrap();
     let insensitive = dir.0.join("A.TXT").exists();
     assert_eq!(case_insensitive(&dir.0), insensitive);
+}
+
+/*
+ * A workspace chat's result (workspaces-plan.md, 4.11): each folder's part
+ * from its own repository, into the folder's part of the chat's store.
+ */
+
+/// One folder of a workspace: where it is, its repository, its base.
+struct Member {
+    path: PathBuf,
+    repo: Repository,
+    base: Oid,
+}
+
+impl Member {
+    fn read(&self, path: &str) -> String {
+        fs::read_to_string(self.path.join(path)).unwrap()
+    }
+}
+
+/// A workspace's `api` (its line ends turned to CRLF on checkout) and
+/// `web`, each a repository of its own, with the overlays' data folder held.
+struct Shop {
+    api: Member,
+    web: Member,
+    _dir: TempDir,
+    _data: tokio::sync::OwnedMutexGuard<()>,
+}
+
+fn shop() -> Shop {
+    let dir = temp_dir();
+    let data = chats::test_data(&dir.0.join("data"));
+    let member = |name: &str, files: &[(&str, &str)], autocrlf| {
+        let path = dir.0.join(name);
+        let (repo, base) = repository(&path, files, autocrlf);
+        Member { path, repo, base }
+    };
+    let api = member("api", &[("a.txt", "a\r\n"), ("old.txt", "old\r\n")], true);
+    let web = member("web", &[("b.txt", "b\n")], false);
+    Shop {
+        api,
+        web,
+        _dir: dir,
+        _data: data,
+    }
+}
+
+/// Imports the chat's `result` (a commit of its own, as the composite's
+/// is) from each of `parts`: a folder's name, the folder, and its part.
+fn across(result: &ChatResult, parts: &[(&str, &Member, Oid)]) -> Result<Imported, ImportError> {
+    let mut across = Across::begin(CHAT, "shop")?;
+    for (name, member, commit) in parts {
+        across.add(name, &member.path, &member.repo, "", *commit)?;
+    }
+    across.finish(result, vec!["notes.txt".into()])
+}
+
+#[test]
+fn a_result_across_folders_becomes_each_folders_changes_and_lands_in_both() {
+    let s = shop();
+    let api = result_on(
+        &s.api.repo,
+        s.api.base,
+        &[
+            ("a.txt", Some("A\n"), TEXT),
+            ("new/n.txt", Some("n\n"), TEXT),
+            ("old.txt", None, TEXT),
+        ],
+    );
+    let web = result_on(&s.web.repo, s.web.base, &[("b.txt", Some("B\n"), TEXT)]);
+    let result = told(web, &[]);
+
+    let imported = across(&result, &[("api", &s.api, api), ("web", &s.web, web)]).unwrap();
+
+    // By the chat's paths, each under its folder's name.
+    let changed = ["api/a.txt", "api/new/n.txt", "api/old.txt", "web/b.txt"];
+    assert_eq!(imported.changed, changed);
+    assert_eq!(imported.outside, ["notes.txt"]);
+    assert_eq!(imported.commit, web.to_string());
+    assert_eq!(super::imported(CHAT), Some(imported));
+    let expected = [
+        ("api/old.txt", "deleted"),
+        ("api/a.txt", "changed"),
+        ("api/new", "folder"),
+        ("api/new/n.txt", "added"),
+        ("web/b.txt", "changed"),
+    ];
+    let expected: Vec<(String, &str)> = expected
+        .into_iter()
+        .map(|(path, what)| (path.to_string(), what))
+        .collect();
+    assert_eq!(store(CHAT), expected);
+    assert_eq!(s.api.read("a.txt"), "a\r\n", "nothing landed yet");
+
+    land_by_itself(CHAT).unwrap().unwrap();
+
+    // Each folder's files as its own repository writes them.
+    assert_eq!(s.api.read("a.txt"), "A\r\n");
+    assert_eq!(s.api.read("new/n.txt"), "n\r\n");
+    assert!(!s.api.path.join("old.txt").exists());
+    assert_eq!(s.web.read("b.txt"), "B\n");
+    assert!(!chats::exists(CHAT), "landed: the store is gone");
+}
+
+#[test]
+fn a_folder_its_result_doesnt_change_has_no_part() {
+    let s = shop();
+    let web = result_on(&s.web.repo, s.web.base, &[("b.txt", Some("B\n"), TEXT)]);
+    let api = result_on(&s.api.repo, s.api.base, &[]);
+
+    let parts = [("api", &s.api, api), ("web", &s.web, web)];
+    let imported = across(&told(web, &[]), &parts).unwrap();
+
+    assert_eq!(imported.changed, ["web/b.txt"]);
+    let kept = chats::store_dir(CHAT).unwrap();
+    assert!(!chats::part_store(&kept, "api").exists());
+    assert!(chats::part_store(&kept, "web").is_dir());
+    assert_eq!(store(CHAT), [("web/b.txt".to_string(), "changed")]);
+    land_by_itself(CHAT).unwrap().unwrap();
+    assert_eq!(s.web.read("b.txt"), "B\n");
+}
+
+#[test]
+fn an_import_across_folders_that_fails_leaves_the_chats_store_as_it_was() {
+    let s = shop();
+    let first = result_on(&s.web.repo, s.web.base, &[("b.txt", Some("B\n"), TEXT)]);
+    across(&told(first, &[]), &[("web", &s.web, first)]).unwrap();
+    let api = result_on(&s.api.repo, s.api.base, &[("a.txt", Some("A\n"), TEXT)]);
+
+    // The second folder's part isn't in its repository: nothing comes in.
+    let parts = [("api", &s.api, api), ("web", &s.web, api)];
+    let failed = across(&told(api, &[]), &parts);
+
+    assert!(matches!(failed, Err(ImportError::Failed(_))), "{failed:?}");
+    assert_eq!(store(CHAT), [("web/b.txt".to_string(), "changed")]);
+    assert_eq!(super::imported(CHAT).unwrap().commit, first.to_string());
+    let staging = chats::store_dir(CHAT).unwrap();
+    let staging = staging.with_file_name(format!(".import-{CHAT}"));
+    assert!(!staging.exists(), "nothing of it is left");
+}
+
+#[test]
+fn files_marked_in_a_folder_wait_for_their_markers() {
+    let s = shop();
+    let marked = "<<<<<<< project (now)\nA\n||||||| before\nb\n=======\nB\n>>>>>>> this chat\n";
+    let web = result_on(&s.web.repo, s.web.base, &[("b.txt", Some(marked), TEXT)]);
+
+    across(&told(web, &["web/b.txt"]), &[("web", &s.web, web)]).unwrap();
+
+    assert_eq!(chats::markers_left(CHAT), ["web/b.txt"]);
+    let waits = land_by_itself(CHAT);
+    assert!(matches!(waits, Err(LandError::Failed(_))), "{waits:?}");
+    assert_eq!(s.web.read("b.txt"), "b\n");
+}
+
+#[test]
+fn a_folders_changes_are_read_as_the_folder_names_them() {
+    let s = shop();
+    let api = result_on(&s.api.repo, s.api.base, &[("a.txt", Some("A\n"), TEXT)]);
+    let web = result_on(&s.web.repo, s.web.base, &[("b.txt", Some("B\n"), TEXT)]);
+    across(
+        &told(web, &[]),
+        &[("api", &s.api, api), ("web", &s.web, web)],
+    )
+    .unwrap();
+
+    // What a move folds into each folder's snapshot: its own paths.
+    let changes = chats::folder_changes(CHAT, "api").unwrap();
+    let paths: Vec<&str> = changes.iter().map(|c| c.path()).collect();
+    assert_eq!(paths, ["a.txt"]);
+    let web: Vec<String> = (chats::folder_changes(CHAT, "web").unwrap().iter())
+        .map(|c| c.path().to_string())
+        .collect();
+    assert_eq!(web, ["b.txt"]);
+    assert!(chats::folder_changes(CHAT, "docs").unwrap().is_empty());
 }

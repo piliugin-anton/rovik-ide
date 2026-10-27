@@ -86,9 +86,34 @@ const HISTORY: &str = "rovik.history";
 const PACKED_AT: &str = "rovik.packedat";
 const DAY: i64 = 24 * 60 * 60;
 
-/// Where a project's shadow is kept, in the app's data folder.
+/// Where a project's shadow is kept, in the app's data folder; a
+/// workspace's composite, by the workspace's ID.
 pub fn dir(data_dir: &Path, project: &str) -> PathBuf {
     data_dir.join("shadow").join(format!("{project}.git"))
+}
+
+/// Where the shadow of the workspace's folder `name` is kept: beside the
+/// workspace's composite, one for each folder the workspace has had (its
+/// names are never another folder's, D8), apart from the shadow of the
+/// project the folder is when it's opened alone.
+pub fn folder_dir(data_dir: &Path, workspace: &str, name: &str) -> PathBuf {
+    data_dir
+        .join("shadow")
+        .join(workspace)
+        .join(format!("{name}.git"))
+}
+
+/// The shadows of the workspace's folders that are there, in order: those
+/// of every folder it has had, so that its composite reads what its
+/// chats' earlier snapshots hold, which a push leaves out by them.
+pub fn folder_dirs(data_dir: &Path, workspace: &str) -> Vec<PathBuf> {
+    let folder = data_dir.join("shadow").join(workspace);
+    let mut dirs: Vec<PathBuf> = (fs::read_dir(folder).into_iter().flatten().flatten())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "git") && path.join("HEAD").is_file())
+        .collect();
+    dirs.sort();
+    dirs
 }
 
 /// A project's shadow repository.
@@ -236,10 +261,11 @@ impl Shadow {
         })
     }
 
-    /// The project's own tree in `snapshot`: the tree at its folder in its
-    /// repository (K31), or an empty one when it has nothing there.
-    pub fn folder_tree(&self, snapshot: &Snapshot) -> Result<Oid> {
-        let tree = self.repo.find_tree(snapshot.tree).map_err(git)?;
+    /// The project's own tree in `tree`, a snapshot's: the tree at its
+    /// folder in its repository (K31), or an empty one when it has nothing
+    /// there.
+    pub fn folder_tree(&self, tree: Oid) -> Result<Oid> {
+        let tree = self.repo.find_tree(tree).map_err(git)?;
         if self.subpath.is_empty() {
             return Ok(tree.id());
         }

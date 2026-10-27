@@ -1381,7 +1381,7 @@ pub async fn check_project(
 /// A workspace chat's folders as its run takes them, of its `workspace`:
 /// refused while one is missing (D20), naming it, and when none is left
 /// (D19).
-fn workspace_folders(
+pub fn workspace_folders(
     workspace: &str,
     folders: Vec<crate::chat_db::workspaces::Folder>,
 ) -> Result<Folders, String> {

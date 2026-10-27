@@ -6,6 +6,7 @@ use crate::connector::{Connecting, Connector, Stream};
 use futures_util::{SinkExt, StreamExt};
 use rovik_protocol::agent::AgentStatus;
 use rovik_protocol::host::{HostInfo, Storage};
+use rovik_protocol::work::WorkChange;
 use rovik_protocol::{Fail, FailCode, Frame, Request, Response, Secret, FORWARD_UPGRADE, PROTOCOL};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -58,6 +59,9 @@ pub struct Fake {
     /// It answers `PageOpened` that the page isn't wanted any more (its
     /// command stopped waiting), once set.
     pub unwanted_pages: Arc<AtomicBool>,
+    /// What it answers `WorkStatus` with, once set: each chat's changes in
+    /// its worktree that haven't landed.
+    pub changes: Arc<Mutex<HashMap<String, Vec<WorkChange>>>>,
 }
 
 impl Connector for Fake {
@@ -123,6 +127,10 @@ async fn serve(mut io: DuplexStream, fake: Fake) {
                     (Request::CleanUp, _, _, Some((_, after))) => Response::Storage(after),
                     (Request::PageOpened { .. }, ..) => {
                         Response::Bool(!fake.unwanted_pages.load(Ordering::Relaxed))
+                    }
+                    (Request::WorkStatus { dialog_id }, ..) => {
+                        let changes = fake.changes.lock().unwrap();
+                        Response::Changes(changes.get(dialog_id).cloned().unwrap_or_default())
                     }
                     _ => answer(&req),
                 });

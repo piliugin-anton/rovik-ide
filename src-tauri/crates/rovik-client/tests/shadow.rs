@@ -749,7 +749,7 @@ fn composite(fixture: &Fixture) -> Composite {
 /// snapshot for the chat.
 fn part(name: &str, shadow: &Shadow, chat: &str) -> (String, Oid) {
     let snapshot = shadow.snapshot(chat).unwrap();
-    (name.to_string(), shadow.folder_tree(&snapshot).unwrap())
+    (name.to_string(), shadow.folder_tree(snapshot.tree).unwrap())
 }
 
 #[test]

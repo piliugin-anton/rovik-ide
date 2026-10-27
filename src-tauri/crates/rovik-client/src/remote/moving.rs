@@ -20,14 +20,15 @@
 //! closed, is finished or undone once its host says whether it has the
 //! chat from that move (`ChatOwner`).
 
+use super::files::ChatFiles;
 use super::sync::{settings, Snapshot};
 use super::{internal, CloudEvent, Remote};
 use crate::client::{Client, HostState};
-use crate::shadow::{self, Shadow};
+use crate::shadow::Shadow;
 use rovik_core::agent_run::{self, StartKind, StartRequest};
 use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::moves::{self, CloudMove};
-use rovik_core::chat_db::{attachments, projects, store, sync};
+use rovik_core::chat_db::{attachments, store, sync};
 use rovik_core::clm::store as clm;
 use rovik_core::overlay::chats;
 use rovik_core::rt;
@@ -37,11 +38,24 @@ use rovik_protocol::sync::{ChatBundle, Ownership};
 use rovik_protocol::work::Project;
 use rovik_protocol::{features, Fail, FailCode, Request, PROTOCOL};
 use serde::Serialize;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// How long a start waits for the home host to connect.
 const HOME_WAIT: Duration = Duration::from_secs(15);
+
+/// Why a chat across folders doesn't go to WSL running an older Rovik: the
+/// user updates it from its page (4.11).
+pub(super) const WSL_TOO_OLD: &str = "WSL runs an older Rovik, which can't run a chat across \
+     folders yet: update it from Settings → This computer → WSL.";
+
+/// What a host too old for something can't do, as its refusal says.
+#[derive(Clone, Copy)]
+enum Cant {
+    /// Take chats at all (4.5).
+    TakeChats,
+    /// Run a chat across folders (4.11).
+    RunFolders,
+}
 
 /// What the move dialog shows before a chat moves (6.8's preflight).
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
@@ -77,11 +91,16 @@ impl Remote {
         };
         let client = match self.ready(host) {
             Ok(client) => client,
-            Err(fail) if fail.code == FailCode::Version => return Ok(self.too_old(host).await),
+            Err(fail) if fail.code == FailCode::Version => {
+                return Ok(self.too_old(host, Cant::TakeChats).await)
+            }
             Err(fail) => return Ok(blocked(fail.message)),
         };
-        let (project, root) = match self.movable(dialog_id).await {
-            Ok(place) => place,
+        let files = match self.movable(dialog_id, host).await {
+            Ok(files) => files,
+            Err(fail) if fail.code == FailCode::Version => {
+                return Ok(self.too_old(host, Cant::RunFolders).await)
+            }
             Err(fail) => return Ok(blocked(fail.message)),
         };
         let mut preflight = MovePreflight::default();
@@ -107,7 +126,12 @@ impl Remote {
         let clm = mode.await.map_err(internal)?.as_deref() == Some("clm");
         preflight.trimming = clm && !info.virtual_files;
 
-        let shadow_dir = shadow::dir(&self.core.paths.data_dir, &project);
+        // A folder chat's project's push; a workspace chat's folders' are
+        // the move dialog's own (G06).
+        let Some(root) = files.root().map(|root| root.to_path_buf()) else {
+            return self.preflight_files(&client, dialog_id, preflight).await;
+        };
+        let shadow_dir = files.shadow(&self.core.paths.data_dir);
         let chat = dialog_id.to_string();
         let guards = rt::spawn_blocking(move || {
             let shadow = Shadow::open(&shadow_dir, &root)?;
@@ -144,10 +168,22 @@ impl Remote {
             preflight.notes.push(note);
         }
 
+        self.preflight_files(&client, dialog_id, preflight).await
+    }
+
+    /// The rest of the preflight: whether a parallel group's "Redo
+    /// sequentially" stays behind, and the files its messages name that the
+    /// host lacks.
+    async fn preflight_files(
+        &self,
+        client: &Client,
+        dialog_id: &str,
+        mut preflight: MovePreflight,
+    ) -> Result<MovePreflight, Fail> {
         let status = chats::overlay_status(dialog_id.to_string()).await;
         preflight.redo_lost = status.is_ok_and(|s| !s.redo_groups.is_empty());
 
-        let (ids, sizes) = self.files_to_send(&client, dialog_id).await?;
+        let (ids, sizes) = self.files_to_send(client, dialog_id).await?;
         preflight.files = ids.len();
         preflight.file_bytes = sizes;
         Ok(preflight)
@@ -164,7 +200,7 @@ impl Remote {
         start: Option<StartRequest>,
     ) -> Result<(), Fail> {
         let client = self.ready(host)?;
-        let (project, root) = self.movable(dialog_id).await?;
+        let files = self.movable(dialog_id, host).await?;
         // Before its row, which a connection's settling then leaves alone,
         // here or in another of Rovik's processes.
         let name = self.host_name(host);
@@ -192,9 +228,8 @@ impl Remote {
             self.lock().moving.remove(dialog_id);
             return Err(Fail::new(FailCode::BadRequest, e));
         }
-        let place = (project.as_str(), root);
         let moved = self
-            .carry_over(&client, dialog_id, host, &move_id, place)
+            .carry_over(&client, dialog_id, host, &move_id, files)
             .await;
         {
             let mut state = self.lock();
@@ -297,7 +332,8 @@ impl Remote {
     }
 
     /// Whether the chat is one `go_home` moves: here, the lead chat, of a
-    /// project with its folder on this computer, with no run going.
+    /// project with its folder on this computer, or of a workspace with its
+    /// folders here, with no run going.
     pub(super) async fn goes_home(&self, dialog_id: &str) -> Result<bool, String> {
         if self.core.agents.is_running(dialog_id) {
             return Ok(false);
@@ -315,7 +351,7 @@ impl Remote {
         if self.core.db.read(move |c| store::lead_chat(c, &id)).await? != dialog_id {
             return Ok(false);
         }
-        Ok(self.project_of(dialog_id).await?.is_some())
+        Ok(self.files_of(dialog_id).await?.is_some())
     }
 
     /// Waits for the host to be ready, up to `limit`: `ready` says what's
@@ -479,7 +515,7 @@ impl Remote {
         dialog_id: &str,
         host: &str,
         move_id: &str,
-        (project, root): (&str, PathBuf),
+        files: ChatFiles,
     ) -> Result<bool, (Fail, bool)> {
         let before = |fail: Fail| (fail, false);
         let mut paused = false;
@@ -505,23 +541,13 @@ impl Remote {
         self.not_cancelled(dialog_id).map_err(before)?;
 
         self.moving(dialog_id, "pushing", None);
-        let shadow_dir = shadow::dir(&self.core.paths.data_dir, project);
-        let (at, folder, chat) = (shadow_dir.clone(), root.clone(), dialog_id.to_string());
+        let (data, chat) = (self.core.paths.data_dir.clone(), dialog_id.to_string());
         let folded = rt::spawn_blocking(move || {
-            let shadow = Shadow::open(&at, &folder)?;
-            let folded = shadow.fold(&chat, &chats::changes(&chat))?;
-            Ok::<_, String>((folded, shadow.excludes(), shadow.subpath().to_string()))
+            let (folded, taken) = files.fold(&data, &chat)?;
+            Ok::<_, String>((folded, Snapshot::of(files, taken)))
         });
         let folded = folded.await.map_err(|e| before(internal(e.to_string())))?;
-        let (folded, excludes, subpath) = folded.map_err(|e| before(internal(e)))?;
-        let snapshot = Snapshot {
-            project: project.to_string(),
-            root: root.clone(),
-            shadow: shadow_dir,
-            commit: folded.start,
-            excludes: excludes.clone(),
-            subpath: subpath.clone(),
-        };
+        let (folded, snapshot) = folded.map_err(|e| before(internal(e)))?;
         let carried = self.carry(host, client, dialog_id, &snapshot).await;
         carried.map_err(|e| before(Fail::new(FailCode::Unreachable, e)))?;
         self.step(dialog_id, moves::PUSHED).await.map_err(before)?;
@@ -545,21 +571,19 @@ impl Remote {
             .await
             .map_err(|e| before(internal(e)))?
             .changes;
-        let id = project.to_string();
-        let summary = self.core.db.read(move |c| projects::summary(c, &id));
-        let name = summary.await.map_err(|e| before(internal(e)))?;
         let chat = dialog_id.to_string();
         let pending = rt::spawn_blocking(move || chats::pending(&chat).map(|p| p.reason));
+        let files = &snapshot.files;
         let bundle = ChatBundle {
             dialog_id: dialog_id.to_string(),
             rows,
             project: Project {
-                id: project.to_string(),
-                name: name.map(|s| s.name).unwrap_or_default(),
-                subpath,
+                id: files.owner.clone(),
+                name: files.name.clone(),
+                subpath: snapshot.subpath.clone(),
             },
-            settings: settings(&self.core.paths.config_dir, &root),
-            excludes,
+            settings: (files.root()).and_then(|root| settings(&self.core.paths.config_dir, root)),
+            excludes: snapshot.excludes.clone(),
             snapshot: folded.base.to_string(),
             changes: Some(folded.start.to_string()),
             pending: pending.await.unwrap_or(None),
@@ -698,9 +722,11 @@ impl Remote {
         Ok((missing, bytes))
     }
 
-    /// The chat can move: it's here, has a project with a folder here, and
-    /// no conflicts wait in its overlay. Its project and folder.
-    async fn movable(&self, dialog_id: &str) -> Result<(String, PathBuf), Fail> {
+    /// The chat can move to `host`: it's here, has a project with a folder
+    /// here, or is a workspace's with its folders here, and no conflicts
+    /// wait in its overlay; one across folders goes only to a host that
+    /// runs such chats (4.11). What it works in.
+    async fn movable(&self, dialog_id: &str, host: &str) -> Result<ChatFiles, Fail> {
         let refused = |why: &str| Fail::new(FailCode::BadRequest, why);
         let id = dialog_id.to_string();
         let at = self.core.db.read(move |c| location::of_chat(c, &id)).await;
@@ -725,12 +751,15 @@ impl Remote {
         if candidates.map_err(internal)? {
             return Err(refused(agent_run::candidates::MOVE_AWAITS_PICK));
         }
-        let place = self.project_of(dialog_id).await.map_err(internal)?;
-        let place = place.ok_or_else(|| {
+        let files = self.files_of(dialog_id).await.map_err(|e| refused(&e))?;
+        let files = files.ok_or_else(|| {
             refused(
                 "Only a chat of a project with its folder on this computer can move to a server.",
             )
         })?;
+        if files.across().is_some() {
+            self.runs_folders(host)?;
+        }
         let chat = dialog_id.to_string();
         let pending = rt::spawn_blocking(move || chats::pending(&chat));
         let conflicts = pending
@@ -744,13 +773,44 @@ impl Remote {
                 "{conflicts} {files} of this chat conflict with the project's changes: settle them first."
             )));
         }
-        Ok(place)
+        Ok(files)
+    }
+
+    /// Whether `host` runs chats across folders (`features::FOLDERS`,
+    /// 4.11): an older Rovik would run one as a plain project. Its refusal
+    /// says how to update it: WSL's from its page here, a server's by an
+    /// upgrade. A host that hasn't said yet what it serves isn't refused
+    /// here: what's asked of it says it can't be reached.
+    pub(super) fn runs_folders(&self, host: &str) -> Result<(), Fail> {
+        let daemon = self.hosts.client(host).and_then(|c| c.daemon());
+        if daemon.is_none_or(|d| d.serves(features::FOLDERS)) {
+            return Ok(());
+        }
+        let why = match self.home().as_deref() == Some(host) {
+            true => WSL_TOO_OLD.to_string(),
+            false => format!(
+                "{} runs an older Rovik, which can't run a chat across folders yet: upgrade it first.",
+                self.host_name(host)
+            ),
+        };
+        Err(Fail::new(FailCode::Version, why))
     }
 
     /// A host whose Rovik is older than this app's, which can't take chats
-    /// (4.5, R02): an administrator there upgrades it for everyone, and
-    /// anyone else is told whom to ask.
-    async fn too_old(&self, host: &str) -> MovePreflight {
+    /// (4.5, R02), or one across folders (4.11): an administrator there
+    /// upgrades it for everyone, and anyone else is told whom to ask. WSL
+    /// is updated from its page here.
+    async fn too_old(&self, host: &str, cant: Cant) -> MovePreflight {
+        if matches!(cant, Cant::RunFolders) && self.home().as_deref() == Some(host) {
+            return MovePreflight {
+                blocked: Some(WSL_TOO_OLD.into()),
+                ..MovePreflight::default()
+            };
+        }
+        let cant = match cant {
+            Cant::TakeChats => "can't take chats",
+            Cant::RunFolders => "can't run a chat across folders yet",
+        };
         let name = self.host_name(host);
         let info: Option<HostInfo> = match self.client(host) {
             Ok(client) => client.request(Request::HostInfo).await.ok(),
@@ -767,12 +827,10 @@ impl Remote {
             .map_or_else(Vec::new, |i| i.admins.clone());
         let upgrade = info.as_ref().is_some_and(|i| admins.contains(&i.user));
         let blocked = match admins.as_slice() {
-            _ if upgrade => {
-                format!("{runs}, which can't take chats: upgrade it for everyone first.")
-            }
-            [] => format!("{runs}, which can't take chats: it needs an upgrade first."),
+            _ if upgrade => format!("{runs}, which {cant}: upgrade it for everyone first."),
+            [] => format!("{runs}, which {cant}: it needs an upgrade first."),
             admins => format!(
-                "{runs}, which can't take chats: ask {} to upgrade it.",
+                "{runs}, which {cant}: ask {} to upgrade it.",
                 admins.join(" or ")
             ),
         };

@@ -235,13 +235,7 @@ pub async fn workspace_relocate_folder(
 ) -> Result<workspaces::Workspace, String> {
     let known = prepared_members(db, &workspace_id).await?;
     let prepared = prepare(vec![to]).await?.remove(0);
-    let (id, folder) = (workspace_id.clone(), name.clone());
-    let was = db
-        .read(move |c| workspaces::folder_project(c, &id, &folder))
-        .await?;
-    // The same project: the folder found has the ID file of the one last
-    // opened there.
-    let same = was.is_some() && prepared.project == was;
+    let same = same_project(db, &workspace_id, &name, &prepared).await?;
     if let Some(why) = folder_held(db, &workspace_id, &name, "located elsewhere", !same).await? {
         return Err(why);
     }
@@ -278,6 +272,34 @@ pub async fn workspace_relocate_folder(
     }
     finish_landings_in(path).await;
     Ok(located)
+}
+
+/// Whether the folder at `to` is the project the workspace's folder `name`
+/// is (D19): Locate… then takes the chats' changes there along, and with
+/// another project it's refused while they have some.
+pub async fn locates_same_project(
+    db: &DbState,
+    workspace_id: &str,
+    name: &str,
+    to: String,
+) -> Result<bool, String> {
+    let prepared = prepare(vec![to]).await?.remove(0);
+    same_project(db, workspace_id, name, &prepared).await
+}
+
+/// Whether `prepared` is the project last opened where the workspace's
+/// folder `name` is: the folder found has that one's ID file.
+async fn same_project(
+    db: &DbState,
+    workspace_id: &str,
+    name: &str,
+    prepared: &workspaces::Prepared,
+) -> Result<bool, String> {
+    let (id, folder) = (workspace_id.to_string(), name.to_string());
+    let was = db
+        .read(move |c| workspaces::folder_project(c, &id, &folder))
+        .await?;
+    Ok(was.is_some() && prepared.project == was)
 }
 
 /// D19: why the workspace's folder `name` can't be `removed` or `located

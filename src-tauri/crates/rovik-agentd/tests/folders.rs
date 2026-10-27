@@ -7,19 +7,24 @@
 
 mod common;
 
+use common::app::App;
 use common::project::{
-    client_as, ended, files, listening, next_result, read, ready_to_run, start, unattended, writes,
-    Setup, CHAT, PROJECT,
+    client_as, ended, files, listening, message, next_result, read, ready_to_run, start,
+    unattended, writes, Setup, CHAT, PROJECT,
 };
 use common::task::{implementation, task_start, thorough_model, until_delivered};
 use common::{commit_all, until, write, Daemon, COMPUTER};
+use git2::{Oid, Repository};
 use rovik_core::agent_run::autopilot::Effort;
 use rovik_core::agent_run::permissions::Permissions;
 use rovik_core::agent_run::{AgentConfig, RunFolder, StartKind, StartRequest, UserMessage};
+use rovik_core::chat_db::api;
+use rovik_core::overlay::{chats, import};
 use rovik_core::testing::{model, Reply};
 use rovik_protocol::work::Synced;
 use rovik_protocol::{features, FailCode, Frame, Request};
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 
 /// A workspace's `api` and `web` as the app carries a chat across them: one
 /// project whose top-level folders they are, committed, and a client of the
@@ -414,4 +419,334 @@ async fn a_thorough_tasks_candidates_work_with_the_chats_folders() {
         assert_eq!(ran("cd web && exit 1"), None, "{chat}: {record:#}");
     }
     assert_eq!(read(&root.join("api/ok.txt")), "ok");
+}
+
+/*
+ * The app with a workspace's chat on the daemon (G05): its folders carried
+ * as one project through the workspace's composite, its results brought
+ * back into each folder.
+ */
+
+/// A folder `name` of the test's own, holding `files`, committed in a
+/// repository of its own.
+fn repository(setup: &Setup, name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let path = setup.daemon.dir.0.join(name);
+    for (file, content) in files {
+        write(&path.join(file), content);
+    }
+    commit_all(&path);
+    path
+}
+
+/// The chat `chat`'s message `id`, as the app sends one across folders: no
+/// folder named, as the app reads the chat's own.
+fn message_of(setup: &Setup, url: &str, chat: &str, id: &str) -> StartRequest {
+    let mut next = message(setup, url, id);
+    next.dialog_id = chat.into();
+    next.root = None;
+    next
+}
+
+/// The workspace's project on the daemon.
+fn workspace_there(setup: &Setup, workspace: &str) -> Repository {
+    let path = setup.daemon.data.join(format!("projects/{workspace}.git"));
+    Repository::open_bare(path).unwrap()
+}
+
+/// The file at `path` of `commit`'s tree in `repo`, as text.
+fn file_of(repo: &Repository, commit: &str, path: &str) -> Option<String> {
+    let commit = repo.find_commit(Oid::from_str(commit).unwrap()).ok()?;
+    let entry = commit.tree().ok()?.get_path(Path::new(path)).ok()?;
+    let blob = repo.find_blob(entry.id()).ok()?;
+    Some(String::from_utf8_lossy(blob.content()).into_owned())
+}
+
+/// Waits for `file` to be `content`, the chat's changes landed and gone.
+async fn landed_in(file: &Path, content: &str) {
+    until(&format!("{} landed as {content:?}", file.display()), || {
+        let there = std::fs::read_to_string(file).is_ok_and(|now| now == content);
+        (there && !chats::exists(CHAT)).then_some(())
+    })
+    .await
+}
+
+/// The chat's worktree on the daemon.
+fn worktree(setup: &Setup, chat: &str) -> PathBuf {
+    let state = setup.daemon.state();
+    PathBuf::from(state["chats"][chat]["worktree"].as_str().unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_across_folders_brings_one_result_that_lands_in_each_folder() {
+    let setup = Setup::new().await;
+    let api = repository(&setup, "api", &[("a.txt", "a\n")]);
+    let web = repository(&setup, "web", &[("b.txt", "b\n")]);
+    let (app, workspace) = App::workspace(&[&api, &web], None).await;
+    // Its result waits until the workspace is open.
+    app.remote.set_open_projects(Vec::new());
+    app.connect(&setup).await;
+    let (_listening, mut heard) = listening(&setup.daemon).await;
+    let (url, _) = model(vec![
+        writes("w1", "api/a.txt", "A\n"),
+        writes("w2", "web/b.txt", "B\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+
+    app.remote
+        .start(message_of(&setup, &url, CHAT, "u1"))
+        .await
+        .unwrap();
+
+    // One result, with both folders' changes.
+    let (result, _) = next_result(&mut heard).await;
+    let there = workspace_there(&setup, &workspace);
+    assert_eq!(files(&there, &result.commit), ["api/a.txt", "web/b.txt"]);
+    // Back here as each folder's changes, by the chat's paths.
+    until("the result waiting here", || {
+        chats::pending(CHAT).filter(|p| p.reason == import::READY)
+    })
+    .await;
+    let changed: Vec<String> = (chats::changes(CHAT).iter())
+        .map(|c| c.path().to_string())
+        .collect();
+    assert_eq!(changed, ["api/a.txt", "web/b.txt"]);
+    assert_eq!(read(&api.join("a.txt")), "a\n", "nothing landed yet");
+
+    // The workspace open: it lands in both folders.
+    let open = [&api, &web].map(|folder| (workspace.clone(), folder.to_path_buf()));
+    app.remote.set_open_projects(open.to_vec());
+    landed_in(&api.join("a.txt"), "A\n").await;
+    landed_in(&web.join("b.txt"), "B\n").await;
+    // The landing moved the chat's base there, for both.
+    let base = until("the landing base moved", || {
+        Some(setup.base())
+            .filter(|base| file_of(&there, base, "web/b.txt").as_deref() == Some("B\n"))
+    })
+    .await;
+    assert_eq!(file_of(&there, &base, "api/a.txt").as_deref(), Some("A\n"));
+}
+
+/// Apply (D32): the chat works in `folders` from now on, once the result
+/// its last run brought is in (its import holds the chat meanwhile).
+async fn set_folders(core: &rovik_core::Core, folders: &str) {
+    for _ in 0..400 {
+        match api::chat_set_folders(core, CHAT.into(), folders.into()).await {
+            Ok(()) => return,
+            Err(e) if e.contains("is at work") => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    panic!("the chat stayed at work");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_checked_joins_at_the_next_message_and_one_unchecked_leaves() {
+    let setup = Setup::new().await;
+    let api = repository(
+        &setup,
+        "api",
+        &[("a.txt", "a\n"), (".gitignore", "target/\n")],
+    );
+    let web = repository(&setup, "web", &[("b.txt", "b\n")]);
+    let (app, _) = App::workspace(&[&api, &web], Some(r#"["api"]"#)).await;
+    app.connect(&setup).await;
+    let (url, asked) = model(vec![
+        Reply::Text("Done."),
+        Reply::Call {
+            id: "c1",
+            name: "bash",
+            args: json!({ "command": "cat web/b.txt" }),
+        },
+        Reply::Text("Done."),
+        Reply::Text("Done."),
+    ])
+    .await;
+    let core = &app.test.core;
+
+    app.remote
+        .start(message_of(&setup, &url, CHAT, "u1"))
+        .await
+        .unwrap();
+    ended(&setup.client).await;
+    let root = worktree(&setup, CHAT);
+    assert_eq!(read(&root.join("api/a.txt")), "a\n");
+    assert!(!root.join("web").exists(), "not one of its folders yet");
+    // What a build there leaves: ignored.
+    write(&root.join("api/target/out.bin"), "built\n");
+
+    // Checked: in its worktree, and its run's, at its next message.
+    let both = r#"["api","web"]"#;
+    assert_eq!(app.remote.leaving_held_there(CHAT, both).await, Ok(None));
+    set_folders(core, both).await;
+    app.remote
+        .start(message_of(&setup, &url, CHAT, "u2"))
+        .await
+        .unwrap();
+    ended(&setup.client).await;
+    assert_eq!(read(&root.join("web/b.txt")), "b\n");
+    let told = asked.lock().unwrap()[2].to_string();
+    assert!(
+        told.contains("--- stdout ---\\nb"),
+        "its run read web: {told}"
+    );
+
+    // Unchecked: no changes there, so it leaves, ignored files and all.
+    let web_only = r#"["web"]"#;
+    assert_eq!(
+        app.remote.leaving_held_there(CHAT, web_only).await,
+        Ok(None)
+    );
+    set_folders(core, web_only).await;
+    app.remote
+        .start(message_of(&setup, &url, CHAT, "u3"))
+        .await
+        .unwrap();
+    ended(&setup.client).await;
+    assert!(!root.join("api").exists(), "{}", setup.daemon.output());
+    assert_eq!(read(&root.join("web/b.txt")), "b\n");
+}
+
+/// Waits for the chat `chat`'s run on the daemon to end.
+async fn ended_of(setup: &Setup, chat: &str) {
+    for _ in 0..1200 {
+        let status: rovik_protocol::agent::AgentStatus =
+            setup.client.request(Request::AgentStatus).await.unwrap();
+        if status.runs.iter().all(|r| r.dialog_id != chat) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("{chat}'s run never ended");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_across_folders_moved_back_waits_with_its_changes_in_each_folder() {
+    // Its changes wait in a view of their own here, which needs virtual
+    // files; without them they land first, as a folder chat's do.
+    if !rovik_core::vfs::mount_works() {
+        return;
+    }
+    let setup = Setup::new().await;
+    let api = repository(&setup, "api", &[("a.txt", "a\n")]);
+    let web = repository(&setup, "web", &[("b.txt", "b\n")]);
+    let (app, _) = App::workspace(&[&api, &web], None).await;
+    app.remote.set_open_projects(Vec::new());
+    app.connect(&setup).await;
+    let (url, _) = model(vec![
+        writes("w1", "api/a.txt", "A\n"),
+        writes("w2", "web/b.txt", "B\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    app.remote
+        .start(message_of(&setup, &url, CHAT, "u1"))
+        .await
+        .unwrap();
+    until("the result waiting here", || {
+        chats::pending(CHAT).filter(|p| p.reason == import::READY)
+    })
+    .await;
+
+    app.remote.move_back(CHAT, None).await.unwrap();
+
+    assert!(app.remote.host_of(CHAT).is_none(), "here again");
+    assert!(chats::pending(CHAT).is_some(), "its changes wait");
+    let changed: Vec<String> = (chats::changes(CHAT).iter())
+        .map(|c| c.path().to_string())
+        .collect();
+    assert_eq!(changed, ["api/a.txt", "web/b.txt"]);
+    assert_eq!(read(&api.join("a.txt")), "a\n");
+    assert_eq!(read(&web.join("b.txt")), "b\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_chats_with_different_folders_keep_each_others_by_products_out_of_their_results() {
+    let setup = Setup::new().await;
+    // Each folder is a repository's, whose root names its by-products.
+    let back = repository(
+        &setup,
+        "back",
+        &[(".gitignore", "target/\n"), ("services/api/a.txt", "a\n")],
+    );
+    let front = repository(
+        &setup,
+        "front",
+        &[(".gitignore", "node_modules/\n"), ("apps/web/b.txt", "b\n")],
+    );
+    let (api, web) = (back.join("services/api"), front.join("apps/web"));
+    let (app, workspace) = App::workspace(&[&api, &web], Some(r#"["web"]"#)).await;
+    app.chat_in("chat-2", &workspace, Some(r#"["api"]"#)).await;
+    app.connect(&setup).await;
+    let (url, _) = model(vec![
+        // web's chat installs its packages, and adds a file.
+        Reply::Call {
+            id: "c1",
+            name: "bash",
+            args: json!({
+                "command": "mkdir -p web/node_modules/x && echo x > web/node_modules/x/index.js"
+            }),
+        },
+        writes("w1", "web/b2.txt", "b2\n"),
+        Reply::Text("Done."),
+        // api's chat answers.
+        Reply::Text("Done."),
+    ])
+    .await;
+    app.remote
+        .start(message_of(&setup, &url, CHAT, "u1"))
+        .await
+        .unwrap();
+    ended_of(&setup, CHAT).await;
+    // api's chat syncs after it, with the rules it sends: the workspace's.
+    app.remote
+        .start(message_of(&setup, &url, "chat-2", "u2"))
+        .await
+        .unwrap();
+    ended_of(&setup, "chat-2").await;
+
+    // web's chat's worktree committed now, as its move back would.
+    let ask = Request::WorkResult {
+        dialog_id: CHAT.into(),
+    };
+    let result: rovik_protocol::work::ChatResult = setup.client.request(ask).await.unwrap();
+
+    let there = workspace_there(&setup, &workspace);
+    let found = files(&there, &result.commit);
+    assert!(found.contains(&"web/b2.txt".to_string()), "{found:?}");
+    assert!(
+        !found.iter().any(|f| f.contains("node_modules")),
+        "{found:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_inside_a_repository_imports_with_its_repositorys_attributes() {
+    let setup = Setup::new().await;
+    // web is a folder of a repository whose root says how text ends.
+    let front = repository(
+        &setup,
+        "front",
+        &[
+            (".gitattributes", "*.txt text eol=crlf\n"),
+            ("apps/web/b.txt", "b\r\n"),
+        ],
+    );
+    let web = front.join("apps/web");
+    let (app, _) = App::workspace(&[&web], None).await;
+    app.connect(&setup).await;
+    let (url, _) = model(vec![
+        writes("w1", "web/c.txt", "c\nd\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+
+    app.remote
+        .start(message_of(&setup, &url, CHAT, "u1"))
+        .await
+        .unwrap();
+
+    landed_in(&web.join("c.txt"), "c\r\nd\r\n").await;
 }

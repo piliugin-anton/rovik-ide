@@ -372,20 +372,28 @@ impl Instances {
 
     /// The projects of the window's folders, each with its folder, as the
     /// claims record them: those the cloud client lands results in by
-    /// themselves (workspaces-plan.md, 3.8). A folder whose project isn't
-    /// known yet, a workspace's own (it has no folder) and the projects left
-    /// at work aren't among them. Given to `give` while the claims are held:
-    /// a list read before another claim is never given after that claim's
-    /// own (two commands' threads following the claims at once).
+    /// themselves (workspaces-plan.md, 3.8). A workspace's ID comes with
+    /// each of its folders too, for its chats across them (4.11). A folder
+    /// whose project isn't known yet and the projects left at work aren't
+    /// among them. Given to `give` while the claims are held: a list read
+    /// before another claim is never given after that claim's own (two
+    /// commands' threads following the claims at once).
     pub fn give_open_projects(&self, give: impl FnOnce(Vec<(String, PathBuf)>)) {
         let claims = self.claims();
-        give(
-            claims
-                .target
-                .iter()
-                .filter_map(|owner| Some((owner.project.clone()?, owner.folder.clone()?)))
-                .collect(),
-        );
+        let mut open: Vec<(String, PathBuf)> = Vec::new();
+        for owner in &claims.target {
+            let Some(folder) = &owner.folder else {
+                continue;
+            };
+            let ids = owner.project.as_deref().into_iter();
+            for id in ids.chain(owner.workspace_id()) {
+                let entry = (id.to_string(), folder.clone());
+                if !open.contains(&entry) {
+                    open.push(entry);
+                }
+            }
+        }
+        give(open);
     }
 
     /// The projects left for another while their chats were at work here.
@@ -1235,7 +1243,7 @@ mod tests {
     }
 
     #[test]
-    fn the_open_projects_are_the_windows_folders_projects() {
+    fn the_open_projects_are_the_windows_folders_projects_and_its_workspaces() {
         let dir = temp_dir("open-projects");
         let (me, _) = instance(&dir);
         let api = folder(&dir, "api", Some("project-api"));
@@ -1246,9 +1254,15 @@ mod tests {
             folders: vec![api.clone(), web.clone()],
         };
         assert!(me.claim(Some(&shop), false, &[]).claimed);
+        // The workspace with each of its folders, for its chats across
+        // them (4.11).
         assert_eq!(
             open_projects(&me),
-            [("project-api".to_string(), api.clone())],
+            [
+                ("project-api".to_string(), api.clone()),
+                ("shop".to_string(), api.clone()),
+                ("shop".to_string(), web.clone()),
+            ],
             "web's project isn't known yet"
         );
         me.reclaim(&web, "project-web");
@@ -1256,7 +1270,9 @@ mod tests {
             open_projects(&me),
             [
                 ("project-api".to_string(), api.clone()),
-                ("project-web".to_string(), web.clone())
+                ("shop".to_string(), api.clone()),
+                ("project-web".to_string(), web.clone()),
+                ("shop".to_string(), web.clone()),
             ]
         );
 

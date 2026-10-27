@@ -12,13 +12,16 @@
 //! the folder's shadow (`Composite::graft`), which doesn't read the
 //! composite's objects: the objects of the part are copied there, and the
 //! part's base and result are committed there on the folder's own tree, so
-//! the folder's import checks its files out with its repository's settings.
+//! the folder's import checks its files out with its repository's settings
+//! (`Composite::import`).
 
 use super::{busy, create, empty_tree, git, hold, mirror, rovik_commit, slashed};
 use super::{snapshot_message, upkeep};
-use super::{Result, Shadow, SNAPSHOTS};
+use super::{Result, Shadow, IMPORTED, SNAPSHOTS};
 use git2::build::TreeUpdateBuilder;
 use git2::{FileMode, ObjectType, Odb, Oid, Reference, Repository, Tree};
+use rovik_core::overlay::import::{Across, ImportError, Imported};
+use rovik_protocol::work::ChatResult;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -67,20 +70,7 @@ impl Composite {
             return Err(format!("Not a chat's id: {chat}"));
         }
         let _held = hold(&self.busy);
-        let mut top = self.repo.treebuilder(None).map_err(git)?;
-        for (folder, tree) in parts {
-            if self.repo.find_tree(*tree).map_err(git)?.is_empty() {
-                continue;
-            }
-            top.insert(folder, *tree, FileMode::Tree.into())
-                .map_err(|e| {
-                    format!(
-                        "“{folder}” can't name a folder of the chat: {}",
-                        e.message()
-                    )
-                })?;
-        }
-        let tree = top.write().map_err(git)?;
+        let tree = self.tree(parts)?;
         let previous = self
             .repo
             .find_reference(&name)
@@ -98,6 +88,75 @@ impl Composite {
             .map_err(git)?;
         upkeep(&self.repo)?;
         Ok(commit)
+    }
+
+    /// The chat's changes as its move to a server takes them (T09): one
+    /// tree of `parts` (each folder's name and its tree with the chat's
+    /// changes), committed on `base`, the chat's composed landing base.
+    /// No ref names it: the move pushes it.
+    pub fn on(&self, chat: &str, base: Oid, parts: &[(String, Oid)]) -> Result<Oid> {
+        let _held = hold(&self.busy);
+        let tree = self.tree(parts)?;
+        rovik_commit(&self.repo, tree, Some(base), &snapshot_message(chat))
+    }
+
+    /// One tree with each of `parts` (a folder's name and its tree) under
+    /// its name, an empty one left out, as git keeps no empty folder.
+    fn tree(&self, parts: &[(String, Oid)]) -> Result<Oid> {
+        let mut top = self.repo.treebuilder(None).map_err(git)?;
+        for (folder, tree) in parts {
+            if self.repo.find_tree(*tree).map_err(git)?.is_empty() {
+                continue;
+            }
+            top.insert(folder, *tree, FileMode::Tree.into())
+                .map_err(|e| {
+                    format!(
+                        "“{folder}” can't name a folder of the chat: {}",
+                        e.message()
+                    )
+                })?;
+        }
+        top.write().map_err(git)
+    }
+
+    /// The chat's `result`, fetched into the composite, as the chat's store
+    /// in `workspace` (`overlay::import::Across`): each of `folders` (its
+    /// name and shadow) has its part grafted into its shadow and imported
+    /// from there, all or none. What the result changed in none of them (a
+    /// folder that left the chat, or files its runs made at the top, which
+    /// the result names) is listed as outside, never landed. The result
+    /// stays as the chat's last one imported, which later fetches have.
+    pub fn import(
+        &self,
+        result: &ChatResult,
+        workspace: &str,
+        folders: &[(String, Shadow)],
+    ) -> std::result::Result<Imported, ImportError> {
+        let chat = result.dialog_id.as_str();
+        let commit = Oid::from_str(&result.commit).map_err(|e| ImportError::Failed(git(e)))?;
+        let (base, mut outside) = {
+            let _held = hold(&self.busy);
+            let found = self.repo.find_commit(commit).map_err(git)?;
+            let base = found
+                .parent(0)
+                .map_err(|_| "the result has no landing base".to_string())?;
+            let names: Vec<&str> = folders.iter().map(|(name, _)| name.as_str()).collect();
+            let (before, after) = (base.tree().map_err(git)?, found.tree().map_err(git)?);
+            (base.id(), changed_elsewhere(&before, &after, &names))
+        };
+        outside.extend(result.outside.iter().cloned());
+        let mut across = Across::begin(chat, workspace)?;
+        for (name, shadow) in folders {
+            let grafted = self.graft(name, shadow, chat, (base, commit))?;
+            let _shadow = hold(&shadow.busy);
+            across.add(name, &shadow.root, &shadow.repo, &shadow.subpath, grafted)?;
+        }
+        let imported = across.finish(result, outside)?;
+        let _held = hold(&self.busy);
+        self.repo
+            .reference(&format!("{IMPORTED}{chat}"), commit, true, "imported")
+            .map_err(git)?;
+        Ok(imported)
     }
 
     /// The chat's result `result`, on its base `base`, both fetched into
@@ -151,6 +210,24 @@ impl Composite {
             &format!("Result of chat {chat}"),
         )
     }
+}
+
+/// The top-level entries `after` changed from `before` that aren't among
+/// `folders`, each by its name.
+fn changed_elsewhere(before: &Tree, after: &Tree, folders: &[&str]) -> Vec<String> {
+    let mut names: Vec<String> = before
+        .iter()
+        .chain(after.iter())
+        .filter_map(|entry| entry.name().ok().map(str::to_string))
+        .filter(|name| !folders.contains(&name.as_str()))
+        .filter(|name| {
+            let id = |tree: &Tree| tree.get_name(name).map(|entry| entry.id());
+            id(before) != id(after)
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// `own`, the folder's tree in its repository's (none: an empty one), with

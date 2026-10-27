@@ -611,7 +611,7 @@ struct SavedView {
 }
 
 /// The store of a workspace chat's folder `name`.
-fn part_store(store: &Path, name: &str) -> PathBuf {
+pub(super) fn part_store(store: &Path, name: &str) -> PathBuf {
     store.join(PARTS).join(name)
 }
 
@@ -659,7 +659,7 @@ fn recorded(store: &Path) -> Option<Folders> {
 }
 
 /// Records what the store's view is over, for opening it again.
-fn record(store: &Path, folders: &Folders) -> Result<(), String> {
+pub(super) fn record(store: &Path, folders: &Folders) -> Result<(), String> {
     match folders.single() {
         Some(project) => std::fs::write(
             store.join(PROJECT_FILE),
@@ -2324,6 +2324,29 @@ pub fn changes_in_folder(dialog_id: &str, name: &str) -> Result<Vec<String>, Str
 
 /// [`changes_in_folder`], the chat's gate held.
 fn changes_there(dialog_id: &str, name: &str) -> Result<Vec<String>, String> {
+    Ok(landable(part_changes(dialog_id, name)?, name)
+        .iter()
+        .map(|c| c.path().to_string())
+        .collect())
+}
+
+/// A workspace chat's changes in its folder `name` that haven't landed, as
+/// the folder names them (`src/x.ts`), build output and dependencies left
+/// out: from its view while it's open, else from that folder's saved list.
+/// What a move to a server folds into the folder's snapshot (4.11).
+pub fn folder_changes(dialog_id: &str, name: &str) -> Result<Vec<OverlayChange>, String> {
+    if !valid_id(dialog_id) || !valid_id(name) {
+        return Err(format!("{name}: not a folder of a chat"));
+    }
+    let gate = gate(dialog_id);
+    let _held = gate.lock().unwrap_or_else(|e| e.into_inner());
+    let changes = part_changes(dialog_id, name)?;
+    Ok(changes.into_iter().filter(|c| !c.by_product()).collect())
+}
+
+/// The changes of a workspace chat's folder `name`, by-products too, as the
+/// folder names them, the chat's gate held: none when it has none there.
+fn part_changes(dialog_id: &str, name: &str) -> Result<Vec<OverlayChange>, String> {
     let changes =
         match get(dialog_id) {
             Some(o) => match &o.under {
@@ -2340,10 +2363,7 @@ fn changes_there(dialog_id: &str, name: &str) -> Result<Vec<String>, String> {
                 }
             }
         };
-    Ok(landable(changes.unwrap_or_default(), name)
-        .iter()
-        .map(|c| c.path().to_string())
-        .collect())
+    Ok(changes.unwrap_or_default())
 }
 
 #[cfg(test)]

@@ -27,6 +27,11 @@
 //!   (R04). A rename of case alone lands, as its deletion goes first.
 //! - **An import replaces the chat's store**, unless the user is resolving
 //!   conflicts in it. The new store is built beside it and swapped in.
+//! - **A workspace chat's result** (workspaces-plan.md, 4.11) is imported a
+//!   folder at a time (`Across`): each folder's part from its own
+//!   repository, where its files check out with that repository's settings,
+//!   into the folder's part of the store, then all of them swapped in at
+//!   once, so a store never holds part of a result.
 //! - **Landing by itself** follows landing.rs's rules, but lands a result
 //!   merged with the project's newer changes only when no checks would run
 //!   on the merge: otherwise they run on the server first (6.6).
@@ -35,6 +40,7 @@ use super::chats::{self, Pending};
 use super::fs::{write_manifest, DeletedBase, OverlayChange};
 use super::land::{LandError, Landed};
 use super::tiers::Tiers;
+use crate::folders::{Folder, Folders};
 use crate::vfs::store::{check_name, Kind};
 use git2::build::CheckoutBuilder;
 use git2::{DiffFile, DiffFindOptions, FileMode, Oid, Repository, Tree};
@@ -42,7 +48,7 @@ use rovik_protocol::work::ChatResult;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The reason a result waits while its project isn't the open one: it
 /// lands by itself once the project is open, or when the user lands it.
@@ -119,21 +125,27 @@ fn import_as(
     fold: bool,
 ) -> Result<Imported, ImportError> {
     let dialog_id = result.dialog_id.as_str();
-    let store = chats::store_dir(dialog_id)
-        .ok_or_else(|| ImportError::Failed("the app's data folder isn't known yet".into()))?;
-    if resolving(dialog_id) {
-        return Err(ImportError::Resolving);
-    }
-    let (marked, unchecked) = (&result.marked, result.unchecked);
-    let result = Oid::from_str(&result.commit).map_err(|e| e.message().to_string())?;
+    let (store, staging) = staging_for(dialog_id)?;
+    let commit = Oid::from_str(&result.commit).map_err(|e| e.message().to_string())?;
     let project = project
         .canonicalize()
         .unwrap_or_else(|_| project.to_path_buf());
-    let staging = store.with_file_name(format!(".import-{dialog_id}"));
-    remove(&staging)?;
-    let built = build(
-        repo, &project, subpath, result, unchecked, fold, &store, &staging,
-    );
+    let built = build(repo, &project, subpath, commit, fold, &store, &staging).and_then(|built| {
+        let imported = Imported {
+            commit: result.commit.clone(),
+            changed: built.changed,
+            outside: built.outside,
+            unchecked: result.unchecked,
+            case_clashes: built.case_clashes,
+        };
+        fs::write(
+            staging.join("project.txt"),
+            project.to_string_lossy().as_bytes(),
+        )
+        .map_err(io)?;
+        keep_record(&staging, &imported)?;
+        Ok((built.changes, imported))
+    });
     let swapped = built
         .map_err(ImportError::Failed)
         .and_then(|(changes, imported)| {
@@ -143,7 +155,8 @@ fn import_as(
     let _ = remove(&staging);
     let imported = swapped?;
     let prefix = prefix(subpath);
-    let marked = marked
+    let marked = result
+        .marked
         .iter()
         .filter(|path| imported.changed.contains(*path))
         .filter_map(|path| path.strip_prefix(prefix.as_str()))
@@ -151,6 +164,135 @@ fn import_as(
         .collect();
     chats::set_marked(dialog_id, marked);
     Ok(imported)
+}
+
+/// The chat's store, and the folder its next one is built in, emptied:
+/// refused while the user resolves conflicts in the store.
+fn staging_for(dialog_id: &str) -> Result<(PathBuf, PathBuf), ImportError> {
+    let store = chats::store_dir(dialog_id)
+        .ok_or_else(|| ImportError::Failed("the app's data folder isn't known yet".into()))?;
+    if resolving(dialog_id) {
+        return Err(ImportError::Resolving);
+    }
+    let staging = store.with_file_name(format!(".import-{dialog_id}"));
+    remove(&staging)?;
+    Ok((store, staging))
+}
+
+/// Keeps in the store built in `staging` what it was imported from.
+fn keep_record(staging: &Path, imported: &Imported) -> Result<(), String> {
+    let record = serde_json::to_vec(imported).map_err(|e| e.to_string())?;
+    fs::create_dir_all(staging).map_err(io)?;
+    fs::write(staging.join(RECORD), record).map_err(io)
+}
+
+/// A workspace chat's result being imported as its store (workspaces-plan.md,
+/// 4.11), a folder at a time: each folder's part from the repository it was
+/// grafted into, so its files check out with that repository's settings,
+/// built beside the chat's store; then the parts are swapped in at once
+/// (`finish`), so the store never holds part of a result. Dropped before
+/// that, it leaves the store as it was.
+pub struct Across {
+    dialog_id: String,
+    workspace: String,
+    store: PathBuf,
+    staging: PathBuf,
+    folders: Vec<Folder>,
+    changes: Vec<OverlayChange>,
+    changed: Vec<String>,
+    case_clashes: Vec<String>,
+}
+
+impl Across {
+    /// Begins importing a result of the chat `dialog_id`, of the workspace
+    /// `workspace`: refused while the user resolves conflicts in its store.
+    pub fn begin(dialog_id: &str, workspace: &str) -> Result<Across, ImportError> {
+        let (store, staging) = staging_for(dialog_id)?;
+        Ok(Across {
+            dialog_id: dialog_id.to_string(),
+            workspace: workspace.to_string(),
+            store,
+            staging,
+            folders: Vec::new(),
+            changes: Vec::new(),
+            changed: Vec::new(),
+            case_clashes: Vec::new(),
+        })
+    }
+
+    /// The part of the chat's folder `name`, at `folder` here: the changes
+    /// of `commit` on its parent, both of which `repo` has, `subpath` the
+    /// folder's place in their trees. Its paths are reported by the chat's
+    /// names for them (`api/src/x.ts`).
+    pub fn add(
+        &mut self,
+        name: &str,
+        folder: &Path,
+        repo: &Repository,
+        subpath: &str,
+        commit: Oid,
+    ) -> Result<(), ImportError> {
+        let folder = folder
+            .canonicalize()
+            .unwrap_or_else(|_| folder.to_path_buf());
+        let fold = case_insensitive(&folder);
+        let store = chats::part_store(&self.store, name);
+        let staging = chats::part_store(&self.staging, name);
+        let built = build(repo, &folder, subpath, commit, fold, &store, &staging)?;
+        let prefix = prefix(subpath);
+        let named = |path: String| {
+            let rel = path.strip_prefix(prefix.as_str()).unwrap_or(&path);
+            format!("{name}/{rel}")
+        };
+        self.changed.extend(built.changed.into_iter().map(named));
+        self.case_clashes
+            .extend(built.case_clashes.into_iter().map(named));
+        if built.changes.is_empty() {
+            remove(&staging)?;
+        }
+        self.changes.extend(built.changes);
+        self.folders.push(Folder {
+            name: name.to_string(),
+            path: folder,
+        });
+        Ok(())
+    }
+
+    /// The parts swapped in as the chat's store, in place of the one it had,
+    /// unless the user started resolving conflicts there meanwhile: its
+    /// `result` (commit, marked files, whether checks would run), with
+    /// `outside`, what the result changed that's in none of the chat's
+    /// folders here.
+    pub fn finish(
+        mut self,
+        result: &ChatResult,
+        outside: Vec<String>,
+    ) -> Result<Imported, ImportError> {
+        let imported = Imported {
+            commit: result.commit.clone(),
+            changed: std::mem::take(&mut self.changed),
+            outside,
+            unchecked: result.unchecked,
+            case_clashes: std::mem::take(&mut self.case_clashes),
+        };
+        let folders = Folders::named(std::mem::take(&mut self.folders))?;
+        keep_record(&self.staging, &imported)?;
+        chats::record(&self.staging, &folders.in_workspace(&self.workspace))?;
+        let changes = std::mem::take(&mut self.changes);
+        swap(&self.dialog_id, &self.store, &self.staging, changes)?;
+        let marked = (result.marked.iter())
+            .filter(|path| imported.changed.contains(*path))
+            .cloned()
+            .collect();
+        chats::set_marked(&self.dialog_id, marked);
+        Ok(imported)
+    }
+}
+
+impl Drop for Across {
+    fn drop(&mut self) {
+        let _ = remove(&self.staging);
+    }
 }
 
 /// What the chat's store was imported from, when it was.
@@ -217,21 +359,32 @@ struct Entry {
     from: Option<(String, String)>,
 }
 
+/// One folder's changes from a result, built in a store.
+struct Built {
+    /// In the order to replay them.
+    changes: Vec<OverlayChange>,
+    /// The paths it brought, by their paths in the trees.
+    changed: Vec<String>,
+    /// The paths it changed outside the folder in its repository (K31).
+    outside: Vec<String>,
+    /// The paths this computer's file system would take for another's
+    /// (R04), by their paths in the trees.
+    case_clashes: Vec<String>,
+}
+
 /// Builds the store in `staging`, its files named as they will be once it
-/// is moved to `store`: its changes, in the order to replay them, and what
-/// it was imported from. `fold`: the project's file system doesn't tell
-/// names apart by case.
-#[allow(clippy::too_many_arguments)]
+/// is moved to `store`: the changes of `result` on its parent, kept in its
+/// list. `fold`: the project's file system doesn't tell names apart by
+/// case.
 fn build(
     repo: &Repository,
     project: &Path,
     subpath: &str,
     result: Oid,
-    unchecked: bool,
     fold: bool,
     store: &Path,
     staging: &Path,
-) -> Result<(Vec<OverlayChange>, Imported), String> {
+) -> Result<Built, String> {
     let commit = repo.find_commit(result).map_err(git)?;
     let base = commit
         .parent(0)
@@ -388,25 +541,16 @@ fn build(
         );
     }
 
-    let imported = Imported {
-        commit: result.to_string(),
-        changed: entries.values().map(|e| e.tree_path.clone()).collect(),
-        outside: outside.into_iter().collect(),
-        unchecked,
-        case_clashes,
-    };
-    fs::write(
-        staging.join("project.txt"),
-        project.to_string_lossy().as_bytes(),
-    )
-    .map_err(io)?;
-    let record = serde_json::to_vec(&imported).map_err(|e| e.to_string())?;
-    fs::write(staging.join(RECORD), record).map_err(io)?;
     remove(&out)?;
     // A folder's deletes, then its entries, parents before children.
     let changes: Vec<OverlayChange> = deletes.into_iter().chain(writes.into_values()).collect();
     write_manifest(staging, next_file, changes.clone()).map_err(io)?;
-    Ok((changes, imported))
+    Ok(Built {
+        changes,
+        changed: entries.values().map(|e| e.tree_path.clone()).collect(),
+        outside: outside.into_iter().collect(),
+        case_clashes,
+    })
 }
 
 /// What a file system that doesn't tell names apart by case can't hold of

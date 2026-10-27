@@ -3185,6 +3185,70 @@ rules under an ignored folder), `what_an_ancestors_gitignore_ignores_stays_out_o
 (staging a run's changes there leaves `node_modules` out),
 `every_chat_of_a_workspace_sends_the_same_rules`.
 
+**G05 — chats across folders in WSL and on hosts.** `remote/files.rs`: `ChatFiles`
+(owner, name, `Folders`, and a workspace chat's workspace's folders) replaces
+`project_of` (`files_of`): a folder chat's is its project's folder as before (its
+project's shadow, the whole repository, with history); a workspace chat's are the
+folders checked for it, through `agent_run::workspace_folders` (now public), so a
+missing one is refused by name everywhere a chat's files are needed: sync, import, move,
+move back, the bar. The kinds differ only there (`snapshot`, `fold`, `import`, `ready`,
+`shadow`). Each folder of a workspace has a shadow of its own at
+`shadow/<workspace>/<name>.git` (a folder's name is never another's, D8), apart from
+its project's; the composite is `shadow/<workspace>.git`, its alternates every folder
+shadow there, those of folders that left included: a push hides the host's commits, and
+libgit2's pack builder reads their trees, which earlier snapshots hold. The host's
+project is named as the workspace is, with no settings or push address of its own (each
+folder's settings go with each start; nothing is pushed, D30), and the rules sent are
+the workspace's (G04). A host that doesn't serve `FOLDERS` is refused in `start`, in
+every sync (`snapshot`) and in `movable` (`runs_folders`): "… runs an older Rovik,
+which can't run a chat across folders yet: upgrade it first.", in the preflight with
+`too_old`'s words for whom to ask, and for the home host the plan's WSL sentence; a host
+that hasn't said what it serves isn't refused there, as what's asked of it then says it
+can't be reached. A start sends the chat's folders as `RunFolder`s with their settings,
+and writes the editor's paths under each folder from its name (`relative_to_folders`), a
+steer too. A result is fetched into the composite and imported by `Composite::import`:
+each folder's part is grafted into its shadow (G03) and built from there into its part
+of the chat's store by `overlay::import::Across` (`begin`, `add` per folder, `finish`),
+beside the store, then swapped in at once, so a store never holds part of a result. The
+store is laid out as a local workspace chat's (`folders.json`, `parts/<name>/`), so
+landing, Undo and the conflict resolver work on it unchanged (F04), its paths are the
+chat's (`api/x`), and `WorkLanded` names every folder's. `build` no longer writes
+`project.txt` and `import.json`; its callers do. What a result changed outside the chat's
+folders (`ChatResult.outside`, and a folder that left the chat) is `Imported.outside`,
+told in a notice as the paths left for their case are (`tell_left_there`): "`notes.md`
+is in none of the chat's folders, so it stays on …". The window's open list carries the
+workspace's ID with each of its folders (`Instances::give_open_projects`), so a
+workspace chat's result lands by itself while its workspace is open. A move folds each
+folder's changes (`chats::folder_changes`, new) into its shadow and composes the bases,
+the changes committed on them (`Composite::on`); a move back opens the chat's view over
+its folders; the move preflight leaves a workspace chat's push notes to G06. The bar
+reads a file's version here through `Folders::abs`, and a plan in the chat's folder by
+its name (`plan_in_worktree`). D19 and D32 on hosts (`remote/held.rs`): the app's
+`workspace_remove_folder`, `workspace_relocate_folder` (changes counting only for
+another project, `api::locates_same_project`) and `chat_set_folders` first ask
+`folder_held_there` and `leaving_held_there`: a chat on a host that works in the folder
+holds it while it's at work there (a run, or its Autopilot task), while its worktree has
+changes there that haven't landed (`WorkStatus`), and while its host can't be asked.
+Apply while a result is being imported is refused as at work, as the import holds the
+chat. Tests: `overlay/import/tests.rs` (a result across folders becomes each folder's
+changes and lands in both, each as its repository writes it; a folder its result doesn't
+change has no part; an import across folders that fails leaves the store as it was; files
+marked in a folder wait for their markers; a folder's changes are read as the folder
+names them), `remote/tests/folders.rs` with the fake daemon (a chat across folders isn't
+moved to a host that can't run it, the upgrade offered; it doesn't start in a WSL that
+can't, saying how to update it; a start across folders names each folder with its
+settings and its paths from its name, a steer too; a folder a host's chat has changes in,
+or is at work in, doesn't leave the workspace or the chat, nor one whose host can't
+say), `remote/bar.rs` (a plan is found in its folder of the worktree), `instances.rs`
+(the open projects are the window's folders' projects and its workspace's), and
+`rovik-agentd/tests/folders.rs` with the real daemon (a run across folders brings one
+result that lands in each folder, and the landing moves the base for both; a folder
+checked joins at the next message, its run reading it, and one unchecked leaves,
+ignored files and all; a chat across folders moved back waits with its changes in each
+folder; two chats with different folders keep each other's by-products out of their
+results; a folder inside a repository imports with its repository's attributes). The
+app's commands are wrappers of the `Remote` methods tested there.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where
