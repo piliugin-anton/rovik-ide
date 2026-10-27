@@ -2,7 +2,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { GitStatus } from '../types';
-import { commitAction, publishQuestion, unpublished } from './gitPublish';
+import {
+  commitAction,
+  commitActionAcross,
+  hasWork,
+  includable,
+  includeBlocked,
+  partialText,
+  publishHintAcross,
+  publishQuestion,
+  publishQuestionAcross,
+  stoppedText,
+  unpublished,
+} from './gitPublish';
 
 const file: GitStatus['files'][number] = {
   path: 'a.txt',
@@ -69,4 +81,92 @@ test('git publish: the question names the branch and the remote', () => {
   assert.match(q.message, /creates feature\/x on origin and pushes it there/);
   assert.equal(q.confirmLabel, 'Publish branch');
   assert.equal(q.cancelLabel, 'Not now');
+});
+
+const ahead: GitStatus = { ...newBranch, upstream: 'origin/feature/x', ahead: 1 };
+const changes: GitStatus = { ...newBranch, upstream: 'origin/feature/x', files: [file] };
+const tracked: GitStatus = { ...newBranch, upstream: 'origin/feature/x' };
+
+test('git publish: over several repositories the button commits first, then pushes, then publishes', () => {
+  // A change and a message anywhere: the commit, though another is ahead.
+  assert.equal(commitActionAcross([ahead, changes], 'Fix'), 'commit');
+  // No message, or no change: push what's ahead, else publish.
+  assert.equal(commitActionAcross([ahead, changes], ''), 'push');
+  assert.equal(commitActionAcross([newBranch, ahead], 'Fix'), 'push');
+  assert.equal(commitActionAcross([newBranch, tracked], ''), 'publish');
+  // Nothing to do: Commit, which the panel leaves disabled.
+  assert.equal(commitActionAcross([tracked], ''), 'commit');
+  assert.equal(commitActionAcross([], 'Fix'), 'commit');
+});
+
+test('git publish: a merge, a rebase or conflicts keep a repository out of the commit, saying why', () => {
+  const merging = {
+    ...changes,
+    operation: { kind: 'merge', conflicts: [] } as unknown as GitStatus['operation'],
+  };
+  assert.equal(includeBlocked(merging, 'api'), 'Finish the merge in api first');
+  assert.equal(includable(merging), false);
+  const conflicted: GitStatus = { ...tracked, files: [{ ...file, status: 'U' }] };
+  assert.equal(includeBlocked(conflicted, 'web'), 'Resolve the conflicts in web first');
+  assert.equal(includable(conflicted), false);
+  // Nothing in the way: in, when there's something to commit or push.
+  assert.equal(includeBlocked(changes, 'api'), null);
+  assert.equal(includable(changes), true);
+  assert.equal(includable(ahead), true);
+  assert.equal(includable(newBranch), true, 'a branch to publish');
+  assert.equal(hasWork(tracked), false);
+  assert.equal(includable(tracked), false, 'nothing to commit or push');
+});
+
+test('git publish: one question publishes every branch a commit across repositories left unpublished', () => {
+  const api = { name: 'api', status: newBranch };
+  const web = { name: 'web', status: { ...newBranch, branch: 'cart', push_remote: 'upstream' } };
+  const both = publishQuestionAcross([api, web]);
+  assert.equal(both.title, 'Publish api’s feature/x and web’s cart?');
+  assert.match(
+    both.message,
+    /^These branches have no remote branch yet, so their commits weren’t pushed: api’s feature\/x \(origin\) and web’s cart \(upstream\)\./
+  );
+  assert.equal(both.confirmLabel, 'Publish branches');
+  assert.equal(both.cancelLabel, 'Not now');
+  const one = publishQuestionAcross([web]);
+  assert.equal(one.title, 'Publish web’s cart?');
+  assert.match(
+    one.message,
+    /^This branch has no remote branch yet, so its commit wasn’t pushed: web’s cart \(upstream\)\./
+  );
+  assert.equal(one.confirmLabel, 'Publish branch');
+  assert.equal(
+    publishHintAcross([api, web]),
+    'Create api’s feature/x on origin and web’s cart on upstream and push them'
+  );
+});
+
+test('git publish: what a stopped or a partial commit across repositories says names each repository', () => {
+  assert.equal(
+    stoppedText([
+      {
+        name: 'web',
+        error: 'Not committed: the pre-commit hook failed (exit code 1):\nlint: 2 errors',
+      },
+    ]),
+    'Nothing was committed.\nweb: the pre-commit hook failed (exit code 1):\nlint: 2 errors'
+  );
+  assert.equal(
+    stoppedText([
+      { name: 'api', error: 'A merge is in progress: finish or abort it first.' },
+      { name: 'docs', error: 'Resolve the conflicts first.' },
+    ]),
+    'Nothing was committed.\napi: A merge is in progress: finish or abort it first.\ndocs: Resolve the conflicts first.'
+  );
+  const lock = { name: 'infra', error: 'failed to lock file' };
+  assert.equal(
+    partialText(['api', 'web'], [lock]),
+    'Committed in api and web; nothing is pushed until infra is committed too.\ninfra: failed to lock file'
+  );
+  assert.equal(
+    partialText(['api'], [lock, { name: 'docs', error: 'disk full' }]),
+    'Committed in api; nothing is pushed until infra and docs are committed too.\ninfra: failed to lock file\ndocs: disk full'
+  );
+  assert.equal(partialText([], [lock]), 'Nothing was committed.\ninfra: failed to lock file');
 });

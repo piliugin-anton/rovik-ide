@@ -31,6 +31,9 @@ pub struct Repo {
     /// The window's folders in it, relative to `workdir` ("" when a folder is
     /// the working folder: all of it), in the window's order.
     pub scopes: Vec<String>,
+    /// The same folders as the window gave them: the panel asks git from the
+    /// first, and a change in any of them refreshes the repository's section.
+    pub folders: Vec<String>,
 }
 
 /// What `git_repos` answers.
@@ -65,6 +68,7 @@ pub fn repos_of(folders: &[Folder]) -> Repos {
                 if !repos[at].scopes.contains(&found.scope) {
                     repos[at].scopes.push(found.scope);
                 }
+                repos[at].folders.push(folder.path.clone());
             }
             None => {
                 repos.push(Repo {
@@ -72,6 +76,7 @@ pub fn repos_of(folders: &[Folder]) -> Repos {
                     workdir: display_path(&found.workdir),
                     name: String::new(),
                     scopes: vec![found.scope],
+                    folders: vec![folder.path.clone()],
                 });
                 workdirs.push(found.workdir);
             }
@@ -231,6 +236,14 @@ mod tests {
         assert_eq!(repos.without, []);
         assert_eq!(repos.repos.len(), 1, "one repository");
         assert_eq!(repos.repos[0].scopes, ["app", "web"]);
+        assert_eq!(
+            repos.repos[0].folders,
+            [
+                dir.join("app").to_string_lossy(),
+                dir.join("web").to_string_lossy()
+            ],
+            "each folder as the window gave it, in its order"
+        );
         assert_eq!(repos.repos[0].workdir, display_path(&dir));
         let _ = fs::remove_dir_all(&dir);
     }

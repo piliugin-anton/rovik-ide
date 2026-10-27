@@ -576,6 +576,41 @@ export type GitStatus = {
   push_remote?: string | null;
 };
 
+/** A repository the window's folders are in (src-tauri/src/git/repos.rs, `git_repos`). */
+export interface GitRepo {
+  /** Its git folder: two folders in one repository share it; a linked worktree has its own. */
+  key: string;
+  workdir: string;
+  /** The folder's stored name when the repository is exactly one of the
+   *  window's folders; else its working folder's name. */
+  name: string;
+  /** The window's folders in it, relative to `workdir` ('' for all of it). */
+  scopes: string[];
+  /** The same folders as the window gave them, in its order. */
+  folders: string[];
+}
+
+/** The window's folders by repository (`git_repos`). */
+export interface GitRepos {
+  repos: GitRepo[];
+  /** The folders in no repository. */
+  without: { path: string; name: string }[];
+}
+
+/** What a repository of a commit across repositories said (`git_commit_many`). */
+export interface GitRepoProblem {
+  /** The folder it was asked from. */
+  path: string;
+  error: string;
+}
+
+/** What a commit across repositories did (src-tauri/src/git/changes.rs, D11). */
+export type GitCommitOutcome =
+  /** Nothing was committed: what a check or a hook found, by repository. */
+  | { result: 'stopped'; problems: GitRepoProblem[] }
+  /** Committed, but in `failed`; a repository in neither list had nothing to commit. */
+  | { result: 'done'; committed: string[]; failed: GitRepoProblem[] };
+
 /** Where HEAD is (src-tauri/src/git/branches.rs, `git_head`). */
 export interface GitHead {
   /** The branch HEAD is on; none when it's detached, or before the first commit. */

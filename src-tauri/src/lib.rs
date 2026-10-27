@@ -350,6 +350,7 @@ pub fn run() {
             git_sync::git_conflict_file,
             git_sync::git_conflict_resolve,
             git::git_commit,
+            git::git_commit_many,
             git::git_hooks,
             git::git_hook_create,
             git::git_hook_make_executable,

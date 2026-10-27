@@ -2350,7 +2350,92 @@ the URI compared with the one sent, since the stub's URIs are opaque-ish.
 set, none for the same one, none when no server was started.
 By hand: the download offer with two folders starts rust-analyzer with both.
 
+**R01 — a section per repository.** `GitPanel.tsx` is the window's part: it
+reads `git_repos` for the folders that are there (App passes
+`resolvable(folders())`, so a missing folder is never offered **Initialize
+repository**), shows a `GitRepoSection` (new) per repository, keyed by
+`Repo.key`, and one per folder in none, keyed by `folder:<path>`, in the
+window's order, and keeps the commit message and its button.
+`GitRepoSection.tsx` is the old panel's body, moved as it was: status, header,
+banner, errors, changes, history, stash, hooks and the resolver, each command
+asked from the repository's first folder with its `scopes` — `Repo.folders`
+(new) lists the window's folders in it as the window gave them. The icons moved
+to `GitIcons.tsx`. One section has no title and is laid out as the panel always
+was (`display: contents`); with several, each has a title row with its name and
+its box for the commit, the sections scroll, and a section's changes take at
+most 40% of the window's height. A section hands the panel a `GitRepoHandle`
+(its status, busy, `run`, `refreshStatus`, `refreshHistory`, `push`,
+`offerSkip`), which the commit works it with, and waits while the panel commits
+across repositories (`locked`). Drafts are kept by `sessionKey` (a project's is
+its path, as before), publish answers by repository and branch,
+`GIT_LOG_LATEST` by the folder a section asks from (`Generations`, a count per
+key), and ConflictResolver's `opKey` is the repository's, as each section passes
+its own path. Tests: "two repositories' history reads don't stop each other"
+(`git/tests.rs`, beside the superseded scan's), `repos.rs`'s shared repository
+lists its `folders`, and `GitPanel.test.tsx` "one repository has no title of its
+own, and asks git from its folder as before" and "two repositories show two
+sections with their names and branches".
+Departures: the `GitPanel`, `gitBranchMenu`, `gitRebase` and `gitChangeCounts`
+tests mount the panel with one folder and a session and answer `git_repos`
+(`src/test/gitRepos.ts`'s `oneRepository`); their assertions are unchanged, and
+`gitChangeCounts`' event names its folder, as the watcher's has since A03.
+ConflictResolver and GitHooksView needed no change: they're given the
+section's path. A `git_repos` read that fails (it doesn't, in practice) shows
+the panel's error with Retry.
+
+**R02 — one commit across repositories.** `changes.rs`'s `git_commit_in` is now
+`Committing`'s steps — check (nothing in progress, no conflicts, someone to
+commit as), stage with the pre-commit hook, the message hooks, the commit,
+post-commit — and `git_commit_many(repos, message, noVerify)` takes them across
+repositories in D11's order: every repository checked first, every problem
+named (`Stopped { problems }`), then every pre-commit, then every message hook
+(the first failure: `Stopped`), then the commits (`Done { committed, failed }`:
+one that fails is reported with those made before it, and the rest are still
+made), then post-commit where one was made; "Nothing to commit." only when no
+repository had anything. It holds every repository's working folder for the
+whole run (`util::rewriting_all`, whose one-folder case is `rewriting`). The
+panel: one section commits as it always did (`git_commit`, then a push or the
+publish question); with several, `commitActionAcross` (`gitPublish.ts`) over
+the included repositories picks Commit, Push or Publish, a box follows
+`includable` (`includeBlocked` says why a merge, a rebase or conflicts keep one
+out; nothing to commit or push leaves it unticked), and `git_commit_many` gets
+the included repositories with changes. What stopped it shows above the commit
+bar by repository (`stoppedText`), with **Commit without hooks** when a hook
+did. After a commit that failed in some (`partialText`), the message stays and
+the repositories it was made in wait in `heldPushes` (by session) until a retry
+commits the rest; then each repository the message went to is pushed in its own
+section, where a failed push shows, one that was only ahead isn't, and the
+branches with no remote branch get one question (`publishQuestionAcross`).
+Tests: `git/tests.rs`'s `commit_many_tests` — a pre-commit failing in the second
+repository leaves the first uncommitted; without hooks no check runs in any; a
+commit-msg hook changes its own repository's message only; each commit goes on
+its repository's branch; a detached HEAD gets its commit; a repository with no
+commit gets its branch; a held `refs/heads/main.lock` in the third reports the
+first two; every problem a check finds is named and nothing is committed;
+nothing to commit anywhere says so. `gitPublish.test.ts` has four, and
+`GitPanel.test.tsx` four: a repository in a merge is left out, saying why; a
+commit failing in one keeps the message and pushes nothing, and the retry
+pushes all three; a failed push shows in its own section; a repository that was
+only ahead isn't pushed by a commit.
+Departures: `commitAction` keeps its one-repository signature (its tests
+unchanged), and `commitActionAcross` is the several's. The identity is checked
+with the other checks, before any hook runs, for one repository too: a commit
+that can't be made no longer runs pre-commit first. A many-commit's problem
+says "Changes are staged outside this window's folders: …" without the
+repository's name, which the panel puts in front; `RepoCommit` carries no name,
+and the outcome names a repository by the folder it was asked from.
+
+**R03 — refreshing by repository.** A section listens to `git-changed` and
+reads its status again when the event's folder is one of its own (`samePath`),
+at most every 2 s, as the panel did for its one folder; the panel reads
+`git_repos` again when an event says a folder's repository came or went
+(`repositories`), and after **Initialize repository**. A section stays as the
+list is read again (keyed by repository), with its history, menus and scroll.
+Tests: `GitPanel.test.tsx` "a folder's change refreshes its own repository's
+section only" and "git init in a folder without a repository gives it a section
+of its own".
+
 Before H, a user of a project sees none of this either: a window still has one
-folder unless `--workspace` asks for one. What does change is that two tabs of
-one name say where each one is, and the project checks page says
-"Packages (N)".
+folder unless `--workspace` asks for one, and its Git panel looks and works as
+it did. What does change is that two tabs of one name say where each one is,
+and the project checks page says "Packages (N)".

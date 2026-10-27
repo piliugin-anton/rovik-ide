@@ -70,8 +70,19 @@ pub async fn rewriting<T: Send + 'static>(
     path: &str,
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    let held = working_folder_of(Path::new(path));
-    let _busy = rovik_core::overlay::chats::hold_busy(&held);
+    rewriting_all(&[path.to_string()], work).await
+}
+
+/// [`rewriting`] in the repository of each of `paths` at once: a commit
+/// across repositories holds every one until its last commit is made.
+pub async fn rewriting_all<T: Send + 'static>(
+    paths: &[String],
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let _busy: Vec<_> = paths
+        .iter()
+        .map(|path| rovik_core::overlay::chats::hold_busy(&working_folder_of(Path::new(path))))
+        .collect();
     blocking(work).await
 }
 

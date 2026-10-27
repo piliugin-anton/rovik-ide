@@ -85,7 +85,15 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   repository, never by the one around it; a submodule's edits are its own
   repository's too, while the commit it has checked out is listed and
   committed in the repository around it, as git records it. A commit with
-  nothing in it isn't made.
+  nothing in it isn't made. In a workspace, each repository its folders
+  are in has a section of its own (its branch, Pull, History and ⋯ menu),
+  and a folder in no repository offers to make one. One message commits
+  each repository ticked for it, on the branch that repository is on: a
+  merge, a rebase or conflicts in one leaves it unticked, saying why. If a
+  commit fails in one repository after others were made, the message stays
+  and nothing is pushed until that one is committed too; then every
+  repository the message went to is pushed, and a branch with no remote
+  branch yet is asked about once for all.
 
 **AI agent**
 
@@ -1080,13 +1088,19 @@ stages is committed, and the message is what the message hooks leave in
 `.git/COMMIT_EDITMSG`. Hooks that run after can't stop anything; their
 failure is only logged, as git ignores it.
 
+A commit across a workspace's repositories runs pre-commit in each, then
+the message hooks in each, and only then makes the commits: a hook that
+fails in one repository stops it before any commit is made, and a message
+hook changes its own repository's message only.
+
 When a hook that checks stops a commit, a push or a merge's commit, the
 error has a button to try once more without it: **Commit without hooks**,
 **Push without hooks** or **Commit merge without hooks**, as git's
 `--no-verify`. That skips pre-commit, commit-msg, pre-merge-commit and
-pre-push for that one try. prepare-commit-msg and the hooks that come
-after still run, as with git, and a push after such a commit still runs
-pre-push. The panel tells the hook from the error (`src/lib/gitHooks.ts`).
+pre-push for that one try, in every repository of a commit across a
+workspace's. prepare-commit-msg and the hooks that come after still run,
+as with git, and a push after such a commit still runs pre-push. The
+panel tells the hook from the error (`src/lib/gitHooks.ts`).
 
 The file tree doesn't show `.git`, so the Git panel's ⋯ menu has
 **Git hooks…** (`src/components/GitHooksView.tsx`,

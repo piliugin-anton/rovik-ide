@@ -195,9 +195,8 @@ export default function App() {
     }))
   );
   /**
-   * The window's one folder, for the parts that still take a folder and not
-   * a list (the tree, the watcher, search and the Git panel take folders
-   * next). With one folder it is that folder.
+   * The window's first folder, for the parts that still take one folder and
+   * not a list. With one folder it is that folder.
    */
   const rootPath = () => {
     const open = folders();
@@ -205,6 +204,8 @@ export default function App() {
   };
   /** The open folder `path` is in, or null when it's in none of them. */
   const folderAt = (path: string) => folderOf(folders(), path);
+  /** The folders the Git panel shows: those that are there (D20). */
+  const gitFolders = createMemo(() => resolvable(folders()));
   /**
    * The projects this window has open: its workspace, and the project of the
    * folder it shows (a folder resolving comes through `resolveProject`). The
@@ -2659,9 +2660,10 @@ export default function App() {
 
         <Show when={sidebarTab() === 'git'}>
           <Switch>
-            <Match when={!!rootPath()}>
+            <Match when={gitFolders().length > 0}>
               <GitPanel
-                projectPath={rootPath()!}
+                folders={gitFolders()}
+                session={sessionKey(target())!}
                 onOpenFile={(abs) => void openInEditor({ path: abs, focus: true, marks: 'git' })}
                 onOpenStashFile={(abs, file, index, message) =>
                   void openFromStash(abs, file, index, message)
@@ -2676,7 +2678,7 @@ export default function App() {
                 onOpenPath={(abs) => void openInEditor({ path: abs, focus: true, marks: 'none' })}
               />
             </Match>
-            <Match when={!rootPath()}>
+            <Match when={gitFolders().length === 0}>
               <p class="text-center">Open a project to see git panel</p>
             </Match>
           </Switch>

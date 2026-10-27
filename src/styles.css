@@ -5190,6 +5190,73 @@ body.is-resizing * {
   padding: 2px 8px;
 }
 
+/* ---------------------------------------------------------------------- */
+/* Sections: one per repository (GitRepoSection.tsx)                      */
+/* ---------------------------------------------------------------------- */
+
+/* One section is laid out as the whole panel always was: its parts are the
+   panel's own. */
+.git-repo-sections,
+.git-repo-section {
+  display: contents;
+}
+
+/* Several stack, each as tall as its changes (up to a share of the panel),
+   and the list of them scrolls. */
+.git-repo-sections-several {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.git-repo-section-several {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-repo-section-several .git-files {
+  flex: none;
+  max-height: 40vh;
+}
+
+.git-repo-section-several .git-panel-loading,
+.git-repo-section-several .git-panel-empty {
+  flex: none;
+  padding: 12px 16px;
+}
+
+.git-repo-section-several > .empty-state {
+  margin: 0;
+  padding: 8px 16px;
+}
+
+.git-repo-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 8px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.git-repo-include {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.git-repo-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .git-inline-error svg {
   flex-shrink: 0;
 }

@@ -1,5 +1,5 @@
 use super::branches::validate_branch_name;
-use super::history::{compact_contains, git_log_blocking, git_log_scan};
+use super::history::{compact_contains, git_log_blocking, git_log_scan, Generations};
 #[cfg(unix)]
 use super::remote::credential_fill;
 use super::*;
@@ -966,6 +966,26 @@ mod revert_tests {
         )
         .unwrap();
         assert_eq!(page.commits.len(), 1);
+    }
+
+    #[test]
+    fn two_repositories_history_reads_dont_stop_each_other() {
+        // A count of its own, not the app's: no other test shares it.
+        let latest = Generations::new();
+        let api = latest.begin("/w/api");
+        let web = latest.begin("/w/web");
+        assert!(
+            latest.is_latest("/w/api", api),
+            "another repository's read leaves it going"
+        );
+        assert!(latest.is_latest("/w/web", web));
+        let again = latest.begin("/w/api");
+        assert!(
+            !latest.is_latest("/w/api", api),
+            "a newer read of its own repository stops it"
+        );
+        assert!(latest.is_latest("/w/api", again));
+        assert!(latest.is_latest("/w/web", web), "and only its own");
     }
 
     fn page_from(dir: &std::path::Path, offset: Option<usize>, tip: Option<&str>) -> GitLogPage {
@@ -2453,5 +2473,303 @@ mod scopes_tests {
             "a folder's entry"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// A commit across the window's repositories (D11): every check first, then
+/// every hook, then the commits, each on the branch its repository is on.
+mod commit_many_tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "git-commit-many-{tag}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn p(dir: &Path) -> String {
+        dir.to_string_lossy().into_owned()
+    }
+
+    /// Who commits, and where the hooks are, whatever the machine's global
+    /// config says.
+    fn configure(repo: &Repository) {
+        let mut c = repo.config().unwrap();
+        c.set_str("user.name", "t").unwrap();
+        c.set_str("user.email", "t@t").unwrap();
+        c.set_str("core.hooksPath", ".git/hooks").unwrap();
+    }
+
+    /// A repository on `main` with one commit, and `a.txt` changed since.
+    fn repo(tag: &str) -> (PathBuf, Repository) {
+        let dir = temp_dir(tag);
+        let repo = Repository::init(&dir).unwrap();
+        configure(&repo);
+        fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git_commit_blocking(p(&dir), "start".into()).unwrap();
+        if repo.head().unwrap().shorthand().ok() != Some("main") {
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch("main", &head, true).unwrap();
+            repo.set_head("refs/heads/main").unwrap();
+        }
+        fs::write(dir.join("a.txt"), "two\n").unwrap();
+        (dir, repo)
+    }
+
+    /// Each repository whole: a workspace whose folders are repositories.
+    fn whole(dirs: &[&Path]) -> Vec<RepoCommit> {
+        dirs.iter()
+            .map(|dir| RepoCommit {
+                path: p(dir),
+                scopes: vec![String::new()],
+            })
+            .collect()
+    }
+
+    fn head_id(repo: &Repository) -> git2::Oid {
+        head_commit(repo).unwrap().id()
+    }
+
+    fn head_message(repo: &Repository) -> String {
+        head_commit(repo).unwrap().message().unwrap().to_string()
+    }
+
+    fn tip(repo: &Repository, branch: &str) -> git2::Oid {
+        repo.find_branch(branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .target()
+            .unwrap()
+    }
+
+    /// Hook `name` of the repository at `dir`, a shell script running `body`.
+    #[cfg(unix)]
+    fn hook(dir: &Path, name: &str, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = dir.join(".git/hooks");
+        fs::create_dir_all(&folder).unwrap();
+        let file = folder.join(name);
+        fs::write(&file, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pre_commit_failing_in_the_second_repository_leaves_the_first_uncommitted() {
+        let (api, api_repo) = repo("pre-commit-api");
+        let (web, web_repo) = repo("pre-commit-web");
+        let (api_before, web_before) = (head_id(&api_repo), head_id(&web_repo));
+        hook(&web, "pre-commit", "echo 'lint: 2 errors' >&2\nexit 1");
+        let outcome = git_commit_many_in(whole(&[&api, &web]), "change".into(), false).unwrap();
+        assert_eq!(
+            outcome,
+            CommitOutcome::Stopped {
+                problems: vec![RepoProblem {
+                    path: p(&web),
+                    error:
+                        "Not committed: the pre-commit hook failed (exit code 1):\nlint: 2 errors"
+                            .into(),
+                }],
+            }
+        );
+        assert_eq!(
+            head_id(&api_repo),
+            api_before,
+            "the first repository's commit waited for every hook"
+        );
+        assert_eq!(head_id(&web_repo), web_before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn without_hooks_no_check_runs_in_any_repository() {
+        let (api, api_repo) = repo("no-verify-api");
+        let (web, web_repo) = repo("no-verify-web");
+        for dir in [&api, &web] {
+            hook(dir, "pre-commit", "echo pre-commit >> .git/ran\nexit 1");
+            hook(dir, "commit-msg", "echo commit-msg >> .git/ran\nexit 1");
+        }
+        let outcome = git_commit_many_in(whole(&[&api, &web]), "wip".into(), true).unwrap();
+        assert_eq!(
+            outcome,
+            CommitOutcome::Done {
+                committed: vec![p(&api), p(&web)],
+                failed: vec![],
+            }
+        );
+        for (dir, repo) in [(&api, &api_repo), (&web, &web_repo)] {
+            assert_eq!(head_message(repo), "wip");
+            assert!(
+                !dir.join(".git/ran").exists(),
+                "no check ran in {}",
+                dir.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_commit_msg_hook_changes_its_own_repositorys_message_only() {
+        let (api, api_repo) = repo("message-api");
+        let (web, web_repo) = repo("message-web");
+        hook(
+            &api,
+            "commit-msg",
+            "printf '[API] %s' \"$(cat \"$1\")\" > \"$1\"",
+        );
+        git_commit_many_in(whole(&[&api, &web]), "fix it".into(), false).unwrap();
+        assert_eq!(head_message(&api_repo), "[API] fix it\n");
+        assert_eq!(head_message(&web_repo), "fix it");
+    }
+
+    #[test]
+    fn each_commit_goes_on_the_branch_its_repository_is_on() {
+        let (api, api_repo) = repo("branch-api");
+        let (web, web_repo) = repo("branch-web");
+        // api works on a branch of its own; web stays on main.
+        let start = head_id(&api_repo);
+        let at = api_repo.find_commit(start).unwrap();
+        api_repo.branch("feature", &at, false).unwrap();
+        api_repo.set_head("refs/heads/feature").unwrap();
+        git_commit_many_in(whole(&[&api, &web]), "change".into(), false).unwrap();
+        assert_eq!(tip(&api_repo, "main"), start, "api's main stayed");
+        let feature = api_repo.find_commit(tip(&api_repo, "feature")).unwrap();
+        assert_eq!(feature.parent_id(0).unwrap(), start, "api's is on feature");
+        assert_eq!(head_id(&web_repo), tip(&web_repo, "main"), "web's on main");
+        assert_eq!(head_message(&web_repo), "change");
+    }
+
+    #[test]
+    fn a_detached_head_gets_its_commit() {
+        let (api, api_repo) = repo("detached-api");
+        let (web, _web_repo) = repo("detached-web");
+        let start = head_id(&api_repo);
+        api_repo.set_head_detached(start).unwrap();
+        git_commit_many_in(whole(&[&api, &web]), "change".into(), false).unwrap();
+        assert!(api_repo.head_detached().unwrap(), "as git leaves it");
+        let head = head_commit(&api_repo).unwrap();
+        assert_eq!(head.parent_id(0).unwrap(), start);
+        assert_eq!(tip(&api_repo, "main"), start, "no branch moved");
+    }
+
+    #[test]
+    fn a_repository_with_no_commit_gets_its_branch() {
+        let (api, _api_repo) = repo("unborn-api");
+        let web = temp_dir("unborn-web");
+        let web_repo = Repository::init(&web).unwrap();
+        configure(&web_repo);
+        fs::write(web.join("b.txt"), "b\n").unwrap();
+        // The branch HEAD names before it has a commit (init.defaultBranch's).
+        let branch = web_repo
+            .find_reference("HEAD")
+            .unwrap()
+            .symbolic_target()
+            .unwrap()
+            .unwrap()
+            .to_string();
+        git_commit_many_in(whole(&[&api, &web]), "first".into(), false).unwrap();
+        let head = web_repo.head().unwrap();
+        assert_eq!(head.name().unwrap(), branch, "the commit made it");
+        assert_eq!(head.peel_to_commit().unwrap().parent_count(), 0);
+    }
+
+    #[test]
+    fn a_commit_that_fails_after_others_were_made_names_them() {
+        let (api, api_repo) = repo("lock-api");
+        let (web, web_repo) = repo("lock-web");
+        let (infra, infra_repo) = repo("lock-infra");
+        let before = [head_id(&api_repo), head_id(&web_repo), head_id(&infra_repo)];
+        // A terminal's git holds infra's branch.
+        fs::write(infra.join(".git/refs/heads/main.lock"), "").unwrap();
+        let outcome =
+            git_commit_many_in(whole(&[&api, &web, &infra]), "change".into(), false).unwrap();
+        let CommitOutcome::Done { committed, failed } = outcome else {
+            panic!("the first two are committed: {outcome:?}");
+        };
+        assert_eq!(committed, [p(&api), p(&web)]);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].path, p(&infra));
+        assert!(failed[0].error.contains("lock"), "{}", failed[0].error);
+        assert_ne!(head_id(&api_repo), before[0]);
+        assert_ne!(head_id(&web_repo), before[1]);
+        assert_eq!(head_id(&infra_repo), before[2], "infra wasn't committed");
+    }
+
+    #[test]
+    fn every_problem_a_check_finds_is_named_and_nothing_is_committed() {
+        let (api, api_repo) = repo("checks-api");
+        let (web, web_repo) = repo("checks-web");
+        let (docs, docs_repo) = repo("checks-docs");
+        // api is in the middle of a merge.
+        fs::write(
+            api.join(".git/MERGE_HEAD"),
+            format!("{}\n", head_id(&api_repo)),
+        )
+        .unwrap();
+        // The window has web's `app` folder, and a terminal staged a change
+        // beside it.
+        fs::create_dir_all(web.join("app")).unwrap();
+        fs::write(web.join("app/x.txt"), "x\n").unwrap();
+        {
+            let mut index = web_repo.index().unwrap();
+            index.add_path(Path::new("a.txt")).unwrap();
+            index.write().unwrap();
+        }
+        let docs_before = head_id(&docs_repo);
+        let repos = vec![
+            RepoCommit {
+                path: p(&api),
+                scopes: vec![String::new()],
+            },
+            RepoCommit {
+                path: p(&web.join("app")),
+                scopes: vec!["app".into()],
+            },
+            RepoCommit {
+                path: p(&docs),
+                scopes: vec![String::new()],
+            },
+        ];
+        let outcome = git_commit_many_in(repos, "change".into(), false).unwrap();
+        assert_eq!(
+            outcome,
+            CommitOutcome::Stopped {
+                problems: vec![
+                    RepoProblem {
+                        path: p(&api),
+                        error: "A merge is in progress: finish or abort it first.".into(),
+                    },
+                    RepoProblem {
+                        path: p(&web.join("app")),
+                        error: "Changes are staged outside this window's folders: a.txt. Commit or unstage them in a terminal first.".into(),
+                    },
+                ],
+            }
+        );
+        assert_eq!(head_id(&docs_repo), docs_before, "nothing anywhere");
+        assert!(
+            web_repo
+                .status_file(Path::new("a.txt"))
+                .unwrap()
+                .is_index_modified(),
+            "what was staged stays staged"
+        );
+    }
+
+    #[test]
+    fn nothing_to_commit_in_any_repository_is_said_so() {
+        let (api, _api_repo) = repo("nothing-api");
+        fs::write(api.join("a.txt"), "one\n").unwrap();
+        let err = git_commit_many_in(whole(&[&api]), "empty".into(), false).unwrap_err();
+        assert_eq!(err, "Nothing to commit.");
     }
 }

@@ -7,9 +7,9 @@ use super::{
     scope_pathspec, scopes_in, signature, stage_all, status_options, status_options_in_scopes,
     workdir, ErrText,
 };
-use crate::util::{blocking, rewriting};
+use crate::util::{blocking, rewriting, rewriting_all};
 use git2::{Repository, ResetType, Status};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[tauri::command]
@@ -52,25 +52,20 @@ pub fn git_commit_blocking_with(
 /// after. Not in the middle of a merge or a rebase (that's
 /// `git_operation_continue`'s), and not with conflicts: staged, their
 /// markers would be committed as text. `no_verify`: as git's
-/// `--no-verify`, without pre-commit and commit-msg.
+/// `--no-verify`, without pre-commit and commit-msg. A commit across
+/// repositories ([`git_commit_many`]) takes the same steps in each.
 pub fn git_commit_in(
     path: String,
     message: String,
     no_verify: bool,
     scopes: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let repo = open_repo(&path)?;
-    crate::git_sync::nothing_in_progress(&repo)?;
-    let mut index = repo.index().err_text()?;
-    if index.has_conflicts() {
-        return Err("Resolve the conflicts first.".to_string());
-    }
-    let scopes = scopes_in(&repo, &path, scopes);
-    let outside = staged_outside(&repo, &scopes)?;
+    let commit = Committing::check(&path, scopes, no_verify)?;
+    let outside = staged_outside(&commit.repo, &commit.scopes)?;
     if !outside.is_empty() {
         // A terminal's `git add` beside the window's folders: what's staged
         // stays staged, and nothing is committed or staged (D12).
-        let workdir = workdir(&repo)?;
+        let workdir = workdir(&commit.repo)?;
         let named = workdir
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -80,42 +75,240 @@ pub fn git_commit_in(
             outside.join(", ")
         ));
     }
-    for scope in &scopes {
-        stage_all(&mut index, &repo, scope)?;
-    }
-    let hooks = Hooks::of(&repo).no_verify(no_verify);
-    if hooks.has("pre-commit") {
-        hooks.run("pre-commit", &[], None).map_err(not_committed)?;
-        // What it staged (or unstaged) is what's committed.
-        index.read(true).err_text()?;
-        if index.has_conflicts() {
-            return Err("Resolve the conflicts first.".to_string());
-        }
-    }
-    let message = hooks
-        .commit_message(&repo, &message, "message")
-        .map_err(not_committed)?;
-    let tree = repo.find_tree(index.write_tree().err_text()?).err_text()?;
-    // Nothing to commit (a submodule whose only change is inside its own
-    // working tree, say): an empty commit isn't made (D12).
-    let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
-    if head_tree.is_some_and(|head| head.id() == tree.id()) {
+    let mut index = commit.stage()?;
+    let message = commit.message(&message)?;
+    if !commit.commit(&mut index, &message)? {
         return Err("Nothing to commit.".to_string());
     }
-    let signature = signature(&repo)?;
-    let parent = head_commit(&repo).ok();
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
-    repo.commit(
-        Some("HEAD"),
-        &signature,
-        &signature,
-        &message,
-        &tree,
-        &parents,
-    )
-    .err_text()?;
-    hooks.run_after("post-commit", &[], None);
+    commit.done();
     Ok(())
+}
+
+/// One repository of a commit across the window's repositories.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepoCommit {
+    /// A folder of the window in it: the repository is found from it.
+    pub path: String,
+    /// The window's folders in it, relative to its working folder ("" for
+    /// all of it).
+    pub scopes: Vec<String>,
+}
+
+/// What a repository of a commit across repositories said: the folder it
+/// was asked from (its [`RepoCommit::path`]), and the error.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct RepoProblem {
+    pub path: String,
+    pub error: String,
+}
+
+/// What a commit across repositories did (D11).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "result", rename_all = "kebab-case")]
+pub enum CommitOutcome {
+    /// Nothing was committed anywhere: every repository a check found a
+    /// problem in, or the one whose hook failed.
+    Stopped { problems: Vec<RepoProblem> },
+    /// The commits were made, but in `failed`: a commit that fails once
+    /// others are written can't take them back. A repository in neither list
+    /// had nothing to commit once its hooks had run.
+    Done {
+        committed: Vec<String>,
+        failed: Vec<RepoProblem>,
+    },
+}
+
+/// Commits one message in several repositories, each on the branch it's on
+/// (D11): every repository is checked first, then each one's folders are
+/// staged and its pre-commit hook runs, then its message hooks, and only
+/// then are the commits made, and post-commit runs in each. A check, or a
+/// hook that fails, stops it before any commit is written; `no_verify`
+/// skips the hooks that check in every repository.
+#[tauri::command]
+pub async fn git_commit_many(
+    repos: Vec<RepoCommit>,
+    message: String,
+    no_verify: Option<bool>,
+) -> Result<CommitOutcome, String> {
+    // Each one's pre-commit hook may rewrite its files: every repository's
+    // folders wait until the last commit is made.
+    let paths: Vec<String> = repos.iter().map(|one| one.path.clone()).collect();
+    let no_verify = no_verify.unwrap_or(false);
+    rewriting_all(&paths, move || {
+        git_commit_many_in(repos, message, no_verify)
+    })
+    .await
+}
+
+pub fn git_commit_many_in(
+    repos: Vec<RepoCommit>,
+    message: String,
+    no_verify: bool,
+) -> Result<CommitOutcome, String> {
+    // 1. Every repository is checked before anything is staged or run, and
+    // every problem is named.
+    let mut ready = Vec::new();
+    let mut problems = Vec::new();
+    for one in repos {
+        let checked = Committing::check(&one.path, Some(one.scopes), no_verify).and_then(|commit| {
+            let outside = staged_outside(&commit.repo, &commit.scopes)?;
+            if outside.is_empty() {
+                return Ok(commit);
+            }
+            Err(format!(
+                "Changes are staged outside this window's folders: {}. Commit or unstage them in a terminal first.",
+                outside.join(", ")
+            ))
+        });
+        match checked {
+            Ok(commit) => ready.push((one.path, commit)),
+            Err(error) => problems.push(RepoProblem {
+                path: one.path,
+                error,
+            }),
+        }
+    }
+    if !problems.is_empty() {
+        return Ok(CommitOutcome::Stopped { problems });
+    }
+    let stopped = |path: &str, error: String| CommitOutcome::Stopped {
+        problems: vec![RepoProblem {
+            path: path.to_string(),
+            error,
+        }],
+    };
+    // 2. Each one's folders are staged and its pre-commit hook runs.
+    let mut indexes = Vec::new();
+    for (path, commit) in &ready {
+        match commit.stage() {
+            Ok(index) => indexes.push(index),
+            Err(error) => return Ok(stopped(path, error)),
+        }
+    }
+    // 3. The message hooks of each: one that changes the message changes its
+    // own repository's.
+    let mut messages = Vec::new();
+    for (path, commit) in &ready {
+        match commit.message(&message) {
+            Ok(message) => messages.push(message),
+            Err(error) => return Ok(stopped(path, error)),
+        }
+    }
+    // 4. The commits. One that fails is reported with those made before it,
+    // and the ones after it are still made.
+    let mut committed = Vec::new();
+    let mut failed = Vec::new();
+    for (((path, commit), index), message) in ready.iter().zip(&mut indexes).zip(&messages) {
+        match commit.commit(index, message) {
+            Ok(true) => committed.push(path.clone()),
+            Ok(false) => {}
+            Err(error) => failed.push(RepoProblem {
+                path: path.clone(),
+                error,
+            }),
+        }
+    }
+    if committed.is_empty() && failed.is_empty() {
+        return Err("Nothing to commit.".to_string());
+    }
+    // 5. post-commit in each repository committed.
+    for (path, commit) in &ready {
+        if committed.contains(path) {
+            commit.done();
+        }
+    }
+    Ok(CommitOutcome::Done { committed, failed })
+}
+
+/// A repository on its way through a commit: checked, then its folders
+/// staged with its pre-commit hook, its message, its commit, and post-commit.
+struct Committing {
+    repo: Repository,
+    scopes: Vec<String>,
+    signature: git2::Signature<'static>,
+    hooks: Hooks,
+}
+
+impl Committing {
+    /// The repository `path` is in, when it can be committed now: nothing in
+    /// progress, no conflicts, and someone to commit as. What's staged
+    /// outside its folders is for the caller to say ([`staged_outside`]).
+    fn check(
+        path: &str,
+        scopes: Option<Vec<String>>,
+        no_verify: bool,
+    ) -> Result<Committing, String> {
+        let repo = open_repo(path)?;
+        crate::git_sync::nothing_in_progress(&repo)?;
+        if repo.index().err_text()?.has_conflicts() {
+            return Err("Resolve the conflicts first.".to_string());
+        }
+        let signature = signature(&repo)?;
+        let scopes = scopes_in(&repo, path, scopes);
+        let hooks = Hooks::of(&repo).no_verify(no_verify);
+        Ok(Committing {
+            repo,
+            scopes,
+            signature,
+            hooks,
+        })
+    }
+
+    /// The index to commit: the folders' changes staged, then the
+    /// pre-commit hook, whose own staging (or unstaging) is what's committed.
+    fn stage(&self) -> Result<git2::Index, String> {
+        let mut index = self.repo.index().err_text()?;
+        for scope in &self.scopes {
+            stage_all(&mut index, &self.repo, scope)?;
+        }
+        if self.hooks.has("pre-commit") {
+            self.hooks
+                .run("pre-commit", &[], None)
+                .map_err(not_committed)?;
+            index.read(true).err_text()?;
+            if index.has_conflicts() {
+                return Err("Resolve the conflicts first.".to_string());
+            }
+        }
+        Ok(index)
+    }
+
+    /// The message once prepare-commit-msg and commit-msg have had it.
+    fn message(&self, message: &str) -> Result<String, String> {
+        self.hooks
+            .commit_message(&self.repo, message, "message")
+            .map_err(not_committed)
+    }
+
+    /// Commits `index` on HEAD: the branch it's on, a detached HEAD as git
+    /// would, or an unborn branch, which the commit makes. False when there's
+    /// nothing to commit (a submodule whose only change is inside its own
+    /// working tree, say): an empty commit isn't made (D12).
+    fn commit(&self, index: &mut git2::Index, message: &str) -> Result<bool, String> {
+        let repo = &self.repo;
+        let tree = repo.find_tree(index.write_tree().err_text()?).err_text()?;
+        let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+        if head_tree.is_some_and(|head| head.id() == tree.id()) {
+            return Ok(false);
+        }
+        let parent = head_commit(repo).ok();
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(
+            Some("HEAD"),
+            &self.signature,
+            &self.signature,
+            message,
+            &tree,
+            &parents,
+        )
+        .err_text()?;
+        Ok(true)
+    }
+
+    /// post-commit, which comes after and can't undo anything.
+    fn done(&self) {
+        self.hooks.run_after("post-commit", &[], None);
+    }
 }
 
 /// The changes staged outside `scopes` (the window's folders in the

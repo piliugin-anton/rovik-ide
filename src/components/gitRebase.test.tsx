@@ -11,6 +11,7 @@ import { render } from 'solid-js/web';
 import { GitPanel } from './GitPanel';
 import { ConfirmDialogHost } from './ConfirmDialog';
 import type { GitOperation, GitPullOutcome, GitStatus } from '../types';
+import { oneRepository } from '../test/gitRepos';
 
 /** How the app answers each command in the test running now. */
 let backend: Record<string, (args: any) => unknown> = {};
@@ -52,6 +53,7 @@ const outcome = (result: GitPullOutcome['result']): GitPullOutcome => ({ result,
 function app(status: GitStatus, rebases: GitPullOutcome[] = []) {
   calls = [];
   backend = {
+    git_repos: () => oneRepository('/work/app'),
     git_status: () => status,
     git_branches: () => BRANCHES,
     git_stash_list: () => [],
@@ -75,7 +77,7 @@ async function panel() {
   dispose = render(
     () => (
       <>
-        <GitPanel projectPath="/work/app" />
+        <GitPanel folders={[{ path: '/work/app', name: 'app' }]} session="/work/app" />
         <ConfirmDialogHost />
       </>
     ),
