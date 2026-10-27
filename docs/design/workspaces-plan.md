@@ -2587,6 +2587,27 @@ chat's. Tests: `folders.rs` five (a chat path splits by its first part; `abs` an
 chat's names are plain and none alike; `output_roots`), and every `agent_run`
 suite unchanged.
 
+**F02 — a run's folders from the chat.** `check_project` returns the run's
+`Folders`: a folder chat's root, checked as before (a candidate's copy keeps its
+exception, ahead of the rest), or a workspace chat's from `workspaces::chat_folders`
+(the names checked for it, in the workspace's order, every folder for `"all"`, a
+chat that names none taken as `"all"`, a name the workspace no longer holds left
+out), with its paths. A workspace chat's request with a root is refused, and so are
+a missing folder (every one named: "web isn't there: locate it, or remove it from
+the workspace, to go on with this chat.") and a chat with no folder left. `prepare`
+takes its folders from `check_project`, so every run, an Autopilot stage's or a
+retry's included, has the chat's folders as they are when it starts: a stage's
+settings hold no folders. The context estimate takes a folder chat's root as before
+and a workspace chat's folders through `check_project`, counting each folder's
+section. `features::FOLDERS` is defined for G02 to advertise; the frontend's
+`root` says a workspace chat sends none. Tests: `check_project_tests` (a workspace
+chat's run gets its folders at their paths, all of them for All folders, the new
+ones after they change; a missing folder or none is refused by name; a request with
+a root is refused; a folder chat's run is as before; an Autopilot stage started
+after the folders changed gets the new ones) and `workspaces_tests.rs` "a workspace
+chat's folders are those checked in the workspace's order". Departure: a workspace
+chat's run has no root until F07 opens its view.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

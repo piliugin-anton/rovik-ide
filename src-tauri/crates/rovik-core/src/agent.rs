@@ -1869,7 +1869,12 @@ pub async fn chat_context_estimate(
 ) -> Result<ContextEstimate, String> {
     let (db, vfs) = (&core.db, &core.vfs);
     let permissions = core.agents.config_for(&dialog_id).permissions;
-    let root = root.filter(|r| !r.trim().is_empty());
+    // A folder chat's folder as the window sends it; a workspace chat's
+    // folders as its run would take them (workspaces-plan.md, 4.1).
+    let folders = match root.filter(|r| !r.trim().is_empty()) {
+        Some(root) => Some(crate::folders::Folders::one(root.into())),
+        None => crate::agent_run::check_project(db, &dialog_id, None).await?,
+    };
     // An Autopilot message starts a task with its plan: a Plan-mode request,
     // without questions (D5).
     let autopilot = mode.as_deref() == Some(crate::agent_run::autopilot::MODE);
@@ -1881,7 +1886,7 @@ pub async fn chat_context_estimate(
         tools
     };
     let tools = offered(crate::agent_run::tools::tools_for(
-        root.is_some(),
+        folders.is_some(),
         vision,
         no_tools.unwrap_or(false),
         &permissions,
@@ -1908,7 +1913,7 @@ pub async fn chat_context_estimate(
         && crate::clm::availability(vfs).is_ok())
     .then(|| {
         let tools = offered(crate::agent_run::tools::tools_for(
-            root.is_some(),
+            folders.is_some(),
             vision,
             no_tools.unwrap_or(false),
             &permissions,
@@ -1918,16 +1923,23 @@ pub async fn chat_context_estimate(
         ));
         sent_chars(tools)
     });
-    let project_chars = match root {
-        Some(root) => {
+    // The project section of the prompt: each folder's.
+    let project_chars = match folders {
+        Some(folders) => {
             let (config_dir, verify) = (core.paths.config_dir.clone(), permissions.verify_changes);
             crate::rt::spawn_blocking(move || {
-                crate::agent_run::project::cached_context(&config_dir, &root, verify)
+                folders
+                    .iter()
+                    .map(|folder| {
+                        let root = folder.path.to_string_lossy();
+                        crate::agent_run::project::cached_context(&config_dir, &root, verify)
+                            .chars()
+                            .count()
+                    })
+                    .sum::<usize>()
             })
             .await
             .unwrap_or_default()
-            .chars()
-            .count()
         }
         None => 0,
     };

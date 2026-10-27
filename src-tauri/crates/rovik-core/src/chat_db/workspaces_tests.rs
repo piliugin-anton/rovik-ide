@@ -74,7 +74,7 @@ fn chat(conn: &mut Connection, id: &str, workspace: &str, folders: Option<&str>)
     .unwrap();
 }
 
-fn chat_folders(conn: &Connection, id: &str) -> Option<String> {
+fn stored_folders(conn: &Connection, id: &str) -> Option<String> {
     get_dialog(conn, id).unwrap().unwrap().folders
 }
 
@@ -320,10 +320,10 @@ fn removing_a_folder_takes_it_out_of_the_chats_that_had_it() {
 
     remove_folder(&mut conn, &workspace.id, "api").unwrap();
 
-    assert_eq!(chat_folders(&conn, "both").as_deref(), Some(r#"["web"]"#));
-    assert_eq!(chat_folders(&conn, "all").as_deref(), Some("all"));
+    assert_eq!(stored_folders(&conn, "both").as_deref(), Some(r#"["web"]"#));
+    assert_eq!(stored_folders(&conn, "all").as_deref(), Some("all"));
     assert_eq!(
-        chat_folders(&conn, "web-only").as_deref(),
+        stored_folders(&conn, "web-only").as_deref(),
         Some(r#"["web"]"#)
     );
 }
@@ -495,4 +495,52 @@ fn a_workspace_lists_its_folders_and_the_missing_ones() {
     let listed = list(&conn).unwrap();
     assert_eq!(listed[0].id, first.id);
     opened(&conn, "no-such-workspace").unwrap_err();
+}
+
+/* ---------------------------------------------------------------------------
+ * 4.1: the folders a workspace chat works in
+ * ------------------------------------------------------------------------- */
+
+/// A workspace chat's run works in the folders checked for it, in the
+/// workspace's order, or in every one for All folders; one that left the
+/// workspace is none of them, and a folder chat has none.
+#[test]
+fn a_workspace_chats_folders_are_those_checked_in_the_workspaces_order() {
+    let mut conn = db();
+    let dir = temp("chat-folders");
+    let workspace = create(
+        &mut conn,
+        "Shop",
+        &[made(&dir, "api"), made(&dir, "web"), made(&dir, "docs")],
+    )
+    .unwrap();
+    chat(&mut conn, "two", &workspace.id, Some(r#"["web","api"]"#));
+    chat(&mut conn, "every", &workspace.id, Some("all"));
+    let names = |conn: &Connection, id: &str| -> Option<Vec<String>> {
+        let folders = chat_folders(conn, id).unwrap()?;
+        Some(folders.into_iter().map(|f| f.name).collect())
+    };
+    assert_eq!(names(&conn, "two").unwrap(), ["api", "web"]);
+    assert_eq!(names(&conn, "every").unwrap(), ["api", "web", "docs"]);
+    let api = &chat_folders(&conn, "two").unwrap().unwrap()[0];
+    assert_eq!(api.path, dir.join("api").to_string_lossy());
+
+    remove_folder(&mut conn, &workspace.id, "web").unwrap();
+    assert_eq!(names(&conn, "two").unwrap(), ["api"]);
+    assert_eq!(names(&conn, "every").unwrap(), ["api", "docs"]);
+
+    create_dialog(
+        &mut conn,
+        &NewDialog {
+            id: "folder-chat".into(),
+            title: "folder-chat".into(),
+            created_at: 1,
+            updated_at: 1,
+            project_id: None,
+            folders: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(names(&conn, "folder-chat"), None);
+    assert_eq!(names(&conn, "no-such-chat"), None);
 }

@@ -760,7 +760,13 @@ impl Run {
             || stage
                 .as_ref()
                 .is_some_and(|s| s.stage == super::autopilot::Stage::Plan);
-        let project_root = request.root.clone().filter(|r| !r.trim().is_empty());
+        // The chat's folders as they are now (workspaces-plan.md, 4.1): a
+        // folder chat's root, or a workspace chat's, from the database.
+        let folders = super::check_project(&core.db, &dialog_id, request.root.as_deref()).await?;
+        let project_root = folders
+            .as_ref()
+            .and_then(Folders::single)
+            .map(|folder| folder.to_string_lossy().into_owned());
         // An isolated chat works in its overlay: the project with its own
         // changes on top, mounted as a folder (src/overlay). Plan mode
         // changes nothing, so it reads the project itself, unless the chat
@@ -1175,7 +1181,7 @@ impl Run {
                 .context_mode
                 .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
             root,
-            folders: project_root.map(|r| Folders::one(r.into())),
+            folders,
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),

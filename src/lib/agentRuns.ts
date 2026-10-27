@@ -120,6 +120,11 @@ export interface StartRequest {
   /** The mode selected in the chat, for a run whose message didn't record one. */
   mode: import('./chatMode').ChatMode;
   contextMode: 'trimming' | 'clm';
+  /**
+   * A folder chat's folder; null with no folder open, and for a workspace
+   * chat, whose run takes its folders from the chat as they are then
+   * (agent_run's `check_project`).
+   */
   root: string | null;
   /** The request's user message as sent (with editor context). */
   currentUserContent?: string;

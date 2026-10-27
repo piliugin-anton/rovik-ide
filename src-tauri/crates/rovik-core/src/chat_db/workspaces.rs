@@ -340,6 +340,32 @@ pub fn get(conn: &Connection, id: &str) -> DbResult<Option<Workspace>> {
     }))
 }
 
+/// The folders a workspace chat works in (workspaces-plan.md, 4.1): those
+/// checked for it, or every one of its workspace's for `"all"` (as is a
+/// chat that names none), in the workspace's order, each marked when it's
+/// missing. A name the workspace no longer holds is no folder of the chat's.
+/// None for a chat that isn't a workspace's.
+pub fn chat_folders(conn: &Connection, dialog_id: &str) -> DbResult<Option<Vec<Folder>>> {
+    let Some(project) = crate::chat_db::store::dialog_project(conn, dialog_id)? else {
+        return Ok(None);
+    };
+    let Some(workspace) = get(conn, &project)? else {
+        return Ok(None);
+    };
+    let checked = match crate::chat_db::store::dialog_folders(conn, dialog_id)?.as_deref() {
+        None | Some("all") => return Ok(Some(workspace.folders)),
+        Some(names) => serde_json::from_str::<Vec<String>>(names)
+            .map_err(|e| format!("The chat's folders can't be read ({e})."))?,
+    };
+    Ok(Some(
+        workspace
+            .folders
+            .into_iter()
+            .filter(|folder| checked.contains(&folder.name))
+            .collect(),
+    ))
+}
+
 /// Every workspace, most recently opened first, each folder marked when it's
 /// missing.
 pub fn list(conn: &Connection) -> DbResult<Vec<Summary>> {

@@ -342,6 +342,19 @@ pub fn dialog_project(conn: &Connection, id: &str) -> DbResult<Option<String>> {
     .map_err(err)
 }
 
+/// A workspace chat's folders (`"all"`, or the names checked as JSON); None
+/// for a folder chat, or no such chat.
+pub fn dialog_folders(conn: &Connection, id: &str) -> DbResult<Option<String>> {
+    conn.query_row(
+        "SELECT folders FROM dialogs WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
+    .map_err(err)
+}
+
 /// The chat a message is in; None for no such message.
 pub fn message_dialog(conn: &Connection, message_id: &str) -> DbResult<Option<String>> {
     conn.query_row(
