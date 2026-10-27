@@ -399,11 +399,9 @@ mod tests {
         assert_eq!(read(&view.join("web")).as_deref(), Some("web/x.ts"));
         assert_eq!(read(&view).as_deref(), Some("x.ts"), "the view's root");
         assert_eq!(read(&base.0.join("elsewhere")), None);
-        let printed = format!(
-            "{0}/src/a.ts: error\n{1}/b.ts",
-            web.display(),
-            view.display()
-        );
+        // Text is read with the roots' `/` (`chat_path` takes either).
+        let slashed = |path: &Path| path.to_string_lossy().replace('\\', "/");
+        let printed = format!("{}/src/a.ts: error\n{}/b.ts", slashed(&web), slashed(&view));
         assert_eq!(roots.in_text(&printed), "web/src/a.ts: error\nb.ts");
 
         // A folder chat's folder and view both read as its own paths.
