@@ -11,7 +11,7 @@ use git2::{
     ConfigLevel, IndexAddOption, IndexEntry, IndexTime, ObjectType, Oid, Repository, Signature,
     TreeWalkMode, TreeWalkResult,
 };
-use rovik_client::shadow::{Shadow, Snapshot, LARGE_FILE};
+use rovik_client::shadow::{Composite, Shadow, Snapshot, LARGE_FILE};
 use rovik_core::overlay::fs::{OverlayChange, OverlayFs};
 use rovik_core::testing::{temp_dir, TempDir};
 use rovik_core::vfs::backend::Backend;
@@ -722,4 +722,161 @@ fn a_deleted_file_changed_since_is_settled_before_a_move() {
     let refused = fixture.shadow().fold(CHAT, &changes).unwrap_err();
 
     assert!(refused.contains("a.txt"), "{refused}");
+}
+
+/// A workspace of two folders for its composite: `api`, a repository of
+/// its own, and `web`, a folder of the repository `shop` beside its `docs`
+/// (K31), each with its shadow beside them.
+fn shop(fixture: &Fixture) -> (Shadow, Shadow) {
+    let (api, shop) = (fixture.dir.0.join("api"), fixture.dir.0.join("shop"));
+    write(&api.join("src/a.ts"), "a\n");
+    commit_all(&api);
+    write(&shop.join("web/src/b.ts"), "b\n");
+    write(&shop.join("docs/readme.md"), "docs\n");
+    commit_all(&shop);
+    let api = Shadow::open(&fixture.dir.0.join("api.git"), &api).unwrap();
+    let web = Shadow::open(&fixture.dir.0.join("web.git"), &shop.join("web")).unwrap();
+    (api, web)
+}
+
+/// The workspace's composite, reading both folders' shadows.
+fn composite(fixture: &Fixture) -> Composite {
+    let shadows = [fixture.dir.0.join("api.git"), fixture.dir.0.join("web.git")];
+    Composite::open(&fixture.dir.0.join("shop.git"), &shadows).unwrap()
+}
+
+/// A folder's part of `chat`'s compose: its name, and its own tree in its
+/// snapshot for the chat.
+fn part(name: &str, shadow: &Shadow, chat: &str) -> (String, Oid) {
+    let snapshot = shadow.snapshot(chat).unwrap();
+    (name.to_string(), shadow.folder_tree(&snapshot).unwrap())
+}
+
+#[test]
+fn composing_two_folders_trees_puts_each_under_its_name() {
+    let fixture = Fixture::new();
+    let (api, web) = shop(&fixture);
+    // Not committed: in api's shadow, not its repository.
+    write(&fixture.dir.0.join("api/src/new.ts"), "new\n");
+    let composite = composite(&fixture);
+
+    let parts = [part("api", &api, CHAT), part("web", &web, CHAT)];
+    let commit = composite.compose(CHAT, &parts).unwrap();
+
+    // Read through the folders' shadows, and through theirs the folders'
+    // repositories; web's repository's other folder isn't the chat's.
+    let expected = [
+        ("api/src/a.ts", "a\n"),
+        ("api/src/new.ts", "new\n"),
+        ("web/src/b.ts", "b\n"),
+    ];
+    assert_eq!(tree_files(composite.repo(), commit), pairs(&expected));
+    let name = format!("refs/rovik/snapshots/{CHAT}");
+    let at = composite.repo().find_reference(&name).unwrap().target();
+    assert_eq!(at, Some(commit));
+}
+
+#[test]
+fn a_chats_compose_has_only_its_folders() {
+    let fixture = Fixture::new();
+    let (api, web) = shop(&fixture);
+    let composite = composite(&fixture);
+    let empty = composite.repo().treebuilder(None).unwrap().write().unwrap();
+
+    let parts = [part("web", &web, "chat-2"), ("void".to_string(), empty)];
+    let commit = composite.compose("chat-2", &parts).unwrap();
+
+    assert_eq!(
+        tree_files(composite.repo(), commit),
+        pairs(&[("web/src/b.ts", "b\n")])
+    );
+    let tree = composite
+        .repo()
+        .find_commit(commit)
+        .unwrap()
+        .tree()
+        .unwrap();
+    let top: Vec<String> = tree.iter().map(|e| e.name().unwrap().to_string()).collect();
+    assert_eq!(
+        top,
+        ["web"],
+        "nor an empty folder, which git keeps no tree of"
+    );
+    let both = [part("api", &api, CHAT), part("web", &web, CHAT)];
+    let other = composite.compose(CHAT, &both).unwrap();
+    assert_ne!(other, commit, "each chat its own");
+    assert!(composite.compose("../x", &both).is_err());
+}
+
+#[test]
+fn an_unchanged_compose_keeps_its_commit() {
+    let fixture = Fixture::new();
+    let (api, web) = shop(&fixture);
+    let composite = composite(&fixture);
+    let parts = || [part("api", &api, CHAT), part("web", &web, CHAT)];
+
+    let first = composite.compose(CHAT, &parts()).unwrap();
+    assert_eq!(composite.compose(CHAT, &parts()).unwrap(), first);
+
+    write(&fixture.dir.0.join("api/src/a.ts"), "a2\n");
+    let second = composite.compose(CHAT, &parts()).unwrap();
+    assert_ne!(second, first);
+    let parent = composite.repo().find_commit(second).unwrap().parent_id(0);
+    assert_eq!(parent.ok(), Some(first), "on the chat's previous one");
+    let files = tree_files(composite.repo(), second);
+    assert!(files.contains(&("api/src/a.ts".into(), "a2\n".into())));
+}
+
+#[test]
+fn grafting_a_folders_result_copies_its_objects_into_the_folders_shadow_and_commits_on_its_current_tree(
+) {
+    use git2::build::TreeUpdateBuilder;
+    use git2::FileMode;
+    let fixture = Fixture::new();
+    let (api, web) = shop(&fixture);
+    let composite = composite(&fixture);
+    let base =
+        (composite.compose(CHAT, &[part("api", &api, CHAT), part("web", &web, CHAT)])).unwrap();
+    // The server's result, as a fetch brings it into the composite: in
+    // objects only the composite has.
+    let repo = composite.repo();
+    let changed = repo.blob(b"b2\n").unwrap();
+    let added = repo.blob(b"added\n").unwrap();
+    let a2 = repo.blob(b"a2\n").unwrap();
+    let base_commit = repo.find_commit(base).unwrap();
+    let mut update = TreeUpdateBuilder::new();
+    update.upsert("web/src/b.ts", changed, FileMode::Blob);
+    update.upsert("web/src/added.ts", added, FileMode::Blob);
+    update.upsert("api/src/a.ts", a2, FileMode::Blob);
+    let tree = update
+        .create_updated(repo, &base_commit.tree().unwrap())
+        .unwrap();
+    let me = Signature::now("Test", "test@example.com").unwrap();
+    let tree = repo.find_tree(tree).unwrap();
+    let result = repo
+        .commit(None, &me, &me, "result", &tree, &[&base_commit])
+        .unwrap();
+    let alone = Repository::open(fixture.dir.0.join("web.git")).unwrap();
+    assert!(alone.find_blob(added).is_err(), "not there yet");
+
+    let grafted = composite.graft("web", &web, CHAT, (base, result)).unwrap();
+
+    // In web's shadow alone, which doesn't read the composite: web's part
+    // in its place in its repository's tree, the rest as its snapshot has
+    // it, on the snapshot's own tree.
+    let alone = Repository::open(fixture.dir.0.join("web.git")).unwrap();
+    let expected = [
+        ("docs/readme.md", "docs\n"),
+        ("web/src/added.ts", "added\n"),
+        ("web/src/b.ts", "b2\n"),
+    ];
+    assert_eq!(tree_files(&alone, grafted), pairs(&expected));
+    let snapshot = web.snapshot(CHAT).unwrap();
+    let grafted_base = alone.find_commit(grafted).unwrap().parent(0).unwrap();
+    assert_eq!(grafted_base.tree_id(), snapshot.tree);
+
+    // A folder at its repository's root has its part as its tree.
+    let grafted = composite.graft("api", &api, CHAT, (base, result)).unwrap();
+    let alone = Repository::open(fixture.dir.0.join("api.git")).unwrap();
+    assert_eq!(tree_files(&alone, grafted), pairs(&[("src/a.ts", "a2\n")]));
 }

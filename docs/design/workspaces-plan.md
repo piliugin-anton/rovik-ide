@@ -3118,6 +3118,30 @@ there is reported as failing, which a copy of the worktree, where FUSE works, wo
 have set apart). The daemon tests run without virtual files, so the "not set apart"
 case only fails without the change in the core's test.
 
+**G03 — a workspace's composite shadow.** `shadow/composite.rs`: `Composite::open`
+makes a bare repository whose alternates are the folders' shadows' object folders,
+written only when they change, so it reads their objects and, through theirs, the
+folders' repositories'. `compose(chat, parts)` takes each folder's name and its own
+tree (`Shadow::folder_tree`: the tree at the folder's place in its repository's
+snapshot, K31) and commits one tree with each under its name, on the chat's previous
+one, at `refs/rovik/snapshots/<chat>`: the folders' history isn't the composite's
+(D30). An empty folder is left out, as git keeps no tree of it, and an unchanged tree
+keeps its commit. `graft(name, shadow, chat, (base, result))` copies the objects of
+the folder's part of a fetched result and of its base from the composite into the
+folder's shadow, each object after what it holds, so a tree there is whole; then it
+commits the base, and the result on it, there on the folder's own tree (the chat's
+snapshot in that shadow, with the part at the folder's place; a folder at its
+repository's root has the part as its tree), and returns the result's commit, for
+`Shadow::import`. The shadow's commit and packing became free functions
+(`rovik_commit`, `upkeep`, `pack`, `empty_tree`), shared by snapshots, folds and the
+composite. Where the composite lives (`shadow::dir` of the workspace's ID) and when it
+opens are G05's. Tests (`tests/shadow.rs`): composing two folders' trees puts each
+under its name, read through two levels of alternates; a chat's compose has only its
+folders, and none that's empty; an unchanged compose keeps its commit, and a changed
+one goes on it; grafting a folder's result copies its objects into the folder's shadow
+and commits on its current tree, a folder of a repository keeping the rest of that
+repository's tree.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

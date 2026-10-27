@@ -6,7 +6,7 @@
 //! did then lands merged with the user's edit, as it would have from the
 //! overlay.
 
-use super::{git, hold, Result, Shadow};
+use super::{git, hold, rovik_commit, snapshot_message, Result, Shadow};
 use git2::build::TreeUpdateBuilder;
 use git2::{FileMode, Oid, Tree};
 use rovik_core::overlay::fs::OverlayChange;
@@ -132,8 +132,9 @@ impl Shadow {
             }
         }
         let start_tree = start.create_updated(&self.repo, &base_tree).map_err(git)?;
-        let base = self.commit(base_tree.id(), Some(snapshot.commit), chat)?;
-        let start = self.commit(start_tree, Some(base), chat)?;
+        let message = snapshot_message(chat);
+        let base = rovik_commit(&self.repo, base_tree.id(), Some(snapshot.commit), &message)?;
+        let start = rovik_commit(&self.repo, start_tree, Some(base), &message)?;
         Ok(Folded { base, start })
     }
 
