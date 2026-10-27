@@ -25,6 +25,7 @@ import { workspaceIdOf, type ChatOwners, type OpenFolder } from '../lib/openFold
 import { addToChat } from '../lib/editorBridge';
 import { notifications } from '../lib/notifications';
 import { requestImplementPlan } from '../lib/plans';
+import { appSettingsPage, closeAppSettings } from '../lib/appSettings';
 import type { DialogSummary } from '../types';
 
 const SETTINGS = {
@@ -55,6 +56,11 @@ let deletion: Promise<void> | null = null;
 let plans: Record<string, string> = {};
 /** The files `list_project_files` lists, by folder. */
 let projectFiles: Record<string, string[]> = {};
+/**
+ * The virtual-files driver here: none unless a test installs it, so a chat
+ * works in one folder (4.12).
+ */
+let driverInstalled = false;
 
 (window as any).__TAURI_INTERNALS__ = {
   transformCallback: () => 1,
@@ -90,6 +96,16 @@ let projectFiles: Record<string, string[]> = {};
         throw new Error(`${args.path}: no such file`);
       case 'list_project_files':
         return { files: projectFiles[args.root] ?? [], truncated: false };
+      case 'vfs_status':
+        return {
+          driver: {
+            driver: 'FUSE',
+            installed: driverInstalled,
+            version: null,
+            detail: null,
+            canInstall: true,
+          },
+        };
       case 'send_chat_message':
         // The chat's title: no model here, so its first words.
         throw new Error('no model here');
@@ -213,9 +229,12 @@ async function mount(
   return { root, dispose, setFolders, setOwners, setContext };
 }
 
+/** The folders' boxes in the menu, without All folders. */
 const boxes = (root: ParentNode) => [
-  ...root.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]'),
+  ...root.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]:not(.folder-menu-all)'),
 ];
+/** The menu's All folders box. */
+const allBox = (root: ParentNode) => root.querySelector<HTMLElement>('.folder-menu-all');
 const box = (root: ParentNode, name: string) => {
   const found = boxes(root).find((b) => b.textContent === name);
   assert.ok(found, `no box for ${name}`);
@@ -487,9 +506,10 @@ test('a copy that still has its original’s chats can’t be checked: its chat 
 test('the menu in place is reached with Tab; the floating one has the focus as it opens', async () => {
   talked();
   const empty = await mount('workspace:tab-in-place', [api, web], web);
+  assert.equal(allBox(empty.root)?.tabIndex, 0, 'its first item: All folders');
   assert.deepEqual(
     boxes(empty.root).map((b) => b.tabIndex),
-    [0, -1]
+    [-1, -1]
   );
   empty.dispose();
 
@@ -852,3 +872,126 @@ test('a workspace chat’s row says the folders checked, or All folders', async 
   ]);
   dispose();
 });
+
+/** Runs `body` with the virtual-files driver installed here. */
+async function withDriver(body: () => Promise<void>) {
+  driverInstalled = true;
+  try {
+    await body();
+  } finally {
+    driverInstalled = false;
+  }
+}
+
+test('checking api and web makes a workspace chat across them', () =>
+  withDriver(async () => {
+    talked(chat('api-1', 'api-project', 2));
+    const { root, dispose } = await mount('workspace:across', [api, web, folder('docs')], api);
+    await plus(root);
+    box(root, 'web').click();
+    await flush();
+    assert.deepEqual(
+      boxes(root).map((b) => b.getAttribute('aria-checked')),
+      ['true', 'true', 'false']
+    );
+    assert.equal(startItem(root)?.textContent, 'Start chat in 2 folders');
+    startItem(root)!.click();
+    await flush();
+    assert.deepEqual(
+      sent('chat_create_dialog').map(({ dialog }) => [dialog.projectId, dialog.folders]),
+      [['across', '["api","web"]']],
+      'the workspace’s, with the names checked'
+    );
+    assert.equal(label(root)?.textContent, 'in api, web');
+    dispose();
+  }));
+
+test('checking All folders checks every box, and unchecking one unchecks it; checking every box doesn’t set it', () =>
+  withDriver(async () => {
+    talked(chat('api-1', 'api-project', 2));
+    const { root, dispose } = await mount('workspace:all', [api, web], api);
+    await plus(root);
+    allBox(root)!.click();
+    await flush();
+    assert.equal(allBox(root)!.getAttribute('aria-checked'), 'true');
+    assert.deepEqual(
+      boxes(root).map((b) => b.getAttribute('aria-checked')),
+      ['true', 'true']
+    );
+    assert.equal(startItem(root)?.textContent, 'Start chat in all folders');
+
+    box(root, 'web').click();
+    await flush();
+    assert.equal(allBox(root)!.getAttribute('aria-checked'), 'false');
+    assert.deepEqual(
+      boxes(root).map((b) => b.getAttribute('aria-checked')),
+      ['true', 'false'],
+      'the rest stay checked'
+    );
+    // Every box checked again, by hand: the chat doesn't follow the workspace.
+    box(root, 'web').click();
+    await flush();
+    assert.equal(allBox(root)!.getAttribute('aria-checked'), 'false');
+    startItem(root)!.click();
+    await flush();
+    assert.deepEqual(
+      sent('chat_create_dialog').map(({ dialog }) => dialog.folders),
+      ['["api","web"]']
+    );
+    dispose();
+
+    // All folders: the chat follows the workspace.
+    talked(chat('api-1', 'api-project', 2));
+    const again = await mount('workspace:all-again', [api, web], api);
+    await plus(again.root);
+    allBox(again.root)!.click();
+    await flush();
+    startItem(again.root)!.click();
+    await flush();
+    assert.deepEqual(
+      sent('chat_create_dialog').map(({ dialog }) => [dialog.projectId, dialog.folders]),
+      [['all-again', 'all']]
+    );
+    assert.equal(label(again.root)?.textContent, 'in all folders');
+    again.dispose();
+  }));
+
+test('without the driver a second box can’t be checked, and All folders says why and opens the page that says how', async () => {
+  talked(chat('api-1', 'api-project', 2));
+  const { root, dispose } = await mount('workspace:no-driver', [api, web], api);
+  await plus(root);
+  box(root, 'web').click();
+  await flush();
+  assert.deepEqual(
+    boxes(root).map((b) => b.getAttribute('aria-checked')),
+    ['false', 'true'],
+    'one at a time: a folder chat works in one'
+  );
+  const all = allBox(root)!;
+  assert.equal(all.getAttribute('aria-disabled'), 'true');
+  assert.equal(
+    all.querySelector('.folder-menu-why')?.textContent,
+    'Needs FUSE: Settings → Virtual files'
+  );
+  all.click();
+  await flush();
+  assert.equal(all.getAttribute('aria-checked'), 'false');
+  assert.equal(appSettingsPage(), 'vfs', 'Settings → Virtual files');
+  assert.equal(boxes(root).length, 0, 'the menu closes');
+  closeAppSettings();
+  dispose();
+});
+
+test('All folders can’t be checked while a folder is missing: its chat couldn’t run', () =>
+  withDriver(async () => {
+    talked();
+    const gone = { ...folder('docs', false), missing: true };
+    const { root, dispose } = await mount('workspace:all-missing', [api, web, gone], api);
+    const all = allBox(root)!;
+    assert.equal(all.getAttribute('aria-disabled'), 'true');
+    assert.match(all.querySelector('.folder-menu-why')?.textContent ?? '', /^docs isn’t there/);
+    all.click();
+    await flush();
+    assert.equal(all.getAttribute('aria-checked'), 'false');
+    dispose();
+  }));

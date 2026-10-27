@@ -4178,6 +4178,27 @@ body.tree-dragging {
   color: var(--accent-fg);
 }
 
+/* A box that can't be checked, with why on its row (FolderMenu.tsx): the
+   box and the name are dimmed, the reason isn't, and a click on it opens
+   the page that says how. */
+.folder-menu .context-menu-item.folder-menu-off {
+  flex-wrap: wrap;
+}
+
+.folder-menu .folder-menu-off .folder-menu-box,
+.folder-menu .folder-menu-off .context-menu-label {
+  opacity: 0.4;
+}
+
+.folder-menu .folder-menu-why {
+  flex-basis: 100%;
+  max-width: 260px;
+  padding-left: 22px;
+  white-space: normal;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
 /* The menu shown in place: the chat panel with no chat to show. */
 .folder-menu.folder-menu-inline {
   position: static;

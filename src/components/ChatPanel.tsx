@@ -1403,6 +1403,18 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /**
+   * Start chat in New chat's menu (D2): a folder chat in the one folder
+   * checked; else a workspace chat across those checked, or following the
+   * workspace for All folders.
+   */
+  async function startChatFrom(folders: OpenFolder[] | 'all'): Promise<DialogSummary | null> {
+    if (folders !== 'all' && folders.length === 1) return startChatIn(folders[0]);
+    setNewChatFrom(null);
+    const names = folders === 'all' ? 'all' : JSON.stringify(folders.map((folder) => folder.name));
+    return startChatOf(props.workspace(), names);
+  }
+
+  /**
    * A new chat of `owner` (a folder's project, null with none open; a
    * workspace's, working in `folders`: `"all"` or names as JSON), the open
    * chat reused while it's empty, as `startChatIn` says.
@@ -4848,7 +4860,7 @@ export default function ChatPanel(props: ChatProps) {
             anchor={anchor()}
             folders={props.folders()}
             initial={props.activeFolder()}
-            onStart={(folder) => void startChatIn(folder)}
+            onStart={(folders) => void startChatFrom(folders)}
             onClose={() => setNewChatFrom(null)}
           />
         )}
@@ -4914,7 +4926,7 @@ export default function ChatPanel(props: ChatProps) {
           <NewChatMenu
             folders={props.folders()}
             initial={props.activeFolder()}
-            onStart={(folder) => void startChatIn(folder)}
+            onStart={(folders) => void startChatFrom(folders)}
           />
         </div>
       </Show>

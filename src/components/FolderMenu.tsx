@@ -2,15 +2,16 @@
 //
 // The menu of a workspace's folders: pick one (which folder a new terminal
 // starts in, C04), or check their boxes (which folders a new chat works in,
-// D2). The look and keys of the app's other menus, which the panel's "+"
-// menu had before a workspace could have several folders: the first item
-// has the focus as it opens, the arrows move it, Enter or Space opens the
-// item in focus, and Escape closes the menu, as Tab does. With boxes, Space
-// checks the folder in focus and Enter does what the menu is for (Start
-// chat), wherever the focus is. Its `children` are a caller's own items,
-// after a separator. A menu with no place to float at is shown where it's
-// put, and leaves the focus where it is (the chat panel with no chat): Tab
-// reaches its first folder.
+// D2), after an All folders box when the caller has one. The look and keys
+// of the app's other menus, which the panel's "+" menu had before a
+// workspace could have several folders: the first item has the focus as it
+// opens, the arrows move it, Enter or Space opens the item in focus, and
+// Escape closes the menu, as Tab does. With boxes, Space checks the folder
+// in focus and Enter does what the menu is for (Start chat), wherever the
+// focus is. A box that can't be checked says why on its row. Its `children`
+// are a caller's own items, after a separator. A menu with no place to
+// float at is shown where it's put, and leaves the focus where it is (the
+// chat panel with no chat): Tab reaches its first item.
 import { For, onMount, Show, type JSX } from 'solid-js';
 import { focusMenuItem, onMenuKey } from '../lib/menuKeys';
 import type { OpenFolder } from '../lib/openFolders';
@@ -25,6 +26,18 @@ export interface FolderChecks {
   unavailable: (folder: OpenFolder) => string | null;
   /** Enter: what the menu is for. */
   onSubmit: () => void;
+  /** The All folders box, first, when there's one. */
+  all?: AllFolders;
+}
+
+/** The All folders box: the chat follows the workspace, folders added later too. */
+export interface AllFolders {
+  checked: boolean;
+  onToggle: () => void;
+  /** Why it can't be checked, shown on its row; null when it can. */
+  unavailable: string | null;
+  /** A click on it while it can't be: what to do about it (the page that says how). */
+  onUnavailable?: () => void;
 }
 
 export interface FolderMenuProps {
@@ -74,6 +87,43 @@ export default function FolderMenu(props: FolderMenuProps) {
       onKeyDown={onKey}
     >
       <ul ref={list} class="context-menu-list" role="menu" aria-label="Folder">
+        <Show when={props.check?.all}>
+          {(all) => (
+            <>
+              <li
+                class="context-menu-item folder-menu-all"
+                classList={{ 'folder-menu-off': !!all().unavailable }}
+                role="menuitemcheckbox"
+                aria-checked={all().checked}
+                aria-disabled={all().unavailable ? true : undefined}
+                tabIndex={floats() ? -1 : 0}
+                title={all().unavailable ?? 'Every folder of the workspace, those added later too'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (all().unavailable) all().onUnavailable?.();
+                  else all().onToggle();
+                }}
+              >
+                <span
+                  class="context-menu-icon folder-menu-box"
+                  classList={{ checked: all().checked }}
+                  aria-hidden="true"
+                >
+                  <Show when={all().checked}>
+                    <Icon>
+                      <path d="m4 8.5 2.5 2.5L12 5.5" />
+                    </Icon>
+                  </Show>
+                </span>
+                <span class="context-menu-label">All folders</span>
+                <Show when={all().unavailable}>
+                  <span class="folder-menu-why">{all().unavailable}</span>
+                </Show>
+              </li>
+              <li class="context-menu-separator" role="separator" />
+            </>
+          )}
+        </Show>
         <For each={props.folders}>
           {(folder, at) => {
             const why = () => props.check?.unavailable(folder) ?? null;
@@ -85,7 +135,7 @@ export default function FolderMenu(props: FolderMenuProps) {
                 role={props.check ? 'menuitemcheckbox' : 'menuitem'}
                 aria-checked={props.check ? checked() : undefined}
                 aria-disabled={why() ? true : undefined}
-                tabIndex={!floats() && at() === 0 ? 0 : -1}
+                tabIndex={!floats() && !props.check?.all && at() === 0 ? 0 : -1}
                 title={why() ?? folder.path}
                 onClick={(e) => {
                   e.stopPropagation();

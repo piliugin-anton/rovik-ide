@@ -564,6 +564,13 @@ impl Remote {
         daemon.is_some_and(|d| d.serves(feature))
     }
 
+    /// What the host's daemon serves beyond protocol 1 (4.5), as its
+    /// `Welcome` said: none until it has.
+    pub fn features(&self, host: &str) -> Vec<String> {
+        let daemon = self.hosts.client(host).and_then(|c| c.daemon());
+        daemon.map(|d| d.features).unwrap_or_default()
+    }
+
     pub(crate) fn policy(&self, host: &str) -> ApprovalPolicy {
         self.lock().policies.get(host).copied().unwrap_or_default()
     }

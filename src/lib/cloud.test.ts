@@ -321,3 +321,20 @@ test('a host has caught up once it says so, and has to again after it was away (
   emit({ type: 'caughtUp', host: 'h1' });
   assert.equal(cloud.caughtUp.h1, true);
 });
+
+test('a host ready again is read again, with what its daemon serves now', async () => {
+  await initCloud();
+  const updated = HOSTS.map((h) => (h.id === 'h1' ? { ...h, features: ['folders'] } : h));
+  backend = { hosts_summaries: () => updated };
+  calls = [];
+  emit({ type: 'host', host: 'h1', state: 'ready' });
+  await flush();
+  assert.equal(sent('hosts_summaries').length, 1, 'it may be another daemon: an update');
+  assert.deepEqual(cloud.hosts[0].features, ['folders']);
+  // Away, its state alone changes.
+  calls = [];
+  emit({ type: 'host', host: 'h1', state: 'offline' });
+  await flush();
+  assert.deepEqual(sent('hosts_summaries'), []);
+  assert.equal(cloud.hosts[0].state, 'offline');
+});

@@ -212,18 +212,24 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   when you switch to another chat.
 - A chat works in its project's folder: the file open in the editor, `@`
   and **Add to chat** name files by their path there, and a file from
-  outside it isn't sent (the message box says why). In a workspace, each
-  chat works in one of its folders: **New chat** asks which (the folder
-  you're working in is checked; a copied folder that still shares its
-  original's chats can be picked once its history is separated), the chat
-  list and the label by the
-  message box say each chat's folder, and the chats of every folder are
-  listed together. **Implement this plan** on a folder's plan starts in a
-  chat of that folder. A chat across several folders saves its plans in
-  its first folder, with a line under the title naming its folders
-  (`Folders: api, web`); **Implement this plan** carries such a plan out
-  in a chat across them, the open one if it works in each, else a new
-  one, and in a workspace without one of them starts none and says which.
+  outside it isn't sent (the message box says why). In a workspace,
+  **New chat** asks which folders a chat works in (the folder you're
+  working in is checked; a copied folder that still shares its original's
+  chats can be checked once its history is separated). One folder makes a
+  chat of that folder; several, or **All folders** (which takes folders
+  added to the workspace later too), a chat across them, which names
+  files by their folder's name (`api/src/x.ts`) and stops while one of
+  them is missing. A chat across folders needs the virtual files driver
+  (Settings → Virtual files; on Windows, Rovik in WSL working across
+  folders): without it a chat works in one folder. The chat list and the
+  label by the message box say each chat's folders, and the chats of every
+  folder are listed together. **Implement this plan** on a folder's plan
+  starts in a chat of that folder. A chat across several folders saves its
+  plans in its first folder, with a line under the title naming its
+  folders (`Folders: api, web`); **Implement this plan** carries such a
+  plan out in a chat across them, the open one if it works in each, else
+  a new one, and in a workspace without one of them starts none and says
+  which.
   Its scouts, step workers, Autopilot tasks and Thorough's two
   implementers work across its folders too, and Claude Code or Codex with
   their own tools are told about them.
