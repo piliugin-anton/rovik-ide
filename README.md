@@ -224,8 +224,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   added to the workspace later too), a chat across them, which names
   files by their folder's name (`api/src/x.ts`) and stops while one of
   them is missing. A chat across folders needs the virtual files driver
-  (Settings → Virtual files; on Windows, Rovik in WSL working across
-  folders): without it a chat works in one folder. The chat list and the
+  (Settings → Virtual files), or runs in WSL or on a cloud host whose Rovik
+  runs such chats (on Windows, in WSL: one with an older Rovik says to
+  update it): without either, a chat works in one folder. The chat list and the
   label by the message box say each chat's folders, and the chats of every
   folder are listed together. A chat across folders changes its folders
   from its label: **Apply** takes them, but not while it's at work or has
@@ -665,6 +666,17 @@ A cloud host is a Linux server that your chats can move to and run on. You
 add one in **Settings → Cloud hosts**, and Rovik logs in to it over SSH as
 your own account there. If you run a server that several people share, see
 [Rovik on a team server](docs/cloud-hosts.md).
+
+A chat across a workspace's folders moves to a host whose Rovik runs such
+chats (an older one is offered the upgrade), and runs in WSL the same way.
+Its folders go there as one project, each under its name, without their git
+history: git there shows Rovik's snapshots of them, and nothing is pushed to
+a branch for the chat. Its results come back into each folder and land in
+each, as a local chat's would; what its runs make outside its folders stays
+on the host, and the chat says so. A folder it works in there isn't removed
+from the workspace, located as another project or unchecked for the chat
+while the chat is at work there, has changes in it there that haven't
+landed, or the host can't be reached to say.
 
 ### An SSH key for a cloud host
 
