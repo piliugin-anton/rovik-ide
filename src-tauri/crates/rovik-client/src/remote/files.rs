@@ -9,7 +9,7 @@
 //! at a time.
 
 use super::Remote;
-use crate::shadow::{self, workspace_excludes, Composite, Folded, Shadow};
+use crate::shadow::{self, workspace_excludes, Composite, Folded, Guards, Shadow};
 use git2::Oid;
 use rovik_core::agent_run;
 use rovik_core::chat_db::{projects, store, workspaces};
@@ -131,6 +131,39 @@ impl ChatFiles {
         let shadows = self.folder_shadows(data_dir, workspace)?;
         let composite = self.composite(data_dir, workspace)?;
         composite.import(result, workspace, &shadows)
+    }
+
+    /// What the chat's first push to a host carries that the user hears
+    /// of first (6.4's guards): a folder chat's project's, as before; a
+    /// workspace chat's from each of its folders, only what's in the
+    /// folder, by the chat's paths (`api/…`), and no history, as theirs
+    /// stays here (D30). It takes a snapshot: off the async threads.
+    pub(super) fn guards(&self, data_dir: &Path, chat: &str) -> Result<Guards, String> {
+        let Some(workspace) = self.across() else {
+            let shadow = self.project_shadow(data_dir)?;
+            return shadow.guards(&shadow.snapshot(chat)?);
+        };
+        let mut all = Guards::default();
+        for (name, shadow) in self.folder_shadows(data_dir, workspace)? {
+            let found = shadow.guards(&shadow.snapshot(chat)?)?;
+            let prefix = match shadow.subpath() {
+                "" => String::new(),
+                subpath => format!("{subpath}/"),
+            };
+            let named = |path: String| {
+                let rel = path.strip_prefix(prefix.as_str())?;
+                Some(format!("{name}/{rel}"))
+            };
+            let sized = |(path, bytes): (String, u64)| named(path).map(|path| (path, bytes));
+            all.large_files
+                .extend(found.large_files.into_iter().filter_map(sized));
+            all.lfs.extend(found.lfs.into_iter().filter_map(sized));
+            all.nested
+                .extend(found.nested.into_iter().filter_map(named));
+            all.crlf_scripts
+                .extend(found.crlf_scripts.into_iter().filter_map(named));
+        }
+        Ok(all)
     }
 
     /// Makes the chat's shadows ready to fetch into, as a snapshot leaves

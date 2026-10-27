@@ -3249,6 +3249,20 @@ folder; two chats with different folders keep each other's by-products out of th
 results; a folder inside a repository imports with its repository's attributes). The
 app's commands are wrappers of the `Remote` methods tested there.
 
+**G06 — the move dialog's folders and notes.** `MovePreflight.folders` (left out when
+empty) names a workspace chat's folders, and its notes are what each folder's first push
+carries that the user hears of first (`ChatFiles::guards`: each folder's guards, only
+what's in the folder, by the chat's paths, `web/run.sh`, and no history size, as their
+history stays here). The dialog says the chat's folders go, lists them under "Its
+folders", says that "Their git history stays on this computer: the first push carries all
+their files.", and heads its notes "About its folders". A missing folder and a host that
+can't run chats across folders block the move with G05's words (`movable`). Tests:
+`remote/tests/folders.rs` (a move's preflight lists the chat's folders and what their
+push carries, a script outside the folder left out; a missing folder blocks a chat across
+folders' move), `chatLocation.test.tsx` (a chat across folders: the dialog lists them,
+says their history stays here, and their notes; one of them missing: the dialog says
+which and offers no Move).
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

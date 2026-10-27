@@ -272,3 +272,83 @@ async fn a_start_across_folders_names_each_with_its_settings_and_its_paths_from_
         "see web/c.ts"
     );
 }
+
+/// `files` committed in a repository at `root`.
+fn committed(root: &std::path::Path, files: &[(&str, &str)]) {
+    let repo = git2::Repository::init(root).unwrap();
+    for (path, content) in files {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, content).unwrap();
+    }
+    let mut index = repo.index().unwrap();
+    let all = git2::IndexAddOption::DEFAULT;
+    index.add_all(["*"], all, None).unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let me = git2::Signature::now("Me", "me@example.com").unwrap();
+    repo.commit(Some("HEAD"), &me, &me, "files", &tree, &[])
+        .unwrap();
+}
+
+/// A host that takes chats across folders, and says what it is.
+fn with_folders() -> Fake {
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::MIRROR.into(), features::FOLDERS.into()];
+    *fake.info.lock().unwrap() = Some(rovik_protocol::host::HostInfo::default());
+    fake
+}
+
+#[tokio::test]
+async fn a_moves_preflight_lists_the_chats_folders_and_what_their_push_carries() {
+    let app = App::new();
+    // web is a folder of a repository, with a script that won't run on the
+    // server, and another outside web, which doesn't go.
+    let front = app.dir.0.join("front");
+    let script = "#!/bin/sh\r\necho hi\r\n";
+    committed(
+        &front,
+        &[("apps/web/run.sh", script), ("other/run.sh", script)],
+    );
+    let api = app.dir.0.join("api");
+    std::fs::create_dir_all(&api).unwrap();
+    let folders: Vec<workspaces::Prepared> = [api, front.join("apps/web")]
+        .iter()
+        .map(|path| workspaces::prepare(&path.to_string_lossy()))
+        .collect();
+    let made = app
+        .core
+        .db
+        .write(move |c| workspaces::create(c, "Shop", &folders));
+    let workspace = made.await.unwrap().id;
+    app.chat("chat", Some(&workspace), Vec::new()).await;
+    let (remote, _fake) = connected_to(&app, with_folders()).await;
+
+    let preflight = remote.move_preflight("chat", HOST).await.unwrap();
+
+    assert_eq!(preflight.blocked, None);
+    assert_eq!(preflight.folders, ["api", "web"]);
+    assert_eq!(
+        preflight.notes,
+        ["web/run.sh has Windows line endings: it won't run on the server."]
+    );
+}
+
+#[tokio::test]
+async fn a_missing_folder_blocks_a_chat_across_folders_move() {
+    let app = App::new();
+    shop(&app, "chat").await;
+    let (remote, _fake) = connected_to(&app, with_folders()).await;
+    std::fs::remove_dir_all(app.dir.0.join("web")).unwrap();
+
+    let preflight = remote.move_preflight("chat", HOST).await.unwrap();
+
+    assert_eq!(
+        preflight.blocked.as_deref(),
+        Some(
+            "web isn't there: locate it, or remove it from the workspace, to go on with this chat."
+        )
+    );
+    assert!(preflight.folders.is_empty());
+    let moved = remote.move_chat("chat", HOST, None).await.unwrap_err();
+    assert_eq!(moved.message, preflight.blocked.unwrap());
+}

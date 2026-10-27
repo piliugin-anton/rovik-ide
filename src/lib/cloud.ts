@@ -85,6 +85,11 @@ export interface MovePreflight {
    * administrators there, who upgrade it for everyone.
    */
   upgrade?: boolean;
+  /**
+   * A chat across a workspace's folders: its folders, by name, which go to the
+   * host without their git history. None for a chat of one folder.
+   */
+  folders?: string[];
 }
 
 export const movePreflight = (dialogId: string, host: string) =>

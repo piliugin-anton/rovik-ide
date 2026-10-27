@@ -24,7 +24,6 @@ use super::files::ChatFiles;
 use super::sync::{settings, Snapshot};
 use super::{internal, CloudEvent, Remote};
 use crate::client::{Client, HostState};
-use crate::shadow::Shadow;
 use rovik_core::agent_run::{self, StartKind, StartRequest};
 use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::moves::{self, CloudMove};
@@ -80,6 +79,10 @@ pub struct MovePreflight {
     /// of its administrators there, who upgrade it for everyone (R02).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub upgrade: bool,
+    /// A chat across folders: its folders, by name, which go to the host
+    /// without their git history (D30). Empty for a folder chat.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
 }
 
 impl Remote {
@@ -126,17 +129,11 @@ impl Remote {
         let clm = mode.await.map_err(internal)?.as_deref() == Some("clm");
         preflight.trimming = clm && !info.virtual_files;
 
-        // A folder chat's project's push; a workspace chat's folders' are
-        // the move dialog's own (G06).
-        let Some(root) = files.root().map(|root| root.to_path_buf()) else {
-            return self.preflight_files(&client, dialog_id, preflight).await;
-        };
-        let shadow_dir = files.shadow(&self.core.paths.data_dir);
-        let chat = dialog_id.to_string();
-        let guards = rt::spawn_blocking(move || {
-            let shadow = Shadow::open(&shadow_dir, &root)?;
-            shadow.guards(&shadow.snapshot(&chat)?)
-        });
+        if files.across().is_some() {
+            preflight.folders = files.folders.iter().map(|f| f.name.clone()).collect();
+        }
+        let (data, chat) = (self.core.paths.data_dir.clone(), dialog_id.to_string());
+        let guards = rt::spawn_blocking(move || files.guards(&data, &chat));
         let guards = guards.await.map_err(|e| internal(e.to_string()))?;
         let guards = guards.map_err(internal)?;
         let mb = |bytes: u64| bytes.div_ceil(1 << 20);
@@ -168,22 +165,10 @@ impl Remote {
             preflight.notes.push(note);
         }
 
-        self.preflight_files(&client, dialog_id, preflight).await
-    }
-
-    /// The rest of the preflight: whether a parallel group's "Redo
-    /// sequentially" stays behind, and the files its messages name that the
-    /// host lacks.
-    async fn preflight_files(
-        &self,
-        client: &Client,
-        dialog_id: &str,
-        mut preflight: MovePreflight,
-    ) -> Result<MovePreflight, Fail> {
         let status = chats::overlay_status(dialog_id.to_string()).await;
         preflight.redo_lost = status.is_ok_and(|s| !s.redo_groups.is_empty());
 
-        let (ids, sizes) = self.files_to_send(client, dialog_id).await?;
+        let (ids, sizes) = self.files_to_send(&client, dialog_id).await?;
         preflight.files = ids.len();
         preflight.file_bytes = sizes;
         Ok(preflight)
