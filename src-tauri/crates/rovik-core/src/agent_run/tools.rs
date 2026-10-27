@@ -212,12 +212,22 @@ fn run_command_schema(permissions: &Permissions) -> Value {
             permissions.allowed_commands.join(", ")
         )
     };
+    let os = std::env::consts::OS;
+    let program = crate::command_tool::shell();
+    let shell = std::path::Path::new(&program).file_name().map_or_else(
+        || program.clone(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let system = system_name(os, in_wsl());
+    let userland = userland_note(os);
     json!({
         "type": "function",
         "function": {
             "name": "bash",
             "description": format!(
-                "Run a shell command in the project root and get its exit code and output (stdout/stderr). Long output is shortened \
+                "Run a shell command and get its exit code and output (stdout/stderr). Each call starts a new shell in \
+                 the project root ({shell} on {system}): a `cd` or a variable set in one call doesn't carry over to the next, \
+                 so chain the steps that need it (`cd web && npm test`).{userland} Long output is shortened \
                  to its start and end; for a failing command, to its error lines and final summary. \
                  Non-interactive: no stdin, pagers disabled. Use it for tests, builds, type checks, linters and git inspection. \
                  Prefer read/search_code/write for reading and editing files.{allowed}"
@@ -232,6 +242,39 @@ fn run_command_schema(permissions: &Permissions) -> Value {
             }
         }
     })
+}
+
+/// The system bash's commands run on (`std::env::consts::OS`), as people
+/// name it.
+fn system_name(os: &'static str, wsl: bool) -> &'static str {
+    match os {
+        "linux" if wsl => "Linux in WSL",
+        "linux" => "Linux",
+        "macos" => "macOS",
+        "windows" => "Windows",
+        other => other,
+    }
+}
+
+/// Whether this is a WSL distribution on a Windows computer.
+fn in_wsl() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::distro::in_wsl()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// What bash's description adds on a system whose command-line tools
+/// differ from the GNU ones models mostly write for.
+fn userland_note(os: &str) -> &'static str {
+    match os {
+        "macos" => " Its sed, grep and find are the BSD ones: `sed -i ''` edits in place, and grep has no -P.",
+        _ => "",
+    }
 }
 
 /// What the lead's bash says of leaving a command running.
@@ -2172,6 +2215,42 @@ mod tests {
             ..Permissions::default()
         });
         assert!(!any.contains("Only these commands"), "{any}");
+    }
+
+    #[test]
+    fn bash_says_each_call_starts_a_new_shell_and_names_the_shell_and_system() {
+        let description = run_command_schema(&Permissions::default())["function"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            description.contains("Each call starts a new shell in the project root")
+                && description.contains("doesn't carry over to the next"),
+            "{description}"
+        );
+        let program = crate::command_tool::shell();
+        let shell = std::path::Path::new(&program)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let system = system_name(std::env::consts::OS, in_wsl());
+        assert!(
+            description.contains(&format!("({shell} on {system})")),
+            "{description}"
+        );
+    }
+
+    #[test]
+    fn systems_are_named_as_people_name_them_and_macos_tools_are_told_apart() {
+        assert_eq!(system_name("linux", false), "Linux");
+        assert_eq!(system_name("linux", true), "Linux in WSL");
+        assert_eq!(system_name("macos", false), "macOS");
+        assert_eq!(system_name("windows", false), "Windows");
+        assert_eq!(system_name("freebsd", false), "freebsd");
+        assert!(userland_note("macos").contains("`sed -i ''`"));
+        assert_eq!(userland_note("linux"), "");
+        assert_eq!(userland_note("windows"), "");
     }
 
     #[test]

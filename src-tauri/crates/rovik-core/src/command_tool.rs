@@ -129,6 +129,27 @@ impl Queued {
     }
 }
 
+/// The shell the agent's commands run in. On Windows, cmd.exe (`COMSPEC`).
+/// Elsewhere the user's shell when it's a POSIX one (the commands are POSIX
+/// shell, as models write them and the permission checks read them), and
+/// `/bin/sh` when it's fish, nu or another shell with a syntax of its own.
+pub fn shell() -> String {
+    #[cfg(windows)]
+    {
+        std::env::var("COMSPEC")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "cmd.exe".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        use crate::process::{shell_kind, user_shell, ShellKind};
+        user_shell()
+            .filter(|s| shell_kind(s) == ShellKind::Posix)
+            .unwrap_or_else(|| "/bin/sh".to_string())
+    }
+}
+
 /// No Windows mechanism yet (overlay/confine.rs, `windows`): the policy is
 /// ignored here and the callers' text checks apply. When one is added, build
 /// the line below through `confine::command`, as the Unix one does, keeping
@@ -136,11 +157,7 @@ impl Queued {
 #[cfg(windows)]
 fn shell_command(command: &str, _confine: Option<&crate::overlay::confine::Confine>) -> Command {
     use std::os::windows::process::CommandExt;
-    let shell = std::env::var("COMSPEC")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "cmd.exe".to_string());
-    let mut cmd = Command::new(shell);
+    let mut cmd = Command::new(shell());
     // Passed as is: `arg` would escape its quotes as `\"`, which cmd doesn't
     // understand, so `git commit -m "msg"` arrived mangled. With /S, cmd
     // strips exactly the outer pair of quotes and runs the rest verbatim.
@@ -148,21 +165,16 @@ fn shell_command(command: &str, _confine: Option<&crate::overlay::confine::Confi
     cmd
 }
 
-/// The user's shell when it's a POSIX one (the commands are POSIX shell, as
-/// models write them and the permission checks read them); `/bin/sh` when
-/// it's fish, nu or another shell with a syntax of its own. With a
-/// `confine` policy it runs confined: the project's path shows the chat's
-/// view, and the credential stores are hidden (overlay/confine.rs).
+/// `command` run by [`shell`]. With a `confine` policy it runs confined:
+/// the project's path shows the chat's view, and the credential stores are
+/// hidden (overlay/confine.rs).
 #[cfg(not(windows))]
 fn shell_command(command: &str, confine: Option<&crate::overlay::confine::Confine>) -> Command {
-    use crate::process::{shell_kind, user_shell, ShellKind};
-    let shell = user_shell()
-        .filter(|s| shell_kind(s) == ShellKind::Posix)
-        .unwrap_or_else(|| "/bin/sh".to_string());
+    let program = shell();
     let mut cmd = match confine {
-        Some(c) => crate::overlay::confine::command(c, &shell, &["-c", command]),
+        Some(c) => crate::overlay::confine::command(c, &program, &["-c", command]),
         None => {
-            let mut cmd = crate::process::command(shell);
+            let mut cmd = crate::process::command(program);
             cmd.args(["-c", command]);
             cmd
         }
