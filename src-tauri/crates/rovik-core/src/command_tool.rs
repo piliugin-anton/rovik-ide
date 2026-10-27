@@ -464,7 +464,11 @@ fn prepared(
         .env("CI", "1")
         // Plain text: color codes only cost context and break matching.
         .env("NO_COLOR", "1")
-        .env("CARGO_TERM_COLOR", "never");
+        .env("CARGO_TERM_COLOR", "never")
+        // No progress bars: each redraw would become a line of its own
+        // (agent_run/command_output.rs `clean_output`).
+        .env("TQDM_DISABLE", "1")
+        .env("PIP_PROGRESS_BAR", "off");
     for (key, value) in job.map(|j| j.cpu_split_env()).unwrap_or_default() {
         cmd.env(key, value);
     }
@@ -699,6 +703,21 @@ mod tests {
         assert_eq!(out.stdout.trim(), "hi");
         assert_eq!(out.stderr.trim(), "oops");
         assert!(!out.timed_out);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn commands_run_with_tqdm_and_pip_progress_bars_turned_off() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            "echo \"$TQDM_DISABLE $PIP_PROGRESS_BAR\"",
+            Duration::from_secs(5),
+            &|| false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out.stdout.trim(), "1 off");
     }
 
     #[cfg(not(windows))]
