@@ -11,6 +11,8 @@ import { DEFAULT_PERMISSIONS, type AgentPermissions } from '../lib/permissions';
 /** The backend's answers in the test running now, and what it was asked to save. */
 let backend: Record<string, (args: any) => unknown> = {};
 let saves: unknown[] = [];
+/** The permissions the page asked for ("Allow it"). */
+let permissionChanges: AgentPermissions[] = [];
 (window as any).__TAURI_INTERNALS__ = {
   invoke: async (cmd: string, args: any) => {
     if (cmd === 'save_project_settings') {
@@ -44,13 +46,14 @@ async function page(saved: unknown = null, permissions: Partial<AgentPermissions
     load_project_settings: () => saved,
   };
   saves = [];
+  permissionChanges = [];
   const root = container();
   render(
     () => (
       <ProjectChecksSettings
         root="/home/me/demo"
         permissions={{ ...DEFAULT_PERMISSIONS, ...permissions }}
-        onPermissionsChange={() => {}}
+        onPermissionsChange={(next) => permissionChanges.push(next)}
         onOpenPage={() => {}}
       />
     ),
@@ -161,4 +164,24 @@ test('project checks: the user’s list stands; back to the detected ones, none 
     [false, false]
   );
   assert.equal(status(root).warning, true);
+});
+
+test('project checks: a check in a folder runs when what it runs there is allowed, and Allow it adds just that', async () => {
+  const root = await page({
+    checks: [
+      { kind: 'lint', command: 'cd api && go vet ./...', enabled: true },
+      { kind: 'test', command: 'cd web && npm test', enabled: true },
+    ],
+  });
+  const warnings = [...root.querySelectorAll('.project-check-warning')];
+  assert.equal(warnings.length, 1, '`npm test` is allowed, so its check in web runs');
+  const command = warnings[0]
+    .closest('.project-check')!
+    .querySelector('.project-check-command') as HTMLInputElement;
+  assert.equal(command.value, 'cd api && go vet ./...');
+  (warnings[0].querySelector('button') as HTMLButtonElement).click();
+  assert.deepEqual(
+    permissionChanges.map((p) => p.allowedCommands),
+    [[...DEFAULT_PERMISSIONS.allowedCommands, 'go vet ./...']]
+  );
 });

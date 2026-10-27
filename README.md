@@ -318,7 +318,9 @@ is brought to the app's version by itself.
 3. **Review permissions:** in **Settings → Permissions & approval**, choose
    which commands the agent may run and what needs your approval. By
    default the agent may only run a short list of safe commands (`ls`,
-   `cat`, `cargo clippy`, …), and it edits files without asking. Turn
+   `cat`, `cargo clippy`, …), and it edits files without asking. A command
+   may start with a `cd` into one of the project's folders, as in
+   `cd web && npm test`: only what runs there has to be on the list. Turn
    approvals on here if you want to review its edits and commands first.
 4. **Chat:** open the AI Chat tab, pick a model and a mode (Agent, Plan or
    Autopilot), and describe what you want. In Agent mode you can keep

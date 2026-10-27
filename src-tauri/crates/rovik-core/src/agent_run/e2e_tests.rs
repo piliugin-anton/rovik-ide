@@ -2487,6 +2487,37 @@ async fn arguments_that_arent_json_are_an_error_for_the_model() {
         .starts_with("Error: could not parse arguments as JSON"));
 }
 
+/// A reply the output limit cut off in the middle of a call: the call
+/// doesn't run, and the model hears why and how to make it fit, with the
+/// start of its arguments rather than all of them.
+#[tokio::test]
+async fn a_call_cut_off_by_the_output_limit_is_told_why_it_did_not_run() {
+    let h = harness(&[]).await;
+    let args: &'static str = Box::leak(
+        format!("{{\"path\":\"big.txt\",\"content\":\"{}", "x".repeat(5_000)).into_boxed_str(),
+    );
+    let (url, _) = model(vec![
+        Reply::CutOff {
+            id: "c1",
+            name: "write",
+            args,
+        },
+        Reply::Text("I'll write it in parts."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Write it"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let result = &result_of(&messages, "c1").content;
+    assert!(
+        result.starts_with("Error: your reply reached the model's output limit"),
+        "{result}"
+    );
+    assert!(!result.contains(&"x".repeat(1_000)), "{result}");
+    assert!(!h.project.join("big.txt").exists());
+}
+
 #[tokio::test]
 async fn without_a_project_only_web_tools_are_offered() {
     let h = harness(&[]).await;
@@ -5282,6 +5313,98 @@ async fn a_project_without_checks_is_unverified_and_disallowed_checks_are_skippe
         record["checks"][0]["reason"],
         "not in your allowed commands"
     );
+}
+
+/// A command whose result shows only part of its output: the whole of it
+/// is saved where the agent reads it by line range, and the run's checks,
+/// which clear earlier runs' saved output, keep this run's (P4.7).
+#[tokio::test]
+async fn a_long_commands_whole_output_is_saved_for_the_agent_and_outlives_the_checks() {
+    let lines: String = (1..=3_000).map(|i| format!("line {i}\n")).collect();
+    let h = harness(&[("big.txt", lines.as_str())]).await;
+    std::fs::create_dir_all(&h.core.paths.config_dir).unwrap();
+    crate::project_profile::save_project_settings(
+        &h.core.paths.config_dir,
+        h.project.to_string_lossy().into_owned(),
+        json!({ "checks": [{ "kind": "test", "command": list(""), "enabled": true }] }),
+    )
+    .unwrap();
+    let print = if cfg!(windows) { "type" } else { "cat" };
+    // The saved copy's line 1 is the command and line 2 its stream's
+    // heading, so `line 1500` is on line 1502.
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "b1",
+            name: "bash",
+            args: json!({ "command": format!("{print} big.txt") }),
+        },
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({ "path": "@checks/bash-b1.log", "start_line": 1502, "end_line": 1502 }),
+        },
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allowed_commands: vec![print.into(), list("")],
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    h.start(h.request(&url, Harness::send("Look"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let shown = &result_of(&messages, "b1").content;
+    assert!(!shown.contains("\nline 1500\n"), "{shown}");
+    assert!(shown.contains("saved as `@checks/bash-b1.log`"), "{shown}");
+    let read = &result_of(&messages, "r1").content;
+    assert!(read.contains("line 1500"), "{read}");
+    assert!(
+        crate::agent_run::check_output::resolve(&h.dialog_id, "@checks/bash-b1.log").is_ok(),
+        "the run's checks kept it"
+    );
+    crate::agent_run::check_output::clean(&h.dialog_id);
+}
+
+/// A check in one of the project's folders, as detection writes it
+/// (`cd web && …`, project.rs `in_folder`), runs when the allowed commands
+/// cover what it runs there: the `cd` needs no entry of its own.
+#[tokio::test]
+async fn a_check_in_a_folder_runs_when_what_it_runs_there_is_allowed() {
+    let h = harness(&[("web/ok.txt", "ok\n")]).await;
+    std::fs::create_dir_all(&h.core.paths.config_dir).unwrap();
+    let check = format!("cd web && {}", list(""));
+    crate::project_profile::save_project_settings(
+        &h.core.paths.config_dir,
+        h.project.to_string_lossy().into_owned(),
+        json!({ "checks": [{ "kind": "test", "command": check, "enabled": true }] }),
+    )
+    .unwrap();
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allowed_commands: vec![list("")],
+        ..Permissions::default()
+    };
+    h.start(h.request(&url, Harness::send("Write"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let record = messages.last().unwrap().meta.as_ref().unwrap()["verification"].clone();
+    assert_eq!(record["checks"][0]["status"], "passed", "{record:#}");
 }
 
 /// A check found in the project's files doesn't run until the user turns

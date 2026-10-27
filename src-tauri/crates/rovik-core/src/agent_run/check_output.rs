@@ -35,11 +35,26 @@ pub fn is_checks_path(path: &str) -> bool {
     path.trim().starts_with(PREFIX)
 }
 
+/// Makes a chat's folder, readable by its user only: the output in it may
+/// show anything a command printed, and the temp folder is shared on Linux.
+fn make_private(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)?;
+    // A folder an earlier version made with the default mode.
+    #[cfg(unix)]
+    std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    Ok(())
+}
+
 /// Saves a check's whole output under `<stem>-<kind>.log` (`stem`: which
-/// checks, e.g. `round-2`); returns the path the agent reads it at.
+/// checks, e.g. `round-2`; a command's is `bash` and its call's id);
+/// returns the path the agent reads it at.
 pub fn save(dialog_id: &str, stem: &str, kind: &str, text: &str) -> Option<String> {
     let dir = dir(dialog_id)?;
-    std::fs::create_dir_all(&dir).ok()?;
+    make_private(&dir).ok()?;
     let kind: String = kind
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
@@ -172,6 +187,30 @@ mod tests {
         clean(&chat);
         assert!(resolve(&chat, &path).is_err());
         clean(&chat); // twice: harmless
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_chats_saved_output_is_in_a_folder_only_its_user_reads() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |chat: &str| {
+            let folder = std::fs::metadata(dir(chat).unwrap()).unwrap();
+            folder.permissions().mode() & 0o777
+        };
+        let fresh = format!("checks-test-{}", uuid::Uuid::new_v4());
+        assert_eq!(
+            save(&fresh, "bash", "call_1", "TOKEN=x").as_deref(),
+            Some("@checks/bash-call-1.log")
+        );
+        assert_eq!(mode(&fresh), 0o700);
+        // A folder an earlier version made, readable by everyone.
+        let older = format!("checks-test-{}", uuid::Uuid::new_v4());
+        std::fs::create_dir_all(dir(&older).unwrap()).unwrap();
+        std::fs::set_permissions(dir(&older).unwrap(), PermissionsExt::from_mode(0o755)).unwrap();
+        save(&older, "round-1", "test", "1 failed").unwrap();
+        assert_eq!(mode(&older), 0o700);
+        clean(&fresh);
+        clean(&older);
     }
 
     #[test]

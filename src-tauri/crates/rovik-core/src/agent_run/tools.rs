@@ -207,16 +207,27 @@ fn run_command_schema(permissions: &Permissions) -> Value {
         String::new()
     } else {
         format!(
-            " Only these commands (and their arguments) are allowed: {}. Others are refused.",
+            " Only these commands (and their arguments) are allowed: {}. Others are refused. \
+             A `cd` into one of the project's folders may come before them (`cd web && npm test`).",
             permissions.allowed_commands.join(", ")
         )
     };
+    let os = std::env::consts::OS;
+    let program = crate::command_tool::shell();
+    let shell = std::path::Path::new(&program).file_name().map_or_else(
+        || program.clone(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let system = system_name(os, in_wsl());
+    let userland = userland_note(os);
     json!({
         "type": "function",
         "function": {
             "name": "bash",
             "description": format!(
-                "Run a shell command in the project root and get its exit code and output (stdout/stderr). Long output is shortened \
+                "Run a shell command and get its exit code and output (stdout/stderr). Each call starts a new shell in \
+                 the project root ({shell} on {system}): a `cd` or a variable set in one call doesn't carry over to the next, \
+                 so chain the steps that need it (`cd web && npm test`).{userland} Long output is shortened \
                  to its start and end; for a failing command, to its error lines and final summary. \
                  Non-interactive: no stdin, pagers disabled. Use it for tests, builds, type checks, linters and git inspection. \
                  Prefer read/search_code/write for reading and editing files.{allowed}"
@@ -231,6 +242,39 @@ fn run_command_schema(permissions: &Permissions) -> Value {
             }
         }
     })
+}
+
+/// The system bash's commands run on (`std::env::consts::OS`), as people
+/// name it.
+fn system_name(os: &'static str, wsl: bool) -> &'static str {
+    match os {
+        "linux" if wsl => "Linux in WSL",
+        "linux" => "Linux",
+        "macos" => "macOS",
+        "windows" => "Windows",
+        other => other,
+    }
+}
+
+/// Whether this is a WSL distribution on a Windows computer.
+fn in_wsl() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::distro::in_wsl()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// What bash's description adds on a system whose command-line tools
+/// differ from the GNU ones models mostly write for.
+fn userland_note(os: &str) -> &'static str {
+    match os {
+        "macos" => " Its sed, grep and find are the BSD ones: `sed -i ''` edits in place, and grep has no -P.",
+        _ => "",
+    }
 }
 
 /// What the lead's bash says of leaving a command running.
@@ -533,6 +577,9 @@ pub struct ToolResult {
     /// Facts for the chat's tool block beyond what `result_meta` reads from
     /// the text, merged into the stored result's meta.
     pub meta: Option<Map<String, Value>>,
+    /// A command's whole output, when its result shows only part of it:
+    /// the run saves it where the agent can read it (check_output.rs).
+    pub whole_output: Option<String>,
 }
 
 impl ToolResult {
@@ -669,6 +716,8 @@ const ERROR_CLASSES: &[(&str, &[&str])] = &[
         ],
     ),
     ("subagent", &["subagent", "worker"]),
+    // A reply cut off by the output limit (`unparsed_arguments`).
+    ("output limit", &["reached the model's output limit"]),
     (
         "bad arguments",
         &[
@@ -863,6 +912,34 @@ pub struct CallContext {
     /// background (bash's `background`, the background tool): the lead's
     /// own. None for a subagent, whose commands end with its work.
     pub background_chat: Option<String>,
+    /// The reply the call came in reached the model's output limit: when
+    /// its arguments don't parse, that's where they were cut off.
+    pub reply_cut_off: bool,
+}
+
+/// How much of arguments that don't parse their error shows: enough to
+/// tell which call it was, not all of a long file's content.
+const UNPARSED_SHOWN_CHARS: usize = 300;
+
+/// The result of a call whose arguments aren't JSON. A reply that reached
+/// the model's output limit (`cut_off`) ends in the middle of its last call:
+/// the model is told so, and how to make the call fit, instead of being
+/// left to send the same oversized call again.
+fn unparsed_arguments(args_json: &str, cut_off: bool) -> String {
+    let mut start: String = args_json.chars().take(UNPARSED_SHOWN_CHARS).collect();
+    if start.len() < args_json.len() {
+        start.push('…');
+    }
+    if cut_off {
+        format!(
+            "Error: your reply reached the model's output limit in the middle of this call, so its \
+             arguments were cut off and it didn't run. Make the call again with less in it: write a \
+             long file in parts (its first part, then each next part with write, old_text quoting the \
+             file's last lines), and keep your reasoning before a call short. Its arguments began: {start}"
+        )
+    } else {
+        format!("Error: could not parse arguments as JSON: {start}")
+    }
 }
 
 /// Runs one tool call. Never fails: problems come back as an "Error: ..."
@@ -882,11 +959,7 @@ pub async fn execute(
         match serde_json::from_str::<Value>(args_json) {
             Ok(Value::Object(map)) => map,
             Ok(_) => Map::new(),
-            Err(_) => {
-                return ToolResult::text(format!(
-                    "Error: could not parse arguments as JSON: {args_json}"
-                ))
-            }
+            Err(_) => return ToolResult::text(unparsed_arguments(args_json, ctx.reply_cut_off)),
         }
     };
     match run(core, root, name, &args, stop, ctx).await {
@@ -1159,6 +1232,7 @@ async fn run(
                 .map(|done| format!("Before it ran: {done}"))
                 .into_iter()
                 .collect();
+            let mut whole_output = None;
             let (mut content, printed) = match background {
                 Some(chat) => {
                     let started =
@@ -1187,7 +1261,11 @@ async fn run(
                     }
                     let lead = ctx.background_chat.is_some();
                     notes.extend(ended_with_it(command, &out, lead));
-                    (format_command_output(command, &out), out.text())
+                    let (shown, shortened) = format_command_output(command, &out);
+                    if shortened {
+                        whole_output = Some(whole_output_text(command, &out));
+                    }
+                    (shown, out.text())
                 }
             };
             for note in notes {
@@ -1196,7 +1274,11 @@ async fn run(
             if let Some(note) = port_note(&printed, &root_owned).await {
                 content.push_str(&note);
             }
-            content
+            return Ok(ToolResult {
+                content,
+                whole_output,
+                ..Default::default()
+            });
         }
         "background" => {
             use crate::command_tool::background;
@@ -1410,7 +1492,8 @@ fn agent_queued(ctx: &CallContext) -> crate::command_tool::Queued {
 }
 
 /// One run of the agent's `command` in `root`, for the chat of `ctx`: as
-/// the agent's heavy work, killed by Stop.
+/// the agent's heavy work, killed by Stop. Its whole output is kept too,
+/// for a result that can show only part of it.
 async fn run_agent_command(
     root: &str,
     command: &str,
@@ -1424,7 +1507,7 @@ async fn run_agent_command(
         command.into(),
         timeout,
         move || stop.is_set(),
-        Some(agent_queued(ctx)),
+        Some(agent_queued(ctx).whole(true)),
     )
     .await
 }
@@ -1582,8 +1665,9 @@ fn format_background_list(listed: &[crate::command_tool::background::Status]) ->
         .join("\n")
 }
 
-/// The text the model sees for a finished command.
-pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
+/// The text the model sees for a finished command, and whether it shows
+/// only part of the command's output.
+pub fn format_command_output(command: &str, out: &CommandOutput) -> (String, bool) {
     let status = if out.stopped {
         "stopped by the user (killed)".to_string()
     } else if out.timed_out {
@@ -1638,7 +1722,24 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
             .into(),
         );
     }
-    parts.join("\n")
+    (parts.join("\n"), shortened)
+}
+
+/// A command's whole output as captured (`CommandOutput::whole`), laid out
+/// as `format_command_output` lays out its part, for reading in pieces.
+fn whole_output_text(command: &str, out: &CommandOutput) -> String {
+    let (stdout, stderr) = match &out.whole {
+        Some((stdout, stderr)) => (stdout.as_str(), stderr.as_str()),
+        None => (out.stdout.as_str(), out.stderr.as_str()),
+    };
+    let mut parts = vec![format!("$ {command}")];
+    for (stream, text) in [("stdout", stdout), ("stderr", stderr)] {
+        let text = clean_output(text);
+        if !text.trim().is_empty() {
+            parts.push(format!("--- {stream} ---\n{}", text.trim_end()));
+        }
+    }
+    parts.join("\n") + "\n"
 }
 
 /// ripgrep-style text: "path:line: text" for matches, "path-line- text" for
@@ -2016,6 +2117,7 @@ mod tests {
             hidden: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: None,
+            reply_cut_off: false,
         };
         let stop = Arc::new(StopSignal::new());
         let write =
@@ -2153,6 +2255,63 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_held_to_the_allowed_commands_hears_that_a_cd_into_a_folder_may_lead_them() {
+        let description = |p: &Permissions| {
+            run_command_schema(p)["function"]["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let held = description(&Permissions::default());
+        assert!(held.contains("Only these commands"), "{held}");
+        assert!(
+            held.contains("A `cd` into one of the project's folders may come before them"),
+            "{held}"
+        );
+        let any = description(&Permissions {
+            allow_any_command: true,
+            ..Permissions::default()
+        });
+        assert!(!any.contains("Only these commands"), "{any}");
+    }
+
+    #[test]
+    fn bash_says_each_call_starts_a_new_shell_and_names_the_shell_and_system() {
+        let description = run_command_schema(&Permissions::default())["function"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            description.contains("Each call starts a new shell in the project root")
+                && description.contains("doesn't carry over to the next"),
+            "{description}"
+        );
+        let program = crate::command_tool::shell();
+        let shell = std::path::Path::new(&program)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let system = system_name(std::env::consts::OS, in_wsl());
+        assert!(
+            description.contains(&format!("({shell} on {system})")),
+            "{description}"
+        );
+    }
+
+    #[test]
+    fn systems_are_named_as_people_name_them_and_macos_tools_are_told_apart() {
+        assert_eq!(system_name("linux", false), "Linux");
+        assert_eq!(system_name("linux", true), "Linux in WSL");
+        assert_eq!(system_name("macos", false), "macOS");
+        assert_eq!(system_name("windows", false), "Windows");
+        assert_eq!(system_name("freebsd", false), "freebsd");
+        assert!(userland_note("macos").contains("`sed -i ''`"));
+        assert_eq!(userland_note("linux"), "");
+        assert_eq!(userland_note("windows"), "");
+    }
+
+    #[test]
     fn context_tools_in_clm_mode() {
         let p = Permissions::default();
         let names = |tools: &[Value]| {
@@ -2226,11 +2385,12 @@ mod tests {
             waited: None,
             whole: None,
         };
-        let text = format_command_output("cargo test", &out);
+        let (text, shortened) = format_command_output("cargo test", &out);
         assert_eq!(
             text,
             "$ cargo test\nexit code 1, 1.2 s\n--- stderr ---\nerror: boom"
         );
+        assert!(!shortened);
         assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], json!(1));
         assert!(result_meta("bash", &text).unwrap().get("waited").is_none());
 
@@ -2244,7 +2404,7 @@ mod tests {
             whole: None,
             ..out
         };
-        let text = format_command_output("cargo test", &out);
+        let (text, _) = format_command_output("cargo test", &out);
         assert!(text.starts_with(
             "$ cargo test\nexit code 1, 1.2 s\nWaited 1 min 20 s for a CPU slot (your terminal is running `cargo build`).\n"
         ));
@@ -2591,7 +2751,7 @@ a.rs (3 matches)
             waited: None,
             whole: None,
         };
-        let text = format_command_output("sleep 999", &out);
+        let (text, _) = format_command_output("sleep 999", &out);
         assert_eq!(
             text,
             "$ sleep 999\ntimed out (killed), 120.0 s\n(no output)"
@@ -2609,7 +2769,9 @@ a.rs (3 matches)
             waited: None,
             whole: None,
         };
-        assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read for the rest)"));
+        let (text, shortened) = format_command_output("x", &out);
+        assert!(text.ends_with("(long output: shown are its start and end; use a narrower command or read for the rest)"));
+        assert!(shortened);
         assert_eq!(
             format_search_result(
                 &SearchResult {
@@ -2800,6 +2962,60 @@ a.rs (3 matches)
         }
     }
 
+    #[test]
+    fn arguments_cut_off_by_the_output_limit_are_told_so_and_shown_in_part() {
+        let args = format!(
+            "{{\"path\":\"big.txt\",\"content\":\"{}",
+            "x".repeat(10_000)
+        );
+        let cut = unparsed_arguments(&args, true);
+        assert!(
+            cut.starts_with("Error: your reply reached the model's output limit"),
+            "{cut}"
+        );
+        assert!(
+            cut.contains("Its arguments began: {\"path\":\"big.txt\""),
+            "{cut}"
+        );
+        assert!(cut.ends_with('…') && cut.chars().count() < 1_000, "{cut}");
+        assert_eq!(error_class(&cut), Some("output limit"));
+
+        let broken = unparsed_arguments("{not json", false);
+        assert_eq!(
+            broken,
+            "Error: could not parse arguments as JSON: {not json"
+        );
+        assert_eq!(error_class(&broken), Some("bad arguments"));
+        let long = unparsed_arguments(&args, false);
+        assert!(long.ends_with('…') && long.chars().count() < 400, "{long}");
+    }
+
+    #[test]
+    fn a_shortened_commands_whole_output_keeps_its_middle_laid_out_as_shown() {
+        let lines: String = (1..=3_000).map(|i| format!("line {i}\n")).collect();
+        let warning = "\x1b[33mwarning: slow\x1b[0m\n".to_string();
+        let out = CommandOutput {
+            exit_code: Some(0),
+            stdout: lines.clone(),
+            stderr: warning.clone(),
+            timed_out: false,
+            stopped: false,
+            truncated: false,
+            duration_ms: 10,
+            waited: None,
+            whole: Some((lines, warning)),
+        };
+        let (shown, shortened) = format_command_output("seq 3000", &out);
+        assert!(shortened && !shown.contains("\nline 1500\n"), "{shown}");
+        let whole = whole_output_text("seq 3000", &out);
+        assert!(
+            whole.starts_with("$ seq 3000\n--- stdout ---\nline 1\n"),
+            "{whole}"
+        );
+        assert!(whole.contains("\nline 1500\n"));
+        assert!(whole.ends_with("line 3000\n--- stderr ---\nwarning: slow\n"));
+    }
+
     /// G02: how a command that ran ended, from its result; nothing for a
     /// refusal or another tool's result.
     #[test]
@@ -2816,7 +3032,7 @@ a.rs (3 matches)
                 waited: None,
                 whole: None,
             };
-            command_end(&format_command_output("npm test", &out))
+            command_end(&format_command_output("npm test", &out).0)
         };
         assert_eq!(end(Some(0), false, false), Some((Some(0), false)));
         assert_eq!(end(Some(2), false, false), Some((Some(2), false)));
@@ -2987,6 +3203,7 @@ a.rs (3 matches)
             hidden: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: None,
+            reply_cut_off: false,
         };
         let stop = Arc::new(StopSignal::new());
         let call = |name: &'static str, args: &'static str| {

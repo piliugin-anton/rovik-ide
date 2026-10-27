@@ -28,12 +28,12 @@ import {
   type ProjectProfile,
   type WorkspaceMember,
 } from '../lib/projectProfile';
-import { checkCommand, type AgentPermissions } from '../lib/permissions';
+import { checkCommand, entriesToAllow, type AgentPermissions } from '../lib/permissions';
 
 export default function ProjectChecksSettings(props: {
   root: string;
   permissions: AgentPermissions;
-  /** "Allow it" adds a check's command to the allowed commands. */
+  /** "Allow it" adds what the allowed commands lack for a check to run. */
   onPermissionsChange: (next: AgentPermissions) => void;
   onOpenPage: (page: SettingsPage) => void;
 }) {
@@ -147,7 +147,7 @@ export default function ProjectChecksSettings(props: {
   function allow(command: string) {
     props.onPermissionsChange({
       ...p(),
-      allowedCommands: [...p().allowedCommands, command.trim()],
+      allowedCommands: [...p().allowedCommands, ...entriesToAllow(command, p())],
     });
   }
 

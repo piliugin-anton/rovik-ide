@@ -373,6 +373,10 @@ pub struct Run {
     pub(super) group_grants: super::group::GroupGrants,
     /// P4.7: earlier runs' saved check output was removed.
     pub(super) cleaned_this_run: bool,
+    /// The latest reply reached the model's output limit (finish reason
+    /// "length"): a call of it whose arguments don't parse was cut off
+    /// there, and is told so (tools.rs `CallContext`).
+    pub(super) reply_cut_off: bool,
     /// Plan reviews in this run, the findings that hold a plan back (until
     /// a plan is saved), and the `submit_plan` call they answered
     /// (plan_review.rs).
@@ -1336,6 +1340,7 @@ impl Run {
             acceptance_unmet: false,
             last_triage: None,
             cleaned_this_run: false,
+            reply_cut_off: false,
             group_grants: Default::default(),
             plan_reviews: 0,
             plan_blocked: false,
@@ -2470,6 +2475,7 @@ impl Run {
             };
             let (focus_note, clm_reminder) = (s.focus_note, s.clm_reminder.take());
             drop(s);
+            self.reply_cut_off = finish_reason.as_deref() == Some("length");
 
             // Reasoning forms the provider refused aren't sent again in this run.
             if let Some((_, rejected, unresolved)) = learned {
