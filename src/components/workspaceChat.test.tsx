@@ -1265,3 +1265,18 @@ test('a folder checked on its repository’s main branch is offered the chat’s
   assert.deepEqual(sent('git_head'), []);
   same.dispose();
 });
+
+test('a workspace chat whose folders all left the workspace says so, and its label asks for one', async () => {
+  talked(workspaceChat('ws-none', 'none', '["infra"]'));
+  const { root, dispose } = await mount('workspace:none', [api, web]);
+  assert.equal(label(root)?.textContent, 'in no folder ▾');
+  await openLabel(root);
+  assert.equal(applyItem(root)!.getAttribute('aria-disabled'), 'true', 'none checked');
+  box(root, 'web').click();
+  await flush();
+  applyItem(root)!.click();
+  await flush();
+  assert.deepEqual(sent('chat_set_folders'), [{ dialogId: 'ws-none', folders: '["web"]' }]);
+  assert.equal(label(root)?.textContent, 'in web ▾');
+  dispose();
+});

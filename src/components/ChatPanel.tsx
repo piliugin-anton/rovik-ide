@@ -654,21 +654,28 @@ export default function ChatPanel(props: ChatProps) {
   };
   /** Several folders: New chat asks which a chat works in, and a chat says which (D2). */
   const severalFolders = () => props.folders().length > 1;
-  /** A chat's folders for its row in the list: "api", "api, web", "All folders". */
+  /**
+   * A chat's folders for its row in the list: "api", "api, web", "All
+   * folders"; "No folder" for a workspace chat whose folders all left the
+   * workspace (D19), which asks for one before its next run.
+   */
   const rowFolders = (dialog: DialogSummary) => {
     const names = chatFolderNames(dialog, props.folders(), props.workspace());
-    return names === 'all' ? 'All folders' : (names?.join(', ') ?? null);
+    if (names === 'all') return 'All folders';
+    return names?.length === 0 ? 'No folder' : (names?.join(', ') ?? null);
   };
-  /** The open chat's folders for the label by the input: "api", "all folders". */
+  /** The open chat's folders for the label by the input: "api", "all folders", "no folder". */
   const activeFolders = () => {
     const dialog = activeDialog();
     const names = dialog ? chatFolderNames(dialog, props.folders(), props.workspace()) : null;
-    return names === 'all' ? 'all folders' : (names?.join(', ') ?? null);
+    if (names === 'all') return 'all folders';
+    return names?.length === 0 ? 'no folder' : (names?.join(', ') ?? null);
   };
   /** The label's tooltip: where the open chat's folders are. */
   const activeFoldersTitle = () => {
-    const root = chatRoot();
-    return root ? `This chat works in ${root.folders.map((f) => f.path).join(', ')}` : undefined;
+    const paths = chatRoot()?.folders.map((folder) => folder.path);
+    if (!paths) return undefined;
+    return paths.length ? `This chat works in ${paths.join(', ')}` : 'This chat has no folder';
   };
   /**
    * No chat to show, in a window with folders, once its chats are loaded:
