@@ -459,3 +459,26 @@ describe('ProjectTypeScriptWorker', () => {
     );
   });
 });
+
+// C06: a workspace's folders are one project, so a source of the second
+// folder is a file of the program too (typing/import resolution across them).
+const API_ROOT = 'file:///home/u/work/api';
+const WEB_ROOT = 'file:///home/u/work/web';
+const API_SRC = `${API_ROOT}/src/api.ts`;
+const WEB_SRC = `${WEB_ROOT}/src/app.ts`;
+
+it("a second folder's sources are files of the program", async () => {
+  const libs: Record<string, ExtraLib> = {};
+  libs[API_SRC] = { content: 'export const a = 1;', version: 1 };
+  libs[WEB_SRC] = {
+    content: "import { a } from '../../api/src/api';\nexport const b = a;\n",
+    version: 1,
+  };
+  const w = worker([model(WEB_SRC, libs[WEB_SRC].content)], { ...OPTIONS }, libs);
+  assert.deepEqual(w.getScriptFileNames().sort(), [API_SRC, WEB_SRC].sort());
+  assert.deepEqual(
+    codes(await w.getSemanticDiagnostics(WEB_SRC)),
+    [],
+    "the other folder's source resolves"
+  );
+});

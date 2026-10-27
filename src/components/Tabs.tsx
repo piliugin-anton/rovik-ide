@@ -1,17 +1,26 @@
-import { Index, Show, type Accessor } from 'solid-js';
+import { createMemo, Index, Show, type Accessor, type JSX } from 'solid-js';
 import { pageLabel } from '../lib/browserTabs';
 import { GlobeIcon } from './BrowserView';
-import { isBrowserTab, type EditorTab } from '../lib/editorTabs';
+import { isBrowserTab, tabHints, type EditorTab } from '../lib/editorTabs';
 
 interface TabsProps {
   /** Files and browser tabs, in order (lib/editorTabs.ts). */
   tabs: Accessor<EditorTab[]>;
   activePath: Accessor<string | null>;
+  /**
+   * The window's folders, by path and stored name: two tabs of one name say
+   * which folder each is in (C03). A project passes its one folder.
+   */
+  folders: Accessor<readonly { path: string; name: string }[]>;
   onSelect: (path: string) => void;
   onClose: (path: string) => void;
 }
 
 export default function Tabs(props: TabsProps) {
+  /** Where a tab whose name another tab has is: "api", "a/src" (C03). */
+  const hints = createMemo(() => tabHints(props.tabs(), props.folders()));
+  const hintOf = (tab: EditorTab) => hints().get(tab.path);
+
   return (
     <div class="tabs">
       {/* By position, not by object: a tab's file is a new object on every
@@ -48,7 +57,7 @@ export default function Tabs(props: TabsProps) {
               <Show when={isBrowserTab(tab())}>
                 <GlobeIcon class="tab-icon" />
               </Show>
-              <span class="tab-name">{tabName(tab())}</span>
+              <span class="tab-name">{tabName(tab(), hintOf(tab()))}</span>
               <span
                 class="tab-close"
                 onClick={(e) => {
@@ -66,9 +75,15 @@ export default function Tabs(props: TabsProps) {
   );
 }
 
-function tabName(tab: EditorTab): string {
+function tabName(tab: EditorTab, hint: string | undefined): JSX.Element {
   if (isBrowserTab(tab)) return pageLabel(tab.address);
-  return `${tab.deleted ? `${tab.name} [DELETED]` : tab.name}${tab.dirty ? ' •' : ''}`;
+  return (
+    <>
+      {tab.deleted ? `${tab.name} [DELETED]` : tab.name}
+      {tab.dirty ? ' •' : ''}
+      <Show when={hint}>{(where) => <span class="tab-hint">· {where()}</span>}</Show>
+    </>
+  );
 }
 
 function tabTitle(tab: EditorTab): string {

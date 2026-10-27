@@ -18,7 +18,7 @@ import Editor from './components/Editor';
 import BrowserView from './components/BrowserView';
 import MarkdownViewSwitch from './components/MarkdownViewSwitch';
 import ChatPanel from './components/ChatPanel';
-import { createFileTreeController } from './lib/fileTree';
+import { actionableRows, createFileTreeController, withoutFolderRows } from './lib/fileTree';
 import { languageForFile, isLikelyBinary } from './lib/language';
 import {
   pickProjectFolder,
@@ -40,7 +40,15 @@ import {
 } from './lib/commands';
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
 import { checkProject, claimProject, openNewWindow, showNoProjectWindow } from './lib/instances';
-import { claimTargetOf, openAtStart, resolvable, switchTarget } from './lib/switchTarget';
+import {
+  claimTargetOf,
+  locateFolder,
+  openAtStart,
+  removeFolder,
+  resolvable,
+  switchTarget,
+  type FolderChangeCalls,
+} from './lib/switchTarget';
 import type { FileWatchPayload, GitStashFilePreview, OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext, CursorInfo } from './lib/activeContext';
@@ -79,7 +87,7 @@ import {
   workspaceTarget,
 } from './lib/projects';
 import { chatApi, type ProjectSummary } from './lib/chatApi';
-import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
+import { rustFileSaved, stopRustSupport, workspaceFoldersChanged } from './lib/lsp/rustAnalyzer';
 import SearchPanel from './components/SearchPanel';
 import { notifyFileWritten, onFileDeleted, onFileWritten } from './lib/approvals';
 import { editorSettings } from './lib/editorSettings';
@@ -99,6 +107,7 @@ import {
   isBrowserTab,
   isFileTab,
   navigated,
+  unsavedIn,
   withFiles,
   withPage,
   type EditorTab,
@@ -420,6 +429,7 @@ export default function App() {
       // tree itself (D9).
       row: target()?.kind === 'workspace',
       id: rootIds()[folder.path],
+      missing: folder.missing,
     }))
   );
 
@@ -486,12 +496,24 @@ export default function App() {
     return rows.length > 0 ? rows[0] : null;
   });
 
+  /** The selected rows the actions act on: a folder's own row never is (D9). */
+  const actionable = createMemo<TreeRow[]>(() => actionableRows(effectiveSelectedRows()));
+
+  /**
+   * The folder the user is working in (D15): the active tab's, else the
+   * selected row's, else the first that's there. A new entry, a terminal or
+   * a settings page goes to it.
+   */
+  const activeFolderNow = createMemo(() =>
+    activeFolder(resolvable(folders()), activePath(), firstSelectedRow()?.path ?? null)
+  );
+
   /**
    * The folder a drop on the tree's empty space, or a new file at the top,
    * lands in: the active folder's (D15's rule, as a terminal starts in it).
    */
   const rootId = () => {
-    const at = activeFolder(folders(), activePath(), firstSelectedRow()?.path ?? null);
+    const at = activeFolderNow();
     return at ? (rootIds()[at.path] ?? null) : null;
   };
 
@@ -585,13 +607,18 @@ export default function App() {
   }
 
   /**
-   * Tabs with unsaved text, before they close (another project opens, or
-   * the window closes): saved, or let go, as the user says. False: stay
-   * (cancelled, or a save didn't go through). Switching projects used to
-   * drop the text without a word, and so did closing the window.
+   * Tabs with unsaved text, before they close (another project opens, a
+   * folder leaves the workspace, or the window closes): saved, or let go, as
+   * the user says. False: stay (cancelled, or a save didn't go through).
+   * Switching projects used to drop the text without a word, and so did
+   * closing the window. `inFolder`: only that folder's tabs, which close as
+   * it leaves the workspace (D9).
    */
-  async function settleUnsavedTabs(leaving: 'project' | 'app'): Promise<boolean> {
-    const unsaved = openFiles().filter((f) => f.dirty && !f.readOnly);
+  async function settleUnsavedTabs(
+    leaving: 'project' | 'app',
+    inFolder?: { folder: OpenFolder }
+  ): Promise<boolean> {
+    const unsaved = unsavedIn(openFiles(), inFolder?.folder.path);
     if (unsaved.length === 0) return true;
     const choice = await chooseDialog({
       title:
@@ -603,7 +630,9 @@ export default function App() {
         `changes that aren’t saved. ` +
         (leaving === 'app'
           ? 'They’re lost when the window closes, unless they’re saved.'
-          : 'The tabs close when another project opens, so they’re lost unless they’re saved.'),
+          : inFolder
+            ? 'They close when the folder leaves the workspace, so they’re lost unless they’re saved.'
+            : 'The tabs close when another project opens, so they’re lost unless they’re saved.'),
       confirmLabel: 'Save',
       alternateLabel: 'Don’t save',
     });
@@ -615,7 +644,7 @@ export default function App() {
       await saveActiveFile();
     }
     // A save refused (changed on disk and kept to compare, or an error).
-    return !openFiles().some((f) => f.dirty && !f.readOnly);
+    return unsavedIn(openFiles(), inFolder?.folder.path).length === 0;
   }
 
   // Rovik's own updates (lib/updates.ts): a look every 30 minutes, and an
@@ -787,15 +816,126 @@ export default function App() {
   /**
    * A folder that was missing is tried again (its row's **Try again**, or
    * the window coming to the front): resolved once it's there, and still
-   * shown as missing until then.
+   * shown as missing until then. Whether it was found.
    */
-  async function tryFolderAgain(path: string) {
+  async function tryFolderAgain(path: string): Promise<boolean> {
     const there = await pathExists(path).catch(() => false);
-    if (!there) return;
+    if (!there) return false;
     setMissingFolders((was) => new Set([...was].filter((missing) => missing !== path)));
     void resolveProject(path, folders());
+    return true;
   }
   onMount(() => onCleanup(rereadAiSettingsOnFocus()));
+
+  /** The window folder a tree row is, when the row is a folder row (D9). */
+  const folderOfRow = (row: TreeRow): OpenFolder | null =>
+    folders().find((folder) => folder.path === row.path) ?? null;
+
+  /** The menu is for one of the window's folders: exactly one folder row is selected. */
+  const menuFolderRow = createMemo<TreeRow | null>(() => {
+    const rows = effectiveSelectedRows();
+    return rows.length === 1 && rows[0].folderRow ? rows[0] : null;
+  });
+  const menuFolder = createMemo(() => {
+    const row = menuFolderRow();
+    return row ? { missing: !!row.missing } : undefined;
+  });
+
+  /**
+   * The window shows `next` after one of its folders left it or moved, in
+   * place: what is open in the folders that stay stays open (the tree's reset
+   * effect would close every folder otherwise), `gone`'s tabs close — a tab
+   * that followed its folder to a new place is already at its new path — and
+   * `gone` is no longer tried as missing, and the selection clears.
+   */
+  function showFolderChange(next: WindowTarget, gone: string) {
+    const roots = openFolders(next).map((folder) => folder.path);
+    for (const { folder, paths } of pathsByFolder([...tree.expanded()], roots)) {
+      tree.presetExpanded(folder, paths);
+    }
+    const closed = new Set(
+      openFiles()
+        .filter((f) => isAtOrUnder(f.path, gone))
+        .map((f) => f.path)
+    );
+    if (closed.size > 0) {
+      setOpenFiles((prev) => prev.filter((f) => !closed.has(f.path)));
+      const active = activePath();
+      if (active && closed.has(active)) setActivePath(null);
+    }
+    setMissingFolders((was) => new Set([...was].filter((path) => path !== gone)));
+    setSelectedFileIds(new Set<string>());
+    setLastSelectedId(null);
+    setTarget(next);
+  }
+
+  /** What Remove and Locate… need of the window, for the folder they act on. */
+  function folderChangeCalls(folder: OpenFolder): FolderChangeCalls {
+    return {
+      settle: (leaving) => settleUnsavedTabs('project', { folder: leaving }),
+      remove: (id, name) => chatApi.removeWorkspaceFolder(id, name),
+      check: (path) => checkProject({ kind: 'folder', path }),
+      relocate: (id, name, path) => chatApi.relocateWorkspaceFolder(id, name, path),
+      follow: (from, to) => followMoves([{ from, to }]),
+      claim: (next) => claimProject(claimTargetOf(next)),
+      show: (next) => showFolderChange(next, folder.path),
+      resolve: (path) => void resolveProject(path, folders()),
+    };
+  }
+
+  /** Remove from workspace: the folder leaves it, and nothing on disk changes. */
+  async function handleRemoveFolder() {
+    setContextMenuVisible(false);
+    const row = menuFolderRow();
+    const at = target();
+    const folder = row ? folderOfRow(row) : null;
+    if (!folder || !at) return;
+    try {
+      await removeFolder(at, folder, folderChangeCalls(folder));
+    } catch (err) {
+      notify({
+        id: 'folder-remove',
+        kind: 'error',
+        title: `Couldn’t remove ${folder.name}`,
+        message: String(err),
+      });
+    }
+  }
+
+  /** Locate…: the folder that isn't there is at another place from now on. */
+  async function handleLocateFolder() {
+    setContextMenuVisible(false);
+    const row = menuFolderRow();
+    const at = target();
+    const folder = row ? folderOfRow(row) : null;
+    if (!folder || !at) return;
+    try {
+      const to = await pickProjectFolder();
+      if (!to) return;
+      await locateFolder(at, folder, to, folderChangeCalls(folder));
+    } catch (err) {
+      notify({
+        id: 'folder-locate',
+        kind: 'error',
+        title: `Couldn’t locate ${folder.name}`,
+        message: String(err),
+      });
+    }
+  }
+
+  /** Try again: a missing folder's row asks whether it's back. */
+  async function handleTryFolderAgain() {
+    setContextMenuVisible(false);
+    const row = menuFolderRow();
+    if (!row) return;
+    if (await tryFolderAgain(row.path)) return;
+    notify({
+      id: `folder-missing:${row.path}`,
+      kind: 'info',
+      title: `${row.name} still isn’t there`,
+      message: `${row.path} can’t be read. Locate it, or remove it from the workspace.`,
+    });
+  }
 
   /** A project whose folder is gone: point it at its folder (lib/projects.ts). */
   async function relinkProject(p: ProjectSummary) {
@@ -1048,11 +1188,18 @@ export default function App() {
   // its file opens in a tab so the changes can be seen. In the background
   // while another file is being worked on, so a long run doesn't keep
   // switching tabs; focused when nothing else is open.
-  // Language servers belong to a project: a different one (or none) stops them.
+  // Language servers belong to the folders that are there: when one comes
+  // or goes (removed, located, tried again), a running server restarts for
+  // them (C07). Nothing starts one: a Rust file does that.
+  const loadableKey = createMemo(() =>
+    resolvable(folders())
+      .map((folder) => folder.path)
+      .join('\n')
+  );
   createEffect(
     on(
-      () => rootPath(),
-      () => void stopRustSupport(),
+      loadableKey,
+      () => workspaceFoldersChanged(resolvable(folders()).map((folder) => folder.path)),
       { defer: true }
     )
   );
@@ -1642,8 +1789,9 @@ export default function App() {
   async function handleDeleteFile() {
     setContextMenuVisible(false);
     // Items inside a selected folder go with it: deleting them separately
-    // would fail once the folder is gone.
-    const selected = effectiveSelectedRows();
+    // would fail once the folder is gone. A folder's own row isn't deleted:
+    // it leaves the workspace instead (D9).
+    const selected = actionable();
     const selectedRows = selected.filter(
       (r) =>
         !selected.some(
@@ -1726,14 +1874,15 @@ export default function App() {
 
   function handleCopyFile() {
     setContextMenuVisible(false);
-    const selectedIds = Array.from(selectedFileIds());
+    // A window folder's row is never copied: it isn't the rows' to act on (D9).
+    const selectedIds = withoutFolderRows(selectedFileIds(), tree.rows());
     if (selectedIds.length === 0) return;
     setClipboard({ ids: selectedIds, mode: 'copy' });
   }
 
   function handleCutFile() {
     setContextMenuVisible(false);
-    const selectedIds = Array.from(selectedFileIds());
+    const selectedIds = withoutFolderRows(selectedFileIds(), tree.rows());
     if (selectedIds.length === 0) return;
     setClipboard({ ids: selectedIds, mode: 'cut' });
   }
@@ -1743,8 +1892,16 @@ export default function App() {
     const entry = clipboard();
     const target = firstSelectedRow();
     if (!entry) return;
+    // A folder row that isn't there has no id to paste into (D20).
+    if (target?.missing) return;
 
-    const destDirId = target?.isDir ? target.id : rootId();
+    // The top of a selected file's own folder, else the active folder's.
+    const folder = target ? folderAt(target.path) : null;
+    const destDirId = target?.isDir
+      ? target.id
+      : folder
+        ? (rootIds()[folder.path] ?? null)
+        : rootId();
     if (!destDirId) {
       window.alert('No destination directory available');
       return;
@@ -1876,9 +2033,19 @@ export default function App() {
     return null;
   }
 
+  /** The tree's row for one of the window's folders: a workspace's folders have one (D9). */
+  function folderRowOf(folder: OpenFolder | null): TreeRow | null {
+    if (!folder) return null;
+    return tree.rows().find((row) => row.folderRow && row.path === folder.path) ?? null;
+  }
+
   function beginCreate(kind: 'file' | 'folder') {
     setContextMenuVisible(false);
-    const folder = creationFolder(firstSelectedRow());
+    const selected = firstSelectedRow();
+    // With nothing selected, the new entry goes into the active folder: in a
+    // workspace that is that folder's row, so the draft sits at depth 1 under
+    // it; a project's root has no row, and the draft is at the top (D15).
+    const folder = selected ? creationFolder(selected) : folderRowOf(activeFolderNow());
     const parentId = folder ? folder.id : rootId();
     if (!parentId) return;
 
@@ -1903,7 +2070,9 @@ export default function App() {
 
   function handleRenameFile() {
     setContextMenuVisible(false);
-    const target = firstSelectedRow();
+    // The rename goes to the selection's first row an action can act on: a
+    // folder's own row is left out, as Rename is enabled for one such row (D9).
+    const target = actionable()[0];
     if (!target) return;
     setEditingId(target.id);
   }
@@ -1959,17 +2128,19 @@ export default function App() {
     if (isTyping) return;
     if (!modKey) return;
 
-    const selected = selectedFileIds();
+    // A window folder's row isn't copied, cut or deleted: it leaves the
+    // workspace instead (D9).
+    const selected = withoutFolderRows(selectedFileIds(), tree.rows());
     const key = e.key.toLowerCase();
 
-    if (key === 'c' && selected.size > 0) {
+    if (key === 'c' && selected.length > 0) {
       e.preventDefault();
-      setClipboard({ ids: Array.from(selected), mode: 'copy' });
+      setClipboard({ ids: selected, mode: 'copy' });
     }
 
-    if (key === 'x' && selected.size > 0) {
+    if (key === 'x' && selected.length > 0) {
       e.preventDefault();
-      setClipboard({ ids: Array.from(selected), mode: 'cut' });
+      setClipboard({ ids: selected, mode: 'cut' });
     }
 
     if (key === 'v') {
@@ -1981,7 +2152,7 @@ export default function App() {
     }
 
     // Delete with Backspace or Delete key
-    if ((key === 'backspace' || key === 'delete') && selected.size > 0) {
+    if ((key === 'backspace' || key === 'delete') && selected.length > 0) {
       e.preventDefault();
       handleDeleteFile();
     }
@@ -2415,7 +2586,7 @@ export default function App() {
               </Show>
             }
           >
-            <SearchPanel rootPath={rootPath} onActiveChange={setSearchActive} />
+            <SearchPanel folders={() => resolvable(folders())} onActiveChange={setSearchActive} />
           </Show>
           <Show when={rootPath() && !searchActive()}>
             <FileTree
@@ -2427,6 +2598,7 @@ export default function App() {
               onToggle={tree.toggle}
               onOpenFile={(row) => void openInEditor({ path: row.path, focus: true })}
               onDrop={(ids, destDir) => void handleTreeDrop(ids, destDir)}
+              rootDrop={() => target()?.kind !== 'workspace'}
               onSelect={handleFileTreeSelect}
               onClearSelection={handleFileTreeClearSelection}
               editingId={editingId}
@@ -2516,6 +2688,7 @@ export default function App() {
           <Tabs
             tabs={tabs}
             activePath={activePath}
+            folders={() => folders()}
             onSelect={(path) => {
               requestEditorFocus(path);
               setActivePath(path);
@@ -2569,6 +2742,7 @@ export default function App() {
               <Editor
                 projectDir={rootPath}
                 folders={() => folders().map((folder) => folder.path)}
+                loadable={() => resolvable(folders()).map((folder) => folder.path)}
                 currentFilePath={path}
                 content={() => openFiles().find((f) => f.path === path)?.content}
                 language={() => openFiles().find((f) => f.path === path)?.language ?? 'plaintext'}
@@ -2587,7 +2761,9 @@ export default function App() {
         </div>
 
         <TerminalPanel
-          rootPath={rootPath}
+          session={() => sessionKey(target())}
+          folders={() => resolvable(folders())}
+          activeFolder={activeFolderNow}
           collapsed={terminalCollapsed}
           onCollapsedChange={setTerminalCollapsed}
         />
@@ -2598,8 +2774,9 @@ export default function App() {
           ref={setMenuEl}
           x={cursorPosition().x}
           y={cursorPosition().y}
-          hasSelection={selectedFileIds().size > 0}
-          singleSelection={selectedFileIds().size === 1}
+          hasSelection={withoutFolderRows(selectedFileIds(), tree.rows()).length > 0}
+          singleSelection={actionable().length === 1}
+          folder={menuFolder()}
           canPaste={!!clipboard()}
           onNewFile={handleNewFile}
           onNewFolder={handleNewFolder}
@@ -2608,6 +2785,9 @@ export default function App() {
           onCut={handleCutFile}
           onPaste={handlePasteFile}
           onDelete={handleDeleteFile}
+          onRemoveFolder={handleRemoveFolder}
+          onLocateFolder={handleLocateFolder}
+          onTryFolderAgain={handleTryFolderAgain}
         />
       </Show>
       <ConfirmDialogHost />
@@ -2629,7 +2809,12 @@ export default function App() {
       <NotificationHost />
       <Show when={appSettingsPage()} keyed>
         {(page) => (
-          <SettingsDialog initialPage={page} rootPath={rootPath()} onClose={closeAppSettings} />
+          <SettingsDialog
+            initialPage={page}
+            rootPath={activeFolderNow()?.path ?? null}
+            folders={resolvable(folders())}
+            onClose={closeAppSettings}
+          />
         )}
       </Show>
     </div>

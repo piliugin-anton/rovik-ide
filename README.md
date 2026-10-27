@@ -25,7 +25,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 **Editor**
 
 - Monaco editor (the editor used in VS Code) with syntax highlighting,
-  themes and tabs.
+  themes and tabs. Two tabs with the same file name show where each one is
+  (`api` · `package.json` in one folder of a workspace, `web` · `package.json`
+  in another).
 - Markdown files have a rendered preview, as GitHub shows them: beside the
   source (Ctrl+K V), instead of it (Ctrl+Shift+V), or switched with the
   buttons at the end of the tab strip. It scrolls with the editor, opens

@@ -6,11 +6,19 @@ import '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRoot, createSignal } from 'solid-js';
-import { createFileTreeController, type TreeRoot } from './fileTree';
-import type { DirEntryInfo } from '../types';
+import {
+  actionableRows,
+  createFileTreeController,
+  withoutFolderRows,
+  type TreeRoot,
+} from './fileTree';
+import { pathsByFolder } from './openFolders';
+import type { DirEntryInfo, TreeRow } from '../types';
 
 /** Folders of a fake disk, by path: their entries' names (a trailing / for a folder). */
 let disk: Record<string, string[]> = {};
+/** The folders each read asked for, in order. */
+let readPaths: string[] = [];
 
 function entries(path: string): DirEntryInfo[] {
   const names = disk[path];
@@ -28,7 +36,10 @@ function entries(path: string): DirEntryInfo[] {
 
 (window as any).__TAURI_INTERNALS__ = {
   invoke: async (cmd: string, args: { path: string }) => {
-    if (cmd === 'read_dir_entries') return entries(args.path);
+    if (cmd === 'read_dir_entries') {
+      readPaths.push(args.path);
+      return entries(args.path);
+    }
     throw new Error(`unexpected ${cmd}`);
   },
 };
@@ -39,7 +50,7 @@ const settle = async () => {
 
 /** A project's folder: the tree's only root, with no row of its own. */
 function project(path: string): TreeRoot[] {
-  return [{ path, name: path, row: false }];
+  return [{ path, name: path, row: false, missing: false }];
 }
 
 test('a renamed folder stays expanded, and the folders open inside it', async () => {
@@ -117,8 +128,8 @@ test('a workspace lists each folder as a row, each read from its own folder', as
   };
   await createRoot(async (dispose) => {
     const [roots] = createSignal<TreeRoot[]>([
-      { path: '/work/api', name: 'api', row: true },
-      { path: '/work/web', name: 'web', row: true },
+      { path: '/work/api', name: 'api', row: true, missing: false },
+      { path: '/work/web', name: 'web', row: true, missing: false },
     ]);
     const tree = createFileTreeController(roots);
     await settle();
@@ -170,8 +181,8 @@ test("a folder's move stays in it, and a change refreshes the folder it's in", a
   };
   await createRoot(async (dispose) => {
     const [roots] = createSignal<TreeRoot[]>([
-      { path: '/work/api', name: 'api', row: true },
-      { path: '/work/web', name: 'web', row: true },
+      { path: '/work/api', name: 'api', row: true, missing: false },
+      { path: '/work/web', name: 'web', row: true, missing: false },
     ]);
     const tree = createFileTreeController(roots);
     await settle();
@@ -224,8 +235,8 @@ test('a link in one folder to another lists rows of its own', async () => {
   };
   await createRoot(async (dispose) => {
     const [roots] = createSignal<TreeRoot[]>([
-      { path: '/work/api', name: 'api', row: true },
-      { path: '/work/web', name: 'web', row: true },
+      { path: '/work/api', name: 'api', row: true, missing: false },
+      { path: '/work/web', name: 'web', row: true, missing: false },
     ]);
     const tree = createFileTreeController(roots);
     await settle();
@@ -243,6 +254,112 @@ test('a link in one folder to another lists rows of its own', async () => {
         .map((f) => f.path)
         .sort(),
       ['/work/api/web/b.ts', '/work/web/b.ts']
+    );
+    dispose();
+  });
+});
+
+test("a folder's own row is left out of the rows an action acts on", () => {
+  const folderRow = { id: 'api', path: '/work/api', name: 'api', isDir: true, folderRow: true };
+  const fileRow = { id: 'a', path: '/work/api/a.ts', name: 'a.ts', isDir: false };
+  assert.deepEqual(
+    actionableRows([folderRow, fileRow] as TreeRow[]).map((r) => r.id),
+    ['a'],
+    'Rename and Delete act on the file, not the folder'
+  );
+});
+
+test("a missing folder's row lists nothing and isn't read again until it's back", async () => {
+  disk = { '/work/api': ['a.ts'], '/work/web': ['b.ts'], '/work/gone': ['c.ts'] };
+  readPaths = [];
+  await createRoot(async (dispose) => {
+    // A folder that isn't there is shown, not read: reading it fails, and a
+    // root is never forgotten, so the retry would go on forever (D20).
+    const [roots, setRoots] = createSignal<TreeRoot[]>([
+      { path: '/work/api', name: 'api', row: true, missing: false },
+      { path: '/work/gone', name: 'gone', row: true, missing: true },
+    ]);
+    const tree = createFileTreeController(roots);
+    await settle();
+    assert.deepEqual(
+      tree.rows().map((r) => `${r.name}${r.missing ? ' (missing)' : ''}`),
+      ['api', 'a.ts', 'gone (missing)']
+    );
+    assert.equal(tree.expanded().has('/work/gone'), false, 'nothing of it is opened');
+    const goneReads = () => readPaths.filter((path) => path === '/work/gone').length;
+    await settle();
+    assert.equal(goneReads(), 0, 'a folder that is not there is not read, nor retried');
+
+    // Back: the same effect reads it, and its row shows it open, as a root
+    // that was never missing does.
+    setRoots([
+      { path: '/work/api', name: 'api', row: true, missing: false },
+      { path: '/work/gone', name: 'gone', row: true, missing: false },
+    ]);
+    await settle();
+    assert.deepEqual(
+      tree.rows().map((r) => `${r.path}${r.missing ? ' (missing)' : ''}`),
+      ['/work/api', '/work/api/a.ts', '/work/gone', '/work/gone/c.ts']
+    );
+    assert.ok(goneReads() > 0, 'its listing is read now');
+    const readNow = goneReads();
+    // The user can still close it, and nothing is read again to do so.
+    tree.toggle({ path: '/work/gone', isDir: true });
+    await settle();
+    assert.deepEqual(
+      tree.rows().map((r) => r.path),
+      ['/work/api', '/work/api/a.ts', '/work/gone']
+    );
+    assert.equal(goneReads(), readNow);
+    dispose();
+  });
+});
+
+test("a folder's row is never among the rows copied, cut or deleted", () => {
+  const rows: TreeRow[] = [
+    { id: 'f', path: '/work/api', name: 'api', isDir: true, depth: 0, folderRow: true },
+    { id: 'a', path: '/work/api/a.ts', name: 'a.ts', isDir: false, depth: 1 },
+    { id: 'b', path: '/work/api/b.ts', name: 'b.ts', isDir: false, depth: 1 },
+  ];
+  assert.deepEqual(withoutFolderRows(new Set(['f', 'a']), rows), ['a']);
+  assert.deepEqual(withoutFolderRows(new Set(['b', 'a']), rows), ['b', 'a']);
+  assert.deepEqual(
+    withoutFolderRows(new Set(['f']), rows),
+    [],
+    'a folder alone: nothing to act on'
+  );
+});
+
+test("removing one folder keeps the others' open folders open", async () => {
+  disk = {
+    '/work/api': ['src/', 'a.ts'],
+    '/work/api/src': ['main.ts'],
+    '/work/web': ['src/', 'b.ts'],
+    '/work/web/src': ['app.ts'],
+  };
+  await createRoot(async (dispose) => {
+    const [roots, setRoots] = createSignal<TreeRoot[]>([
+      { path: '/work/api', name: 'api', row: true, missing: false },
+      { path: '/work/web', name: 'web', row: true, missing: false },
+    ]);
+    const tree = createFileTreeController(roots);
+    await settle();
+    tree.toggle({ path: '/work/api/src', isDir: true });
+    await settle();
+    tree.toggle({ path: '/work/web/src', isDir: true });
+    await settle();
+
+    // What Remove does before the target changes: the folder that stays has
+    // its expansion registered, folder by folder.
+    for (const saved of pathsByFolder([...tree.expanded()], ['/work/api'])) {
+      tree.presetExpanded(saved.folder, saved.paths);
+    }
+    setRoots([{ path: '/work/api', name: 'api', row: true, missing: false }]);
+    await settle();
+    assert.equal(tree.expanded().has('/work/api/src'), true, "the folder's own is still open");
+    assert.deepEqual(
+      tree.rows().map((r) => r.path),
+      ['/work/api', '/work/api/src', '/work/api/src/main.ts', '/work/api/a.ts']
     );
     dispose();
   });

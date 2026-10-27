@@ -15,6 +15,10 @@ export interface TreeRow {
   depth: number;
   loading?: boolean;
   ignored?: boolean;
+  /** A workspace folder's own row: never renamed, deleted, moved or dragged (D9). */
+  folderRow?: boolean;
+  /** That folder isn't there (deleted, or a drive that isn't mounted) (D20). */
+  missing?: boolean;
 }
 
 export interface OpenFile {

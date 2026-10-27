@@ -13,6 +13,7 @@ import { batch, createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import TerminalPanel from './TerminalPanel';
 import { initCloud, refreshHosts, type HostSummary } from '../lib/cloud';
+import type { OpenFolder } from '../lib/openFolders';
 import type { TerminalEvent } from '../lib/terminal';
 
 /** How the app answers each command in the test running now. */
@@ -85,6 +86,11 @@ const OFFLINE: HostSummary = {
   terminal: true,
 };
 const UNDEPLOYED: HostSummary = { id: 'h3', name: 'New', deployed: false, terminal: true };
+/** A folder, and the folders of one workspace, as the panel takes them. */
+const folder = (path: string): OpenFolder => ({ path, name: path, missing: false });
+const PROJECT: OpenFolder = { path: '/work/project', name: 'project', missing: false };
+const API: OpenFolder = { path: '/work/api', name: 'api', missing: false };
+const WEB: OpenFolder = { path: '/work/web', name: 'web', missing: false };
 /** A daemon the developer setting names by its socket: no SSH there. */
 const SOCKET: HostSummary = {
   id: '/run/agentd.sock',
@@ -128,7 +134,9 @@ async function panel() {
       <TerminalPanel
         collapsed={collapsed}
         onCollapsedChange={setCollapsed}
-        rootPath={() => '/work/project'}
+        session={() => '/work/project'}
+        folders={() => [PROJECT]}
+        activeFolder={() => PROJECT}
       />
     ),
     root
@@ -143,7 +151,7 @@ const tooltips = (root: HTMLElement) =>
   [...root.querySelectorAll('.terminal-tab')].map((e) => e.getAttribute('title'));
 const plus = (root: HTMLElement) => root.querySelector<HTMLButtonElement>('.terminal-new-button')!;
 const menuItems = (root: HTMLElement) => [
-  ...root.querySelectorAll<HTMLElement>('.terminal-new-menu [role="menuitem"]'),
+  ...root.querySelectorAll<HTMLElement>('.context-menu [role="menuitem"]'),
 ];
 const itemLabel = (item: Element) => item.querySelector('.context-menu-label')!.textContent;
 
@@ -183,7 +191,13 @@ test("each project's terminals: another's aren't shown, and come back with it", 
   const [collapsed, setCollapsed] = createSignal(false);
   disposeLast = render(
     () => (
-      <TerminalPanel collapsed={collapsed} onCollapsedChange={setCollapsed} rootPath={project} />
+      <TerminalPanel
+        collapsed={collapsed}
+        onCollapsedChange={setCollapsed}
+        session={project}
+        folders={() => (project() ? [folder(project()!)] : [])}
+        activeFolder={() => (project() ? folder(project()!) : null)}
+      />
     ),
     root
   );
@@ -542,4 +556,69 @@ test("a composition that starts is xterm's, as before: what it makes goes in onc
     textarea.dispatchEvent(compositionEvent('compositionend', '你'));
   });
   assert.deepEqual(sentNow, ['你']);
+});
+
+test('in a workspace, "+" lists the folders and the terminal starts in the one picked', async () => {
+  await app([]);
+  const root = container();
+  const [collapsed, setCollapsed] = createSignal(false);
+  disposeLast = render(
+    () => (
+      <TerminalPanel
+        collapsed={collapsed}
+        onCollapsedChange={setCollapsed}
+        session={() => 'workspace:w1'}
+        folders={() => [API, WEB]}
+        activeFolder={() => WEB}
+      />
+    ),
+    root
+  );
+  await flush();
+  // The panel's own first terminal starts in the folder being worked in (D15).
+  assert.deepEqual(
+    sent('spawn_terminal').map((a) => a.cwd),
+    ['/work/web']
+  );
+  assert.deepEqual(tooltips(root), ['/work/web · web'], 'a tab says which folder it is in');
+
+  plus(root).click();
+  await flush();
+  assert.deepEqual(menuItems(root).map(itemLabel), ['api', 'web']);
+  menuItems(root)[0].click();
+  await flush();
+  assert.deepEqual(
+    sent('spawn_terminal').map((a) => a.cwd),
+    ['/work/web', '/work/api'],
+    'the terminal starts in the folder picked'
+  );
+});
+
+test("a removed folder's terminal keeps running", async () => {
+  await app([]);
+  const root = container();
+  const [collapsed, setCollapsed] = createSignal(false);
+  const [folders, setFolders] = createSignal<OpenFolder[]>([API, WEB]);
+  disposeLast = render(
+    () => (
+      <TerminalPanel
+        collapsed={collapsed}
+        onCollapsedChange={setCollapsed}
+        session={() => 'workspace:w1'}
+        folders={folders}
+        activeFolder={() => folders()[0]}
+      />
+    ),
+    root
+  );
+  await flush();
+  assert.equal(sent('spawn_terminal').length, 1);
+
+  // The folder it runs in leaves the workspace: its shell is the window's,
+  // and keeps running (C01).
+  setFolders([API]);
+  await flush();
+  assert.deepEqual(sent('close_terminal'), []);
+  assert.deepEqual(labels(root), ['bash'], 'still shown and running');
+  assert.equal(root.querySelectorAll('.terminal-instance').length, 1);
 });

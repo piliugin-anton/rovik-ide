@@ -6,7 +6,14 @@
 // tree, terminals and chats) is App.tsx's: this takes the calls it needs,
 // so the order, and what a refused switch leaves as it was, can be read and
 // tested on their own.
-import { openFolders, type OpenFolder, type WindowTarget } from './openFolders';
+import {
+  openFolders,
+  withoutFolder,
+  workspaceAsTarget,
+  type OpenFolder,
+  type WindowTarget,
+} from './openFolders';
+import type { Workspace } from './chatApi';
 import type { ClaimTarget } from './instances';
 
 /** What a switch needs of the window. */
@@ -112,5 +119,87 @@ export async function switchTarget(
   // tried again when the window comes to the front, or by its row's
   // **Try again**.
   await calls.resolve(await presentFolders(target, calls.exists));
+  return true;
+}
+
+/** What removing a folder, or locating it at a new place, needs of the window. */
+export interface FolderChangeCalls {
+  /** Settles the unsaved tabs of the folder that goes; false: the user cancelled. */
+  settle: (folder: OpenFolder) => Promise<boolean>;
+  /** Removes the folder, by its name, from the workspace: refused for the last one. */
+  remove: (workspaceId: string, name: string) => Promise<void>;
+  /** Whether the new place may open here: another window with it comes to the front. */
+  check: (path: string) => Promise<boolean>;
+  /** The folder is at `to` from now on, as the backend keeps the workspace then. */
+  relocate: (workspaceId: string, name: string, to: string) => Promise<Workspace>;
+  /** The folder's tabs, pointed at its new place. */
+  follow: (from: string, to: string) => void;
+  /** Claims the target for this window; false when another window took it meanwhile. */
+  claim: (target: WindowTarget) => Promise<boolean>;
+  /** Makes it the target shown. */
+  show: (target: WindowTarget) => void | Promise<void>;
+  /** The folder at `path` resolved, now that it's there. */
+  resolve: (path: string) => void | Promise<void>;
+}
+
+/**
+ * Removes a folder from a workspace (docs/design/workspaces-plan.md C01): its
+ * unsaved tabs are settled, it leaves the workspace, and the window shows the
+ * workspace without it. Nothing on disk is touched.
+ *
+ * What it returns: whether the workspace changed. False only when nothing
+ * did — the user kept the folder's unsaved tabs, or the target is a project
+ * (the list of one, with no folder row to remove) — and a refused removal (the
+ * last folder) throws, with the workspace as it was.
+ *
+ * The claim follows the backend's change, because the backend reads a
+ * workspace's folders from the database when it claims it. Should another
+ * window have taken the workspace meanwhile, the window still shows what the
+ * database keeps — the folder is gone, and a row for it would be a lie — and
+ * the claim itself has already said so (instances.ts's "open elsewhere"
+ * notice); a later switch claims or refuses as usual.
+ */
+export async function removeFolder(
+  target: WindowTarget,
+  folder: OpenFolder,
+  calls: FolderChangeCalls
+): Promise<boolean> {
+  // A project is the list of one: it has no folder row to remove.
+  if (target.kind !== 'workspace') return false;
+  if (!(await calls.settle(folder))) return false;
+  await calls.remove(target.id, folder.name);
+  const next = withoutFolder(target, folder.name);
+  await calls.claim(next);
+  await calls.show(next);
+  return true;
+}
+
+/**
+ * Locate…: the folder named `folder` is at `to` from now on. The new place is
+ * checked first, so the database never points at a folder another window
+ * holds; then the backend relocates it (D5), its tabs follow it, and the
+ * window shows the workspace as the backend now keeps it.
+ *
+ * What it returns: whether anything moved. False only when nothing did — the
+ * new place is another window's, or the target is a project. As in
+ * `removeFolder`, the claim comes after the relocation (the backend claims a
+ * workspace's folders as the database has them) and a refusal doesn't leave
+ * the window showing the old place: the workspace has moved, the claim's
+ * notice says another window has it, and a later switch claims or refuses.
+ */
+export async function locateFolder(
+  target: WindowTarget,
+  folder: OpenFolder,
+  to: string,
+  calls: FolderChangeCalls
+): Promise<boolean> {
+  // A project is the list of one: it has no folder row to locate.
+  if (target.kind !== 'workspace') return false;
+  if (!(await calls.check(to))) return false;
+  const next = workspaceAsTarget(await calls.relocate(target.id, folder.name, to));
+  calls.follow(folder.path, to);
+  await calls.claim(next);
+  await calls.show(next);
+  await calls.resolve(to);
   return true;
 }

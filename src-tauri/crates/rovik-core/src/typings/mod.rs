@@ -103,9 +103,10 @@ pub struct ProjectDefinitions {
     pub typings: LoadedTypings,
 }
 
-/// The project's sources and the dependencies they reach.
-pub fn load_definitions(root: &Path) -> ProjectDefinitions {
-    let scan = sources::scan(root);
+/// The project's sources and the dependencies they reach. Its folders are
+/// a project's one, or a workspace's several (C06).
+pub fn load_definitions(roots: &[PathBuf]) -> ProjectDefinitions {
+    let scan = sources::scan(roots);
     let typings = closure_of(&scan).finish();
     ProjectDefinitions {
         sources: scan.files,
@@ -115,14 +116,14 @@ pub fn load_definitions(root: &Path) -> ProjectDefinitions {
 
 /// The dependencies the project's sources reach. The sources are read for
 /// their imports and not returned: for a refresh after an install.
-pub fn load_typings(root: &Path) -> LoadedTypings {
-    let scan = sources::scan(root);
+pub fn load_typings(roots: &[PathBuf]) -> LoadedTypings {
+    let scan = sources::scan(roots);
     closure_of(&scan).finish()
 }
 
 /// The project's sources alone (within limits).
-pub fn load_sources(root: &Path) -> LoadedFiles {
-    sources::scan(root).files
+pub fn load_sources(roots: &[PathBuf]) -> LoadedFiles {
+    sources::scan(roots).files
 }
 
 /// The packages these imports reach, less those under `exclude` (package
@@ -240,7 +241,7 @@ mod tests {
                 ("node_modules/eslint/lib/index.d.ts", "export {}"),
             ],
         );
-        let loaded = load_definitions(&dir);
+        let loaded = load_definitions(std::slice::from_ref(&dir));
         assert!(!loaded.sources.truncated && !loaded.typings.truncated);
         assert_eq!(
             relative_paths(&dir, &loaded.sources.files),

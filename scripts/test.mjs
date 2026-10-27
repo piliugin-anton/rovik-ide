@@ -61,8 +61,65 @@ const browserOnly = {
       return { path: args.path, namespace: 'stub' };
     });
     b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
-      contents:
-        'const stub = new Proxy(function () {}, { get: (_, k) => (k === "__esModule" ? false : stub), apply: () => stub, construct: () => stub });\nmodule.exports = stub;',
+      // A property of the stub is the stub, however deep: `typescript`,
+      // `languages` and the rest are read as they are when a module loads
+      // (defaults.ts reads its defaults then), and any call is a no-op.
+      // Node's ESM interop copies a CommonJS module's own keys, so the
+      // namespaces a module reads at load are in `exports` and `ownKeys`.
+      //
+      // Two are real, because what's built on them is plain JavaScript:
+      // a URI (uris.ts keys files by its text) and the editor's list of
+      // models (an LSP client opens what is open, and finds nothing).
+      contents: `
+const disposable = { dispose: () => {} };
+const makeUri = (text) => ({
+  scheme: 'file',
+  path: text.replace(/^file:\\/\\//, ''),
+  fsPath: text.replace(/^file:\\/\\//, ''),
+  toString: () => text,
+  with: (change) => makeUri(change && change.path ? 'file://' + change.path : text),
+});
+const Uri = {
+  parse: (text) => makeUri(text),
+  file: (path) => makeUri('file://' + String(path).replace(/\\\\/g, '/')),
+  joinPath: (base, ...parts) =>
+    makeUri(String(base).replace(/\\/+$/, '') + '/' + parts.join('/')),
+};
+const editor = new Proxy(
+  {},
+  {
+    get: (target, key) =>
+      key === 'getModels' ? () => [] : key === 'onDidCreateModel' ? () => disposable : stub,
+  }
+);
+const exposed = { Uri, editor };
+const names = [
+  ...Object.keys(exposed),
+  'typescript',
+  'languages',
+  'Range',
+  'Position',
+  'Selection',
+  'KeyCode',
+  'KeyMod',
+  'MarkerSeverity',
+  'MarkerTag',
+];
+const stub = new Proxy(function () {}, {
+  get: (target, key) => (key === '__esModule' ? false : key in exposed ? exposed[key] : stub),
+  apply: () => stub,
+  construct: () => stub,
+  getOwnPropertyDescriptor: (target, key) =>
+    Object.getOwnPropertyDescriptor(target, key) ?? {
+      value: key in exposed ? exposed[key] : stub,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+  ownKeys: (target) => [...Reflect.ownKeys(target), ...names],
+});
+module.exports = stub;
+`,
       loader: 'js',
     }));
   },

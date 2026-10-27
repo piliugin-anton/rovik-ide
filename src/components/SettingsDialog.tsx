@@ -10,8 +10,9 @@
 // updates' switch in the windows' shared state. There's nothing to save on
 // close. Sub-pages keep a Back bar pinned under the header,
 // outside the scrolling body.
-import { createSignal, Match, onCleanup, onMount, Show, Switch } from 'solid-js';
+import { createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js';
 import { PAGE_TITLE, type SettingsPage } from '../lib/appSettings';
+import type { OpenFolder } from '../lib/openFolders';
 import { kindsWithoutModel } from '../lib/subagentSettings';
 import {
   aiAutopilot,
@@ -58,16 +59,30 @@ const AI_PAGES: SettingsPage[] = [
 interface SettingsDialogProps {
   /** Opens straight on a page (e.g. "Manage providers…" in the model picker). */
   initialPage?: SettingsPage;
-  /** The open project, for its checks page; none without a project. */
+  /** The folder being worked in, for the project pages; none without a folder. */
   rootPath?: string | null;
+  /** The window's folders: a workspace's project pages pick one (C05). */
+  folders?: readonly OpenFolder[];
   onClose: () => void;
 }
 
 export default function SettingsDialog(props: SettingsDialogProps) {
   const [page, setPage] = createSignal<SettingsPage>(props.initialPage ?? 'menu');
+  /** The folder the project pages show: the active one to begin with (C05). */
+  const [selected, setSelected] = createSignal<string | null>(props.rootPath ?? null);
   const [providersApi, setProvidersApi] = createSignal<ProvidersSettingsController | null>(null);
   const [connectorsApi, setConnectorsApi] = createSignal<ConnectorsSettingsController | null>(null);
   const [hostsApi, setHostsApi] = createSignal<HostsSettingsController | null>(null);
+
+  /** A workspace has several folders, so its project pages ask which one. */
+  const choosing = () => (props.folders?.length ?? 0) > 1;
+  /** The folders the select offers, the active one first. */
+  const choices = () => {
+    const open = props.folders ?? [];
+    const active = open.find((folder) => folder.path === props.rootPath);
+    return active ? [active, ...open.filter((folder) => folder !== active)] : open;
+  };
+  const askingFolder = () => choosing() && (page() === 'project' || page() === 'files');
 
   // The saved settings as they are now: the chat panel may have changed
   // them (the chat's model, what a model's provider accepts) since the
@@ -161,6 +176,21 @@ export default function SettingsDialog(props: SettingsDialogProps) {
               </button>
             </p>
           </Show>
+          <Show when={askingFolder()}>
+            <label class="settings-folder-row">
+              <span class="settings-hint">Folder</span>
+              <select
+                class="settings-select settings-folder-select"
+                aria-label="Folder"
+                value={selected() ?? ''}
+                onChange={(e) => setSelected(e.currentTarget.value)}
+              >
+                <For each={choices()}>
+                  {(folder) => <option value={folder.path}>{folder.name}</option>}
+                </For>
+              </select>
+            </label>
+          </Show>
           <Switch>
             <Match when={page() === 'menu'}>
               <SettingsMenu rootPath={props.rootPath ?? null} onOpen={setPage} />
@@ -218,26 +248,39 @@ export default function SettingsDialog(props: SettingsDialogProps) {
                 onOpenPage={setPage}
               />
             </Match>
-            <Match when={page() === 'project' && props.rootPath}>
-              <ProjectChecksSettings
-                root={props.rootPath!}
-                permissions={aiPermissions()}
-                onPermissionsChange={updatePermissions}
-                onOpenPage={setPage}
-              />
-            </Match>
             <Match when={page() === 'project'}>
-              <p class="settings-hint">
-                No project is open. The checks are set per project: open a folder first.
-              </p>
-            </Match>
-            <Match when={page() === 'files' && props.rootPath}>
-              <RestrictedFilesSettings root={props.rootPath!} />
+              {/* Keyed: another folder is another page, read again (C05). */}
+              <Show
+                when={selected()}
+                keyed
+                fallback={
+                  <p class="settings-hint">
+                    No project is open. The checks are set per project: open a folder first.
+                  </p>
+                }
+              >
+                {(root) => (
+                  <ProjectChecksSettings
+                    root={root}
+                    permissions={aiPermissions()}
+                    onPermissionsChange={updatePermissions}
+                    onOpenPage={setPage}
+                  />
+                )}
+              </Show>
             </Match>
             <Match when={page() === 'files'}>
-              <p class="settings-hint">
-                No project is open. Restricted files are set per project: open a folder first.
-              </p>
+              <Show
+                when={selected()}
+                keyed
+                fallback={
+                  <p class="settings-hint">
+                    No project is open. Restricted files are set per project: open a folder first.
+                  </p>
+                }
+              >
+                {(root) => <RestrictedFilesSettings root={root} />}
+              </Show>
             </Match>
             <Match when={page() === 'workload'}>
               <HeavyCommandsSettings />

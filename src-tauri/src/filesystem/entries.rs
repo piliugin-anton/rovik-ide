@@ -165,7 +165,7 @@ fn entry_name(from: &Path, new_name: Option<String>, what: &str) -> Result<Strin
 /// under `foo`, so compare lowercased there too — otherwise moving a folder
 /// into its own differently-cased descendant slips past the guard.
 fn is_at_or_under(path: &Path, ancestor: &Path) -> bool {
-    if path == ancestor || path.starts_with(ancestor) {
+    if same_path(path, ancestor) || path.starts_with(ancestor) {
         return true;
     }
     #[cfg(any(windows, target_os = "macos"))]
@@ -173,12 +173,54 @@ fn is_at_or_under(path: &Path, ancestor: &Path) -> bool {
         // One separator too: Windows paths come with `\`, or a mix.
         let lower = |p: &Path| p.to_string_lossy().to_lowercase().replace('\\', "/");
         let (p, a) = (lower(path), lower(ancestor));
-        p == a || p.starts_with(&format!("{}/", a.trim_end_matches('/')))
+        p.starts_with(&format!("{}/", a.trim_end_matches('/')))
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         false
     }
+}
+
+/// Whether both paths name the same place: equal under the platform's case
+/// rule (Windows and default macOS ignore case), trailing separators aside.
+/// Paths only: two links to one folder, or a link and its target, aren't the
+/// same place (a link in a folder isn't that folder's own entry).
+fn same_path(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let normal = |p: &Path| {
+            p.to_string_lossy()
+                .to_lowercase()
+                .replace('\\', "/")
+                .trim_end_matches('/')
+                .to_string()
+        };
+        normal(a) == normal(b)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        false
+    }
+}
+
+/// Refuses `what` ("delete", "rename", "move") on one of the window's own
+/// folders: it leaves the workspace instead, and only through the workspace's
+/// own commands (docs/design/workspaces-plan.md C01). The folders are
+/// compared by path: deleting a link that points at one of them is fine.
+fn refuse_window_folder(state: &WatcherState, path: &Path, what: &str) -> Result<(), String> {
+    // A poisoned lock still holds the window's list: read it, rather than
+    // refusing every folder operation until the app restarts.
+    let folders = state.folders.lock().unwrap_or_else(|e| e.into_inner());
+    if folders.iter().any(|folder| same_path(folder, path)) {
+        return Err(format!(
+            "can't {what} {}: it is a folder of this window (remove it from the workspace instead)",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Whether both paths point at the same file (same inode / file index).
@@ -441,6 +483,7 @@ pub async fn delete_path(
     permanent: Option<bool>,
 ) -> Result<(), String> {
     let p = resolve_id(&state, &id)?;
+    refuse_window_folder(&state, &p, "delete")?;
     blocking(move || {
         let meta = fs::symlink_metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?;
         if permanent.unwrap_or(false) {
@@ -516,6 +559,7 @@ pub async fn rename_path(
     new_name: String,
 ) -> Result<String, String> {
     let from = resolve_id(&state, &id)?;
+    refuse_window_folder(&state, &from, "rename")?;
     let new_name = validate_file_name(&new_name)?;
     let parent = from
         .parent()
@@ -561,6 +605,7 @@ pub async fn move_path(
     new_name: Option<String>,
 ) -> Result<String, String> {
     let from = resolve_id(&state, &id)?;
+    refuse_window_folder(&state, &from, "move")?;
     let dest_dir = resolve_id(&state, &dest_dir_id)?;
     let name = entry_name(&from, new_name, "move")?;
     let moved = blocking(move || {
@@ -746,6 +791,28 @@ mod tests {
             .contains("root folder"));
     }
 
+    /// A panic while the folder list is locked poisons it; the guard still
+    /// refuses the window's folders, rather than failing every folder
+    /// operation or reading past the list.
+    #[test]
+    fn a_poisoned_folder_list_still_guards_the_windows_folders() {
+        let dir = scratch("poisonedfolders");
+        let state = WatcherState::default();
+        *state.folders.lock().unwrap() = vec![dir.join("one")];
+        std::thread::scope(|s| {
+            let poisoned = s.spawn(|| {
+                let _held = state.folders.lock().unwrap();
+                panic!("poisons the folder list");
+            });
+            assert!(poisoned.join().is_err());
+        });
+        assert!(state.folders.is_poisoned());
+        let err = refuse_window_folder(&state, &dir.join("one"), "delete").unwrap_err();
+        assert!(err.contains("is a folder of this window"), "{err}");
+        assert!(refuse_window_folder(&state, &dir.join("other"), "delete").is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn descendant_moves_are_detected() {
         let root = Path::new("/proj");
@@ -754,6 +821,54 @@ mod tests {
         assert!(!is_at_or_under(&root.join("other"), &root.join("sub")));
         // A sibling whose name merely shares a prefix is not a descendant.
         assert!(!is_at_or_under(Path::new("/proj2/x"), root));
+    }
+
+    /// A window's folders leave the workspace through the workspace's own
+    /// commands, so the tree's commands don't delete, rename or move one
+    /// (docs/design/workspaces-plan.md C01).
+    #[test]
+    fn a_windows_folder_isnt_deleted_renamed_or_moved() {
+        let dir = scratch("windowfolder");
+        let state = WatcherState::default();
+        *state.folders.lock().unwrap() = vec![dir.join("one"), dir.join("two")];
+        for what in ["delete", "rename", "move"] {
+            let err = refuse_window_folder(&state, &dir.join("two"), what).unwrap_err();
+            assert!(err.contains("is a folder of this window"), "{err}");
+        }
+        // A trailing separator names the same folder.
+        let trailing = PathBuf::from(format!(
+            "{}{}",
+            dir.join("one").display(),
+            std::path::MAIN_SEPARATOR
+        ));
+        assert!(refuse_window_folder(&state, &trailing, "delete").is_err());
+        // Where case doesn't count, the other spelling is the same folder.
+        #[cfg(any(windows, target_os = "macos"))]
+        {
+            let other_case = PathBuf::from(dir.join("two").to_string_lossy().to_uppercase());
+            assert!(refuse_window_folder(&state, &other_case, "delete").is_err());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only the folder itself is refused: a folder inside it, and a link that
+    /// points at it, are the tree's to act on (deleting a link deletes the
+    /// link, not what it points at).
+    #[test]
+    fn a_folder_inside_a_windows_folder_or_a_link_to_one_is_acted_on() {
+        let dir = scratch("windowinside");
+        let inside = dir.join("src");
+        std::fs::create_dir_all(&inside).unwrap();
+        let state = WatcherState::default();
+        *state.folders.lock().unwrap() = vec![dir.clone()];
+        assert!(refuse_window_folder(&state, &inside, "delete").is_ok());
+        #[cfg(unix)]
+        {
+            let link = dir.join("elsewhere");
+            std::os::unix::fs::symlink(&inside, &link).unwrap();
+            assert!(refuse_window_folder(&state, &link, "delete").is_ok());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

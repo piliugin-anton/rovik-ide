@@ -22,6 +22,7 @@ import {
   readFileUnlessGone,
 } from '../commands';
 import type { ImportSite, LoadedFiles, LoadedTypings } from '../../types';
+import { innermostFolder } from '../openFolders';
 import { notify } from '../notifications';
 import { readProjectConfig } from './compilerOptions';
 import { clearTypeScriptMarkers, setSemanticValidationEnabled } from './defaults';
@@ -92,11 +93,12 @@ export class IntelliSenseProject {
   private readonly editedModels = new Set<monaco.editor.ITextModel>();
   private readonly modelListeners: monaco.IDisposable[] = [];
 
+  /** `roots`: the window's folders, a project's one or a workspace's several (C06). */
   constructor(
-    readonly root: string,
+    readonly roots: readonly string[],
     activeFile: string | null
   ) {
-    this.types = new ActiveConfig(root);
+    this.types = new ActiveConfig(roots);
     this.types.setActiveFile(activeFile);
     const sink: SourceChangeSink = {
       apply: (changes) => this.applySourceChanges(changes),
@@ -134,7 +136,8 @@ export class IntelliSenseProject {
 
   /** A source changed on disk: `content` if known, null when deleted, undefined to read it. */
   sourceChanged(path: string, content?: string | null): void {
-    if (!this.owns(path) || !isProjectSource(path, this.root)) return;
+    const folder = this.folderOf(path);
+    if (!folder || !isProjectSource(path, folder)) return;
     this.sources.queue(path, content);
   }
 
@@ -174,14 +177,24 @@ export class IntelliSenseProject {
   }
 
   private owns(path: string): boolean {
-    return forwardSlashes(path).startsWith(forwardSlashes(this.root));
+    return this.folderOf(path) !== null;
+  }
+
+  /** The window folder `path` is in, or null when it's in none of them. */
+  private folderOf(path: string): string | null {
+    return innermostFolder(this.roots, path);
+  }
+
+  /** The configs found in `root`: the ones its own files' configs are. */
+  private configPathsUnder(root: string): string[] {
+    return [...this.configPaths].filter((path) => this.folderOf(path) === root);
   }
 
   private async load(): Promise<void> {
     // A new project has no libs yet: no semantic errors until it is loaded.
     setSemanticValidationEnabled(false);
     try {
-      const { sources, typings } = await loadProjectDefinitions(this.root).catch(() => ({
+      const { sources, typings } = await loadProjectDefinitions(this.roots).catch(() => ({
         sources: NOTHING,
         typings: NO_TYPINGS,
       }));
@@ -189,19 +202,22 @@ export class IntelliSenseProject {
       // The configs are among the sources: no second trip to disk for them.
       this.noteConfigs(sources);
       const loaded = new Map(sources.files.map((f) => [f.path, f.content]));
-      const config = await readProjectConfig(
-        this.root,
-        [...this.configPaths],
-        async (path) => loaded.get(path) ?? readFileContent(path)
-      );
-      if (this.disposed) return;
+      // Each folder's own configs, read from what the walk already loaded.
+      for (const root of this.roots) {
+        const config = await readProjectConfig(
+          root,
+          this.configPathsUnder(root),
+          async (path) => loaded.get(path) ?? readFileContent(path)
+        );
+        if (this.disposed) return;
+        this.types.configure(root, config);
+      }
       this.warnIfTruncated('typings', typings);
       this.warnIfTruncated('sources', sources);
       this.deps.reset(typings);
       const typingLibs = this.typingLibs(typings);
       // Options first: a change restarts the worker, which then starts
       // with the complete lib set instead of receiving it twice.
-      this.types.configure(config);
       this.applyInstalled();
       workerLibs.replace([...typingLibs, ...this.sourceLibs(sources)], isLoadedLib);
       this.noteSources(sources);
@@ -258,7 +274,7 @@ export class IntelliSenseProject {
   }
 
   private async reloadSources(): Promise<void> {
-    const sources = await loadProjectSources(this.root).catch(() => null);
+    const sources = await loadProjectSources(this.roots).catch(() => null);
     if (this.disposed || !sources) return;
     this.warnIfTruncated('sources', sources);
     this.noteConfigs(sources);
@@ -271,7 +287,7 @@ export class IntelliSenseProject {
   }
 
   private async refreshTypings(): Promise<void> {
-    const typings = await loadProjectTypings(this.root).catch(() => null);
+    const typings = await loadProjectTypings(this.roots).catch(() => null);
     if (this.disposed || !typings) return; // keep the old libs
     this.warnIfTruncated('typings', typings);
     this.deps.reset(typings);
@@ -286,9 +302,11 @@ export class IntelliSenseProject {
   }
 
   private async reloadConfig(): Promise<void> {
-    const config = await readProjectConfig(this.root, [...this.configPaths]);
-    if (this.disposed) return;
-    this.types.configure(config);
+    for (const root of this.roots) {
+      const config = await readProjectConfig(root, this.configPathsUnder(root));
+      if (this.disposed) return;
+      this.types.configure(root, config);
+    }
     this.types.apply();
   }
 
@@ -314,7 +332,8 @@ export class IntelliSenseProject {
       specifiers: [...specifiers],
     }));
     this.wanted.clear();
-    const typings = await loadDependencyTypings(this.root, sites, this.deps.loadedDirs).catch(
+    // Its root is only checked to be a folder: the sites' folders decide.
+    const typings = await loadDependencyTypings(this.roots[0], sites, this.deps.loadedDirs).catch(
       () => null
     );
     if (this.disposed || !typings) return;
@@ -399,7 +418,9 @@ export class IntelliSenseProject {
 
   private warnIfTruncated(what: 'typings' | 'sources', loaded: LoadedFiles): void {
     if (!loaded.truncated) return;
-    console.warn(`IntelliSense: not all ${what} of ${this.root} were loaded (limit reached)`);
+    console.warn(
+      `IntelliSense: not all ${what} of ${this.roots.join(', ')} were loaded (limit reached)`
+    );
     notify({
       id: `intellisense-truncated-${what}`,
       kind: 'warning',
@@ -411,10 +432,6 @@ export class IntelliSenseProject {
       timeout: 20_000,
     });
   }
-}
-
-function forwardSlashes(path: string): string {
-  return path.replace(/\\/g, '/');
 }
 
 /** A model's file path, as the backend and the watcher name it (uris.ts). */

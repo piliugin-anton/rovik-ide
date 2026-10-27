@@ -79,6 +79,10 @@ pub struct WatcherState {
     /// onto with stale or differently-cased casing. After a cross-device
     /// move the old id maps to the copy, whose identity is the copy's own.
     id_to_path: Mutex<HashMap<String, (PathBuf, Option<String>)>>,
+    /// The window's folders, as `start_file_watch` was given them: the tree's
+    /// commands never delete, rename or move one of them, they leave the
+    /// workspace instead (docs/design/workspaces-plan.md C01).
+    folders: Mutex<Vec<PathBuf>>,
 }
 
 fn resolve_id(state: &WatcherState, id: &str) -> Result<PathBuf, String> {

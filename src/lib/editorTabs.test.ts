@@ -8,6 +8,8 @@ import {
   isFileTab,
   navigated,
   reloaded,
+  tabHints,
+  unsavedIn,
   withFiles,
   withPage,
   type BrowserTab,
@@ -101,4 +103,76 @@ test('a browser tab navigated or reloaded is a new tab object, and the others st
   assert.notEqual(again[2], moved[2]);
   assert.equal(again[0], moved[0]);
   assert.deepEqual(reloaded(tabs, '/p/a.ts'), tabs, 'a file is no browser tab');
+});
+
+const hintFolder = (path: string, name: string) => ({ path, name });
+
+test('two package.json show their folders', () => {
+  const tabs: EditorTab[] = [file('/work/api/package.json'), file('/work/web/package.json')];
+  const hints = tabHints(tabs, [hintFolder('/work/api', 'api'), hintFolder('/work/web', 'web')]);
+  assert.deepEqual(
+    hints.get('/work/api/package.json'),
+    'api',
+    "the folder's stored name, not the one it would be given now"
+  );
+  assert.deepEqual(hints.get('/work/web/package.json'), 'web');
+});
+
+test('two index.ts in one project show their parent folders', () => {
+  const tabs: EditorTab[] = [file('/p/a/src/index.ts'), file('/p/b/src/index.ts')];
+  const hints = tabHints(tabs, [hintFolder('/p', 'p')]);
+  assert.deepEqual(
+    [hints.get('/p/a/src/index.ts'), hints.get('/p/b/src/index.ts')],
+    ['a/src', 'b/src']
+  );
+
+  // The shortest end that tells them apart: "src" would be both.
+  const siblings: EditorTab[] = [file('/p/a/index.ts'), file('/p/b/index.ts')];
+  const near = tabHints(siblings, [hintFolder('/p', 'p')]);
+  assert.deepEqual([near.get('/p/a/index.ts'), near.get('/p/b/index.ts')], ['a', 'b']);
+});
+
+test('a unique name shows alone, and a tab outside the folders gets no hint', () => {
+  const tabs: EditorTab[] = [
+    file('/work/api/package.json'),
+    file('/work/api/only.ts'),
+    file('/elsewhere/package.json'),
+    page('browser:1', 'http://localhost:5173/'),
+    // A stashed version's tab: its key is no path in the folder.
+    { ...file('disk:readme', 'disk:1'), name: 'package.json' },
+  ];
+  const hints = tabHints(tabs, [hintFolder('/work/api', 'api')]);
+  assert.equal(hints.has('/work/api/only.ts'), false, 'one tab of its name');
+  // A tab in no folder of the window neither gets a hint nor makes one.
+  assert.equal(hints.has('/elsewhere/package.json'), false);
+  assert.equal(hints.has('/work/api/package.json'), false);
+});
+
+test('closing a folder settles only the unsaved files in it, and a read-only one has nothing to save', () => {
+  const dirty = (path: string, extra: Partial<OpenFile> = {}): OpenFile => ({
+    ...file(path),
+    dirty: true,
+    ...extra,
+  });
+  const files = [
+    dirty('/work/api/a.ts'),
+    dirty('/work/web/b.ts'),
+    dirty('/work/api/stash.ts', { readOnly: true }),
+    file('/work/api/clean.ts'),
+  ];
+  assert.deepEqual(
+    unsavedIn(files).map((f) => f.path),
+    ['/work/api/a.ts', '/work/web/b.ts'],
+    'every folder, for leaving the app'
+  );
+  assert.deepEqual(
+    unsavedIn(files, '/work/api').map((f) => f.path),
+    ['/work/api/a.ts'],
+    'only the leaving folder'
+  );
+  assert.deepEqual(
+    unsavedIn(files, '/work/web').map((f) => f.path),
+    ['/work/web/b.ts']
+  );
+  assert.deepEqual(unsavedIn(files.slice(2), '/work/api'), [], 'a read-only file is not saved');
 });

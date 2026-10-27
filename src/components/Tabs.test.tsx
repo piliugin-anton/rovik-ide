@@ -36,6 +36,7 @@ function rendered() {
       <Tabs
         tabs={() => TABS}
         activePath={() => 'browser:1'}
+        folders={() => [{ path: '/p', name: 'p' }]}
         onSelect={(path) => selected.push(path)}
         onClose={(path) => closed.push(path)}
       />
@@ -70,5 +71,28 @@ test('a browser tab is selected and closed by its key', () => {
   assert.deepEqual(selected, ['browser:1'], 'closing it doesn’t select it');
   page.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true }));
   assert.deepEqual(closed, ['browser:1', 'browser:1'], 'a middle click closes it too');
+  dispose();
+});
+
+test('two tabs of one name show where each one is', () => {
+  const root = container();
+  const tabs: EditorTab[] = [file('/p/api/package.json'), file('/p/web/package.json')];
+  const dispose = render(
+    () => (
+      <Tabs
+        tabs={() => tabs}
+        activePath={() => null}
+        folders={() => [{ path: '/p', name: 'p' }]}
+        onSelect={() => {}}
+        onClose={() => {}}
+      />
+    ),
+    root
+  );
+  const hints = [...root.querySelectorAll('.tab-hint')].map((el) => el.textContent);
+  assert.deepEqual(hints, ['· api', '· web']);
+  // The file's own name is unchanged; the hint is beside it.
+  const names = [...root.querySelectorAll('.tab-name')].map((el) => el.firstChild?.textContent);
+  assert.deepEqual(names, ['package.json', 'package.json']);
   dispose();
 });

@@ -599,6 +599,11 @@ pub async fn start_file_watch(
 
     let (tx, rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
     let roots: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    // Stored before the watch starts, so a folder that can't be watched (an
+    // empty drive, say) is still the window's and stays un-deletable.
+    // A poisoned lock (a panic while it was held) still holds a list that
+    // is read: it's taken over, so the guard never sees the folders before.
+    *state.folders.lock().unwrap_or_else(|e| e.into_inner()) = roots.clone();
     // Off the main thread: watching a big tree folder by folder takes a
     // while (inotify), and nothing else must wait for it.
     let (watcher, started) = crate::util::blocking(move || {

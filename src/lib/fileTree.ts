@@ -13,6 +13,26 @@ export interface TreeRoot {
   row: boolean;
   /** The backend's id for the folder, once resolved: the id of its row. */
   id?: string;
+  /** The folder isn't there: its row says so, and none of it is read (D20). */
+  missing: boolean;
+}
+
+/**
+ * The selected rows that copy, cut and delete act on: a workspace folder's
+ * own row is never one of them (it leaves the workspace instead, D9).
+ */
+export function withoutFolderRows(ids: ReadonlySet<string>, rows: readonly TreeRow[]): string[] {
+  const folderRows = new Set(rows.filter((row) => row.folderRow).map((row) => row.id));
+  return [...ids].filter((id) => !folderRows.has(id));
+}
+
+/**
+ * The selected rows that an action acts on (delete, rename, the menu's
+ * counts). A window folder's own row is left out: it leaves the workspace
+ * instead (D9), so no action may take it as its target.
+ */
+export function actionableRows(rows: readonly TreeRow[]): TreeRow[] {
+  return rows.filter((row) => !row.folderRow);
 }
 
 /**
@@ -80,6 +100,15 @@ export function createFileTreeController(roots: () => readonly TreeRoot[]) {
     return roots().some((root) => root.path === path);
   }
 
+  /**
+   * Whether `path` is in a folder that isn't there: nothing of it is read,
+   * so its row's Try again or Locate… is what brings it back (D20).
+   */
+  function isMissing(path: string): boolean {
+    const at = rootOf(path);
+    return at !== null && roots().some((root) => root.path === at && root.missing);
+  }
+
   async function loadDir(path: string) {
     const root = rootOf(path);
     if (!root) return;
@@ -134,8 +163,9 @@ export function createFileTreeController(roots: () => readonly TreeRoot[]) {
       const next = new Set<string>();
       for (const root of current) {
         // A root's own listing is always read: its row shows it open, and a
-        // project's root has no row to open.
-        next.add(root.path);
+        // project's root has no row to open. A folder that isn't there has
+        // nothing to read.
+        if (!root.missing) next.add(root.path);
         for (const saved of pending.filter((p) => p.root === root.path)) {
           for (const path of saved.paths) next.add(path);
         }
@@ -145,18 +175,35 @@ export function createFileTreeController(roots: () => readonly TreeRoot[]) {
       setLastRoots(key);
     }
     for (const root of current) {
-      if (!cache().has(root.path)) {
+      if (!root.missing && !cache().has(root.path)) {
         void loadDir(root.path);
       }
     }
     // Fetch any expanded directory that isn't cached yet — covers both
     // manual toggling and a restored expansion set, with no ordering
-    // requirement between parent/child.
+    // requirement between parent/child. A folder that isn't there is left
+    // alone: reading it fails, and it can't be forgotten (a root never is),
+    // so reading it again would go on for as long as the window is open.
     for (const p of expanded()) {
-      if (!cache().has(p) && !loading().has(p)) {
+      if (!isMissing(p) && !cache().has(p) && !loading().has(p)) {
         void loadDir(p);
       }
     }
+  });
+
+  // A folder that was missing and is there now is listed open, as a root
+  // that was never missing is. Not a reset: the other folders' expansions stay.
+  let missingBefore = new Set<string>();
+  createEffect(() => {
+    const current = roots();
+    const back = current.filter((root) => !root.missing && missingBefore.has(root.path));
+    missingBefore = new Set(current.filter((root) => root.missing).map((root) => root.path));
+    if (back.length === 0) return;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      for (const root of back) next.add(root.path);
+      return next;
+    });
   });
 
   /**
@@ -313,8 +360,11 @@ export function createFileTreeController(roots: () => readonly TreeRoot[]) {
         name: root.name,
         isDir: true,
         depth: 0,
+        folderRow: true,
+        missing: root.missing,
       });
-      if (currentExpanded.has(root.path)) walk(root.path, 1);
+      // Nothing of a folder that isn't there is listed: there's nothing to read.
+      if (!root.missing && currentExpanded.has(root.path)) walk(root.path, 1);
     }
     return out;
   });

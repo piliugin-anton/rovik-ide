@@ -2209,6 +2209,148 @@ kept, then the delete once another project is the open one.
 Departure: the guard is in the core's api, not the command, so it can be tested
 with a `TestCore`; the command only tells it which projects are the window's.
 
-Before H, a user of a project sees none of this: no menu makes a workspace, and
-a window still has one folder (A's note stands). The visible changes are still
-the fixed bugs of section 12 and the README's Git panel section.
+**C01 — a window's folders in the tree and in App.** The backend refuses to
+delete, rename or move one of the window's folders: `WatcherState.folders` is
+what `start_file_watch` was given (stored before the watch starts, so a folder
+that can't be watched is guarded too), and `entries.rs`'s
+`refuse_window_folder` refuses `delete_path`, `rename_path` and `move_path`
+with "…: a folder of this window: remove it from the workspace instead". It
+compares paths under the platform's case rule, sharing the equality half of
+`is_at_or_under` (`same_path`), so a link to a folder is still the tree's to
+delete. `TreeRow` gains `folderRow` and `missing`, `TreeRoot` a `missing`;
+`createFileTreeController` gives a folder its row, reads nothing of a missing
+one (before, a root that failed was retried forever: `forget` never drops a
+root), and exports `withoutFolderRows` for the ids copy, cut and delete act on.
+`FileTree` takes `rootDrop` (a project has a project-root drop target, a
+workspace none), leaves folder rows out of a drag, won't toggle a missing row,
+refuses a drop on one, and draws a folder row with its path as its title
+(`tree-root-row`) and "Folder not found" when it's missing. The menu gets
+`folder`, `onRemoveFolder`, `onLocateFolder` and `onTryFolderAgain`:
+New file, New folder, Paste, Remove from workspace, and for a missing folder
+Locate…, Try again, Remove from workspace — never Rename, Copy, Cut or Delete.
+App has `activeFolderNow` (the `rootId` now uses it), sends a new entry into
+the active folder's row, pastes into a selected file's own folder, and its
+handlers, the clipboard keys and the menu's `hasSelection` go through
+`withoutFolderRows`. `removeFolder` and `locateFolder` live in
+`switchTarget.ts` as ordered calls (`FolderChangeCalls`), so their order is
+tested without App; `showFolderChange` changes the target in place, registering
+each remaining folder's expansion with `tree.presetExpanded` (else the tree's
+reset effect closes every folder), closes what left, and drops it from
+`missingFolders`. Both change the backend first and claim after it — the
+backend claims a workspace's folders as the database has them, so claiming
+first would claim the folder that's leaving or its old place — and a claim
+another window refuses doesn't stop the window from showing what the database
+keeps (the folder is gone, or at its new place; a row or a target for the old
+one would be a lie), with the claim's own "open elsewhere" notice and a later
+switch claiming or refusing as usual. So `true` means the workspace changed,
+whether or not this window could claim it again. `settleUnsavedTabs` takes
+`{ folder }`, settling only that folder's tabs, with a message saying they
+close as the folder leaves.
+Tests: `entries.rs` "a window's folder isn't deleted, renamed or moved" and "a
+folder inside a window's folder, or a link to one, is acted on"; `fileTree
+.test.ts` "a missing folder's row lists nothing and isn't read again until
+it's back", "a folder's row is never among the rows copied, cut or deleted",
+"removing one folder keeps the others' open folders open"; `FileTree.test.tsx`
+the five drag/drop and missing-row tests; `FileContextMenu.test.tsx` (new) two;
+`openFolders.test.ts` and `switchTarget.test.ts` five more.
+Departures: the folder menu's tests have their own file, as the menu is its own
+component; Remove asks for no confirmation (it touches nothing on disk) but
+settles the folder's tabs first; Locate… checks the new place with
+`project_check` before the backend relocates, so the database never points at
+a folder another window holds; the guard compares paths, not file identities.
+
+**C02 — search in every folder.** `SearchPanel` takes `folders` instead of
+`rootPath` and searches every folder at once; `mergeResults` keeps the matches
+in folder order under one limit for the whole search, adds the folders' totals
+and says more exist when any folder was truncated or the merge cut lines. The
+groups carry their folder (their collapsed state is keyed by folder and path),
+a workspace's results come under a header per folder, and a result opens
+`toAbsolutePath(path, folder.path)`. The folders are searched with
+`Promise.allSettled`: one that fails (its drive went between the window's check
+and the search, the backend refused) keeps its header with the reason under it
+(`search-folder-error`) while the others' results show; only when no folder
+answered at all does the panel show the error itself, as it did with one
+folder. `searchPanel.test.tsx` (new): two folders' results under their headers,
+the same relative path opening each folder's own file, one folder as it looks
+today, one folder's failure leaving the others' results, no folder answering,
+the limit for the whole search.
+Departure: `.search-folder-header` and `.search-folder-error` rules in
+`styles.css`, off the row's files.
+
+**C03 — tabs of one name told apart.** `tabHints` (editorTabs.ts) gives each
+tab a name another tab shares the shortest end of its parent path's segments
+that no other shares — "api" and "web" with several folders, "a/src" and
+"b/src" in one project — over the files of the window's folders alone. `Tabs`
+takes `folders` and shows the hint in a `tab-hint` span after the name; App
+passes the window's folders. Tests: `editorTabs.test.ts` three,
+`Tabs.test.tsx` one. Departure: a `.tab-hint` rule in `styles.css`.
+
+**C04 — terminals by session.** `FolderMenu` (new) is the pick-one menu of a
+workspace's folders, with the look and keys of `TerminalNewMenu` and a
+`children` slot; `TerminalNewMenu`'s hosts are `TerminalHostItems`, used by its
+own menu and by that slot. `TerminalPanel` takes `session`, `folders` and
+`activeFolder` in place of `rootPath`: its tabs belong to a `session` and carry
+the `folderName` they opened in, `newTerminal` starts in the active folder (or
+the one picked), and a workspace's "+" always opens `FolderMenu`, with the
+hosts after a separator. A tab's tooltip adds "· <folder>" in a workspace.
+Tests: "in a workspace, '+' lists the folders and the terminal starts in the
+one picked" and "a removed folder's terminal keeps running"; the existing tests
+pass a session and one folder.
+
+**C05 — settings pages with a folder select.** `SettingsDialog` takes `folders`
+and keeps a `selected` folder (the active one first); on the project and files
+pages with more than one folder it shows a `settings-folder-select`, and each
+page is rendered in a `<Show when={selected()} keyed>` so another folder reads
+it again. `ProjectChecksSettings`'s members' heading is "Packages (N)". Tests:
+`SettingsDialog.test.tsx` "with several folders the project pages show a
+folder select, the active one first", "one folder: the project pages ask
+nothing", "choosing another folder shows its restricted files";
+`ProjectChecksSettings.test.tsx` "the members' heading reads Packages (N)".
+`SettingsMenu` and `RestrictedFilesSettings` are unchanged; the menu's "This
+project · <name>" names the active folder. Departure: a
+`.settings-folder-row` rule in `styles.css`.
+
+**C06 — IntelliSense over the folders.** `sources::scan` takes `roots` and
+walks them into one `Collector`, so the 5,000-file / 40 MB limit is the
+project's, its folders' together, and `load_definitions`, `load_typings` and
+`load_sources` take `&[PathBuf]`; `util::blocking_in_folders` keeps the roots
+that are folders and errors only when none is, and the three typings commands
+take `roots`. `ActiveConfig` takes the folders, configures each one and gives a
+file its own folder's options (`innermostFolder`), its `covers` comparing the
+folder as well as the config; `IntelliSenseProject` takes `roots` and reads each
+folder's configs (`configPathsUnder`), warning by the folders' names.
+`ensureProjectIntelliSense` and `isIntelliSenseReady` compare by the folders'
+list, the definition opener only asks whether a project is loaded, and
+`Editor` takes `loadable` (the folders that are there) for the two. Tests:
+`sources.rs` "two roots' sources are both loaded" and "two roots share one
+limit", `util.rs` "a root that isn't a folder is left out, and none is an
+error", `activeConfig.test.ts` (new) two, `projectWorker.test.ts` "a second
+folder's sources are files of the program". Departure, and a big one: the
+Monaco stub in `scripts/test.mjs` now has its namespaces when a module is
+loaded (Node's ESM interop copies a CommonJS module's own keys, so the stub
+lists them), a `Uri` whose text is the key uris.ts builds, and an empty model
+list — without them no test could load the modules IntelliSense is built on.
+
+**C07 — rust-analyzer over the folders.** `LspClientOptions.root` is
+`folders`: the process runs in the first, `rootUri` and `rootPath` are the
+first, and `workspaceFolders` lists every one, in `initialize` and in the
+answer to `workspace/workspaceFolders`. `rustAnalyzer.ts`'s `activeFolders`
+replaces `activeRoot`, compared by `join('\n')`, and `launch`, `restartWith`,
+`install` and `offerDownload` take the list; `restartRustAnalyzer()` reads it,
+and only `offerRustSrc` gets `folders[0]` (the `rust-src` offer is still made
+once per first folder). When the folders that are there change (one removed,
+located, or back after Try again), App restarts a running server for them
+through `workspaceFoldersChanged`, so another set of folders is a restart, not
+a `didChangeWorkspaceFolders`; with none running it does nothing.
+`Editor` calls `ensureRustSupport(props.loadable())`. Tests: `client.test.ts`
+(new) "initialize lists both folders, the first one as the workspace root" and
+"workspace/workspaceFolders is answered with the folders sent in initialize" —
+the URI compared with the one sent, since the stub's URIs are opaque-ish.
+`rustAnalyzer.test.ts` (new) counts the binary lookups: a restart for a changed
+set, none for the same one, none when no server was started.
+By hand: the download offer with two folders starts rust-analyzer with both.
+
+Before H, a user of a project sees none of this either: a window still has one
+folder unless `--workspace` asks for one. What does change is that two tabs of
+one name say where each one is, and the project checks page says
+"Packages (N)".

@@ -6,8 +6,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { OpenFolder } from './openFolders';
 
-const { claimTargetOf, openAtStart, presentFolders, resolvable, switchTarget } =
-  await import('./switchTarget');
+import type { WindowTarget } from './openFolders';
+
+const {
+  claimTargetOf,
+  locateFolder,
+  openAtStart,
+  presentFolders,
+  removeFolder,
+  resolvable,
+  switchTarget,
+} = await import('./switchTarget');
 const { openFolders } = await import('./openFolders');
 
 /** The calls a switch makes, each recorded: the order is what's tested. */
@@ -162,4 +171,126 @@ test('what is claimed for a target: a folder by its path, a workspace by its ID'
     id: 'w1',
   });
   assert.equal(claimTargetOf(null), null);
+});
+
+/** What Remove and Locate… make of a target, for the recorded order. */
+const pathsOf = (target: WindowTarget) =>
+  target.kind === 'workspace' ? target.folders.map((f) => f.path).join(',') : target.path;
+
+/** The calls a folder's removal or relocation makes, each recorded. */
+function changes(over: Record<string, unknown> = {}) {
+  const order: string[] = [];
+  const made = {
+    settle: async (folder: OpenFolder) => (order.push(`settle:${folder.path}`), true),
+    remove: async (id: string, name: string) => void order.push(`remove:${id}:${name}`),
+    check: async (path: string) => (order.push(`check:${path}`), true),
+    relocate: async (id: string, name: string, to: string) => {
+      order.push(`relocate:${id}:${name}:${to}`);
+      return {
+        id,
+        name: 'Shop',
+        folders: [
+          { name: 'api', path: '/work/api', missing: false },
+          { name, path: to, missing: false },
+        ],
+      };
+    },
+    follow: (from: string, to: string) => void order.push(`follow:${from}:${to}`),
+    claim: async (target: WindowTarget) => (order.push(`claim:${pathsOf(target)}`), true),
+    show: async (target: WindowTarget) => void order.push(`show:${pathsOf(target)}`),
+    resolve: (path: string) => void order.push(`resolve:${path}`),
+    ...over,
+  };
+  return { order, made };
+}
+
+const webOf = (target: WindowTarget) => openFolders(target).find((f) => f.name === 'web')!;
+
+test('removing a folder settles its tabs, removes it, then claims the workspace without it', async () => {
+  const target = workspace('w1', ['/work/api', '/work/web']);
+  const { order, made } = changes();
+  assert.equal(await removeFolder(target, webOf(target), made), true);
+  assert.deepEqual(order, [
+    'settle:/work/web',
+    'remove:w1:web',
+    'claim:/work/api',
+    'show:/work/api',
+  ]);
+});
+
+test('a cancelled settle removes nothing', async () => {
+  const target = workspace('w1', ['/work/api', '/work/web']);
+  const { order, made } = changes({
+    settle: async (folder: OpenFolder) => (order.push(`settle:${folder.path}`), false),
+  });
+  assert.equal(await removeFolder(target, webOf(target), made), false);
+  assert.deepEqual(order, ['settle:/work/web'], 'the workspace still has both folders');
+});
+
+test('a refused removal claims nothing', async () => {
+  const target = workspace('w1', ['/work/api', '/work/web']);
+  const { order, made } = changes({
+    remove: async (id: string, name: string) => {
+      order.push(`remove:${id}:${name}`);
+      throw new Error('/work/web: a workspace keeps at least one folder');
+    },
+  });
+  await assert.rejects(removeFolder(target, webOf(target), made), /at least one folder/);
+  assert.deepEqual(order, ['settle:/work/web', 'remove:w1:web'], 'nothing else happened');
+});
+
+test('Locate… checks the new place first, then points the folder’s tabs at it', async () => {
+  const target = workspace('w1', ['/work/api', '/work/web']);
+  const { order, made } = changes();
+  assert.equal(await locateFolder(target, webOf(target), '/mnt/web', made), true);
+  assert.deepEqual(order, [
+    'check:/mnt/web',
+    'relocate:w1:web:/mnt/web',
+    'follow:/work/web:/mnt/web',
+    'claim:/work/api,/mnt/web',
+    'show:/work/api,/mnt/web',
+    'resolve:/mnt/web',
+  ]);
+});
+
+test('a new place another window has is refused and nothing moves', async () => {
+  const target = workspace('w1', ['/work/api', '/work/web']);
+  const { order, made } = changes({
+    check: async (path: string) => (order.push(`check:${path}`), false),
+  });
+  assert.equal(await locateFolder(target, webOf(target), '/mnt/web', made), false);
+  assert.deepEqual(order, ['check:/mnt/web'], 'relocated: no');
+});
+
+test('a claim refused after the removal still shows the workspace the backend keeps', async () => {
+  // Another window took the workspace between this window's last claim and
+  // this one: the folder is gone from the database all the same, so the tree
+  // must not go on showing it.
+  const target = workspace('w1', ['/work/api', '/work/web']);
+  const { order, made } = changes({
+    claim: async (next: WindowTarget) => (order.push(`claim:${pathsOf(next)}`), false),
+  });
+  assert.equal(await removeFolder(target, webOf(target), made), true, 'the workspace changed');
+  assert.deepEqual(order, [
+    'settle:/work/web',
+    'remove:w1:web',
+    'claim:/work/api',
+    'show:/work/api',
+  ]);
+});
+
+test('a claim refused after Locate… still shows the folder at its new place', async () => {
+  const target = workspace('w1', ['/work/api', '/work/web']);
+  const { order, made } = changes({
+    claim: async (next: WindowTarget) => (order.push(`claim:${pathsOf(next)}`), false),
+  });
+  assert.equal(await locateFolder(target, webOf(target), '/mnt/web', made), true, 'it moved');
+  assert.deepEqual(order, [
+    'check:/mnt/web',
+    'relocate:w1:web:/mnt/web',
+    'follow:/work/web:/mnt/web',
+    'claim:/work/api,/mnt/web',
+    'show:/work/api,/mnt/web',
+    'resolve:/mnt/web',
+  ]);
 });

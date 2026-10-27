@@ -126,7 +126,7 @@ fn synthetic_large_project() {
     );
 
     let started = Instant::now();
-    let loaded = load_definitions(&dir);
+    let loaded = load_definitions(std::slice::from_ref(&dir));
     let took = started.elapsed();
     let typing_bytes: usize = loaded.typings.files.iter().map(|f| f.content.len()).sum();
     let started = Instant::now();

@@ -10,6 +10,8 @@ import {
   openFolders,
   pathsByFolder,
   sessionKey,
+  withoutFolder,
+  workspaceAsTarget,
   type OpenFolder,
 } from './openFolders';
 
@@ -99,4 +101,51 @@ test("a session's open tree folders are registered on the folder each is in", ()
     { folder: '/work/packages/web', paths: ['/work/packages/web/src'] },
   ]);
   assert.deepEqual(pathsByFolder([], []), []);
+});
+
+test('withoutFolder leaves the other folders in their order', () => {
+  const target = {
+    kind: 'workspace' as const,
+    id: 'w1',
+    name: 'Shop',
+    folders: [
+      { name: 'api', path: '/work/api' },
+      { name: 'web', path: '/work/web' },
+      { name: 'docs', path: '/work/docs' },
+    ],
+  };
+  /** The folders that stay, by name: a project's none, it has no folder row. */
+  const left = (name: string) => {
+    const next = withoutFolder(target, name);
+    return next.kind === 'workspace' ? next.folders.map((folder) => folder.name) : [];
+  };
+  assert.deepEqual(left('web'), ['api', 'docs']);
+  // A name no folder has leaves them as they are.
+  assert.deepEqual(left('gone'), ['api', 'web', 'docs']);
+  assert.deepEqual(withoutFolder({ kind: 'folder', path: '/work/api' }, 'api'), {
+    kind: 'folder',
+    path: '/work/api',
+  });
+});
+
+test("workspaceAsTarget keeps each folder's stored name", () => {
+  assert.deepEqual(
+    workspaceAsTarget({
+      id: 'w1',
+      name: 'Shop',
+      folders: [
+        { name: 'api', path: '/work/api', missing: false },
+        { name: 'storefront', path: '/work/web', missing: true },
+      ],
+    }),
+    {
+      kind: 'workspace',
+      id: 'w1',
+      name: 'Shop',
+      folders: [
+        { name: 'api', path: '/work/api' },
+        { name: 'storefront', path: '/work/web' },
+      ],
+    }
+  );
 });

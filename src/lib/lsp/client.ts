@@ -37,7 +37,12 @@ export interface LspClientOptions {
   name: string;
   command: string;
   args?: string[];
-  root: string;
+  /**
+   * The window's folders, a project's one or a workspace's several (C07):
+   * the server's workspace, which it reads as one project. Its process runs
+   * in the first.
+   */
+  folders: readonly string[];
   /** The Monaco language this server is for ("rust"). */
   languageId: string;
   /** File extensions it handles (".rs"). */
@@ -122,21 +127,22 @@ export class LspClient {
       if (event.type === 'message') this.receive(event.data);
       else if (event.type === 'exit') this.handleExit(event.code);
     };
+    const root = this.opts.folders[0];
     this.serverId = await invoke<string>('lsp_start', {
       command: this.opts.command,
       args: this.opts.args ?? [],
-      cwd: this.opts.root,
+      cwd: root,
       onEvent: channel,
     });
 
-    const rootUri = modelUriFor(this.opts.root).toString();
-    const name = this.opts.root.split(/[\\/]/).filter(Boolean).pop() ?? this.opts.root;
+    const workspaceFolders = this.workspaceFolders();
     const result = await this.request('initialize', {
       processId: null,
       clientInfo: { name: 'Rovik IDE' },
-      rootUri,
-      rootPath: this.opts.root,
-      workspaceFolders: [{ uri: rootUri, name }],
+      // The first folder is the workspace's own; every folder is in it.
+      rootUri: root === undefined ? null : modelUriFor(root).toString(),
+      rootPath: root ?? null,
+      workspaceFolders,
       initializationOptions: this.opts.initializationOptions,
       capabilities: {
         workspace: { workspaceFolders: true, configuration: false, applyEdit: false },
@@ -268,6 +274,10 @@ export class LspClient {
       case 'workspace/configuration':
         result = (params?.items ?? []).map(() => null);
         break;
+      case 'workspace/workspaceFolders':
+        // Asked again later (a reload, a client that lost them): the same list.
+        result = this.workspaceFolders();
+        break;
       case 'workspace/applyEdit':
         result = { applied: false };
         break;
@@ -280,6 +290,14 @@ export class LspClient {
         return;
     }
     this.send({ jsonrpc: '2.0', id, result });
+  }
+
+  /** The window's folders as LSP workspace folders: every one, the first folder's own URI first (C07). */
+  private workspaceFolders(): { uri: string; name: string }[] {
+    return this.opts.folders.map((folder) => ({
+      uri: modelUriFor(folder).toString(),
+      name: folder.split(/[\\/]/).filter(Boolean).pop() ?? folder,
+    }));
   }
 
   private onNotification(method: string, params: Json) {

@@ -65,6 +65,8 @@ interface EditorProps {
   projectDir: Accessor<string | null>;
   /** The window's folders: a file's formatter, preview links and diagnostics are its folder's (D14). */
   folders: Accessor<readonly string[]>;
+  /** The folders that are there, loaded as one project: a missing one has nothing to load (C06). */
+  loadable: Accessor<readonly string[]>;
   currentFilePath: string;
   /** The file's text as the app holds it; undefined once its tab is closed. */
   content: Accessor<string | undefined>;
@@ -106,7 +108,7 @@ export default function Editor(props: EditorProps) {
   // definitions arrive instead of flashing false squiggles.
   const needsDefs = (lang: string) => lang === 'typescript' || lang === 'javascript';
   const [defsLoading, setDefsLoading] = createSignal(
-    needsDefs(props.language()) && !isIntelliSenseReady(props.projectDir())
+    needsDefs(props.language()) && !isIntelliSenseReady(props.loadable())
   );
 
   onMount(() => {
@@ -458,17 +460,17 @@ export default function Editor(props: EditorProps) {
     // them. Once per project (later mounts reuse them). While they load,
     // TS/JS files show a centered loading note (see defsLoading below) and
     // semantic diagnostics stay off (lib/intellisense.ts), so imports don't
-    // flash as errors. Tracked on projectDir: a project switch without a
-    // remount re-arms the overlay for the new root.
+    // flash as errors. Tracked on the folders loaded: a switch without a
+    // remount re-arms the overlay for the new ones.
     createEffect(() => {
-      const root = props.projectDir();
-      if (!needsDefs(props.language()) || isIntelliSenseReady(root)) {
+      const roots = props.loadable();
+      if (!needsDefs(props.language()) || isIntelliSenseReady(roots)) {
         setDefsLoading(false);
-        void ensureProjectIntelliSense(root);
+        void ensureProjectIntelliSense(roots);
         return;
       }
       setDefsLoading(true);
-      void ensureProjectIntelliSense(root).then(
+      void ensureProjectIntelliSense(roots).then(
         () => {
           if (!disposed) setDefsLoading(false);
         },
@@ -492,7 +494,7 @@ export default function Editor(props: EditorProps) {
 
     // Rust: rust-analyzer, started with the project's first Rust file.
     if (props.language() === 'rust') {
-      ensureRustSupport(props.projectDir());
+      ensureRustSupport(props.loadable());
       const rustActions = [
         editor.addAction({
           id: 'rovik.rustAnalyzer.restart',

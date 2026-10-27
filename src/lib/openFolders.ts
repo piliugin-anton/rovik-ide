@@ -7,7 +7,7 @@
 // folder of a workspace.
 import { isAtOrUnder } from './fileTools';
 import { fileName } from './toolGroups';
-import type { ProjectInfo } from './chatApi';
+import type { ProjectInfo, Workspace } from './chatApi';
 
 /** A folder of a workspace, as the workspace keeps it: its stored name (D8) and path. */
 export interface WorkspaceFolder {
@@ -29,6 +29,29 @@ export interface OpenFolder {
   project?: ProjectInfo;
   /** The folder isn't there: deleted, or a drive or share that isn't mounted (D20). */
   missing: boolean;
+}
+
+/**
+ * A workspace as a target: its folders as the database keeps them, each with
+ * the stored name its chats write (D8).
+ */
+export function workspaceAsTarget(workspace: Workspace): WindowTarget {
+  return {
+    kind: 'workspace',
+    id: workspace.id,
+    name: workspace.name,
+    folders: workspace.folders.map(({ name, path }) => ({ name, path })),
+  };
+}
+
+/**
+ * `target` without the folder named `name`: what a workspace is claimed as
+ * once that folder has left it. A project is the list of one and has no
+ * folder row to remove, so it's returned as it is.
+ */
+export function withoutFolder(target: WindowTarget, name: string): WindowTarget {
+  if (target.kind === 'folder') return target;
+  return { ...target, folders: target.folders.filter((folder) => folder.name !== name) };
 }
 
 /**

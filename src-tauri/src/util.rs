@@ -42,6 +42,25 @@ pub async fn blocking_in<T: Send + 'static>(
     blocking(move || Ok(load(&root))).await
 }
 
+/// `load`, off the async threads, on the window's folders: a project's one,
+/// or a workspace's several, walked as one project (C06). A folder that isn't
+/// there is left out — it has nothing to load, and D20 shows it as missing —
+/// and it's an error only when none of them is a folder.
+pub async fn blocking_in_folders<T: Send + 'static>(
+    roots: Vec<String>,
+    load: impl FnOnce(&[PathBuf]) -> T + Send + 'static,
+) -> Result<T, String> {
+    let folders: Vec<PathBuf> = roots
+        .iter()
+        .map(PathBuf::from)
+        .filter(|root| root.is_dir())
+        .collect();
+    if folders.is_empty() {
+        return Err(format!("{}: not a folder", roots.join(", ")));
+    }
+    blocking(move || Ok(load(&folders))).await
+}
+
 /// `work` off the main thread while the repository's folders wait: the
 /// working tree at `path` is being rewritten (rovik_core::overlay::chats).
 /// The hold is on the repository's working folder, not on `path` alone: a
@@ -166,6 +185,30 @@ mod tests {
         assert_eq!(taken, [1, 2]);
         assert!(terminals.get("t1").is_err() && terminals.get("t2").is_err());
         assert!(terminals.take_all().is_empty());
+    }
+
+    #[test]
+    fn a_root_that_isnt_a_folder_is_left_out_and_none_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("folders-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let there = dir.to_string_lossy().into_owned();
+        let seen = rovik_core::rt::block_on(blocking_in_folders(
+            vec![there.clone(), "/no/such/folder".into()],
+            |folders| folders.to_vec(),
+        ));
+        assert_eq!(
+            seen.map(|folders| folders.len()),
+            Ok(1),
+            "the folder that is there, and only it"
+        );
+        let none = rovik_core::rt::block_on(blocking_in_folders(
+            vec!["/no/such/folder".into(), "/nor/this".into()],
+            |folders| folders.to_vec(),
+        ));
+        let err = none.unwrap_err();
+        assert!(err.ends_with("not a folder"), "{err}");
+        assert!(err.contains("/nor/this"), "says which folders: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

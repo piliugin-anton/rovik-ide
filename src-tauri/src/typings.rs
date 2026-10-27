@@ -1,27 +1,30 @@
 //! The editor's IntelliSense definitions (rovik_core::typings), as
-//! commands. Each runs off the async runtime (util::blocking_in): walking
-//! and reading thousands of files must not stall the other commands.
+//! commands. Each runs off the async runtime (util::blocking_in_folders):
+//! walking and reading thousands of files must not stall the other commands.
+//! A workspace's folders are loaded as one project, within one set of limits
+//! (C06).
 
-use crate::util::blocking_in;
+use crate::util::{blocking_in, blocking_in_folders};
 use rovik_core::typings::{self, ImportSite, LoadedFiles, LoadedTypings, ProjectDefinitions};
 
 /// The project's sources and the dependencies they reach: what a project
-/// opens with.
+/// opens with. `roots` are its folders: a project's one, a workspace's
+/// several.
 #[tauri::command]
-pub async fn load_project_definitions(root: String) -> Result<ProjectDefinitions, String> {
-    blocking_in(root, typings::load_definitions).await
+pub async fn load_project_definitions(roots: Vec<String>) -> Result<ProjectDefinitions, String> {
+    blocking_in_folders(roots, typings::load_definitions).await
 }
 
 /// The project's sources alone (within limits).
 #[tauri::command]
-pub async fn load_project_sources(root: String) -> Result<LoadedFiles, String> {
-    blocking_in(root, typings::load_sources).await
+pub async fn load_project_sources(roots: Vec<String>) -> Result<LoadedFiles, String> {
+    blocking_in_folders(roots, typings::load_sources).await
 }
 
 /// The dependencies the project's sources reach, again: after an install.
 #[tauri::command]
-pub async fn load_project_typings(root: String) -> Result<LoadedTypings, String> {
-    blocking_in(root, typings::load_typings).await
+pub async fn load_project_typings(roots: Vec<String>) -> Result<LoadedTypings, String> {
+    blocking_in_folders(roots, typings::load_typings).await
 }
 
 /// The packages these imports reach that the editor doesn't have yet

@@ -238,6 +238,12 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* A folder that couldn't be searched, under its header: the others still show. */
+.search-folder-error {
+  margin: 2px 8px 4px;
+  font-size: 11px;
+}
+
 .search-results {
   flex: 1;
   min-height: 0;
@@ -296,6 +302,16 @@ body {
   white-space: nowrap;
   color: var(--fg-dim);
   font-size: 11px;
+}
+
+/* A workspace's results say which folder each file of them is in (C02). */
+.search-folder-header {
+  padding: 6px 8px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
 }
 
 .search-file-count {
@@ -412,6 +428,23 @@ body.tree-dragging {
 }
 
 .tree-row.ignored .tree-row-name {
+  color: var(--fg-dim);
+}
+
+/* A window folder's own row names a whole folder: a step brighter, in bold. */
+.tree-root-row .tree-row-name {
+  font-weight: 600;
+}
+
+/* A folder that isn't there: nothing of it is read, and it can't be opened. */
+.tree-root-missing .tree-row-name {
+  color: var(--fg-dim);
+}
+
+.tree-root-missing-note {
+  margin-left: 8px;
+  font-size: 11px;
+  font-style: italic;
   color: var(--fg-dim);
 }
 
@@ -598,6 +631,12 @@ body.tree-dragging {
 .tab-icon {
   flex-shrink: 0;
   margin-right: -2px;
+}
+
+/* Where a tab whose name another tab has is: "api", "a/src" (C03). */
+.tab-hint {
+  color: var(--fg-dim);
+  font-size: 11px;
 }
 
 .tab-close:hover {

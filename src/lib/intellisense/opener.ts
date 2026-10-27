@@ -6,10 +6,10 @@
 import * as monaco from 'monaco-editor';
 import { openInEditor } from '../openInEditor';
 
-export function registerDefinitionOpener(currentRoot: () => string | null): void {
+export function registerDefinitionOpener(loaded: () => boolean): void {
   monaco.editor.registerEditorOpener({
     openCodeEditor(source, resource, selectionOrPosition) {
-      if (resource.scheme !== 'file' || !currentRoot()) return false;
+      if (resource.scheme !== 'file' || !loaded()) return false;
       // In the same file Monaco moves the cursor itself (and keeps its
       // back/forward history): only other files need opening.
       if (source.getModel()?.uri.toString() === resource.toString()) return false;

@@ -47,23 +47,32 @@ initLanguageDefaults();
 registerSemanticTokens();
 
 let current: IntelliSenseProject | null = null;
+/** The folders the worker has loaded, as one key: another list is another project. */
+let currentRoots: string | null = null;
 /** The file shown in the editor, kept across projects. */
 let activeFile: string | null = null;
 
-/** Loads the project into Monaco, once per project root. */
-export function ensureProjectIntelliSense(root: string | null): Promise<void> {
-  if (!root) return Promise.resolve();
+/** The folders as one key: the same folders in the same order are one project (C06). */
+const keyOf = (roots: readonly string[]): string => roots.join('\n');
+
+/**
+ * Loads the project into Monaco, once per set of folders: a project's one, or
+ * a workspace's several, whose sources and configs are read as one project.
+ */
+export function ensureProjectIntelliSense(roots: readonly string[]): Promise<void> {
+  if (roots.length === 0) return Promise.resolve();
   // The worker holds one project: after A → B → A, A loads again.
-  if (current?.root !== root) {
+  if (currentRoots !== keyOf(roots) || !current) {
     current?.dispose();
-    current = new IntelliSenseProject(root, activeFile);
+    current = new IntelliSenseProject(roots, activeFile);
+    currentRoots = keyOf(roots);
   }
   return current.loaded;
 }
 
-/** True when the project's definitions are fully loaded (or no project). */
-export function isIntelliSenseReady(root: string | null): boolean {
-  return !root || (current?.root === root && current.ready);
+/** True when the project's definitions are fully loaded (or no folder is open). */
+export function isIntelliSenseReady(roots: readonly string[]): boolean {
+  return roots.length === 0 || (currentRoots === keyOf(roots) && current?.ready === true);
 }
 
 /**
@@ -116,9 +125,9 @@ export function typesScopeCovers(path: string): boolean {
   return current?.typesScopeCovers(path) ?? true;
 }
 
-registerDefinitionOpener(() => current?.root ?? null);
+registerDefinitionOpener(() => current !== null);
 installIntelliSenseDevtools(() => ({
-  root: current?.root ?? null,
+  roots: current?.roots ?? [],
   ready: current?.ready ?? false,
   compilerOptions: primaryDefaults.getCompilerOptions(),
 }));

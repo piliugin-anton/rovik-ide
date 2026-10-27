@@ -263,10 +263,7 @@ export default function ProjectChecksSettings(props: {
         {(found) => (
           <details class="settings-section workspace-details">
             <summary class="workspace-summary">
-              <span class="settings-section-title">
-                Workspaces ({found().workspaces!.length}{' '}
-                {found().workspaces!.length === 1 ? 'package' : 'packages'})
-              </span>
+              <span class="settings-section-title">Packages ({found().workspaces!.length})</span>
               <span class="settings-hint">Add a check for one package</span>
             </summary>
             <div class="workspace-add-row">

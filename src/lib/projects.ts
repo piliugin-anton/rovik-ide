@@ -10,6 +10,7 @@ import { createSignal } from 'solid-js';
 import { chatApi, type ProjectInfo, type ProjectSummary } from './chatApi';
 import { claimNoProject } from './instances';
 import type { OpenFolder, WindowTarget } from './openFolders';
+import { workspaceAsTarget } from './openFolders';
 import { notify } from './notifications';
 
 /** undefined: not resolved yet; null: no folder open. */
@@ -52,13 +53,7 @@ export async function refreshProjects() {
 export async function workspaceTarget(id: string): Promise<WindowTarget | null> {
   try {
     const found = (await chatApi.listWorkspaces()).find((workspace) => workspace.id === id);
-    if (!found) return null;
-    return {
-      kind: 'workspace',
-      id: found.id,
-      name: found.name,
-      folders: found.folders.map(({ name, path }) => ({ name, path })),
-    };
+    return found ? workspaceAsTarget(found) : null;
   } catch (err) {
     console.error('Reading the workspace failed:', err);
     return null;
