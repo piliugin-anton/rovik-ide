@@ -16,9 +16,8 @@
 use super::events::Parser;
 use super::hooks::{self, Event, Hooks};
 use super::{
-    args_for, conclude, cwd_of, env_for, hook_tool, open, plans_on_its_own, policy, request_for,
-    resolve_program, session_of, thread_of, Halt, Served, Settings, HOOKS_INSTRUCTIONS,
-    HOOKS_TOKEN, TOOLS_TOKEN,
+    args_for, conclude, cwd_of, env_for, hook_tool, open, policy, request_for, resolve_program,
+    session_of, thread_of, Halt, Served, Settings, HOOKS_INSTRUCTIONS, HOOKS_TOKEN, TOOLS_TOKEN,
 };
 use crate::agent::ChatStreamEvent;
 use crate::connectors::harness::{pump, Process, Stop, MIN_FIRST_LINE};
@@ -138,7 +137,6 @@ async fn start(
             .map(str::to_string),
         hooks: &events,
         ephemeral: false,
-        experimental: false,
     };
     let opened = match open(process, turn, settings, opening, cancel).await {
         Ok(opened) => opened,
@@ -162,9 +160,7 @@ async fn start(
     // Its commands as Codex's own are (a compaction, a review); a skill's
     // are for Codex's own tools, and go as the message they are.
     let ask = super::ask_of(prompt, &[]);
-    // In Plan mode, Rovik's plan mode: none of Codex's own.
-    let plan = plans_on_its_own(settings, turn);
-    let (method, params) = request_for(&ask, &opened.id, turn, opened.model.as_deref(), plan);
+    let (method, params) = request_for(&ask, &opened.id, turn);
     parser.begin(opened.rpc.request(method, params));
     let hooks = Arc::new(Hooks {
         checks: None,

@@ -159,6 +159,7 @@ pub struct VerifyCarry {
     worker_steps: Vec<super::worker::DoneStep>,
     reviews_total: u32,
     review_findings: Vec<super::change_review::Finding>,
+    review_optional: Vec<super::change_review::Finding>,
     /// What the run last wrote or read: in a chat that isn't isolated, a
     /// rollback undoes only what's still the run's (K15).
     seen: std::sync::Arc<crate::file_guard::Seen>,
@@ -204,6 +205,7 @@ impl VerifyCarry {
             worker_steps: Vec::new(),
             reviews_total: 0,
             review_findings: Vec::new(),
+            review_optional: Vec::new(),
             seen: crate::file_guard::Seen::new("test"),
             ledger: Default::default(),
             rechecks: 0,
@@ -666,6 +668,7 @@ impl Run {
             worker_steps: take(&mut self.worker_steps),
             reviews_total: self.reviews_total,
             review_findings: take(&mut self.review_findings),
+            review_optional: take(&mut self.review_optional),
             seen: self.seen.clone(),
             ledger: take(&mut self.ledger),
             rechecks: self.rechecks,
@@ -709,6 +712,7 @@ impl Run {
         self.worker_steps = c.worker_steps;
         self.reviews_total = c.reviews_total;
         self.review_findings = c.review_findings;
+        self.review_optional = c.review_optional;
         self.seen = c.seen;
         self.ledger = c.ledger;
         self.rechecks = c.rechecks;
@@ -1408,9 +1412,13 @@ impl Run {
         self.writes_since_review = true;
         self.review_outcome = None;
         let sent = self.review_change_as(true).await?;
+        let outcome = self.review_outcome.take();
+        // Optional findings alone went to the agent: nothing serious, and
+        // its fix, if it makes one, still gets a check round.
+        let serious = sent && !matches!(&outcome, Some((status, _)) if status == "clean");
         // "done" only when a reviewer read the change and reported.
-        let line = match self.review_outcome.take() {
-            _ if sent => json!({ "status": "findings" }),
+        let line = match outcome {
+            _ if serious => json!({ "status": "findings" }),
             Some((status, _)) if status == "clean" || status == "findings" => {
                 json!({ "status": "done" })
             }

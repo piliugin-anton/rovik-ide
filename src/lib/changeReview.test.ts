@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  disputes,
+  formatScore,
+  guideHeadline,
   reviewAnswersSummary,
   reviewDetails,
   reviewFacts,
@@ -247,4 +250,119 @@ test('answer_review’s answers in a line (S06)', () => {
   );
   assert.equal(reviewAnswersSummary({}), undefined);
   assert.equal(reviewAnswersSummary({ responses: 'fixed' }), undefined);
+});
+
+test('a change review’s score shows in its line and its facts, as a plain number', () => {
+  assert.equal(formatScore(1), '1');
+  assert.equal(formatScore(0.125), '0.125');
+  assert.equal(formatScore(1.375), '1.375');
+  const scored: ReviewMeta = { ...base, status: 'findings', round: 2, score: 1.25 };
+  assert.equal(reviewDetails(scored), 'Review 2 of at most 3 · score 1.25');
+  assert.deepEqual(
+    reviewFacts(scored).find(([label]) => label === 'Score'),
+    [
+      'Score',
+      '1.25: the blocking findings’ ranks added up (high 1, medium 0.5, low 0.25, halved when plausible and again when outside the change)',
+    ]
+  );
+  // A clean review scores 0; a record from before scores has none.
+  assert.equal(
+    reviewDetails({ ...base, status: 'clean', score: 0 }),
+    'Review 1 of at most 3 · score 0'
+  );
+  assert.equal(reviewDetails({ ...base, status: 'clean' }), 'Review 1 of at most 3');
+});
+
+test('the guide’s line says what it did, or why it didn’t', () => {
+  assert.equal(
+    guideHeadline({ status: 'running' }),
+    'The reviewer found problems again: a guide is reading the reviews and the agent’s answers…'
+  );
+  assert.equal(
+    guideHeadline({ status: 'done' }),
+    'The guide told the agent where and why it goes wrong.'
+  );
+  assert.equal(
+    guideHeadline({ status: 'done', partial: true }),
+    'The guide told the agent where and why it goes wrong (out of budget: what it found so far).'
+  );
+  assert.equal(
+    guideHeadline({ status: 'skipped', reason: 'its model failed (overloaded)' }),
+    'Guide skipped: its model failed (overloaded). The agent got the findings alone.'
+  );
+  assert.equal(guideHeadline({ status: 'stopped' }), 'The guide was stopped.');
+  assert.match(guideHeadline({ status: 'running' }, true), /didn’t finish/);
+});
+
+test('a change review’s lighter findings show in its line and its facts', () => {
+  const optional = [finding('medium'), finding('low')];
+  const noted = [finding('low')];
+  assert.equal(
+    reviewHeadline({ ...base, status: 'clean', optional, noted }, false),
+    'The reviewer found nothing that holds the change back: 2 optional findings went to the agent without holding the change back, and 1 minor one is listed here for you only.'
+  );
+  assert.equal(
+    reviewHeadline({ ...base, status: 'findings', findings: [finding('high')], noted }, false),
+    'The reviewer found 1 finding: 1 sent to the agent to fix or answer, and a follow-up review checks them. Also, 1 minor one is listed here for you only.'
+  );
+  // A follow-up that found the earlier ones resolved, with an optional one new.
+  const earlier = [
+    {
+      finding: 1,
+      severity: 'high' as const,
+      location: 'a.ts:1',
+      title: 't',
+      response: { action: 'fixed' as const, note: 'n' },
+      resolved: true,
+      checked: true,
+      reason: 'r',
+    },
+  ];
+  assert.equal(
+    reviewHeadline({ ...base, status: 'clean', earlier, optional: [finding('medium')] }, false),
+    'The reviewer found the earlier finding resolved and nothing that holds the change back: 1 optional finding went to the agent without holding the change back.'
+  );
+  const facts = reviewFacts({ ...base, status: 'clean', optional, noted });
+  assert.deepEqual(
+    facts.filter(([label]) => label === 'Optional' || label === 'For you only'),
+    [
+      ['Optional', '2, sent to the agent without holding it back'],
+      ['For you only', '1'],
+    ]
+  );
+});
+
+test('disputes count by the follow-up’s own word', () => {
+  const answered = (action: 'fixed' | 'not_a_problem', resolved: boolean, checked?: boolean) => ({
+    finding: 1,
+    severity: 'medium' as const,
+    location: 'a.ts:1',
+    title: 't',
+    response: { action, note: 'n' },
+    resolved,
+    reason: 'r',
+    ...(checked === undefined ? {} : { checked }),
+  });
+  const meta: ReviewMeta = {
+    ...base,
+    status: 'clean',
+    earlier: [
+      answered('not_a_problem', true, true),
+      answered('not_a_problem', true, true),
+      answered('not_a_problem', false, true),
+      // The IDE's default, not the reviewer's word, and a fix: neither.
+      answered('not_a_problem', true, false),
+      answered('fixed', false, true),
+    ],
+  };
+  assert.deepEqual(disputes(meta), { upheld: 2, rejected: 1 });
+  assert.deepEqual(
+    reviewFacts(meta).find(([label]) => label === 'Disputes'),
+    ['Disputes', '2 upheld (the reviewer was wrong), 1 rejected (the reviewer was right)']
+  );
+  assert.deepEqual(disputes(base), { upheld: 0, rejected: 0 });
+  assert.equal(
+    reviewFacts(base).find(([label]) => label === 'Disputes'),
+    undefined
+  );
 });

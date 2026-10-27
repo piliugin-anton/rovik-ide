@@ -1,8 +1,8 @@
 // CodexFields.tsx
 //
 // Codex's part of a connector's form (ConnectorsSettings.tsx), its
-// `ConnectorFields`: how it signs in, in the Connection section; then how
-// chats use it, its permissions (with its own tools), and the advanced ones
+// `ConnectorFields`: how it signs in, in the Connection section; then its
+// permissions (for its own tools, in Agent mode), and the advanced ones
 // (the program, its settings folder, more arguments), each a labelled row
 // as on the other Settings pages. The same fields as codex/mod.rs
 // `Settings` (lib/codex.ts).
@@ -11,7 +11,6 @@ import {
   CODEX_AUTH_KINDS,
   CODEX_INSTALL,
   CODEX_PERMISSION_MODES,
-  CODEX_USE_MODES,
   codexSettings,
   type CodexSettings,
 } from '../lib/codex';
@@ -50,32 +49,24 @@ function Connection(props: ConnectorFieldsProps) {
   );
 }
 
-/** How chats use it, its permissions, and the advanced ones. */
+/** Its permissions, and the advanced ones. */
 function Options(props: ConnectorFieldsProps) {
   const { settings, patch } = useSettings(props);
   return (
     <>
       <section class="settings-section">
-        <div class="settings-section-title">How chats use it</div>
+        <div class="settings-section-title">Permissions</div>
+        <p class="settings-hint">
+          For its own tools, in Agent mode. In Plan mode and Autopilot it runs Rovik’s tools, under
+          Permissions & approval.
+        </p>
         <ChoiceSelect
-          label="Runs as"
-          choices={CODEX_USE_MODES}
-          value={settings().tools}
-          onChange={(tools) => patch({ tools })}
+          label="Mode"
+          choices={CODEX_PERMISSION_MODES}
+          value={settings().permissionMode}
+          onChange={(permissionMode) => patch({ permissionMode })}
         />
       </section>
-
-      <Show when={settings().tools === 'own'}>
-        <section class="settings-section">
-          <div class="settings-section-title">Permissions</div>
-          <ChoiceSelect
-            label="Mode"
-            choices={CODEX_PERMISSION_MODES}
-            value={settings().permissionMode}
-            onChange={(permissionMode) => patch({ permissionMode })}
-          />
-        </section>
-      </Show>
 
       <details class="settings-section settings-details connector-advanced">
         <summary class="settings-details-summary">

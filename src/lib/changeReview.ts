@@ -22,6 +22,44 @@ export interface ReviewFinding {
   /** A plan review's finding: the step it's about. */
   step?: number;
   newEvidence?: string;
+  /**
+   * A change review's: what it weighs, its severity's weight (high 1,
+   * medium 0.5, low 0.25), halved when only plausible and again when it's
+   * about code the change didn't touch (change_review.rs `Finding::rank`).
+   */
+  rank?: number;
+  /** A change review's: about code the change didn't touch. */
+  outside?: boolean;
+}
+
+/** What a guide said (src-tauri/src/agent_run/guide.rs `Guidance`). */
+export interface GuideResult {
+  /** "## Where it goes wrong": each place, with the finding or `path:line`. */
+  whereWrong: string;
+  /** "## Why": the cause behind them. */
+  why: string;
+  /** "## Guidance": the steps for the agent's next attempt. */
+  steps: string;
+}
+
+/**
+ * The guide of a change review (guide.rs): from the run's second review that
+ * found problems on, a subagent that read every review, the agent's answers
+ * and the change, and told the agent where and why it goes wrong.
+ */
+export interface GuideMeta {
+  status: 'running' | 'done' | 'skipped' | 'stopped';
+  /** skipped: why. */
+  reason?: string;
+  result?: GuideResult;
+  /** Out of budget: what it found so far. */
+  partial?: boolean;
+  childDialogId?: string;
+  model?: string;
+  modelsTried?: string[];
+  toolCalls?: number;
+  ms?: number;
+  usage?: import('./subagents').SubagentUsage;
 }
 
 /**
@@ -110,6 +148,72 @@ export interface ReviewMeta {
   /** change: R08's review once the checks pass after a repair. */
   afterGreen?: boolean;
   usage?: import('./subagents').SubagentUsage;
+  /**
+   * change, once it reported: its blocking findings' ranks added up (0 when
+   * nothing holds the change back). The higher, the more is still wrong.
+   */
+  score?: number;
+  /**
+   * change: findings that weigh too little to block (rank 0.25), sent to the
+   * agent as optional; nothing follows them up. `findings` are the blocking ones.
+   */
+  optional?: ReviewFinding[];
+  /** change: findings that weigh least, kept here for the user only. */
+  noted?: ReviewFinding[];
+  /** change: the guide that ran after it (guide.rs), when one did. */
+  guide?: GuideMeta;
+}
+
+/**
+ * A change review's lighter findings in a phrase: "2 optional findings went
+ * to the agent without holding the change back, and 1 minor one is listed
+ * here for you only"; null for none.
+ */
+function lighterFindings(meta: ReviewMeta): string | null {
+  const parts: string[] = [];
+  const optional = meta.optional?.length ?? 0;
+  const noted = meta.noted?.length ?? 0;
+  if (optional)
+    parts.push(
+      `${plural(optional, 'optional finding')} went to the agent without holding the change back`
+    );
+  if (noted)
+    parts.push(
+      `${plural(noted, 'minor one')} ${noted === 1 ? 'is' : 'are'} listed here for you only`
+    );
+  return parts.length ? parts.join(', and ') : null;
+}
+
+/**
+ * The earlier findings the agent answered as not a problem, by the
+ * follow-up's own word: upheld (the reviewer was wrong) and rejected.
+ */
+export function disputes(meta: ReviewMeta): { upheld: number; rejected: number } {
+  const disputed = (meta.earlier ?? []).filter(
+    (e) => e.response?.action === 'not_a_problem' && e.checked === true
+  );
+  const upheld = disputed.filter((e) => e.resolved).length;
+  return { upheld, rejected: disputed.length - upheld };
+}
+
+/** A rank or a score as the card shows it: "1", "0.25", "1.375". */
+export function formatScore(n: number): string {
+  return String(Number(n.toFixed(3)));
+}
+
+/** The guide's line in its review's card. */
+export function guideHeadline(g: GuideMeta, interrupted = false): string {
+  if (interrupted) return 'The guide didn’t finish: the run ended while it was running.';
+  switch (g.status) {
+    case 'running':
+      return 'The reviewer found problems again: a guide is reading the reviews and the agent’s answers…';
+    case 'done':
+      return `The guide told the agent where and why it goes wrong${g.partial ? ' (out of budget: what it found so far)' : ''}.`;
+    case 'stopped':
+      return 'The guide was stopped.';
+    case 'skipped':
+      return `Guide skipped: ${g.reason ?? 'it couldn’t run'}. The agent got the findings alone.`;
+  }
 }
 
 /** The record's first line. */
@@ -121,23 +225,33 @@ export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
   switch (meta.status) {
     case 'running':
       return `Reviewing the change (${what})…`;
-    case 'clean':
+    case 'clean': {
       if (meta.reason) return `The reviewer reported nothing to fix: ${meta.reason}.`;
+      const lighter = lighterFindings(meta);
+      const earlier = meta.earlier?.length
+        ? `the earlier ${meta.earlier.length === 1 ? 'finding' : 'findings'} resolved and `
+        : '';
+      if (lighter)
+        return `The reviewer found ${earlier}nothing that holds the change back: ${lighter}.`;
       // S06: a follow-up that found what it checked settled.
-      if (meta.earlier?.length)
-        return `The reviewer found the earlier ${meta.earlier.length === 1 ? 'finding' : 'findings'} resolved and nothing new to fix.`;
+      if (earlier) return `The reviewer found ${earlier}nothing new to fix.`;
       return 'The reviewer found nothing to fix.';
+    }
     case 'findings': {
       const all = meta.findings ?? [];
-      // Every finding goes back to the agent, whatever its severity.
+      // The blocking findings: each goes back to the agent to fix or answer.
       const serious = all.length;
       const count = plural(all.length, 'finding');
       if (meta.blocked) {
         const open = meta.open ?? all.length;
         return `The reviewer still finds ${plural(open, 'problem')} after the run’s last review: the change goes no further, and the run ends here.`;
       }
+      const lighter = lighterFindings(meta);
       if (serious)
-        return `The reviewer found ${count}: ${serious} sent to the agent to fix or answer, and a follow-up review checks them.`;
+        return (
+          `The reviewer found ${count}: ${serious} sent to the agent to fix or answer, and a follow-up review checks them.` +
+          (lighter ? ` Also, ${lighter}.` : '')
+        );
       return 'The reviewer found nothing to fix.';
     }
     case 'skipped':
@@ -210,6 +324,20 @@ export function reviewFacts(meta: ReviewMeta): [string, string][] {
   if (meta.files?.length) facts.push(['Files', meta.files.join(', ')]);
   if (meta.changedLines !== undefined) facts.push(['Changed lines', String(meta.changedLines)]);
   if (meta.findings?.length) facts.push(['Findings', String(meta.findings.length)]);
+  if (meta.score !== undefined)
+    facts.push([
+      'Score',
+      `${formatScore(meta.score)}: the blocking findings’ ranks added up (high 1, medium 0.5, low 0.25, halved when plausible and again when outside the change)`,
+    ]);
+  if (meta.optional?.length)
+    facts.push(['Optional', `${meta.optional.length}, sent to the agent without holding it back`]);
+  if (meta.noted?.length) facts.push(['For you only', String(meta.noted.length)]);
+  const { upheld, rejected } = disputes(meta);
+  if (upheld || rejected)
+    facts.push([
+      'Disputes',
+      `${upheld} upheld (the reviewer was wrong), ${rejected} rejected (the reviewer was right)`,
+    ]);
   if (meta.earlier?.length) {
     const count = (verdict: ReturnType<typeof earlierVerdict>) =>
       meta.earlier!.filter((e) => earlierVerdict(e) === verdict).length;
@@ -239,6 +367,7 @@ export function reviewDetails(meta: ReviewMeta): string {
         ? `Review ${meta.round}`
         : `Review ${meta.round} of at most ${meta.maxRounds}`,
   ];
+  if (meta.score !== undefined) parts.push(`score ${formatScore(meta.score)}`);
   if (meta.toolCalls !== undefined) parts.push(`${meta.toolCalls} tool calls`);
   if (meta.ms !== undefined) parts.push(`${Math.round(meta.ms / 1000)} s`);
   if (meta.model) parts.push(modelLabel(meta.model, meta.modelsTried));

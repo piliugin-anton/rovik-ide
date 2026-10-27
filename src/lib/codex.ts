@@ -13,20 +13,15 @@ export type CodexSettings = {
   /** How it signs in: this computer's login, an access token, or an API key. */
   auth: 'login' | 'token' | 'apiKey';
   /**
-   * `rovik`: Rovik's permissions and approvals decide each command and
-   * patch; the others are Codex's own sandbox and approval presets.
+   * For its own tools (Agent mode): `rovik`, Rovik's permissions and
+   * approvals decide each command and patch; the others are Codex's own
+   * sandbox and approval presets.
    */
   permissionMode: 'rovik' | 'auto' | 'workspace' | 'readOnly' | 'fullAccess';
   /** `CODEX_HOME`: another login and settings folder; empty: its own. */
   configDir: string;
   /** More arguments for `codex app-server`, as typed on a command line. */
   extraArgs: string;
-  /**
-   * How chats use it: `own`, Codex with its own tools and its own prompt,
-   * under its permission mode; `rovik`, as the model behind Rovik's agent,
-   * with Rovik's prompt and Rovik's tools over MCP.
-   */
-  tools: 'own' | 'rovik';
 };
 
 export const CODEX_DEFAULTS: CodexSettings = {
@@ -35,25 +30,7 @@ export const CODEX_DEFAULTS: CodexSettings = {
   permissionMode: 'rovik',
   configDir: '',
   extraArgs: '',
-  tools: 'own',
 };
-
-export const CODEX_USE_MODES: Choice<CodexSettings['tools']>[] = [
-  {
-    value: 'own',
-    label: 'Codex',
-    hint: 'Its own tools and prompt; Rovik shows each step it takes.',
-    detail:
-      'Codex runs its own tools (its shell, its patches…) with its own system prompt and the AGENTS.md it reads, under the permission mode below; Rovik shows each step it took. In Plan mode it plans in its own plan mode, changing nothing. Autopilot and Rovik’s subagents need Rovik’s tools.',
-  },
-  {
-    value: 'rovik',
-    label: 'Rovik’s agent on Codex',
-    hint: 'Rovik’s prompt and tools, with Codex as the model.',
-    detail:
-      'Codex is the model behind Rovik’s agent: Rovik’s system prompt, Rovik’s tools over MCP, each call under Permissions and approval in the chat’s copy of the project, with Rovik’s checks, checklist, plans, Autopilot and subagents.',
-  },
-];
 
 export const CODEX_PERMISSION_MODES: Choice<CodexSettings['permissionMode']>[] = [
   {
@@ -115,7 +92,10 @@ export const CODEX_INSTALL =
 
 /** A connector's settings with Codex's defaults for what isn't set. */
 export function codexSettings(p: Pick<Provider, 'settings'>): CodexSettings {
-  const s = (p.settings ?? {}) as Partial<CodexSettings>;
+  // Whose tools it runs isn't kept: it's the chat's mode's.
+  const { tools: _mode, ...s } = (p.settings ?? {}) as Partial<CodexSettings> & {
+    tools?: unknown;
+  };
   return {
     ...CODEX_DEFAULTS,
     ...s,
@@ -210,16 +190,14 @@ export const CODEX: ConnectorSpec = {
   kind: 'codex',
   title: 'Codex',
   about:
-    'OpenAI’s coding agent, run in the project folder with its own tools. Chats that pick one of its models hand it the task; its steps and tokens show with the reply.',
+    'OpenAI’s coding agent, run in the project folder: with its own tools in Agent mode, as the model behind Rovik’s agent in Plan mode and Autopilot. Chats that pick one of its models hand it the task; its steps and tokens show with the reply.',
   install: CODEX_INSTALL,
   settings: (raw) => codexSettings({ settings: raw }),
-  usesRovikTools: (raw) => codexSettings({ settings: raw }).tools === 'rovik',
   summary: (raw) => {
     const s = codexSettings({ settings: raw });
     const mode = CODEX_PERMISSION_MODES.find((m) => m.value === s.permissionMode)?.label;
-    return `${s.program} · ${s.tools === 'rovik' ? 'Rovik’s agent' : (mode ?? s.permissionMode)}`;
+    return `${s.program} · ${mode ?? s.permissionMode}`;
   },
-  planMode: true,
   modelsHint: 'Test the connection to list the models your account offers, or add one by ID below.',
   chatCall: codexChatCall,
 };

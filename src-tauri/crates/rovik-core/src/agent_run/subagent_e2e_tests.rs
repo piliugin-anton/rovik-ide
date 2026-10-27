@@ -756,7 +756,12 @@ async fn routed_scripts_stay_apart() {
 const REVIEW: &str = "# Review this change";
 
 const FINDING_A: &str = "## Findings\n\n1. [high] a.txt:1 — The greeting is wrong\n   - Scenario: anyone reading a.txt sees \"helo\".\n   - Fix: spell it \"hello\".\n   - Confidence: confirmed";
-const FINDING_B: &str = "## Findings\n\n1. [medium] b.txt:1 — The farewell is missing\n   - Scenario: b.txt is empty.\n   - Fix: add one.\n   - Confidence: plausible";
+/// A confirmed medium finding on a line the change wrote (b.txt, once the
+/// lead wrote it): it weighs 0.5, so it blocks.
+const FAREWELL: &str = "## Findings\n\n1. [medium] b.txt:1 — The farewell is misspelled\n   - Scenario: b.txt says \"by\".\n   - Fix: spell it \"bye\".\n   - Confidence: confirmed";
+/// A plausible medium finding on a line the change wrote (a.txt): it
+/// weighs 0.25, so it goes to the agent as optional.
+const LOWER_CASE: &str = "## Findings\n\n1. [medium] a.txt:1 — The greeting is lower case\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: plausible";
 const NO_FINDINGS: &str = "## Findings\n\nNone.";
 
 /// The agent's answer to the change review's finding 1 (`answer_review`):
@@ -909,20 +914,21 @@ async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
 }
 
 #[tokio::test]
-async fn every_finding_is_followed_up_before_the_checks() {
+async fn every_blocking_finding_is_followed_up_before_the_checks() {
     let h = harness(&[("a.txt", "old\n"), ("b.txt", "")]).await;
     let (url, _) = model_routed(
         vec![(
             REVIEW,
             vec![
                 Reply::Text(FINDING_A),
-                // A medium, plausible finding counts too: it's held.
-                Reply::Text(FINDING_B),
+                // A confirmed medium finding on the change blocks too: it's held.
+                Reply::Text(FAREWELL),
                 Reply::Text(NO_FINDINGS),
             ],
         )],
         vec![
             write_call("w1", "a.txt", "helo\n"),
+            write_call("w1b", "b.txt", "by\n"),
             Reply::Text("Done."),
             write_call("w2", "a.txt", "hello\n"),
             answered("a1", "fixed", "spelled hello"),
@@ -949,19 +955,20 @@ async fn every_finding_is_followed_up_before_the_checks() {
     );
 }
 
-/// Agent mode: a low finding the agent never resolves, still open after
-/// the run's last review, keeps the change from being accepted: the run
-/// ends `review-open`, before the checks.
+/// Agent mode: a blocking finding (a high, plausible one, on the change)
+/// the agent never resolves, still open after the run's last review, keeps
+/// the change from being accepted: the run ends `review-open`, before the
+/// checks.
 #[tokio::test]
-async fn a_low_finding_left_open_blocks_the_change_in_agent_mode() {
-    let low = "## Findings\n\n1. [low] a.txt:1 — The greeting has a trailing space\n   - Scenario: a.txt ends with a space.\n   - Fix: trim it.\n   - Confidence: plausible";
+async fn a_blocking_finding_left_open_blocks_the_change_in_agent_mode() {
+    let space = "## Findings\n\n1. [high] a.txt:1 — The greeting has a trailing space\n   - Scenario: a.txt ends with a space.\n   - Fix: trim it.\n   - Confidence: plausible";
     let not_resolved = "## Earlier findings\n\n- Earlier 1: not resolved — the space is still there\n\n## Findings\n\nNone.";
     let h = harness(&[("a.txt", "old\n")]).await;
     let (url, _) = model_routed(
         vec![(
             REVIEW,
             vec![
-                Reply::Text(low),
+                Reply::Text(space),
                 Reply::Text(not_resolved),
                 Reply::Text(not_resolved),
             ],
@@ -989,7 +996,473 @@ async fn a_low_finding_left_open_blocks_the_change_in_agent_mode() {
     let last = reviews(&messages).pop().unwrap();
     assert_eq!(last["blocked"], true, "{last}");
     assert_eq!(last["open"], 1, "{last}");
-    assert_eq!(last["findings"][0]["severity"], "low", "{last}");
+    assert_eq!(last["findings"][0]["severity"], "high", "{last}");
+    // Disputed, and found still open by the reviewer's own word: confirmed.
+    assert_eq!(last["findings"][0]["confidence"], "confirmed", "{last}");
+    assert_eq!(last["findings"][0]["rank"], 1.0, "{last}");
+}
+
+/// A review whose findings all weigh too little to block sends the agent
+/// the optional ones and holds nothing back: when the agent changes
+/// nothing, the checks run next, and no follow-up review runs.
+#[tokio::test]
+async fn optional_findings_alone_hold_nothing_back() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, seen) = model_routed(
+        vec![(
+            REVIEW,
+            vec![Reply::Text(LOWER_CASE), Reply::Text(NO_FINDINGS)],
+        )],
+        vec![
+            write_call("w1", "a.txt", "hello\n"),
+            Reply::Text("Done."),
+            Reply::Text("Left it: lower case is the house style."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let messages = h.messages().await;
+    assert_eq!(
+        record_order(&messages),
+        ["review:clean", "note", "verification:unverified"]
+    );
+    let note = &review_notes(&messages)[0].content;
+    assert!(
+        note.contains("It found nothing that holds the change back"),
+        "{note}"
+    );
+    assert!(
+        note.contains("- [medium] a.txt:1 — The greeting is lower case"),
+        "{note}"
+    );
+    assert_eq!(reviews(&messages)[0]["score"], 0.0);
+    assert_eq!(requests_with(&seen, REVIEW).len(), 1, "no follow-up review");
+}
+
+/// What a finding weighs decides what it does: a high, confirmed one on
+/// the change blocks, a plausible medium one goes to the agent as optional
+/// (unnumbered, and never followed up or sent again), and a low, plausible
+/// one only to the record, for the user. One about code the change didn't
+/// touch weighs half.
+#[tokio::test]
+async fn findings_block_go_as_optional_or_stay_in_the_record_by_their_weight() {
+    let three = "## Findings\n\n\
+        1. [low] a.txt:1 — The greeting has no exclamation mark\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: plausible\n\n\
+        2. [medium] a.txt:1 — The greeting is lower case\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: plausible\n\n\
+        3. [high] a.txt:1 — The greeting is wrong\n   - Scenario: anyone reading a.txt sees \"helo\".\n   - Fix: spell it \"hello\".\n   - Confidence: confirmed\n\n\
+        4. [high] c.txt:1 — The other file is wrong too\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: plausible";
+    // The follow-up finds the high one fixed, and repeats the optional one
+    // without new evidence: it isn't sent again.
+    let follow = "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\n\
+        1. [medium] a.txt:1 — The greeting is lower case\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: plausible";
+    let h = harness(&[("a.txt", "old\n"), ("c.txt", "other\n")]).await;
+    let (url, _) = model_routed(
+        vec![(REVIEW, vec![Reply::Text(three), Reply::Text(follow)])],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "hello\n"),
+            answered("a1", "fixed", "spelled hello"),
+            Reply::Text("Fixed."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let messages = h.messages().await;
+    assert_eq!(
+        record_order(&messages),
+        [
+            "review:findings",
+            "note",
+            "review:clean",
+            "verification:unverified"
+        ]
+    );
+    let rounds = reviews(&messages);
+    let titles = |v: &Value| {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|f| f["title"].as_str().unwrap_or("").to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    assert_eq!(titles(&rounds[0]["findings"]), ["The greeting is wrong"]);
+    // The medium plausible one weighs 0.25, the high plausible one about
+    // c.txt, which the change didn't touch, 0.25 too.
+    assert_eq!(
+        titles(&rounds[0]["optional"]),
+        ["The greeting is lower case", "The other file is wrong too"]
+    );
+    assert_eq!(rounds[0]["optional"][1]["outside"], true);
+    assert_eq!(rounds[0]["optional"][1]["rank"], 0.25);
+    assert_eq!(
+        titles(&rounds[0]["noted"]),
+        ["The greeting has no exclamation mark"]
+    );
+    assert_eq!(rounds[0]["score"], 1.0);
+    // The agent got the high one to answer, the optional ones apart, and
+    // never the noted one.
+    let note = &review_notes(&messages)[0].content;
+    assert!(
+        note.contains("1. [high] a.txt:1 — The greeting is wrong"),
+        "{note}"
+    );
+    assert!(note.contains("## Optional findings"), "{note}");
+    assert!(
+        note.contains("- [medium] a.txt:1 — The greeting is lower case"),
+        "{note}"
+    );
+    assert!(
+        !note.contains("2. ["),
+        "only the blocking one is numbered: {note}"
+    );
+    assert!(!note.contains("exclamation mark"), "{note}");
+    // The follow-up: the high one fixed, the optional one not sent again.
+    assert_eq!(rounds[1]["status"], "clean");
+    assert_eq!(
+        titles(&rounds[1]["dropped"]),
+        ["The greeting is lower case"]
+    );
+    assert!(rounds[1].get("optional").is_none(), "{}", rounds[1]);
+}
+
+/// An optional finding the follow-up review reports again, traced this
+/// time, weighs more than when it was sent: it comes back, and blocks.
+#[tokio::test]
+async fn an_optional_finding_the_follow_up_traces_comes_back_and_blocks() {
+    // The farewell, plausible, weighs 0.25: optional.
+    let first = "## Findings\n\n\
+        1. [high] a.txt:1 — The greeting is wrong\n   - Scenario: anyone reading a.txt sees \"helo\".\n   - Fix: spell it \"hello\".\n   - Confidence: confirmed\n\n\
+        2. [medium] b.txt:1 — The farewell is misspelled\n   - Scenario: b.txt says \"by\".\n   - Fix: spell it \"bye\".\n   - Confidence: plausible";
+    // Confirmed now (FAREWELL's), it weighs 0.5.
+    let traced = "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\n\
+        1. [medium] b.txt:1 — The farewell is misspelled\n   - Scenario: b.txt says \"by\".\n   - Fix: spell it \"bye\".\n   - Confidence: confirmed";
+    let fixed =
+        "## Earlier findings\n\n- Earlier 1: resolved — b.txt says bye\n\n## Findings\n\nNone.";
+    let h = harness(&[("a.txt", "old\n"), ("b.txt", "bye\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            vec![Reply::Text(first), Reply::Text(traced), Reply::Text(fixed)],
+        )],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            write_call("w1b", "b.txt", "by\n"),
+            Reply::Text("Done."),
+            // The optional farewell left as it is.
+            write_call("w2", "a.txt", "hello\n"),
+            answered("a1", "fixed", "spelled hello"),
+            Reply::Text("Fixed."),
+            write_call("w3", "b.txt", "bye\n"),
+            answered("a2", "fixed", "spelled bye"),
+            Reply::Text("Fixed."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let messages = h.messages().await;
+    let rounds = reviews(&messages);
+    assert_eq!(
+        rounds[0]["optional"][0]["title"],
+        "The farewell is misspelled"
+    );
+    assert_eq!(rounds[1]["status"], "findings", "{}", rounds[1]);
+    assert_eq!(
+        rounds[1]["findings"][0]["title"],
+        "The farewell is misspelled"
+    );
+    assert_eq!(rounds[1]["findings"][0]["rank"], 0.5);
+    assert!(rounds[1].get("dropped").is_none(), "{}", rounds[1]);
+    let note = &review_notes(&messages)[1].content;
+    assert!(
+        note.contains("1. [medium] b.txt:1 — The farewell is misspelled"),
+        "{note}"
+    );
+    assert_eq!(rounds[2]["status"], "clean", "{}", rounds[2]);
+    assert_eq!(h.file("b.txt").as_deref(), Some("bye\n"));
+}
+
+const GUIDE: &str = "# Guide the agent";
+const GUIDANCE: &str = "## Where it goes wrong\n- Finding 1 (`a.txt:1`): it changed the case of \"helo\", not its spelling.\n\n\
+    ## Why\nIt read the finding as a style problem and never reread the line.\n\n\
+    ## Guidance\n1. Spell it \"hello\" as the request does, then read a.txt:1 again.";
+/// The follow-up of FINDING_A that finds it still open, with a new medium,
+/// confirmed finding about b.txt, which the lead wrote: it blocks too.
+const STILL_WRONG: &str = "## Earlier findings\n\n- Earlier 1: not resolved — a.txt says Helo, not hello\n\n## Findings\n\n\
+    1. [medium] b.txt:1 — The farewell is misspelled\n   - Scenario: b.txt says \"by\".\n   - Fix: spell it \"bye\".\n   - Confidence: confirmed";
+const ALL_RESOLVED: &str = "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n- Earlier 2: resolved — b.txt says bye\n\n## Findings\n\nNone.";
+
+fn guide_on() -> subagent::SubagentConfig {
+    serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "reviewer": { "enabled": true }, "guide": { "enabled": true } },
+        "reviewMinLines": 1,
+    }))
+    .unwrap()
+}
+
+/// The lead's script for two reviews that find problems: a fix that
+/// misses the first finding, then one that fixes both.
+fn fixed_on_the_third_try() -> Vec<Reply> {
+    vec![
+        write_call("w1", "a.txt", "helo\n"),
+        write_call("w1b", "b.txt", "by\n"),
+        Reply::Text("Done."),
+        write_call("w2", "a.txt", "Helo\n"),
+        answered("a1", "fixed", "capitalized it"),
+        Reply::Text("Fixed."),
+        write_call("w3", "a.txt", "hello\n"),
+        write_call("w4", "b.txt", "bye\n"),
+        Reply::Call {
+            id: "a2",
+            name: "answer_review",
+            args: json!({ "responses": [
+                { "finding": 1, "status": "fixed", "note": "spelled it hello" },
+                { "finding": 2, "status": "fixed", "note": "spelled it bye" },
+            ] }),
+        },
+        Reply::Text("Fixed both."),
+    ]
+}
+
+/// The review notes the lead got, in order.
+fn review_notes(messages: &[MessageRow]) -> Vec<&MessageRow> {
+    messages
+        .iter()
+        .filter(|m| m.meta.as_ref().is_some_and(|m| m["harness"] == "review"))
+        .collect()
+}
+
+/// The run's second review that finds problems brings the guide: it reads
+/// both reviews, each finding with its rank, the agent's answer and the
+/// next review's verdict, and what it says goes to the agent with that
+/// review's findings. The records keep the ranks, the scores and the guide.
+#[tokio::test]
+async fn the_second_review_that_finds_problems_brings_a_guide() {
+    let h = harness(&[("a.txt", "old\n"), ("b.txt", "")]).await;
+    let (url, seen) = model_routed(
+        vec![
+            (
+                REVIEW,
+                vec![
+                    Reply::Text(FINDING_A),
+                    Reply::Text(STILL_WRONG),
+                    Reply::Text(ALL_RESOLVED),
+                ],
+            ),
+            (GUIDE, vec![Reply::Text(GUIDANCE)]),
+        ],
+        fixed_on_the_third_try(),
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), guide_on()))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+
+    let messages = h.messages().await;
+    assert_eq!(
+        record_order(&messages),
+        [
+            "review:findings",
+            "note",
+            "review:findings",
+            "note",
+            "review:clean",
+            "verification:unverified"
+        ]
+    );
+    // A high, confirmed finding weighs 1; a medium, confirmed one 0.5.
+    let rounds = reviews(&messages);
+    assert_eq!(rounds[0]["findings"][0]["rank"], 1.0);
+    assert_eq!(rounds[0]["score"], 1.0);
+    assert_eq!(rounds[1]["findings"][1]["rank"], 0.5);
+    assert_eq!(rounds[1]["score"], 1.5);
+    assert_eq!(rounds[2]["score"], 0.0);
+    // The guide ran once, after the second review, in its record.
+    assert!(rounds[0].get("guide").is_none() && rounds[2].get("guide").is_none());
+    let guide = &rounds[1]["guide"];
+    assert_eq!(guide["status"], "done", "{guide}");
+    assert_eq!(
+        guide["result"]["why"],
+        "It read the finding as a style problem and never reread the line."
+    );
+    let child = guide["childDialogId"].as_str().unwrap().to_string();
+    assert!(h.messages_of(&child).await[0].content.starts_with(GUIDE));
+
+    // Its brief: both reviews, with the agent's answer, the verdict, the
+    // ranks and the scores; never the lead's conversation.
+    let asked = requests_with(&seen, GUIDE);
+    assert_eq!(asked.len(), 1);
+    let brief = asked[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(brief.contains("2 of its reviews found problems"), "{brief}");
+    assert!(
+        brief.contains("The scores so far: review 1: 1 → review 2: 1.5."),
+        "{brief}"
+    );
+    assert!(brief.contains(
+        "   - Rank: 1\n   - The agent's answer: fixed — capitalized it\n   - The next review: still open — a.txt says Helo, not hello"
+    ), "{brief}");
+    assert!(
+        brief.contains(
+            "   - Rank: 1\n   - Still open after a fix attempt: it needs another approach."
+        ),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("2. [medium] b.txt:1 — The farewell is misspelled"),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("   - Rank: 0.5\n   - New in this review."),
+        "{brief}"
+    );
+    assert!(brief.contains("+Helo"), "the change as it is: {brief}");
+    assert!(
+        !brief.contains("Fixed."),
+        "nothing from the lead's conversation"
+    );
+    let tools = tool_names(&asked[0]);
+    assert!(tools.contains(&"read".to_string()), "{tools:?}");
+    for t in ["write", "bash", "task", "answer_review"] {
+        assert!(!tools.contains(&t.to_string()), "{t} offered to the guide");
+    }
+    assert!(system_prompt(&asked[0]).starts_with("You are a guide"));
+
+    // The lead got the guidance with the second review's findings, before
+    // what to do next; the first review's note had none.
+    let notes = review_notes(&messages);
+    assert!(!notes[0].content.contains("from a guide"));
+    let note = &notes[1].content;
+    let findings = note
+        .find("2. [medium] b.txt:1 — The farewell is misspelled")
+        .unwrap();
+    let guidance = note
+        .find("## Where you go wrong, from a guide")
+        .unwrap_or_else(|| panic!("{note}"));
+    let next = note
+        .find("Every numbered finding must be resolved")
+        .unwrap();
+    assert!(findings < guidance && guidance < next, "{note}");
+    assert!(note.contains(": review 1: 1 → review 2: 1.5."), "{note}");
+    assert!(
+        note.contains("**Guidance for this attempt:**\n1. Spell it \"hello\""),
+        "{note}"
+    );
+}
+
+/// One review that finds problems, then one that finds them fixed, starts
+/// no guide; nor do two that find problems with the guide off, whose
+/// findings go to the agent alone, still scored.
+#[tokio::test]
+async fn one_review_that_finds_problems_or_the_guide_off_brings_none() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let resolved =
+        "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\nNone.";
+    let (url, seen) = model_routed(
+        vec![
+            (REVIEW, vec![Reply::Text(FINDING_A), Reply::Text(resolved)]),
+            (GUIDE, vec![Reply::Text(GUIDANCE)]),
+        ],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "hello\n"),
+            answered("a1", "fixed", "it says hello now"),
+            Reply::Text("Fixed it."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), guide_on()))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    assert!(requests_with(&seen, GUIDE).is_empty());
+    assert!(reviews(&h.messages().await)
+        .iter()
+        .all(|r| r.get("guide").is_none()));
+
+    let h = harness(&[("a.txt", "old\n"), ("b.txt", "")]).await;
+    let (url, seen) = model_routed(
+        vec![
+            (
+                REVIEW,
+                vec![
+                    Reply::Text(FINDING_A),
+                    Reply::Text(STILL_WRONG),
+                    Reply::Text(ALL_RESOLVED),
+                ],
+            ),
+            (GUIDE, vec![Reply::Text(GUIDANCE)]),
+        ],
+        fixed_on_the_third_try(),
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    assert!(requests_with(&seen, GUIDE).is_empty());
+    let messages = h.messages().await;
+    let rounds = reviews(&messages);
+    assert!(rounds.iter().all(|r| r.get("guide").is_none()));
+    assert_eq!(rounds[1]["score"], 1.5);
+    assert!(review_notes(&messages)
+        .iter()
+        .all(|m| !m.content.contains("from a guide")));
+}
+
+/// A guide whose report can't be read, even after its repair turn, is
+/// recorded as skipped, and the review's findings go to the agent alone:
+/// the run goes on as it would without a guide.
+#[tokio::test]
+async fn a_guide_that_cant_report_is_skipped_and_the_findings_still_go() {
+    let h = harness(&[("a.txt", "old\n"), ("b.txt", "")]).await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                REVIEW,
+                vec![
+                    Reply::Text(FINDING_A),
+                    Reply::Text(STILL_WRONG),
+                    Reply::Text(ALL_RESOLVED),
+                ],
+            ),
+            (
+                GUIDE,
+                vec![
+                    Reply::Text("It just needs another try."),
+                    Reply::Text("Really, try again."),
+                ],
+            ),
+        ],
+        fixed_on_the_third_try(),
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), guide_on()))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let messages = h.messages().await;
+    let guide = &reviews(&messages)[1]["guide"];
+    assert_eq!(guide["status"], "skipped", "{guide}");
+    assert!(
+        guide["reason"]
+            .as_str()
+            .unwrap()
+            .contains("didn't follow the format"),
+        "{guide}"
+    );
+    let notes = review_notes(&messages);
+    assert_eq!(notes.len(), 2);
+    assert!(notes[1]
+        .content
+        .contains("2. [medium] b.txt:1 — The farewell is misspelled"));
+    assert!(!notes[1].content.contains("from a guide"));
 }
 
 #[tokio::test]
@@ -6980,6 +7453,151 @@ async fn a_review_after_green_that_couldnt_read_the_report_isnt_done() {
             .starts_with("its report didn't follow the format: it has no \"## Findings\" section"),
         "{reason}"
     );
+}
+
+/// A project whose checks (`npm test`) pass once a.txt says ok: it says
+/// no.
+fn greeting_checks() -> [(&'static str, &'static str); 3] {
+    [
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+        (
+            "check.js",
+            "const fs = require('fs'); if (!fs.readFileSync('a.txt', 'utf8').includes('ok')) { console.error('a.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("a.txt", "no\n"),
+    ]
+}
+
+/// A review after green with optional findings alone found nothing
+/// serious: the agent gets them, and when it changes nothing the run ends
+/// verified.
+#[tokio::test]
+async fn a_review_after_green_with_optional_findings_alone_found_nothing_serious() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = harness(&greeting_checks()).await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            vec![Reply::Text(NO_FINDINGS), Reply::Text(LOWER_CASE)],
+        )],
+        vec![
+            write_call("w1", "a.txt", "nope\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "ok\n"),
+            Reply::Text("Fixed."),
+            Reply::Text("Left it: lower case is the house style."),
+        ],
+    )
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    h.start(h.with_subagents(&url, "Greet", permissions, reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    assert_eq!(
+        record_order(&messages),
+        [
+            "review:clean",
+            "verification:failed",
+            "verification:passed",
+            "review:clean",
+            "note"
+        ]
+    );
+    let records: Vec<Value> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .collect();
+    assert_eq!(records[1]["reviewAfterGreen"]["status"], "done");
+    let note = &review_notes(&messages)[0].content;
+    assert!(
+        note.contains("It found nothing that holds the change back"),
+        "{note}"
+    );
+}
+
+/// An optional finding sent before the checks isn't sent again by the
+/// review after green, when the checks waited for approval in between,
+/// each round in a run of its own (`VerifyCarry`).
+#[tokio::test]
+async fn an_optional_finding_isnt_sent_again_after_the_checks_waited_for_approval() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = harness(&greeting_checks()).await;
+    let (url, seen) = model_routed(
+        vec![(
+            REVIEW,
+            vec![Reply::Text(LOWER_CASE), Reply::Text(LOWER_CASE)],
+        )],
+        vec![
+            write_call("w1", "a.txt", "nope\n"),
+            Reply::Text("Done."),
+            Reply::Text("Left it: lower case is the house style."),
+            // After "Run checks": the checks failed.
+            write_call("w2", "a.txt", "ok\n"),
+            Reply::Text("Fixed."),
+        ],
+    )
+    .await;
+    let permissions = Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    let subagents = reviewer_on(json!({}));
+    h.start(h.with_subagents(&url, "Greet", permissions.clone(), subagents.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let mut outcome = String::new();
+    for _ in 0..2 {
+        let record = h.messages().await.last().unwrap().id.clone();
+        h.events.lock().unwrap().clear();
+        let mut request = h.request(
+            &url,
+            StartKind::RunChecks { record_id: record },
+            permissions.clone(),
+        );
+        request.config.as_mut().unwrap().subagents = subagents.clone();
+        h.start(request).await;
+        outcome = h.run_end().await;
+        if outcome != "verify-needs-approval" {
+            break;
+        }
+    }
+    assert_eq!(outcome, "verified");
+    let messages = h.messages().await;
+    let rounds = reviews(&messages);
+    assert_eq!(rounds.len(), 2, "{rounds:?}");
+    assert_eq!(rounds[1]["afterGreen"], true, "{}", rounds[1]);
+    assert_eq!(rounds[1]["status"], "clean", "{}", rounds[1]);
+    assert_eq!(
+        rounds[1]["dropped"][0]["title"],
+        "The greeting is lower case"
+    );
+    assert!(rounds[1].get("optional").is_none(), "{}", rounds[1]);
+    assert_eq!(review_notes(&messages).len(), 1, "sent once");
+    assert_eq!(requests_with(&seen, REVIEW).len(), 2);
 }
 
 /*

@@ -465,8 +465,6 @@ async fn claude_codes_own_shell_is_denied_reading_a_restricted_file() {
     );
     request.profile.id = "cc::sonnet".into();
     request.profile.model = "sonnet".into();
-    // As the app resolves a connector running its own tools.
-    request.profile.no_tools = true;
     request.profile.connector =
         Some(json!({ "program": program, "permissionMode": "bypassPermissions" }));
     h.start(request).await.unwrap();
@@ -533,7 +531,6 @@ async fn claude_codes_own_file_tools_and_its_shells_folder_are_checked_too() {
     );
     request.profile.id = "cc::sonnet".into();
     request.profile.model = "sonnet".into();
-    request.profile.no_tools = true;
     request.profile.connector =
         Some(json!({ "program": program, "permissionMode": "bypassPermissions" }));
     h.start(request).await.unwrap();

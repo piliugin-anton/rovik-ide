@@ -6,10 +6,13 @@
 import { For, Show } from 'solid-js';
 import {
   earlierVerdict,
+  formatScore,
+  guideHeadline,
   reviewDetails,
   reviewFacts,
   reviewHeadline,
   type EarlierCheck,
+  type GuideMeta,
   type ReviewFinding,
   type ReviewMeta,
 } from '../lib/changeReview';
@@ -44,6 +47,19 @@ function FindingItem(props: { finding: ReviewFinding; dropped?: boolean }) {
         </Show>
         <span class="review-title">{f().title}</span>
         <span class="review-confidence">{f().confidence}</span>
+        <Show when={f().outside}>
+          <span class="review-outside" title="About code the change didn’t touch: it weighs half">
+            outside the change
+          </span>
+        </Show>
+        <Show when={f().rank !== undefined}>
+          <span
+            class="review-rank"
+            title="What it weighs: high 1, medium 0.5, low 0.25, halved when plausible and again when outside the change"
+          >
+            rank {formatScore(f().rank!)}
+          </span>
+        </Show>
       </div>
       <div class="review-finding-body">
         <div>
@@ -92,6 +108,61 @@ function EarlierItem(props: { check: EarlierCheck }) {
         </div>
       </Show>
     </li>
+  );
+}
+
+/** The guide that ran after this review (guide.rs): what it told the agent, or why it didn't. */
+function GuideBlock(props: {
+  guide: GuideMeta;
+  dialogId: string | null;
+  recordId: string;
+  live: boolean;
+}) {
+  const callId = () => `${props.recordId}:guide`;
+  const progress = () => liveSubagent(props.dialogId, callId());
+  const childId = () => props.guide.childDialogId ?? progress()?.childDialogId ?? null;
+  const interrupted = () => props.guide.status === 'running' && !props.live;
+  // P5.9: neither a finished guide's live entry nor an unshown transcript stays.
+  const work = createSubagentWork({
+    dialogId: () => props.dialogId,
+    toolCallId: callId,
+    childId,
+    finishedChildId: () => {
+      const id = props.guide.childDialogId;
+      return props.guide.status !== 'running' ? id : null;
+    },
+  });
+  return (
+    <div class={`review-guide ${interrupted() ? 'stopped' : props.guide.status}`}>
+      <div class="chat-verify-progress">
+        {guideHeadline(props.guide, interrupted())}
+        <Show when={props.guide.status === 'running' && !interrupted() && progress()}>
+          {(p) => <> {liveLabel(p(), false)}</>}
+        </Show>
+        <Show when={childId() && props.guide.status !== 'running'}>
+          {' '}
+          <ShowWorkButton work={work} />
+        </Show>
+      </div>
+      <Show when={props.guide.result}>
+        {(r) => (
+          <div class="review-finding-body">
+            <div>
+              <span class="review-label">Where it goes wrong:</span> {r().whereWrong}
+            </div>
+            <div>
+              <span class="review-label">Why:</span> {r().why}
+            </div>
+            <div>
+              <span class="review-label">Guidance:</span> {r().steps}
+            </div>
+          </div>
+        )}
+      </Show>
+      <Show when={work.shown() && childId()}>
+        <SubagentTranscript childDialogId={childId()!} running={props.guide.status === 'running'} />
+      </Show>
+    </div>
   );
 }
 
@@ -146,6 +217,38 @@ export default function ReviewRecord(props: {
         <ul class="review-findings">
           <For each={props.meta.findings}>{(f) => <FindingItem finding={f} />}</For>
         </ul>
+      </Show>
+      <Show when={props.meta.optional?.length}>
+        <details class="review-optional">
+          <summary>
+            {props.meta.optional!.length} optional, sent to the agent without holding the change
+            back
+          </summary>
+          <ul class="review-findings">
+            <For each={props.meta.optional}>{(f) => <FindingItem finding={f} />}</For>
+          </ul>
+        </details>
+      </Show>
+      <Show when={props.meta.noted?.length}>
+        <details class="review-noted">
+          <summary>
+            {props.meta.noted!.length} minor, the likeliest to be wrong, for you only: not sent to
+            the agent
+          </summary>
+          <ul class="review-findings">
+            <For each={props.meta.noted}>{(f) => <FindingItem finding={f} dropped />}</For>
+          </ul>
+        </details>
+      </Show>
+      <Show when={props.meta.guide}>
+        {(g) => (
+          <GuideBlock
+            guide={g()}
+            dialogId={props.dialogId}
+            recordId={props.recordId}
+            live={props.live}
+          />
+        )}
       </Show>
       <Show when={props.meta.notHeld?.length}>
         <details class="review-dropped">

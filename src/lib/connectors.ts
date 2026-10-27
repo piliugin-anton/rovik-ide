@@ -6,7 +6,9 @@
 // loop, tools and prompt, so the IDE hands it the model, the message and
 // the project folder, follows what it does, and shows its steps, its
 // tokens and its cost with the reply
-// (src-tauri/crates/rovik-core/src/connectors).
+// (src-tauri/crates/rovik-core/src/connectors). That's Agent mode; in Plan
+// mode and Autopilot it's the model behind Rovik's agent instead, with
+// Rovik's prompt and Rovik's tools (over MCP).
 //
 // A connector is kept as a `Provider` entry in the AI settings whose
 // `baseUrl` is `connector://<kind>` (its token or key is `apiKey`, so it
@@ -39,11 +41,6 @@ import { CODEX } from './codex';
 
 export const CONNECTOR_SCHEME = 'connector://';
 
-/** Whether the entry is a connector that runs Rovik's tools. */
-export function usesRovikTools(p: Pick<Provider, 'baseUrl' | 'connector' | 'settings'>): boolean {
-  return specOf(p)?.usesRovikTools(p.settings ?? {}) ?? false;
-}
-
 /**
  * What Rovik knows of a kind of connector, the same for every kind: each
  * kind's is in a module of its own (claudeCode.ts, codex.ts), one entry of
@@ -57,18 +54,10 @@ export interface ConnectorSpec {
   install: string;
   /** Its settings with the defaults for what isn't set: `{}` gives a new one's. */
   settings: (raw: Record<string, unknown>) => Record<string, unknown>;
-  /** Whether its runs get Rovik's tools (over MCP), as its settings say. */
-  usesRovikTools: (settings: Record<string, unknown>) => boolean;
   /** For its row in the list: the program and how it runs. */
   summary: (settings: Record<string, unknown>) => string;
   /** The model its chats' titles are asked of; none: the chat's own. */
   titleModel?: string;
-  /**
-   * Running its own tools, it plans in a plan mode of its own when the chat
-   * is in Plan mode (the core's `Connector::plan_mode`). Without one, Plan
-   * mode isn't offered with its own tools, which would carry the plan out.
-   */
-  planMode: boolean;
   /** Under its models' table while it has none: how to get them. */
   modelsHint: string;
   /**
@@ -507,9 +496,10 @@ export function connectorProfile(
     vision: false,
     pdf: false,
     contextTokens: model.contextOverride ?? model.contextLength,
-    // With its own tools, the IDE offers it none; with Rovik's, the run's
-    // tools go to it over MCP.
-    noTools: !usesRovikTools(provider),
+    // It takes Rovik's tools (over MCP): the run offers them in Plan mode,
+    // Autopilot and to a subagent, and none in Agent mode, where it runs
+    // its own (the core's `run::lead_profile`).
+    noTools: false,
     firstByteTimeoutMs: model.firstTokenTimeoutSec ? model.firstTokenTimeoutSec * 1000 : undefined,
     reasoning: model.reasoning ?? { choice: 'auto' },
     connector: provider.settings ?? {},

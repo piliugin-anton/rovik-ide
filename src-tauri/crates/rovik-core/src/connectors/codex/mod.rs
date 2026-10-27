@@ -6,15 +6,15 @@
 //! for the chat (`thread/start`), or continues the chat's (`thread/resume`),
 //! so Codex keeps its own context between turns, and runs one turn of it
 //! (`turn/start`) with the chat's message, the model and the effort. Its
-//! own system prompt goes with its own tools; with Rovik's tools, and in a
-//! one-off request, Rovik's replaces it (`baseInstructions`).
+//! own system prompt goes with its own tools (in Agent mode); with Rovik's
+//! tools (in Plan mode and Autopilot, connectors/mod.rs), and in a one-off
+//! request, Rovik's replaces it (`baseInstructions`).
 //!
 //! It runs unattended. Under Rovik's permissions (the default) Codex asks
 //! before every command and patch, and Rovik's hooks (codex/hooks.rs)
 //! answer as Rovik's permissions and approvals say, a patch as the file
 //! edits it makes; Codex's own modes are its sandbox and approval presets,
-//! where what would ask is declined. In Plan mode it plans in its own plan
-//! mode, in a read-only sandbox, its plan the reply. Around each command
+//! where what would ask is declined. Around each command
 //! of its shell, Rovik's hooks refuse what would touch the project's
 //! restricted files, and have the run make ready what the command needs,
 //! before it runs and after it failed (agent_run/environment.rs); on a
@@ -125,21 +125,9 @@ pub enum PermissionMode {
     FullAccess,
 }
 
-/// Whose tools a run uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub enum ToolsMode {
-    /// Codex's own (its shell, its patches…), under the permission mode of
-    /// the settings: Rovik shows what it did.
-    #[default]
-    Own,
-    /// Rovik's, over MCP: Codex is the model behind Rovik's agent loop,
-    /// and each call is a tool call of the reply, which Rovik runs.
-    Rovik,
-}
-
 /// The connector's settings, as the frontend keeps them with its entry
-/// (src/lib/codex.ts has the same fields and defaults).
+/// (src/lib/codex.ts has the same fields and defaults). Whose tools a turn
+/// uses isn't one: it's the run's mode's (`Turn::rovik_tools`).
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -153,7 +141,6 @@ pub struct Settings {
     /// More arguments for `codex app-server`, as typed on a command line
     /// (`-c key=value`): after Rovik's, so theirs win.
     pub extra_args: String,
-    pub tools: ToolsMode,
 }
 
 impl Settings {
@@ -210,14 +197,7 @@ fn signs_in_with_key(settings: &Settings, api_key: &str) -> bool {
 
 /// Whether Rovik's permissions decide on Codex's own tools.
 fn follows_rovik(settings: &Settings) -> bool {
-    settings.tools == ToolsMode::Own && settings.permission_mode == PermissionMode::Rovik
-}
-
-/// Whether Codex plans in its own plan mode: with its own tools, in a
-/// chat's Plan mode. With Rovik's tools the plan mode is Rovik's (its
-/// prompt and its tools), as with any model, Autopilot's plan stage too.
-fn plans_on_its_own(settings: &Settings, turn: &Turn) -> bool {
-    turn.plan_mode && !turn.one_shot && settings.tools == ToolsMode::Own
+    settings.permission_mode == PermissionMode::Rovik
 }
 
 /// The effort as Codex takes it: the levels every model it lists has.
@@ -246,18 +226,17 @@ struct Policy {
 }
 
 /// A turn's policy. With Rovik's tools, and in a one-off request, Codex's
-/// own tools have nothing to do: read-only, never asking. In Plan mode its
-/// sandbox keeps everything as it is, and nothing is asked (Codex refuses
-/// what would need it). Under Rovik's permissions it asks before every
-/// command and patch, Rovik's hooks answering, and runs what Rovik allows
-/// without a sandbox of its own, as Claude Code runs its commands.
+/// own tools have nothing to do: read-only, never asking. Under Rovik's
+/// permissions it asks before every command and patch, Rovik's hooks
+/// answering, and runs what Rovik allows without a sandbox of its own, as
+/// Claude Code runs its commands.
 fn policy(settings: &Settings, turn: &Turn) -> Policy {
     let policy = |approval, sandbox| Policy {
         approval,
         sandbox,
         reviewer: None,
     };
-    if turn.one_shot || settings.tools == ToolsMode::Rovik || turn.plan_mode {
+    if turn.one_shot || turn.rovik_tools {
         return policy("never", "read-only");
     }
     match settings.permission_mode {
@@ -313,7 +292,7 @@ fn args_for(
         }
         set(&format!("mcp_servers.{}", served.name), server);
     }
-    let own_tools_off = turn.one_shot || settings.tools == ToolsMode::Rovik;
+    let own_tools_off = turn.one_shot || turn.rovik_tools;
     if own_tools_off {
         // Codex's own tools and what its prompt says of them, and the
         // project's instructions, which Rovik's prompt carries.
@@ -337,7 +316,7 @@ fn args_for(
         set("include_apps_instructions", json!(false));
         set("project_doc_max_bytes", json!(0));
     }
-    if settings.tools == ToolsMode::Rovik && !turn.one_shot {
+    if turn.rovik_tools {
         // Rovik's tools called as functions of their own, not from code.
         let namespace = format!("mcp__{}", super::mcp::SERVER_NAME);
         set(
@@ -359,14 +338,14 @@ fn hook_events(settings: &Settings, turn: &Turn) -> Vec<Event> {
     if turn.one_shot {
         return Vec::new();
     }
-    if settings.tools == ToolsMode::Rovik {
+    if turn.rovik_tools {
         return vec![Event::PreToolUse];
     }
     if turn.commands.is_none() && turn.asks.is_none() {
         return Vec::new();
     }
     let mut events = vec![Event::PreToolUse];
-    if follows_rovik(settings) && !turn.plan_mode && turn.asks.is_some() {
+    if follows_rovik(settings) && turn.asks.is_some() {
         events.push(Event::PermissionRequest);
     }
     events.push(Event::PostToolUse);
@@ -429,8 +408,6 @@ struct Opening<'a> {
     hooks: &'a [Event],
     /// Nothing kept: a one-off request.
     ephemeral: bool,
-    /// Plan mode's collaboration modes, an experimental part of the API.
-    experimental: bool,
 }
 
 /// Starts the app server's conversation: its handshake, the key it signs
@@ -490,7 +467,7 @@ async fn open(
     };
     let hello = json!({
         "clientInfo": { "name": "rovik", "title": "Rovik IDE", "version": env!("CARGO_PKG_VERSION") },
-        "capabilities": { "experimentalApi": opening.experimental },
+        "capabilities": { "experimentalApi": false },
     });
     ask!("initialize", hello).map_err(|e| refused("Codex refused to start", e))?;
     rpc.notify("initialized");
@@ -693,15 +670,8 @@ fn commands_from(listed: &Value) -> Vec<ConnectorCommand> {
     commands
 }
 
-/// The request that runs `ask` in `thread`, its method and parameters: in
-/// Codex's own plan mode when `plan` ([`plans_on_its_own`]).
-fn request_for(
-    ask: &Ask,
-    thread: &str,
-    turn: &Turn,
-    model: Option<&str>,
-    plan: bool,
-) -> (&'static str, Value) {
+/// The request that runs `ask` in `thread`: its method and parameters.
+fn request_for(ask: &Ask, thread: &str, turn: &Turn) -> (&'static str, Value) {
     let text = |text: &str| json!({ "type": "text", "text": text, "text_elements": [] });
     let input = match ask {
         Ask::Compact => return ("thread/compact/start", json!({ "threadId": thread })),
@@ -737,12 +707,6 @@ fn request_for(
     let effort = turn.effort.map(effort_arg);
     if let Some(effort) = effort {
         params["effort"] = json!(effort);
-    }
-    if plan {
-        params["collaborationMode"] = json!({
-            "mode": "plan",
-            "settings": { "model": model.unwrap_or_default(), "reasoning_effort": effort, "developer_instructions": null },
-        });
     }
     ("turn/start", params)
 }
@@ -830,7 +794,6 @@ async fn run_turn(
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
         env_file.into_iter().collect(),
     )?;
-    let plan = plans_on_its_own(settings, turn);
     let opening = Opening {
         policy: policy(settings, turn),
         resume: thread,
@@ -841,7 +804,6 @@ async fn run_turn(
         developer: None,
         hooks: &events,
         ephemeral: turn.one_shot,
-        experimental: plan,
     };
     let opened = match open(process, turn, settings, opening, cancel).await {
         Ok(opened) => opened,
@@ -905,13 +867,13 @@ async fn run_turn(
         true => Ask::Text(prompt.to_string()),
         false => ask_of(prompt, &skills),
     };
-    let (method, params) = request_for(&ask, &id, turn, model.as_deref(), plan);
+    let (method, params) = request_for(&ask, &id, turn);
     parser.begin(rpc.request(method, params));
-    let rovik_decides = (follows_rovik(settings) || plan) && !turn.one_shot;
+    let rovik_decides = follows_rovik(settings) && !turn.one_shot;
     let hooks = Arc::new(Hooks {
         checks: turn.commands.clone().filter(|_| !turn.one_shot),
         asks: turn.asks.clone().filter(|_| rovik_decides),
-        ask_commands: rovik_decides && !plan,
+        ask_commands: rovik_decides,
         ask_patches: rovik_decides,
         rovik_tools: false,
         root: cwd.clone(),
@@ -1259,7 +1221,7 @@ async fn test_request(args: &ProbeRequestArgs) -> Result<ProbeRequest, String> {
         prompt: "Reply with the single word: pong".into(),
         cwd: None,
         isolated: false,
-        plan_mode: false,
+        rovik_tools: false,
         session: None,
         recap: None,
         one_shot: true,
@@ -1446,12 +1408,6 @@ impl Connector for Codex {
         })
     }
 
-    /// Its collaboration mode `plan`, in a read-only sandbox: its plan the
-    /// reply.
-    fn plan_mode(&self) -> bool {
-        true
-    }
-
     fn latest_version(&self) -> BoxFuture<'_, Option<String>> {
         Box::pin(async {
             let response = crate::net::client().await.get(LATEST).send().await.ok()?;
@@ -1475,7 +1431,7 @@ impl Connector for Codex {
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let settings = Settings::from_value(&turn.settings);
-            if settings.tools == ToolsMode::Rovik && !turn.one_shot {
+            if turn.rovik_tools {
                 return rovik_tools::run(turn, settings, cancel, on_event).await;
             }
             // A session kept for Rovik's tools isn't continued with Codex's

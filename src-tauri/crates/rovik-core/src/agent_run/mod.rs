@@ -17,6 +17,8 @@
 //!   guard.rs      checkpoints and loop detection
 //!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
 //!   change_review.rs  a fresh-context review of the change before the checks
+//!   guide.rs      after the second review that found problems: where and
+//!                 why the agent goes wrong, with the review's findings
 //!   tools.rs      tool schemas and running a tool
 //!   steer.rs      messages the user sends a run while it works
 //!   autopilot/    a task carried out with nobody there: its stages
@@ -44,6 +46,7 @@ mod execute;
 pub mod failure;
 pub mod group;
 pub mod guard;
+pub mod guide;
 pub mod judge;
 mod landing;
 pub mod log;
@@ -1418,25 +1421,13 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
 /// Why a message's mode can't run on its model, if it can't; refused before
 /// anything is stored. Autopilot's stages work with Rovik's tools (its plan
 /// goes in with `submit_plan`, its subagents run through `task`), which a
-/// model marked "no tools" or a connector running its own doesn't use. Plan
-/// mode changes nothing, which a connector running its own tools promises
-/// only with a plan mode of its own (`Connector::plan_mode`).
+/// model marked "no tools" doesn't use. A connector's harness does: in
+/// Autopilot, as in Plan mode, it runs as Rovik's agent (`run::lead_profile`).
 fn mode_refusal(request: &StartRequest) -> Option<String> {
-    mode_refusal_with(request, |kind| {
-        crate::connectors::connector(kind).plan_mode()
-    })
-}
-
-/// `mode_refusal`, with whether a kind of connector has a plan mode of its
-/// own given (tests: a kind without one).
-fn mode_refusal_with(
-    request: &StartRequest,
-    plan_mode: impl Fn(crate::connectors::ConnectorKind) -> bool,
-) -> Option<String> {
     let StartKind::Send { message } = &request.start else {
         return None;
     };
-    if !request.profile.no_tools {
+    if !request.profile.no_tools || crate::connectors::is_connector(&request.profile.base_url) {
         return None;
     }
     let mode = message
@@ -1445,22 +1436,10 @@ fn mode_refusal_with(
         .and_then(|m| m.get("mode"))
         .and_then(|m| m.as_str())
         .or(request.mode.as_deref());
-    let kind = crate::connectors::kind_of(&request.profile.base_url);
-    match mode {
-        Some(autopilot::MODE) => Some(
-            "Autopilot works with Rovik's tools, which this model doesn't use: pick one that does, or a connector set to use Rovik's tools (Settings → Connectors)."
-                .into(),
-        ),
-        Some("plan") => kind
-            .filter(|k| !plan_mode(*k))
-            .map(|k| {
-                format!(
-                    "{} has no plan mode of its own, and its tools would change the project: use Agent mode, or set it to use Rovik's tools (Settings → Connectors).",
-                    k.title()
-                )
-            }),
-        _ => None,
-    }
+    (mode == Some(autopilot::MODE)).then(|| {
+        "Autopilot works with Rovik's tools, which this model doesn't use: pick one that does."
+            .into()
+    })
 }
 
 /// A start of a run, boxed (`start_run_boxed`).
@@ -1503,8 +1482,11 @@ pub(super) async fn start_run(
     let mut request = request;
     if let StartKind::Send { message } = &mut request.start {
         check_attachments(db, message).await?;
-        // "Implement this plan": the plan's text, from its file (A04).
-        plan::expand_implementation(message, request.root.as_deref())?;
+        // "Implement this plan": the plan's text, from its file (A04), in
+        // Agent mode, where a connector's harness has its own tools, not
+        // Rovik's `todo` (`run::lead_profile`).
+        let todo = !run::lead_profile(request.profile.clone(), true).no_tools;
+        plan::expand_implementation(message, request.root.as_deref(), todo)?;
     }
     // A change to the chat's files outside any run (a server's merge)
     // ends first: the run starts on them as they're left.

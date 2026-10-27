@@ -57,6 +57,9 @@ pub enum Kind {
     Scout,
     /// Reviews the whole change before the checks run (change_review.rs).
     Reviewer,
+    /// After the second change review that found problems, tells the lead
+    /// where and why it goes wrong (guide.rs).
+    Guide,
     /// Reads a large or repeated check failure for its cause (triage.rs).
     Triage,
     /// Checks a submitted plan against the code (plan_review.rs).
@@ -93,11 +96,14 @@ impl Kind {
         match self {
             // A plan changes nothing yet: the whole project, ranked for it.
             Kind::Scout | Kind::PlanReviewer | Kind::Planner | Kind::Judge => MapScope::Lead,
-            Kind::Reviewer | Kind::Triage | Kind::TestWriter | Kind::Acceptance | Kind::Breaker => {
-                MapScope::Changed {
-                    fraction_percent: 50,
-                }
-            }
+            Kind::Reviewer
+            | Kind::Guide
+            | Kind::Triage
+            | Kind::TestWriter
+            | Kind::Acceptance
+            | Kind::Breaker => MapScope::Changed {
+                fraction_percent: 50,
+            },
             // Around its step's files (and the run's changes so far).
             Kind::Worker => MapScope::Changed {
                 fraction_percent: 100,
@@ -108,6 +114,7 @@ impl Kind {
     pub const ALL: &'static [Kind] = &[
         Kind::Scout,
         Kind::Reviewer,
+        Kind::Guide,
         Kind::Triage,
         Kind::PlanReviewer,
         Kind::Worker,
@@ -122,6 +129,7 @@ impl Kind {
         match self {
             Kind::Scout => "scout",
             Kind::Reviewer => "reviewer",
+            Kind::Guide => "guide",
             Kind::Triage => "triage",
             Kind::PlanReviewer => "planReviewer",
             Kind::Worker => "worker",
@@ -156,6 +164,7 @@ impl Kind {
         match self {
             Kind::Scout => &SCOUT,
             Kind::Reviewer => &super::change_review::REVIEWER,
+            Kind::Guide => &super::guide::GUIDE,
             Kind::Triage => &super::triage::TRIAGE,
             Kind::PlanReviewer => &super::plan_review::PLAN_REVIEWER,
             Kind::Worker => &super::worker::WORKER,
@@ -1847,6 +1856,7 @@ mod tests {
                 "test writer" => Kind::TestWriter,
                 "triage" => Kind::Triage,
                 "reviewer" => Kind::Reviewer,
+                "guide" => Kind::Guide,
                 "plan reviewer" => Kind::PlanReviewer,
                 "acceptance" => Kind::Acceptance,
                 "planner" => Kind::Planner,

@@ -13,9 +13,9 @@ export type ClaudeCodeSettings = {
   /** How it signs in: this computer's login, a `claude setup-token` token, or an API key. */
   auth: 'login' | 'token' | 'apiKey';
   /**
-   * `rovik`: Rovik's permissions and approvals decide each call Claude Code
-   * would ask about (claude_code.rs `ROVIK_PERMISSIONS`); the others are
-   * Claude Code's own modes.
+   * For its own tools (Agent mode): `rovik`, Rovik's permissions and
+   * approvals decide each call Claude Code would ask about (claude_code.rs
+   * `ROVIK_PERMISSIONS`); the others are Claude Code's own modes.
    */
   permissionMode:
     'rovik' | 'acceptEdits' | 'bypassPermissions' | 'default' | 'plan' | 'dontAsk' | 'auto';
@@ -32,12 +32,6 @@ export type ClaudeCodeSettings = {
   extraArgs: string;
   /** `--bare`: none of the user's hooks, skills, plugins or CLAUDE.md. */
   bare: boolean;
-  /**
-   * How chats use it: `own`, Claude Code with its own tools and its own
-   * prompt, under its permission mode; `rovik`, as the model behind
-   * Rovik's agent, with Rovik's prompt and Rovik's tools over MCP.
-   */
-  tools: 'own' | 'rovik';
 };
 
 export const CLAUDE_CODE_DEFAULTS: ClaudeCodeSettings = {
@@ -49,25 +43,7 @@ export const CLAUDE_CODE_DEFAULTS: ClaudeCodeSettings = {
   configDir: '',
   extraArgs: '',
   bare: false,
-  tools: 'own',
 };
-
-export const USE_MODES: Choice<ClaudeCodeSettings['tools']>[] = [
-  {
-    value: 'own',
-    label: 'Claude Code',
-    hint: 'Its own tools and prompt; Rovik shows each step it takes.',
-    detail:
-      'Claude Code runs its own tools (Read, Edit, Bash…) with its own system prompt and the CLAUDE.md it reads, under the permission mode below; Rovik shows each step it took. In Plan mode it plans in its own plan mode. Autopilot and Rovik’s subagents need Rovik’s tools.',
-  },
-  {
-    value: 'rovik',
-    label: 'Rovik’s agent on Claude Code',
-    hint: 'Rovik’s prompt and tools, with Claude Code as the model.',
-    detail:
-      'Claude Code is the model behind Rovik’s agent: Rovik’s system prompt, Rovik’s tools over MCP, each call under Permissions and approval in the chat’s copy of the project, with Rovik’s checks, checklist, plans, Autopilot and subagents.',
-  },
-];
 
 export const PERMISSION_MODES: Choice<ClaudeCodeSettings['permissionMode']>[] = [
   {
@@ -140,11 +116,18 @@ export const CLAUDE_CODE_INSTALL = 'curl -fsSL https://claude.ai/install.sh | ba
 /**
  * A connector's settings with Claude Code's defaults for what isn't set.
  * What it no longer has is left out: the system prompt is the tools'
- * (its own with its own, Rovik's with Rovik's).
+ * (its own with its own, Rovik's with Rovik's), and whose tools it runs is
+ * the chat's mode's (its own in Agent mode, Rovik's in Plan mode and
+ * Autopilot).
  */
 export function claudeCodeSettings(p: Pick<Provider, 'settings'>): ClaudeCodeSettings {
-  const { systemPrompt: _gone, ...s } = (p.settings ?? {}) as Partial<ClaudeCodeSettings> & {
+  const {
+    systemPrompt: _gone,
+    tools: _mode,
+    ...s
+  } = (p.settings ?? {}) as Partial<ClaudeCodeSettings> & {
     systemPrompt?: unknown;
+    tools?: unknown;
   };
   return {
     ...CLAUDE_CODE_DEFAULTS,
@@ -223,17 +206,15 @@ export const CLAUDE_CODE: ConnectorSpec = {
   kind: 'claude-code',
   title: 'Claude Code',
   about:
-    'Anthropic’s coding agent, run headless in the project folder with its own tools. Chats that pick one of its models hand it the task; its steps, tokens and cost show with the reply.',
+    'Anthropic’s coding agent, run headless in the project folder: with its own tools in Agent mode, as the model behind Rovik’s agent in Plan mode and Autopilot. Chats that pick one of its models hand it the task; its steps, tokens and cost show with the reply.',
   install: CLAUDE_CODE_INSTALL,
   settings: (raw) => claudeCodeSettings({ settings: raw }),
-  usesRovikTools: (raw) => claudeCodeSettings({ settings: raw }).tools === 'rovik',
   summary: (raw) => {
     const s = claudeCodeSettings({ settings: raw });
     const mode = PERMISSION_MODES.find((m) => m.value === s.permissionMode)?.label;
-    return `${s.program} · ${s.tools === 'rovik' ? 'Rovik’s agent' : (mode ?? s.permissionMode)}`;
+    return `${s.program} · ${mode ?? s.permissionMode}`;
   },
   titleModel: CLAUDE_CODE_TITLE_MODEL,
-  planMode: true,
   modelsHint:
     'Test the connection to list its models (aliases such as sonnet and opus, and full names), or add one by ID below.',
   chatCall: claudeCodeChatCall,

@@ -160,6 +160,22 @@ test('tokens on a block, and the latest request’s total', () => {
     outputTokens: 37,
     cost: 0.75,
   });
+  // A change review's guide counts beside its reviewer.
+  const guided = msg('assistant', {
+    review: {
+      kind: 'change',
+      status: 'findings',
+      round: 2,
+      maxRounds: 3,
+      usage: { inputTokens: 10, outputTokens: 1 },
+      guide: { status: 'done', usage: { inputTokens: 30, outputTokens: 3, cost: 0.125 } },
+    },
+  });
+  assert.deepEqual(runUsage([...messages, guided]), {
+    inputTokens: 345,
+    outputTokens: 39,
+    cost: 0.625,
+  });
 });
 
 test('a reloaded page picks up a running subagent with what it does (P1.5)', () => {

@@ -582,7 +582,8 @@ async fn a_task_runs_from_its_plan_to_its_delivery() {
         .unwrap()
         .to_string();
     let shown = plan::relative_plan_path(&file, Some(&h.project.to_string_lossy()));
-    let text = plan::implementation_request(&std::fs::read_to_string(&file).unwrap(), Some(&shown));
+    let text =
+        plan::implementation_request(&std::fs::read_to_string(&file).unwrap(), Some(&shown), true);
     assert_eq!(starts[0].content, text);
     let requests = seen.lock().unwrap().clone();
     let implementing = requests
@@ -1175,7 +1176,10 @@ async fn the_button_and_the_driver_send_the_same_implementation_request() {
     assert!(by_button.ends_with(&by_driver), "{by_button}");
     assert!(by_button.starts_with("## Repository map"), "{by_button}");
     let text = std::fs::read_to_string(&file).unwrap();
-    assert_eq!(by_driver, plan::implementation_request(&text, Some(&shown)));
+    assert_eq!(
+        by_driver,
+        plan::implementation_request(&text, Some(&shown), true)
+    );
 }
 
 /// A01: an Agent-mode run's log line says nothing of Autopilot.
@@ -7728,7 +7732,7 @@ async fn real_codex_runs_an_autopilot_task_from_its_plan_to_its_delivery() {
     ];
     let (url, _) = responses_routed(routes, plan).await;
     let home = crate::testing::temp_dir();
-    let settings = real_codex(&url, &home.0, json!({ "tools": "rovik" }));
+    let settings = real_codex(&url, &home.0, json!({}));
     let mut request = codex_send(
         &h,
         "",

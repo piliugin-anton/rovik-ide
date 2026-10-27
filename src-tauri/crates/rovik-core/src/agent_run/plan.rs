@@ -728,8 +728,32 @@ pub fn relative_plan_path(path: &str, root: Option<&str>) -> String {
 /// The text that implements a plan (Agent mode): the plan in full, kept in
 /// view for the whole run (the current request is never dropped from the
 /// context), then how to carry it out. `file`: where it's saved, as the
-/// chat shows it.
-pub fn implementation_request(plan: &str, file: Option<&str>) -> String {
+/// chat shows it. `todo`: the model keeps its checklist with Rovik's `todo`;
+/// one without it (a connector's harness with its own tools) uses its own
+/// checklist tool, if it has one.
+pub fn implementation_request(plan: &str, file: Option<&str>, todo: bool) -> String {
+    let checklist = match todo {
+        true => concat!(
+            "First create your checklist with the todo tool from the plan's steps, with the first step in_progress, then work through them in order, ",
+            "one step at a time, each with its own todo call: call todo alone to mark a step in_progress before starting it, ",
+            "do the work, then call todo alone again to mark it done before the next step. Never save up finished steps for one update at the end. ",
+        ),
+        false => concat!(
+            "First make a checklist of the plan's steps with your own checklist tool, if you have one, then work through them in order, ",
+            "one step at a time: mark a step in progress before starting it, and done before the next. ",
+        ),
+    };
+    // How to carry it out, with either checklist.
+    let work = concat!(
+        "For each step, read the files it names before changing them, and make ",
+        "the changes it describes to the functions, types and settings it names. Follow the plan and its decisions. ",
+        "If a step turns out wrong or unnecessary (a file or function isn\u{2019}t where the plan says, or the change ",
+        "doesn\u{2019}t fit the code), mark it skipped or changed with the reason instead of silently doing something else. ",
+        "When the steps are done, run the checks in the plan\u{2019}s Validation section that you can run (build, ",
+        "typecheck, tests, lint), add or update the tests it asks for, and fix what fails. In your final message, ",
+        "say which checks passed, which you couldn\u{2019}t run and why, what is left to check by hand, and why you changed ",
+        "any files the plan doesn\u{2019}t mention.",
+    );
     [
         match file {
             Some(file) => format!(
@@ -742,20 +766,7 @@ pub fn implementation_request(plan: &str, file: Option<&str>) -> String {
         plan.trim().to_string(),
         "</plan>".into(),
         String::new(),
-        concat!(
-            "First create your checklist with the todo tool from the plan's steps, with the first step in_progress, then work through them in order, ",
-            "one step at a time, each with its own todo call: call todo alone to mark a step in_progress before starting it, ",
-            "do the work, then call todo alone again to mark it done before the next step. Never save up finished steps for one update at the end. ",
-            "For each step, read the files it names before changing them, and make ",
-            "the changes it describes to the functions, types and settings it names. Follow the plan and its decisions. ",
-            "If a step turns out wrong or unnecessary (a file or function isn\u{2019}t where the plan says, or the change ",
-            "doesn\u{2019}t fit the code), mark it skipped or changed with the reason instead of silently doing something else. ",
-            "When the steps are done, run the checks in the plan\u{2019}s Validation section that you can run (build, ",
-            "typecheck, tests, lint), add or update the tests it asks for, and fix what fails. In your final message, ",
-            "say which checks passed, which you couldn\u{2019}t run and why, what is left to check by hand, and why you changed ",
-            "any files the plan doesn\u{2019}t mention.",
-        )
-        .into(),
+        format!("{checklist}{work}"),
     ]
     .join("\n")
 }
@@ -765,10 +776,11 @@ pub fn implementation_request(plan: &str, file: Option<&str>) -> String {
 /// its file is now, goes in `meta.sentContent` before the message is
 /// stored, so every turn and Retry sends it the same. A message that has
 /// its text already, or isn't one, is left as it is. Err: the file can't
-/// be read.
+/// be read. `todo`: the model has Rovik's (`implementation_request`).
 pub fn expand_implementation(
     message: &mut super::UserMessage,
     root: Option<&str>,
+    todo: bool,
 ) -> Result<(), String> {
     let Some(meta) = message.meta.as_mut().and_then(Value::as_object_mut) else {
         return Ok(());
@@ -795,7 +807,7 @@ pub fn expand_implementation(
     let shown = relative_plan_path(&file, root);
     meta.insert(
         "sentContent".into(),
-        Value::String(implementation_request(&text, Some(&shown))),
+        Value::String(implementation_request(&text, Some(&shown), todo)),
     );
     Ok(())
 }
@@ -2646,10 +2658,10 @@ mod tests {
                 joined.to_string_lossy().into_owned(),
             ),
         ] {
-            let expected = implementation_request("# P\n\nThe plan.\n", Some(&shown));
+            let expected = implementation_request("# P\n\nThe plan.\n", Some(&shown), true);
             let mut m =
                 message(json!({ "mode": "agent", "implementsPlan": true, "planPath": path }));
-            expand_implementation(&mut m, Some(&root)).unwrap();
+            expand_implementation(&mut m, Some(&root), true).unwrap();
             assert_eq!(m.meta.as_ref().unwrap()["sentContent"], expected, "{path}");
             assert_eq!(m.meta.as_ref().unwrap()["implementsPlan"], true);
         }
@@ -2659,19 +2671,37 @@ mod tests {
             json!({ "implementsPlan": true, "planPath": "x.md", "sentContent": "as sent" }),
         ] {
             let mut m = message(meta.clone());
-            expand_implementation(&mut m, Some(&root)).unwrap();
+            expand_implementation(&mut m, Some(&root), true).unwrap();
             assert_eq!(m.meta, Some(meta));
         }
         let mut gone =
             message(json!({ "implementsPlan": true, "planPath": ".rovik/plans/missing.md" }));
-        let err = expand_implementation(&mut gone, Some(&root)).unwrap_err();
+        let err = expand_implementation(&mut gone, Some(&root), true).unwrap_err();
         assert!(err.contains("can't be read"), "{err}");
         // A file that's no plan's isn't sent to the model as one: the
         // message may name what a server wrote.
         std::fs::write(dir.0.join("notes.md"), "private\n").unwrap();
         let mut other = message(json!({ "implementsPlan": true, "planPath": "notes.md" }));
-        let err = expand_implementation(&mut other, Some(&root)).unwrap_err();
+        let err = expand_implementation(&mut other, Some(&root), true).unwrap_err();
         assert!(err.contains("isn't a plan's file"), "{err}");
+    }
+
+    /// A model without Rovik's `todo` (a connector's harness with its own
+    /// tools) isn't asked for it: it keeps its checklist with its own tool.
+    #[test]
+    fn an_implementation_without_rovik_s_todo_keeps_its_checklist_with_its_own() {
+        let with = implementation_request("# P\n", Some(".rovik/plans/p.md"), true);
+        assert!(with.contains("with the todo tool"), "{with}");
+        let own = implementation_request("# P\n", Some(".rovik/plans/p.md"), false);
+        assert!(!own.contains("todo"), "{own}");
+        assert!(
+            own.contains("with your own checklist tool, if you have one"),
+            "{own}"
+        );
+        // The rest is the same.
+        let rest = |text: &str| text[text.find("For each step").unwrap()..].to_string();
+        assert_eq!(rest(&own), rest(&with));
+        assert!(own.starts_with("Implement this plan. It's saved in .rovik/plans/p.md"));
     }
     use serde_json::json;
 

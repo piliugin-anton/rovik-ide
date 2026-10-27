@@ -4,8 +4,8 @@
 //! connectors/claude_code.rs), and Prepare's installs (prepare.rs).
 //!
 //! - [`before`] a command, the programs it starts that an ecosystem brings
-//!   (ecosystems/) and that aren't there are made available; before a
-//!   harness's own shell's, never in Plan mode ([`before_harness_command`]).
+//!   (ecosystems/) and that aren't there are made available, before a
+//!   harness's own shell's too ([`before_harness_command`]).
 //! - [`after`] it failed for want of a program or of a package, the
 //!   program is made available, or the project's dependencies installed;
 //!   the caller runs the command again, or tells the model to.
@@ -63,8 +63,7 @@ pub struct Context {
     /// Says what's being installed while it is; None clears it.
     pub note: Arc<dyn Fn(Option<String>) + Send + Sync>,
     /// The run is in Plan mode, which changes nothing: no dependencies
-    /// are installed, nor anything before a command a harness's own shell
-    /// runs ([`before_harness_command`]).
+    /// are installed.
     pub plan_mode: bool,
 }
 
@@ -152,14 +151,9 @@ pub async fn before(cx: &Context, command: &str, look: Look) -> Ready {
 }
 
 /// [`before`] a command a harness's own shell is about to run (Claude
-/// Code's, through its hook), as far as [`Look::Host`] goes. Nothing in
-/// Plan mode: the harness runs its hook before it refuses a command, as it
-/// refuses most there, and a version installed for a command that never
-/// runs is minutes waited for nothing.
+/// Code's, through its hook), as far as [`Look::Host`] goes. A harness runs
+/// its own shell in Agent mode only (`run::lead_profile`).
 pub async fn before_harness_command(cx: &Context, command: &str) -> Ready {
-    if cx.plan_mode {
-        return Ready::default();
-    }
     before(cx, command, Look::Host).await
 }
 
@@ -1548,22 +1542,15 @@ mod tests {
         assert_eq!(*asked.lock().unwrap(), ["Node 20"]);
     }
 
-    /// A harness runs its hook before it refuses a command, as it refuses
-    /// most in Plan mode: nothing is installed before one there. In Agent
-    /// mode its command is made ready as Rovik's own are.
+    /// A command a harness's own shell is about to run is made ready as
+    /// Rovik's own are.
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn nothing_is_installed_before_a_harness_command_in_plan_mode() {
+    async fn a_harness_command_is_made_ready_as_rovik_s_own_are() {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let _host = Host::new(|root| installing_node(root, asked.clone()));
-        let (_test, mut cx, notes) = project(&[("package.json", "{}"), (".nvmrc", "20\n")]);
+        let (_test, cx, _notes) = project(&[("package.json", "{}"), (".nvmrc", "20\n")]);
         let _lacking = toolchains::lacking(&["node", "npm", "npx"]);
-        cx.plan_mode = true;
-        let planning = before_harness_command(&cx, "npm test").await;
-        assert_eq!(planning, Ready::default());
-        assert!(asked.lock().unwrap().is_empty());
-        assert!(notes.lock().unwrap().is_empty());
-        cx.plan_mode = false;
         let working = before_harness_command(&cx, "npm test").await;
         assert_eq!(working.done, ["Node 20 was installed for this project"]);
         assert_eq!(*asked.lock().unwrap(), ["Node 20"]);

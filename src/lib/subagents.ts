@@ -520,9 +520,10 @@ function latestRequest(messages: ChatMessage[]): ChatMessage[] {
 export function runUsage(messages: ChatMessage[]): SubagentUsage | null {
   let total: SubagentUsage | null = null;
   for (const m of latestRequest(messages)) {
-    // P5.3: a check round's triage counts too.
+    // P5.3: a check round's triage counts too, and a review's guide.
     const used = [
       m.meta?.subagent?.usage ?? m.meta?.review?.usage,
+      m.meta?.review?.guide?.usage,
       m.meta?.verification?.triage?.usage,
       // A connector's harness says what its turn used (lib/connectors.ts).
       connectorUsage(m.meta?.connector),
@@ -547,7 +548,12 @@ export function runUsageSource(messages: ChatMessage[]): string {
   let subagents = false;
   const connectors = new Set<string>();
   for (const m of latestRequest(messages)) {
-    if (m.meta?.subagent?.usage ?? m.meta?.review?.usage ?? m.meta?.verification?.triage?.usage)
+    if (
+      m.meta?.subagent?.usage ??
+      m.meta?.review?.usage ??
+      m.meta?.review?.guide?.usage ??
+      m.meta?.verification?.triage?.usage
+    )
       subagents = true;
     if (connectorUsage(m.meta?.connector)) {
       connectors.add(connectorTitle(m.meta?.connector?.kind as ConnectorKind | undefined));

@@ -1210,15 +1210,17 @@ async fn a_running_chat_resolves_its_own_conflict() {
     );
     request.isolate = Some(true);
     h.start(request).await;
-    for _ in 0..200 {
-        if crate::overlay::chats::changes(&h.dialog_id)
-            .iter()
-            .any(|c| c.path() == "a.txt")
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    // The user's edit, once the write's result is stored: the conflict is
+    // found while `sleep` runs, and told with its result. The chat's change
+    // shows earlier, while the write finishes, and a conflict found then
+    // goes with the write's own result.
+    h.wait_for("w1's result", |e| {
+        e["type"] == "messagesAdded"
+            && e["messages"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|m| m["toolCallId"] == "w1"))
+    })
+    .await;
     std::fs::write(h.project.join("a.txt"), "user\n").unwrap();
     // What the project's watcher does when the file changes.
     crate::overlay::chats::project_changed(&h.project, &[h.project.join("a.txt")], false);
@@ -3244,6 +3246,28 @@ async fn a_message_with_a_missing_image_is_refused() {
     assert!(seen.lock().unwrap().is_empty());
 }
 
+/// Autopilot's stages work with Rovik's tools: a send in Autopilot on a
+/// model marked "no tools" is refused with why, before anything is stored
+/// or started. (A connector's never is: agent_run `mode_refusal`.)
+#[tokio::test]
+async fn autopilot_on_a_model_without_tools_is_refused() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Text("unused")]).await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Ship it".into(),
+        meta: Some(json!({ "mode": "autopilot" })),
+        attachments: Vec::new(),
+    };
+    let mut request = h.request(&url, StartKind::Send { message }, quiet_permissions());
+    request.profile.no_tools = true;
+    let err = agent_start(&h.core, request).await.unwrap_err();
+    assert!(err.contains("Autopilot works with Rovik's tools"), "{err}");
+    assert!(!h.core.agents.is_running(&h.dialog_id));
+    assert!(h.messages().await.is_empty());
+    assert!(seen.lock().unwrap().is_empty());
+}
+
 /// B07b: a plan edited by hand after it was checked: the agent hears what's
 /// wrong with it before its first turn, and the user sees it.
 #[tokio::test]
@@ -4806,7 +4830,13 @@ async fn project_without_its_dependencies() -> Harness {
 /// the command, a lone program call, runs again by itself. The model sees
 /// the second run, and why there was one. Needs npm.
 #[tokio::test]
+// Its install runs for real: the lock keeps out other tests' cloud hosts,
+// whose Node would come first on its commands' PATH, from a folder that
+// goes when their test ends (`toolchains::env_for`). This test's one
+// thread holds it across its awaits.
+#[allow(clippy::await_holding_lock)]
 async fn a_command_missing_the_projects_dependencies_runs_again_once_theyre_installed() {
+    let _no_host = crate::toolchains::test_lock();
     if !has_npm() {
         eprintln!("npm isn't installed: skipped");
         return;
@@ -4845,7 +4875,13 @@ async fn a_command_missing_the_projects_dependencies_runs_again_once_theyre_inst
 /// run it again. One the user's permissions would ask about first is the
 /// model's to run. Needs npm.
 #[tokio::test]
+// Its install runs for real: the lock keeps out other tests' cloud hosts,
+// whose Node would come first on its commands' PATH, from a folder that
+// goes when their test ends (`toolchains::env_for`). This test's one
+// thread holds it across its awaits.
+#[allow(clippy::await_holding_lock)]
 async fn a_compound_command_is_left_to_the_model_to_run_again() {
+    let _no_host = crate::toolchains::test_lock();
     if !has_npm() {
         eprintln!("npm isn't installed: skipped");
         return;
