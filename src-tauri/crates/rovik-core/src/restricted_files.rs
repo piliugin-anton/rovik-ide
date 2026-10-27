@@ -339,6 +339,10 @@ impl RestrictedFile {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RestrictedFiles {
     listed: Vec<RestrictedFile>,
+    /// A workspace chat's: each of its folders' own, by its name. A path's
+    /// first part says which decides for the rest of it, as when the folder
+    /// is open alone (workspaces-plan.md, 4.4).
+    folders: Vec<(String, RestrictedFiles)>,
 }
 
 impl RestrictedFiles {
@@ -360,7 +364,27 @@ impl RestrictedFiles {
                     .collect()
             })
             .unwrap_or_default();
-        RestrictedFiles { listed }
+        RestrictedFiles {
+            listed,
+            folders: Vec::new(),
+        }
+    }
+
+    /// A workspace chat's: each of its folders' (by name) for the paths in
+    /// that folder.
+    pub fn of_folders(folders: Vec<(String, RestrictedFiles)>) -> RestrictedFiles {
+        RestrictedFiles {
+            listed: Vec::new(),
+            folders,
+        }
+    }
+
+    /// For a workspace chat's path `key` in one of its folders: that
+    /// folder's list, and the path in the folder.
+    fn routed<'a>(&self, key: &'a str) -> Option<(&RestrictedFiles, &'a str)> {
+        let (name, rest) = key.split_once('/').unwrap_or((key, ""));
+        let (_, own) = self.folders.iter().find(|(n, _)| n == name)?;
+        Some((own, rest))
     }
 
     /// The project's, as saved under `settings_root` (the project's folder,
@@ -373,6 +397,9 @@ impl RestrictedFiles {
     /// The user's entry that decides for `key` (project-relative): the one
     /// for the file itself, else for the nearest folder it's in.
     fn entry_for(&self, key: &str) -> Option<&RestrictedFile> {
+        if let Some((own, rest)) = self.routed(key) {
+            return own.entry_for(rest);
+        }
         self.listed
             .iter()
             .filter(|e| paths::under(&e.path, key))
@@ -383,6 +410,9 @@ impl RestrictedFiles {
     /// project), at `abs`, is kept from the agent for `op`. A folder whose
     /// name looks secret isn't (`.env/`, a virtual environment).
     fn blocks(&self, key: &str, abs: &Path, op: Op) -> bool {
+        if let Some((own, rest)) = self.routed(key) {
+            return own.blocks(rest, abs, op);
+        }
         match self.entry_for(key) {
             Some(entry) => entry.blocks(op),
             None => {
@@ -398,6 +428,9 @@ impl RestrictedFiles {
     /// Whether `rel`, a file at `abs` that a walk of the project found (or
     /// a change to the project names), is kept from the agent for `op`.
     pub fn blocks_file(&self, rel: &str, abs: &Path, op: Op) -> bool {
+        if let Some((own, rest)) = self.routed(rel) {
+            return own.blocks_file(rest, abs, op);
+        }
         match self.entry_for(rel) {
             Some(entry) => entry.blocks(op),
             None => secret_file(rel, abs),
@@ -452,6 +485,18 @@ impl RestrictedFiles {
     /// lets the agent read included: a harness's rules can't make an
     /// exception.
     pub fn denied(&self, root: &Path) -> Denied {
+        // A workspace chat's: each folder's found from its own root, as
+        // when it's open alone, named from the view's.
+        if !self.folders.is_empty() {
+            let mut denied = Denied::default();
+            for (name, own) in &self.folders {
+                let found = own.denied(&root.join(name));
+                let named = |paths: Vec<String>| paths.into_iter().map(|p| format!("{name}/{p}"));
+                denied.read.extend(named(found.read));
+                denied.write.extend(named(found.write));
+            }
+            return denied;
+        }
         let mut denied = Denied::default();
         let mut add = |path: String, read: bool, write: bool| {
             if read && !denied.read.contains(&path) {
@@ -602,6 +647,9 @@ impl RestrictedFiles {
     /// [`skipped_folder`], or build output for changes ([`BUILD_FOLDERS`]);
     /// unless the user's list names it or something in it.
     pub(crate) fn skips(&self, key: &str, op: Op) -> bool {
+        if let Some((own, rest)) = self.routed(key).filter(|(_, rest)| !rest.is_empty()) {
+            return own.skips(rest, op);
+        }
         let name = key.rsplit(['/', '\\']).next().unwrap_or(key);
         let skipped = skipped_folder(name) || (op == Op::Write && BUILD_FOLDERS.contains(&name));
         if !skipped {
@@ -1026,6 +1074,61 @@ mod tests {
                     ".env.local".into(),
                     "config/master.key".into(),
                     "later.json".into(),
+                ],
+            }
+        );
+    }
+
+    /// A workspace chat's: each folder's list decides for the paths in it,
+    /// as when it's open alone, and a harness is denied each folder's files
+    /// by their paths in the view (workspaces-plan.md, 4.4).
+    #[test]
+    fn a_workspace_chats_lists_go_by_a_paths_first_part() {
+        let view = project(&[
+            "api/.env",
+            "api/private/a.txt",
+            "web/private/a.txt",
+            "web/node_modules/x/secrets.json",
+            "examples/secrets.yaml",
+        ]);
+        let api = RestrictedFiles::from_settings(&json!({
+            "restrictedFiles": [{ "path": "private" }, { "path": "node_modules" }]
+        }));
+        let restricted = RestrictedFiles::of_folders(vec![
+            ("api".into(), api),
+            ("web".into(), RestrictedFiles::default()),
+            ("examples".into(), RestrictedFiles::default()),
+        ]);
+        let r = root(&view);
+        let blocked = |path: &str| restricted.blocked(&r, path, Op::Read);
+        assert_eq!(blocked("api/.env").as_deref(), Some("api/.env"));
+        assert_eq!(
+            blocked("api/private/a.txt").as_deref(),
+            Some("api/private/a.txt")
+        );
+        assert_eq!(blocked("web/private/a.txt"), None, "api's entry is api's");
+        assert_eq!(
+            blocked("examples/secrets.yaml").as_deref(),
+            Some("examples/secrets.yaml"),
+            "a folder's own name doesn't make its files templates"
+        );
+        // A walk skips web's dependencies, but not api's, which its list names.
+        assert!(restricted.skips("web/node_modules", Op::Read));
+        assert!(!restricted.skips("api/node_modules", Op::Read));
+        assert_eq!(
+            restricted.denied(&view.0),
+            Denied {
+                read: vec![
+                    "api/.env".into(),
+                    "api/private/".into(),
+                    "api/node_modules".into(),
+                    "examples/secrets.yaml".into(),
+                ],
+                write: vec![
+                    "api/.env".into(),
+                    "api/private/".into(),
+                    "api/node_modules".into(),
+                    "examples/secrets.yaml".into(),
                 ],
             }
         );

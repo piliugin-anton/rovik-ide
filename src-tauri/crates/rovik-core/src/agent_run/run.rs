@@ -540,6 +540,18 @@ pub(super) struct TurnOutput {
     pub(super) connector: Option<Value>,
 }
 
+/// A workspace chat's folders at its last run, as that run recorded them on
+/// its message (`Run::record_folders`); None before its first.
+fn folders_at_last_run(recent: &[MessageRow]) -> Option<Vec<String>> {
+    recent.iter().rev().find_map(|m| {
+        let names = m.meta.as_ref()?.get("folders")?.as_array()?;
+        names
+            .iter()
+            .map(|n| n.as_str().map(str::to_string))
+            .collect()
+    })
+}
+
 /// Why a workspace chat's run doesn't start without its view
 /// (workspaces-plan.md, D23): the driver mounts it.
 pub(super) const NEEDS_VIEW: &str = "A chat across folders needs the virtual files driver (Settings → Virtual files), or start a chat in one folder.";
@@ -1067,8 +1079,30 @@ impl Run {
             }
         }
 
-        let (checks, project_context, restricted) = match &root {
-            Some(r) => {
+        // A workspace chat's folders at its last run, for those that joined
+        // or left since.
+        let since = folders_at_last_run(&recent);
+        let (checks, project_context, restricted) = match (&root, &folders) {
+            (Some(view), Some(chat_folders)) if chat_folders.single().is_none() => {
+                let (config_dir, view) = (
+                    core.paths.config_dir.clone(),
+                    std::path::PathBuf::from(view),
+                );
+                let (folders, verify) = (chat_folders.clone(), config.permissions.verify_changes);
+                crate::rt::spawn_blocking(move || {
+                    project::load_folders(
+                        &config_dir,
+                        Some(&view),
+                        &folders,
+                        verify,
+                        autopilot,
+                        since.as_deref(),
+                    )
+                })
+                .await
+                .unwrap_or_default()
+            }
+            (Some(r), _) => {
                 // Settings are kept by the project's folder, not the view's;
                 // a candidate's, by its task chat's (T05).
                 let settings_root = core
@@ -1089,7 +1123,7 @@ impl Run {
                 .await
                 .unwrap_or_default()
             }
-            None => Default::default(),
+            (None, _) => Default::default(),
         };
         let restricted = Arc::new(restricted);
         // V02 (D7): an Autopilot implementation in a project with no checks
@@ -1245,6 +1279,11 @@ impl Run {
                 Role::Lead,
             )
         };
+        // A workspace chat's folders, recorded on its run's message: its
+        // next run tells which joined or left since.
+        if let Some(chat_folders) = run.folders.as_ref().filter(|f| f.single().is_none()) {
+            run.record_folders(&recent, chat_folders).await;
+        }
         // Balanced Autopilot's plan reviews go on by the plan-fix limits.
         if run.balanced_autopilot() {
             let fix = run.plan_fix();
@@ -3170,6 +3209,30 @@ impl Run {
             }
         }
         self.store_meta(message_id, meta).await
+    }
+
+    /// Records a workspace chat's folders on its run's message (the latest
+    /// one of the user's, or the IDE's own for a stage), for its next run to
+    /// compare with (`folders_at_last_run`).
+    async fn record_folders(&self, recent: &[MessageRow], folders: &Folders) {
+        let names: Vec<&str> = folders.iter().map(|f| f.name.as_str()).collect();
+        let Some(message) = recent.iter().rev().find(|m| m.role == "user") else {
+            return;
+        };
+        let mut meta = message.meta.clone().unwrap_or_else(|| json!({}));
+        let Some(fields) = meta.as_object_mut() else {
+            return;
+        };
+        if fields.get("folders") == Some(&json!(names)) {
+            return;
+        }
+        fields.insert("folders".into(), json!(names));
+        if let Err(e) = self.store_meta(&message.id, meta).await {
+            eprintln!(
+                "agent: chat {}: its folders weren't recorded: {e}",
+                self.dialog_id
+            );
+        }
     }
 
     /// Stores a message's meta as given and shows it.

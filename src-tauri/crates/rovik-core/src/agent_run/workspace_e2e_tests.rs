@@ -285,3 +285,208 @@ async fn land_and_undo_are_refused_while_a_folder_is_missing() {
     assert_eq!(crate::overlay::chats::changes(&h.dialog_id).len(), 2);
     crate::overlay::chats::discard(&h.dialog_id).unwrap();
 }
+
+/// The system prompt of the `n`th request the model was sent.
+fn system_of(seen: &Arc<Mutex<Vec<Value>>>, n: usize) -> String {
+    seen.lock().unwrap()[n]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// A folder's instructions as the prompt has them, up to their end or
+/// where they were cut.
+fn instructions_of<'a>(system: &'a str, name: &str) -> &'a str {
+    let label =
+        format!("{name}'s instructions for agents ({name}/AGENTS.md); follow them in {name}:\n\n");
+    let start = system.find(&label).expect(&label) + label.len();
+    let rest = &system[start..];
+    let end = rest.find("\n\n").unwrap_or(rest.len());
+    rest[..end].trim_end_matches("\n[…truncated]")
+}
+
+#[tokio::test]
+async fn each_folders_instructions_checks_and_git_are_in_the_prompt_under_its_name() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(
+        &[
+            (
+                "api",
+                &[
+                    ("AGENTS.md", "Use tabs in api.\n"),
+                    ("package.json", r#"{"scripts":{"test":"node t.js"}}"#),
+                ],
+            ),
+            (
+                "web",
+                &[
+                    ("AGENTS.md", "Use spaces in web.\n"),
+                    ("package.json", r#"{"scripts":{"lint":"eslint ."}}"#),
+                ],
+            ),
+        ],
+        "all",
+    )
+    .await;
+    for name in ["api", "web"] {
+        turn_on_detected_checks(&h.core.paths.config_dir, &h.project.join(name));
+    }
+    let (url, seen) = model(vec![Reply::Text("Hello.")]).await;
+    h.start(h.workspace_request(&url, Harness::send("Hi"), Permissions::default()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let system = system_of(&seen, 0);
+    assert_eq!(instructions_of(&system, "api"), "Use tabs in api.");
+    assert_eq!(instructions_of(&system, "web"), "Use spaces in web.");
+    assert!(system.contains("`cd api && npm test`"), "{system}");
+    assert!(system.contains("`cd web && npm run lint`"), "{system}");
+    assert!(
+        system.contains("Git: `api` isn't in a repository; `web` isn't in a repository."),
+        "{system}"
+    );
+    assert!(!system.contains("The project's instructions"), "{system}");
+}
+
+#[tokio::test]
+async fn the_folders_instructions_share_12000_characters_and_a_short_ones_rest_goes_to_the_others()
+{
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let line = format!("{}\n", "x".repeat(99));
+    let (api, web) = (
+        format!("API\n{}", line.repeat(100)),
+        format!("WEB\n{}", line.repeat(100)),
+    );
+    let docs = format!("Short.\n{}", line.repeat(9));
+    let h = workspace_harness(
+        &[
+            ("api", &[("AGENTS.md", api.as_str())]),
+            ("web", &[("AGENTS.md", web.as_str())]),
+            ("docs", &[("AGENTS.md", docs.as_str())]),
+        ],
+        "all",
+    )
+    .await;
+    let (url, seen) = model(vec![Reply::Text("Hello.")]).await;
+    h.start(h.workspace_request(&url, Harness::send("Hi"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let system = system_of(&seen, 0);
+    let len = |name: &str| instructions_of(&system, name).chars().count();
+    assert_eq!(instructions_of(&system, "docs"), docs.trim(), "whole");
+    // What docs doesn't use goes to the others, evenly.
+    let room = (12_000 - docs.trim().chars().count()) / 2;
+    for name in ["api", "web"] {
+        assert!(
+            len(name) > 6_000 - 1_000 && len(name) <= room,
+            "{name}: {}",
+            len(name)
+        );
+    }
+    assert!(len("api") + len("web") + len("docs") <= 12_000);
+    assert_eq!(system.matches("[…truncated]").count(), 2);
+}
+
+#[tokio::test]
+async fn a_folders_restricted_files_are_refused_by_their_paths_in_the_view_and_only_its_own() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = workspace_harness(
+        &[
+            (
+                "api",
+                &[(".env", "KEY=1\n"), ("config.json", "{\"api\": 1}\n")],
+            ),
+            ("web", &[("config.json", "{\"web\": 1}\n")]),
+            ("examples", &[("secrets.yaml", "token: x\n")]),
+        ],
+        "all",
+    )
+    .await;
+    // web's own list keeps its config.json from the agent; api's says nothing.
+    crate::project_profile::save_project_settings(
+        &h.core.paths.config_dir,
+        h.project.join("web").to_string_lossy().into_owned(),
+        json!({ "restrictedFiles": [{ "path": "config.json" }] }),
+    )
+    .unwrap();
+    let read = |id: &'static str, path: &str| Reply::Call {
+        id,
+        name: "read",
+        args: json!({ "path": path }),
+    };
+    let (url, _) = model(vec![
+        read("r1", "api/.env"),
+        read("r2", "web/config.json"),
+        read("r3", "api/config.json"),
+        read("r4", "examples/secrets.yaml"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.workspace_request(&url, Harness::send("Read"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let result = |id: &str| result_of(&messages, id).content.clone();
+    assert!(
+        result("r1").starts_with("Error: api/.env is a restricted file"),
+        "{}",
+        result("r1")
+    );
+    assert!(
+        result("r2").starts_with("Error: web/config.json is a restricted file"),
+        "{}",
+        result("r2")
+    );
+    assert!(result("r3").contains("\"api\": 1"), "{}", result("r3"));
+    // A folder named `examples` keeps its secrets as it does alone.
+    assert!(
+        result("r4").starts_with("Error: examples/secrets.yaml is a restricted file"),
+        "{}",
+        result("r4")
+    );
+}
+
+#[tokio::test]
+async fn after_the_chats_folders_change_the_next_prompt_says_which_joined_and_which_left() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let shop: &[(&str, &[(&str, &str)])] = &[
+        ("api", &[("a.txt", "a\n")]),
+        ("web", &[("b.txt", "b\n")]),
+        ("docs", &[("c.txt", "c\n")]),
+    ];
+    let h = workspace_harness(shop, r#"["api","web"]"#).await;
+    let (url, seen) = model(vec![Reply::Text("One."), Reply::Text("Two.")]).await;
+    h.start(h.workspace_request(&url, Harness::send("First"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(!system_of(&seen, 0).contains("folders changed"));
+    let messages = h.messages().await;
+    let first = messages.iter().find(|m| m.role == "user").unwrap();
+    assert_eq!(
+        first.meta.as_ref().unwrap()["folders"],
+        json!(["api", "web"])
+    );
+
+    let id = h.dialog_id.clone();
+    h.core
+        .db
+        .write(move |c| store::set_dialog_folders(c, &id, Some(r#"["api","docs"]"#)))
+        .await
+        .unwrap();
+    h.events.lock().unwrap().clear();
+    h.start(h.workspace_request(&url, Harness::send("Second"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let system = system_of(&seen, 1);
+    assert!(
+        system.contains("its folders changed: `docs` joined; `web` left"),
+        "{system}"
+    );
+}

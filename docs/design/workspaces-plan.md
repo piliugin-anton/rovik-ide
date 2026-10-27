@@ -2748,6 +2748,39 @@ without the driver (a file where its view would mount) or with isolation off, an
 works in no folder instead; Land and Undo are refused while a folder is missing.
 Departure: isolation off has a message of its own, as the driver's would mislead.
 
+**F08 — what the agent is told of a workspace chat's folders.**
+`project::load_folders(config_dir, root, &folders, verify, below, since)` gives a
+workspace chat's run its checks, its project section and its restricted files. Each
+folder is read in the view (`root/<name>`; at its own path without one) as when it's
+open alone, by its own settings: its stack as `"{stack} ({name}/)"`, V09's folders
+one level down inside it for an Autopilot task (`{name}/{sub}/`), its services line
+as `{name}: …`, its checks run in it (`cd api && …`), and its instructions under its
+name. The instructions share 12,000 characters (`WORKSPACE_INSTRUCTIONS_MAX_CHARS`):
+each folder an even share, a short one's rest going to the others (`shares`), each
+cut by `project_profile::cut`, which `read_instructions` now uses too;
+`project_context` and `load_folders` share its checks and instructions parts. The
+section opens with 4.4's paragraph, then a git line (a repository, `git -C api
+status`; a folder of one whose root isn't in the view; none) and, when the chat's
+folders changed since its last run, which joined and which left: each workspace
+chat's run records its folders' names in its message's `meta.folders` (the latest
+user message, or a stage's), which the next run compares with.
+`RestrictedFiles::of_folders` hands a path to its first part's folder's own list
+(`entry_for`, `blocks`, `blocks_file`, `skips`), so a folder named `examples` keeps
+the verdicts it has alone, and `denied` scans each folder from its own root, naming
+its files from the view's. Tests: `project.rs` (shares; each folder read as alone
+under its name, its stack, services, checks, V09 folders and git line; the folders
+that joined and left), `restricted_files.rs` (a workspace chat's lists go by a path's
+first part, a harness denied each folder's files by their paths in the view), and
+`workspace_e2e_tests.rs` (each folder's instructions, checks and git line are in the
+prompt under its name; the instructions share 12,000 characters and a short one's
+rest goes to the others; a folder's restricted files are refused by their paths in
+the view, and only its own, `examples` included; after the chat's folders change,
+the next prompt says which joined and which left, from the last run's message).
+Departures: the services line and V09's folders are tested on `load_folders` (a
+Compose of the test's, an Autopilot task's `below`), not through a run; the context
+estimate keeps adding each folder's own section until F12 caches `load_folders` by
+the chat's folders.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

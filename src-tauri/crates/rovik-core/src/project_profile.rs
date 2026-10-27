@@ -84,6 +84,9 @@ const INSTRUCTION_FILES: &[&str] = &[
     ".cursorrules",
 ];
 const INSTRUCTIONS_MAX_CHARS: usize = 6_000;
+/// What a workspace chat's folders' instructions share (D25): each folder an
+/// even part, what one doesn't use going to the others.
+pub const WORKSPACE_INSTRUCTIONS_MAX_CHARS: usize = 12_000;
 
 pub fn detect(root: &Path) -> ProjectProfile {
     let mut profile = ProjectProfile::default();
@@ -641,32 +644,40 @@ fn detect_make(root: &Path, profile: &mut ProjectProfile) {
  * ------------------------------------------------------------------------- */
 
 fn read_instructions(root: &Path) -> Option<ProjectInstructions> {
-    let (file, text) = INSTRUCTION_FILES.iter().find_map(|f| {
-        fs::read_to_string(root.join(f))
-            .ok()
-            .map(|t| (f.to_string(), t))
-    })?;
-    let max = INSTRUCTIONS_MAX_CHARS;
-    let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    let truncated = text.chars().count() > max;
-    let text = if truncated {
-        let cut: String = text.chars().take(max).collect();
-        // End on a line break, so a sentence or code line isn't cut in half.
-        match cut.rfind('\n') {
-            Some(i) if i > max / 2 => cut[..i].to_string(),
-            _ => cut,
-        }
-    } else {
-        text.to_string()
-    };
+    let (file, text) = instructions_file(root)?;
+    let (text, truncated) = cut(&text, INSTRUCTIONS_MAX_CHARS);
     Some(ProjectInstructions {
         file,
         text,
         truncated,
     })
+}
+
+/// The agent instruction file in `root`, whole: its name, and its text
+/// trimmed. None without one, or with an empty one.
+pub fn instructions_file(root: &Path) -> Option<(String, String)> {
+    let (file, text) = INSTRUCTION_FILES.iter().find_map(|f| {
+        fs::read_to_string(root.join(f))
+            .ok()
+            .map(|t| (f.to_string(), t))
+    })?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| (file, text.to_string()))
+}
+
+/// `text` in `max` characters at most, and whether it was cut. A cut ends
+/// on a line break when there's one in its second half, so a sentence or a
+/// code line isn't cut in half.
+pub fn cut(text: &str, max: usize) -> (String, bool) {
+    if text.chars().count() <= max {
+        return (text.to_string(), false);
+    }
+    let cut: String = text.chars().take(max).collect();
+    let text = match cut.rfind('\n') {
+        Some(i) if i > max / 2 => cut[..i].to_string(),
+        _ => cut,
+    };
+    (text, true)
 }
 
 /// The project in a folder, as `detect` sees it.
