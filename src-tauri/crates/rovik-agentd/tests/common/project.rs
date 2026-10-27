@@ -3,16 +3,17 @@
 //! chat its worktree there and start runs in it.
 
 use super::{commit_all, start_request, write, Daemon, COMPUTER};
-use git2::Repository;
+use git2::{ObjectType, Oid, Repository, TreeWalkMode, TreeWalkResult};
 use rovik_client::shadow::Shadow;
 use rovik_client::{Client, HostState, Identity, Incoming, UnixConnector};
 use rovik_core::agent_run::permissions::Permissions;
 use rovik_core::agent_run::{AgentConfig, StartKind, StartRequest, UserMessage};
 use rovik_core::testing::Reply;
 use rovik_protocol::agent::AgentStatus;
+use rovik_protocol::events::AgentEvent;
 use rovik_protocol::packs::snapshot_ref;
-use rovik_protocol::work::{Project, Synced};
-use rovik_protocol::{Fail, Request, Secret};
+use rovik_protocol::work::{ChatResult, Project, Synced};
+use rovik_protocol::{Event, Fail, Request, Secret};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -237,4 +238,45 @@ pub async fn listening(daemon: &Daemon) -> (Client, mpsc::UnboundedReceiver<Inco
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("never connected\n{}", daemon.output());
+}
+
+/// The files of a commit's tree in `repo`, by path.
+pub fn files(repo: &Repository, commit: &str) -> Vec<String> {
+    let commit = repo.find_commit(Oid::from_str(commit).unwrap()).unwrap();
+    let mut files = Vec::new();
+    let tree = commit.tree().unwrap();
+    tree.walk(TreeWalkMode::PreOrder, |dir, entry| {
+        if entry.kind() == Some(ObjectType::Blob) {
+            files.push(format!(
+                "{dir}{}",
+                String::from_utf8_lossy(entry.name_bytes())
+            ));
+        }
+        TreeWalkResult::Ok
+    })
+    .unwrap();
+    files.sort();
+    files
+}
+
+/// The next result the client hears of, and the outcome of the run that
+/// ended before it, if one did.
+pub async fn next_result(
+    heard: &mut mpsc::UnboundedReceiver<Incoming>,
+) -> (ChatResult, Option<String>) {
+    let mut ended = None;
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(30), heard.recv()).await;
+        match next.expect("no result came").expect("the client went") {
+            Incoming::Event {
+                event: Event::ResultReady(result),
+                ..
+            } => return (result, ended),
+            Incoming::Event {
+                event: Event::Agent(AgentEvent::RunEnded { outcome, .. }),
+                ..
+            } => ended = Some(outcome),
+            _ => {}
+        }
+    }
 }

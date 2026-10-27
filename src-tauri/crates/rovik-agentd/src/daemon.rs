@@ -6,6 +6,7 @@
 use crate::auth::Tokens;
 use crate::changes;
 use crate::events::Events;
+use crate::fail::{bad_request, internal, joined};
 use crate::gc;
 use crate::host;
 use crate::limits::Caps;
@@ -17,11 +18,13 @@ use crate::work;
 use rovik_core::agent_run::wire_content;
 use rovik_core::chat_db::location::Location;
 use rovik_core::chat_db::store::{self, NewDialog};
+use rovik_core::folders::Folders;
 use rovik_core::overlay::chats;
-use rovik_core::{project_profile, Core};
+use rovik_core::{project_profile, rt, Core};
 use rovik_protocol::agent::{AgentStatus, StartKind, StartRequest};
 use rovik_protocol::{Access, Fail, FailCode, Request, Response, Target};
 use std::collections::{BTreeSet, HashMap};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -326,12 +329,66 @@ impl Daemon {
     }
 
     /// A start (6.2): the store keeps its keys apart and its settings, and
-    /// the chat becomes the computer's.
+    /// the chat becomes the computer's. Before it's kept, a workspace
+    /// chat's folders are checked and kept, and those its last start named
+    /// that this one doesn't leave its worktree: a start refused on the way
+    /// changes nothing the next one goes by.
     async fn start(&self, computer: &str, mut start: StartRequest) -> Result<Response, Fail> {
         self.can_run(&start.dialog_id)?;
+        self.keep_folders(&mut start)?;
+        let left = self.folders_left(&start)?;
+        self.leave(&start.dialog_id, left).await?;
         self.store.started(computer, &start)?;
         self.tell_marked(&mut start);
         self.run(start).await
+    }
+
+    /// Where the folders that leave a workspace chat with this start are:
+    /// those its last start named that this one doesn't
+    /// (workspaces-plan.md, 4.11).
+    fn folders_left(&self, start: &StartRequest) -> Result<Option<Folders>, Fail> {
+        let root = work::root(self, &start.dialog_id);
+        let Some(root) = root.filter(|_| !start.folders.is_empty()) else {
+            return Ok(None);
+        };
+        let left: Vec<String> = (self.store.folders_of(&start.dialog_id).into_iter())
+            .filter(|name| start.folders.iter().all(|f| &f.name != name))
+            .collect();
+        if left.is_empty() {
+            return Ok(None);
+        }
+        // An earlier start's, each checked as this one's were.
+        Folders::under(root, left).map(Some).map_err(internal)
+    }
+
+    /// The folders that left the chat, gone from its worktree with their
+    /// ignored files: only a folder the chat has no changes in leaves it
+    /// (D32). Never while its run goes, which works in them.
+    async fn leave(&self, chat: &str, left: Option<Folders>) -> Result<(), Fail> {
+        let Some(left) = left else {
+            return Ok(());
+        };
+        let _files = work::hold_files(self, chat)?;
+        let removed = rt::spawn_blocking(move || {
+            for folder in left.iter() {
+                // A link or a file in its place goes as it is, never what
+                // a link points to.
+                let removed = match fs::symlink_metadata(&folder.path) {
+                    Ok(meta) if meta.is_dir() => fs::remove_dir_all(&folder.path),
+                    Ok(_) => fs::remove_file(&folder.path),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(e),
+                };
+                removed.map_err(|e| {
+                    internal(format!(
+                        "{} left the chat but stays in its worktree here: {e}",
+                        folder.name
+                    ))
+                })?;
+            }
+            Ok(())
+        });
+        removed.await.map_err(joined)?
     }
 
     /// The first message after a sync put conflict markers in the chat's
@@ -407,6 +464,53 @@ impl Daemon {
         self.keep_project_settings(&mut start)?;
         self.ensure_chat(&start.dialog_id, None).await?;
         rovik_core::dispatch(&self.core, Request::AgentStart(Box::new(start))).await
+    }
+
+    /// A workspace chat's folders (workspaces-plan.md, 4.11): each a folder
+    /// at the top of its worktree, made there when its snapshot holds no
+    /// file of it, with the settings its start brought kept for it, as
+    /// `keep_project_settings` keeps a project's. Its runs find them there
+    /// (`check_project`'s daemon form). A start naming a folder that can't
+    /// be one there is refused before anything changes.
+    fn keep_folders(&self, start: &mut StartRequest) -> Result<(), Fail> {
+        if start.folders.is_empty() {
+            return Ok(());
+        }
+        let root = work::root(self, &start.dialog_id).ok_or_else(|| {
+            bad_request(
+                "A chat across folders runs in its worktree on this server: its project \
+                 syncs first (WorkSync).",
+            )
+        })?;
+        let names = start.folders.iter().map(|f| f.name.clone()).collect();
+        let folders = Folders::under(root, names).map_err(bad_request)?;
+        let mut missing = Vec::new();
+        for folder in folders.iter() {
+            match fs::symlink_metadata(&folder.path) {
+                Ok(meta) if meta.is_dir() => {}
+                Ok(_) => {
+                    return Err(bad_request(format!(
+                        "{} isn't a folder at the top of this chat's worktree here: a file or \
+                         a link has its name.",
+                        folder.name
+                    )))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(folder),
+                Err(e) => return Err(internal(format!("{}: {e}", folder.name))),
+            }
+        }
+        for folder in missing {
+            fs::create_dir(&folder.path).map_err(|e| internal(format!("{}: {e}", folder.name)))?;
+        }
+        let config_dir = &self.core.paths.config_dir;
+        for (folder, named) in folders.iter().zip(&mut start.folders) {
+            if let Some(settings) = named.settings.take() {
+                let at = work::text(&folder.path);
+                project_profile::save_project_settings(config_dir, at, settings)
+                    .map_err(internal)?;
+            }
+        }
+        Ok(())
     }
 
     /// The project's settings the start brought, kept for the folder its

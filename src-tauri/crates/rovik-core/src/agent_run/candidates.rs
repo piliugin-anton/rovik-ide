@@ -42,7 +42,7 @@ use super::events::AgentEvent;
 use super::judge;
 use super::run::{new_message, Run};
 use super::subagent::{self, Kind, SubOutcome, SubagentSettings};
-use super::StartKind;
+use super::{RunFolder, StartKind};
 use crate::chat_db::store::{self, char_prefix, NewChildDialog};
 use crate::core::Core;
 use crate::folders::Folders;
@@ -494,10 +494,15 @@ pub(super) async fn start(
     let (task, effort) = (first.task.clone(), first.effort);
     // None when the chat's folders can't be had (one is missing): one
     // implementer, whose run says why it can't start.
-    let folders = super::check_project(&core.db, dialog_id, settings.root.as_deref())
-        .await
-        .ok()
-        .flatten();
+    let folders = super::check_project(
+        &core.db,
+        dialog_id,
+        settings.root.as_deref(),
+        &settings.folders,
+    )
+    .await
+    .ok()
+    .flatten();
     let made = make(core, dialog_id, records, round, folders.clone(), || {
         copies_for(core, settings, folders.as_ref())
     })
@@ -974,6 +979,18 @@ impl Run {
             root: self.project_root(),
             local_date: Some(self.local_date.clone()),
             isolate: Some(crate::overlay::chats::get(&self.dialog_id).is_some()),
+            // A daemon's workspace chat's folders, which its candidates have
+            // at the top of their own worktrees too.
+            folders: self
+                .folders
+                .iter()
+                .filter(|folders| folders.root().is_some())
+                .flat_map(Folders::iter)
+                .map(|folder| RunFolder {
+                    name: folder.name.clone(),
+                    settings: None,
+                })
+                .collect(),
         }
     }
 

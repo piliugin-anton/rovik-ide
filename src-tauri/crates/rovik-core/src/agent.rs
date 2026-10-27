@@ -1878,7 +1878,7 @@ pub async fn chat_context_estimate(
     // folders as its run would take them (workspaces-plan.md, 4.1).
     let folders = match root.filter(|r| !r.trim().is_empty()) {
         Some(root) => Some(crate::folders::Folders::one(root.into())),
-        None => crate::agent_run::check_project(db, &dialog_id, None).await?,
+        None => crate::agent_run::check_project(db, &dialog_id, None, &[]).await?,
     };
     // An Autopilot message starts a task with its plan: a Plan-mode request,
     // without questions (D5).

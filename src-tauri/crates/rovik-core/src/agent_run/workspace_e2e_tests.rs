@@ -251,7 +251,7 @@ async fn land_and_undo_are_refused_while_a_folder_is_missing() {
     let landing = crate::overlay::chats::last_landing(&h.dialog_id).unwrap();
 
     // More changes, in both folders, as a run would leave them waiting.
-    let folders = check_project(&h.core.db, &h.dialog_id, None)
+    let folders = check_project(&h.core.db, &h.dialog_id, None, &[])
         .await
         .unwrap()
         .unwrap();
@@ -1788,4 +1788,151 @@ async fn codex_with_its_own_tools_is_told_the_folders() {
         .as_str()
         .unwrap_or_default();
     assert!(told.contains(FOLDERS_SAID), "{started:#?}");
+}
+
+/// A workspace chat on a daemon (4.11): `folders` (each a name and its
+/// files) at the top of a worktree, the harness's `project`, which is one of
+/// its project's folders, and a chat of that project, as the daemon has it.
+/// Its runs are a server's; the overlays could open (a copy of the code
+/// before a change), and none should.
+async fn daemon_harness(folders: &[(&str, &[(&str, &str)])]) -> Harness {
+    let TestCore { core, events, dir } = TestCore::new();
+    core.agents.set_on_server();
+    let worktree = dir.0.join("work").join("chat");
+    for (name, files) in folders {
+        for (path, content) in *files {
+            let file = worktree.join(name).join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, content).unwrap();
+        }
+    }
+    let at = worktree.clone();
+    let project = core
+        .db
+        .write(move |c| crate::chat_db::projects::resolve(c, &at).map(|r| r.opened.project.id))
+        .await
+        .unwrap();
+    let dialog_id = uuid::Uuid::new_v4().to_string();
+    let dialog = NewDialog {
+        id: dialog_id.clone(),
+        title: "Test".into(),
+        created_at: 0,
+        updated_at: 0,
+        project_id: Some(project),
+        folders: None,
+    };
+    core.db
+        .write(move |c| store::create_dialog(c, &dialog))
+        .await
+        .unwrap();
+    let mut h = Harness {
+        core,
+        project: worktree,
+        events,
+        dialog_id,
+        _dir: dir,
+        _isolated: None,
+    };
+    h.isolate().await;
+    h
+}
+
+impl Harness {
+    /// A daemon's start of its workspace chat: in its worktree, not
+    /// isolated, with the folders `names`.
+    fn daemon_request(
+        &self,
+        url: &str,
+        start: StartKind,
+        permissions: Permissions,
+        names: &[&str],
+    ) -> StartRequest {
+        StartRequest {
+            root: Some(self.project.to_string_lossy().into_owned()),
+            isolate: Some(false),
+            folders: names
+                .iter()
+                .map(|name| RunFolder {
+                    name: name.to_string(),
+                    settings: None,
+                })
+                .collect(),
+            ..self.request(url, start, permissions)
+        }
+    }
+}
+
+/// On a daemon a workspace chat's run works in its worktree, where each of
+/// its folders is the top-level folder of its name: no view, none needed.
+#[tokio::test]
+async fn on_a_daemon_a_workspace_chat_works_in_its_worktree_by_its_folders_names() {
+    let h = daemon_harness(SHOP).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({ "path": "api/src/a.ts" }),
+        },
+        write("w1", "web/src/b.ts", "export const b = 2;\n"),
+        Reply::Call {
+            id: "c1",
+            name: "bash",
+            args: json!({ "command": "cd web && cat src/b.ts" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let names = ["api", "web"];
+    h.start(h.daemon_request(&url, Harness::send("Change web"), any_command(), &names))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "r1")
+        .content
+        .contains("export const a = 1;"));
+    assert!(result_of(&messages, "c1")
+        .content
+        .contains("export const b = 2;"));
+    // Written where it works, in its worktree: nothing to land.
+    assert_eq!(
+        h.file("web/src/b.ts").as_deref(),
+        Some("export const b = 2;\n")
+    );
+    assert!(
+        crate::overlay::chats::get(&h.dialog_id).is_none(),
+        "no view"
+    );
+}
+
+/// On a daemon there's no copy of the code before a change (the worktree
+/// is the chat's own): a check failing there is the change's, never set
+/// apart as failing before it, as a copy of the worktree would have it.
+#[tokio::test]
+async fn on_a_daemon_a_check_failing_in_the_worktree_is_reported_as_failing() {
+    let h = daemon_harness(&[(
+        "api",
+        &[
+            ("check.sh", &todo_check("$f")),
+            ("src/old.ts", "// TODO\n"),
+            ("src/a.ts", "a\n"),
+        ],
+    )])
+    .await;
+    set_checks(&h, "api", &[("typecheck", "sh check.sh")]);
+    let (url, _) = model(vec![
+        write("w1", "api/src/a.ts", "a2\n"),
+        Reply::Text("Done."),
+        Reply::Text("The TODO was there before: I left it."),
+        Reply::Text("I left it."),
+        Reply::Text("I left it."),
+    ])
+    .await;
+    h.start(h.daemon_request(&url, Harness::send("Change api"), checked(), &["api"]))
+        .await;
+    let outcome = h.run_end_within(Duration::from_secs(60)).await;
+    assert_ne!(outcome, "verified");
+    let records = verifications(&h.messages().await);
+    let check = check_in(&records[0], "cd api && sh check.sh");
+    assert_eq!(check["status"], "failed", "{check:#}");
+    assert_eq!(check["preexisting"], Value::Null, "{check:#}");
 }

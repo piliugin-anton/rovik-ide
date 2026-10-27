@@ -3068,6 +3068,56 @@ stage requests included until G02 gives them the task's folders. Tests:
 `rovik-protocol` (a workspace chat's start round-trips with its folders; a start
 without them parses with none and writes none; a folder without settings has none).
 
+**G02 — the daemon runs workspace chats.** The daemon serves `features::FOLDERS`.
+`check_project` takes the start's folders: on a daemon a workspace chat's start names
+them, and they're `Folders::under(root, names)`, each a plain name, a top-level folder
+of the run's root, the chat's worktree (a Thorough candidate's the same, under its own
+worktree); folders without a root are refused. `Folders::root()` marks that form: its
+run works in the worktree, never a view (`run.rs`), and isn't isolated
+(`Run::isolated`), so, as for a folder chat there, no code before a change is compared
+(a check failing there is the change's), nothing lands and the red check is skipped.
+The folders a run's checks follow (D27) also take the worktree's own `git status`
+(`server::unlanded`): on a daemon that's what earlier runs and a merge changed that
+hasn't landed, the worktree's index being reset to the landing base (sync.rs,
+results.rs), as the overlay lists it here. Autopilot's `Settings` keep the start's
+folders, so its stages, retries and candidates (`main_settings`) run with them. The
+daemon checks and keeps a start's folders before the start itself (`keep_folders`):
+each is a folder at the top of the worktree, or nothing yet (made then, as git keeps
+no empty folder), never a file or a link; each one's settings are saved for
+`<worktree>/<name>`, and the names go in `StartSettings.folders` (serde default) for
+restarts and checked merges. The folders its last start named and this one doesn't
+leave the worktree, ignored files and all, under the chat's hold on its files: at that
+start rather than "at the next sync", as a sync names no folders and the start after
+it does. A workspace chat's result holds its folders and what its base has at its top;
+what its runs made there besides stays out, named in `ChatResult.outside` (serde
+default), but `.rovik`, which holds the ID file the server writes there; its changes
+(`WorkChanges`) leave out the same. `unchecked` is true only when no check of the
+folders the result changes (its top-level entries that differ from the base) would
+run, nor one that names no folder (`checks_changed`, now public). Its delivery isn't
+pushed to a branch and fails saying to land its result from the app (D30). Test
+helpers moved for sharing: `next_result` and `files` to `tests/common/project.rs`,
+`thorough_model` and `implementation` (now given the plan and the file) to
+`tests/common/task.rs`. Tests: `rovik-agentd/tests/folders.rs` (the daemon says it
+runs chats across folders; a two-folder chat's first sync gives one worktree with each
+folder under its name, and its run works there told each folder's checks by its
+settings, checking the folder it changed; a result lands unchecked only when none of
+its folders' checks would run; a merge checked on the server runs the changed folders'
+checks, not another's that would fail; a check failing there is reported as failing,
+not set apart; a file made at the worktree's top is named in `outside` and isn't in the
+result, nor the server's `.rovik`; a restart keeps the chat's folders; a folder a later
+start leaves out leaves the worktree with its ignored files; a start whose folder isn't
+`root/<name>`, or is a file there, is refused before anything changes; a Thorough
+task's candidates work with the chat's folders, so web's failing check never runs in
+them), `results.rs` (a chat across folders isn't delivered and says why: a unit test,
+as a whole task's delivery needs npm), `folders.rs`, `check_project_tests` (the daemon
+form; a folder that isn't at the top of the root, and folders without a root, are
+refused; an Autopilot stage on a daemon works in its start's folders), `server.rs` (a
+worktree's unlanded changes are its git status), `workspace_e2e_tests.rs` (on a daemon
+a workspace chat works in its worktree by its folders' names, no view; a check failing
+there is reported as failing, which a copy of the worktree, where FUSE works, would
+have set apart). The daemon tests run without virtual files, so the "not set apart"
+case only fails without the change in the core's test.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where

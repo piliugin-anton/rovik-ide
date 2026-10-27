@@ -364,7 +364,7 @@ fn clear(r: &CheckResult) -> bool {
 /// the folders `changed` (None: a folder chat, whose checks all do): run in
 /// a changed folder (`cd api && …`, `cd api/ui && …`), or in none (a plan's
 /// own commands).
-fn checks_changed(command: &str, changed: Option<&std::collections::BTreeSet<String>>) -> bool {
+pub fn checks_changed(command: &str, changed: Option<&std::collections::BTreeSet<String>>) -> bool {
     let folder = super::project::folder_of(command);
     let name = folder.split('/').next().unwrap_or_default();
     name.is_empty() || changed.is_none_or(|names| names.contains(name))
@@ -628,7 +628,12 @@ impl Run {
     /// folder chat, whose checks all run.
     fn changed_folders(&self) -> Option<std::collections::BTreeSet<String>> {
         let folders = self.folders.as_ref().filter(|f| f.single().is_none())?;
-        let keys = self.touched_keys();
+        let mut keys = self.touched_keys();
+        // On a daemon, what earlier runs changed (and what a merge did) is
+        // what its worktree changed from the landing base (4.7, 4.11).
+        if let Some(worktree) = folders.root() {
+            keys.extend(super::server::unlanded(worktree));
+        }
         let names = keys
             .iter()
             .filter_map(|key| folders.split(key))

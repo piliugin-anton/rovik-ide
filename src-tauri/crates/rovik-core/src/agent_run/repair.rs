@@ -922,13 +922,15 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, std::io::Error> {
 impl Run {
     /// Whether the run works in its chat's own copy (an overlay), where
     /// nobody else writes: a workspace chat's view always, and a folder
-    /// chat's when its root isn't its folder.
+    /// chat's when its root isn't its folder. Never on a daemon, whose runs
+    /// work in their chat's worktree, a folder chat's folder or a
+    /// workspace chat's folders' (4.11).
     pub(super) fn isolated(&self) -> bool {
         let Some(root) = self.root.as_deref() else {
             return false;
         };
         match &self.folders {
-            Some(folders) => folders.single() != Some(Path::new(root)),
+            Some(folders) => folders.single().or(folders.root()) != Some(Path::new(root)),
             None => true,
         }
     }

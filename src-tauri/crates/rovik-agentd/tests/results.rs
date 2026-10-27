@@ -7,11 +7,9 @@
 
 mod common;
 
-use common::project::{listening, start, unattended, Setup, CHAT};
+use common::project::{files, listening, next_result, start, unattended, Setup, CHAT};
 use common::{commit_paths, write};
-use git2::{
-    Delta, ObjectType, Oid, Repository, Status, StatusOptions, TreeWalkMode, TreeWalkResult,
-};
+use git2::{Delta, Oid, Repository, Status, StatusOptions};
 use rovik_client::Incoming;
 use rovik_core::agent_run::{pending_reason, StartKind, UserMessage};
 use rovik_core::testing::{model, model_routed, Reply};
@@ -21,7 +19,6 @@ use rovik_protocol::{Event, Request};
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedReceiver;
 
 /// The chat's worktree, at a snapshot of the project as it is now: its
 /// root, and the snapshot.
@@ -30,25 +27,6 @@ async fn worktree(setup: &Setup) -> (PathBuf, String) {
     setup.ensure().await;
     let root = PathBuf::from(setup.sync(CHAT, &snapshot).await.unwrap().root);
     (root, snapshot)
-}
-
-/// The files of a commit's tree, by path.
-fn files(repo: &Repository, commit: &str) -> Vec<String> {
-    let commit = repo.find_commit(Oid::from_str(commit).unwrap()).unwrap();
-    let mut files = Vec::new();
-    let tree = commit.tree().unwrap();
-    tree.walk(TreeWalkMode::PreOrder, |dir, entry| {
-        if entry.kind() == Some(ObjectType::Blob) {
-            files.push(format!(
-                "{dir}{}",
-                String::from_utf8_lossy(entry.name_bytes())
-            ));
-        }
-        TreeWalkResult::Ok
-    })
-    .unwrap();
-    files.sort();
-    files
 }
 
 /// What the agent's `git status` says in the worktree.
@@ -60,26 +38,6 @@ fn status(worktree: &Repository) -> Vec<(String, Status)> {
     entries
         .map(|entry| (entry.path().unwrap().to_string(), entry.status()))
         .collect()
-}
-
-/// The next result the client hears of, and the outcome of the run that
-/// ended before it, if one did.
-async fn next_result(heard: &mut UnboundedReceiver<Incoming>) -> (ChatResult, Option<String>) {
-    let mut ended = None;
-    loop {
-        let next = tokio::time::timeout(Duration::from_secs(30), heard.recv()).await;
-        match next.expect("no result came").expect("the client went") {
-            Incoming::Event {
-                event: Event::ResultReady(result),
-                ..
-            } => return (result, ended),
-            Incoming::Event {
-                event: Event::Agent(AgentEvent::RunEnded { outcome, .. }),
-                ..
-            } => ended = Some(outcome),
-            _ => {}
-        }
-    }
 }
 
 #[tokio::test]

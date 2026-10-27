@@ -30,6 +30,7 @@ use git2::{
 };
 use rovik_core::agent_run::autopilot::{DeliverAsk, Pushed};
 use rovik_core::agent_run::{self, pending_reason_in, project, AgentConfig};
+use rovik_core::folders::Folders;
 use rovik_core::overlay::markers;
 use rovik_core::rt;
 use rovik_core::staging::{self, Base};
@@ -37,7 +38,7 @@ use rovik_protocol::autopilot::Delivery;
 use rovik_protocol::packs::{kept_ref, result_ref};
 use rovik_protocol::work::{Change, ChatResult, WorkChange};
 use rovik_protocol::{Event, Fail, FailCode};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -176,6 +177,15 @@ impl Results {
                 ..Pushed::default()
             })
         };
+        // D30: its folders' histories stay on its computer.
+        if !self.store.folders_of(chat).is_empty() {
+            return failed(
+                "A chat across folders isn't pushed to a branch (git on this server holds \
+                 Rovik's snapshots of its folders, not their history): land its result from \
+                 the app"
+                    .into(),
+            );
+        }
         self.all_committed(chat).await;
         if self.store.result_of(chat).is_none() {
             return failed(
@@ -296,14 +306,22 @@ impl Results {
         let marked = self.store.marked_of(dialog_id);
         let root = place.worktree.join(self.store.subpath_of(dialog_id));
         let config = self.store.config_of(dialog_id);
+        let folders = self.store.folders_of(dialog_id);
         let config_dir = self.config_dir.clone();
         let committed = rt::spawn_blocking(move || {
-            let commit = commit_worktree(&place.worktree, &index, &base, &chat)?;
+            let (commit, outside) =
+                commit_worktree(&place.worktree, &index, &base, &chat, &folders)?;
             let marked = markers_left(&place.worktree, marked);
-            let checks = config.is_some_and(|c| checks_would_run(&config_dir, &root, &c));
-            Ok::<_, String>((commit, marked, checks))
+            let checks = match config {
+                Some(config) => {
+                    let result = (place.worktree.as_path(), base.as_str(), commit);
+                    checks_would_run(&config_dir, &root, &config, &folders, result)?
+                }
+                None => false,
+            };
+            Ok::<_, String>((commit, marked, checks, outside))
         });
-        let (commit, marked, checks) = committed
+        let (commit, marked, checks, outside) = committed
             .await
             .map_err(|e| internal(e.to_string()))?
             .map_err(internal)?;
@@ -318,6 +336,7 @@ impl Results {
             pending: self.store.pending_of(dialog_id).or(hold),
             marked,
             unchecked: !checks,
+            outside,
             branch: None,
             pr: None,
         };
@@ -371,13 +390,15 @@ impl Results {
         let _base = self.base.lock().await;
         let (place, base) = self.worktree(dialog_id)?;
         let kept = self.store.kept_of(dialog_id).into_keys().collect();
+        let folders = self.store.folders_of(dialog_id);
         let (index, subpath) = (
             self.dir.join(format!("{dialog_id}.index")),
             subpath.to_string(),
         );
         let read = rt::spawn_blocking(move || {
             let merged = in_root(&subpath, kept);
-            changes_of(&place.worktree, &index, &base, &subpath, &merged)
+            let staged = stage_worktree(&place.worktree, &index, &base, &folders)?;
+            changes_of(staged, &subpath, &merged)
         });
         read.await
             .map_err(|e| internal(e.to_string()))?
@@ -449,10 +470,21 @@ pub fn rovik_signature() -> Result<Signature<'static>, git2::Error> {
 
 /// Stages the worktree through the chat's own index, against `base`, and
 /// commits it on `base` at the chat's result ref. An unchanged tree keeps
-/// the previous result.
-fn commit_worktree(worktree: &Path, index: &Path, base: &str, chat: &str) -> Result<Oid, String> {
+/// the previous result. With it, what a workspace chat's runs made at the
+/// top of its worktree outside its `folders`, which stays out of it
+/// (`stage_worktree`).
+fn commit_worktree(
+    worktree: &Path,
+    index: &Path,
+    base: &str,
+    chat: &str,
+    folders: &[String],
+) -> Result<(Oid, Vec<String>), String> {
     let message = format!("Result of chat {chat}");
-    commit_at(worktree, index, base, &result_ref(chat), &message)
+    let staged = stage_worktree(worktree, index, base, folders)?;
+    let outside = staged.outside.clone();
+    let commit = commit_staged(staged, &result_ref(chat), &message)?;
+    Ok((commit, outside))
 }
 
 /// The worktree staged through `index` against `base` and committed on it
@@ -466,8 +498,16 @@ pub fn commit_at(
     name: &str,
     message: &str,
 ) -> Result<Oid, String> {
+    commit_staged(stage_worktree(worktree, index, base, &[])?, name, message)
+}
+
+/// `staged` committed on its base at the ref `name`, or the commit there
+/// when it has the same tree on the same base.
+fn commit_staged(staged: Staged, name: &str, message: &str) -> Result<Oid, String> {
     let git = |e: git2::Error| e.message().to_string();
-    let (repo, base, tree) = stage_worktree(worktree, index, base)?;
+    let Staged {
+        repo, base, tree, ..
+    } = staged;
     let base = repo.find_commit(base).map_err(git)?;
     let previous = repo
         .find_reference(name)
@@ -487,13 +527,28 @@ pub fn commit_at(
     Ok(commit)
 }
 
-/// The worktree staged through the chat's own index against `base`: its
-/// repository, the base, and the tree a result of it has.
+/// A worktree staged for a result (`stage_worktree`).
+struct Staged {
+    repo: Repository,
+    /// The commit it's staged against.
+    base: Oid,
+    /// The tree a result of it has.
+    tree: Oid,
+    /// What's at its top outside a workspace chat's folders, by name.
+    outside: Vec<String>,
+}
+
+/// The worktree staged through the chat's own index against `base`. A
+/// workspace chat's tree holds its `folders` and what else the base has at
+/// its top; what its runs made there besides stays out (4.11), named in
+/// `outside` but for `.rovik`, which holds the ID file the server writes
+/// there (work.rs).
 fn stage_worktree(
     worktree: &Path,
     index: &Path,
     base: &str,
-) -> Result<(Repository, Oid, Oid), String> {
+    folders: &[String],
+) -> Result<Staged, String> {
     let git = |e: git2::Error| e.message().to_string();
     let repo = Repository::open(worktree).map_err(git)?;
     if let Some(dir) = index.parent() {
@@ -501,28 +556,43 @@ fn stage_worktree(
     }
     let mut own = Index::open(index).map_err(git)?;
     repo.set_index(&mut own).map_err(git)?;
-    let (base, tree) = {
+    let (base, tree, outside) = {
         let base = (Oid::from_str(base).and_then(|base| repo.find_commit(base))).map_err(git)?;
         let base_tree = base.tree().map_err(git)?;
-        (
-            base.id(),
-            staging::stage(&repo, Base::Tree(&base_tree))?.tree,
-        )
+        let mut tree = staging::stage(&repo, Base::Tree(&base_tree))?.tree;
+        let mut outside = Vec::new();
+        if !folders.is_empty() {
+            let staged = repo.find_tree(tree).map_err(git)?;
+            let mut kept = repo.treebuilder(Some(&staged)).map_err(git)?;
+            for entry in staged.iter() {
+                let name = String::from_utf8_lossy(entry.name_bytes()).into_owned();
+                if folders.contains(&name) || base_tree.get_name(&name).is_some() {
+                    continue;
+                }
+                kept.remove(&name).map_err(git)?;
+                if name != ".rovik" {
+                    outside.push(name);
+                }
+            }
+            tree = kept.write().map_err(git)?;
+        }
+        (base.id(), tree, outside)
     };
-    Ok((repo, base, tree))
+    Ok(Staged {
+        repo,
+        base,
+        tree,
+        outside,
+    })
 }
 
-/// What a result of the worktree would change on its base, in the
-/// project's folder (`subpath` in the tree).
-fn changes_of(
-    worktree: &Path,
-    index: &Path,
-    base: &str,
-    subpath: &str,
-    merged: &[String],
-) -> Result<Vec<WorkChange>, String> {
+/// What a result of the `staged` worktree would change on its base, in
+/// the project's folder (`subpath` in the tree).
+fn changes_of(staged: Staged, subpath: &str, merged: &[String]) -> Result<Vec<WorkChange>, String> {
     let git = |e: git2::Error| e.message().to_string();
-    let (repo, base, tree) = stage_worktree(worktree, index, base)?;
+    let Staged {
+        repo, base, tree, ..
+    } = staged;
     let base = repo
         .find_commit(base)
         .and_then(|base| base.tree())
@@ -579,11 +649,46 @@ fn changes_of(
 
 /// Whether the chat's checks would run on its result merged with the
 /// project's newer changes: those its run in `root` has, by its computer's
-/// configuration, as a local chat's landing asks (6.5).
-fn checks_would_run(config_dir: &Path, root: &Path, config: &AgentConfig) -> bool {
-    let (p, root) = (&config.permissions, root.to_string_lossy());
-    let (checks, _) = project::load(config_dir, &root, &root, p.verify_changes);
-    agent_run::checks_would_run(p, &checks)
+/// configuration, as a local chat's landing asks (6.5). A workspace
+/// chat's are those of the `folders` its result changes, and those that
+/// name none (D27). `result`: the worktree, its base and the result.
+fn checks_would_run(
+    config_dir: &Path,
+    root: &Path,
+    config: &AgentConfig,
+    folders: &[String],
+    (worktree, base, result): (&Path, &str, Oid),
+) -> Result<bool, String> {
+    let p = &config.permissions;
+    if folders.is_empty() {
+        let root = root.to_string_lossy();
+        let (checks, _) = project::load(config_dir, &root, &root, p.verify_changes);
+        return Ok(agent_run::checks_would_run(p, &checks));
+    }
+    let folders = Folders::under(root.to_path_buf(), folders.to_vec())?;
+    let changed = changed_at_top(worktree, base, result)?;
+    let (checks, _, _) =
+        project::load_folders(config_dir, None, &folders, p.verify_changes, false, None);
+    let checks: Vec<_> = (checks.into_iter())
+        .filter(|c| agent_run::checks_changed(&c.command, Some(&changed)))
+        .collect();
+    Ok(agent_run::checks_would_run(p, &checks))
+}
+
+/// The names at the top of the `result` commit's tree that differ from
+/// its `base`'s: a workspace chat's, the folders it changes.
+fn changed_at_top(worktree: &Path, base: &str, result: Oid) -> Result<BTreeSet<String>, String> {
+    let git = |e: git2::Error| e.message().to_string();
+    let repo = Repository::open(worktree).map_err(git)?;
+    let tree = |id: Oid| repo.find_commit(id).and_then(|c| c.tree()).map_err(git);
+    let base = tree(Oid::from_str(base).map_err(git)?)?;
+    let result = tree(result)?;
+    let id = |tree: &git2::Tree, name: &str| tree.get_name(name).map(|entry| entry.id());
+    let names = base.iter().chain(result.iter());
+    let names = names.map(|entry| String::from_utf8_lossy(entry.name_bytes()).into_owned());
+    Ok(names
+        .filter(|name| id(&base, name) != id(&result, name))
+        .collect())
 }
 
 /// Of the files the chat was given conflict markers in, those that still
@@ -787,6 +892,67 @@ mod tests {
                 "{path}: {refused:?}"
             );
         }
+    }
+
+    /// D30: a chat across folders is never pushed to a branch, whatever its
+    /// computer asked: git here holds Rovik's snapshots of its folders, so
+    /// its result lands from the app, which its delivery says.
+    #[tokio::test]
+    async fn a_chat_across_folders_isnt_delivered_and_says_why() {
+        use rovik_protocol::agent::{ModelProfile, RunFolder, StartKind, StartRequest};
+        use rovik_protocol::autopilot::AutonomyConfig;
+        let dir = rovik_core::testing::temp_dir();
+        let store = Arc::new(Store::open(&dir.0).unwrap());
+        let push = AutonomyConfig {
+            delivery: Delivery::PushBranch {
+                deploy_key: "~/.ssh/deploy".into(),
+                open_pr: false,
+            },
+            notify_url: None,
+        };
+        store.set_autonomy("laptop", push).unwrap();
+        let profile: ModelProfile = serde_json::from_value(serde_json::json!({
+            "id": "m", "label": "m", "model": "m", "baseUrl": "http://x",
+        }))
+        .unwrap();
+        let folder = |name: &str| RunFolder {
+            name: name.into(),
+            settings: None,
+        };
+        let start = StartRequest {
+            dialog_id: "chat".into(),
+            start: StartKind::Resume,
+            profile,
+            options: None,
+            mode: None,
+            context_mode: None,
+            root: None,
+            current_user_content: None,
+            local_date: None,
+            config: None,
+            isolate: None,
+            project_settings: None,
+            folders: vec![folder("api"), folder("web")],
+        };
+        store.started("laptop", &start).unwrap();
+        let events = Events::new("boot".into(), Arc::new(|_: &str| None));
+        let results = Results::new(dir.0.join("results"), dir.0.join("config"), store, events);
+        let ask = DeliverAsk {
+            dialog_id: "chat".into(),
+            task: "u1".into(),
+            title: "Both".into(),
+            body: String::new(),
+        };
+
+        let pushed = results.deliver(ask).await.expect("a delivery's report");
+
+        assert_eq!(pushed.branch, None);
+        let problem = pushed.problem.unwrap_or_default();
+        assert!(problem.contains("across folders"), "{problem}");
+        assert!(
+            problem.contains("land its result from the app"),
+            "{problem}"
+        );
     }
 
     #[test]

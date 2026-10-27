@@ -25,6 +25,10 @@ pub struct Folders {
     /// their build folder and their commands' history. None for a folder
     /// chat's folder, and where only the folders matter (a landing's).
     workspace: Option<String>,
+    /// The daemon's form (4.1, 4.11): the chat's worktree, whose top-level
+    /// folders these are (`root/<name>`), where its runs work directly
+    /// rather than in a view. None here.
+    root: Option<PathBuf>,
 }
 
 impl Folders {
@@ -36,6 +40,7 @@ impl Folders {
                 path,
             }],
             workspace: None,
+            root: None,
         }
     }
 
@@ -65,7 +70,30 @@ impl Folders {
         Ok(Folders {
             list,
             workspace: None,
+            root: None,
         })
+    }
+
+    /// A workspace chat's folders on a daemon (4.1): each of `names` a
+    /// top-level folder of `root`, the chat's worktree, named as
+    /// [`Folders::named`] requires, so none is anywhere but `root/<name>`.
+    pub fn under(root: PathBuf, names: Vec<String>) -> Result<Self, String> {
+        let list = names
+            .into_iter()
+            .map(|name| Folder {
+                path: root.join(&name),
+                name,
+            })
+            .collect();
+        let mut folders = Folders::named(list)?;
+        folders.root = Some(root);
+        Ok(folders)
+    }
+
+    /// The worktree a daemon's workspace chat's folders are the top-level
+    /// folders of ([`Folders::under`]); None for every other chat's.
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
     }
 
     /// The same folders, of the workspace `id`.
@@ -378,6 +406,33 @@ mod tests {
         }
         assert!(Folders::named(vec![folder("api"), folder("API")]).is_err());
         assert!(Folders::named(vec![folder("api"), folder("web")]).is_ok());
+    }
+
+    #[test]
+    fn a_daemons_workspace_chat_has_its_folders_at_the_top_of_its_worktree() {
+        let root = PathBuf::from("/srv/work/chat-1");
+        let folders = Folders::under(root.clone(), vec!["api".into(), "web".into()]).unwrap();
+        assert_eq!(folders.root(), Some(root.as_path()));
+        assert_eq!(folders.single(), None, "a workspace chat's");
+        let paths: Vec<&Path> = folders.iter().map(|f| f.path.as_path()).collect();
+        assert_eq!(paths, [root.join("api"), root.join("web")]);
+        assert_eq!(
+            folders.abs("web/src/y.ts"),
+            Some(root.join("web").join("src").join("y.ts"))
+        );
+        assert_eq!(
+            folders.chat_path(&root.join("api").join("x.ts")).as_deref(),
+            Some("api/x.ts")
+        );
+        // Only a plain name is a folder at `root/<name>`.
+        for bad in ["", ".", "..", "../x", "a/b", "/etc"] {
+            let refused = Folders::under(root.clone(), vec![bad.into()]);
+            assert!(refused.is_err(), "{bad:?}");
+        }
+        assert!(Folders::under(root.clone(), vec!["api".into(), "API".into()]).is_err());
+        // Every other chat's folders have no worktree.
+        assert_eq!(Folders::one(root.clone()).root(), None);
+        assert_eq!(workspace(&root).root(), None);
     }
 
     #[test]

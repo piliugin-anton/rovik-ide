@@ -21,7 +21,7 @@ use crate::agent::OpenAIChatOptions;
 use crate::agent_run::budget::{self, Spent};
 use crate::agent_run::events::AgentEvent;
 use crate::agent_run::recovery::{self, Recovery};
-use crate::agent_run::{plan, StartKind, StartRequest, UserMessage};
+use crate::agent_run::{plan, RunFolder, StartKind, StartRequest, UserMessage};
 use crate::chat_db::store;
 use crate::core::Core;
 use rovik_protocol::agent::ModelProfile;
@@ -42,6 +42,10 @@ pub struct Settings {
     pub root: Option<String>,
     pub local_date: Option<String>,
     pub isolate: Option<bool>,
+    /// A daemon's workspace chat's folders, at the top of `root` (its
+    /// worktree there, `check_project`): none for every other chat, whose
+    /// folders each stage reads as they are when it starts.
+    pub folders: Vec<RunFolder>,
 }
 
 impl Settings {
@@ -53,6 +57,7 @@ impl Settings {
             root: request.root.clone(),
             local_date: request.local_date.clone(),
             isolate: request.isolate,
+            folders: request.folders.clone(),
         }
     }
 
@@ -72,7 +77,7 @@ impl Settings {
             config: None,
             isolate: self.isolate,
             project_settings: None,
-            folders: Vec::new(),
+            folders: self.folders.clone(),
         }
     }
 }
@@ -391,7 +396,8 @@ async fn chat_folders(
     dialog_id: &str,
     settings: &Settings,
 ) -> Result<Option<crate::folders::Folders>, String> {
-    crate::agent_run::check_project(&core.db, dialog_id, settings.root.as_deref()).await
+    let root = settings.root.as_deref();
+    crate::agent_run::check_project(&core.db, dialog_id, root, &settings.folders).await
 }
 
 /// Ends the stage a run carried out. A plan's is done once a plan was

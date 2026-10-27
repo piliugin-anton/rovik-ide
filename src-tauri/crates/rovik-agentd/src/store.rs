@@ -10,7 +10,7 @@
 use crate::fail::internal;
 use crate::keys::{self, Keys};
 use rovik_protocol::agent::{
-    AgentConfig, ModelProfile, OpenAIChatOptions, StartKind, StartRequest,
+    AgentConfig, ModelProfile, OpenAIChatOptions, RunFolder, StartKind, StartRequest,
 };
 use rovik_protocol::autopilot::AutonomyConfig;
 use rovik_protocol::host::KeyInfo;
@@ -182,6 +182,11 @@ pub struct StartSettings {
     pub context_mode: Option<String>,
     pub root: Option<String>,
     pub local_date: Option<String>,
+    /// A workspace chat's folders' names, each a top-level folder of its
+    /// worktree (workspaces-plan.md, 4.11): its restarts and checked merges
+    /// run in them, and those a later start leaves out leave the worktree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
 }
 
 impl StartSettings {
@@ -195,6 +200,7 @@ impl StartSettings {
             context_mode: start.context_mode.clone(),
             root: start.root.clone(),
             local_date: start.local_date.clone(),
+            folders: start.folders.iter().map(|f| f.name.clone()).collect(),
         }
     }
 }
@@ -581,6 +587,18 @@ impl Store {
             .clone()
     }
 
+    /// A workspace chat's folders' names, as its last start named them:
+    /// none for a folder chat, and before its first start here.
+    pub fn folders_of(&self, dialog_id: &str) -> Vec<String> {
+        let inner = self.lock();
+        let start = inner
+            .state
+            .chats
+            .get(dialog_id)
+            .and_then(|c| c.start.as_ref());
+        start.map(|s| s.folders.clone()).unwrap_or_default()
+    }
+
     pub fn subpath_of(&self, dialog_id: &str) -> String {
         let inner = self.lock();
         let chat = inner.state.chats.get(dialog_id);
@@ -833,7 +851,12 @@ impl Store {
             isolate: None,
             // Kept here since the start that brought them.
             project_settings: None,
-            folders: Vec::new(),
+            folders: (settings.folders.into_iter())
+                .map(|name| RunFolder {
+                    name,
+                    settings: None,
+                })
+                .collect(),
         })
     }
 

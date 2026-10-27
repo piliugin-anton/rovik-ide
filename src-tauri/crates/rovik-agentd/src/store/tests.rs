@@ -390,6 +390,7 @@ fn results_are_numbered_and_the_same_one_keeps_its_number() {
         pending: None,
         marked: Vec::new(),
         unchecked: false,
+        outside: Vec::new(),
         branch: None,
         pr: None,
     };

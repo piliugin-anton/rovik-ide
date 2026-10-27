@@ -240,14 +240,14 @@ async fn the_view_gains_a_folder_checked_and_drops_one_unchecked_with_its_store(
             db.write(move |c| db_store::set_dialog_folders(c, chat, Some(names)))
                 .await
                 .unwrap();
-            crate::agent_run::check_project(&db, chat, None)
+            crate::agent_run::check_project(&db, chat, None, &[])
                 .await
                 .unwrap()
                 .unwrap()
         }
     };
 
-    let folders = crate::agent_run::check_project(&t.core.db, chat, None)
+    let folders = crate::agent_run::check_project(&t.core.db, chat, None, &[])
         .await
         .unwrap()
         .unwrap();

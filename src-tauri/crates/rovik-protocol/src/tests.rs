@@ -105,6 +105,7 @@ fn result(pending: Option<&str>) -> ChatResult {
         pending: pending.map(String::from),
         marked: Vec::new(),
         unchecked: false,
+        outside: Vec::new(),
         branch: None,
         pr: None,
     }
@@ -865,6 +866,10 @@ fn every_response_round_trips() {
             }),
             Response::ChatResult(ChatResult {
                 unchecked: true,
+                ..result(None)
+            }),
+            Response::ChatResult(ChatResult {
+                outside: vec!["notes.md".into(), "build".into()],
                 ..result(None)
             }),
             Response::ChatResults(vec![result(None)]),

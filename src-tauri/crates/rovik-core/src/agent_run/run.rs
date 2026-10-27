@@ -798,8 +798,15 @@ impl Run {
                 .as_ref()
                 .is_some_and(|s| s.stage == super::autopilot::Stage::Plan);
         // The chat's folders as they are now (workspaces-plan.md, 4.1): a
-        // folder chat's root, or a workspace chat's, from the database.
-        let folders = super::check_project(&core.db, &dialog_id, request.root.as_deref()).await?;
+        // folder chat's root, or a workspace chat's, from the database here
+        // and from its start on a daemon.
+        let folders = super::check_project(
+            &core.db,
+            &dialog_id,
+            request.root.as_deref(),
+            &request.folders,
+        )
+        .await?;
         let project_root = folders
             .as_ref()
             .and_then(Folders::single)
@@ -830,10 +837,12 @@ impl Run {
         let root = match (&folders, &project_root) {
             // A workspace chat works in its view of its folders, every run,
             // Plan mode too (D23): there's no one folder it could work in
-            // instead.
-            (Some(folders), None) => {
-                Some(workspace_view(&dialog_id, folders, isolate, near_limit())?)
-            }
+            // instead. On a daemon it works in its worktree, where they are
+            // (4.11).
+            (Some(folders), None) => match folders.root() {
+                Some(worktree) => Some(worktree.to_string_lossy().into_owned()),
+                None => Some(workspace_view(&dialog_id, folders, isolate, near_limit())?),
+            },
             (_, Some(r))
                 if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) =>
             {

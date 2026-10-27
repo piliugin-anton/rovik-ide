@@ -769,9 +769,14 @@ impl Remote {
             return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
         }
         let client = self.client(&host)?;
-        agent_run::check_project(&self.core.db, &request.dialog_id, request.root.as_deref())
-            .await
-            .map_err(internal)?;
+        agent_run::check_project(
+            &self.core.db,
+            &request.dialog_id,
+            request.root.as_deref(),
+            &[],
+        )
+        .await
+        .map_err(internal)?;
         if matches!(request.start, StartKind::Send { .. }) {
             self.sync_before_send(&host, &request.dialog_id).await;
         }
