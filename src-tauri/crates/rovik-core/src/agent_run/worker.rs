@@ -588,8 +588,7 @@ pub fn plan_file_named(request: &str, folders: Option<&Folders>) -> Option<Strin
     if Path::new(named).is_absolute() {
         return Some(named.to_string());
     }
-    let file = folders?.abs(named)?;
-    Some(file.to_string_lossy().into_owned())
+    plan::plan_file_in(folders?, named)
 }
 
 /*
