@@ -216,6 +216,21 @@ export function chatRootOf(
 }
 
 /**
+ * The folder a request about chat `dialog`'s files names them in (a file it
+ * wrote, opened from its tool call): the chat's own. A chat the list doesn't
+ * have (a subagent's, `undefined` here) is shown inside the open chat,
+ * `open`, and works in its folder. The window's first folder when neither's
+ * folder is open here; null with no folder open.
+ */
+export function chatFolderFor(
+  dialog: { projectId?: string | null } | undefined,
+  open: { projectId?: string | null } | null | undefined,
+  folders: readonly OpenFolder[]
+): ChatRoot | null {
+  return chatRootOf(dialog ?? open, folders) ?? folders[0] ?? null;
+}
+
+/**
  * Which folders a chat works in, as its row and the label by its input say
  * them (3.8): its folder's name, a workspace chat's names checked, or "all"
  * for one that follows the workspace. Null when that can't be said: the

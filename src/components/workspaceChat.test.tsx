@@ -4,17 +4,20 @@
 // folder resolving keeps the open chat and what's typed in it, and a
 // crash's unanswered send comes back in whichever folder's chat it was.
 // New chat asks which folder the chat works in, an empty chat is reused
-// for the folder picked, and with no chat the panel asks the same. A chat
-// names files as paths in its folder, and another folder's file isn't
-// sent. Implement on a folder's plan uses that folder's chat. The panel as
-// the app mounts it, the app answered here, command by command. Run with:
-// npm test
+// for the folder picked (unless its draft names its folder's files), and
+// with no chat the panel asks the same, the input waiting for the chat
+// started; deleting the open chat shows the next, never the menu meanwhile.
+// A chat names files as paths in its folder, and another folder's file
+// isn't sent. Implement on a folder's plan uses that folder's chat. The
+// panel as the app mounts it, the app answered here, command by command.
+// Run with: npm test
 import { container } from '../test/dom';
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import ChatPanel from './ChatPanel';
+import { ConfirmDialogHost } from './ConfirmDialog';
 import type { MessageRow, UnsettledSend } from '../lib/chatApi';
 import type { ActiveFileContext } from '../lib/activeContext';
 import type { ChatOwners, OpenFolder } from '../lib/openFolders';
@@ -44,6 +47,8 @@ let rows: Record<string, MessageRow[]> = {};
 let unsettled: Record<string, UnsettledSend[]> = {};
 /** The commands the panel sent, in order. */
 let calls: { cmd: string; args: any }[] = [];
+/** A chat's deletion in the database: held while a test looks (null: done at once). */
+let deletion: Promise<void> | null = null;
 
 (window as any).__TAURI_INTERNALS__ = {
   transformCallback: () => 1,
@@ -72,6 +77,8 @@ let calls: { cmd: string; args: any }[] = [];
         return { branch: 'feature', main_branch: 'main' };
       case 'agent_start':
         return 'run-1';
+      case 'chat_delete_dialog':
+        return deletion;
       case 'send_chat_message':
         // The chat's title: no model here, so its first words.
         throw new Error('no model here');
@@ -226,6 +233,44 @@ async function plus(root: HTMLElement) {
   await flush();
 }
 
+/** What Add to chat gives for a file's first lines. */
+const reference = (path: string) => ({
+  id: path,
+  path,
+  name: path.split('/').pop()!,
+  relativePath: path,
+  lines: { start: 1, end: 2 },
+});
+
+/**
+ * Deletes the chat titled `title` from the history, saying yes when asked:
+ * whether the folder menu showed while the database deleted it. The deletion
+ * ends either way: the store is the app's, kept for the next test.
+ */
+async function menuWhileDeleting(root: HTMLElement, title: string): Promise<boolean> {
+  let done = () => {};
+  deletion = new Promise((resolve) => (done = resolve));
+  try {
+    const confirm = render(() => <ConfirmDialogHost />, container());
+    mounted.push(confirm);
+    (root.querySelector('.chat-history-button') as HTMLButtonElement).click();
+    await flush();
+    const row = [...root.querySelectorAll('.chat-history-item')].find(
+      (item) => item.querySelector('.chat-history-item-title')?.textContent === title
+    );
+    (row!.querySelector('.chat-history-delete') as HTMLButtonElement).click();
+    await flush();
+    const yes = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Delete');
+    yes!.click();
+    await flush();
+    return root.querySelector('.chat-start') !== null;
+  } finally {
+    done();
+    deletion = null;
+    await flush();
+  }
+}
+
 test('with two folders, New chat lists them with boxes, the active one checked, and Start chat makes a folder chat in it', async () => {
   talked(chat('api-1', 'api-project', 2));
   const { root, dispose } = await mount('workspace:boxes', [api, web], web);
@@ -330,6 +375,71 @@ test('an empty chat is reused, moved to the folder picked', async () => {
   dispose();
 });
 
+test('an empty chat whose draft names its folder’s file stays, and the other folder gets a chat', async () => {
+  // Moved, the chat would send api's file by its path in web.
+  talked();
+  const { root, dispose } = await mount('workspace:reuse-draft', [api, web], api);
+  startItem(root)!.click();
+  await flush();
+  addToChat(reference('/w/api/src/index.ts'));
+  await flush();
+  assert.equal(root.querySelectorAll('.chat-file-reference').length, 1);
+  await plus(root);
+  box(root, 'web').click();
+  await flush();
+  startItem(root)!.click();
+  await flush();
+  assert.deepEqual(sent('chat_move_empty_dialog'), [], 'api’s chat keeps its draft');
+  assert.deepEqual(
+    sent('chat_create_dialog').map((a) => a.dialog.projectId),
+    ['api-project', 'web-project']
+  );
+  assert.equal(root.querySelectorAll('.chat-file-reference').length, 0, 'web’s starts empty');
+  assert.equal(label(root)?.textContent, 'in web');
+  dispose();
+});
+
+test('with no chat the input waits for one, and what Add to chat gave goes in the chat started', async () => {
+  talked();
+  const { root, dispose } = await mount('workspace:no-chat-yet', [api, web], web);
+  assert.equal(input(root).getAttribute('contenteditable'), 'false');
+  assert.equal(input(root).getAttribute('data-placeholder'), 'Start a chat above to write to it');
+  addToChat(reference('/w/web/src/cart.ts'));
+  await flush();
+  assert.equal(root.querySelectorAll('.chat-file-reference').length, 0, 'no chat to take it yet');
+  assert.equal(note(root), undefined, 'nor is it turned away');
+  startItem(root)!.click();
+  await flush();
+  assert.equal(input(root).getAttribute('contenteditable'), 'true');
+  const chip = root.querySelector<HTMLElement>('.chat-file-reference');
+  assert.equal(JSON.parse(chip!.dataset.file!).relativePath, 'src/cart.ts');
+  dispose();
+});
+
+test('deleting the open chat shows the next one, never the folder menu meanwhile', async () => {
+  // One folder: a new chat in it once the last one goes, as a project had.
+  talked(chat('one-1', 'one-project', 2));
+  const project = await mount('workspace:delete-one', [folder('one')]);
+  assert.equal(await menuWhileDeleting(project.root, 'one-1'), false, 'no menu while it goes');
+  assert.equal(project.root.querySelector('.chat-start'), null);
+  assert.deepEqual(
+    sent('chat_create_dialog').map((a) => a.dialog.projectId),
+    ['one-project']
+  );
+  project.dispose();
+
+  // Two folders and another chat: that one opens.
+  talked(chat('api-2', 'api-project', 3), chat('web-1', 'web-project', 2));
+  const { root, dispose } = await mount('workspace:delete-two', [api, web]);
+  assert.equal(await menuWhileDeleting(root, 'api-2'), false, 'there is a chat to show');
+  assert.equal(root.querySelector('.chat-start'), null);
+  assert.ok(
+    sent('chat_get_messages').some((a) => a.dialogId === 'web-1'),
+    'web-1 opens'
+  );
+  dispose();
+});
+
 test('a missing folder is listed but can’t be checked', async () => {
   talked();
   const gone = { ...folder('web', false), missing: true };
@@ -341,6 +451,39 @@ test('a missing folder is listed but can’t be checked', async () => {
   await flush();
   assert.equal(row.getAttribute('aria-checked'), 'false');
   assert.equal(startItem(root)?.textContent, 'Start chat in api', 'the folder that is there');
+  dispose();
+});
+
+test('a copy that still has its original’s chats can’t be checked: its chat would work in the original', async () => {
+  talked();
+  const copy: OpenFolder = { ...folder('api-copy'), project: api.project };
+  const { root, dispose } = await mount('workspace:copy', [api, copy], copy);
+  const item = box(root, 'api-copy');
+  assert.equal(item.getAttribute('aria-disabled'), 'true');
+  assert.equal(
+    item.title,
+    'api-copy shares its chats with api until the copy’s history is separated'
+  );
+  assert.equal(box(root, 'api').getAttribute('aria-checked'), 'true', 'the original instead');
+  dispose();
+});
+
+test('the menu in place is reached with Tab; the floating one has the focus as it opens', async () => {
+  talked();
+  const empty = await mount('workspace:tab-in-place', [api, web], web);
+  assert.deepEqual(
+    boxes(empty.root).map((b) => b.tabIndex),
+    [0, -1]
+  );
+  empty.dispose();
+
+  talked(chat('api-1', 'api-project', 2));
+  const { root, dispose } = await mount('workspace:tab-floating', [api, web]);
+  await plus(root);
+  assert.deepEqual(
+    boxes(root).map((b) => b.tabIndex),
+    [-1, -1]
+  );
   dispose();
 });
 
@@ -443,13 +586,6 @@ test('the editor context names the file as the chat does, and another folder’s
 test('another folder’s file isn’t added to the chat, and the input says why', async () => {
   talked(chat('web-1', 'web-project', 2));
   const { root, dispose } = await mount('workspace:add-to-chat', [api, web]);
-  const reference = (path: string) => ({
-    id: path,
-    path,
-    name: path.split('/').pop()!,
-    relativePath: path,
-    lines: { start: 1, end: 2 },
-  });
   addToChat(reference('/w/web/src/cart.ts'));
   await flush();
   const chip = root.querySelector<HTMLElement>('.chat-file-reference');

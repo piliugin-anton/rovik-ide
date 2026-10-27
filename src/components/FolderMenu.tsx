@@ -9,7 +9,8 @@
 // checks the folder in focus and Enter does what the menu is for (Start
 // chat), wherever the focus is. Its `children` are a caller's own items,
 // after a separator. A menu with no place to float at is shown where it's
-// put, and leaves the focus where it is (the chat panel with no chat).
+// put, and leaves the focus where it is (the chat panel with no chat): Tab
+// reaches its first folder.
 import { For, onMount, Show, type JSX } from 'solid-js';
 import { focusMenuItem, onMenuKey } from '../lib/menuKeys';
 import type { OpenFolder } from '../lib/openFolders';
@@ -74,7 +75,7 @@ export default function FolderMenu(props: FolderMenuProps) {
     >
       <ul ref={list} class="context-menu-list" role="menu" aria-label="Folder">
         <For each={props.folders}>
-          {(folder) => {
+          {(folder, at) => {
             const why = () => props.check?.unavailable(folder) ?? null;
             const checked = () => !!props.check?.checked.has(folder.path);
             return (
@@ -84,7 +85,7 @@ export default function FolderMenu(props: FolderMenuProps) {
                 role={props.check ? 'menuitemcheckbox' : 'menuitem'}
                 aria-checked={props.check ? checked() : undefined}
                 aria-disabled={why() ? true : undefined}
-                tabIndex={-1}
+                tabIndex={!floats() && at() === 0 ? 0 : -1}
                 title={why() ?? folder.path}
                 onClick={(e) => {
                   e.stopPropagation();

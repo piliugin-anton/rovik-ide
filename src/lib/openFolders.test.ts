@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   activeFolder,
+  chatFolderFor,
   chatFolderNames,
   chatOwners,
   chatPathOf,
@@ -218,6 +219,17 @@ test("a folder chat works in the window's folder whose project it is", () => {
   );
   // With no folder open a chat has no project, and no folder.
   assert.equal(chatRootOf({ projectId: null }, folders), null);
+});
+
+test("a file of a chat the list doesn't have, a subagent's, is in the open chat's folder", () => {
+  const folders = [resolved(api, 'p-api'), resolved(web, 'p-web')];
+  const open = { projectId: 'p-web' };
+  assert.equal(chatFolderFor(undefined, open, folders)?.name, 'web');
+  // A listed chat's own folder, whichever chat is open.
+  assert.equal(chatFolderFor({ projectId: 'p-api' }, open, folders)?.name, 'api');
+  // Neither's folder is open here: the window's first; no folder open: none.
+  assert.equal(chatFolderFor(undefined, null, folders)?.name, 'api');
+  assert.equal(chatFolderFor(undefined, null, []), null);
 });
 
 test("a folder chat's path is joined to its folder", () => {

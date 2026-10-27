@@ -374,13 +374,18 @@ impl Instances {
     /// claims record them: those the cloud client lands results in by
     /// themselves (workspaces-plan.md, 3.8). A folder whose project isn't
     /// known yet, a workspace's own (it has no folder) and the projects left
-    /// at work aren't among them.
-    pub fn open_projects(&self) -> Vec<(String, PathBuf)> {
-        self.claims()
-            .target
-            .iter()
-            .filter_map(|owner| Some((owner.project.clone()?, owner.folder.clone()?)))
-            .collect()
+    /// at work aren't among them. Given to `give` while the claims are held:
+    /// a list read before another claim is never given after that claim's
+    /// own (two commands' threads following the claims at once).
+    pub fn give_open_projects(&self, give: impl FnOnce(Vec<(String, PathBuf)>)) {
+        let claims = self.claims();
+        give(
+            claims
+                .target
+                .iter()
+                .filter_map(|owner| Some((owner.project.clone()?, owner.folder.clone()?)))
+                .collect(),
+        );
     }
 
     /// The projects left for another while their chats were at work here.
@@ -1222,6 +1227,13 @@ mod tests {
     /// record them, once known; not a workspace's own, which has no folder,
     /// nor a project left at work, nor a folder whose answer came after the
     /// window left it.
+    /// The open projects as `give_open_projects` gives them.
+    fn open_projects(me: &Instances) -> Vec<(String, PathBuf)> {
+        let mut given = Vec::new();
+        me.give_open_projects(|open| given = open);
+        given
+    }
+
     #[test]
     fn the_open_projects_are_the_windows_folders_projects() {
         let dir = temp_dir("open-projects");
@@ -1235,13 +1247,13 @@ mod tests {
         };
         assert!(me.claim(Some(&shop), false, &[]).claimed);
         assert_eq!(
-            me.open_projects(),
+            open_projects(&me),
             [("project-api".to_string(), api.clone())],
             "web's project isn't known yet"
         );
         me.reclaim(&web, "project-web");
         assert_eq!(
-            me.open_projects(),
+            open_projects(&me),
             [
                 ("project-api".to_string(), api.clone()),
                 ("project-web".to_string(), web.clone())
@@ -1256,6 +1268,27 @@ mod tests {
                 .claimed
         );
         me.reclaim(&web, "project-web");
-        assert_eq!(me.open_projects(), [("project-other".to_string(), other)]);
+        assert_eq!(open_projects(&me), [("project-other".to_string(), other)]);
+    }
+
+    /// Two commands follow the claims at once (a folder's late answer, the
+    /// window's next claim): the list each read is given before a claim can
+    /// change it, so the older list can't be given last.
+    #[test]
+    fn the_open_projects_are_given_before_another_claim_can_change_them() {
+        let dir = temp_dir("open-projects-held");
+        let (me, _) = instance(&dir);
+        let api = folder(&dir, "api", Some("project-api"));
+        assert!(
+            me.claim(Some(&Target::Folder(api.clone())), false, &[])
+                .claimed
+        );
+        me.give_open_projects(|open| {
+            assert_eq!(open, [("project-api".to_string(), api.clone())]);
+            assert!(
+                me.claims.try_lock().is_err(),
+                "a claim waits until it's given"
+            );
+        });
     }
 }

@@ -641,16 +641,20 @@ export default function ChatPanel(props: ChatProps) {
     return root ? `This chat works in ${root.path}` : undefined;
   };
   /**
-   * No chat shown, in a window with folders, once its chats are loaded:
+   * No chat to show, in a window with folders, once its chats are loaded:
    * the panel shows New chat's menu to start one (3.8). With one folder a
    * chat is made in it instead, unless it can't have one (it's missing).
+   * While chats are listed one is about to show (the open one was deleted,
+   * and the next opens): no menu meanwhile.
    */
   const startsFromMenu = () =>
     !activeDialog() &&
     props.folders().length > 0 &&
+    (severalFolders() || cantChatIn(props.folders()[0], props.folders()) !== null) &&
     !loadingHistory() &&
     !historyLoadError() &&
-    store.state.list.loaded;
+    store.state.list.loaded &&
+    store.state.list.items.length === 0;
 
   /*
    * A connector's commands (lib/connectorCommands.ts): listed for the chat's
@@ -1170,7 +1174,7 @@ export default function ChatPanel(props: ChatProps) {
   function startDefaultChat() {
     if (severalFolders()) return;
     const folder = props.folders()[0] ?? null;
-    if (folder && cantChatIn(folder)) return;
+    if (folder && cantChatIn(folder, props.folders())) return;
     createNewDialog(folder?.project?.id ?? null);
   }
 
@@ -1244,6 +1248,8 @@ export default function ChatPanel(props: ChatProps) {
   onCleanup(stopAddToChat);
 
   function insertPendingReferences() {
+    // With no chat yet they wait for the one started from the menu (3.8).
+    if (!activeDialog()) return;
     for (const reference of takeChatReferences()) insertReferenceChip(reference);
   }
 
@@ -1332,11 +1338,12 @@ export default function ChatPanel(props: ChatProps) {
    * A new chat in `folder` (null: no folder open). The open chat, while it's
    * still empty, is reused rather than piling up empty chats in the history:
    * moved to the folder's project when it's another's, which a chat with a
-   * message never is (3.8). Null when no chat could be started there.
+   * message never is, nor one whose draft names files (3.8). Null when no
+   * chat could be started there.
    */
   async function startChatIn(folder: OpenFolder | null): Promise<DialogSummary | null> {
     setNewChatFrom(null);
-    const why = folder && cantChatIn(folder);
+    const why = folder && cantChatIn(folder, props.folders());
     if (why) {
       notify({ kind: 'warning', title: 'No chat started', message: why, timeout: 6000 });
       return null;
@@ -1345,8 +1352,10 @@ export default function ChatPanel(props: ChatProps) {
     const current = activeDialog();
     if (current && isEmptyChat(current.id)) {
       const same = (current.projectId ?? null) === owner;
-      // One on a host stays the project's it is there.
-      if (same || (!current.place && (await store.moveEmpty(current.id, owner)))) {
+      // One on a host stays the project's it is there, and a draft naming
+      // files stays with the chat of their folder: another's can't read them.
+      const movable = !current.place && composerReferences().length === 0;
+      if (same || (movable && (await store.moveEmpty(current.id, owner)))) {
         setHistoryOpen(false);
         setFocusMessageId(null);
         inputTextareaRef?.focus();
@@ -1360,6 +1369,8 @@ export default function ChatPanel(props: ChatProps) {
     // The reset cleared `input` while the old chat was still active,
     // scheduling an empty save for it; drop it, the flush kept it.
     if (prevId && prevId !== dialog.id) cancelComposerDraft(prevId);
+    // Add to chat while there was no chat: its references go in this one.
+    insertPendingReferences();
     inputTextareaRef?.focus();
     return dialog;
   }
@@ -3285,8 +3296,14 @@ export default function ChatPanel(props: ChatProps) {
   /** The chats an approval or a question waits in, for the list's badges (U03). */
   const waitingIds = createMemo(waitingChats);
 
-  /** Why the open chat can't change now: one that's moving is read-only (U02). */
-  const readOnly = () => readOnlyReason(activeDialog()?.place, cloud.hosts);
+  /**
+   * Why the open chat can't change now: one that's moving is read-only
+   * (U02). With no chat yet, the composer waits for the one the menu above
+   * starts (3.8).
+   */
+  const readOnly = () =>
+    readOnlyReason(activeDialog()?.place, cloud.hosts) ??
+    (startsFromMenu() ? 'Start a chat above to write to it' : null);
 
   /**
    * How a Continue would start `dialogId`, once what's queued for it is

@@ -1425,6 +1425,41 @@ async fn a_chat_is_pulled_by_one_window_at_a_time() {
     assert_eq!(took.unwrap().unwrap(), Ok(true));
 }
 
+/// A steer whose chat's folder can't be read fails, saying why, rather than
+/// sending the editor context's local paths to the host.
+#[tokio::test]
+async fn a_steer_whose_chats_folder_cant_be_read_fails_and_sends_nothing() {
+    let app = App::new();
+    let web = project_in(&app, "web").await;
+    app.chat("chat", Some(&web), Vec::new()).await;
+    let (remote, fake) = connected(&app).await;
+    remote.place("chat", HOST);
+    app.core
+        .db
+        .write(|c| {
+            c.execute_batch("ALTER TABLE dialogs RENAME TO dialogs_gone")
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let message = UserMessage {
+        id: "s1".into(),
+        content: "use the client".into(),
+        meta: None,
+        attachments: Vec::new(),
+    };
+    assert!(remote.steer("chat", message).await.is_err());
+    assert!(
+        !fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| matches!(r, Request::AgentSteer { .. })),
+        "nothing went to the host"
+    );
+}
+
 /// steering-plan.md 3.8: a message for a run on a host goes there with the
 /// editor context's local paths written from its chat's own folder, as a
 /// start's are (K08), whichever of a workspace's folders that is

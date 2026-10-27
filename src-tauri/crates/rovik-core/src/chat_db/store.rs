@@ -240,8 +240,9 @@ fn owned_by(owners: Option<&[String]>, at: usize) -> DbResult<(String, Option<St
 }
 
 /// The chats of `owners`, newest first (None: the chats with no project),
-/// several owners' interleaved by recency; keyset paging so deep pages cost
-/// the same as the first.
+/// several owners' interleaved by recency; keyset paging, so a deep page
+/// costs no more than the first: each sorts the owners' chats older than its
+/// cursor (the index finds them by owner, not in one order across owners).
 pub fn list_dialogs(
     conn: &Connection,
     owners: Option<&[String]>,

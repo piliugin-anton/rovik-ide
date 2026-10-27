@@ -137,10 +137,10 @@ import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChan
 import { movedPath, isAtOrUnder, parentOf } from './lib/fileTools';
 import {
   activeFolder,
+  chatFolderFor,
   chatOwners,
   chatPathOf,
   chatPathToAbsolute,
-  chatRootOf,
   folderOf,
   openFolders,
   pathsByFolder,
@@ -1303,13 +1303,12 @@ export default function App() {
   /**
    * The folder a path from the chat `dialogId` (else the open chat) is in
    * (docs/design/workspaces-plan.md, 3.8): the chat names its files in its
-   * own folder. The window's first folder when it has no chat, or the chat's
-   * folder isn't open here; null with no folder open.
+   * own folder, and a subagent's chat, which isn't listed, in the open
+   * chat's (`chatFolderFor`).
    */
   function folderForChat(dialogId?: string | null): ChatRoot | null {
-    const id = dialogId ?? chatStore.state.activeId;
-    const own = id ? chatRootOf(chatStore.summaryOf(id), resolvedFolders()) : null;
-    return own ?? resolvedFolders()[0] ?? null;
+    const listed = dialogId ? chatStore.summaryOf(dialogId) : undefined;
+    return chatFolderFor(listed, chatStore.state.active, resolvedFolders());
   }
 
   /**

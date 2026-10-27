@@ -82,7 +82,7 @@ pub(crate) fn follow_claims(app: &AppHandle) {
 
 /// The client's open projects, the claims' (`follow_claims`).
 fn open_in_client(instances: &Instances, remote: &Remote) {
-    remote.set_open_projects(instances.open_projects());
+    instances.give_open_projects(|open| remote.set_open_projects(open));
 }
 
 /// The chats among `dialog_ids` another of Rovik's windows is at work on

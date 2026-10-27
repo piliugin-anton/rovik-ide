@@ -5,13 +5,14 @@
 // is working in checked as it opens, and Start chat, which names the folder
 // checked. A folder chat works in one folder, so checking a folder unchecks
 // the one checked before; a workspace chat across several comes with F14.
-// A missing folder is listed, and can't be checked. Space checks the folder
-// in focus, Enter starts the chat, and Escape, Tab or a press elsewhere
-// makes none. Opened from a button it floats there; the chat panel with no
-// chat shows it in place, to start one (3.8).
+// A missing folder is listed, and can't be checked, nor can a copy that
+// still has its original's chats. Space checks the folder in focus, Enter
+// starts the chat, and Escape, Tab or a press elsewhere makes none. Opened
+// from a button it floats there; the chat panel with no chat shows it in
+// place, to start one (3.8).
 import { createEffect, createSignal, onCleanup, onMount } from 'solid-js';
 import FolderMenu from './FolderMenu';
-import type { OpenFolder } from '../lib/openFolders';
+import { chatRootOf, type OpenFolder } from '../lib/openFolders';
 
 export interface NewChatMenuProps {
   /** The window's folders, in its order. */
@@ -26,11 +27,21 @@ export interface NewChatMenuProps {
   onClose?: () => void;
 }
 
-/** Why a folder can't be checked for a chat, or null when it can. */
-export function cantChatIn(folder: OpenFolder): string | null {
+/**
+ * Why `folder` can't be checked for a chat, or null when it can. `folders`:
+ * the window's, in its order.
+ */
+export function cantChatIn(folder: OpenFolder, folders: readonly OpenFolder[]): string | null {
   if (folder.missing)
-    return `${folder.name} isn’t there: locate it, or remove it from the workspace`;
+    return folders.length > 1
+      ? `${folder.name} isn’t there: locate it, or remove it from the workspace`
+      : `${folder.name} isn’t there`;
   if (!folder.project) return `${folder.name} is still being opened`;
+  // A copy has its original's chats until its history is separated: a chat
+  // started in either works in the one listed first, which has them.
+  const first = chatRootOf({ projectId: folder.project.id }, folders);
+  if (first && first.path !== folder.path)
+    return `${folder.name} shares its chats with ${first.name} until the copy’s history is separated`;
   return null;
 }
 
@@ -38,16 +49,16 @@ export default function NewChatMenu(props: NewChatMenuProps) {
   const first = () => {
     const initial = props.initial;
     const at = initial && props.folders.find((folder) => folder.path === initial.path);
-    return at && !cantChatIn(at)
+    return at && !cantChatIn(at, props.folders)
       ? at
-      : (props.folders.find((folder) => !cantChatIn(folder)) ?? null);
+      : (props.folders.find((folder) => !cantChatIn(folder, props.folders)) ?? null);
   };
   const [checked, setChecked] = createSignal<OpenFolder | null>(first());
   /** The folder checked, while it's still one a chat can be in. */
   const chosen = () => {
     const at = checked();
     const now = at && props.folders.find((folder) => folder.path === at.path);
-    return now && !cantChatIn(now) ? now : null;
+    return now && !cantChatIn(now, props.folders) ? now : null;
   };
   const start = () => {
     const folder = chosen();
@@ -101,7 +112,7 @@ export default function NewChatMenu(props: NewChatMenuProps) {
         checked: new Set(chosen() ? [chosen()!.path] : []),
         // One folder at a time: a folder chat works in one.
         onToggle: (folder) => setChecked((was) => (was?.path === folder.path ? null : folder)),
-        unavailable: cantChatIn,
+        unavailable: (folder) => cantChatIn(folder, props.folders),
         onSubmit: start,
       }}
       onClose={() => props.onClose?.()}

@@ -818,8 +818,7 @@ impl Remote {
         let root = self
             .project_of(dialog_id)
             .await
-            .ok()
-            .flatten()
+            .map_err(internal)?
             .map(|(_, folder)| folder);
         if let Some(root) = root.as_deref().and_then(Path::to_str) {
             let sent = message.meta.as_mut().and_then(|m| m.get_mut("sentContent"));

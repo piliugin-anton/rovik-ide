@@ -2487,13 +2487,19 @@ which the chat input's references use and no test reached before.
 
 **E02 — a chat's folder.** With several folders both New chat buttons open
 `NewChatMenu` (new): `FolderMenu`'s new check mode (`menuitemcheckbox` rows, Space
-checks, Enter starts, a missing or unresolved folder listed but off, saying why),
-the folder worked in checked, one folder at a time until F14, and **Start chat in
-web**. With no chat to show, the panel shows the same menu in place instead of
-making an empty chat; with one folder, nothing changes. An empty open chat is
+checks, Enter starts, a missing or unresolved folder listed but off, saying why,
+as is a copy that still has its original's chats: its chat would work in the
+original, the folder `chatRootOf` finds first), the folder worked in checked, one
+folder at a time until F14, and **Start chat in web**. With no chat to show, the
+panel shows the same menu in place instead of making an empty chat (Tab reaches
+its first folder), the input waits for the chat started, read-only and saying
+so, and **Add to chat**'s references go into that chat; while chats are listed
+one is about to show (the open one was deleted, the next opens), and the menu
+doesn't flash meanwhile. With one folder, nothing changes. An empty open chat is
 reused, moved to the folder's project by `chat_move_empty_dialog`
 (`store::move_empty_dialog`, which refuses a chat with a message, a subagent's,
-and one on a host or moving). `openFolders.ts` has `chatRootOf` (the folder whose
+and one on a host or moving), unless its draft names files: they're its folder's,
+so the draft stays with it and the other folder gets a chat of its own. `openFolders.ts` has `chatRootOf` (the folder whose
 project the chat is), `chatPathToAbsolute` and `chatPathOf` (paths with `/`,
 null outside the chat's folder). ChatPanel goes through them for the run's
 root, the estimate, the connector's commands, `@` (its folder's files only), the
@@ -2507,10 +2513,12 @@ the editor uses the open chat when the plan is its folder's (waiting while it
 works), else starts a chat in the plan's folder (`peekImplementPlanRequest`
 leaves the request waiting until the chat that takes it can). Tests:
 `chat_db/tests.rs` "an empty chat moves to another owner and one with a message
-doesn't"; `openFolders.test.ts` five (a folder chat's root, its path joined to
+doesn't"; `openFolders.test.ts` six (a folder chat's root, its path joined to
 its folder, a file named from its folder and one outside named nothing, a Windows
-file named with `/` and found again, a row's names); `workspaceChat.test.tsx`
-eleven, from the boxes to Implement; `chatBranchOffer.test.tsx` "a chat in the
+file named with `/` and found again, one whose folder is spelled in another case,
+a row's names); `workspaceChat.test.tsx` nineteen, from the boxes to Implement
+(the reuse that leaves a draft naming files, the input waiting with no chat, a
+deletion that never shows the menu, a copy that can't be checked, Tab); `chatBranchOffer.test.tsx` "a chat in the
 second folder is offered a branch for that folder's repository".
 Departures: no `runPlace` yet: a run's root is its chat's folder (`rootOf`), and
 `runPlace` comes with the workspace chats it tells apart (F14); **All folders**
@@ -2522,34 +2530,41 @@ styles C04's menu missed (its icon, label, focus, separator and off rows), in
 `styles.css` with the new rows' box, the note, the label and the menu in place.
 
 **E03 — a chat's paths, opened.** App's `folderForChat` is the folder of the chat
-a request names (else the open chat's; the window's first folder when there's
-none): a written file's comparison tab is `chat:<chat>:<its path in the chat>`
+a request names, else of the open chat (`chatFolderFor`): a subagent's chat
+isn't listed, and its tool calls show inside the open chat, whose folder it
+works in; the window's first folder when neither's is open here: a written file's comparison tab is `chat:<chat>:<its path in the chat>`
 (`chatPathOf`), and a path from the chat opens in its own folder
 (`chatPathToAbsolute`), as do the paths it mentions that become links
 (`setProjectFileResolver`). The isolation bar takes the chat's `root`: a file
 whose change landed since the list was read opens as itself, from the chat's
-folder, rather than as a comparison of two equal versions. Test:
-`isolationBar.test.tsx` "a changed file of the second folder's chat opens from the
-second folder". Departure: `overlay.ts` needed no change: its paths are the
+folder, rather than as a comparison of two equal versions (a deletion that
+landed has no file to open, and is compared). Tests: `isolationBar.test.tsx` "a
+changed file of the second folder's chat opens from the second folder", and
+`openFolders.test.ts` "a file of a chat the list doesn't have, a subagent's, is
+in the open chat's folder". Departure: `overlay.ts` needed no change: its paths are the
 chat's, as the backend takes them.
 
 **E04 — the client's open projects.** `rovik_client`'s `State.open` is the
 window's open projects, a list (`set_open_projects`), each with its folder: the
-claims' record (`Instances::open_projects`, the target's folders whose project is
-known), which the app hands over after each claim (`project_claim`) and each
-`reclaim` (`commands/chat.rs`'s `follow_claims`). `chat_open_project` no longer
+claims' record (`Instances::give_open_projects`, the target's folders whose
+project is known), which the app hands over after each claim (`project_claim`)
+and each `reclaim` (`commands/chat.rs`'s `follow_claims`), while the claims are
+held: two commands following them at once can't hand over the older list last. `chat_open_project` no longer
 sets it, and `folder_answered` is gone: an answer about a folder renames its
 project in the record, which the client follows, and an answer for a folder the
 window has left is in no record. `handled_elsewhere`, `land_waiting`,
 `project_of` and `is_open` look among them; a steering message's paths are made
-relative to its chat's own folder (`project_of`); Test delivery pushes to the
+relative to its chat's own folder (`project_of`), and a steer whose chat's folder
+can't be read fails rather than send local paths; Test delivery pushes to the
 first open folder with an `origin`. Tests: `remote/tests.rs` (the delivery test
 with a first folder that's no repository, the steer of the second folder's chat,
-events shown with the project as a workspace's second folder);
+a steer whose chat's folder can't be read, events shown with the project as a
+workspace's second folder);
 `rovik-agentd/tests/landing.rs` "a result for the second folder's chat lands
 while the workspace is open"; app crate `instances.rs` "the open projects are the
-window's folders' projects" and `commands/chat.rs` "a folder resolved after the
-window moved on isn't the client's open project".
+window's folders' projects" and "the open projects are given before another claim
+can change them", and `commands/chat.rs` "a folder resolved after the window
+moved on isn't the client's open project".
 Departures: the client test of `folder_answered` went with it, its case covered
 by the app crate's two; the daemon's tests call `set_open_projects`, and
 `landing.rs`'s answered folder is the list the claims give after the answer.
