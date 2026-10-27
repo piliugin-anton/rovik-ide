@@ -44,10 +44,12 @@
 mod composite;
 mod fold;
 mod guards;
+mod rules;
 
 pub use composite::Composite;
 pub use fold::Folded;
 pub use guards::{Guards, LARGE_FILE, LARGE_HISTORY};
+pub use rules::workspace_excludes;
 
 use git2::{
     Commit, Config, ObjectType, Oid, Reference, Repository, RepositoryInitOptions, Signature,

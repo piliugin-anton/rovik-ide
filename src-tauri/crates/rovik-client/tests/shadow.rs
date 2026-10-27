@@ -11,7 +11,7 @@ use git2::{
     ConfigLevel, IndexAddOption, IndexEntry, IndexTime, ObjectType, Oid, Repository, Signature,
     TreeWalkMode, TreeWalkResult,
 };
-use rovik_client::shadow::{Composite, Shadow, Snapshot, LARGE_FILE};
+use rovik_client::shadow::{workspace_excludes, Composite, Shadow, Snapshot, LARGE_FILE};
 use rovik_core::overlay::fs::{OverlayChange, OverlayFs};
 use rovik_core::testing::{temp_dir, TempDir};
 use rovik_core::vfs::backend::Backend;
@@ -879,4 +879,209 @@ fn grafting_a_folders_result_copies_its_objects_into_the_folders_shadow_and_comm
     let grafted = composite.graft("api", &api, CHAT, (base, result)).unwrap();
     let alone = Repository::open(fixture.dir.0.join("api.git")).unwrap();
     assert_eq!(tree_files(&alone, grafted), pairs(&[("src/a.ts", "a2\n")]));
+}
+
+/// The rules of `shop`'s root in `ruled_shop`.
+const ROOT_RULES: &str = "node_modules/\n*.log\n!keep.log\n/apps/web/dist\n/docs/*.md\n\
+                          */web/cache\napps/**/gen/\nbuild\nout/\nmy?file\n!my\\ file\n";
+
+/// A repository `shop` whose folder `apps/web` a workspace has as `front`,
+/// with ignore rules at every level above it: the user's global excludes
+/// (`*.mine`, `user_settings`), its `info/exclude`, `root`, its root's
+/// `.gitignore`, and `apps`' `.gitignore`; and `own`, the folder's own
+/// `.gitignore`.
+fn ruled_shop(fixture: &Fixture, root: &str, own: &str) -> PathBuf {
+    let shop = fixture.dir.0.join("shop");
+    write(&shop.join("README.md"), "shop\n");
+    open_or_init(&shop);
+    write(&shop.join(".git/info/exclude"), "secret.txt\n");
+    write(&shop.join(".gitignore"), root);
+    write(
+        &shop.join("apps/.gitignore"),
+        "web/tmp\n/web/coverage/\nother/x\n*.bak\n",
+    );
+    write(&shop.join("apps/web/.gitignore"), own);
+    write(&shop.join("apps/web/src/a.ts"), "a\n");
+    shop
+}
+
+/// A worktree of the composite as a daemon has it: the folder under its
+/// name with `own`, its own `.gitignore`, `rules` its `info/exclude`, and
+/// no global excludes of its own.
+fn composite_worktree(fixture: &Fixture, rules: &[String], own: &str) -> Repository {
+    let worktree = fixture.dir.0.join("worktree");
+    write(&worktree.join("front/.gitignore"), own);
+    let repo = open_or_init(&worktree);
+    write(&worktree.join(".git/info/exclude"), rules.join("\n") + "\n");
+    let none = fixture.dir.0.join("no-excludes");
+    write(&none, "");
+    let mut config = repo.config().unwrap();
+    config
+        .set_str("core.excludesfile", &none.to_string_lossy())
+        .unwrap();
+    // Read again, with the rules as they are now.
+    Repository::open(&worktree).unwrap()
+}
+
+/// Each of `table`'s paths in the folder, ignored as it says in `shop`
+/// (with `root` and `own`), is ignored the same under the folder's name
+/// with the rebased rules; and, the files made, a walk of each worktree
+/// (as a snapshot's or a result's staging walks it) finds the same ones.
+fn ignored_alike(root: &str, own: &str, table: &[(&str, bool)]) {
+    let fixture = Fixture::new();
+    let shop = ruled_shop(&fixture, root, own);
+    let folders = [("front".to_string(), shop.join("apps/web"))];
+    let rules = workspace_excludes(&folders).unwrap();
+    let real = Repository::open(&shop).unwrap();
+    let composite = composite_worktree(&fixture, &rules, own);
+    for (path, ignored) in table {
+        let there = real.is_path_ignored(format!("apps/web/{path}")).unwrap();
+        let here = composite.is_path_ignored(format!("front/{path}")).unwrap();
+        assert_eq!(there, *ignored, "{path}, in its repository");
+        assert_eq!(here, there, "{path}, in the composite: {rules:#?}");
+    }
+    let worktree = composite.workdir().unwrap().to_path_buf();
+    for (path, _) in table {
+        write(&shop.join("apps/web").join(path), "x\n");
+        write(&worktree.join("front").join(path), "x\n");
+    }
+    let found = |repo: &Repository, folder: &str| -> Vec<String> {
+        let mut opts = git2::StatusOptions::new();
+        opts.include_untracked(true).recurse_untracked_dirs(true);
+        let statuses = repo.statuses(Some(&mut opts)).unwrap();
+        let mut found: Vec<String> = (statuses.iter())
+            .filter_map(|entry| Some(entry.path().ok()?.strip_prefix(folder)?.to_string()))
+            .collect();
+        found.sort();
+        found
+    };
+    assert_eq!(
+        found(&composite, "front/"),
+        found(&real, "apps/web/"),
+        "{rules:#?}"
+    );
+}
+
+#[test]
+fn rebased_rules_ignore_what_git_ignores_in_the_folder() {
+    ignored_alike(
+        ROOT_RULES,
+        "local.txt\n",
+        &[
+            ("src/a.ts", false),
+            ("README.md", false),
+            ("node_modules/x/index.js", true),
+            ("src/node_modules/y.js", true),
+            ("debug.log", true),
+            ("src/deep/trace.log", true),
+            ("keep.log", false),
+            ("dist/app.js", true),
+            ("src/dist/app.js", false),
+            ("cache/c.bin", true),
+            ("gen/x.ts", true),
+            ("src/gen/y.ts", true),
+            ("build", true),
+            ("src/build/z.o", true),
+            ("out/o.txt", true),
+            ("src/out", false),
+            ("tmp/t.txt", true),
+            ("src/tmp/t.txt", false),
+            ("coverage/lcov.info", true),
+            ("x", false),
+            ("notes.bak", true),
+            ("secret.txt", true),
+            ("src/secret.txt", true),
+            ("a.mine", true),
+            ("local.txt", true),
+            ("docs/readme.md", false),
+            ("myxfile", true),
+            ("my file", false),
+        ],
+    );
+}
+
+/// A rule naming a folder above the folder, or the folder itself, takes in
+/// all of it, but what a later rule takes back, as libgit2 reads them: a
+/// negation without wildcards takes back only a rule that names it (or
+/// its basename) or one with wildcards that matches it.
+#[test]
+fn a_rule_naming_the_folder_or_one_above_it_takes_in_all_of_it() {
+    ignored_alike(
+        "ap*/\n!apps/web/keep.txt\n",
+        "",
+        &[
+            ("src/a.ts", true),
+            ("deep/down/x.txt", true),
+            ("keep.txt", false),
+        ],
+    );
+    ignored_alike(
+        "/apps/web\n!/apps/web/keep.txt\n",
+        "",
+        &[("src/a.ts", true), ("keep.txt", true)],
+    );
+    // All of a monorepo's apps but this one.
+    ignored_alike(
+        "/apps/*\n!/apps/web\n",
+        "",
+        &[("src/a.ts", false), ("keep.txt", false)],
+    );
+    // A walk never goes into a folder an ignore rule takes in, whatever
+    // the folder's own rules take back.
+    ignored_alike(
+        "apps/\n",
+        "*\n!important.txt\n",
+        &[("src/a.ts", true), ("important.txt", false)],
+    );
+}
+
+#[test]
+fn what_an_ancestors_gitignore_ignores_stays_out_of_the_result() {
+    use rovik_core::staging::{self, Base};
+    let fixture = Fixture::new();
+    let shop = ruled_shop(&fixture, ROOT_RULES, "local.txt\n");
+    let rules = workspace_excludes(&[("front".to_string(), shop.join("apps/web"))]).unwrap();
+    let repo = composite_worktree(&fixture, &rules, "local.txt\n");
+    let worktree = repo.workdir().unwrap().to_path_buf();
+    write(&worktree.join("front/src/a.ts"), "a\n");
+    let base = commit_all(&worktree);
+    // A run there installs packages, and changes a file.
+    write(&worktree.join("front/node_modules/x/index.js"), "x\n");
+    write(&worktree.join("front/src/b.ts"), "b\n");
+
+    let base = repo.find_commit(base).unwrap().tree().unwrap();
+    let staged = staging::stage(&repo, Base::Tree(&base)).unwrap();
+
+    let tree = repo.find_tree(staged.tree).unwrap();
+    assert!(tree.get_path(Path::new("front/src/b.ts")).is_ok());
+    assert!(
+        tree.get_path(Path::new("front/node_modules")).is_err(),
+        "{rules:#?}"
+    );
+}
+
+#[test]
+fn every_chat_of_a_workspace_sends_the_same_rules() {
+    let fixture = Fixture::new();
+    let shop = ruled_shop(&fixture, ROOT_RULES, "local.txt\n");
+    let api = fixture.dir.0.join("api");
+    write(&api.join(".gitignore"), "target/\n");
+    open_or_init(&api);
+    let (api, front) = (
+        ("api".to_string(), api),
+        ("front".to_string(), shop.join("apps/web")),
+    );
+
+    // The workspace's, whichever folders a chat works in: each folder's,
+    // in the workspace's order.
+    let rules = workspace_excludes(&[api.clone(), front.clone()]).unwrap();
+
+    let apart = [
+        workspace_excludes(std::slice::from_ref(&api)).unwrap(),
+        workspace_excludes(std::slice::from_ref(&front)).unwrap(),
+    ];
+    assert_eq!(rules, apart.concat());
+    assert!(rules.contains(&"/front/**/node_modules/".to_string()));
+    assert!(rules.contains(&"/api/**/*.mine".to_string()), "{rules:#?}");
+    assert_eq!(rules, workspace_excludes(&[api, front]).unwrap());
 }

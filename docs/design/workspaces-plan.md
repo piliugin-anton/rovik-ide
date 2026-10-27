@@ -3142,6 +3142,49 @@ one goes on it; grafting a folder's result copies its objects into the folder's 
 and commits on its current tree, a folder of a repository keeping the rest of that
 repository's tree.
 
+**G04 — ignore rules rebased under a folder's name.** `shadow/rules.rs`:
+`workspace_excludes(folders)` gives, for each folder in the workspace's order, what git
+ignores in it from outside it, rewritten to match under its name in the composite: the
+user's global excludes (`core.excludesfile` of the folder's repository's settings, else
+git's XDG file), the repository's `info/exclude` (of its common folder, for a linked
+worktree), and the `.gitignore` of each folder from the repository's root down to the
+folder's parent, in that order in one list, as a later rule wins and git weighs each of
+these files over the one before. A folder outside any repository gets the global
+excludes alone. The folder's own `.gitignore`s are in its tree and, deeper than the
+composite's `info/exclude`, still weigh most. A line is read as libgit2 reads it
+(`git_attr_fnmatch__parse`: one `\r`, a comment, `!`, trailing spaces but escaped ones,
+one leading slash, a trailing slash for folders only, anchored when a slash is left,
+wild for an unescaped `*`, `?` or `[`), and a rule's parts are matched against the
+folder's path part by part with a port of libgit2's `wildmatch` (`**` takes in any
+number of folders, an unanchored rule starts with one). What's left of it applies inside
+the folder (`apps/**/gen/` at `apps/web` is `/front/**/gen/`); a rule that ends at the
+folder or above it takes in all of it, as `/front/`, not `/front/**`: a walk doesn't go
+into an ignored folder, so, as in the repository, nothing inside can take a file back. A
+negated rule without wildcards that takes back no earlier rule of its file is left out,
+as libgit2 drops it when it reads the file (`does_negate_rule`, comparing patterns with
+escaped spaces unescaped, as libgit2 keeps them); a rebased negation without wildcards
+gets its own rule before it, which libgit2 needs to keep it, so it takes back just what
+it did. A folder's name is matched as it is (`*?[\` escaped). The rules are the
+workspace's, the same for each of its chats, as the daemon keeps one `info/exclude` per
+project; G05 sends them with every sync. Two of libgit2's own differences show in the
+tests: `is_path_ignored` reads a path's `.gitignore`s from the root down where a status
+walk reads the deepest first, and only a walk stops at an ignored folder, so the tests
+compare both. A difference that stays: `core.ignorecase` of the folder's repository
+(macOS, Windows) folds case where a rule meets the folder's path, but on a Linux daemon
+the rest of the rule matches the case it's written in, so `Dist/` ignores `dist` here and
+not there. Tests: `rules.rs` (a rule is rebased under the folder's name; read as libgit2
+reads it; a negation without wildcards is kept only after a rule it takes back; patterns
+match as libgit2's wildmatch does; a folder's name is matched as it is) and
+`tests/shadow.rs`, where a repository has rules at every level above its folder
+`apps/web`: `rebased_rules_ignore_what_git_ignores_in_the_folder` (28 paths, each
+ignored as libgit2's `is_path_ignored` says in the repository and in a composite's
+worktree with the rebased rules in its `info/exclude`, and the files made, both status
+walks list the same ones), `a_rule_naming_the_folder_or_one_above_it_takes_in_all_of_it`
+(a negation libgit2 keeps, one it drops, a monorepo's apps but this one, a folder's own
+rules under an ignored folder), `what_an_ancestors_gitignore_ignores_stays_out_of_the_result`
+(staging a run's changes there leaves `node_modules` out),
+`every_chat_of_a_workspace_sends_the_same_rules`.
+
 Before H, a user of a project sees none of this either: a window still has one
 folder unless `--workspace` asks for one, and its Git panel and its chats look
 and work as they did. What does change is that two tabs of one name say where
