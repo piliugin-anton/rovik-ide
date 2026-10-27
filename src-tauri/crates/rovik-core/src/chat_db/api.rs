@@ -820,11 +820,15 @@ mod tests {
             },
             None,
         );
-        let beat = crate::testing::beating("up");
+        // Runs until it's stopped, in either shell (cmd.exe on Windows).
+        let command = match cfg!(windows) {
+            true => "ping -n 60 127.0.0.1 >NUL",
+            false => "sleep 60",
+        };
         crate::command_tool::background::start(
             "rm-running",
             &root,
-            &beat,
+            command,
             &|| false,
             queued,
             std::sync::Arc::new(|| {}),
