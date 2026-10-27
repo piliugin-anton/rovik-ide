@@ -63,8 +63,10 @@ export interface ConnectorSpec {
   /**
    * One of its own tool calls as the chat shows it: as the call of Rovik's
    * tool of the same kind, its arguments as that one takes them, so its
-   * line and block read as Rovik's do (`connectorSegments`). None for a
-   * tool Rovik has none like: shown by its own name and input.
+   * line and block read as Rovik's do (`connectorSegments`). A skill it
+   * uses is a `skill` call (`{ skill, args }`), which Rovik's agent has
+   * none of. None for a tool Rovik has none like: shown by its own name
+   * and input.
    */
   chatCall: (name: string, input: Record<string, unknown>) => ChatCall | undefined;
 }

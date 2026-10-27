@@ -286,6 +286,12 @@ function describe(name: string, args: Args, status: CallStatus, meta?: ToolMeta)
     case 'todo':
       return { title: 'Checklist', meta: todoSummary(args) };
 
+    // A connector's (ConnectorSpec.chatCall).
+    case 'skill': {
+      const skill = str(args.skill)?.trim();
+      return { title: `${active ? 'Using' : 'Used'} skill${skill ? ` ${skill}` : ''}` };
+    }
+
     case 'answer_review':
       return {
         title: active ? 'Answering the review' : 'Answered the review',

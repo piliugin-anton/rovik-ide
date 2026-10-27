@@ -30,12 +30,13 @@ export interface ToolRun {
 
 /**
  * Calls that keep a line of their own: each question, checklist update,
- * plan and subagent (`task`: its approvals show on its own block) is its
- * own event, and a change to the agent's context file says "its context",
- * not a file name.
+ * plan, subagent (`task`: its approvals show on its own block) and skill
+ * is its own event, and a change to the agent's context file says "its
+ * context", not a file name.
  */
 function standsAlone(call: ChatToolCall): boolean {
-  if (['ask_user', 'todo', 'submit_plan', 'task', 'answer_review'].includes(call.name)) return true;
+  if (['ask_user', 'todo', 'submit_plan', 'task', 'answer_review', 'skill'].includes(call.name))
+    return true;
   return call.name === 'write' && isLiveContextPath(str(parseArgsLenient(call.arguments).path));
 }
 
@@ -342,6 +343,15 @@ export function describeGroup(
     }
     case 'restore_context':
       return label(verb('Restoring its context', 'Restored its context'), []);
+    // A connector's (ConnectorSpec.chatCall).
+    case 'skill':
+      return label(
+        verb('Using skill', 'Used skill'),
+        argsList.map((a) => {
+          const skill = str(a.skill)?.trim();
+          return skill ? { text: skill } : undefined;
+        })
+      );
     default:
       return label(verb(`Calling ${name || 'tool'}`, `Called ${name || 'tool'}`), []);
   }

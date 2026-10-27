@@ -743,6 +743,9 @@ async fn a_forked_skill_the_user_runs_shows_as_its_step_while_it_works() {
         if let Some(steps) = patch["meta"]["connector"]["steps"].as_array() {
             running = steps.first().is_some_and(|s| s["ok"].is_null());
             shown_running |= running;
+            // Named before Claude Code says anything of itself, for the
+            // chat to show the step as Claude Code's ("Using skill census").
+            assert_eq!(patch["meta"]["connector"]["kind"], "claude-code");
         }
         if running {
             assert!(

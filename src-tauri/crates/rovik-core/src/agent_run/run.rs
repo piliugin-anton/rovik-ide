@@ -3242,6 +3242,10 @@ struct Stream {
     harness: Option<Value>,
     harness_steps: Vec<crate::connectors::HarnessStep>,
     dirty_harness: bool,
+    /// The connector the reply is from, its profile's: the harness meta
+    /// names it from the first step, which can come before the harness
+    /// says anything of itself (a skill run as `/name` in a forked context).
+    connector: Option<crate::connectors::ConnectorKind>,
     /// The reasoning as it is sent back (`reasoning_details`; reasoning_echo.rs).
     reasoning_details: Vec<Value>,
     /// The reasoning came in the reply text, in this tag (`<think>`): it goes
@@ -3303,6 +3307,7 @@ impl Stream {
             harness: None,
             harness_steps: Vec::new(),
             dirty_harness: false,
+            connector: crate::connectors::kind_of(&run.profile.base_url),
             reasoning_details: Vec::new(),
             reasoning_inline: None,
             model: run.profile.model.clone(),
@@ -3415,7 +3420,8 @@ impl Stream {
                     Some(existing) => *existing = step,
                     None => self.harness_steps.push(step),
                 }
-                self.harness.get_or_insert_with(|| json!({}));
+                let kind = self.connector.map(|k| k.id());
+                self.harness.get_or_insert_with(|| json!({ "kind": kind }));
                 self.dirty_harness = true;
             }
             ChatStreamEvent::Reasoning { content } => {
