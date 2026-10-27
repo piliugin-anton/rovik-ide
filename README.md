@@ -521,7 +521,10 @@ that need a terminal or work on after the run (`/color`, `/loop`,
 `/goal`, `/batch`). Up and Down move through it, Enter or Tab
 picks one; Escape closes it. A picked command goes to Claude Code as
 typed and alone, without the editor's context before it, and its output
-is the reply (`/compact` says how far it shrank the conversation). Only
+is the reply (`/compact` says how far it shrank the conversation). A
+skill that works in a forked context (`context: fork`) shows as its step
+while it runs ("Calling Skill"), since Claude Code prints its work only
+once it's done. Only
 a picked command runs as one: a message typed by hand, `/compact` or
 `/etc/passwd has a typo`, goes as a message, so Claude Code reads it as
 text. A command picked while the agent works isn't sent to the run, which

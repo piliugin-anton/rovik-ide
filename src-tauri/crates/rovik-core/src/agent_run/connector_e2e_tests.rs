@@ -712,6 +712,60 @@ fn claude_in_parts(h: &Harness, parts: &[&[Value]]) -> String {
     crate::connectors::fake_claude(&h._dir.0, &script)
 }
 
+/// A skill the user runs that works in a forked context (`/name` of one
+/// with `context: fork`): Claude Code prints nothing of its work until it's
+/// done. Its step shows from the start, at work, and no line says the
+/// reply is late or stalled meanwhile; its reply follows once it's done.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_forked_skill_the_user_runs_shows_as_its_step_while_it_works() {
+    let h = harness(&[("a.txt", "alpha\n")]).await;
+    let fork = "forked-command-census";
+    let started = json!({"type":"system","subtype":"task_started","task_id":"a1","description":"/census","task_type":"local_agent"});
+    let done = [
+        json!({"type":"system","subtype":"task_notification","task_id":"a1","status":"completed","summary":"/census"}),
+        json!({"type":"system","subtype":"init","session_id":"s-6","model":"claude-haiku-5-5"}),
+        json!({"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.txt"}}]},"parent_tool_use_id":fork}),
+        json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"alpha"}]},"parent_tool_use_id":fork}),
+        json!({"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"a.txt says alpha."}]},"parent_tool_use_id":null}),
+        json!({"type":"result","subtype":"success","is_error":false,"result":"a.txt says alpha.","num_turns":0,"usage":{}}),
+    ];
+    // The skill works for a second.
+    let program = claude_in_parts(&h, &[&[started], &done]);
+    h.start(claude_code_send(&h, &program, "agent", "/census"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    let mut running = false;
+    let mut shown_running = false;
+    for patch in reply_patches(&h) {
+        if let Some(steps) = patch["meta"]["connector"]["steps"].as_array() {
+            running = steps.first().is_some_and(|s| s["ok"].is_null());
+            shown_running |= running;
+        }
+        if running {
+            assert!(
+                patch.get("status").is_none_or(Value::is_null),
+                "a status while the skill works: {patch:#}"
+            );
+        }
+    }
+    assert!(shown_running, "{:#?}", reply_patches(&h));
+
+    let messages = h.messages().await;
+    let reply = messages.last().unwrap();
+    assert_eq!(reply.content, "a.txt says alpha.");
+    let meta = reply.meta.clone().unwrap();
+    let steps = meta["connector"]["steps"].as_array().unwrap();
+    assert_eq!(steps[0]["name"], "Skill");
+    assert_eq!(steps[0]["input"], json!({ "skill": "census" }));
+    assert_eq!(steps[0]["ok"], true);
+    // What it did, as its subagent's steps.
+    assert_eq!(steps[1]["name"], "Read");
+    assert_eq!(steps[1]["parent"], fork);
+}
+
 /// While Claude Code runs a tool of its own it prints nothing: that's the
 /// tool's time, which its step shows at work, not the reply stalling. Once
 /// the tool is done, a silence is the reply's again: "Still generating".

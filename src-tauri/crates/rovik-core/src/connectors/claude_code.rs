@@ -777,8 +777,69 @@ impl Parser {
                     self.compacted = Some((before, after));
                 }
             }
+            "task_started" => self.task_started(value, emit),
+            "task_notification" => self.task_ended(value, emit),
             _ => {}
         }
+    }
+
+    /// A task of Claude Code's began. A skill the user runs that works in
+    /// a forked context (`/name` of one with `context: fork`) is a task no
+    /// tool call stands for, and it runs before anything else of the turn
+    /// is printed: its steps and its words come only once it's done. So it
+    /// is a step of its own meanwhile, a `Skill` call as the model's would
+    /// be. Other tasks are a tool call's (`tool_use_id`), which its step
+    /// shows, or a command of a task's own (`parent_task_id`).
+    fn task_started(&mut self, value: &Value, emit: &mut dyn FnMut(ChatStreamEvent)) {
+        if value.get("tool_use_id").is_some() || value.get("parent_task_id").is_some() {
+            return;
+        }
+        let text = |key: &str| value.get(key).and_then(Value::as_str).unwrap_or("").trim();
+        let id = text("task_id");
+        let Some(command) = text("description").strip_prefix('/') else {
+            return;
+        };
+        if id.is_empty() || command.is_empty() {
+            return;
+        }
+        let (skill, args) = command
+            .split_once(char::is_whitespace)
+            .unwrap_or((command, ""));
+        let mut input = json!({ "skill": skill });
+        if !args.trim().is_empty() {
+            input["args"] = json!(args.trim());
+        }
+        let step = HarnessStep {
+            id: id.to_string(),
+            name: "Skill".into(),
+            input,
+            ..HarnessStep::default()
+        };
+        if !self.steps.contains_key(id) {
+            self.order.push(id.to_string());
+        }
+        self.steps.insert(id.to_string(), step.clone());
+        emit(ChatStreamEvent::HarnessStep { step });
+    }
+
+    /// A task ended: the step that stands for it (`task_started`) has its
+    /// outcome. What the skill found is the reply's text, which follows.
+    fn task_ended(&mut self, value: &Value, emit: &mut dyn FnMut(ChatStreamEvent)) {
+        let id = value.get("task_id").and_then(Value::as_str).unwrap_or("");
+        let Some(step) = self.steps.get_mut(id) else {
+            return;
+        };
+        let status = value.get("status").and_then(Value::as_str).unwrap_or("");
+        step.ok = Some(status == "completed");
+        step.result = Some(
+            match status {
+                "completed" => "The skill completed.",
+                "stopped" => "The skill was stopped.",
+                _ => "The skill failed.",
+            }
+            .into(),
+        );
+        emit(ChatStreamEvent::HarnessStep { step: step.clone() });
     }
 
     fn stream_event(
@@ -3507,6 +3568,105 @@ mod tests {
         assert!(asks(false, false), "its own tools");
         assert!(asks(true, false), "Rovik's tools");
         assert!(!asks(false, true), "a chat's title");
+    }
+
+    /// A skill the user runs (`/name`) that works in a forked context prints
+    /// nothing of its work until it's done: it's a `Skill` step from the
+    /// moment its task starts, done when the task ends, and what it did
+    /// comes after, as its subagent's steps and the reply's text.
+    #[test]
+    fn a_skill_the_user_runs_in_a_forked_context_is_a_step_while_it_works() {
+        let mut p = Parser::default();
+        let mut events = Vec::new();
+        // Claude Code 2.1.311's lines for `/slow-census`, a skill with
+        // `context: fork` (cut short): its task starts, then a command of
+        // its own and the task itself end; the rest comes all at once.
+        let fork = "forked-command-slow-census";
+        let started = json!({"type":"system","subtype":"task_started","task_id":"a904","description":"/slow-census","subagent_type":"general-purpose","is_backgrounded":false,"task_type":"local_agent","prompt":"Base directory for this skill: …","skip_transcript":true,"ambient":true});
+        p.line(&started.to_string(), &mut |e| events.push(e));
+        assert_eq!(names(&events), ["step:Skill::"], "shown as it starts");
+        let lines = [
+            json!({"type":"system","subtype":"task_started","task_id":"bwhh","owned_by_subagent":true,"tool_use_id":"toolu_1","description":"Pause for 3 seconds","parent_task_id":"a904","task_type":"local_bash"}),
+            json!({"type":"system","subtype":"task_notification","task_id":"bwhh","tool_use_id":"toolu_1","status":"completed","summary":"Pause for 3 seconds"}),
+            json!({"type":"system","subtype":"task_notification","task_id":"a904","status":"completed","summary":"/slow-census","skip_transcript":true,"ambient":true}),
+            json!({"type":"system","subtype":"init","session_id":"s-1","model":"claude-haiku-5-5"}),
+            json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: …"}]},"parent_tool_use_id":fork,"isSynthetic":true}),
+            json!({"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 3"}}]},"parent_tool_use_id":fork}),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"(Bash completed with no output)"}]},"parent_tool_use_id":fork}),
+            json!({"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"a.txt says alpha."}]},"parent_tool_use_id":null}),
+            json!({"type":"result","subtype":"success","is_error":false,"result":"a.txt says alpha.","num_turns":0,"usage":{"input_tokens":0,"output_tokens":0},"total_cost_usd":0.0025}),
+        ];
+        for line in lines {
+            p.line(&line.to_string(), &mut |e| events.push(e));
+        }
+        assert_eq!(
+            names(&events),
+            [
+                "step:Skill::",
+                "step:Skill:The skill completed.:true",
+                "session:s-1:claude-haiku-5-5",
+                "step:Bash::",
+                "step:Bash:(Bash completed with no output):true",
+                "delta:a.txt says alpha.",
+                "finished:success:0",
+                "done",
+            ]
+        );
+        let steps: Vec<&HarnessStep> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatStreamEvent::HarnessStep { step } => Some(step),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(steps[0].id, "a904");
+        assert_eq!(steps[0].input, json!({ "skill": "slow-census" }));
+        assert_eq!(steps[0].parent, None, "the reply's own step");
+        assert_eq!(steps[2].parent.as_deref(), Some(fork), "its subagent's");
+        assert!(p.finished && p.failure.is_none());
+    }
+
+    /// The skill's arguments are its step's; a task that fails or is
+    /// stopped says so. Tasks of a tool call's (whose step shows them) or
+    /// not run as a command are no step of their own.
+    #[test]
+    fn a_forked_skill_s_step_has_its_arguments_and_how_it_ended() {
+        let mut p = Parser::default();
+        let mut events = Vec::new();
+        let mut emit = |e| events.push(e);
+        let started = |id: &str, description: &str| json!({"type":"system","subtype":"task_started","task_id":id,"description":description,"task_type":"local_agent"});
+        let ended = |id: &str, status: &str| json!({"type":"system","subtype":"task_notification","task_id":id,"status":status,"summary":"x"});
+        let lines = [
+            started("t1", "/review-pr 123 --fast"),
+            ended("t1", "failed"),
+            started("t2", "/file-census"),
+            ended("t2", "stopped"),
+            // A subagent's task, which its tool call's step shows.
+            json!({"type":"system","subtype":"task_started","task_id":"t3","tool_use_id":"toolu_9","description":"/file-census","task_type":"local_agent"}),
+            ended("t3", "completed"),
+            // Not the user's command.
+            started("t4", "Summarize the session"),
+            ended("t4", "completed"),
+        ];
+        for line in lines {
+            p.line(&line.to_string(), &mut emit);
+        }
+        assert_eq!(
+            names(&events),
+            [
+                "step:Skill::",
+                "step:Skill:The skill failed.:false",
+                "step:Skill::",
+                "step:Skill:The skill was stopped.:false",
+            ]
+        );
+        let ChatStreamEvent::HarnessStep { step } = &events[0] else {
+            panic!()
+        };
+        assert_eq!(
+            step.input,
+            json!({ "skill": "review-pr", "args": "123 --fast" })
+        );
     }
 
     #[test]
