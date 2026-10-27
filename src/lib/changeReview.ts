@@ -24,10 +24,12 @@ export interface ReviewFinding {
   newEvidence?: string;
   /**
    * A change review's: what it weighs, its severity's weight (high 1,
-   * medium 0.5, low 0.25), halved when only plausible (change_review.rs
-   * `Finding::rank`).
+   * medium 0.5, low 0.25), halved when only plausible and again when it's
+   * about code the change didn't touch (change_review.rs `Finding::rank`).
    */
   rank?: number;
+  /** A change review's: about code the change didn't touch. */
+  outside?: boolean;
 }
 
 /** What a guide said (src-tauri/src/agent_run/guide.rs `Guidance`). */
@@ -147,12 +149,51 @@ export interface ReviewMeta {
   afterGreen?: boolean;
   usage?: import('./subagents').SubagentUsage;
   /**
-   * change, once it reported: the ranks of the findings it left open, added
-   * up (0 when clean). The higher, the more is still wrong.
+   * change, once it reported: its blocking findings' ranks added up (0 when
+   * nothing holds the change back). The higher, the more is still wrong.
    */
   score?: number;
+  /**
+   * change: findings that weigh too little to block (rank 0.25), sent to the
+   * agent as optional; nothing follows them up. `findings` are the blocking ones.
+   */
+  optional?: ReviewFinding[];
+  /** change: findings that weigh least, kept here for the user only. */
+  noted?: ReviewFinding[];
   /** change: the guide that ran after it (guide.rs), when one did. */
   guide?: GuideMeta;
+}
+
+/**
+ * A change review's lighter findings in a phrase: "2 optional findings went
+ * to the agent without holding the change back, and 1 minor one is listed
+ * here for you only"; null for none.
+ */
+function lighterFindings(meta: ReviewMeta): string | null {
+  const parts: string[] = [];
+  const optional = meta.optional?.length ?? 0;
+  const noted = meta.noted?.length ?? 0;
+  if (optional)
+    parts.push(
+      `${plural(optional, 'optional finding')} went to the agent without holding the change back`
+    );
+  if (noted)
+    parts.push(
+      `${plural(noted, 'minor one')} ${noted === 1 ? 'is' : 'are'} listed here for you only`
+    );
+  return parts.length ? parts.join(', and ') : null;
+}
+
+/**
+ * The earlier findings the agent answered as not a problem, by the
+ * follow-up's own word: upheld (the reviewer was wrong) and rejected.
+ */
+export function disputes(meta: ReviewMeta): { upheld: number; rejected: number } {
+  const disputed = (meta.earlier ?? []).filter(
+    (e) => e.response?.action === 'not_a_problem' && e.checked === true
+  );
+  const upheld = disputed.filter((e) => e.resolved).length;
+  return { upheld, rejected: disputed.length - upheld };
 }
 
 /** A rank or a score as the card shows it: "1", "0.25", "1.375". */
@@ -184,23 +225,33 @@ export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
   switch (meta.status) {
     case 'running':
       return `Reviewing the change (${what})…`;
-    case 'clean':
+    case 'clean': {
       if (meta.reason) return `The reviewer reported nothing to fix: ${meta.reason}.`;
+      const lighter = lighterFindings(meta);
+      const earlier = meta.earlier?.length
+        ? `the earlier ${meta.earlier.length === 1 ? 'finding' : 'findings'} resolved and `
+        : '';
+      if (lighter)
+        return `The reviewer found ${earlier}nothing that holds the change back: ${lighter}.`;
       // S06: a follow-up that found what it checked settled.
-      if (meta.earlier?.length)
-        return `The reviewer found the earlier ${meta.earlier.length === 1 ? 'finding' : 'findings'} resolved and nothing new to fix.`;
+      if (earlier) return `The reviewer found ${earlier}nothing new to fix.`;
       return 'The reviewer found nothing to fix.';
+    }
     case 'findings': {
       const all = meta.findings ?? [];
-      // Every finding goes back to the agent, whatever its severity.
+      // The blocking findings: each goes back to the agent to fix or answer.
       const serious = all.length;
       const count = plural(all.length, 'finding');
       if (meta.blocked) {
         const open = meta.open ?? all.length;
         return `The reviewer still finds ${plural(open, 'problem')} after the run’s last review: the change goes no further, and the run ends here.`;
       }
+      const lighter = lighterFindings(meta);
       if (serious)
-        return `The reviewer found ${count}: ${serious} sent to the agent to fix or answer, and a follow-up review checks them.`;
+        return (
+          `The reviewer found ${count}: ${serious} sent to the agent to fix or answer, and a follow-up review checks them.` +
+          (lighter ? ` Also, ${lighter}.` : '')
+        );
       return 'The reviewer found nothing to fix.';
     }
     case 'skipped':
@@ -276,7 +327,16 @@ export function reviewFacts(meta: ReviewMeta): [string, string][] {
   if (meta.score !== undefined)
     facts.push([
       'Score',
-      `${formatScore(meta.score)}: the open findings’ ranks added up (high 1, medium 0.5, low 0.25, halved when plausible)`,
+      `${formatScore(meta.score)}: the blocking findings’ ranks added up (high 1, medium 0.5, low 0.25, halved when plausible and again when outside the change)`,
+    ]);
+  if (meta.optional?.length)
+    facts.push(['Optional', `${meta.optional.length}, sent to the agent without holding it back`]);
+  if (meta.noted?.length) facts.push(['For you only', String(meta.noted.length)]);
+  const { upheld, rejected } = disputes(meta);
+  if (upheld || rejected)
+    facts.push([
+      'Disputes',
+      `${upheld} upheld (the reviewer was wrong), ${rejected} rejected (the reviewer was right)`,
     ]);
   if (meta.earlier?.length) {
     const count = (verdict: ReturnType<typeof earlierVerdict>) =>

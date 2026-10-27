@@ -47,10 +47,15 @@ function FindingItem(props: { finding: ReviewFinding; dropped?: boolean }) {
         </Show>
         <span class="review-title">{f().title}</span>
         <span class="review-confidence">{f().confidence}</span>
+        <Show when={f().outside}>
+          <span class="review-outside" title="About code the change didn’t touch: it weighs half">
+            outside the change
+          </span>
+        </Show>
         <Show when={f().rank !== undefined}>
           <span
             class="review-rank"
-            title="What it weighs: high 1, medium 0.5, low 0.25, halved when plausible"
+            title="What it weighs: high 1, medium 0.5, low 0.25, halved when plausible and again when outside the change"
           >
             rank {formatScore(f().rank!)}
           </span>
@@ -212,6 +217,28 @@ export default function ReviewRecord(props: {
         <ul class="review-findings">
           <For each={props.meta.findings}>{(f) => <FindingItem finding={f} />}</For>
         </ul>
+      </Show>
+      <Show when={props.meta.optional?.length}>
+        <details class="review-optional">
+          <summary>
+            {props.meta.optional!.length} optional, sent to the agent without holding the change
+            back
+          </summary>
+          <ul class="review-findings">
+            <For each={props.meta.optional}>{(f) => <FindingItem finding={f} />}</For>
+          </ul>
+        </details>
+      </Show>
+      <Show when={props.meta.noted?.length}>
+        <details class="review-noted">
+          <summary>
+            {props.meta.noted!.length} minor, the likeliest to be wrong, for you only: not sent to
+            the agent
+          </summary>
+          <ul class="review-findings">
+            <For each={props.meta.noted}>{(f) => <FindingItem finding={f} dropped />}</For>
+          </ul>
+        </details>
       </Show>
       <Show when={props.meta.guide}>
         {(g) => (

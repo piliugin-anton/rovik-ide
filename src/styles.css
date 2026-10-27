@@ -9712,7 +9712,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg-dim);
 }
 
-/* A change review's finding: what it weighs (change_review.rs `rank`). */
+/* A change review's finding: what it weighs (change_review.rs `rank`),
+   and whether it's about code the change didn't touch. */
+.review-outside,
 .review-rank {
   color: var(--fg-dim);
   font-variant-numeric: tabular-nums;
@@ -9727,7 +9729,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg-dim);
 }
 
-.review-dropped summary {
+.review-dropped summary,
+.review-optional summary,
+.review-noted summary {
   cursor: pointer;
 }
 

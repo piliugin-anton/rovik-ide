@@ -792,6 +792,40 @@ test('a change review shows each finding’s rank, its score and the guide that 
   assert.ok(gone.querySelector('.review-guide.stopped'));
   assert.match(gone.querySelector('.review-guide')?.textContent ?? '', /didn’t finish/);
 
+  // Its lighter findings: the optional ones, and the minor ones for the user.
+  const lighter = container();
+  render(
+    () => (
+      <ReviewRecord
+        meta={{
+          ...meta,
+          guide: undefined,
+          optional: [{ ...finding('high', 'plausible', 0.25, 'Elsewhere, unsure'), outside: true }],
+          noted: [finding('low', 'plausible', 0.125, 'A nit, maybe')],
+        }}
+        dialogId="d-g"
+        recordId="g5"
+        live={false}
+      />
+    ),
+    lighter
+  );
+  const optional = lighter.querySelector('details.review-optional')!;
+  assert.equal(
+    optional.querySelector('summary')?.textContent,
+    '1 optional, sent to the agent without holding the change back'
+  );
+  assert.equal(optional.querySelector('.review-outside')?.textContent, 'outside the change');
+  assert.equal(optional.querySelector('.review-rank')?.textContent, 'rank 0.25');
+  const noted = lighter.querySelector('details.review-noted')!;
+  assert.match(noted.querySelector('summary')?.textContent ?? '', /^1 minor, .*for you only/);
+  assert.ok(noted.querySelector('.review-finding.dropped'), 'shown dimmed');
+  // Blocking findings on the change have no "outside" mark.
+  assert.equal(
+    lighter.querySelector('ul.review-findings > li .review-outside')?.closest('details'),
+    optional
+  );
+
   // A plan review's findings have no rank, and a review without a guide shows none.
   const plan = container();
   render(

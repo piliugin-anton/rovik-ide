@@ -1293,6 +1293,12 @@ pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
             if said && !reason.is_empty() {
                 f.new_evidence = Some(reason.clone());
             }
+            // Kept open by the reviewer's own word, on a second reading of
+            // the code, after the agent's fix or answer: it's confirmed,
+            // whatever the first review was sure of.
+            if said {
+                f.confidence = "confirmed".into();
+            }
             out.open.push(f);
         }
         out.verdicts.push(Verdict {
@@ -3281,6 +3287,33 @@ mod tests {
         ))
         .unwrap()
         .remove(0)
+    }
+
+    /// An earlier finding a follow-up keeps open by its own word was read
+    /// twice, the second time after the agent's fix or answer: it's
+    /// confirmed. One kept open by the IDE's default (the plan came back
+    /// unchanged, with nothing said) stays as sure as it was.
+    #[test]
+    fn a_finding_kept_open_by_the_follow_ups_word_is_confirmed() {
+        let mut unsure = finding("high", "Step 2", "Wrong order");
+        unsure.confidence = "plausible".into();
+        let facts = |verdicts: &[Verdict], unchanged_and_silent: bool| {
+            follow_up(
+                &Facts {
+                    earlier: std::slice::from_ref(&unsure),
+                    responses: &[],
+                    verdicts,
+                    unchanged_and_silent,
+                    changed: &[],
+                },
+                Vec::new(),
+            )
+        };
+        let said = parse_verdicts(
+            "## Earlier findings\n\n- Earlier 1: not resolved — step 2 still runs first.",
+        );
+        assert_eq!(facts(&said, false).open[0].confidence, "confirmed");
+        assert_eq!(facts(&[], true).open[0].confidence, "plausible");
     }
 
     /// B13: what a follow-up review leaves open: the earlier findings it

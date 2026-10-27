@@ -4,20 +4,22 @@
 //! the checklist and the diff, never the agent's conversation: independence
 //! is the point (Cognition's review agent, PROMPTS.md's manual reviewer).
 //!
-//! Its findings follow a strict format (`parse_findings`). Every finding,
-//! whatever its severity or confidence, goes back to the agent, which fixes
-//! it or says why it isn't a problem. A finding it repeats without new
-//! evidence is dropped. At most MAX_CHANGE_REVIEWS_PER_RUN reviews in a run,
+//! Its findings follow a strict format (`parse_findings`). What a finding
+//! weighs (`Finding::rank`: its severity, how sure the reviewer is, whether
+//! it's on the change) decides what it does (`weigh`): a blocking one goes
+//! back to the agent, which fixes it or says why it isn't a problem; a
+//! lighter one goes to it as optional; the lightest, only to the record. A
+//! finding it repeats without new evidence is dropped. At most MAX_CHANGE_REVIEWS_PER_RUN reviews in a run,
 //! and MAX_REVIEWS_IN_ROW before the checks run. A reviewer that fails, or
 //! whose report can't be read even after its repair turn, is recorded as
 //! skipped, never as "no findings".
 //!
 //! The review blocks, in Autopilot and in Agent mode alike (S06,
-//! autopilot-plan D10): the agent answers each finding with `answer_review`
-//! (its replies aren't read), and the next review is a follow-up that gives
-//! a verdict on each earlier finding, as a follow-up plan review does (B13).
-//! A finding still open after the run's last review, of any severity, ends
-//! the run `review-open`: the change isn't accepted until every finding is
+//! autopilot-plan D10): the agent answers each blocking finding with
+//! `answer_review` (its replies aren't read), and the next review is a
+//! follow-up that gives a verdict on each, as a follow-up plan review does
+//! (B13). A blocking finding still open after the run's last review ends
+//! the run `review-open`: the change isn't accepted until every one is
 //! resolved.
 
 use super::diff::{self, Hunk};
@@ -46,6 +48,8 @@ const REVIEWER_PROMPT: &str = r###"You are a code reviewer: a read-only helper o
 - Edge cases it doesn't handle: empty input, missing files, concurrency, other platforms.
 - Plan steps or parts of the request that weren't done, and changes beyond the request.
 
+Only what the change brings is a finding: a problem in what it changed, or one it causes elsewhere (a caller it should have updated, a contract it broke). A problem that was there before the change, in code it didn't touch and doesn't depend on, isn't one. A finding outside the changed lines says in its Scenario how the change causes it.
+
 Style, naming and formatting are not findings. Neither is anything the project's checks (type check, lint, tests) will catch on their own: they run after you.
 
 ## Rules
@@ -66,7 +70,7 @@ Reply with exactly this, most severe first, and nothing before it:
    - Fix: the change you suggest.
    - Confidence: confirmed or plausible.
 
-Severity: high (wrong results, data loss, a crash in normal use), medium (wrong in an edge case that matters), low (minor). With nothing to report, reply "## Findings" and then "None."."###;
+Severity: high (wrong results, data loss, a crash in normal use), medium (wrong in an edge case that matters), low (minor); don't rate one higher than it is. Confidence: confirmed when you traced in the code the path to the wrong outcome, plausible when you couldn't trace all of it. With nothing to report, reply "## Findings" and then "None."."###;
 
 pub static REVIEWER: KindSpec = KindSpec {
     label: "Change reviewer",
@@ -121,6 +125,10 @@ pub struct Finding {
     /// change needs it in Balanced Autopilot).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    /// A change review's finding about code the change didn't touch: not
+    /// on or near a line it changed (`on_change`). It weighs half (`rank`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside: bool,
 }
 
 impl Finding {
@@ -134,27 +142,73 @@ impl Finding {
     }
 
     /// How much the finding weighs: its severity's weight (high 1, medium
-    /// 0.5, low 0.25), halved when the reviewer found it only plausible.
+    /// 0.5, low 0.25), halved when the reviewer found it only plausible,
+    /// and halved again when it's about code the change didn't touch.
     pub fn rank(&self) -> f64 {
         let weight = match self.severity.as_str() {
             "high" => 1.0,
             "medium" => 0.5,
             _ => 0.25,
         };
-        if self.confidence == "confirmed" {
-            weight
+        let sure = if self.confidence == "confirmed" {
+            1.0
         } else {
-            weight * PLAUSIBLE_FACTOR
-        }
+            PLAUSIBLE_FACTOR
+        };
+        let place = if self.outside { OUTSIDE_FACTOR } else { 1.0 };
+        weight * sure * place
     }
 }
 
 /// What a finding the reviewer found only plausible weighs, of what a
 /// confirmed one of its severity does.
 const PLAUSIBLE_FACTOR: f64 = 0.5;
+/// What a finding about code the change didn't touch weighs, of what one
+/// on the change does: such a problem was more likely there before.
+const OUTSIDE_FACTOR: f64 = 0.5;
 
-/// A review's score: its open findings' ranks added up. 0 for a clean
-/// review; the higher, the more is still wrong with the change. The
+/// A finding of at least this rank holds the change back: any high one on
+/// the change, a confirmed high one elsewhere, a confirmed medium one on
+/// it. The agent fixes it, or answers it with evidence.
+pub const BLOCKING_RANK: f64 = 0.5;
+/// Below `BLOCKING_RANK`, a finding of at least this rank goes to the agent
+/// as optional (at most `MAX_OPTIONAL` a review, the highest first); below
+/// it, only to the record, for the user: the likeliest to be wrong, and a
+/// fix of what isn't broken is how correct code gets broken.
+pub const OPTIONAL_RANK: f64 = 0.25;
+pub const MAX_OPTIONAL: usize = 3;
+
+/// A review's findings by what they weigh, each the highest rank first
+/// (the reviewer's order among equals).
+#[derive(Debug, Default, PartialEq)]
+pub struct Weighed {
+    /// They hold the change back: the agent fixes or answers each.
+    pub blocking: Vec<Finding>,
+    /// The agent gets them as optional, and nothing follows them up.
+    pub optional: Vec<Finding>,
+    /// Only the record keeps them, for the user.
+    pub noted: Vec<Finding>,
+}
+
+/// `findings` sorted by rank and split by `BLOCKING_RANK` and `OPTIONAL_RANK`.
+pub fn weigh(mut findings: Vec<Finding>) -> Weighed {
+    findings.sort_by(|a, b| b.rank().total_cmp(&a.rank()));
+    let mut out = Weighed::default();
+    for f in findings {
+        let rank = f.rank();
+        if rank >= BLOCKING_RANK {
+            out.blocking.push(f);
+        } else if rank >= OPTIONAL_RANK && out.optional.len() < MAX_OPTIONAL {
+            out.optional.push(f);
+        } else {
+            out.noted.push(f);
+        }
+    }
+    out
+}
+
+/// A review's score: its blocking findings' ranks added up. 0 when nothing
+/// holds the change back; the higher, the more is still wrong with it. The
 /// weights are powers of two, so the sum is exact.
 pub fn score(findings: &[Finding]) -> f64 {
     findings.iter().map(Finding::rank).sum()
@@ -529,6 +583,7 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
             step,
             new_evidence: field("new evidence"),
             evidence: field("evidence"),
+            outside: false,
         });
     }
     Ok(out)
@@ -591,11 +646,30 @@ pub fn drop_repeats(findings: Vec<Finding>, earlier: &[Finding]) -> (Vec<Finding
         .partition(|f| f.new_evidence.is_some() || !earlier.iter().any(|e| same_finding(f, e)))
 }
 
+/// An optional finding sent before (`sent`) comes back only with new
+/// evidence, or when it weighs more now (the reviewer traced it this time,
+/// or the change has come to touch it): nothing follows one up, so the
+/// same one again would only repeat it.
+fn drop_optional_repeats(findings: Vec<Finding>, sent: &[Finding]) -> (Vec<Finding>, Vec<Finding>) {
+    findings.into_iter().partition(|f| {
+        f.new_evidence.is_some()
+            || !sent
+                .iter()
+                .any(|s| same_finding(f, s) && f.rank() <= s.rank())
+    })
+}
+
 /// A finding as the brief shows it: in the report format, so a reviewer
 /// that copies the shape of what it sees writes a report that parses.
 pub(super) fn describe(f: &Finding, n: usize) -> String {
+    describe_as(f, &format!("{n}."))
+}
+
+/// `describe`, its line led by `lead`: "1." for a finding answered by its
+/// number, "-" for an optional one, which isn't answered.
+fn describe_as(f: &Finding, lead: &str) -> String {
     let mut out = format!(
-        "{n}. [{}] {}\n   - Scenario: {}\n   - Fix: {}\n   - Confidence: {}",
+        "{lead} [{}] {}\n   - Scenario: {}\n   - Fix: {}\n   - Confidence: {}",
         f.severity,
         f.headline(),
         f.scenario.replace('\n', "\n     "),
@@ -618,22 +692,28 @@ pub enum Rounds {
 }
 
 /// The note that sends findings to the agent (S06): answered with
-/// `answer_review`, then checked by a follow-up review. Every finding
-/// counts, whatever its severity. `last`: the run's last review, which no
+/// `answer_review`, then checked by a follow-up review. Every blocking
+/// finding counts (`weigh`). `last`: the run's last review, which no
 /// review follows.
 pub fn findings_note(findings: &[Finding], round: u32, last: bool) -> String {
-    findings_note_in(findings, round, last, Rounds::Count, None)
+    findings_note_in(findings, &[], round, last, Rounds::Count, None)
 }
 
-/// `findings_note`, its rounds counted as `rounds` says, with the guide's
-/// part (guide.rs `for_agent`) after the findings when one ran.
+/// `findings_note`, its rounds counted as `rounds` says, with the optional
+/// findings (`weigh`) after the blocking ones, and the guide's part
+/// (guide.rs `for_agent`) after them when one ran. With no blocking
+/// finding, the note has the optional ones alone (`optional_note`).
 pub fn findings_note_in(
     findings: &[Finding],
+    optional: &[Finding],
     round: u32,
     last: bool,
     rounds: Rounds,
     guidance: Option<&str>,
 ) -> String {
+    if findings.is_empty() {
+        return optional_note(optional, round, rounds);
+    }
     let list = findings
         .iter()
         .enumerate()
@@ -642,31 +722,89 @@ pub fn findings_note_in(
         .join("\n\n");
     let ends = match rounds {
         Rounds::Count => format!(
-            "a finding still open after review {MAX_CHANGE_REVIEWS_PER_RUN}, whatever its severity, ends the run with the change not accepted."
+            "one of these still open after review {MAX_CHANGE_REVIEWS_PER_RUN} ends the run with the change not accepted."
         ),
-        Rounds::ByProgress { stalled: 0 } => "the reviews go on while each leaves fewer findings open than any before: two in a row that don't end them, and a finding still open then, whatever its severity, ends the run with the change not accepted.".to_string(),
-        Rounds::ByProgress { .. } => "this review left no fewer findings open than an earlier one: if the next doesn't either, the reviews end, and a finding still open then, whatever its severity, ends the run with the change not accepted.".to_string(),
+        Rounds::ByProgress { stalled: 0 } => "the reviews go on while each leaves fewer findings open than any before: two in a row that don't end them, and one of these still open then ends the run with the change not accepted.".to_string(),
+        Rounds::ByProgress { .. } => "this review left no fewer findings open than an earlier one: if the next doesn't either, the reviews end, and one of these still open then ends the run with the change not accepted.".to_string(),
     };
     let next = if last {
         "This was the run's last review: fix every finding, then finish, and the project's checks run."
             .to_string()
     } else {
         format!(
-            "Every finding must be resolved, low ones too: the change isn't accepted while one is open. \
+            "Every numbered finding must be resolved: the change isn't accepted while one is open. \
              Answer each finding with the answer_review tool, by its number: \"fixed\" once you've fixed it (say what you changed), \
              or \"not-a-problem\" (say why, from the code). Your replies aren't read as answers. Then finish: a follow-up review \
              checks the answers and the fixes before the project's checks run, and {ends}"
         )
     };
-    let which = match rounds {
-        Rounds::Count => format!("review {round} of at most {MAX_CHANGE_REVIEWS_PER_RUN}"),
-        Rounds::ByProgress { .. } => format!("review {round}"),
+    let which = which_review(round, rounds);
+    let optional = match optional {
+        [] => String::new(),
+        _ => format!(
+            "## Optional findings\n\n{OPTIONAL_RULE}\n\n{}\n\n",
+            optional_list(optional)
+        ),
     };
     let guidance = guidance.map_or(String::new(), |g| format!("{}\n\n", g.trim()));
     format!(
         "{IDE_NOTE}A reviewer read your change with fresh eyes ({which}): it saw the request, the plan and the diff, not this conversation. \
          Its findings are another model's opinion: check each against the code before you act on it. \
-         A finding with \"New evidence\" was answered before, and the reviewer says why it's still open.\n\n{list}\n\n{guidance}{next}"
+         A finding with \"New evidence\" was answered before, and the reviewer says why it's still open.\n\n{list}\n\n{optional}{guidance}{next}"
+    )
+}
+
+/// The findings the agent answered as not a problem, by a follow-up's own
+/// word (`earlier`, its record's): upheld, the reviewer was wrong, and
+/// rejected, it was right. A verdict the IDE gave counts as neither.
+pub fn disputes(earlier: &Value) -> (usize, usize) {
+    let count = |upheld: bool| {
+        earlier.as_array().map_or(0, |e| {
+            e.iter()
+                .filter(|e| {
+                    e["response"]["action"] == "not_a_problem"
+                        && e["checked"] == true
+                        && e["resolved"] == upheld
+                })
+                .count()
+        })
+    };
+    (count(true), count(false))
+}
+
+/// "review 2 of at most 3", or a Thorough task's "review 2" (T07).
+fn which_review(round: u32, rounds: Rounds) -> String {
+    match rounds {
+        Rounds::Count => format!("review {round} of at most {MAX_CHANGE_REVIEWS_PER_RUN}"),
+        Rounds::ByProgress { .. } => format!("review {round}"),
+    }
+}
+
+/// What the agent is told of optional findings: they weigh less, so it
+/// changes code for one only once the code shows it's right.
+const OPTIONAL_RULE: &str = "These weigh less, so they don't hold the change back: the reviewer was unsure of them, they're minor, \
+     or they're about code the change didn't touch. Change code for one only once you've confirmed in the code that it's wrong, \
+     and only within your change; otherwise leave it. Don't answer them with answer_review, and nothing follows them up.";
+
+/// Optional findings as the note lists them: bulleted, not numbered, as
+/// nothing answers them.
+fn optional_list(findings: &[Finding]) -> String {
+    findings
+        .iter()
+        .map(|f| describe_as(f, "-"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The note for a review that found nothing that holds the change back,
+/// only optional findings.
+fn optional_note(optional: &[Finding], round: u32, rounds: Rounds) -> String {
+    let which = which_review(round, rounds);
+    format!(
+        "{IDE_NOTE}A reviewer read your change with fresh eyes ({which}): it saw the request, the plan and the diff, not this conversation. \
+         It found nothing that holds the change back, and these optional findings. They're another model's opinion. \
+         {OPTIONAL_RULE}\n\n{}\n\nThen finish: the project's checks run.",
+        optional_list(optional)
     )
 }
 
@@ -764,6 +902,55 @@ fn file_header(c: &FileChange) -> String {
         (_, None) => format!("--- {} (deleted)", c.path),
         _ => format!("--- {}", c.path),
     }
+}
+
+/// Lines either side of a changed line that count as on it: a finding names
+/// the line it's about, which may be beside the one that changed.
+const NEAR_CHANGE: usize = 3;
+
+/// The lines `c` changed, as ranges (first, last), 1-based, numbered both
+/// as the file was and as it is: a reviewer may number a line either way
+/// (the brief's diff numbers it as it was). A deletion is the line it was
+/// at; an insertion, the line it went before.
+fn changed_ranges(c: &FileChange) -> Vec<(usize, usize)> {
+    let (Some(before), Some(after)) = (&c.before, &c.after) else {
+        return Vec::new();
+    };
+    let hunks = diff::diff_lines(&diff::split_lines(before), &diff::split_lines(after));
+    let mut out = Vec::new();
+    // Lines the hunks so far added, less those they deleted.
+    let mut shift: isize = 0;
+    for h in &hunks {
+        let was = h.orig_start;
+        out.push((was, was + h.deleted.len().saturating_sub(1)));
+        let is = (was as isize + shift).max(1) as usize;
+        out.push((is, is + h.added.len().saturating_sub(1)));
+        shift += h.added.len() as isize - h.deleted.len() as isize;
+    }
+    out
+}
+
+/// Whether `f` is about what the change touched (`changes`, their paths
+/// relative to `root`): the change as a whole (no file), a file it added or
+/// deleted, a file it changed when no line is named, or a line near one it
+/// changed. Else it's about code the change didn't touch (`Finding::outside`).
+pub(super) fn on_change(f: &Finding, changes: &[FileChange], root: &str) -> bool {
+    let Some(path) = f.path.as_deref() else {
+        return true;
+    };
+    let key = super::repair::rel_key(root, path);
+    let Some(c) = changes.iter().find(|c| super::paths::same(&c.path, &key)) else {
+        return false;
+    };
+    let Some(line) = f.line.map(|l| l as usize) else {
+        return true;
+    };
+    if c.before.is_none() || c.after.is_none() {
+        return true;
+    }
+    changed_ranges(c)
+        .iter()
+        .any(|&(first, last)| line + NEAR_CHANGE >= first && line <= last + NEAR_CHANGE)
 }
 
 /// The diff a helper's brief may hold, in characters, by its model: about
@@ -1002,7 +1189,7 @@ impl Run {
     /// S06 (4.6, D10), in Autopilot and in Agent mode alike: the findings
     /// sent wait for their answers (`answer_review`), and the next review
     /// is a follow-up whatever changed, giving a verdict on each (B13's
-    /// rules). Every finding counts, whatever its severity: one still open
+    /// rules). Every blocking finding counts (`weigh`): one still open
     /// after the run's last review sets `review_blocked`, and the run ends
     /// `review-open`.
     pub(super) async fn review_change_as(&mut self, after_green: bool) -> Result<bool, String> {
@@ -1115,7 +1302,10 @@ impl Run {
             )
             .await;
         review["ms"] = json!(started.elapsed().as_millis() as u64);
+        // What holds the change back, and what goes to the agent as
+        // optional (`weigh`).
         let mut serious: Vec<Finding> = Vec::new();
+        let mut optional: Vec<Finding> = Vec::new();
         // A follow-up's verdict on each finding it checked (guide.rs).
         let mut verdicts: Vec<plan_review::Verdict> = Vec::new();
         match subagent::outcome_of(&mut review, outcome) {
@@ -1126,6 +1316,17 @@ impl Run {
             subagent::SubOutcome::Report(r) => match parse_findings(&r.text) {
                 Err(e) => skipped(&mut review, format!("its report couldn't be read: {e}")),
                 Ok(found) => {
+                    let root = self.root.clone().unwrap_or_default();
+                    let found: Vec<Finding> = found
+                        .into_iter()
+                        .map(|mut f| {
+                            f.outside = !on_change(&f, &changes, &root);
+                            f
+                        })
+                        .collect();
+                    // An optional finding sent before, in any review that
+                    // follows: its brief doesn't list them.
+                    let (found, mut dropped) = drop_optional_repeats(found, &self.review_optional);
                     let kept = if follow_up {
                         // S06: B13's rules: an answered finding stays open
                         // when the review says it isn't resolved, or the
@@ -1141,24 +1342,36 @@ impl Run {
                             found,
                         );
                         review["earlier"] = json!(follow.earlier);
-                        if !follow.dropped.is_empty() {
-                            review["dropped"] = json!(follow.dropped);
-                        }
+                        dropped.append(&mut follow.dropped);
                         verdicts = std::mem::take(&mut follow.verdicts);
                         follow.open
                     } else {
-                        let (kept, dropped) = drop_repeats(found, &earlier);
-                        if !dropped.is_empty() {
-                            review["dropped"] = json!(dropped);
-                        }
+                        let (kept, again) = drop_repeats(found, &earlier);
+                        dropped.extend(again);
                         kept
                     };
-                    // Every finding counts, whatever its severity or
-                    // confidence: none is only shown.
-                    serious = kept.clone();
-                    review["status"] = json!(if kept.is_empty() { "clean" } else { "findings" });
-                    review["findings"] = ranked(&kept);
-                    review["score"] = json!(score(&kept));
+                    if !dropped.is_empty() {
+                        review["dropped"] = json!(dropped);
+                    }
+                    // What a finding weighs decides what it does: it holds
+                    // the change back, goes to the agent as optional, or
+                    // only to the record. The status is what holds it back.
+                    let weighed = weigh(kept);
+                    serious = weighed.blocking;
+                    optional = weighed.optional;
+                    review["status"] = json!(if serious.is_empty() {
+                        "clean"
+                    } else {
+                        "findings"
+                    });
+                    review["findings"] = ranked(&serious);
+                    if !optional.is_empty() {
+                        review["optional"] = ranked(&optional);
+                    }
+                    if !weighed.noted.is_empty() {
+                        review["noted"] = ranked(&weighed.noted);
+                    }
+                    review["score"] = json!(score(&serious));
                     if r.status == SubStatus::Partial {
                         review["partial"] = json!(true);
                     }
@@ -1227,6 +1440,7 @@ impl Run {
             review["status"].as_str().unwrap_or("").to_string(),
             review["reason"].as_str().map(str::to_string),
         ));
+        let (upheld, rejected) = disputes(&review["earlier"]);
         log::write(
             &self.core,
             json!({
@@ -1236,7 +1450,11 @@ impl Run {
                 "status": review["status"],
                 "findings": review["findings"].as_array().map_or(0, Vec::len),
                 "serious": serious.len(),
+                "optional": optional.len(),
+                "noted": review["noted"].as_array().map_or(0, Vec::len),
                 "score": review["score"],
+                "disputesUpheld": upheld,
+                "disputesRejected": rejected,
                 "dropped": review["dropped"].as_array().map_or(0, Vec::len),
                 "changedLines": rendered.changed_lines,
                 "reduced": rendered.reduced,
@@ -1245,13 +1463,14 @@ impl Run {
                 "ms": review["ms"],
             }),
         );
-        if serious.is_empty() || self.stopped() || self.review_blocked {
+        if self.stopped() || self.review_blocked || (serious.is_empty() && optional.is_empty()) {
             return Ok(false);
         }
         // guide.rs: from the run's second review that found problems on,
         // where and why the agent goes wrong goes with the findings. A
-        // review asked again (it couldn't report) found nothing new.
-        let guidance = match asked_again {
+        // review asked again (it couldn't report) found nothing new, and
+        // one with optional findings alone found nothing to hold it back.
+        let guidance = match asked_again || serious.is_empty() {
             true => None,
             false => self.guide_after_review(&record_id, &mut review).await?,
         };
@@ -1266,13 +1485,23 @@ impl Run {
         };
         let mut note = new_message(
             "user",
-            &findings_note_in(&serious, round, last, rounds, guidance.as_deref()),
+            &findings_note_in(
+                &serious,
+                &optional,
+                round,
+                last,
+                rounds,
+                guidance.as_deref(),
+            ),
         );
         note.meta = Some(json!({ "harness": "review" }));
         self.review_note_id = Some(note.id.clone());
-        // Findings asked about again were kept when first found.
+        // Findings asked about again were kept when first found. The
+        // optional ones apart: a later brief lists `review_findings` as
+        // settled, and nothing settles an optional one.
         if !asked_again {
             self.review_findings.extend(serious);
+            self.review_optional.extend(optional);
         }
         self.append(vec![note]).await?;
         Ok(true)
@@ -1414,24 +1643,191 @@ mod tests {
             assert_eq!(f.rank(), confirmed, "{severity}, confirmed");
             f.confidence = "plausible".into();
             assert_eq!(f.rank(), plausible, "{severity}, plausible");
+            // About code the change didn't touch: half again.
+            f.outside = true;
+            assert_eq!(
+                f.rank(),
+                plausible / 2.0,
+                "{severity}, plausible, elsewhere"
+            );
+            f.outside = false;
         }
     }
 
-    /// The guide's part goes after the findings and before what to do
-    /// next, which ends the note; without a guide, nothing is between.
+    /// The note numbers the blocking findings, lists the optional ones
+    /// apart, without numbers, then the guide's part, and ends with what to
+    /// do next; without them, nothing is between.
     #[test]
-    fn the_findings_note_carries_the_guide_between_the_findings_and_what_to_do() {
+    fn the_note_has_the_blocking_then_the_optional_findings_then_the_guide() {
         let f = parse_findings(GOOD).unwrap();
         let guide = "## Where you go wrong, from a guide\n\nIt keeps fixing the caller.\n";
-        let note = findings_note_in(&f[..1], 2, false, Rounds::Count, Some(guide));
-        let list = note.find("1. [high] src/a.ts:42").unwrap();
-        let from = note
-            .find("## Where you go wrong, from a guide\n\nIt keeps fixing the caller.\n\nEvery finding must be resolved")
-            .unwrap_or_else(|| panic!("{note}"));
-        assert!(list < from, "{note}");
+        let note = findings_note_in(&f[..1], &f[1..], 2, false, Rounds::Count, Some(guide));
+        let at = |text: &str| {
+            note.find(text)
+                .unwrap_or_else(|| panic!("{text:?} in {note}"))
+        };
+        let blocking = at("1. [high] src/a.ts:42 — Off by one in the loop");
+        let optional = at("## Optional findings\n\nThese weigh less");
+        let bullet = at("- [low] src/b.ts — Unused import");
+        let guidance = at("## Where you go wrong, from a guide\n\nIt keeps fixing the caller.\n\nEvery numbered finding must be resolved");
+        assert!(blocking < optional && optional < bullet && bullet < guidance);
+        assert!(
+            !note.contains("2. [low]"),
+            "an optional one has no number: {note}"
+        );
         let plain = findings_note(&f[..1], 2, false);
-        assert!(!plain.contains("from a guide"));
-        assert!(plain.contains("Confidence: confirmed\n\nEvery finding must be resolved"));
+        assert!(!plain.contains("from a guide") && !plain.contains("Optional findings"));
+        assert!(plain.contains("Confidence: confirmed\n\nEvery numbered finding must be resolved"));
+    }
+
+    /// With nothing that holds the change back, the note has the optional
+    /// findings alone: nothing to answer, and the checks come next.
+    #[test]
+    fn a_note_with_only_optional_findings_asks_for_no_answer() {
+        let f = parse_findings(GOOD).unwrap();
+        let note = findings_note_in(&[], &f[1..], 1, false, Rounds::Count, None);
+        assert!(note.starts_with(IDE_NOTE));
+        assert!(note.contains("It found nothing that holds the change back"));
+        assert!(note.contains("- [low] src/b.ts — Unused import"));
+        assert!(note.contains("Don't answer them with answer_review"));
+        assert!(note.ends_with("Then finish: the project's checks run."));
+        assert!(!note.contains("Every numbered finding"));
+    }
+
+    /// A finding with `outside` set, for weighing.
+    fn weighed(severity: &str, confidence: &str, outside: bool, title: &str) -> Finding {
+        Finding {
+            severity: severity.into(),
+            confidence: confidence.into(),
+            outside,
+            title: title.into(),
+            ..parse_findings(GOOD).unwrap().remove(0)
+        }
+    }
+
+    /// Highest rank first, the reviewer's order among equals: what weighs
+    /// 0.5 or more blocks; what weighs 0.25 is optional, three at most;
+    /// the rest only the record keeps.
+    #[test]
+    fn findings_are_weighed_into_blocking_optional_and_noted() {
+        let w = weigh(vec![
+            weighed("low", "plausible", false, "low, unsure"),
+            weighed("medium", "confirmed", false, "medium, sure"),
+            weighed("medium", "plausible", false, "medium, unsure"),
+            weighed("high", "plausible", true, "high, unsure, elsewhere"),
+            weighed("high", "confirmed", true, "high, sure, elsewhere"),
+            weighed("low", "confirmed", false, "low, sure"),
+            weighed("medium", "plausible", true, "medium, unsure, elsewhere"),
+            weighed("high", "confirmed", false, "high, sure"),
+            weighed("medium", "plausible", false, "a fourth at 0.25"),
+        ]);
+        let titles = |f: &[Finding]| f.iter().map(|f| f.title.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            titles(&w.blocking),
+            ["high, sure", "medium, sure", "high, sure, elsewhere"]
+        );
+        assert_eq!(
+            titles(&w.optional),
+            ["medium, unsure", "high, unsure, elsewhere", "low, sure"]
+        );
+        assert_eq!(
+            titles(&w.noted),
+            [
+                "a fourth at 0.25",
+                "low, unsure",
+                "medium, unsure, elsewhere"
+            ]
+        );
+        assert_eq!(score(&w.blocking), 2.0);
+        assert_eq!(weigh(Vec::new()), Weighed::default());
+    }
+
+    /// On the change: no file named, a file it added or deleted, a changed
+    /// file named without a line, or a line within NEAR_CHANGE of one it
+    /// changed, numbered as the file is now or as it was. Elsewhere: not.
+    #[test]
+    fn a_finding_is_on_the_change_near_a_changed_line_numbered_either_way() {
+        let lines: Vec<String> = (1..=40).map(|i| format!("line {i}")).collect();
+        let mut now = lines.clone();
+        now[29] = "line 30 changed".into();
+        for k in 0..10 {
+            now.insert(5 + k, format!("new {k}"));
+        }
+        let changes = vec![
+            FileChange {
+                path: "src/a.rs".into(),
+                before: Some(lines.join("\n")),
+                after: Some(now.join("\n")),
+            },
+            FileChange {
+                path: "src/new.rs".into(),
+                before: None,
+                after: Some("x".into()),
+            },
+        ];
+        let at = |location: &str| {
+            let text = format!(
+                "## Findings\n\n1. [high] {location} — t\n   - Scenario: s\n   - Fix: f\n   - Confidence: confirmed"
+            );
+            on_change(&parse_findings(&text).unwrap()[0], &changes, "/root")
+        };
+        // Ten lines added after line 5: lines 6 to 15 now.
+        assert!(at("src/a.rs:6") && at("src/a.rs:10") && at("src/a.rs:15"));
+        // Line 30 changed: line 40 now, and line 30 in the brief's diff.
+        assert!(at("src/a.rs:40") && at("src/a.rs:30") && at("src/a.rs:33"));
+        assert!(at("./src/a.rs:40"), "the path as the reviewer may write it");
+        assert!(!at("src/a.rs:22") && !at("src/a.rs:34"), "away from both");
+        assert!(at("src/a.rs"), "a changed file, no line");
+        assert!(at("src/new.rs:1"), "a file the change added");
+        assert!(!at("src/b.rs:1"), "a file the change didn't touch");
+        let mut whole = parse_findings(GOOD).unwrap().remove(0);
+        whole.path = None;
+        assert!(
+            on_change(&whole, &changes, "/root"),
+            "the change as a whole"
+        );
+    }
+
+    /// A dispute counts by the follow-up's own word: upheld when it found
+    /// the agent's answer right, rejected when not; its default neither.
+    #[test]
+    fn disputes_count_by_the_follow_ups_word() {
+        let earlier = json!([
+            { "response": { "action": "not_a_problem" }, "checked": true, "resolved": true },
+            { "response": { "action": "not_a_problem" }, "checked": true, "resolved": false },
+            { "response": { "action": "not_a_problem" }, "checked": false, "resolved": true },
+            { "response": { "action": "fixed" }, "checked": true, "resolved": false },
+            { "response": null, "checked": true, "resolved": false },
+        ]);
+        assert_eq!(disputes(&earlier), (1, 1));
+        assert_eq!(disputes(&Value::Null), (0, 0));
+    }
+
+    /// An optional finding sent before comes back only weighing more (the
+    /// reviewer traced it this time, or the change touches it now) or with
+    /// new evidence; as it was, or lighter, it's a repeat. Another finding
+    /// elsewhere isn't one.
+    #[test]
+    fn an_optional_finding_comes_back_only_weighing_more_or_with_new_evidence() {
+        let sent = [
+            weighed("medium", "plausible", false, "Maybe a null"),
+            weighed("high", "plausible", true, "Maybe a leak"),
+        ];
+        let back = |f: Finding| drop_optional_repeats(vec![f], &sent).0.len() == 1;
+        assert!(!back(weighed("medium", "plausible", false, "Maybe a null")));
+        assert!(!back(weighed("low", "confirmed", false, "Maybe a null")));
+        assert!(back(weighed("medium", "confirmed", false, "Maybe a null")));
+        assert!(back(weighed("high", "plausible", false, "Maybe a leak")));
+        let mut evidence = weighed("medium", "plausible", false, "Maybe a null");
+        evidence.new_evidence = Some("the caller passes null".into());
+        assert!(back(evidence));
+        let elsewhere = Finding {
+            location: "src/c.ts:7".into(),
+            path: Some("src/c.ts".into()),
+            line: Some(7),
+            ..weighed("medium", "plausible", false, "Maybe a null")
+        };
+        assert!(back(elsewhere));
     }
 
     /// Findings in a change review's record carry their rank.
@@ -1705,7 +2101,10 @@ mod tests {
         assert!(note.contains("review 1 of at most 3"));
         assert!(note.contains("1. [high] src/a.ts:42 — Off by one in the loop\n   - Scenario:"));
         assert!(note.contains("answer_review"));
-        assert!(note.contains("low ones too"), "{note}");
+        assert!(
+            note.contains("Every numbered finding must be resolved"),
+            "{note}"
+        );
     }
 
     /// Round 2 (§4.2): the severity is read without case and stored in

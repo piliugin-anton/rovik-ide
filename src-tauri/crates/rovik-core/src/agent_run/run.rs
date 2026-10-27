@@ -347,6 +347,10 @@ pub struct Run {
     /// which the guide reads (guide.rs); and what the last guide said.
     pub(super) review_rounds: Vec<super::guide::ReviewRound>,
     pub(super) last_guidance: Option<super::guide::Guidance>,
+    /// The optional findings sent so far (change_review.rs `weigh`): one
+    /// comes back only with new evidence, or weighing more. Apart from
+    /// `review_findings`, which a later brief lists as settled.
+    pub(super) review_optional: Vec<super::change_review::Finding>,
     /// S07: the test writer ran for a change that had no test (once).
     pub(super) tests_after_change: bool,
     /// T04: the adversarial tester ran in this run (once a run).
@@ -1320,6 +1324,7 @@ impl Run {
             review_blocked: false,
             review_rounds: Vec::new(),
             last_guidance: None,
+            review_optional: Vec::new(),
             tests_after_change: false,
             breaker_ran: false,
             plan_review_progress: Default::default(),
