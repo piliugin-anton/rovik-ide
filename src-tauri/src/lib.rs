@@ -257,6 +257,7 @@ pub fn run() {
             filesystem::save_ai_settings,
             filesystem::ai_settings_stamp,
             commands::chat::chat_list_dialogs,
+            commands::chat::chat_move_empty_dialog,
             commands::chat::chat_open_project,
             commands::chat::chats_at_work_elsewhere,
             commands::chat::chat_unsettled_sends,
@@ -684,12 +685,18 @@ async fn project_claim(
         Some(instances::Target::Workspace { id, .. }) => Some(id.clone()),
         _ => None,
     };
+    let claiming = app.clone();
     let claim = rt::spawn_blocking(move || {
-        app.state::<Instances>()
+        claiming
+            .state::<Instances>()
             .claim(target.as_ref(), focus_other, &at_work)
     })
     .await
     .map_err(|e| e.to_string())?;
+    // The cloud client lands results by themselves in the folders open now.
+    if claim.claimed {
+        commands::chat::follow_claims(&app);
+    }
     // A workspace opened here is the most recent one in the project list
     // (workspaces-plan.md, 3.3).
     if claim.claimed {

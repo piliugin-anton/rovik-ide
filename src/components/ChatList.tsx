@@ -52,6 +52,12 @@ export default function ChatList(props: {
   waitingIds?: Record<string, true>;
   /** The cloud hosts, for the badges of chats on them. */
   hosts?: HostSummary[];
+  /**
+   * Which folders a chat works in, for its row ("api", "api, web", "All
+   * folders"): given in a window with several folders (workspaces-plan.md,
+   * 3.8).
+   */
+  folders?: (dialog: DialogSummary) => string | null;
 }) {
   let scrollRef: HTMLDivElement | undefined;
   let searchRef: HTMLInputElement | undefined;
@@ -261,6 +267,9 @@ export default function ChatList(props: {
                       <span class="chat-history-item-date">
                         {new Date(entry().row.dialog.updatedAt).toLocaleString()}
                       </span>
+                      <Show when={props.folders?.(entry().row.dialog)}>
+                        {(names) => <span class="chat-history-item-folders">{names()}</span>}
+                      </Show>
                       <For
                         each={chatBadges(
                           entry().row.dialog,

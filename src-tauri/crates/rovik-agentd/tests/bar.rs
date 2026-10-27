@@ -30,7 +30,7 @@ use std::time::Duration;
 async fn waiting() -> (Setup, App, PathBuf) {
     let mut setup = Setup::new().await;
     let app = App::new(&mut setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     let root = ready_to_run(&setup).await;
     (setup, app, root)
@@ -65,7 +65,7 @@ async fn eventually<F: Future<Output = bool>>(what: &str, mut check: impl FnMut(
 
 fn open(setup: &Setup, app: &App) {
     let open = (PROJECT.to_string(), setup.project.clone());
-    app.remote.set_open_project(Some(open));
+    app.remote.set_open_projects(vec![open]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -273,7 +273,7 @@ async fn the_bar_lists_a_moved_file_as_moved() {
     let mut setup = Setup::new().await;
     write(&setup.project.join("src/old.rs"), "fn old() {}\n");
     let app = App::new(&mut setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     ready_to_run(&setup).await;
     let (url, _) = model(vec![
@@ -346,7 +346,7 @@ async fn unmark_takes_markers_handed_over_back_out() {
 async fn merged_there(setup: &mut Setup) -> (App, PathBuf) {
     write(&setup.project.join("a.txt"), "1\n2\n3\n4\n5\n");
     let app = App::new(setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(setup).await;
     let root = ready_to_run(setup).await;
     let (url, _) = model(vec![

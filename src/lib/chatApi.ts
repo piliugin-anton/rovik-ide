@@ -78,9 +78,13 @@ async function page(
 }
 
 export const chatApi = {
-  /** A project's chats (`projectId` null: the chats with no project). */
-  listDialogs: (projectId: string | null, cursor: DialogCursor | null, limit = 50) =>
-    invoke<DialogPage>('chat_list_dialogs', { projectId, cursor, limit }),
+  /**
+   * The chats of a window's owners, newest first: each open folder's project
+   * and its workspace's own, interleaved by recency (`owners` null: the chats
+   * with no project, a window with no folder open).
+   */
+  listDialogs: (owners: string[] | null, cursor: DialogCursor | null, limit = 50) =>
+    invoke<DialogPage>('chat_list_dialogs', { owners, cursor, limit }),
   /**
    * The project a folder is: by the ID file in it (.rovik/project.json),
    * so renaming or moving the folder keeps its chats; else by its path;
@@ -141,6 +145,14 @@ export const chatApi = {
     projectId: string | null;
   }) => invoke<void>('chat_create_dialog', { dialog }),
 
+  /**
+   * New chat reuses the empty chat open for the folder chosen: it belongs to
+   * `projectId` from now on (a workspace's, with its `folders`, for a
+   * workspace chat). Refused once the chat has a message.
+   */
+  moveEmptyDialog: (dialogId: string, projectId: string | null, folders: string | null = null) =>
+    invoke<void>('chat_move_empty_dialog', { dialogId, projectId, folders }),
+
   updateMessage: (
     messageId: string,
     patch: {
@@ -173,9 +185,9 @@ export const chatApi = {
   /** One chat's summary as it is now: where it is after a move. */
   getDialog: (dialogId: string) => invoke<DialogSummary | null>('chat_get_dialog', { dialogId }),
 
-  /** Searches one project's chats (`projectId` null: the chats with no project). */
-  search: (query: string, projectId: string | null, limit = 50) =>
-    invoke<ChatSearchHit[]>('chat_search', { query, projectId, limit }),
+  /** Searches the chats of a window's owners together (`owners` null: the chats with no project). */
+  search: (query: string, owners: string[] | null, limit = 50) =>
+    invoke<ChatSearchHit[]>('chat_search', { query, owners, limit }),
 
   messagesAnswered: (messageIds: string[]) =>
     invoke<string[]>('chat_messages_answered', { messageIds }),

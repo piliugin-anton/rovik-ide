@@ -11,6 +11,10 @@ const globals = [
   'Node',
   'Element',
   'HTMLElement',
+  // The chat input checks the lines WebKit wraps in <div>s, and walks its
+  // text to find the caret (ChatPanel).
+  'HTMLDivElement',
+  'NodeFilter',
   // Solid's Portal (ConfirmDialog) checks for it.
   'HTMLHeadElement',
   'SVGElement',

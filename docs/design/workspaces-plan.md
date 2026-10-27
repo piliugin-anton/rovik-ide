@@ -2448,7 +2448,111 @@ refreshes its own repository's section only", "git init in a folder without a
 repository gives it a section of its own" and "a repository left out of a
 commit reads what changed in it while the commit ran".
 
+**E01 — the chats of several owners.** `chat_db`'s `list_dialogs`, `search` and
+`dialogs_of` (was `dialogs_in_project`) take the window's owners: a list of
+project IDs, as one JSON array (`json_each`), so a statement's text is the same
+for any number of them, or None for the chats with no project; the commands take
+`owners`. `projects.ts` keeps each folder's project (`folderProjects`, by path,
+started again with each new set of folders, kept on a copy's or a move's
+answer), App joins it to the folders (`resolvedFolders`, apart from `folders()`,
+so a folder resolving changes nothing in the tree, search or the editor) and
+works out the owners (`openFolders.ts`'s `chatOwners`: the workspace's ID first,
+then each folder's that's there; undefined while one resolves; `sameOwners`,
+`listedBy`). `chatStore.showOwners` replaces `switchProject`: another target
+lists its chats from the start, as before; the same target with other projects
+reads its list again without emptying it, and keeps the open chat while its
+project is listed, its loaded messages and its input with it. ChatPanel's
+`showChats` recovers the unanswered sends of each project new to the window
+(`unsettled_sends` keeps its one project). A row says its chat's folder with
+several (`chatFolderNames`: a folder's name, a workspace chat's names or "All
+folders"). Tests: `chat_db/tests.rs` "a window's owners' chats are listed
+together newest first", "… are searched together", "a subagent of a workspace
+chat belongs to the workspace"; `openFolders.test.ts` three for the owners;
+`chatStore.test.ts` "a folder added keeps the open chat; its folder removed lets
+it go"; `workspaceChat.test.tsx` (new) "adding a folder keeps the open chat and
+its draft", "after a crash, an unanswered send in the second folder's chat comes
+back" and "a row shows its chat's folders".
+Departures: the store's test has its own name, as the draft is the panel's
+(tested there). B06's `openProjectIds` now holds every folder's project, and
+`resolveProject` is given the folders with their projects on Try again and
+Locate…, so B04's "a copy of another folder of the window keeps its own history"
+sees the other folders' projects in the app too (it was given folders without
+them). The test DOM (`src/test/dom.ts`) gained `HTMLDivElement` and `NodeFilter`,
+which the chat input's references use and no test reached before.
+
+**E02 — a chat's folder.** With several folders both New chat buttons open
+`NewChatMenu` (new): `FolderMenu`'s new check mode (`menuitemcheckbox` rows, Space
+checks, Enter starts, a missing or unresolved folder listed but off, saying why),
+the folder worked in checked, one folder at a time until F14, and **Start chat in
+web**. With no chat to show, the panel shows the same menu in place instead of
+making an empty chat; with one folder, nothing changes. An empty open chat is
+reused, moved to the folder's project by `chat_move_empty_dialog`
+(`store::move_empty_dialog`, which refuses a chat with a message, a subagent's,
+and one on a host or moving). `openFolders.ts` has `chatRootOf` (the folder whose
+project the chat is), `chatPathToAbsolute` and `chatPathOf` (paths with `/`,
+null outside the chat's folder). ChatPanel goes through them for the run's
+root, the estimate, the connector's commands, `@` (its folder's files only), the
+selection, the branch offer and Implement; a reference from **Add to chat** or a
+paste is named as the chat names it, and one of another folder isn't added: the
+note above the input says "api/src/routes.ts is in api; this chat works in web.",
+as it does while the editor's file is another folder's, which the context then
+leaves out. A run of a chat whose folder isn't open here is refused. With several
+folders the label by the input says "in web" (a span). **Implement** on a plan in
+the editor uses the open chat when the plan is its folder's (waiting while it
+works), else starts a chat in the plan's folder (`peekImplementPlanRequest`
+leaves the request waiting until the chat that takes it can). Tests:
+`chat_db/tests.rs` "an empty chat moves to another owner and one with a message
+doesn't"; `openFolders.test.ts` five (a folder chat's root, its path joined to
+its folder, a file named from its folder and one outside named nothing, a Windows
+file named with `/` and found again, a row's names); `workspaceChat.test.tsx`
+eleven, from the boxes to Implement; `chatBranchOffer.test.tsx` "a chat in the
+second folder is offered a branch for that folder's repository".
+Departures: no `runPlace` yet: a run's root is its chat's folder (`rootOf`), and
+`runPlace` comes with the workspace chats it tells apart (F14); **All folders**
+comes with F14 too. `fileReferences.ts` and `activeContext.ts` are unchanged: the
+panel names each reference as the chat does (`inChat`) wherever it comes from, so
+the editor needn't know the chat. The menu shows which folder Start chat makes the
+chat in ("Start chat in web"), there being one. `FolderMenu` gets the scoped
+styles C04's menu missed (its icon, label, focus, separator and off rows), in
+`styles.css` with the new rows' box, the note, the label and the menu in place.
+
+**E03 — a chat's paths, opened.** App's `folderForChat` is the folder of the chat
+a request names (else the open chat's; the window's first folder when there's
+none): a written file's comparison tab is `chat:<chat>:<its path in the chat>`
+(`chatPathOf`), and a path from the chat opens in its own folder
+(`chatPathToAbsolute`), as do the paths it mentions that become links
+(`setProjectFileResolver`). The isolation bar takes the chat's `root`: a file
+whose change landed since the list was read opens as itself, from the chat's
+folder, rather than as a comparison of two equal versions. Test:
+`isolationBar.test.tsx` "a changed file of the second folder's chat opens from the
+second folder". Departure: `overlay.ts` needed no change: its paths are the
+chat's, as the backend takes them.
+
+**E04 — the client's open projects.** `rovik_client`'s `State.open` is the
+window's open projects, a list (`set_open_projects`), each with its folder: the
+claims' record (`Instances::open_projects`, the target's folders whose project is
+known), which the app hands over after each claim (`project_claim`) and each
+`reclaim` (`commands/chat.rs`'s `follow_claims`). `chat_open_project` no longer
+sets it, and `folder_answered` is gone: an answer about a folder renames its
+project in the record, which the client follows, and an answer for a folder the
+window has left is in no record. `handled_elsewhere`, `land_waiting`,
+`project_of` and `is_open` look among them; a steering message's paths are made
+relative to its chat's own folder (`project_of`); Test delivery pushes to the
+first open folder with an `origin`. Tests: `remote/tests.rs` (the delivery test
+with a first folder that's no repository, the steer of the second folder's chat,
+events shown with the project as a workspace's second folder);
+`rovik-agentd/tests/landing.rs` "a result for the second folder's chat lands
+while the workspace is open"; app crate `instances.rs` "the open projects are the
+window's folders' projects" and `commands/chat.rs` "a folder resolved after the
+window moved on isn't the client's open project".
+Departures: the client test of `folder_answered` went with it, its case covered
+by the app crate's two; the daemon's tests call `set_open_projects`, and
+`landing.rs`'s answered folder is the list the claims give after the answer.
+
 Before H, a user of a project sees none of this either: a window still has one
-folder unless `--workspace` asks for one, and its Git panel looks and works as
-it did. What does change is that two tabs of one name say where each one is,
-and the project checks page says "Packages (N)".
+folder unless `--workspace` asks for one, and its Git panel and its chats look
+and work as they did. What does change is that two tabs of one name say where
+each one is, the project checks page says "Packages (N)", and a chat names the
+editor's file by its path in the project (an isolated chat's tools refuse a full
+path, section 12): a file from outside the project isn't named to the chat, and
+the message box says why.

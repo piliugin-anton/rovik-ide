@@ -80,6 +80,7 @@ import ProjectList from './components/ProjectList';
 import {
   chatsBlocked,
   currentProject,
+  folderProjects,
   newFoldersGeneration,
   projectList,
   refreshProjects,
@@ -133,13 +134,19 @@ import {
 } from './lib/intellisense';
 import { followDisk, scheduleModelPrune, syncTabModels, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
-import { movedPath, toAbsolutePath, toRelativePath, isAtOrUnder, parentOf } from './lib/fileTools';
+import { movedPath, isAtOrUnder, parentOf } from './lib/fileTools';
 import {
   activeFolder,
+  chatOwners,
+  chatPathOf,
+  chatPathToAbsolute,
+  chatRootOf,
   folderOf,
   openFolders,
   pathsByFolder,
+  sameOwners,
   sessionKey,
+  type ChatRoot,
   type OpenFolder,
   type WindowTarget,
 } from './lib/openFolders';
@@ -207,18 +214,39 @@ export default function App() {
   /** The folders the Git panel shows: those that are there (D20). */
   const gitFolders = createMemo(() => resolvable(folders()));
   /**
-   * The projects this window has open: its workspace, and the project of the
-   * folder it shows (a folder resolving comes through `resolveProject`). The
-   * project list hides Delete for every one of them (B06); the backend
-   * refuses a project this window has open anyway, which covers every folder
-   * of a workspace (`chat_delete_project` with `Instances::owners()`).
+   * The window's folders with the project each is, once resolved: a
+   * workspace's folders are each a project of their own, with chats of their
+   * own (docs/design/workspaces-plan.md, 3.8). Apart from `folders()`, which
+   * the tree, search, the terminals and the editor take: a folder resolving
+   * changes nothing there.
+   */
+  const resolvedFolders = createMemo(() => {
+    const known = folderProjects();
+    return folders().map((folder) => {
+      const project = known.get(folder.path);
+      return project ? { ...folder, project } : folder;
+    });
+  });
+  /**
+   * Whose chats the chat panel shows (lib/openFolders.ts): each folder's
+   * project and the workspace's own; undefined while a folder resolves.
+   */
+  const owners = createMemo(
+    () => chatOwners(target(), resolvedFolders(), currentProject() === null),
+    undefined,
+    { equals: sameOwners }
+  );
+  /**
+   * The projects this window has open: its workspace, and each folder's
+   * project once resolved. The project list hides Delete for every one of
+   * them (B06); the backend refuses a project this window has open anyway
+   * (`chat_delete_project` with `Instances::owners()`).
    */
   const openProjectIds = createMemo(() => {
     const ids = new Set<string>();
     const at = target();
     if (at?.kind === 'workspace') ids.add(at.id);
-    const project = currentProject();
-    if (project) ids.add(project.id);
+    for (const folder of resolvedFolders()) if (folder.project) ids.add(folder.project.id);
     return ids;
   });
 
@@ -823,7 +851,7 @@ export default function App() {
     const there = await pathExists(path).catch(() => false);
     if (!there) return false;
     setMissingFolders((was) => new Set([...was].filter((missing) => missing !== path)));
-    void resolveProject(path, folders());
+    void resolveProject(path, resolvedFolders());
     return true;
   }
   onMount(() => onCleanup(rereadAiSettingsOnFocus()));
@@ -880,7 +908,7 @@ export default function App() {
       follow: (from, to) => followMoves([{ from, to }]),
       claim: (next) => claimProject(claimTargetOf(next)),
       show: (next) => showFolderChange(next, folder.path),
-      resolve: (path) => void resolveProject(path, folders()),
+      resolve: (path) => void resolveProject(path, resolvedFolders()),
     };
   }
 
@@ -1066,17 +1094,17 @@ export default function App() {
   async function openRequested(request: OpenInEditor): Promise<void> {
     const { path, activate = true, focus = false, highlight = 'flash', marks = 'auto' } = request;
     if (typeof marks === 'object') return openComparison(path, marks.compare, request);
-    const root = rootPath();
-    if (!root && !isContextPath(path)) return;
+    const folder = folderForChat(request.dialogId);
+    if (!folder && !isContextPath(path)) return;
     // A written file as its chat has it, when that isn't the project's
     // file: an isolated chat's change that hasn't landed, a remote chat's.
     // Before the project's file is looked for: an isolated chat's new file
     // isn't there at all.
-    if (request.dialogId && root && marks !== 'none' && !isContextPath(path)) {
-      const rel = toRelativePath(toAbsolutePath(path, root), root);
-      if (await openChatVersion(request.dialogId, rel, request)) return;
+    if (request.dialogId && folder && marks !== 'none' && !isContextPath(path)) {
+      const rel = chatPathOf(folder, chatPathToAbsolute(folder, path)!);
+      if (rel !== null && (await openChatVersion(request.dialogId, rel, request))) return;
     }
-    const abs = await resolveOpenPath(path, root);
+    const abs = await resolveOpenPath(path, folder);
     if (!abs && (await openRemoteContext(path, request))) return;
     if (!abs) {
       notify({
@@ -1273,21 +1301,33 @@ export default function App() {
     return true;
   }
   /**
-   * The file a path from the chat names: relative to the project, absolute,
+   * The folder a path from the chat `dialogId` (else the open chat) is in
+   * (docs/design/workspaces-plan.md, 3.8): the chat names its files in its
+   * own folder. The window's first folder when it has no chat, or the chat's
+   * folder isn't open here; null with no folder open.
+   */
+  function folderForChat(dialogId?: string | null): ChatRoot | null {
+    const id = dialogId ?? chatStore.state.activeId;
+    const own = id ? chatRootOf(chatStore.summaryOf(id), resolvedFolders()) : null;
+    return own ?? resolvedFolders()[0] ?? null;
+  }
+
+  /**
+   * The file a path from the chat names: in the chat's folder, absolute,
    * or in the active chat's context folder (`@context/…`, on the virtual
    * volume). Null when it can't be one.
    */
-  async function resolveOpenPath(path: string, root: string | null): Promise<string | null> {
+  async function resolveOpenPath(path: string, folder: ChatRoot | null): Promise<string | null> {
     if (isContextPath(path)) {
       const dialogId = chatStore.state.activeId;
       return dialogId ? contextRealPath(dialogId, path) : null;
     }
-    return root ? toAbsolutePath(path, root) : null;
+    return chatPathToAbsolute(folder, path);
   }
-  // Which paths mentioned in the chat are files in this project (or the
+  // Which paths mentioned in the chat are files in its folder (or the
   // agent's context folder).
   setProjectFileResolver(async (path) => {
-    const abs = await resolveOpenPath(path, rootPath());
+    const abs = await resolveOpenPath(path, folderForChat());
     if (!abs || !(await pathExists(abs))) return null;
     return (await dirEntryCount(abs, 1)) === null ? abs : null; // a file, not a folder
   });
@@ -2647,13 +2687,11 @@ export default function App() {
             }
           >
             <ChatPanel
-              rootPath={rootPath}
+              folders={resolvedFolders}
+              activeFolder={activeFolderNow}
               activeFileContext={activeFileContext}
               files={tree.files}
-              projectId={() => {
-                const p = currentProject();
-                return p === undefined ? undefined : (p?.id ?? null);
-              }}
+              owners={owners}
             />
           </Show>
         </Show>

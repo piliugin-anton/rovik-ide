@@ -370,6 +370,19 @@ impl Instances {
             .collect()
     }
 
+    /// The projects of the window's folders, each with its folder, as the
+    /// claims record them: those the cloud client lands results in by
+    /// themselves (workspaces-plan.md, 3.8). A folder whose project isn't
+    /// known yet, a workspace's own (it has no folder) and the projects left
+    /// at work aren't among them.
+    pub fn open_projects(&self) -> Vec<(String, PathBuf)> {
+        self.claims()
+            .target
+            .iter()
+            .filter_map(|owner| Some((owner.project.clone()?, owner.folder.clone()?)))
+            .collect()
+    }
+
     /// The projects left for another while their chats were at work here.
     pub fn left_at_work(&self) -> Vec<Option<String>> {
         self.claims()
@@ -1202,5 +1215,47 @@ mod tests {
             assert_eq!(answer, "");
         }
         assert_eq!(focused.load(Ordering::SeqCst), 0);
+    }
+
+    /// The cloud client lands results by themselves in the window's folders'
+    /// projects (workspaces-plan.md, 3.8): each folder's, as the claims
+    /// record them, once known; not a workspace's own, which has no folder,
+    /// nor a project left at work, nor a folder whose answer came after the
+    /// window left it.
+    #[test]
+    fn the_open_projects_are_the_windows_folders_projects() {
+        let dir = temp_dir("open-projects");
+        let (me, _) = instance(&dir);
+        let api = folder(&dir, "api", Some("project-api"));
+        let web = folder(&dir, "web", None);
+        let shop = Target::Workspace {
+            id: "shop".into(),
+            name: "Shop".into(),
+            folders: vec![api.clone(), web.clone()],
+        };
+        assert!(me.claim(Some(&shop), false, &[]).claimed);
+        assert_eq!(
+            me.open_projects(),
+            [("project-api".to_string(), api.clone())],
+            "web's project isn't known yet"
+        );
+        me.reclaim(&web, "project-web");
+        assert_eq!(
+            me.open_projects(),
+            [
+                ("project-api".to_string(), api.clone()),
+                ("project-web".to_string(), web.clone())
+            ]
+        );
+
+        // Another project, api's chats still at work: only the new one is open.
+        let other = folder(&dir, "other", Some("project-other"));
+        let left = [Some("project-api".to_string())];
+        assert!(
+            me.claim(Some(&Target::Folder(other.clone())), false, &left)
+                .claimed
+        );
+        me.reclaim(&web, "project-web");
+        assert_eq!(me.open_projects(), [("project-other".to_string(), other)]);
     }
 }

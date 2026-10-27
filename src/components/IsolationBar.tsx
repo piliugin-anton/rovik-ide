@@ -2,7 +2,9 @@
 //
 // Above the composer of an isolated chat: what the chat changed that isn't
 // in the project yet, and why it didn't land if it didn't. Each file opens
-// as a comparison with the project's version. Land puts the changes in the
+// as a comparison with the project's version, or, once its change is in the
+// project (it landed meanwhile), as the file itself, in the chat's folder
+// (docs/design/workspaces-plan.md, 3.8). Land puts the changes in the
 // project (Land anyway: the chat's version wins over the conflicts listed;
 // one the project caused since is shown as new instead);
 // Discard throws them away; after a landing, Undo takes it back. Conflicts
@@ -25,6 +27,7 @@ import { confirmDialog } from './ConfirmDialog';
 import { ConflictResolver, forgetConflictChoices, type ConflictSource } from './ConflictResolver';
 import type { GitOperation } from '../types';
 import { openInEditor } from '../lib/openInEditor';
+import { chatPathToAbsolute, type ChatRoot } from '../lib/openFolders';
 import { notify } from '../lib/notifications';
 import { plural } from '../lib/textUtils';
 import {
@@ -51,6 +54,8 @@ import {
 
 interface Props {
   dialogId: string;
+  /** The folder the chat works in: its changed files' paths are in it (lib/openFolders.ts). */
+  root: ChatRoot | null;
   /** Changes when the chat may have changed files (a run went on or ended). */
   revision: number;
   /** A run is going: landing or discarding would pull files out from under it. */
@@ -240,6 +245,13 @@ export default function IsolationBar(props: Props) {
   async function compare(file: ChangedFile) {
     const versions = await overlayFile(props.dialogId, file.path).catch(() => null);
     if (!versions) return;
+    // The change is in the project now (it landed since the list was read):
+    // nothing to compare, the file itself opens, from the chat's folder.
+    const own = versions.chat === versions.project && chatPathToAbsolute(props.root, file.path);
+    if (own) {
+      await openInEditor({ path: own, focus: true });
+      return;
+    }
     const name = file.path.split('/').pop() ?? file.path;
     await openInEditor({
       path: `chat:${props.dialogId}:${file.path}`,

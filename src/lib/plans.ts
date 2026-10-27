@@ -114,3 +114,8 @@ export function onImplementPlanRequest(listener: () => void): () => void {
 export function takeImplementPlanRequest(): ImplementPlanRequest | undefined {
   return pending.splice(0).pop();
 }
+
+/** The request `takeImplementPlanRequest` would take, left waiting: which chat takes it decides whether it can now. */
+export function peekImplementPlanRequest(): ImplementPlanRequest | undefined {
+  return pending[pending.length - 1];
+}

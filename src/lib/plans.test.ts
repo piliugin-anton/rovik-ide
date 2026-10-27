@@ -26,7 +26,7 @@ test('a remote plan opens from the owner, read-only', async () => {
   setEditorOpener(async (request) => {
     opened.push(request);
   });
-  const remote = chatStore.createDialog('Fix the build');
+  const remote = chatStore.createDialog('Fix the build', null);
   chatStore.setPlace(remote.id, { kind: 'host', host: 'h1' });
   const path = '/srv/rovik/work/chat/.rovik/plans/fix-the-build.md';
   await openPlan(remote.id, path);
@@ -39,7 +39,7 @@ test('a remote plan opens from the owner, read-only', async () => {
   assert.match(compare.title, /^fix-the-build\.md \(on h1\)$/);
 
   // A local chat's opens in the editor, where it can be edited.
-  const local = chatStore.createDialog('Local');
+  const local = chatStore.createDialog('Local', null);
   await openPlan(local.id, '/home/me/app/.rovik/plans/local.md');
   assert.deepEqual(opened[1], { path: '/home/me/app/.rovik/plans/local.md', focus: true });
   assert.equal(reads().length, 1, 'read as a file there');

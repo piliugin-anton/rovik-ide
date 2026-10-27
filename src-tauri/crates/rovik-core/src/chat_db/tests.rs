@@ -989,7 +989,7 @@ fn subagent_chats_stay_out_of_lists_and_search() {
         .map(|d| d.id)
         .collect();
     assert_eq!(listed, ["p"]);
-    assert!(!dialogs_in_project(&conn, None).unwrap().contains("k"));
+    assert!(!dialogs_of(&conn, None).unwrap().contains("k"));
     assert!(search(&conn, "blueberry", None, 10).unwrap().is_empty());
     assert!(search(&conn, "scout", None, 10).unwrap().is_empty());
     // P6.7: not even indexed.
@@ -1672,7 +1672,7 @@ fn a_chats_summary_carries_its_project_and_folders() {
     assert_eq!(plain.folders, None, "a folder chat has none of its own");
 
     // The list carries them too, and one set of folders for the next run.
-    let page = list_dialogs(&conn, Some("w"), None, 50).unwrap();
+    let page = list_dialogs(&conn, Some(&["w".into()]), None, 50).unwrap();
     assert_eq!(page.items.len(), 2);
     assert!(page
         .items
@@ -1686,5 +1686,182 @@ fn a_chats_summary_carries_its_project_and_folders() {
             .folders
             .as_deref(),
         Some(r#"["api"]"#)
+    );
+}
+
+/// A project row of `kind` (`folder` or `workspace`), for chats to point at.
+fn project_row(conn: &Connection, id: &str, kind: &str) {
+    let path = if kind == "workspace" {
+        String::new()
+    } else {
+        format!("/work/{id}")
+    };
+    conn.execute(
+        "INSERT INTO projects (id, name, path, created_at, last_opened_at, kind)
+         VALUES (?1, ?1, ?2, 1, 1, ?3)",
+        rusqlite::params![id, path, kind],
+    )
+    .unwrap();
+}
+
+/// A chat titled `title` of `project` (None: no project), `age_days` old.
+fn owned_chat(conn: &mut Connection, id: &str, title: &str, project: Option<&str>, age_days: i64) {
+    dialog(conn, id, title, age_days);
+    set_dialog_project(conn, id, project).unwrap();
+}
+
+/// A workspace window lists the chats of its owners — each folder's project
+/// and the workspace's own — as one list, newest first, page after page;
+/// another project's chats and those with no project aren't among them
+/// (workspaces-plan.md, 3.8).
+#[test]
+fn a_windows_owners_chats_are_listed_together_newest_first() {
+    let mut conn = db();
+    project_row(&conn, "api", "folder");
+    project_row(&conn, "web", "folder");
+    project_row(&conn, "other", "folder");
+    project_row(&conn, "shop", "workspace");
+    owned_chat(&mut conn, "api-new", "Fix the API", Some("api"), 0);
+    owned_chat(&mut conn, "web-1", "Style the cart", Some("web"), 1);
+    owned_chat(&mut conn, "shop-1", "Both at once", Some("shop"), 2);
+    owned_chat(&mut conn, "api-old", "Add a route", Some("api"), 3);
+    owned_chat(
+        &mut conn,
+        "elsewhere",
+        "Not this window's",
+        Some("other"),
+        0,
+    );
+    owned_chat(&mut conn, "loose", "No folder open", None, 0);
+
+    let owners: Vec<String> = ["shop", "api", "web"].map(String::from).to_vec();
+    let ids = |page: &DialogPage| page.items.iter().map(|d| d.id.clone()).collect::<Vec<_>>();
+    let first = list_dialogs(&conn, Some(&owners), None, 2).unwrap();
+    assert_eq!(ids(&first), ["api-new", "web-1"]);
+    let second = list_dialogs(&conn, Some(&owners), first.next_cursor.as_ref(), 2).unwrap();
+    assert_eq!(ids(&second), ["shop-1", "api-old"]);
+    assert!(
+        second.next_cursor.is_none(),
+        "every owner's chat was listed"
+    );
+
+    // One owner lists its own, and no project the chats with none.
+    let api = list_dialogs(&conn, Some(&["api".to_string()]), None, 50).unwrap();
+    assert_eq!(ids(&api), ["api-new", "api-old"]);
+    assert_eq!(
+        ids(&list_dialogs(&conn, None, None, 50).unwrap()),
+        ["loose"]
+    );
+    assert!(
+        list_dialogs(&conn, Some(&[]), None, 50)
+            .unwrap()
+            .items
+            .is_empty(),
+        "no owners list nothing"
+    );
+}
+
+/// Search takes the window's owners as the list does: a match in either
+/// folder's chats is found, and one in another project's isn't.
+#[test]
+fn a_windows_owners_chats_are_searched_together() {
+    let mut conn = db();
+    project_row(&conn, "api", "folder");
+    project_row(&conn, "web", "folder");
+    project_row(&conn, "other", "folder");
+    owned_chat(&mut conn, "api-1", "Deploy pipeline fix", Some("api"), 1);
+    owned_chat(&mut conn, "web-1", "Deploy preview", Some("web"), 0);
+    owned_chat(&mut conn, "other-1", "Deploy elsewhere", Some("other"), 0);
+    owned_chat(&mut conn, "loose", "Deploy with no folder", None, 0);
+
+    let owners: Vec<String> = ["api", "web"].map(String::from).to_vec();
+    let mut found: Vec<String> = search(&conn, "deploy", Some(&owners), 10)
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.dialog.id)
+        .collect();
+    found.sort();
+    assert_eq!(found, ["api-1", "web-1"]);
+    // The typo fallback looks among the same chats.
+    let fuzzy: Vec<String> = search(&conn, "pipelnie", Some(&owners), 10)
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.dialog.id)
+        .collect();
+    assert_eq!(fuzzy, ["api-1"]);
+}
+
+/// A workspace chat's subagent belongs to the workspace, as any subagent
+/// belongs to its parent's project, and stays out of the window's list.
+#[test]
+fn a_subagent_of_a_workspace_chat_belongs_to_the_workspace() {
+    let mut conn = db();
+    project_row(&conn, "shop", "workspace");
+    create_dialog(
+        &mut conn,
+        &NewDialog {
+            id: "lead".into(),
+            title: "Across both".into(),
+            created_at: 1,
+            updated_at: 1,
+            project_id: Some("shop".into()),
+            folders: Some(r#"["api","web"]"#.into()),
+        },
+    )
+    .unwrap();
+    child(&mut conn, "scout", "lead", "call-1");
+
+    assert_eq!(
+        dialog_project(&conn, "scout").unwrap().as_deref(),
+        Some("shop")
+    );
+    let owners = ["shop".to_string()];
+    let listed: Vec<String> = list_dialogs(&conn, Some(&owners), None, 50)
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|d| d.id)
+        .collect();
+    assert_eq!(listed, ["lead"]);
+    assert!(!dialogs_of(&conn, Some(&owners)).unwrap().contains("scout"));
+}
+
+/// New chat reuses an empty chat for the folder chosen: it moves to that
+/// folder's project, a workspace's with its folders. A chat with a message,
+/// or a subagent's, keeps its own (workspaces-plan.md, 3.8).
+#[test]
+fn an_empty_chat_moves_to_another_owner_and_one_with_a_message_doesnt() {
+    let mut conn = db();
+    project_row(&conn, "api", "folder");
+    project_row(&conn, "web", "folder");
+    project_row(&conn, "shop", "workspace");
+    owned_chat(&mut conn, "empty", "New Chat", Some("api"), 0);
+    move_empty_dialog(&conn, "empty", Some("web"), None).unwrap();
+    let moved = get_dialog(&conn, "empty").unwrap().unwrap();
+    assert_eq!(moved.project_id.as_deref(), Some("web"));
+    assert_eq!(moved.folders, None);
+    move_empty_dialog(&conn, "empty", Some("shop"), Some(r#"["api","web"]"#)).unwrap();
+    let across = get_dialog(&conn, "empty").unwrap().unwrap();
+    assert_eq!(across.project_id.as_deref(), Some("shop"));
+    assert_eq!(across.folders.as_deref(), Some(r#"["api","web"]"#));
+
+    owned_chat(&mut conn, "talked", "Fix the API", Some("api"), 0);
+    add(&mut conn, "talked", vec![message("m1", "user", "Fix it")]);
+    assert!(move_empty_dialog(&conn, "talked", Some("web"), None).is_err());
+    assert_eq!(
+        dialog_project(&conn, "talked").unwrap().as_deref(),
+        Some("api")
+    );
+
+    owned_chat(&mut conn, "lead", "Lead", Some("api"), 0);
+    child(&mut conn, "scout", "lead", "call-1");
+    assert!(move_empty_dialog(&conn, "scout", Some("web"), None).is_err());
+    assert_eq!(
+        dialog_project(&conn, "scout").unwrap().as_deref(),
+        Some("api")
+    );
+    assert!(
+        move_empty_dialog(&conn, "nobody", Some("web"), None).is_err(),
+        "no such chat"
     );
 }

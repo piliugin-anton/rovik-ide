@@ -236,8 +236,11 @@ struct State {
     /// commands are sandboxed. A chat of a project moves there before its
     /// first start (remote/moving.rs, `go_home`).
     home: Option<String>,
-    /// The project open in the app: its id and folder (6.5).
-    open: Option<(String, PathBuf)>,
+    /// The projects open in the app's window, each by its id and folder:
+    /// its folders' (a workspace's are several), as the window's claims
+    /// record them (the app's instances.rs; workspaces-plan.md, 3.8).
+    /// Results land by themselves only in them (6.5).
+    open: Vec<(String, PathBuf)>,
     /// Each chat's snapshot as its last sync took it (6.7).
     last_sync: HashMap<String, Oid>,
     /// The projects ensured on each host this session: (host, project).
@@ -337,12 +340,7 @@ impl Remote {
         let Some(project) = self.chat_project(dialog_id).await else {
             return false;
         };
-        let open_here = self
-            .lock()
-            .open
-            .as_ref()
-            .is_some_and(|(id, _)| *id == project);
-        if open_here {
+        if self.is_open(&project) {
             return false;
         }
         if let Some((at, seen)) = self.lock().elsewhere_seen.get(&project) {
@@ -486,15 +484,18 @@ impl Remote {
         state.ensured.retain(|(ensured, _)| ensured != host);
     }
 
-    /// "Test delivery" (H05): the host pushes an empty branch to the open
-    /// project's remote, as a task's result would go, and deletes it.
+    /// "Test delivery" (H05): the host pushes an empty branch to the remote
+    /// of the first open folder whose repository has an `origin` one, as a
+    /// task's result would go, and deletes it.
     pub async fn test_delivery(&self, host: &str) -> Result<DeliveryTest, String> {
-        let folder = self.lock().open.clone().map(|(_, folder)| folder);
-        let remote = folder
-            .as_deref()
-            .and_then(sync::origin_of)
-            .as_deref()
-            .and_then(rovik_protocol::autopilot::push_url)
+        let folders: Vec<PathBuf> = self.lock().open.iter().map(|(_, at)| at.clone()).collect();
+        let remote = folders
+            .iter()
+            .find_map(|folder| {
+                sync::origin_of(folder)
+                    .as_deref()
+                    .and_then(rovik_protocol::autopilot::push_url)
+            })
             .ok_or(
                 "Open a project whose repository has an `origin` remote: the test pushes there.",
             )?;
@@ -801,9 +802,10 @@ impl Remote {
 
     /// A message for the chat's run while it works (steering-plan.md, 3.8).
     /// A chat here goes to `dispatch`. For a chat on a host, the editor
-    /// context's local paths are written from the open project's folder,
-    /// as a start's are (K08), and its files go up first, in an upload of
-    /// its own that Stop cancels. Then the host's run takes it.
+    /// context's local paths are written from the chat's own folder (its
+    /// project's here, workspaces-plan.md 3.8), as a start's are (K08), and
+    /// its files go up first, in an upload of its own that Stop cancels.
+    /// Then the host's run takes it.
     pub async fn steer(&self, dialog_id: &str, mut message: UserMessage) -> Result<Response, Fail> {
         let Some(host) = self.host_of(dialog_id) else {
             let request = Request::AgentSteer {
@@ -813,7 +815,12 @@ impl Remote {
             return rovik_core::dispatch(&self.core, request).await;
         };
         let client = self.client(&host)?;
-        let root = self.lock().open.clone().map(|(_, folder)| folder);
+        let root = self
+            .project_of(dialog_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|(_, folder)| folder);
         if let Some(root) = root.as_deref().and_then(Path::to_str) {
             let sent = message.meta.as_mut().and_then(|m| m.get_mut("sentContent"));
             if let Some(serde_json::Value::String(text)) = sent {

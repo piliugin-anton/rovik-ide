@@ -57,7 +57,7 @@ impl App {
         });
         made.await.unwrap();
         let remote = Remote::new(test.core.clone());
-        remote.set_open_project(Some((PROJECT.into(), setup.project.clone())));
+        remote.set_open_projects(vec![(PROJECT.into(), setup.project.clone())]);
         App {
             test,
             remote,
@@ -77,7 +77,7 @@ impl App {
         drop(remote);
         let remote = Remote::new(test.core.clone());
         remote.load().await.unwrap();
-        remote.set_open_project(Some((PROJECT.into(), setup.project.clone())));
+        remote.set_open_projects(vec![(PROJECT.into(), setup.project.clone())]);
         App {
             test,
             remote,

@@ -223,11 +223,28 @@ const DIALOG_COLUMNS: &str =
       AND m.direction = 'back' AND m.step NOT IN ('forgetting', 'deleted')), \
      project_id, folders";
 
-/// A project's chats, newest first (`project` None: the chats with no
-/// project); keyset paging so deep pages cost the same as the first.
+/// Whose chats a list or a search takes, as a condition on `dialogs` whose
+/// list of projects is the parameter numbered `at` (workspaces-plan.md, 3.8):
+/// `owners` are a window's owners — each open folder's project and its
+/// workspace's own — and None the chats with no project, a window with no
+/// folder open. The list goes as one JSON array (`json_each`), so the
+/// statement's text is the same for any number of them.
+fn owned_by(owners: Option<&[String]>, at: usize) -> DbResult<(String, Option<String>)> {
+    match owners {
+        None => Ok(("project_id IS NULL".into(), None)),
+        Some(ids) => Ok((
+            format!("project_id IN (SELECT value FROM json_each(?{at}))"),
+            Some(serde_json::to_string(ids).map_err(err)?),
+        )),
+    }
+}
+
+/// The chats of `owners`, newest first (None: the chats with no project),
+/// several owners' interleaved by recency; keyset paging so deep pages cost
+/// the same as the first.
 pub fn list_dialogs(
     conn: &Connection,
-    project: Option<&str>,
+    owners: Option<&[String]>,
     cursor: Option<&Cursor>,
     limit: usize,
 ) -> DbResult<DialogPage> {
@@ -235,29 +252,36 @@ pub fn list_dialogs(
     let fetch = (limit + 1) as i64;
     let mut items: Vec<DialogSummary> = match cursor {
         None => {
+            let (owned, list) = owned_by(owners, 2)?;
             let mut stmt = conn
                 .prepare_cached(&format!(
-                    "SELECT {DIALOG_COLUMNS} FROM dialogs WHERE project_id IS ?2 AND archived = 0
+                    "SELECT {DIALOG_COLUMNS} FROM dialogs WHERE {owned} AND archived = 0
                      ORDER BY updated_at DESC, id DESC LIMIT ?1"
                 ))
                 .map_err(err)?;
+            let mut values: Vec<rusqlite::types::Value> = vec![fetch.into()];
+            values.extend(list.map(Into::into));
             let rows = stmt
-                .query_map(params![fetch, project], dialog_from_row)
+                .query_map(params_from_iter(values), dialog_from_row)
                 .map_err(err)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(err)?;
             rows
         }
         Some(c) => {
+            let (owned, list) = owned_by(owners, 4)?;
             let mut stmt = conn
                 .prepare_cached(&format!(
-                    "SELECT {DIALOG_COLUMNS} FROM dialogs WHERE project_id IS ?4 AND archived = 0
+                    "SELECT {DIALOG_COLUMNS} FROM dialogs WHERE {owned} AND archived = 0
                        AND (updated_at < ?1 OR (updated_at = ?1 AND id < ?2))
                      ORDER BY updated_at DESC, id DESC LIMIT ?3"
                 ))
                 .map_err(err)?;
+            let mut values: Vec<rusqlite::types::Value> =
+                vec![c.updated_at.into(), c.id.clone().into(), fetch.into()];
+            values.extend(list.map(Into::into));
             let rows = stmt
-                .query_map(params![c.updated_at, c.id, fetch, project], dialog_from_row)
+                .query_map(params_from_iter(values), dialog_from_row)
                 .map_err(err)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(err)?;
@@ -277,17 +301,20 @@ pub fn list_dialogs(
     Ok(DialogPage { items, next_cursor })
 }
 
-/// The ids of a project's chats (`project` None: the chats with no project).
+/// The ids of the chats of `owners` (None: the chats with no project).
 /// Subagents' chats aren't among them: they belong to their parent.
-pub fn dialogs_in_project(
+pub fn dialogs_of(
     conn: &Connection,
-    project: Option<&str>,
+    owners: Option<&[String]>,
 ) -> DbResult<std::collections::HashSet<String>> {
+    let (owned, list) = owned_by(owners, 1)?;
     let mut stmt = conn
-        .prepare_cached("SELECT id FROM dialogs WHERE project_id IS ?1 AND parent_id IS NULL")
+        .prepare_cached(&format!(
+            "SELECT id FROM dialogs WHERE {owned} AND parent_id IS NULL"
+        ))
         .map_err(err)?;
     let rows = stmt
-        .query_map(params![project], |r| r.get::<_, String>(0))
+        .query_map(params_from_iter(list), |r| r.get::<_, String>(0))
         .map_err(err)?;
     rows.collect::<Result<_, _>>().map_err(err)
 }
@@ -530,6 +557,33 @@ pub fn set_dialog_project(conn: &Connection, id: &str, project_id: Option<&str>)
     )
     .map(drop)
     .map_err(err)
+}
+
+/// An empty chat works elsewhere from now on (workspaces-plan.md, 3.8): New
+/// chat reuses the empty chat open rather than pile up empty ones, moved to
+/// the project of the folder chosen (a workspace's, with its `folders`, for
+/// a workspace chat). Refused for a chat with a message, a subagent's chat,
+/// and one on a host or moving there or back: their messages and their
+/// copies are of the folder they have.
+pub fn move_empty_dialog(
+    conn: &Connection,
+    id: &str,
+    project_id: Option<&str>,
+    folders: Option<&str>,
+) -> DbResult<()> {
+    let moved = conn
+        .execute(
+            "UPDATE dialogs SET project_id = ?2, folders = ?3
+             WHERE id = ?1 AND parent_id IS NULL AND location IS NULL
+               AND NOT EXISTS (SELECT 1 FROM messages WHERE dialog_id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM cloud_moves WHERE dialog_id = ?1)",
+            params![id, project_id, folders],
+        )
+        .map_err(err)?;
+    if moved == 1 {
+        return Ok(());
+    }
+    Err("This chat isn't empty any more, or isn't on this computer: it keeps its folder.".into())
 }
 
 /// A workspace chat works in these folders from now on (`"all"`, or the

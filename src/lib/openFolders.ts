@@ -5,7 +5,7 @@
 // the watcher, search, the Git panel and the chats take these folders, so a
 // project is the list of one and everything built for a project works for a
 // folder of a workspace.
-import { isAtOrUnder } from './fileTools';
+import { isAtOrUnder, toAbsolutePath } from './fileTools';
 import { fileName } from './toolGroups';
 import type { ProjectInfo, Workspace } from './chatApi';
 
@@ -135,4 +135,126 @@ export function activeFolder(
 export function sessionKey(target: WindowTarget | null): string | null {
   if (!target) return null;
   return target.kind === 'folder' ? target.path : `workspace:${target.id}`;
+}
+
+/**
+ * Whose chats a window lists and searches (docs/design/workspaces-plan.md,
+ * 3.8): its owners.
+ */
+export interface ChatOwners {
+  /**
+   * What the window shows, as `sessionKey` names it (null: nothing open).
+   * Another one lists its chats from the start; the same one with other
+   * projects keeps the open chat while its own project is among them.
+   */
+  target: string | null;
+  /**
+   * The projects whose chats are listed, each once: each folder's that's
+   * there, and a workspace's own first. Null with no folder open: the chats
+   * with no project.
+   */
+  projects: string[] | null;
+}
+
+/**
+ * The window's owners, once each of its folders that's there knows its
+ * project; undefined until then, as the chat panel waits for a project's
+ * folder to resolve. A missing folder isn't resolved, so it has none and
+ * waits for nothing (D20). With nothing open, the chats with no project are
+ * the window's once they're claimed for it (`noProjectReady`).
+ */
+export function chatOwners(
+  target: WindowTarget | null,
+  folders: readonly OpenFolder[],
+  noProjectReady: boolean
+): ChatOwners | undefined {
+  if (!target) return noProjectReady ? { target: null, projects: null } : undefined;
+  const projects: string[] = target.kind === 'workspace' ? [target.id] : [];
+  for (const folder of folders) {
+    if (folder.missing) continue;
+    if (!folder.project) return undefined;
+    if (!projects.includes(folder.project.id)) projects.push(folder.project.id);
+  }
+  return { target: sessionKey(target), projects };
+}
+
+/** Whether `owners` list the chats of `projectId` (null: the chats with no project). */
+export function listedBy(owners: ChatOwners, projectId: string | null): boolean {
+  if (owners.projects === null) return projectId === null;
+  return projectId !== null && owners.projects.includes(projectId);
+}
+
+/** Whether two sets of owners are the same: the same target, the same projects in order. */
+export function sameOwners(a: ChatOwners | undefined, b: ChatOwners | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.target !== b.target) return false;
+  if (a.projects === null || b.projects === null) return a.projects === b.projects;
+  return (
+    a.projects.length === b.projects.length && a.projects.every((id, i) => b.projects![i] === id)
+  );
+}
+
+/**
+ * Where a chat works (3.2): a folder chat's folder, as the window has it. A
+ * project's chats are its folder's, and so are a workspace folder's own.
+ */
+export type ChatRoot = OpenFolder;
+
+/**
+ * The folder `dialog` works in: the window's folder whose project the chat
+ * is. Null when that folder isn't open here (it left the window, it's
+ * missing, it isn't resolved yet), or when the chat has no project (no
+ * folder open).
+ */
+export function chatRootOf(
+  dialog: { projectId?: string | null } | null | undefined,
+  folders: readonly OpenFolder[]
+): ChatRoot | null {
+  const id = dialog?.projectId;
+  if (!id) return null;
+  return folders.find((folder) => !folder.missing && folder.project?.id === id) ?? null;
+}
+
+/**
+ * Which folders a chat works in, as its row and the label by its input say
+ * them (3.8): its folder's name, a workspace chat's names checked, or "all"
+ * for one that follows the workspace. Null when that can't be said: the
+ * chat has no project, or its folder isn't open here.
+ */
+export function chatFolderNames(
+  dialog: { projectId?: string | null; folders?: string | null },
+  folders: readonly OpenFolder[]
+): string[] | 'all' | null {
+  if (dialog.folders === 'all') return 'all';
+  if (dialog.folders) {
+    try {
+      const names: unknown = JSON.parse(dialog.folders);
+      if (Array.isArray(names) && names.every((name) => typeof name === 'string')) return names;
+    } catch {
+      // Not a list of names: nothing to say.
+    }
+    return null;
+  }
+  const root = chatRootOf(dialog, folders);
+  return root ? [root.name] : null;
+}
+
+/**
+ * The file a chat's path names (3.2): a folder chat's `src/x.ts` is in its
+ * folder, an absolute path is itself. Null when the chat has no folder here.
+ */
+export function chatPathToAbsolute(root: ChatRoot | null, path: string): string | null {
+  return root ? toAbsolutePath(path, root.path) : null;
+}
+
+/**
+ * The name a chat gives the file at `abs` (3.2): its path in the chat's
+ * folder, with `/` between its parts on every system, as the chat's tools
+ * take it. Null for a file outside the chat's folder: the chat can't read
+ * it, so nothing names it to the chat.
+ */
+export function chatPathOf(root: ChatRoot | null, abs: string): string | null {
+  if (!root || !isAtOrUnder(abs, root.path)) return null;
+  const slashed = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '');
+  return slashed(abs).slice(slashed(root.path).length).replace(/^\/+/, '');
 }

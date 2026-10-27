@@ -200,6 +200,14 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   the chat or the message box pastes back with its attachments.
 - Chats are saved and searchable, and they keep running in the background
   when you switch to another chat.
+- A chat works in its project's folder: the file open in the editor, `@`
+  and **Add to chat** name files by their path there, and a file from
+  outside it isn't sent (the message box says why). In a workspace, each
+  chat works in one of its folders: **New chat** asks which (the folder
+  you're working in is checked), the chat list and the label by the
+  message box say each chat's folder, and the chats of every folder are
+  listed together. **Implement this plan** on a folder's plan starts in a
+  chat of that folder.
 
 ---
 

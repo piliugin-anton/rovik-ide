@@ -28,6 +28,26 @@ export const currentProject = current;
 export const projectList = all;
 export const chatsBlocked = blocked;
 
+/**
+ * Each of the window's folders' project, by the folder's path, once resolved:
+ * a workspace's folders are each a project of their own, whose chats the
+ * window lists (docs/design/workspaces-plan.md, 3.8). A folder still being
+ * resolved, or whose project couldn't be opened, isn't in it; each new set
+ * of folders starts it again (`newFoldersGeneration`).
+ */
+const [byFolder, setByFolder] = createSignal<ReadonlyMap<string, ProjectInfo>>(new Map());
+export const folderProjects = byFolder;
+
+/** `root`'s project is `project` from now on, or none (`null`). */
+function setFolderProject(root: string, project: ProjectInfo | null) {
+  setByFolder((was) => {
+    const next = new Map(was);
+    if (project) next.set(root, project);
+    else next.delete(root);
+    return next;
+  });
+}
+
 export async function refreshProjects() {
   try {
     const list = await chatApi.listProjects();
@@ -85,8 +105,12 @@ const runs = new Map<string, number>();
  */
 let generation = 0;
 
-/** The window shows another set of folders: answers asked before are dropped. */
+/**
+ * The window shows another set of folders: answers asked before are dropped,
+ * and so are the projects the folders it left were.
+ */
 export function newFoldersGeneration(): number {
+  setByFolder(new Map());
   return ++generation;
 }
 
@@ -120,6 +144,7 @@ export async function resolveProject(
     const opened = await chatApi.openProject(root);
     if (!current()) return;
     setCurrent(opened.project);
+    setFolderProject(root, opened.project);
     void refreshProjects();
     const s = opened.suggestion;
     if (s?.kind === 'copy') askAboutCopy(root, s.original, folders);
@@ -130,11 +155,22 @@ export async function resolveProject(
     if (current()) {
       setBlocked({ kind: 'failed', error: String(err) });
       setCurrent(null);
+      setFolderProject(root, null);
     }
   }
 }
 
 const chats = (n: number) => `${n} chat${n === 1 ? '' : 's'}`;
+
+/**
+ * The user said which project the folder at `root` is (a copy's own
+ * history, a moved project's chats): it's that project from now on, if the
+ * window still has the folder open.
+ */
+function answered(root: string, project: ProjectInfo) {
+  if (current()?.path === root) setCurrent(project);
+  if (byFolder().has(root)) setFolderProject(root, project);
+}
 
 /**
  * The copy's history is its own: a new ID in this folder. Each folder asks
@@ -143,7 +179,7 @@ const chats = (n: number) => `${n} chat${n === 1 ? '' : 's'}`;
 function askAboutCopy(root: string, original: ProjectSummary, folders: OpenFolder[]) {
   const separate = async () => {
     const project = await chatApi.answerCopy(root, original.id, false);
-    if (current()?.path === root) setCurrent(project);
+    answered(root, project);
     void refreshProjects();
   };
   // The original is another folder of this window: the two would share their
@@ -206,7 +242,7 @@ function askAboutMoved(root: string, here: ProjectInfo, candidates: ProjectSumma
         primary: true,
         run: async () => {
           const project = await chatApi.answerMoved(root, here.id, first.id);
-          if (current()?.path === root) setCurrent(project);
+          answered(root, project);
           void refreshProjects();
         },
       },

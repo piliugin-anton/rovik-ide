@@ -7,19 +7,16 @@ use super::store::{self, Cursor, DialogPage, DialogSummary, MessagePage, Message
 use super::{attachments, projects, workspaces, DbState};
 use crate::core::Core;
 
+/// The chats of a window's owners, newest first (`owners` None: the chats
+/// with no project), as `store::list_dialogs` pages them.
 pub async fn chat_list_dialogs(
     db: &DbState,
-    project_id: Option<String>,
+    owners: Option<Vec<String>>,
     cursor: Option<Cursor>,
     limit: Option<usize>,
 ) -> Result<DialogPage, String> {
     db.read(move |c| {
-        store::list_dialogs(
-            c,
-            project_id.as_deref(),
-            cursor.as_ref(),
-            limit.unwrap_or(50),
-        )
+        store::list_dialogs(c, owners.as_deref(), cursor.as_ref(), limit.unwrap_or(50))
     })
     .await
 }
@@ -119,7 +116,7 @@ pub async fn chat_delete_project(
     let db = &core.db;
     let id = project_id.clone();
     let chats = db
-        .read(move |c| store::dialogs_in_project(c, Some(&id)))
+        .read(move |c| store::dialogs_of(c, Some(std::slice::from_ref(&id))))
         .await?;
     for chat in &chats {
         remove_chat_and_children_files(core, chat).await?;
@@ -272,6 +269,20 @@ pub async fn chat_create_dialog(db: &DbState, dialog: NewDialog) -> Result<(), S
     db.write(move |c| store::create_dialog(c, &dialog)).await
 }
 
+/// New chat reuses the empty chat open for the folder chosen: it belongs to
+/// that folder's project from now on (`store::move_empty_dialog`).
+pub async fn chat_move_empty_dialog(
+    db: &DbState,
+    dialog_id: String,
+    project_id: Option<String>,
+    folders: Option<String>,
+) -> Result<(), String> {
+    db.write(move |c| {
+        store::move_empty_dialog(c, &dialog_id, project_id.as_deref(), folders.as_deref())
+    })
+    .await
+}
+
 pub async fn chat_update_message(
     db: &DbState,
     message_id: String,
@@ -349,13 +360,15 @@ async fn remove_chat_files(core: &Core, dialog_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Searches the chats of a window's owners together (`owners` None: the
+/// chats with no project).
 pub async fn chat_search(
     db: &DbState,
     query: String,
-    project_id: Option<String>,
+    owners: Option<Vec<String>>,
     limit: Option<usize>,
 ) -> Result<Vec<SearchHit>, String> {
-    db.read(move |c| search::search(c, &query, project_id.as_deref(), limit.unwrap_or(50)))
+    db.read(move |c| search::search(c, &query, owners.as_deref(), limit.unwrap_or(50)))
         .await
 }
 

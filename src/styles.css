@@ -1675,6 +1675,26 @@ body.tree-dragging {
   color: var(--fg-dim);
 }
 
+/* Why a file isn't the open chat's: another folder's (workspaces-plan.md, 3.8). */
+.chat-folder-note {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+/* The chat panel with no chat in a window of several folders: New chat's menu, in place. */
+.chat-start {
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-start-text {
+  margin: 12px 12px 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
 /* Status of a pending reply: waiting, retrying with a countdown. */
 .chat-pending.status {
   color: var(--fg-muted);
@@ -4064,6 +4084,7 @@ body.tree-dragging {
 .file-context-menu .context-menu-icon,
 .terminal-context-menu .context-menu-icon,
 .terminal-new-menu .context-menu-icon,
+.folder-menu .context-menu-icon,
 .opened-port-menu .context-menu-icon,
 .chat-input-context-menu .context-menu-icon {
   display: inline-flex;
@@ -4074,6 +4095,7 @@ body.tree-dragging {
 .file-context-menu .context-menu-label,
 .terminal-context-menu .context-menu-label,
 .terminal-new-menu .context-menu-label,
+.folder-menu .context-menu-label,
 .opened-port-menu .context-menu-label,
 .chat-input-context-menu .context-menu-label {
   flex: 1;
@@ -4093,11 +4115,13 @@ body.tree-dragging {
    ▾ (OpenedPorts.tsx) take the keyboard: the item in focus looks as the
    hovered one does. */
 .terminal-new-menu .context-menu-item:focus,
+.folder-menu .context-menu-item:focus,
 .opened-port-menu .context-menu-item:focus {
   outline: none;
 }
 
 .terminal-new-menu .context-menu-item:focus-visible,
+.folder-menu .context-menu-item:focus-visible,
 .opened-port-menu .context-menu-item:focus-visible {
   background: var(--hover-strong);
 }
@@ -4113,6 +4137,7 @@ body.tree-dragging {
 
 .file-context-menu .context-menu-item.disabled,
 .terminal-context-menu .context-menu-item.disabled,
+.folder-menu .context-menu-item.disabled,
 .opened-port-menu .context-menu-item.disabled,
 .chat-input-context-menu .context-menu-item.disabled {
   cursor: default;
@@ -4121,6 +4146,7 @@ body.tree-dragging {
 
 .file-context-menu .context-menu-item.disabled:hover,
 .terminal-context-menu .context-menu-item.disabled:hover,
+.folder-menu .context-menu-item.disabled:hover,
 .opened-port-menu .context-menu-item.disabled:hover,
 .chat-input-context-menu .context-menu-item.disabled:hover {
   background: none;
@@ -4128,10 +4154,41 @@ body.tree-dragging {
 
 .file-context-menu .context-menu-separator,
 .terminal-context-menu .context-menu-separator,
+.folder-menu .context-menu-separator,
 .chat-input-context-menu .context-menu-separator {
   height: 1px;
   margin: 4px 6px;
   background: var(--border);
+}
+
+/* A folder's box in New chat's menu (FolderMenu.tsx, D2). */
+.folder-menu .folder-menu-box {
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 1px solid var(--fg-muted);
+  border-radius: 3px;
+}
+
+.folder-menu .folder-menu-box.checked {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* The menu shown in place: the chat panel with no chat to show. */
+.folder-menu.folder-menu-inline {
+  position: static;
+  z-index: auto;
+  margin: 12px;
+  box-shadow: none;
+}
+
+/* What New chat's menu is for: Start chat, which names the folder. */
+.folder-menu .new-chat-start {
+  font-weight: 600;
 }
 
 /* Terminal panel */
@@ -7751,6 +7808,16 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   min-width: 0;
 }
 
+/* Which folder the chat works in, with several: a label, not a control. */
+.chat-model-select-row .chat-folders-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
 .effort-selector {
   position: relative;
   flex-shrink: 0;
@@ -10393,6 +10460,15 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .chat-history-item-meta .chat-history-item-date {
   flex-shrink: 0;
+}
+
+/* Which folders a chat works in, in a window with several (workspaces-plan.md, 3.8). */
+.chat-history-item-folders {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  color: var(--fg-muted);
 }
 
 .chat-badge {

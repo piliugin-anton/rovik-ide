@@ -6,8 +6,8 @@
 //! imported last, as a `ResultReady` replayed after a connection, or the
 //! newest result again after the app restarts, can be, is passed over: the
 //! chat's `mirror_state` keeps which it was. It lands by itself under
-//! landing.rs's rules while the chat's project is the open project, and
-//! waits as "Ready to land" otherwise. Each landing is reported to the host
+//! landing.rs's rules while the chat's project is one the window has open,
+//! and waits as "Ready to land" otherwise. Each landing is reported to the host
 //! with `WorkLanded`, at once or after its next connection, which
 //! `mirror_state` remembers across a restart, so the next result doesn't
 //! bring back what the user undid (K34). A result that comes while the
@@ -26,7 +26,7 @@ use rovik_core::overlay::land::{LandError, Landed};
 use rovik_core::rt;
 use rovik_protocol::work::{ChatResult, SyncState};
 use rovik_protocol::Request;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Weak;
 use tokio::sync::{mpsc, oneshot};
 
@@ -45,7 +45,7 @@ pub(super) enum Job {
         dialog_id: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
-    /// The open project changed: its results that waited for it land.
+    /// The projects open changed: the results that waited for one land.
     Opened,
     /// The bar's Land; `keep_chat`: Land anyway.
     Land {
@@ -69,21 +69,14 @@ pub(super) async fn work_through(me: Weak<Remote>, mut jobs: mpsc::UnboundedRece
 }
 
 impl Remote {
-    /// The project open in the app, by its id and folder: results land by
-    /// themselves only there (6.5). Those that waited for it land now.
-    pub fn set_open_project(&self, project: Option<(String, PathBuf)>) {
-        self.lock().open = project;
+    /// The projects open in the app's window, each by its id and folder:
+    /// its folders', as the window's claims record them (the app's
+    /// instances.rs, after each claim and each answer about a folder).
+    /// Results land by themselves only in them (6.5); those that waited for
+    /// one land now.
+    pub fn set_open_projects(&self, open: Vec<(String, PathBuf)>) {
+        self.lock().open = open;
         let _ = self.jobs.send(Job::Opened);
-    }
-
-    /// The user said what the folder at `root` is (a copy of another
-    /// project, or one that moved), which made it `project`'s: when it's
-    /// the open folder, results land there as that project's from now on.
-    pub fn folder_answered(&self, root: &Path, project: &str) {
-        let open = self.lock().open.clone();
-        if open.is_some_and(|(id, at)| at == root && id != project) {
-            self.set_open_project(Some((project.to_string(), root.to_path_buf())));
-        }
     }
 
     /// Lands the chat's imported result as the bar's Land does
@@ -397,9 +390,9 @@ impl Remote {
 
     /// The results that waited for their project, once it's open.
     async fn land_waiting(&self) {
-        let Some((open, _)) = self.lock().open.clone() else {
+        if self.lock().open.is_empty() {
             return;
-        };
+        }
         let remote: Vec<String> = {
             let state = self.lock();
             let chats = state.chats.keys();
@@ -411,7 +404,7 @@ impl Remote {
         for chat in remote {
             let ready = chats::pending(&chat).is_some_and(|p| p.reason == import::READY);
             let project = self.project_of(&chat).await.ok().flatten();
-            if ready && project.is_some_and(|(id, _)| id == open) {
+            if ready && project.is_some_and(|(id, _)| self.is_open(&id)) {
                 let _ = self.land_imported(&chat, None).await;
             }
         }
@@ -569,8 +562,9 @@ impl Remote {
         }
     }
 
-    /// The chat's project here, by its id and folder: the open folder when
-    /// it's the open project, else the folder it was last opened from.
+    /// The chat's project here, by its id and folder: its folder in the
+    /// window when it's one of the projects open, else the folder it was
+    /// last opened from.
     pub(super) async fn project_of(
         &self,
         dialog_id: &str,
@@ -580,8 +574,13 @@ impl Remote {
         let Some(project) = db.read(move |c| store::dialog_project(c, &id)).await? else {
             return Ok(None);
         };
-        let open = self.lock().open.clone();
-        if let Some((_, root)) = open.filter(|(id, _)| *id == project) {
+        let open = self
+            .lock()
+            .open
+            .iter()
+            .find(|(id, _)| *id == project)
+            .cloned();
+        if let Some((_, root)) = open {
             return Ok(Some((project, root)));
         }
         let id = project.clone();
@@ -591,11 +590,9 @@ impl Remote {
             .map(|s| (project, PathBuf::from(s.path))))
     }
 
-    fn is_open(&self, project: &str) -> bool {
-        self.lock()
-            .open
-            .as_ref()
-            .is_some_and(|(id, _)| id == project)
+    /// Whether `project` is one the window has open.
+    pub(super) fn is_open(&self, project: &str) -> bool {
+        self.lock().open.iter().any(|(id, _)| id == project)
     }
 
     /// Tells the user of the paths of a result that stay on its host, as

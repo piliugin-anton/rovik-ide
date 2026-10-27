@@ -32,7 +32,8 @@ fn chat(conn: &mut Connection, id: &str, project: Option<&str>) {
 }
 
 fn chats(conn: &Connection, project: Option<&str>) -> Vec<String> {
-    list_dialogs(conn, project, None, 50)
+    let owners = project.map(|id| vec![id.to_string()]);
+    list_dialogs(conn, owners.as_deref(), None, 50)
         .unwrap()
         .items
         .into_iter()
@@ -180,7 +181,7 @@ fn search_stays_in_the_project() {
     )
     .unwrap();
     let ids = |q: &str, p: &str| {
-        search(&conn, q, Some(p), 10)
+        search(&conn, q, Some(&[p.to_string()]), 10)
             .unwrap()
             .into_iter()
             .map(|h| h.dialog.id)

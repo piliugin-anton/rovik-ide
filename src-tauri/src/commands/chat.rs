@@ -15,19 +15,22 @@ use rovik_core::chat_db::{api, attachments, projects};
 use rovik_core::Core;
 use rovik_protocol::Request;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tauri::ipc::InvokeBody;
 use tauri::{AppHandle, Manager, State};
 
+/// The chats of the window's owners: each open folder's project and its
+/// workspace's own (workspaces-plan.md, 3.8); `owners` None: the chats with
+/// no project, a window with no folder open.
 #[tauri::command]
 pub async fn chat_list_dialogs(
     core: State<'_, Core>,
-    project_id: Option<String>,
+    owners: Option<Vec<String>>,
     cursor: Option<Cursor>,
     limit: Option<usize>,
 ) -> Result<DialogPage, String> {
-    api::chat_list_dialogs(&core.db, project_id, cursor, limit).await
+    api::chat_list_dialogs(&core.db, owners, cursor, limit).await
 }
 
 /// One chat's summary as the list shows it, as it is now: after a move,
@@ -41,19 +44,17 @@ pub async fn chat_get_dialog(
 }
 
 /// The project a folder is, with a suggestion when it looks like a copy or
-/// a moved project. It's the open project from now on: remote chats'
-/// results land by themselves only there (6.5).
+/// a moved project. It's one of the window's open projects from now on, if
+/// the window still has the folder: remote chats' results land by
+/// themselves only there (6.5).
 #[tauri::command]
 pub async fn chat_open_project(
     app: AppHandle,
     core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
     root: String,
 ) -> Result<projects::Opened, String> {
     let opened = api::chat_open_project(&core.db, root.clone()).await?;
     reclaim(&app, &root, &opened.project.id);
-    let open = (opened.project.id.clone(), PathBuf::from(root));
-    remote.set_open_project(Some(open));
     Ok(opened)
 }
 
@@ -64,6 +65,24 @@ fn reclaim(app: &AppHandle, root: &str, project: &str) {
     if let Some(instances) = app.try_state::<Instances>() {
         instances.reclaim(Path::new(root), project);
     }
+    follow_claims(app);
+}
+
+/// The cloud client follows the window's claims (instances.rs): the
+/// projects it lands results in by themselves are the window's folders', as
+/// the claims record them (workspaces-plan.md, 3.8). A folder's answer that
+/// comes after the window left it is in no record, and opens nothing.
+pub(crate) fn follow_claims(app: &AppHandle) {
+    if let (Some(instances), Some(remote)) =
+        (app.try_state::<Instances>(), app.try_state::<Arc<Remote>>())
+    {
+        open_in_client(&instances, &remote);
+    }
+}
+
+/// The client's open projects, the claims' (`follow_claims`).
+fn open_in_client(instances: &Instances, remote: &Remote) {
+    remote.set_open_projects(instances.open_projects());
 }
 
 /// The chats among `dialog_ids` another of Rovik's windows is at work on
@@ -119,7 +138,6 @@ pub async fn chat_read_plan(
 pub async fn chat_answer_copy(
     app: AppHandle,
     core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
     root: String,
     original_id: String,
     share: bool,
@@ -129,7 +147,6 @@ pub async fn chat_answer_copy(
     }
     let project = api::chat_answer_copy(&core.db, root.clone(), original_id, share).await?;
     reclaim(&app, &root, &project.id);
-    remote.folder_answered(Path::new(&root), &project.id);
     Ok(project)
 }
 
@@ -148,7 +165,6 @@ pub async fn chat_answer_moved(
     remote.before_merging_project(&current_id).await?;
     let project = api::chat_answer_moved(&core.db, root.clone(), current_id, target_id).await?;
     reclaim(&app, &root, &project.id);
-    remote.folder_answered(Path::new(&root), &project.id);
     Ok(project)
 }
 
@@ -246,6 +262,19 @@ pub async fn chat_get_message_body(
 #[tauri::command]
 pub async fn chat_create_dialog(core: State<'_, Core>, dialog: NewDialog) -> Result<(), String> {
     api::chat_create_dialog(&core.db, dialog).await
+}
+
+/// New chat reuses the empty chat open for the folder chosen
+/// (workspaces-plan.md, 3.8): it belongs to that folder's project from now
+/// on. Refused once the chat has a message.
+#[tauri::command]
+pub async fn chat_move_empty_dialog(
+    core: State<'_, Core>,
+    dialog_id: String,
+    project_id: Option<String>,
+    folders: Option<String>,
+) -> Result<(), String> {
+    api::chat_move_empty_dialog(&core.db, dialog_id, project_id, folders).await
 }
 
 #[tauri::command]
@@ -361,14 +390,16 @@ pub async fn chat_resync_dialog(
         .map_err(|fail| fail.message)
 }
 
+/// Searches the chats of the window's owners together (`owners` None: the
+/// chats with no project).
 #[tauri::command]
 pub async fn chat_search(
     core: State<'_, Core>,
     query: String,
-    project_id: Option<String>,
+    owners: Option<Vec<String>>,
     limit: Option<usize>,
 ) -> Result<Vec<SearchHit>, String> {
-    api::chat_search(&core.db, query, project_id, limit).await
+    api::chat_search(&core.db, query, owners, limit).await
 }
 
 /// The sends of the project's chats a window that ended left unanswered:
@@ -472,7 +503,64 @@ pub async fn chat_get_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::instances::Target;
+    use rovik_core::chat_db::store;
     use serde_json::json;
+
+    /// The cloud client lands results by themselves in the window's folders'
+    /// projects, as the claims record them (workspaces-plan.md, 3.8): a
+    /// folder resolved after the window moved on doesn't become one, so its
+    /// chats stay the window's that has it open.
+    #[test]
+    fn a_folder_resolved_after_the_window_moved_on_isnt_the_clients_open_project() {
+        let test = rovik_core::testing::TestCore::new();
+        let (api, web) = (test.dir.0.join("api"), test.dir.0.join("web"));
+        for (chat, project, folder) in [("api-chat", "p-api", &api), ("web-chat", "p-web", &web)] {
+            std::fs::create_dir_all(folder).unwrap();
+            let (project, folder) = (project.to_string(), folder.clone());
+            let dialog = NewDialog {
+                id: chat.into(),
+                title: chat.into(),
+                created_at: 0,
+                updated_at: 0,
+                project_id: Some(project.clone()),
+                folders: None,
+            };
+            let made = test.core.db.write(move |c| {
+                projects::ensure(c, &project, &project, &folder)?;
+                store::create_dialog(c, &dialog)
+            });
+            rovik_core::rt::block_on(made).unwrap();
+        }
+        let remote = Remote::new(test.core.clone());
+        // Every project is open in another window as well: a chat is this
+        // window's only while its project is open here.
+        remote.on_open_elsewhere(Arc::new(|_| true));
+        let instances = Instances::start(test.dir.0.join("open-projects"), || {}).unwrap();
+        assert!(
+            instances
+                .claim(Some(&Target::Folder(api.clone())), false, &[])
+                .claimed
+        );
+        // The window moves on to web before api's answer comes.
+        assert!(
+            instances
+                .claim(Some(&Target::Folder(web.clone())), false, &[])
+                .claimed
+        );
+        instances.reclaim(&web, "p-web");
+        open_in_client(&instances, &remote);
+        instances.reclaim(&api, "p-api");
+        open_in_client(&instances, &remote);
+
+        let elsewhere =
+            |chat: &'static str| rovik_core::rt::block_on(remote.handled_elsewhere(chat));
+        assert!(!elsewhere("web-chat"), "web is open here");
+        assert!(
+            elsewhere("api-chat"),
+            "api isn't: its answer came after the window left it"
+        );
+    }
 
     /// An attached file reaches chat_store_attachment as the IPC's raw body,
     /// or as a JSON array where the webview blocks the custom protocol.
