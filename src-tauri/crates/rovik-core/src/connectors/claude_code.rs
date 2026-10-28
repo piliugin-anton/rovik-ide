@@ -1866,7 +1866,8 @@ fn hook_settings(server: &McpServer) -> String {
 }
 
 /// One of Claude Code's own tool calls as the Rovik call that does the
-/// same with files, for the restricted files' check: its shell's command,
+/// same with files, for the restricted files' check and the run's record
+/// of what its step did (`Connector::step_calls`): its shell's command,
 /// `Read` a `read`, `Write` a whole `write`, `Edit` (and the notebook's) a
 /// partial one, and `Grep` that prints lines the `rg` it runs. None: one
 /// that reads no file's text (`Glob`, a `Grep` for names or counts).
@@ -2459,6 +2460,10 @@ impl Connector for ClaudeCode {
             }
         })
     }
+
+    fn step_calls(&self, step: &HarnessStep) -> Vec<HarnessCall> {
+        harness_call(&step.name, &step.input).into_iter().collect()
+    }
 }
 
 /// A small request, to see that the program is signed in and answers:
@@ -3039,6 +3044,58 @@ mod tests {
         // Any other tool by its own name.
         let fetch = json!({ "url": "https://example.com" });
         assert_eq!(asked_call("WebFetch", &fetch, Some(root)).tool, "WebFetch");
+    }
+
+    /// What a step of Claude Code's own did is the Rovik call that does the
+    /// same, as its check before it runs has it: the run records the
+    /// changes of those that succeeded as its own.
+    #[test]
+    fn claude_codes_steps_are_the_rovik_calls_that_do_the_same() {
+        let step = |name: &str, input: Value| HarnessStep {
+            id: "toolu_1".into(),
+            name: name.into(),
+            input,
+            ..HarnessStep::default()
+        };
+        let write = |args: Value| HarnessCall::Tool {
+            name: "write".into(),
+            args: args.as_object().unwrap().clone(),
+        };
+        let calls = |name: &str, input: Value| ClaudeCode.step_calls(&step(name, input));
+        assert_eq!(
+            calls(
+                "Bash",
+                json!({ "command": "npm i", "description": "install" })
+            ),
+            [HarnessCall::Command("npm i".into())]
+        );
+        assert_eq!(
+            calls(
+                "Edit",
+                json!({ "file_path": "src/a.ts", "old_string": "a", "new_string": "b" })
+            ),
+            [write(json!({ "path": "src/a.ts", "old_text": "" }))]
+        );
+        assert_eq!(
+            calls("Write", json!({ "file_path": "b.ts", "content": "x" })),
+            [write(json!({ "path": "b.ts", "content": "x" }))]
+        );
+        assert_eq!(
+            calls(
+                "NotebookEdit",
+                json!({ "notebook_path": "n.ipynb", "new_source": "x" })
+            ),
+            [write(json!({ "path": "n.ipynb", "old_text": "" }))]
+        );
+        // What changes no file is none of the run's changes.
+        assert!(calls("Glob", json!({ "pattern": "**/*.ts" })).is_empty());
+        assert!(calls("WebFetch", json!({ "url": "https://example.com" })).is_empty());
+        let thought = HarnessStep {
+            id: "thinking-1".into(),
+            thinking: Some("Hmm.".into()),
+            ..HarnessStep::default()
+        };
+        assert!(ClaudeCode.step_calls(&thought).is_empty());
     }
 
     #[test]

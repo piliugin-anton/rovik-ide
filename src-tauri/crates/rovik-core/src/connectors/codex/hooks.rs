@@ -634,7 +634,7 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
 }
 
 /// A call of Codex's file tools as the Rovik call that does the same.
-fn tool_call(name: &str, args: Value) -> HarnessCall {
+pub(super) fn tool_call(name: &str, args: Value) -> HarnessCall {
     HarnessCall::Tool {
         name: name.to_string(),
         args: args.as_object().cloned().unwrap_or_default(),

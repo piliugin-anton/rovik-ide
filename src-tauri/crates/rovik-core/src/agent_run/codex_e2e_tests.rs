@@ -311,6 +311,47 @@ async fn codex_s_own_commands_are_checked_whatever_its_mode() {
     assert_eq!(steps["exec-4"]["ok"], false);
 }
 
+/// In Agent mode, the files Codex's own patch changes are the run's
+/// change: the project's checks run on them when Codex finishes. Its
+/// command that changes nothing doesn't count.
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_s_own_patch_is_checked() {
+    let h = harness(&[("src/a.txt", "one\n")]).await;
+    h.set_checks(json!([{ "kind": "test", "command": "ls src", "enabled": true }]));
+    let patch = "*** Begin Patch\n*** Update File: src/a.txt\n@@\n-one\n+uno\n*** End Patch";
+    let scenario = json!({ "steps": [
+        { "command": "ls src", "id": "exec-1", "output": "a.txt\n" },
+        { "patch": patch, "id": "exec-2", "paths": ["src/a.txt"] },
+        { "text": "Done." },
+    ] });
+    let Some(program) = crate::connectors::fake_codex(&h._dir.0, &scenario) else {
+        eprintln!("no python3 with tomllib: skipped");
+        return;
+    };
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    let settings = json!({ "permissionMode": "fullAccess" });
+    h.start(codex_send(
+        &h,
+        &program,
+        "agent",
+        "Make it uno",
+        settings,
+        permissions,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(h.run_end().await, "verified");
+    let records = super::repair_tests::records(&h.messages().await);
+    assert_eq!(records.len(), 1, "{records:#?}");
+    assert_eq!(records[0]["status"], "passed");
+    assert_eq!(records[0]["changedFiles"], json!(["src/a.txt"]));
+}
+
 /// Plan mode on Codex, whatever its permission mode: it's the model behind
 /// Rovik's agent. Its call is the reply's, Rovik runs it and stores its
 /// result, and Codex, waiting on it over MCP, gets it and writes its reply.

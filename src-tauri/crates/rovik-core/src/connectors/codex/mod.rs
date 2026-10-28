@@ -46,7 +46,7 @@ use super::harness::{
 use super::mcp::{McpCall, McpServer, HOOK};
 use super::{
     Connector, ConnectorAuth, ConnectorCommand, ConnectorKind, ConnectorModel, ConnectorProbe,
-    ProbeRequest, ProbeRequestArgs, SetupAction, SetupCommand, Turn,
+    HarnessCall, HarnessStep, ProbeRequest, ProbeRequestArgs, SetupAction, SetupCommand, Turn,
 };
 use crate::agent::{ChatStreamEvent, ReasoningEffort};
 use crate::chat_request::ChatError;
@@ -1462,6 +1462,10 @@ impl Connector for Codex {
                 }
             }
         })
+    }
+
+    fn step_calls(&self, step: &HarnessStep) -> Vec<HarnessCall> {
+        events::step_calls(step)
     }
 }
 

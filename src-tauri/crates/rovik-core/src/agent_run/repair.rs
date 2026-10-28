@@ -911,7 +911,8 @@ pub fn real_key(root: &str, path: &str) -> Option<String> {
     Some(rel.to_string_lossy().replace('\\', "/"))
 }
 
-fn read(path: &Path) -> Result<Option<Vec<u8>>, std::io::Error> {
+/// A file's bytes; None when it doesn't exist.
+pub(super) fn read(path: &Path) -> Result<Option<Vec<u8>>, std::io::Error> {
     match std::fs::read(path) {
         Ok(b) => Ok(Some(b)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -1001,11 +1002,19 @@ impl Run {
         let Ok(before) = read(Path::new(&abs)) else {
             return;
         };
-        if !self.baseline.contains_key(&key) {
+        self.note_original(&key, before);
+    }
+
+    /// What a file (`key`, relative to the root) was before the run first
+    /// changed it (`before`; None: it didn't exist): its baseline the first
+    /// time in the run (R05), and in the open checkpoint the first time in
+    /// the round (R02).
+    pub(super) fn note_original(&mut self, key: &str, before: Option<Vec<u8>>) {
+        if !self.baseline.contains_key(key) {
             // In an isolated chat, the project's copy is what the file was
             // before the chat (an earlier run may have changed the view).
             // A subagent runs within one round of its lead's.
-            let original = match (self.project_file(&key), self.isolated()) {
+            let original = match (self.project_file(key), self.isolated()) {
                 (Some(file), true) => {
                     Original::new(read(&file).ok().flatten(), Source::ProjectCopy)
                 }
@@ -1014,10 +1023,10 @@ impl Run {
                 }
                 _ => Original::new(before.clone(), Source::ViewAtRunStart),
             };
-            self.baseline.insert(key.clone(), original);
+            self.baseline.insert(key.to_string(), original);
         }
         if let Some(cp) = self.checkpoint.as_mut().filter(|c| !c.too_big) {
-            cp.files.entry(key).or_insert(before);
+            cp.files.entry(key.to_string()).or_insert(before);
         }
     }
 

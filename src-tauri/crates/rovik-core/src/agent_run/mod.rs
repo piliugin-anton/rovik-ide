@@ -47,6 +47,7 @@ pub mod failure;
 pub mod group;
 pub mod guard;
 pub mod guide;
+mod harness_changes;
 pub mod judge;
 mod landing;
 pub mod log;

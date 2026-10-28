@@ -6,7 +6,7 @@ use super::*;
 
 /// A test runner in miniature: `test(name, fn)` cases from tests/*.test.js,
 /// reported as cargo does ("test t::name ... FAILED", then a summary).
-const RUNNER: &str = r#"
+pub(super) const RUNNER: &str = r#"
 const fs = require('fs');
 const cases = [];
 global.test = (name, fn) => cases.push({ name, fn });
@@ -22,16 +22,16 @@ console.log('test result: ' + (failed ? 'FAILED' : 'ok') + '. ' + (cases.length 
 process.exit(failed ? 1 : 0);
 "#;
 
-const PACKAGE: &str = r#"{ "name": "t", "scripts": { "test": "node run.js" } }"#;
+pub(super) const PACKAGE: &str = r#"{ "name": "t", "scripts": { "test": "node run.js" } }"#;
 
 /// Two tests: `one` reads a.txt, `two` reads b.txt.
-const TESTS: &str = r#"
+pub(super) const TESTS: &str = r#"
 const fs = require('fs');
 test('one', () => assert(fs.readFileSync('a.txt', 'utf8').includes('good'), 'a.txt is not good'));
 test('two', () => assert(!fs.readFileSync('b.txt', 'utf8').includes('broken'), 'b.txt is broken'));
 "#;
 
-fn has_node() -> bool {
+pub(super) fn has_node() -> bool {
     std::process::Command::new("npm")
         .arg("--version")
         .output()
@@ -46,7 +46,7 @@ fn write(id: &'static str, path: &str, content: &str) -> Reply {
     }
 }
 
-fn records(messages: &[MessageRow]) -> Vec<Value> {
+pub(super) fn records(messages: &[MessageRow]) -> Vec<Value> {
     messages
         .iter()
         .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
