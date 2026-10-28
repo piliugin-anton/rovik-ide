@@ -34,7 +34,11 @@ let saved: PersistedAiSettings = {
 let calls: { cmd: string; args: any }[] = [];
 let backend: Record<string, (args: any) => unknown> = {};
 (window as any).__TAURI_INTERNALS__ = {
+  transformCallback: () => 0,
+  unregisterCallback: () => {},
   invoke: async (cmd: string, args: any) => {
+    if (cmd === 'plugin:event|listen') return 0;
+    if (cmd === 'plugin:event|unlisten') return null;
     calls.push({ cmd, args });
     if (cmd === 'load_ai_settings') return JSON.stringify(saved);
     if (cmd === 'save_ai_settings') {

@@ -20,11 +20,27 @@ import type { SettingsPage } from '../lib/appSettings';
 /** How the app answers each command in the test running now. */
 let backend: Record<string, (args: any) => unknown> = {};
 let calls: { cmd: string; args: any }[] = [];
+const listeners: { event: string; handler: number }[] = [];
+const callbacks = new Map<number, (e: unknown) => void>();
+(window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+/** The app sends `event`: every listener for it hears. */
+function emit(event: string, payload: unknown) {
+  for (const l of listeners.filter((l) => l.event === event)) {
+    callbacks.get(l.handler)!({ event, id: 1, payload });
+  }
+}
 (window as any).__TAURI_INTERNALS__ = {
-  transformCallback: () => 0,
+  transformCallback: (cb: (e: unknown) => void) => {
+    const id = callbacks.size + 1;
+    callbacks.set(id, cb);
+    return id;
+  },
   unregisterCallback: () => {},
   invoke: async (cmd: string, args: any) => {
-    if (cmd === 'plugin:event|listen') return 0;
+    if (cmd === 'plugin:event|listen') {
+      listeners.push({ event: args.event, handler: args.handler });
+      return args.handler;
+    }
     if (cmd === 'plugin:event|unlisten') return null;
     calls.push({ cmd, args });
     const answer = backend[cmd];
@@ -466,4 +482,23 @@ test('there is no Test on choice without a host that runs MCP servers', async ()
   ]);
   await click(button('Edit'));
   assert.equal(testOn(), null);
+});
+
+test('a host that drops out after it was chosen is no longer tested on', async () => {
+  const build = hostRow('build', 'ready', ['mcp']);
+  await page([docs], { kind: 'keychain' }, [build]);
+  backend.mcp_test = () => TESTED;
+  await click(button('Edit'));
+  testOn()!.value = 'build';
+  testOn()!.dispatchEvent(new Event('change', { bubbles: true }));
+  await flush();
+  backend.hosts_list = () => ({
+    hosts: [{ ...build, state: 'offline' }],
+    store: { kind: 'keychain' },
+  });
+  emit('cloud-event', { type: 'host', host: 'build', state: 'offline' });
+  await flush();
+  assert.equal(testOn(), null, 'nothing but this computer is left to choose');
+  await click(button('Test'));
+  assert.equal(sent('mcp_test')[0].host, null);
 });

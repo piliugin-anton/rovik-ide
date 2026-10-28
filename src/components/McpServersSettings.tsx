@@ -8,7 +8,7 @@
 // the settings: lib/mcpServers.ts's `savingServer`), tests it, and picks
 // which of its tools the agent gets. Servers can also be added from the
 // JSON another client's setup instructions give.
-import { createResource, createSignal, For, Index, Show } from 'solid-js';
+import { createResource, createSignal, For, Index, onCleanup, Show } from 'solid-js';
 import type { SettingsPage } from '../lib/appSettings';
 import {
   emptyTransport,
@@ -32,6 +32,7 @@ import {
   type McpTransport,
   type McpValue,
 } from '../lib/mcpServers';
+import { onCloudEvent } from '../lib/cloud';
 import { listHosts } from '../lib/hosts';
 import { confirmDialog } from './ConfirmDialog';
 import { SecretsUnlock, Segmented, SettingRow, SettingStatus } from './SettingsControls';
@@ -87,10 +88,18 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
   const [store, { refetch: refetchStore }] = createResource(() => mcpStore().catch(() => null));
   // The hosts whose daemon runs MCP servers: places to Test on. A host list
   // that won't load leaves only this computer.
-  const [hosts] = createResource(() => listHosts().catch(() => null));
+  const [hosts, { refetch: refetchHosts }] = createResource(() => listHosts().catch(() => null));
+  // A host connecting or dropping changes who can be chosen.
+  onCleanup(
+    onCloudEvent((event) => {
+      if (event.type === 'host') void refetchHosts();
+    })
+  );
   const testHosts = () =>
     (hosts()?.hosts ?? []).filter((h) => h.state === 'ready' && h.serves.includes('mcp'));
-  const [testHost, setTestHost] = createSignal('');
+  const [chosenHost, setChosenHost] = createSignal('');
+  // The place chosen, while it's still offered: otherwise this computer ('').
+  const testHost = () => (testHosts().some((h) => h.id === chosenHost()) ? chosenHost() : '');
   const locked = () => {
     const s = store();
     return s?.kind === 'file' && !s.unlocked;
@@ -621,7 +630,7 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
                       aria-label="Test on"
                       value={testHost()}
                       onChange={(e) => {
-                        setTestHost(e.currentTarget.value);
+                        setChosenHost(e.currentTarget.value);
                         forgetTest();
                       }}
                     >
