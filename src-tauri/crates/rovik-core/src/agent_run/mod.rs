@@ -52,6 +52,7 @@ pub mod judge;
 mod landing;
 pub mod log;
 pub mod loops;
+pub mod mcp_tool;
 mod parallel;
 pub mod paths;
 pub mod permissions;

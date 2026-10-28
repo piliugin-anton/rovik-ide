@@ -183,6 +183,10 @@ pub struct Run {
     pub(super) repo_map: Option<String>,
     /// Map budget in chars (about 2% of the context window), fixed at prepare.
     pub(super) repo_map_chars: usize,
+    /// The tools of the user's MCP servers, listed as the run started
+    /// (mcp-plan.md, Q04): the `mcp` tool and the prompt's list come from
+    /// it. A scout shares its lead's.
+    pub(super) mcp: Option<Arc<super::mcp_tool::Catalog>>,
     /// When the map was last (re)built: a mid-run rebuild waits until it's
     /// MAP_MAX_AGE old.
     pub(super) map_refreshed_at: Instant,
@@ -1132,6 +1136,17 @@ impl Run {
             None => None,
         };
 
+        // Q04, Q06 (mcp-plan.md): the tools of the user's MCP servers, as
+        // they are now, for the whole run; none for a model that takes no
+        // tools.
+        let mcp = match request.profile.no_tools {
+            true => None,
+            false => {
+                super::mcp_tool::Catalog::list(core, &config.mcp_servers, project_root.as_deref())
+                    .await
+            }
+        };
+
         // Forcing `todo` on a plan implementation's first turn only makes
         // sense when no checklist exists yet (nothing to carry, nothing
         // made): otherwise the carry note / live list already governs.
@@ -1192,6 +1207,7 @@ impl Run {
             restricted,
             repo_map,
             repo_map_chars,
+            mcp,
             writes_since_verify: !changed_files.is_empty() || inherits_changes,
             writes_since_review: inherits_changes,
             changed_files,
@@ -1250,6 +1266,7 @@ impl Run {
             context_mode: crate::clm::MODE_TRIMMING.into(),
             root: None,
             project_root: None,
+            mcp: None,
             merged_from_project: None,
             marker_reminders: 0,
             landed: false,
@@ -1408,6 +1425,7 @@ impl Run {
             restricted: parent.restricted.clone(),
             repo_map: parent.repo_map.clone(),
             repo_map_chars: parent.repo_map_chars,
+            mcp: parent.mcp.clone(),
             ..Run::blank(
                 parent.core.clone(),
                 seen,
@@ -1431,6 +1449,13 @@ impl Run {
             }),
             None => json!({ "role": "lead", "dialogId": self.dialog_id }),
         }
+    }
+
+    /// Whether the run calls only the MCP tools a server marks read-only:
+    /// in Plan mode, and as a scout, the one subagent that takes `mcp`
+    /// (mcp-plan.md, Q08).
+    pub(super) fn mcp_read_only(&self) -> bool {
+        self.plan_mode || self.sub().is_some()
     }
 
     /// The subagent's context, when this run is one.
@@ -2132,6 +2157,22 @@ impl Run {
         if self.autopilot {
             super::autopilot::without_questions(&mut tools);
         }
+        // Q05, Q06, Q08 (mcp-plan.md): the `mcp` tool, and the prompt's list
+        // of the MCP servers' tools, when they have one for the run's mode;
+        // a subagent keeps it only if its kind takes it (below).
+        let mcp_read_only = self.mcp_read_only();
+        let mcp_section = match &self.mcp {
+            Some(catalog)
+                if !tools.is_empty() && !context_only && catalog.offers(mcp_read_only) =>
+            {
+                tools.push(super::mcp_tool::schema());
+                let allowed = self
+                    .sub()
+                    .is_none_or(|sub| sub.allows(super::mcp_tool::NAME));
+                allowed.then(|| catalog.section(mcp_read_only))
+            }
+            _ => None,
+        };
         // S06: the answers to the change review's findings: always in
         // Autopilot; in Agent mode while a review's findings wait for them.
         if (self.autopilot || !self.review_held.is_empty())
@@ -2159,11 +2200,11 @@ impl Run {
             if sub.scope.is_some() {
                 tools.push(super::worker::extend_scope_schema());
             }
-            system_prompt = Some(format!(
-                "{}\n\n{}",
-                spec.prompt(&sub.budget),
-                self.project_context
-            ));
+            let mut prompt = format!("{}\n\n{}", spec.prompt(&sub.budget), self.project_context);
+            if let Some(section) = &mcp_section {
+                prompt = format!("{prompt}\n\n{section}");
+            }
+            system_prompt = Some(prompt);
         } else {
             // The lead's commands may run on after its turn: a dev server.
             tools::offer_background(&mut tools);
@@ -2200,6 +2241,10 @@ impl Run {
         let project_context = match subagent_section {
             Some(section) => format!("{project_context}\n\n{section}"),
             None => project_context,
+        };
+        let project_context = match &mcp_section {
+            Some(section) if self.sub().is_none() => format!("{project_context}\n\n{section}"),
+            _ => project_context,
         };
         // D5: Autopilot's lead decides what it would otherwise ask.
         if self.autopilot && system_prompt.is_none() {

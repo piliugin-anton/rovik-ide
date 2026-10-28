@@ -432,6 +432,8 @@ Add "## Blocked" with the reason only if you couldn't do the task."###;
 
 static SCOUT: KindSpec = KindSpec {
     label: "Scout",
+    // `mcp`: the read-only tools of the user's MCP servers, when there are
+    // any (docs/design/mcp-plan.md, Q08).
     tools: &[
         "read",
         "list_dir",
@@ -442,6 +444,7 @@ static SCOUT: KindSpec = KindSpec {
         "diagnostics",
         "web_search",
         "browse_url",
+        "mcp",
     ],
     default_budget: Budget {
         tool_calls: 20,
