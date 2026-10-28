@@ -13,9 +13,6 @@ const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
 const CAPABILITIES_KEY: &str = "io.modelcontextprotocol/clientCapabilities";
 const CLIENT_KEY: &str = "io.modelcontextprotocol/clientInfo";
 
-/// The modern errors (`-32020` to `-32022`): a server that answers with
-/// one speaks 2026-07-28 or later.
-const MODERN_ERRORS: std::ops::RangeInclusive<i64> = -32022..=-32020;
 /// JSON-RPC's "invalid params": a tool's arguments the server refused.
 pub(super) const INVALID_PARAMS: i64 = -32602;
 const METHOD_NOT_FOUND: i64 = -32601;
@@ -64,11 +61,6 @@ pub(super) enum Failure {
 }
 
 impl Failure {
-    /// Whether it says the server speaks the modern protocol.
-    pub(super) fn is_modern(&self) -> bool {
-        matches!(self, Failure::Rpc { code, .. } if MODERN_ERRORS.contains(code))
-    }
-
     /// For the agent or the settings page.
     pub(super) fn text(&self) -> String {
         match self {
@@ -295,7 +287,6 @@ mod tests {
             panic!("{error:?}");
         };
         assert_eq!(failure.text(), "Unknown tool: x (error -32602)");
-        assert!(!failure.is_modern());
         let asking = json!({
             "jsonrpc": "2.0", "id": 2,
             "result": {
@@ -322,7 +313,7 @@ mod tests {
             br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2026-07-28"]}}}"#,
         )
         .unwrap();
-        assert!(modern.is_modern());
+        assert!(matches!(modern, Failure::Rpc { code: -32022, .. }));
         assert_eq!(error_in(b"Bad Request"), None);
         assert_eq!(error_in(br#"{"jsonrpc":"2.0","id":1,"result":{}}"#), None);
     }
