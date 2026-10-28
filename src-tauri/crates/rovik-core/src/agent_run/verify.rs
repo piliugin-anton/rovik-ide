@@ -1628,10 +1628,11 @@ impl Run {
     }
 
     /// Before the run's first saved output (its first checks, mid-run or at
-    /// the end, or a join's conflict versions): earlier runs' saved output
-    /// goes, once (P4.7: never this run's). A task's later runs keep its
-    /// Prepare stage's (S03): the stage's record links it, and the
-    /// implement run may read it. The stage starts afresh.
+    /// the end, a join's conflict versions, or a command's whole output,
+    /// execute.rs): earlier runs' saved output goes, once (P4.7: never this
+    /// run's). A task's later runs keep its Prepare stage's (S03): the
+    /// stage's record links it, and the implement run may read it. The
+    /// stage starts afresh.
     pub(super) fn clean_earlier_output(&mut self) {
         if !self.cleaned_this_run {
             self.cleaned_this_run = true;

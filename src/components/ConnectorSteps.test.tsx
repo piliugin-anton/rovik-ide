@@ -72,6 +72,32 @@ test('while it thinks, its last thought says so with its latest line', () => {
   gone();
 });
 
+test('a skill it uses is named on its line, while it works and once it’s done', () => {
+  const step = { id: 'a904', name: 'Skill', input: { skill: 'slow-census' } };
+  const working = container();
+  const stop = render(
+    () => (
+      <ConnectorSteps meta={{ kind: 'claude-code', steps: [step] }} running={true} dialogId="d1" />
+    ),
+    working
+  );
+  assert.deepEqual(lines(working), ['Using skill slow-census']);
+  stop();
+  const done = { ...step, result: 'The skill completed.', ok: true };
+  const root = container();
+  const dispose = render(
+    () => (
+      <ConnectorSteps meta={{ kind: 'claude-code', steps: [done] }} running={false} dialogId="d1" />
+    ),
+    root
+  );
+  assert.deepEqual(lines(root), ['Used skill slow-census']);
+  // Its block, open, says the same.
+  (root.querySelector('.tool-group-header') as HTMLElement).click();
+  assert.equal(root.querySelector('.tool-call-title')?.textContent, 'Used skill slow-census');
+  dispose();
+});
+
 test('a call waiting for approval shows its request, and Allow answers it', async () => {
   const meta: ConnectorMeta = {
     kind: 'claude-code',

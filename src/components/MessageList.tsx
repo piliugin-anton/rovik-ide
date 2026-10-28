@@ -51,6 +51,7 @@ import ReportFacts from './ReportFacts';
 import ReviewRecord from './ReviewRecord';
 import StageRecord from './StageRecord';
 import ConnectorSteps from './ConnectorSteps';
+import { textAfterSteps } from '../lib/connectors';
 import { currentTask, stageOf } from '../lib/autopilot';
 import { liveSubagent } from '../lib/subagents';
 import { indexToolResults } from '../lib/toolResults';
@@ -203,6 +204,14 @@ export default function MessageList(props: {
    */
   const hasConnectorSteps = (m: ChatMessage) =>
     !!m.meta?.connector?.steps?.length && !m.meta.connector.rovikTools;
+  /**
+   * The text of the reply's own bubble: with a connector's steps, what it
+   * wrote after the last of them; what came before shows among them.
+   */
+  const ownText = (m: ChatMessage) =>
+    hasConnectorSteps(m) && m.meta?.connector
+      ? textAfterSteps(m.meta.connector, m.content)
+      : m.content;
   const requestUndelivered = () => {
     const list = messages();
     for (let i = list.length - 1; i >= 0; i--) {
@@ -1377,12 +1386,14 @@ export default function MessageList(props: {
                 </Show>
 
                 {/* A connector's harness at work with its own tools: its
-                    thinking and its calls as Rovik's show, before its words
+                    thinking and its calls as Rovik's show, with what it
+                    wrote before each in its place, before its last words
                     (or the error they led to). */}
                 <Show when={m.role === 'assistant' && hasConnectorSteps(m) && m.meta?.connector}>
                   {(meta) => (
                     <ConnectorSteps
                       meta={meta()}
+                      text={m.error ? undefined : m.content}
                       running={!!m.pending}
                       dialogId={props.dialogId}
                       notes={props.toolNotes}
@@ -1446,7 +1457,7 @@ export default function MessageList(props: {
                 </Show>
 
                 <Show
-                  when={!m.error && (!isBlank(m.content) || hasAttachments(m)) && !m.meta?.harness}
+                  when={!m.error && (!isBlank(ownText(m)) || hasAttachments(m)) && !m.meta?.harness}
                 >
                   <div class="chat-message-wrap" classList={{ user: m.role === 'user' }}>
                     <div
@@ -1460,8 +1471,8 @@ export default function MessageList(props: {
                         m.failed ? 'Not delivered: text was put back into the input' : undefined
                       }
                     >
-                      <Show when={!isBlank(m.content)}>
-                        <MessageContent content={m.content} streaming={!!m.pending} />
+                      <Show when={!isBlank(ownText(m))}>
+                        <MessageContent content={ownText(m)} streaming={!!m.pending} />
                       </Show>
                       {/* Images attached to the message: a click shows one whole. */}
                       <Show when={userImages(m).length}>

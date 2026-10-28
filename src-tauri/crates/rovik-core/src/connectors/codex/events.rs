@@ -229,10 +229,13 @@ impl Parser {
                 if let Some(why) = params.get("explanation").filter(|e| e.is_string()) {
                     input["explanation"] = why.clone();
                 }
+                // Its plan as it stands: a record, done as it shows, not a
+                // tool at work (whose step has no result until it's done).
                 let step = HarnessStep {
                     id: format!("plan-{turn}"),
                     name: "update_plan".into(),
                     input,
+                    ok: Some(true),
                     ..HarnessStep::default()
                 };
                 self.show(step, emit);
@@ -1049,6 +1052,30 @@ mod tests {
         );
         assert!(steps["thinking-1"].ms.is_some());
         assert_eq!(steps["thinking-2"].thinking.as_deref(), Some("Quietly"));
+    }
+
+    /// Its plan is a step done as it shows: no tool is at work on it, so
+    /// the chat doesn't wait on it (run.rs `harness_step_running`).
+    #[test]
+    fn a_plan_update_is_a_step_done_as_it_shows() {
+        let (mut parser, _, _input) = parser();
+        parser.begin(1);
+        let plan = json!([{ "step": "Read a.rs", "status": "inProgress" }]);
+        let events = feed(
+            &mut parser,
+            &[note(
+                "turn/plan/updated",
+                json!({ "turnId": "u1", "plan": plan, "explanation": "Start small" }),
+            )],
+        );
+        let steps = last_steps(&events);
+        let step = &steps["plan-u1"];
+        assert_eq!(step.name, "update_plan");
+        assert_eq!(
+            step.input,
+            json!({ "plan": plan, "explanation": "Start small" })
+        );
+        assert_eq!(step.ok, Some(true));
     }
 
     #[test]

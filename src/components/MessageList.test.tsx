@@ -96,6 +96,49 @@ test('once the harness has started, the run’s status is the chat’s own line'
   stepped.dispose();
 });
 
+test('a connector’s text shows in its place among its steps, as it went', () => {
+  const reply: ChatMessage = {
+    id: 'a1',
+    role: 'assistant',
+    content: 'I’ll read a.txt first.\n\nI’ll read b.txt next.\n\nThey say alpha and beta.',
+    finalized: true,
+    meta: {
+      connector: {
+        kind: 'claude-code',
+        steps: [
+          { id: 't1', name: 'Read', input: { file_path: 'a.txt' }, result: 'a', ok: true, at: 22 },
+          { id: 't2', name: 'Read', input: { file_path: 'b.txt' }, result: 'b', ok: true, at: 45 },
+        ],
+      },
+    },
+  };
+  const { root, dispose } = list([user, reply], 'Claude Code');
+  // Its words and its steps' lines, top to bottom.
+  const words = (e: Element) => {
+    const found: string[] = [];
+    const walk = (node: Node) => {
+      if (node.nodeType === 3) found.push(node.textContent?.trim() ?? '');
+      node.childNodes.forEach(walk);
+    };
+    walk(e);
+    return found.filter(Boolean).join(' ');
+  };
+  try {
+    assert.deepEqual(
+      [...root.querySelectorAll('.chat-message.assistant, .tool-group-header')].map(words),
+      [
+        'I’ll read a.txt first.',
+        'Read a.txt',
+        'I’ll read b.txt next.',
+        'Read b.txt',
+        'They say alpha and beta.',
+      ]
+    );
+  } finally {
+    dispose();
+  }
+});
+
 test('a failed reply that ran nothing shows the error alone', () => {
   const failed: ChatMessage = {
     id: 'a1',

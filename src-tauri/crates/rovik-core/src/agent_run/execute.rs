@@ -948,6 +948,25 @@ impl Run {
         if !matches!(verdict, GuardVerdict::Ok) {
             result.content.push_str(verdict.note().unwrap_or(""));
         }
+        // A command's result that shows only part of its output: the whole
+        // of it is saved for the agent to read, not run again, named after
+        // the call, so no name is ever reused for other output. Said after
+        // the guard saw the result, so a repeated command, whose saved copy
+        // has a new name, still reads as a repeat. In its own folder,
+        // earlier runs' output goes first (P4.7); a subagent's goes to its
+        // lead's, which the lead's run clears.
+        if let Some(whole) = result.whole_output.take() {
+            let owner = self.checks_owner();
+            if owner == self.dialog_id {
+                self.clean_earlier_output();
+            }
+            match super::check_output::save(&owner, "bash", &tc.id, &whole) {
+                Some(path) => result.content.push_str(&format!(
+                    "\n(All of its output is saved as `{path}`: read it there by line range instead of running the command again.)"
+                )),
+                None => eprintln!("rovik: couldn't save a command's whole output for chat {owner}"),
+            }
+        }
         if writes && !tools::is_error(&result.content) {
             if let Some(path) = &write_path {
                 if !self.changed_files.contains(path) {
@@ -1718,12 +1737,11 @@ impl Run {
             seen: self.seen.clone(),
             restricted: self.restricted.clone(),
             owner: self.overlay_owner(),
-            checks_owner: self
-                .sub()
-                .map_or_else(|| self.dialog_id.clone(), |s| s.parent_dialog_id.clone()),
+            checks_owner: self.checks_owner(),
             hidden: self.sub().map(|s| s.hidden.clone()).unwrap_or_default(),
             background_chat: self.sub().is_none().then(|| self.dialog_id.clone()),
             folders: self.folders.clone(),
+            reply_cut_off: self.reply_cut_off,
             note: std::sync::Arc::new(move |note| {
                 app.emit(AgentEvent::ToolNote {
                     dialog_id: dialog_id.clone(),
@@ -1732,6 +1750,13 @@ impl Run {
                 })
             }),
         }
+    }
+
+    /// The chat whose saved output (`@checks/`, check_output.rs) this run's
+    /// calls read and add to: its own, or its lead's for a subagent.
+    fn checks_owner(&self) -> String {
+        self.sub()
+            .map_or_else(|| self.dialog_id.clone(), |s| s.parent_dialog_id.clone())
     }
 
     fn tool_note(&self, tool_call_id: &str, note: Option<String>) {

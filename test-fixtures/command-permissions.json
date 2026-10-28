@@ -144,6 +144,41 @@
       "expect": { "segments": [["echo", "$(whoami)"]], "opaque": false, "permitted": true }
     },
     { "command": "(cd src && ls)", "expect": { "opaque": true, "permitted": false } },
+    {
+      "command": "cd web && npm test",
+      "expect": {
+        "segments": [
+          ["cd", "web"],
+          ["npm", "test"]
+        ],
+        "permitted": true,
+        "modifiesFiles": false
+      }
+    },
+    {
+      "command": "cd packages/api && cargo test",
+      "expect": { "permitted": true, "modifiesFiles": false }
+    },
+    {
+      "command": "cd 'my app' && npm test",
+      "expect": {
+        "segments": [
+          ["cd", "my app"],
+          ["npm", "test"]
+        ],
+        "permitted": true
+      }
+    },
+    { "command": "cd web/../api && ls", "expect": { "permitted": true } },
+    { "command": "cd .. && npm test", "expect": { "permitted": false } },
+    { "command": "cd web/../.. && ls", "expect": { "permitted": false } },
+    { "command": "cd /tmp && ls", "expect": { "permitted": false } },
+    { "command": "cd ~ && ls", "expect": { "permitted": false } },
+    { "command": "cd $HOME && ls", "expect": { "permitted": false } },
+    { "command": "cd - && ls", "expect": { "permitted": false } },
+    { "command": "cd web && rm -rf dist", "expect": { "permitted": false } },
+    { "command": "cd web && ls", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "cd web && make", "allowAny": true, "expect": { "modifiesFiles": true } },
     { "command": "diff <(ls a) <(ls b)", "expect": { "opaque": true } },
     {
       "command": "grep \"a b\" 'c d'",
