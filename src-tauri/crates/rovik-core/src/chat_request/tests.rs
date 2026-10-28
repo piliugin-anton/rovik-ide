@@ -40,6 +40,7 @@ fn names(events: &[ChatStreamEvent]) -> Vec<String> {
             } => format!("tool_done:{name}:{arguments}"),
             ChatStreamEvent::HarnessStep { step } => format!("harness_step:{}", step.name),
             ChatStreamEvent::HarnessSession { session, .. } => format!("harness_session:{session}"),
+            ChatStreamEvent::HarnessRead { id } => format!("harness_read:{id}"),
         })
         .collect()
 }

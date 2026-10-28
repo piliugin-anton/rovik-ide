@@ -436,6 +436,9 @@ pub struct Run {
     pub(super) calls: CallClock,
     /// The messages the user sends it while it works (steer.rs).
     pub(super) steer: Arc<super::steer::SteerQueue>,
+    /// Its connector's harness read some of them mid-turn, and waits: the
+    /// next turn goes on with it, and what waits is its to read.
+    pub(super) harness_waits: bool,
     /// Messages it read, and those it handed back (the `run` line).
     pub(super) steers: u32,
     pub(super) steers_returned: u32,
@@ -539,6 +542,9 @@ pub(super) struct TurnOutput {
     /// A connector's record of the turn (connectors/mod.rs): the harness's
     /// steps, its session, its model and what it used.
     pub(super) connector: Option<Value>,
+    /// The messages the user sent that the connector's harness read
+    /// mid-turn, in order: stored after the reply (`Run::read_steering`).
+    pub(super) read: Vec<super::steer::Queued>,
 }
 
 /// Whether a run goes on with a message waiting where it would end with
@@ -1365,6 +1371,7 @@ impl Run {
             befores: Default::default(),
             calls: CallClock::default(),
             steer: controls.steer,
+            harness_waits: false,
             steers: 0,
             steers_returned: 0,
             denied_by_user: false,
@@ -1644,8 +1651,9 @@ impl Run {
             // P1, the next step (steering-plan.md): every tool call has its
             // result here, so what the user sent meanwhile is stored now, for
             // the next request. Not before an interrupted reply is picked up:
-            // its continuation must follow it.
-            if !self.continue_reply {
+            // its continuation must follow it. Nor while a connector's harness
+            // waits to go on with its turn: it reads them itself.
+            if !self.continue_reply && !self.harness_waits {
                 self.read_waiting("step").await?;
             }
             // Every tool call has its result here, and the checks are
@@ -1657,7 +1665,11 @@ impl Run {
             }
             // T05: a candidate's line in its task's chat follows its run.
             self.note_progress("");
-            let turn = self.model_turn().await?;
+            let mut turn = self.model_turn().await?;
+            // What the user sent that its harness read mid-turn: stored
+            // where it read them, after what it did before.
+            self.read_steering(std::mem::take(&mut turn.read), "harness")
+                .await?;
 
             // Stopped for repeating itself: keep the reply up to where it
             // started, tell the model once, and go on; a second time, the run ends.
@@ -1740,6 +1752,10 @@ impl Run {
             // would offer to resume it).
             if self.stopped() && turn.tool_calls.is_empty() {
                 return Ok("stopped".into());
+            }
+            // Its harness read the user's messages and waits to go on.
+            if self.harness_waits {
+                continue;
             }
 
             // The model says it's done: the checks decide.
@@ -2228,6 +2244,11 @@ impl Run {
         } else {
             None
         };
+        // A connector's harness that reads the user's messages mid-turn is
+        // handed them as they come, in a run that takes them (steer.rs).
+        let reads = self.steer.steerable()
+            && crate::connectors::kind_of(&self.profile.base_url)
+                .is_some_and(|kind| crate::connectors::connector(kind).reads_messages());
         // Shown when the request starts (asking again with another effort).
         let mut opening_status: Option<Status> = None;
         // One-time context notes (CLM) an attempt at this turn went out with:
@@ -2244,6 +2265,15 @@ impl Run {
             // makes ready (`answer_command_check`).
             let (command_checks, mut checks) = tokio::sync::mpsc::unbounded_channel();
             let command_checks = self.profile.connector.is_some().then_some(command_checks);
+            // And is handed the messages the user sends meanwhile: first
+            // those a harness that goes on with its run hasn't read yet.
+            let (to_harness, steering) = tokio::sync::mpsc::unbounded_channel();
+            if reads {
+                for q in self.steer.handed() {
+                    let _ = to_harness.send(super::steer::for_harness(&q, clm));
+                }
+            }
+            let (to_harness, steering) = (reads.then_some(to_harness), reads.then_some(steering));
             let params = ChatParams {
                 base_url: self.profile.base_url.clone(),
                 api_key: self.profile.api_key.clone(),
@@ -2280,6 +2310,7 @@ impl Run {
                 tool_asks,
                 command_checks,
                 restricted: Some(self.restricted.clone()),
+                steering,
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -2342,6 +2373,13 @@ impl Run {
                             }
                         }
                         _ = ticker.tick() => {
+                            // What the user sent since goes to the harness,
+                            // until Stop.
+                            if let (Some(to), None) = (&to_harness, stop_deadline) {
+                                for q in self.steer.hand_over() {
+                                    let _ = to.send(super::steer::for_harness(&q, clm));
+                                }
+                            }
                             lock(&stream).tick(started, stop_deadline.is_some());
                             if wants_again && !ask_again && stop_deadline.is_none() && lock(&stream).may_ask_again() {
                                 ask_again = true;
@@ -2474,7 +2512,8 @@ impl Run {
             let reasoning = s.reasoning_meta(true);
             let (finish_reason, usage) = (s.finish_reason.take(), s.usage.take());
             let connector = s.harness_meta(usage.as_ref());
-            let output = TurnOutput {
+            let read_ids = std::mem::take(&mut s.read);
+            let mut output = TurnOutput {
                 message_id,
                 text: std::mem::take(&mut s.text),
                 tool_calls: std::mem::take(&mut s.tool_calls),
@@ -2482,9 +2521,19 @@ impl Run {
                 reasoning,
                 connector,
                 failure,
+                read: Vec::new(),
             };
             let (focus_note, clm_reminder) = (s.focus_note, s.clm_reminder.take());
             drop(s);
+            // The messages the harness read are the turn's, stored after
+            // its reply. Unless it failed, its turn ended there, and the
+            // harness waits to go on with the others it has; once its turn
+            // is over, it never reads them, and they wait again.
+            output.read = self.steer.read_by_harness(&read_ids);
+            self.harness_waits = !output.read.is_empty() && output.failure.is_none();
+            if !self.harness_waits {
+                self.steer.take_back();
+            }
             self.reply_cut_off = finish_reason.as_deref() == Some("length");
 
             // Reasoning forms the provider refused aren't sent again in this run.
@@ -3264,6 +3313,9 @@ struct Stream {
     /// names it from the first step, which can come before the harness
     /// says anything of itself (a skill run as `/name` in a forked context).
     connector: Option<crate::connectors::ConnectorKind>,
+    /// The messages the user sent that the harness read mid-turn, by id, in
+    /// the order it read them (`ChatStreamEvent::HarnessRead`).
+    read: Vec<String>,
     /// The reasoning as it is sent back (`reasoning_details`; reasoning_echo.rs).
     reasoning_details: Vec<Value>,
     /// The reasoning came in the reply text, in this tag (`<think>`): it goes
@@ -3326,6 +3378,7 @@ impl Stream {
             harness_steps: Vec::new(),
             dirty_harness: false,
             connector: crate::connectors::kind_of(&run.profile.base_url),
+            read: Vec::new(),
             reasoning_details: Vec::new(),
             reasoning_inline: None,
             model: run.profile.model.clone(),
@@ -3560,6 +3613,7 @@ impl Stream {
                     status,
                 });
             }
+            ChatStreamEvent::HarnessRead { id } => self.read.push(id),
             ChatStreamEvent::ToolCallStart { id, name } => {
                 self.mark_output();
                 let call = ToolCall {
@@ -3630,9 +3684,10 @@ impl Stream {
             || (self.got_output && self.last_output.elapsed() >= REPLY_IDLE)
     }
 
-    /// Asking again loses nothing of the reply and spares a wait.
+    /// Asking again loses nothing of the reply and spares a wait: nor of
+    /// the user's messages its harness read.
     fn may_ask_again(&self) -> bool {
-        !self.reply_started() && self.stuck()
+        !self.reply_started() && self.read.is_empty() && self.stuck()
     }
 
     /// Anything of this reply was shown, its reasoning included.

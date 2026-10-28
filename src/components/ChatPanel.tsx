@@ -3887,7 +3887,10 @@ export default function ChatPanel(props: ChatProps) {
     }
   }
 
-  /** ✕ on a queued message: it comes back into the input, unless the run read it already. */
+  /**
+   * ✕ on a queued message: it comes back into the input, unless the agent
+   * has it already (read, or handed to a connector's harness).
+   */
   async function takeBackSteer(messageId: string) {
     const dialogId = activeDialogId();
     if (!dialogId) return;
@@ -3910,8 +3913,8 @@ export default function ChatPanel(props: ChatProps) {
     if (taken) handBackSteers(dialogId, [messageId]);
     else {
       notify({
-        title: 'The agent read it already',
-        message: 'Your message was read before it could be taken back.',
+        title: 'The agent has it already',
+        message: 'Your message reached the agent before it could be taken back.',
         timeout: 6000,
       });
     }

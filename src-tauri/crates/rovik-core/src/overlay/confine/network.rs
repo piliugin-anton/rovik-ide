@@ -902,8 +902,10 @@ fn pasta_args(holder: u32, ports: &[u16], sealed: bool) -> Vec<String> {
 /// Waits until pasta has set the namespace of holder `holder` up. Open: it
 /// has a default route, which pasta adds once the addresses are in place,
 /// and pasta listens on each of the server's loopback `ports` it reaches,
-/// which comes a little after. Sealed: its loopback is up. Why not, when
-/// pasta ends first or takes too long.
+/// which comes a little after. Sealed: its loopback is up, and no route
+/// out is left: the device of the pasta before, and its routes, go a few
+/// milliseconds after that pasta has ended. Why not, when pasta ends
+/// first or takes too long.
 fn wait_configured(
     pasta: &mut Child,
     holder: u32,
@@ -920,7 +922,7 @@ fn wait_configured(
             ));
         }
         let ready = match sealed {
-            true => loopback_up(holder),
+            true => loopback_up(holder) && !has_default_route(holder),
             false => has_default_route(holder) && listens_on(holder, ports),
         };
         if ready {

@@ -817,4 +817,84 @@ socket=no
         let said = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{said}");
     }
+
+    /// A Chrome stuck as it starts, deaf to TERM (as when it waits on a
+    /// D-Bus that never answers), is killed once its time is up, and the
+    /// probe goes on to say it didn't start. Here `timeout` cuts each of
+    /// its waits to a second, and the probe finds no other command.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_chrome_deaf_to_term_is_killed_and_the_probe_goes_on() {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let on_path = |name: &str| {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|dir| dir.join(name))
+                .find(|path| path.is_file())
+                .unwrap_or_else(|| panic!("no {name} on PATH"))
+        };
+        let bin = tempfile::tempdir().unwrap();
+        let script = |name: &str, text: String| {
+            let path = bin.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        // It outlasts the wait below, then goes by itself.
+        let chrome = script(
+            "chromium",
+            format!(
+                "#!/bin/sh\ntrap '' TERM\nexec '{}' 30\n",
+                on_path("sleep").display()
+            ),
+        );
+        script(
+            "timeout",
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = -k ]; then\n\
+                   shift 3\n\
+                   exec '{timeout}' -k 1 1 \"$@\"\n\
+                 fi\n\
+                 shift\n\
+                 exec '{timeout}' 1 \"$@\"\n",
+                timeout = on_path("timeout").display()
+            ),
+        );
+        let mut probe = Command::new(on_path("sh"))
+            .arg("-s")
+            .env("PATH", bin.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        probe
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(PROBE.as_bytes())
+            .unwrap();
+        let started = Instant::now();
+        while probe.try_wait().unwrap().is_none() {
+            if started.elapsed() > Duration::from_secs(10) {
+                let _ = probe.kill();
+                panic!("the probe still waits for Chrome");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut said = String::new();
+        probe
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut said)
+            .unwrap();
+        let found = format!("chrome={}\n", chrome.display());
+        assert!(said.contains(&found), "{said}");
+        assert!(said.contains("chrome_headless=no\n"), "{said}");
+    }
 }

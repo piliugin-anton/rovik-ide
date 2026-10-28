@@ -238,7 +238,16 @@ pub(super) async fn run(
         true => hooks.answer(call),
         false => matcher.take(call),
     };
-    let stop = pump(process, parser, Some(calls), &mut on_call, cancel, emit).await;
+    let stop = pump(
+        process,
+        parser,
+        Some(calls),
+        None,
+        &mut on_call,
+        cancel,
+        emit,
+    )
+    .await;
     if stop == Stop::Yielded {
         let made = live.parser.yielded.take().unwrap_or_default();
         live.matcher.await_answers(made);

@@ -22,8 +22,10 @@ if [ -z "$chrome" ]; then
   done
 fi
 say chrome "$chrome"
+# A Chrome stuck as it starts (waiting on a D-Bus that never answers)
+# outlives the TERM: the KILL 5 s later ends it, and the probe goes on.
 if [ -n "$chrome" ]; then
-  if timeout 30 "$chrome" --headless=new --disable-gpu --no-first-run --dump-dom about:blank >/dev/null 2>&1; then
+  if timeout -k 5 30 "$chrome" --headless=new --disable-gpu --no-first-run --dump-dom about:blank >/dev/null 2>&1; then
     say chrome_headless yes
   else
     say chrome_headless no
