@@ -3000,6 +3000,7 @@ mod tests {
             "/w/.hidden",
             "/w/@scope",
             "/w/a:b$c`d*e?[f]{g}",
+            "/w/100%",
             "/w/{..,x}",
             "/w/-dash",
             "/w/~tilde",

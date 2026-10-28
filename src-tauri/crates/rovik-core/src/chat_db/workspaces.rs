@@ -176,18 +176,19 @@ fn parent_part(path: &str) -> &str {
 }
 
 /// A folder's name made plain for the view and a command line: separators,
-/// `:`, `$`, `~`, backticks, `*`, `?`, `[`, `]`, braces and control
+/// `:`, `$`, `%`, `~`, backticks, `*`, `?`, `[`, `]`, braces and control
 /// characters become `-`, a leading `.`, `@` or `-` goes (the view's top
 /// keeps `@context` for the agent's own files), at most 64 characters, and
 /// nothing left is `folder`. So every name passes the `cd` rule
-/// (`permissions.rs`, D26).
+/// (`permissions.rs` `enters_project_folder`, D26), which refuses `%` as
+/// cmd.exe expands it.
 fn plain(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.chars() {
         if c.is_control()
             || matches!(
                 c,
-                '/' | '\\' | ':' | '$' | '~' | '`' | '*' | '?' | '[' | ']' | '{' | '}'
+                '/' | '\\' | ':' | '$' | '%' | '~' | '`' | '*' | '?' | '[' | ']' | '{' | '}'
             )
         {
             out.push('-');

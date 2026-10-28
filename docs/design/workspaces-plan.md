@@ -381,7 +381,7 @@ to)` (Locate…), `opened(id)`, `list()` (most recently opened first, each
 **Folder names** (D8): `folder_name(folder, taken)`, a pure function:
 
 1. The folder's last part as opened (`D:\` gives `D`).
-2. Made plain: separators, `:`, `$`, `~`, backticks, `*`, `?`, `[`, `]` and
+2. Made plain: separators, `:`, `$`, `%`, `~`, backticks, `*`, `?`, `[`, `]` and
    control characters become `-`; leading `.`, `@` and `-` are dropped (the
    view's top keeps `@context` for the agent-managed context); at most 64
    characters; empty becomes `folder`. So every name passes the `cd` rule

@@ -240,12 +240,13 @@ fn a_name_the_agent_skips_takes_its_parents() {
 }
 
 /// D8: a name is a folder of the view and of a command line: separators,
-/// `:`, `$`, `~`, backticks, `*`, `?`, `[`, `]` and braces are made plain,
+/// `:`, `$`, `%`, `~`, backticks, `*`, `?`, `[`, `]` and braces are made plain,
 /// and a leading `.`, `@` or `-` goes (`@context` is the agent's own).
 #[test]
 fn a_name_is_made_plain() {
     for (folder, name) in [
         ("/w/a$b", "a-b"),
+        ("/w/100%", "100-"),
         ("/w/a~b", "a-b"),
         ("/w/a`b", "a-b"),
         ("/w/a*b", "a-b"),
