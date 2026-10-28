@@ -1296,12 +1296,14 @@ fn seatbelt_profile(c: &Confine) -> (String, Vec<(String, PathBuf)>) {
 
 /// Seatbelt's rules for connections out that reach the loopback alone, but
 /// not its `closed` ports (the proxies' there): the allowed hosts' on macOS
-/// (allowed-hosts-plan.md, J07). Each rule says all it means, so nothing
-/// rests on which of two rules Seatbelt prefers.
+/// (allowed-hosts-plan.md, J07). Seatbelt takes the last rule that matches,
+/// so they end a profile, in this order: every address denied, the
+/// loopback allowed, each proxy's port denied. (One deny that carved the
+/// loopback out with `require-not` denied the loopback too.)
 fn loopback_rules(closed: &[u16]) -> String {
     let mut rules = String::from(
-        "(deny network-outbound (require-all (remote ip \"*:*\") \
-         (require-not (remote ip \"localhost:*\"))))\n",
+        "(deny network-outbound (remote ip \"*:*\"))\n\
+         (allow network-outbound (remote ip \"localhost:*\"))\n",
     );
     for port in closed {
         rules += &format!("(deny network-outbound (remote ip \"localhost:{port}\"))\n");
@@ -1666,17 +1668,12 @@ mod seatbelt_socket_tests {
         };
         assert!(!seatbelt_profile(&c).0.contains("remote ip"));
         let (profile, _) = seatbelt_profile(&c.to_loopback(vec![3128, 1080]));
-        assert!(
-            profile.contains(
-                "(deny network-outbound (require-all (remote ip \"*:*\") \
-                 (require-not (remote ip \"localhost:*\"))))\n"
-            ),
-            "{profile}"
-        );
-        for port in [3128, 1080] {
-            let closed = format!("(deny network-outbound (remote ip \"localhost:{port}\"))\n");
-            assert!(profile.contains(&closed), "{profile}");
-        }
+        // Last, as the last rule that matches is the one Seatbelt takes.
+        let rules = "(deny network-outbound (remote ip \"*:*\"))\n\
+                     (allow network-outbound (remote ip \"localhost:*\"))\n\
+                     (deny network-outbound (remote ip \"localhost:3128\"))\n\
+                     (deny network-outbound (remote ip \"localhost:1080\"))\n";
+        assert!(profile.ends_with(rules), "{profile}");
         // A harness's program gets these rules alone (J10).
         assert_eq!(
             loopback_profile(&[3128]),

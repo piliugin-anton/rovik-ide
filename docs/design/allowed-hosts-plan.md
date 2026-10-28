@@ -222,19 +222,21 @@ private by design (D20).
 ## J07. macOS: Seatbelt
 
 Commands already run under Seatbelt. While the list is on their profile
-also has:
+ends with:
 
 ```
-(deny network-outbound (require-all (remote ip "*:*") (require-not (remote ip "localhost:*"))))
+(deny network-outbound (remote ip "*:*"))
+(allow network-outbound (remote ip "localhost:*"))
 (deny network-outbound (remote ip "localhost:<each proxy port>"))
 ```
 
-Each rule says all it means (as the profile's hidden folders already do),
-so nothing rests on which of two rules Seatbelt prefers: outward
-connections reach the loopback only (the filter, the agent's servers, a
-local database), but not a local proxy the environment, the system or
-Settings → Network names. The commands get the filter's variables (J03, on
-127.0.0.1). Name lookups stay
+Seatbelt takes the last rule that matches, so the order is the rule:
+outward connections reach the loopback only (the filter, the agent's
+servers, a local database), but not a local proxy the environment, the
+system or Settings → Network names. (A single deny that carved the
+loopback out with `require-not` denied the loopback too, on macOS CI.)
+The commands get the filter's variables (J03, on 127.0.0.1). Name lookups
+stay
 possible (macOS resolves `localhost` through mDNSResponder too, and
 refusing it would break every test that opens `http://localhost:…`): a
 command can still look a name up, which can carry a little data out in the
