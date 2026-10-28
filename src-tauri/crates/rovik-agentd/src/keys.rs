@@ -72,7 +72,7 @@ impl Keys {
     }
 
     /// Keeps the MCP secrets a start brought, each server's replacing all
-    /// its older ones. The ids of the servers whose secrets changed.
+    /// its older ones, none clearing them. The ids of the servers whose secrets changed.
     pub fn take_mcp(
         &mut self,
         secrets: &BTreeMap<String, BTreeMap<String, Secret>>,
@@ -83,8 +83,13 @@ impl Keys {
                 .iter()
                 .map(|(key, value)| (key.clone(), value.0.clone()))
                 .collect();
-            if self.mcp.get(id) != Some(&values) {
-                self.mcp.insert(id.clone(), values);
+            // No values clears the server's entry.
+            let old = if values.is_empty() {
+                self.mcp.remove(id)
+            } else {
+                self.mcp.insert(id.clone(), values.clone())
+            };
+            if old.unwrap_or_default() != values {
                 changed.push(id.clone());
             }
         }

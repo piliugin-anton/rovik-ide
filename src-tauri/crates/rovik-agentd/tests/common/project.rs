@@ -68,11 +68,16 @@ impl Setup {
     }
 
     pub async fn ensure(&self) {
+        self.ensure_in("").await;
+    }
+
+    /// `ensure`, the project being the folder `subpath` of its repository.
+    pub async fn ensure_in(&self, subpath: &str) {
         let ensure = Request::ProjectEnsure {
             project: Project {
                 id: PROJECT.into(),
                 name: "app".into(),
-                subpath: String::new(),
+                subpath: subpath.into(),
             },
             settings: Some(json!({ "checks": ["cargo test"] })),
             excludes: vec!["*.mine".into()],

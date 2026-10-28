@@ -415,6 +415,8 @@ async fn clear(daemon: &Daemon, chat: &str, keep: Option<&str>) -> bool {
             .unwrap_or_default()
             .subpath;
         let root = place.worktree.join(subpath);
+        // The command servers its runs started there stop with it (Q11).
+        daemon.core.mcp.stop_in(&root);
         let project = place.project.clone();
         let forgotten = daemon
             .core
@@ -453,15 +455,6 @@ async fn clear(daemon: &Daemon, chat: &str, keep: Option<&str>) -> bool {
     }
 }
 
-/// The chat's worktree went: its MCP servers started in it stop, before
-/// the store forgets where it was.
-pub fn worktree_gone(daemon: &Daemon, chat: &str) {
-    if let Some(place) = daemon.store.place(chat) {
-        daemon.core.mcp.stop_in(&place.worktree);
-    }
-    daemon.store.worktree_gone(chat);
-}
-
 /// The worktrees, branches and refs of chats whose rows are gone (R01):
 /// chats deleted while the daemon was away, and chats taken back by their
 /// computer and forgotten (`ChatForget`), released before
@@ -495,7 +488,7 @@ pub async fn collect_chats(daemon: &Daemon, released_before: i64) -> usize {
             // open) is tried again next time, not left as nobody's, which
             // the collection below would remove with the chat's rows.
             if clear(daemon, &chat, None).await {
-                worktree_gone(daemon, &chat);
+                daemon.store.worktree_gone(&chat);
                 removed += 1;
             }
         }

@@ -25,6 +25,7 @@ use crate::work;
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::agent_run::{self, candidates, recovery};
 use rovik_core::chat_db::store::now_ms;
+use rovik_core::mcp::McpState;
 use rovik_core::{process, rt, workload, Core, EventSink, Paths};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,6 +39,14 @@ const SWEEP_EVERY: Duration = Duration::from_secs(5 * 60);
 /// command at its default limit (2 minutes) may still be cut. systemd
 /// gives the unit 90 s (`TimeoutStopSec`), then kills what's left.
 pub const DRAIN_WAIT: Duration = Duration::from_secs(80);
+
+/// Every `every`, stops the MCP servers unused for `idle`, for good.
+async fn sweep(mcp: McpState, every: Duration, idle: Duration) {
+    loop {
+        tokio::time::sleep(every).await;
+        mcp.stop_idle(idle);
+    }
+}
 
 pub fn serve(options: Options) -> Result<(), String> {
     // 1. While the process is still single-threaded: it sets the
@@ -141,13 +150,7 @@ async fn run(
     core.mcp.set_secrets(Arc::new(move |server, key| {
         Ok(secrets.mcp_value(server, key))
     }));
-    let mcp = core.mcp.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(SWEEP_EVERY).await;
-            mcp.stop_idle(IDLE_AFTER);
-        }
-    });
+    tokio::spawn(sweep(core.mcp.clone(), SWEEP_EVERY, IDLE_AFTER));
     // `ChatChanged` names the database's clock (6.3).
     events.set_db(core.db.clone());
     // A run follows its chat's computer's configuration (D16).
@@ -341,9 +344,10 @@ fn shared_toolchains(
         && writable(&caches.join("npm"))
         && writable(&caches.join("crates")))
     .then(|| caches.to_path_buf());
-    let installer = admin.toolchains.user_install.then(|| {
-        Arc::new(root_installer(installer::INSTALLED)) as Arc<rovik_core::toolchains::Installer>
-    });
+    let installer = admin
+        .toolchains
+        .user_install
+        .then(|| Arc::new(root_installer(installer::INSTALLED)) as Arc<rovik_core::toolchains::Installer>);
     Some(rovik_core::toolchains::Shared {
         root: root.to_path_buf(),
         caches,
@@ -373,9 +377,7 @@ fn can_write(dir: &Path) -> bool {
 /// user has: `rovik-agentd user toolchain …`, given the words the
 /// toolchain's kind, version, components and targets make, and nothing a
 /// chat wrote.
-fn root_installer(
-    binary: &'static str,
-) -> impl Fn(rovik_core::toolchains::Want) -> Result<(), String> + Send + Sync {
+fn root_installer(binary: &'static str) -> impl Fn(rovik_core::toolchains::Want) -> Result<(), String> + Send + Sync {
     move |want| {
         let mut command = rovik_core::process::command("sudo");
         command
@@ -556,8 +558,64 @@ fn drained(outcome: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{makes_no_result, shared_toolchains};
+    use super::{makes_no_result, shared_toolchains, sweep};
     use crate::limits::AdminFile;
+    use rovik_core::connectors::mcp::McpServer as FakeServer;
+    use rovik_core::mcp::McpState;
+    use rovik_protocol::mcp::{McpServer, McpTransport, McpValue};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    /// Q11: the sweep stops a server nobody uses, so its next use starts it
+    /// again. A running server keeps the secret it started with, so one
+    /// that stops shows by failing with a secret that has changed since.
+    #[tokio::test]
+    async fn the_sweep_stops_an_idle_mcp_server() {
+        let (fake, _calls) = FakeServer::start(&[], "", None).await.unwrap();
+        let token = Arc::new(Mutex::new(fake.authorization()));
+        let state = McpState::default();
+        let saved = token.clone();
+        state.set_secrets(Arc::new(move |_, _| {
+            Ok(Some(saved.lock().unwrap().clone()))
+        }));
+        let server = McpServer {
+            id: "s1".into(),
+            name: "fake".into(),
+            enabled: true,
+            transport: McpTransport::Url {
+                url: fake.url(),
+                headers: vec![McpValue {
+                    name: "Authorization".into(),
+                    value: String::new(),
+                    secret: true,
+                }],
+            },
+            disabled_tools: Vec::new(),
+        };
+        let servers = std::slice::from_ref(&server);
+        assert!(state.list(servers, None).await[0].tools.is_ok());
+        *token.lock().unwrap() = "Bearer wrong".into();
+        assert!(
+            state.list(servers, None).await[0].tools.is_ok(),
+            "still running with the secret it started with"
+        );
+
+        let sweeping = tokio::spawn(sweep(
+            state.clone(),
+            Duration::from_millis(10),
+            Duration::ZERO,
+        ));
+        let mut stopped = false;
+        for _ in 0..200 {
+            if state.list(servers, None).await[0].tools.is_err() {
+                stopped = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        sweeping.abort();
+        assert!(stopped, "the sweep never stopped the idle server");
+    }
 
     /// A daemon outside the `rovik` group, as on a host without systemd,
     /// can't write the shared caches: it shares the versions and the root

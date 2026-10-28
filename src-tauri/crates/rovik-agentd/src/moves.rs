@@ -111,7 +111,7 @@ pub async fn import(
         Ok(imported) => Ok(imported),
         Err(e) => {
             work::clear_stay(daemon, &chat, &project.id).await;
-            work::worktree_gone(daemon, &chat);
+            daemon.store.worktree_gone(&chat);
             Err(e)
         }
     }

@@ -534,3 +534,18 @@ fn a_store_from_before_mcp_reads_with_no_mcp_secrets() {
     assert_eq!(store.keys().len(), 1);
     assert_eq!(store.mcp_value("s1", "env/TOKEN"), None);
 }
+
+#[test]
+fn an_empty_mcp_secret_map_clears_the_server_s_and_is_reported_changed() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &mcp_start("chat", "t0p")).unwrap();
+    let mut cleared = mcp_start("chat", "");
+    cleared.mcp_secrets = [("s1".to_string(), Default::default())].into();
+    assert_eq!(store.started("laptop", &cleared).unwrap(), ["s1"]);
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), None);
+    let keys = fs::read_to_string(dir.0.join("keys.json")).unwrap();
+    assert!(!keys.contains("t0p"), "{keys}");
+    // Cleared already: nothing changes.
+    assert!(store.started("laptop", &cleared).unwrap().is_empty());
+}

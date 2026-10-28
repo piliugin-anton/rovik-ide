@@ -552,10 +552,12 @@ impl McpState {
         stop_all(gone);
     }
 
-    /// The saved secret values of the enabled `servers`, by server id and
-    /// key (`env/NAME`), for a daemon that has no keychain (Q11). A value
-    /// not saved, or that can't be read, is left out: the server then says
-    /// so when it starts. Read on a blocking thread.
+    /// The saved secret values of the enabled `servers` that have a secret
+    /// field, by server id and key (`env/NAME`), for a daemon that has no
+    /// keychain (Q11). A server with none saved has an empty map, so a
+    /// secret cleared here clears on the host too. A server with a value
+    /// that can't be read is left out: the host keeps what it had. Read on
+    /// a blocking thread.
     pub async fn saved_secrets(
         &self,
         servers: &[McpServer],
@@ -568,24 +570,34 @@ impl McpState {
         let read = crate::rt::spawn_blocking(move || {
             let mut all = BTreeMap::new();
             for server in &servers {
+                let fields: Vec<_> = server
+                    .transport
+                    .values()
+                    .iter()
+                    .filter(|v| v.secret && !v.name.trim().is_empty())
+                    .collect();
+                if fields.is_empty() {
+                    continue;
+                }
                 let mut found = BTreeMap::new();
-                for value in server.transport.values() {
-                    if !value.secret || value.name.trim().is_empty() {
-                        continue;
-                    }
+                let mut readable = true;
+                for value in fields {
                     let key = server.transport.secret_key(&value.name);
                     match source(&server.id, &key) {
                         Ok(Some(secret)) => {
                             found.insert(key, Secret(secret));
                         }
                         Ok(None) => {}
-                        Err(e) => log::warn!(
-                            "MCP server {}: the saved value {key} couldn't be read: {e}",
-                            server.id
-                        ),
+                        Err(e) => {
+                            log::warn!(
+                                "MCP server {}: the saved value {key} couldn't be read: {e}",
+                                server.id
+                            );
+                            readable = false;
+                        }
                     }
                 }
-                if !found.is_empty() {
+                if readable {
                     all.insert(server.id.clone(), found);
                 }
             }

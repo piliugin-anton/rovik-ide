@@ -265,8 +265,9 @@ pub struct StartRequest {
     pub project_settings: Option<serde_json::Value>,
     /// The values of the MCP servers' secrets (a token in an env var or a
     /// header) that a host's run needs, by server id and then by key
-    /// (`env/NAME`, `header/Name`). The host keeps none: they live in this
-    /// run's memory only (mcp-plan-2.md, Q11).
+    /// (`env/NAME`, `header/Name`). A server given replaces all its older
+    /// values on the host, which keeps them in keys.json (mcp-plan-2.md,
+    /// Q11): an empty map clears them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp_secrets: BTreeMap<String, BTreeMap<String, Secret>>,
 }

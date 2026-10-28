@@ -727,8 +727,9 @@ async fn a_missing_command_says_so_and_servers_turned_off_are_left_out() {
     assert!(error.contains("isn't installed"), "{error}");
 }
 
-/// Only an enabled server's
-/// saved secrets come out, by id and key.
+/// Only an enabled server's saved secrets come out, by id and key; a server
+/// with a secret field and none saved has an empty entry, so a secret
+/// cleared here clears on the host.
 #[tokio::test]
 async fn saved_secrets_are_the_enabled_servers_values_the_keychain_has() {
     let state = McpState::default();
@@ -755,26 +756,35 @@ async fn saved_secrets_are_the_enabled_servers_values_the_keychain_has() {
     assert_eq!(secrets.len(), 1);
     assert_eq!(secrets["id-s1"]["header/Authorization"].0, "Bearer x");
     assert_eq!(secrets["id-s1"].len(), 1, "{secrets:?}");
+
+    let s3 = server("s3", url(vec![header("Authorization", "", true)]));
+    let plain = server("s4", url(vec![header("X-Plain", "plain", false)]));
+    let secrets = state.saved_secrets(&[s3, plain]).await;
+    assert!(secrets["id-s3"].is_empty(), "{secrets:?}");
+    assert!(!secrets.contains_key("id-s4"), "no secret field, no entry");
 }
 
-/// A secret the keychain can't give is left out; the others still come.
+/// A server with a secret the keychain can't give is left out whole, so
+/// the host keeps what it had; the other servers still come.
 #[tokio::test]
-async fn an_unreadable_secret_is_left_out_not_an_error() {
+async fn a_server_with_an_unreadable_secret_is_left_out_not_an_error() {
     let state = McpState::default();
-    state.set_secrets(Arc::new(|_, key| match key {
-        "header/Locked" => Err("locked".into()),
+    state.set_secrets(Arc::new(|id, key| match (id, key) {
+        ("id-s1", "header/Locked") => Err("locked".into()),
         _ => Ok(Some("v".into())),
     }));
-    let s = server(
+    let url = |headers| McpTransport::Url {
+        url: "http://127.0.0.1:1/mcp".into(),
+        headers,
+    };
+    let s1 = server(
         "s1",
-        McpTransport::Url {
-            url: "http://127.0.0.1:1/mcp".into(),
-            headers: vec![header("Locked", "", true), header("Open", "", true)],
-        },
+        url(vec![header("Locked", "", true), header("Open", "", true)]),
     );
-    let secrets = state.saved_secrets(&[s]).await;
-    assert_eq!(secrets["id-s1"].len(), 1);
-    assert_eq!(secrets["id-s1"]["header/Open"].0, "v");
+    let s2 = server("s2", url(vec![header("Open", "", true)]));
+    let secrets = state.saved_secrets(&[s1, s2]).await;
+    assert!(!secrets.contains_key("id-s1"), "{secrets:?}");
+    assert_eq!(secrets["id-s2"]["header/Open"].0, "v");
 }
 
 /// Whether the fake server of `log` has seen its input close.
