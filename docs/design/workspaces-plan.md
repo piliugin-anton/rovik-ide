@@ -3327,3 +3327,13 @@ a workspace's folders as the database has them (B03), folders are added before t
 claimed, so one another window takes between the check and the claim stays in the
 workspace while this window goes on without it, as the claim's notice says, until the
 workspace is opened again.
+
+**H02 — the README.** Features has a Workspaces item: what a workspace is, the menu's two
+items and the dialog's checks, what a workspace made from the open folder keeps, the
+folder rows and their menu, search, terminals, the settings pages' folder picker, the
+editor's services, and what deleting one deletes. The Several windows item says a project
+is open in one window alone or in a workspace, and its section how a workspace is claimed
+with its folders, all or none, how the notice names the workspace, and which folders a
+window leaving a workspace at work keeps. The Git panel item says a repository that is one
+of the folders goes by the folder's name. Getting started (H01) and the chats across
+folders (E–G) were written with their tasks. `npm run format:check` passes.

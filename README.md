@@ -46,11 +46,27 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   https page (see [Servers and pages on a cloud
   host](#servers-and-pages-on-a-cloud-host)).
 - Project-wide text search powered by ripgrep's engine.
-- Several windows, each with a project of its own: **New window** in the
-  project menu opens another, and `rovik-ide <folder>` opens a folder in a
-  window of its own. A project is open in one window at a time (a copy
-  sharing its chats too): opening it again brings that window to the front
-  (see [Several windows](#several-windows)).
+- Workspaces: several folders in one window, an API and its client say,
+  each still a project of its own, with its own chats and settings.
+  **Create a workspace…** in the project menu lists the folder open now and
+  takes the others from the folder picker or a typed path, each checked as
+  it's added (a folder inside another of them, or open in another window,
+  says so); made from the open folder, the workspace keeps its tabs, its
+  terminals and the commit message being written. **Add folder to
+  workspace…** adds more later. Each folder is a row at the top of the file
+  tree, under its name, with **Remove from workspace**, and **Locate…** and
+  **Try again** while it's missing: the rest of the workspace opens without
+  it. Search covers every folder, its results under each folder's name; the
+  terminal's **+** asks which folder; Project checks and Restricted files
+  have a folder picker; IntelliSense and rust-analyzer take every folder.
+  The project list shows workspaces among the projects, and deleting one
+  deletes its own chats, never its folders or theirs.
+- Several windows, each with a project or a workspace of its own: **New
+  window** in the project menu opens another, and `rovik-ide <folder>`
+  opens a folder in a window of its own. A project is open in one window
+  at a time, alone or in a workspace (a copy sharing its chats too):
+  opening it again brings that window to the front (see [Several
+  windows](#several-windows)).
 - A built-in terminal that uses your own shell, on this computer or on a
   connected [cloud host](#a-terminal-on-a-cloud-host). Each project has
   its own terminals: switching to another project, its terminals are shown,
@@ -87,7 +103,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   committed in the repository around it, as git records it. A commit with
   nothing in it isn't made. In a workspace, each repository its folders
   are in has a section of its own (its branch, Pull, History and ⋯ menu),
-  and a folder in no repository offers to make one. One message commits
+  under the folder's name when the repository is one of the folders, and a
+  folder in no repository offers to make one. One message commits
   each repository ticked for it, on the branch that repository is on: a
   merge, a rebase or conflicts in one leaves it unticked, saying why. If a
   commit fails in one repository after others were made, the message stays
@@ -1072,6 +1089,14 @@ window shows a note instead of them. A window that switches to another
 project while chats of the first are still at work (a run, an Autopilot
 task, a stage waiting out a rate limit) keeps the first claimed until they
 finish.
+
+A workspace is claimed with its folders, all or none: its own lock and each
+folder's. So a folder is open in one window at a time, alone or in a
+workspace, and opening it where it's taken brings that window to the front,
+saying which workspace has it ("api is open in another window, in Shop").
+A window that leaves a workspace while chats across its folders are at work
+keeps the workspace and its folders claimed until they finish, and one that
+leaves while a folder's own chats are at work keeps that folder.
 
 What one process must not do to another's work is guarded the same way:
 
