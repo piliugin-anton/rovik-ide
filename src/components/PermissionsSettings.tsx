@@ -330,9 +330,9 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
       <section class="settings-section">
         <div class="settings-section-title">Network</div>
         <p class="settings-hint">
-          Hosts the agent may reach: its web search, the pages it opens and screenshots, Claude
-          Code’s web fetch, and its commands, which have no other way out. This computer’s own
-          services (localhost) are always reachable.
+          Hosts the agent may reach: its web search, the pages it opens and screenshots, its
+          commands, and Claude Code’s and Codex’s runs, which have no other way out and need their
+          own service’s hosts listed. This computer’s own services (localhost) are always reachable.
         </p>
 
         <SettingRow label="Can reach">

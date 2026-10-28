@@ -182,22 +182,28 @@ pub fn hold(confine: Option<Confine>, chat: &str) -> Result<(Option<Confine>, En
     Ok((Some(confine), proxy_env(chat, port)))
 }
 
-/// `confine` in the agent's sealed network (J04), made again if it
-/// couldn't be as the list was turned on, and that network.
+/// `confine` in the agent's sealed network (J04), and that network.
 #[cfg(target_os = "linux")]
 fn held(confine: Confine) -> Result<(Confine, Option<Arc<Network>>), String> {
+    let network = sealed()?;
+    Ok((confine.with_network(network.clone()), Some(network)))
+}
+
+/// The agent's sealed network (J04), made again if it couldn't be as the
+/// list was turned on.
+#[cfg(target_os = "linux")]
+fn sealed() -> Result<Arc<Network>, String> {
     follow(false).map_err(|why| {
         format!(
-            "The user's allowed hosts are on, and the agent's commands reach the network only \
-             through them, from a network of their own, which couldn't be made here: {why}. Ask \
+            "The user's allowed hosts are on, and the agent's work reaches the network only \
+             through them, from a network of its own, which couldn't be made here: {why}. Ask \
              the user to fix that, or to let the agent reach any host in Settings → Permissions \
              & approval."
         )
     })?;
-    let network = network::agents().ok_or_else(|| {
-        "The user's allowed hosts were turned off as the command started: run it again.".to_string()
-    })?;
-    Ok((confine.with_network(network.clone()), Some(network)))
+    network::agents().ok_or_else(|| {
+        "The user's allowed hosts were turned off as it started: run it again.".to_string()
+    })
 }
 
 /// `confine` under Seatbelt's rules for the loopback alone, the proxies'
@@ -214,6 +220,69 @@ fn held(_confine: Confine) -> Result<(Confine, Option<Arc<Network>>), String> {
     Err(
         "The user's allowed hosts are on, and the agent's commands can't be held to them on this \
          system."
+            .into(),
+    )
+}
+
+/// Where a harness's program (Claude Code, Codex) starts, and what it's
+/// given ([`hold_program`]).
+#[derive(Default)]
+pub struct Held {
+    /// The network it starts in: the agent's ([`network::agents`]).
+    pub network: Option<Arc<Network>>,
+    /// Its proxy variables, while the list is on: the filter.
+    pub env: Env,
+    /// While the list is on, on macOS, the Seatbelt profile it runs under:
+    /// connections out to the loopback alone.
+    pub seatbelt: Option<String>,
+}
+
+/// Where a harness's program starts for `chat` (J10): in the agent's
+/// network, and while the list is on, held to it as a command is, the
+/// filter its proxy. It gets no sandbox of a command's, which would keep it
+/// from its own files. Why not, when the list is on but it can't be held
+/// here.
+pub fn hold_program(chat: &str) -> Result<Held, String> {
+    if current().is_none() {
+        return Ok(Held {
+            network: network::agents(),
+            ..Held::default()
+        });
+    }
+    program_held(chat)
+}
+
+/// In the agent's sealed network (J04).
+#[cfg(target_os = "linux")]
+fn program_held(chat: &str) -> Result<Held, String> {
+    let network = sealed()?;
+    let port = filter_port(Client::Commands, Some(&network))?;
+    Ok(Held {
+        network: Some(network),
+        env: proxy_env(chat, port),
+        seatbelt: None,
+    })
+}
+
+/// Under Seatbelt's rules for the loopback alone (J07).
+#[cfg(target_os = "macos")]
+fn program_held(chat: &str) -> Result<Held, String> {
+    let port = filter_port(Client::Commands, None)?;
+    let closed = crate::net::proxies_here();
+    Ok(Held {
+        network: None,
+        env: proxy_env(chat, port),
+        seatbelt: Some(crate::overlay::confine::loopback_profile(&closed)),
+    })
+}
+
+/// On Windows itself nothing holds a program to the list (J08).
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn program_held(_chat: &str) -> Result<Held, String> {
+    Err(
+        "The user's allowed hosts are on, and a harness's program on Windows itself can't be \
+         held to them: open the project in WSL, where it is, or ask the user to let the agent \
+         reach any host in Settings → Permissions & approval."
             .into(),
     )
 }
@@ -590,6 +659,10 @@ mod tests {
         let (confine, env) = hold(confine, "chat").unwrap();
         assert_eq!(confine.map(|c| c.network.is_some()), had);
         assert!(env.is_empty(), "{env:?}");
+        // A harness's program, as before: no proxy, no Seatbelt.
+        let program = hold_program("chat").unwrap();
+        assert!(program.env.is_empty() && program.seatbelt.is_none());
+        assert_eq!(program.network.is_some(), network::agents().is_some());
     }
 
     /// While the list is on, a command's only way out is the filter: a host
@@ -669,10 +742,28 @@ mod tests {
             result.contains("(The user's allowed hosts kept these out: unlisted.example."),
             "{result}"
         );
+        // A harness's program is held as a command is (J10).
+        let program = hold_program("held").unwrap();
+        let proxy = program
+            .env
+            .iter()
+            .find(|(name, _)| name == "HTTPS_PROXY")
+            .map(|(_, value)| value.as_str());
+        assert!(
+            proxy.is_some_and(|proxy| proxy.starts_with("http://held@127.0.0.1:")),
+            "{proxy:?}"
+        );
+        #[cfg(target_os = "linux")]
+        assert!(program.network.is_some() && program.seatbelt.is_none());
+        #[cfg(target_os = "macos")]
+        assert!(program
+            .seatbelt
+            .is_some_and(|profile| profile.contains("(remote ip \"localhost:*\")")));
 
         // Any host again: the network is let go.
         configure(&Permissions::default());
         assert!(crate::overlay::confine::network::agents().is_none());
+        assert!(hold_program("held").unwrap().env.is_empty());
     }
 
     #[test]

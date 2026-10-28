@@ -170,6 +170,10 @@ pub struct Turn {
     /// (restricted_files.rs), relative to `cwd`: a harness that can deny its
     /// tools files does.
     pub denied: crate::restricted_files::Denied,
+    /// The user's allowed hosts are on (allowed_hosts.rs): its program is
+    /// held to them, and its hosted web search, which its provider runs
+    /// where the list can't reach, is off.
+    pub allowed_hosts_on: bool,
 }
 
 /// A harness's request to run one of its own tools, put to the run's
@@ -574,19 +578,48 @@ pub async fn run_chat(
         asks: params.tool_asks.clone(),
         commands: params.command_checks.clone(),
         denied,
+        allowed_hosts_on: crate::allowed_hosts::current().is_some(),
     };
     // The session the harness opens or continues is kept for the chat's
     // next turn, as the events say it.
     let dialog_id = params.dialog_id.clone();
+    let started = std::time::Instant::now();
     let mut remember = |event: ChatStreamEvent| {
         if let (ChatStreamEvent::HarnessSession { session, .. }, Some(dialog)) =
             (&event, &dialog_id)
         {
             sessions::put(&data_dir, kind, dialog, session);
         }
+        // A run that failed says what the user's allowed hosts kept from
+        // it: a host it needed, likely (allowed-hosts-plan.md, J10).
+        let event = match event {
+            ChatStreamEvent::Error { error } => {
+                use crate::allowed_hosts::filter::Client;
+                let chat = dialog_id.as_deref();
+                let hosts = crate::allowed_hosts::refused_since(started, Client::Commands, chat);
+                ChatStreamEvent::Error {
+                    error: with_kept_out(error, &hosts),
+                }
+            }
+            other => other,
+        };
         on_event(event);
     };
     connector(kind).run(turn, cancel, &mut remember).await
+}
+
+/// A run's error, with the hosts the user's allowed hosts kept from its
+/// program (`hosts`) after it: what to add for the run to work.
+fn with_kept_out(mut error: ChatError, hosts: &[String]) -> ChatError {
+    if !hosts.is_empty() {
+        error.message = format!(
+            "{} The allowed hosts kept these out: {}. Add the ones it needs in Settings → \
+             Permissions & approval → Network.",
+            error.message.trim_end(),
+            hosts.join(", ")
+        );
+    }
+    error
 }
 
 /// Explicit messages (a one-off request) as the harness takes them: the
@@ -1256,6 +1289,23 @@ out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Done.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_run_names_the_hosts_the_allowed_hosts_kept_out() {
+        use crate::chat_request::ErrorKind;
+        let error = || ChatError::new(ErrorKind::Network, "Claude Code: API Error: 403 \n");
+        assert_eq!(with_kept_out(error(), &[]).message, error().message);
+        let hosts = [
+            "api.anthropic.com".to_string(),
+            "statsig.anthropic.com".into(),
+        ];
+        assert_eq!(
+            with_kept_out(error(), &hosts).message,
+            "Claude Code: API Error: 403 The allowed hosts kept these out: api.anthropic.com, \
+             statsig.anthropic.com. Add the ones it needs in Settings → Permissions & approval \
+             → Network."
+        );
+    }
 
     fn row(role: &str, content: &str, meta: Option<Value>, finalized: bool) -> MessageRow {
         MessageRow {

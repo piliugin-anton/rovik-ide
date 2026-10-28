@@ -1306,6 +1306,18 @@ there is closed to them. Names can still be looked up there, as macOS
 answers them through a service of its own, so a command could carry a
 little data out in a name it looks up.
 
+Claude Code and Codex start the same way while the list is on: in the
+agent's network on Linux, under the same Seatbelt rules on macOS, with the
+filter as their proxy (`allowed_hosts.rs` `hold_program`). Their own
+service's hosts must be listed for their runs to work (`api.anthropic.com`
+for Claude Code; `api.openai.com` or `chatgpt.com` for Codex): a run that
+fails names the hosts the list kept out. Their web search, which their
+providers run on their own servers, out of the list's reach, is off. On
+Windows itself nothing holds their programs, so their runs there are
+refused while the list is on; a project in WSL runs them there, held. On a
+cloud host, a project's services start on internal networks of their own
+while the list is on: they reach each other, and nothing outside.
+
 ### Steering
 
 In Agent mode, Enter (or the Send arrow beside Stop) sends what's typed to

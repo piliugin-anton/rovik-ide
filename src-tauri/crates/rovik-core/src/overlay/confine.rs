@@ -1309,6 +1309,17 @@ fn loopback_rules(closed: &[u16]) -> String {
     rules
 }
 
+/// macOS's program that runs another under a Seatbelt profile.
+pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+/// The Seatbelt profile a harness's program (Claude Code, Codex) runs under
+/// while the allowed hosts hold it on macOS (allowed-hosts-plan.md, J10):
+/// everything allowed but connections out other than the loopback's, and
+/// `closed`'s ports there.
+pub fn loopback_profile(closed: &[u16]) -> String {
+    format!("(version 1)\n(allow default)\n{}", loopback_rules(closed))
+}
+
 /// Each command runs under `sandbox-exec` with the policy's profile
 /// ([`seatbelt_profile`]): the system read-only but for the writable
 /// folders, the hidden ones out of reach. It's part of macOS, so there's
@@ -1325,7 +1336,7 @@ mod macos {
     pub(super) const PROBE: (&str, &[&str]) = ("/bin/sh", &["-c", "true"]);
     pub(super) static MECHANISMS: &[&dyn Mechanism] = &[&Seatbelt];
 
-    const PROGRAM: &str = "/usr/bin/sandbox-exec";
+    const PROGRAM: &str = super::SANDBOX_EXEC;
 
     pub(super) struct Seatbelt;
 
@@ -1666,6 +1677,11 @@ mod seatbelt_socket_tests {
             let closed = format!("(deny network-outbound (remote ip \"localhost:{port}\"))\n");
             assert!(profile.contains(&closed), "{profile}");
         }
+        // A harness's program gets these rules alone (J10).
+        assert_eq!(
+            loopback_profile(&[3128]),
+            format!("(version 1)\n(allow default)\n{}", loopback_rules(&[3128]))
+        );
     }
 }
 

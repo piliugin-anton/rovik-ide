@@ -288,10 +288,15 @@ fonts.googleapis.com"), so the model knows a page may look incomplete.
 
 The services' containers (D21) are started by the daemon from the
 project's compose file, which the agent can change. While the list is on,
-the model Rovik gives Compose puts them on an internal network
-(`networks.default.internal: true`): they reach each other, not the
-outside. Their ports reach the agent's network as before (D21's relays go
-into each container's own namespace).
+the model Rovik gives Compose makes each of the project's networks
+internal (`internal: true`), named apart from its open one so that one is
+never reused: they reach each other, not the outside. A service on a
+network that isn't the project's, or in a network mode but `none` and
+another service's, isn't started. A project's containers are made again
+(`--force-recreate`) when the list was turned on or off since the daemon
+made them, as they'd keep the network they were made with. Their ports
+reach the agent's network as before (D21's relays go into each
+container's own namespace).
 
 ## J12. Changing the setting
 
