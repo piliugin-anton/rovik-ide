@@ -2595,6 +2595,7 @@ async function run() {
         DEMO
       )
     ).map((t) => t.replace(' •', ''));
+    assert(open.length > 0, `no tab of the project's files (${(await tabTitles()).join(', ')})`);
     await d.quit();
     await sleep(2000);
     await startApp();
@@ -2897,6 +2898,7 @@ async function workspaceSteps() {
 
   await step('restart: the workspace and its tabs come back', async () => {
     const open = (await tabTitles()).filter((title) => title?.startsWith(DEMO));
+    assert(open.length > 0, `no tab of demo's files (${(await tabTitles()).join(', ')})`);
     await d.quit();
     await sleep(2000);
     await startApp();
