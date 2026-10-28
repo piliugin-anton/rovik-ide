@@ -231,10 +231,13 @@ ends with:
 ```
 
 Seatbelt takes the last rule that matches, so the order is the rule:
-outward connections reach the loopback only (the filter, the agent's
+outward connections reach this computer alone (the filter, the agent's
 servers, a local database), but not a local proxy the environment, the
-system or Settings → Network names. (A single deny that carved the
-loopback out with `require-not` denied the loopback too, on macOS CI.)
+system or Settings → Network names, nor any other host, one on this
+computer's own network included. Seatbelt's `localhost` is every address
+of this computer's, its LAN address too, not the loopback alone. (A single
+deny that carved the loopback out with `require-not` denied the loopback
+too, on macOS CI.)
 The commands get the filter's variables (J03, on 127.0.0.1). Name lookups
 stay
 possible (macOS resolves `localhost` through mDNSResponder too, and

@@ -1806,37 +1806,18 @@ mod macos_tests {
     }
 
     /// Held to the loopback (the allowed hosts, allowed-hosts-plan.md J07),
-    /// a command reaches a server there, but not the same server at this
-    /// computer's own address, nor a proxy's port on the loopback.
+    /// a command reaches this computer's own servers, but not a proxy's
+    /// port on the loopback, nor another host, not even one on this
+    /// computer's own network: Seatbelt refuses those outright. (Its
+    /// `localhost` is every address of this computer's, its LAN one too.)
     #[test]
-    fn held_to_the_loopback_a_command_reaches_it_alone() {
+    fn held_to_the_loopback_a_command_reaches_this_computer_alone() {
         let root = fresh("sbloopback");
-        let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = server.local_addr().unwrap().port();
         let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let proxy_port = proxy.local_addr().unwrap().port();
-        // This computer's address on its way out: connecting a UDP socket
-        // sends nothing.
-        let address = std::net::UdpSocket::bind("0.0.0.0:0")
-            .and_then(|socket| {
-                socket.connect("192.0.2.1:80")?;
-                socket.local_addr()
-            })
-            .map(|local| local.ip())
-            .ok()
-            .filter(|ip| !ip.is_loopback());
-        let Some(address) = address else {
-            eprintln!("no address of this computer's own: skipped");
-            return;
-        };
-        let reach = |host: &str, port: u16| format!("nc -z -G 2 {host} {port}; echo $?");
-        let script = [
-            reach("127.0.0.1", port),
-            reach(&address.to_string(), port),
-            reach("127.0.0.1", proxy_port),
-        ]
-        .join("; ");
-        let free = Confine {
+        let held = Confine {
             view: root.clone(),
             project: root.clone(),
             hide: Vec::new(),
@@ -1844,23 +1825,44 @@ mod macos_tests {
             sockets: Vec::new(),
             read_only: Vec::new(),
             network: None,
-            loopback_only: None,
+            loopback_only: Some(vec![proxy_port]),
         };
-        // Not held, it reaches all three.
-        let out = run(&free, &root, &script);
-        assert_eq!(
-            stdout(&out),
-            "0\n0\n0\n",
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let out = run(&free.to_loopback(vec![proxy_port]), &root, &script);
-        assert_eq!(
-            stdout(&out),
-            "0\n1\n1\n",
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        // What nc says of a connection to `host:port`, made held.
+        let reach = |host: &str, port: u16| {
+            let script = format!("nc -z -G 2 {host} {port} 2>&1; echo \"[$?]\"");
+            stdout(&run(&held, &root, &script))
+        };
+        let reached = reach("127.0.0.1", port);
+        assert!(reached.ends_with("[0]\n"), "{reached}");
+        // Another host on this computer's network: its address with the
+        // last number changed, where anything or nothing may answer.
+        // Connecting a UDP socket sends nothing.
+        let neighbour = std::net::UdpSocket::bind("0.0.0.0:0")
+            .and_then(|socket| {
+                socket.connect("192.0.2.1:80")?;
+                socket.local_addr()
+            })
+            .ok()
+            .and_then(|local| match local.ip() {
+                std::net::IpAddr::V4(v4) if !v4.is_loopback() => {
+                    let [a, b, c, d] = v4.octets();
+                    let other = if d == 1 { 2 } else { 1 };
+                    Some(std::net::Ipv4Addr::new(a, b, c, other).to_string())
+                }
+                _ => None,
+            });
+        let mut refused = vec![
+            ("127.0.0.1".to_string(), proxy_port),
+            ("192.0.2.1".to_string(), 80),
+        ];
+        refused.extend(neighbour.map(|host| (host, 80)));
+        for (host, port) in refused {
+            let said = reach(&host, port);
+            assert!(
+                said.contains("Operation not permitted") && said.ends_with("[1]\n"),
+                "{host}:{port}: {said}"
+            );
+        }
         drop((server, proxy));
         let _ = std::fs::remove_dir_all(&root);
     }
