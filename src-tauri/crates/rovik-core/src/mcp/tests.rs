@@ -395,11 +395,12 @@ async fn a_server_that_cant_be_reached_waits_before_it_is_tried_again() {
 
 /// The fake command server (Python): `legacy` speaks the handshake and asks
 /// Rovik a `ping` in the middle of a call; `modern` refuses the handshake
-/// and wants `_meta` on every request; `crash` exits at once, saying why.
+/// and wants `_meta` on every request; `wait` holds a call until the file
+/// `<log>.release` exists; `crash` exits at once, saying why.
 /// What it receives, its folder and its environment go in `log`, one JSON
 /// line each.
 const FAKE_SERVER: &str = r#"
-import json, os, sys
+import json, os, sys, time
 mode, log = sys.argv[1], sys.argv[2]
 def record(value):
     with open(log, 'a') as f:
@@ -451,6 +452,9 @@ while True:
         name, arguments = params.get('name'), params.get('arguments') or {}
         if name == 'slow':
             continue
+        if mode == 'wait':
+            while not os.path.exists(log + '.release'):
+                time.sleep(0.02)
         if name == 'note' and not arguments.get('note'):
             send({'jsonrpc': '2.0', 'id': id, 'error': {'code': -32602, 'message': 'note is required'}})
             continue
@@ -721,4 +725,177 @@ async fn a_missing_command_says_so_and_servers_turned_off_are_left_out() {
     assert_eq!(listed.len(), 1);
     let error = listed[0].tools.clone().unwrap_err();
     assert!(error.contains("isn't installed"), "{error}");
+}
+
+/// Only an enabled server's
+/// saved secrets come out, by id and key.
+#[tokio::test]
+async fn saved_secrets_are_the_enabled_servers_values_the_keychain_has() {
+    let state = McpState::default();
+    state.set_secrets(Arc::new(|id, key| match (id, key) {
+        ("id-s1", "header/Authorization") => Ok(Some("Bearer x".into())),
+        ("id-s2", _) => Ok(Some("other".into())),
+        _ => Ok(None),
+    }));
+    let url = |headers| McpTransport::Url {
+        url: "http://127.0.0.1:1/mcp".into(),
+        headers,
+    };
+    let s1 = server(
+        "s1",
+        url(vec![
+            header("Authorization", "", true),
+            header("X-Missing", "", true),
+            header("X-Plain", "plain", false),
+        ]),
+    );
+    let mut s2 = server("s2", url(vec![header("Authorization", "", true)]));
+    s2.enabled = false;
+    let secrets = state.saved_secrets(&[s1, s2]).await;
+    assert_eq!(secrets.len(), 1);
+    assert_eq!(secrets["id-s1"]["header/Authorization"].0, "Bearer x");
+    assert_eq!(secrets["id-s1"].len(), 1, "{secrets:?}");
+}
+
+/// A secret the keychain can't give is left out; the others still come.
+#[tokio::test]
+async fn an_unreadable_secret_is_left_out_not_an_error() {
+    let state = McpState::default();
+    state.set_secrets(Arc::new(|_, key| match key {
+        "header/Locked" => Err("locked".into()),
+        _ => Ok(Some("v".into())),
+    }));
+    let s = server(
+        "s1",
+        McpTransport::Url {
+            url: "http://127.0.0.1:1/mcp".into(),
+            headers: vec![header("Locked", "", true), header("Open", "", true)],
+        },
+    );
+    let secrets = state.saved_secrets(&[s]).await;
+    assert_eq!(secrets["id-s1"].len(), 1);
+    assert_eq!(secrets["id-s1"]["header/Open"].0, "v");
+}
+
+/// Whether the fake server of `log` has seen its input close.
+#[cfg(unix)]
+async fn exited(log: &Path) -> bool {
+    for _ in 0..200 {
+        if logged(log).iter().any(|m| m["bye"] == true) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+/// A daemon's sweep: a server unused for a while is stopped, unless a call
+/// is running on it; the next list starts it again.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_idle_server_is_stopped_and_one_in_use_is_not() {
+    let dir = temp_dir();
+    let Some((transport, log)) = fake(&dir.0, "wait") else {
+        return;
+    };
+    let state = McpState::default();
+    with_token(&state);
+    let fake_server = server("fake", transport);
+    let tools = state.list(std::slice::from_ref(&fake_server), None).await[0]
+        .tools
+        .clone()
+        .unwrap();
+    let echo = tools.iter().find(|t| t.name == "echo").unwrap().clone();
+    let calling = {
+        let (state, fake_server) = (state.clone(), fake_server.clone());
+        tokio::spawn(async move {
+            state
+                .call(
+                    &fake_server,
+                    None,
+                    &echo,
+                    json!({ "text": "hi" }),
+                    &StopSignal::new(),
+                )
+                .await
+        })
+    };
+    while !logged(&log).iter().any(|m| m["method"] == "tools/call") {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    state.stop_idle(Duration::ZERO);
+    std::fs::write(format!("{}.release", log.display()), "").unwrap();
+    let result = calling.await.unwrap().unwrap();
+    assert_eq!(result["content"][0]["text"], "echo: hi");
+    assert!(
+        !logged(&log).iter().any(|m| m["bye"] == true),
+        "the server in use kept running"
+    );
+
+    state.stop_idle(Duration::ZERO);
+    assert!(exited(&log).await, "{:?}", logged(&log));
+    state.list(std::slice::from_ref(&fake_server), None).await;
+    let starts = logged(&log)
+        .iter()
+        .filter(|m| m.get("cwd").is_some())
+        .count();
+    assert_eq!(starts, 2, "started again by the next list");
+    state.shutdown().await;
+}
+
+/// A server idle for less than the time given is left running.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_recently_used_server_is_not_stopped_as_idle() {
+    let dir = temp_dir();
+    let Some((transport, log)) = fake(&dir.0, "legacy") else {
+        return;
+    };
+    let state = McpState::default();
+    with_token(&state);
+    let fake_server = server("fake", transport);
+    state.list(std::slice::from_ref(&fake_server), None).await;
+    state.stop_idle(Duration::from_secs(3600));
+    state.list(std::slice::from_ref(&fake_server), None).await;
+    let starts = logged(&log)
+        .iter()
+        .filter(|m| m.get("cwd").is_some())
+        .count();
+    assert_eq!(starts, 1);
+    state.shutdown().await;
+}
+
+/// A chat's worktree that goes takes its servers with it, not another
+/// folder's.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_worktree_s_servers_stop_when_it_goes() {
+    let dir = temp_dir();
+    let Some((transport, log)) = fake(&dir.0, "legacy") else {
+        return;
+    };
+    let (a, b) = (dir.0.join("a"), dir.0.join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let state = McpState::default();
+    with_token(&state);
+    let fake_server = server("fake", transport);
+    state
+        .list(std::slice::from_ref(&fake_server), Some(&a))
+        .await;
+    state
+        .list(std::slice::from_ref(&fake_server), Some(&b))
+        .await;
+    state.stop_in(&a);
+    assert!(exited(&log).await, "{:?}", logged(&log));
+    let byes = || logged(&log).iter().filter(|m| m["bye"] == true).count();
+    assert_eq!(byes(), 1, "only a's process exited");
+    let tools = state
+        .list(std::slice::from_ref(&fake_server), Some(&b))
+        .await[0]
+        .tools
+        .clone();
+    assert!(tools.is_ok(), "b's still answers");
+    assert_eq!(byes(), 1);
+    state.shutdown().await;
 }

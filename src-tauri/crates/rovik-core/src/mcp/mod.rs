@@ -24,11 +24,13 @@ pub use tool::Tool;
 
 use crate::agent_run::StopSignal;
 use futures_util::future::BoxFuture;
+use rovik_protocol::Secret;
 use rpc::{Era, Failure};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -437,6 +439,38 @@ fn refused_text(failure: &Failure) -> String {
 struct Instance {
     transport: McpTransport,
     state: tokio::sync::Mutex<State>,
+    /// When a list or call last began or ended on it: how long it has
+    /// been idle.
+    last_used: Mutex<Instant>,
+    /// How many lists and calls are running on it now.
+    in_use: AtomicUsize,
+}
+
+/// A list or call using an instance: while it lives, the instance isn't
+/// idle. Taken under the `servers` lock that finds the instance, so a
+/// sweep can't stop it between the two.
+struct Busy(Arc<Instance>);
+
+impl Busy {
+    fn new(instance: Arc<Instance>) -> Busy {
+        instance.in_use.fetch_add(1, Ordering::SeqCst);
+        *lock(&instance.last_used) = Instant::now();
+        Busy(instance)
+    }
+}
+
+impl std::ops::Deref for Busy {
+    type Target = Instance;
+    fn deref(&self) -> &Instance {
+        &self.0
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        *lock(&self.0.last_used) = Instant::now();
+        self.0.in_use.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 enum State {
@@ -516,6 +550,89 @@ impl McpState {
             keys.iter().filter_map(|key| running.remove(key)).collect()
         };
         stop_all(gone);
+    }
+
+    /// The saved secret values of the enabled `servers`, by server id and
+    /// key (`env/NAME`), for a daemon that has no keychain (Q11). A value
+    /// not saved, or that can't be read, is left out: the server then says
+    /// so when it starts. Read on a blocking thread.
+    pub async fn saved_secrets(
+        &self,
+        servers: &[McpServer],
+    ) -> BTreeMap<String, BTreeMap<String, Secret>> {
+        let source = lock(&self.0.secrets).clone();
+        let servers: Vec<McpServer> = servers.iter().filter(|s| s.enabled).cloned().collect();
+        let Some(source) = source else {
+            return BTreeMap::new();
+        };
+        let read = crate::rt::spawn_blocking(move || {
+            let mut all = BTreeMap::new();
+            for server in &servers {
+                let mut found = BTreeMap::new();
+                for value in server.transport.values() {
+                    if !value.secret || value.name.trim().is_empty() {
+                        continue;
+                    }
+                    let key = server.transport.secret_key(&value.name);
+                    match source(&server.id, &key) {
+                        Ok(Some(secret)) => {
+                            found.insert(key, Secret(secret));
+                        }
+                        Ok(None) => {}
+                        Err(e) => log::warn!(
+                            "MCP server {}: the saved value {key} couldn't be read: {e}",
+                            server.id
+                        ),
+                    }
+                }
+                if !found.is_empty() {
+                    all.insert(server.id.clone(), found);
+                }
+            }
+            all
+        })
+        .await;
+        read.unwrap_or_else(|e| {
+            log::warn!("MCP servers' saved secrets couldn't be read: {e}");
+            BTreeMap::new()
+        })
+    }
+
+    /// Stops the servers not used for `unused_for` and not in use now: a
+    /// daemon's sweep, since nothing else ends its servers (Q11). The next
+    /// use starts one again.
+    pub fn stop_idle(&self, unused_for: Duration) {
+        let gone = self.take(|instance| {
+            instance.in_use.load(Ordering::SeqCst) == 0
+                && lock(&instance.last_used).elapsed() >= unused_for
+        });
+        stop_all(gone);
+    }
+
+    /// Stops the command servers started in `folder`: a chat's worktree
+    /// that went (Q11).
+    pub fn stop_in(&self, folder: &Path) {
+        let gone: Vec<Arc<Instance>> = {
+            let mut running = lock(&self.0.servers);
+            let keys: Vec<Key> = running
+                .keys()
+                .filter(|(_, at)| at.as_deref() == Some(folder))
+                .cloned()
+                .collect();
+            keys.iter().filter_map(|key| running.remove(key)).collect()
+        };
+        stop_all(gone);
+    }
+
+    /// Removes the instances `which` picks, from the running ones.
+    fn take(&self, which: impl Fn(&Instance) -> bool) -> Vec<Arc<Instance>> {
+        let mut running = lock(&self.0.servers);
+        let keys: Vec<Key> = running
+            .iter()
+            .filter(|(_, instance)| which(instance))
+            .map(|(key, _)| key.clone())
+            .collect();
+        keys.iter().filter_map(|key| running.remove(key)).collect()
     }
 
     /// The tools of the enabled `servers`, for a run whose project is
@@ -651,22 +768,24 @@ impl McpState {
 
     /// The server where it runs for `project`: a running one with the same
     /// settings, else a new one, which replaces one with other settings.
-    fn instance(&self, server: &McpServer, project: Option<&Path>) -> Arc<Instance> {
+    fn instance(&self, server: &McpServer, project: Option<&Path>) -> Busy {
         let key = (server.id.clone(), folder_for(&server.transport, project));
         let mut running = lock(&self.0.servers);
         if let Some(instance) = running.get(&key) {
             if instance.transport == server.transport {
-                return instance.clone();
+                return Busy::new(instance.clone());
             }
         }
         let instance = Arc::new(Instance {
             transport: server.transport.clone(),
             state: tokio::sync::Mutex::new(State::Down),
+            last_used: Mutex::new(Instant::now()),
+            in_use: AtomicUsize::new(0),
         });
         if let Some(old) = running.insert(key, instance.clone()) {
             stop_all(vec![old]);
         }
-        instance
+        Busy::new(instance)
     }
 
     /// The instance's session: the running one, else one started now. One

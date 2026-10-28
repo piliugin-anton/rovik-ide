@@ -155,6 +155,44 @@ async fn an_mcp_tool_is_called_once_the_user_approves_it() {
     assert_eq!(*got.lock().unwrap(), ["bash: {\"command\":\"ls\"}"]);
 }
 
+/// Q11 (mcp-plan-2.md): a daemon's runs get the `mcp` tool too.
+#[tokio::test]
+async fn a_run_on_a_daemon_calls_mcp_tools() {
+    let h = harness(&[]).await;
+    h.core.agents.set_on_server();
+    let (_rovik, docs, got) = docs_server().await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "m1",
+            name: "mcp",
+            args: json!({ "tool": "docs.bash", "arguments": { "command": "ls" } }),
+        },
+        Reply::Text("Listed."),
+    ])
+    .await;
+    let request = h.request(
+        &url,
+        Harness::send("List the docs host"),
+        quiet_permissions(),
+    );
+    h.start(with_docs(request, &docs)).await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    assert!(
+        agent_resolve_approval(
+            &h.core,
+            h.dialog_id.clone(),
+            "m1".into(),
+            ApprovalDecision::Allow
+        )
+        .await
+    );
+    assert_eq!(h.run_end().await, "done");
+    let first = seen.lock().unwrap()[0].clone();
+    assert_eq!(tool_names(&first).iter().filter(|n| *n == "mcp").count(), 1);
+    assert_eq!(*got.lock().unwrap(), ["bash: {\"command\":\"ls\"}"]);
+}
+
 /// Q07: the user can let MCP calls run without asking.
 #[tokio::test]
 async fn mcp_calls_run_without_asking_when_the_rule_says_so() {

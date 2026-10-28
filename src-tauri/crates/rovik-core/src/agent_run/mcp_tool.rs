@@ -60,16 +60,12 @@ pub struct Catalog {
 
 impl Catalog {
     /// The tools of the user's enabled `servers`, for a run whose project
-    /// is `project`: none on a cloud host's or WSL's daemon, where the
-    /// servers don't run (Q01), nor without servers.
+    /// is `project`: none without servers.
     pub async fn list(
         core: &Core,
         servers: &[McpServer],
         project: Option<&str>,
     ) -> Option<Arc<Catalog>> {
-        if core.agents.on_server() {
-            return None;
-        }
         let servers: Vec<McpServer> = servers
             .iter()
             .filter(|s| s.enabled && is_valid_name(&s.name))
