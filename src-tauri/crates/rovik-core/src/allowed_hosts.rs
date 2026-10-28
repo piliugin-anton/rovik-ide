@@ -19,7 +19,8 @@
 //! through the filter ([`filter`], J03), one listening for each client where
 //! that client reaches it ([`filter_port`]). A command's sandbox leaves it
 //! no other way out ([`hold`]): on Linux the agent's network is sealed but
-//! for the filter (J04-J06).
+//! for the filter (J04-J06), on macOS Seatbelt keeps it to the loopback
+//! (J07).
 
 use crate::net::BrowserProxy;
 use crate::overlay::confine::network::{self, Network};
@@ -199,8 +200,16 @@ fn held(confine: Confine) -> Result<(Confine, Option<Arc<Network>>), String> {
     Ok((confine.with_network(network.clone()), Some(network)))
 }
 
-/// Nowhere else is a command held to the list yet.
-#[cfg(not(target_os = "linux"))]
+/// `confine` under Seatbelt's rules for the loopback alone, the proxies'
+/// ports there closed too (J07): the filter listens on 127.0.0.1.
+#[cfg(target_os = "macos")]
+fn held(confine: Confine) -> Result<(Confine, Option<Arc<Network>>), String> {
+    Ok((confine.to_loopback(crate::net::proxies_here()), None))
+}
+
+/// Nowhere else is a command held to the list: Windows runs the agent's
+/// commands in WSL, under Linux's (J08).
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn held(_confine: Confine) -> Result<(Confine, Option<Arc<Network>>), String> {
     Err(
         "The user's allowed hosts are on, and the agent's commands can't be held to them on this \
@@ -586,8 +595,9 @@ mod tests {
     /// While the list is on, a command's only way out is the filter: a host
     /// off the list is refused and named for the model, an address isn't
     /// reached directly, and a server left running from before is stopped
-    /// (J03-J05). In a process of its own, as the list is the process's.
-    #[cfg(target_os = "linux")]
+    /// (J03-J05, J07). In a process of its own, as the list is the
+    /// process's.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_command_reaches_the_network_only_through_the_filter() {
         crate::testing::in_a_process_of_its_own(
@@ -595,7 +605,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     #[ignore = "run in a process of its own by a_command_reaches_the_network_only_through_the_filter"]
     fn a_held_command_in_a_process_of_its_own() {
@@ -603,8 +613,12 @@ mod tests {
         use crate::agent_run::StopSignal;
         let dir = crate::testing::temp_dir();
         let sandboxed = crate::overlay::confine::hiding_if_available(&dir.0).is_some();
-        if crate::distro::which("pasta").is_none() || !crate::process::on_path("curl") || !sandboxed
-        {
+        // Linux seals the network with pasta.
+        #[cfg(target_os = "linux")]
+        let sealable = crate::distro::which("pasta").is_some();
+        #[cfg(not(target_os = "linux"))]
+        let sealable = true;
+        if !sealable || !crate::process::on_path("curl") || !sandboxed {
             eprintln!("pasta, curl or the sandbox is missing here: skipped");
             return;
         }

@@ -331,8 +331,8 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
         <div class="settings-section-title">Network</div>
         <p class="settings-hint">
           Hosts the agent may reach: its web search, the pages it opens and screenshots, Claude
-          Code’s web fetch, and on Linux and WSL its commands, which have no other way out. This
-          computer’s own services (localhost) are always reachable.
+          Code’s web fetch, and its commands, which have no other way out. This computer’s own
+          services (localhost) are always reachable.
         </p>
 
         <SettingRow label="Can reach">

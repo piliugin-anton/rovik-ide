@@ -1300,6 +1300,12 @@ servers kept. The sealed network needs pasta (the `passt` package): where
 it can't be made, the agent's commands are refused while the list is on,
 with why.
 
+On macOS, Seatbelt holds the agent's commands to this computer's own
+services (`localhost`), where the filter listens, and a proxy of yours
+there is closed to them. Names can still be looked up there, as macOS
+answers them through a service of its own, so a command could carry a
+little data out in a name it looks up.
+
 ### Steering
 
 In Agent mode, Enter (or the Send arrow beside Stop) sends what's typed to

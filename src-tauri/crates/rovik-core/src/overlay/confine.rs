@@ -31,8 +31,9 @@
 //!   ([`network`], Linux), which the command joins before its sandbox's own
 //!   steps: its servers' ports are this user's alone. While the user's
 //!   allowed hosts are on, the agent's network is sealed but for their
-//!   filter, on a desktop too (allowed_hosts.rs,
-//!   docs/design/allowed-hosts-plan.md).
+//!   filter, on a desktop too, and on macOS Seatbelt keeps a command's
+//!   connections to the loopback (`loopback_only`): allowed_hosts.rs,
+//!   docs/design/allowed-hosts-plan.md.
 //!
 //! The policy is the same on every operating system. A [`Mechanism`] is how
 //! one OS enforces it, and each OS module ([`linux`], [`macos`],
@@ -88,6 +89,11 @@ pub struct Confine {
     /// ([`network::agents`]), a team server's, or on a desktop and in WSL
     /// the sealed one made while the allowed hosts are on; none otherwise.
     pub network: Option<std::sync::Arc<network::Network>>,
+    /// Its connections out reach the loopback alone, but not these of its
+    /// ports (the proxies' there): where the allowed hosts hold it on
+    /// macOS, with Seatbelt ([`Confine::to_loopback`]). On Linux the
+    /// agent's sealed network does.
+    pub loopback_only: Option<Vec<u16>>,
 }
 
 impl Confine {
@@ -103,6 +109,7 @@ impl Confine {
             view,
             project,
             network: None,
+            loopback_only: None,
         }
         .in_agents_network()
     }
@@ -119,6 +126,7 @@ impl Confine {
             view: root.clone(),
             project: root,
             network: None,
+            loopback_only: None,
         }
         .in_agents_network()
     }
@@ -155,6 +163,14 @@ impl Confine {
             network.join(&mut cmd);
         }
         cmd
+    }
+
+    /// With its connections out reaching the loopback alone, but not
+    /// `closed`'s ports there (the proxies'): the allowed hosts' hold on
+    /// macOS (allowed-hosts-plan.md, J07).
+    pub fn to_loopback(mut self, closed: Vec<u16>) -> Confine {
+        self.loopback_only = Some(closed);
+        self
     }
 
     /// With `dir` writable too (a chat's build folder).
@@ -1272,7 +1288,25 @@ fn seatbelt_profile(c: &Confine) -> (String, Vec<(String, PathBuf)>) {
     if !closed.is_empty() {
         profile += &format!("(deny network-outbound {})\n", any(closed));
     }
+    if let Some(ports) = &c.loopback_only {
+        profile += &loopback_rules(ports);
+    }
     (profile, params)
+}
+
+/// Seatbelt's rules for connections out that reach the loopback alone, but
+/// not its `closed` ports (the proxies' there): the allowed hosts' on macOS
+/// (allowed-hosts-plan.md, J07). Each rule says all it means, so nothing
+/// rests on which of two rules Seatbelt prefers.
+fn loopback_rules(closed: &[u16]) -> String {
+    let mut rules = String::from(
+        "(deny network-outbound (require-all (remote ip \"*:*\") \
+         (require-not (remote ip \"localhost:*\"))))\n",
+    );
+    for port in closed {
+        rules += &format!("(deny network-outbound (remote ip \"localhost:{port}\"))\n");
+    }
+    rules
 }
 
 /// Each command runs under `sandbox-exec` with the policy's profile
@@ -1508,6 +1542,7 @@ mod seatbelt_profile_tests {
             sockets: Vec::new(),
             read_only: vec![bin.clone(), config.clone(), root.join("gone")],
             network: None,
+            loopback_only: None,
         };
         let (profile, params) = seatbelt_profile(&c);
         assert!(params.contains(&("R0".into(), bin.clone())));
@@ -1533,6 +1568,7 @@ mod seatbelt_profile_tests {
             sockets: Vec::new(),
             read_only: Vec::new(),
             network: None,
+            loopback_only: None,
         };
         let (profile, params) = seatbelt_profile(&c);
         let names: Vec<(&str, &Path)> = params
@@ -1587,6 +1623,7 @@ mod seatbelt_socket_tests {
             sockets: vec![runtime.clone(), agent.clone(), root.join("gone")],
             read_only: Vec::new(),
             network: None,
+            loopback_only: None,
         };
         let (profile, params) = seatbelt_profile(&c);
         assert!(params.contains(&("S0".to_string(), runtime.clone())));
@@ -1599,6 +1636,36 @@ mod seatbelt_socket_tests {
             r#"(deny network-outbound (require-any (subpath (param "S0")) (literal (param "S1"))))"#
         ));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Held to the loopback (the allowed hosts on macOS), a command's
+    /// connections out reach it alone, and not a proxy's port there.
+    #[test]
+    fn held_to_the_loopback_the_profile_denies_other_addresses_and_the_proxies() {
+        let root = std::env::temp_dir();
+        let c = Confine {
+            view: root.clone(),
+            project: root.clone(),
+            hide: Vec::new(),
+            writable: Vec::new(),
+            sockets: Vec::new(),
+            read_only: Vec::new(),
+            network: None,
+            loopback_only: None,
+        };
+        assert!(!seatbelt_profile(&c).0.contains("remote ip"));
+        let (profile, _) = seatbelt_profile(&c.to_loopback(vec![3128, 1080]));
+        assert!(
+            profile.contains(
+                "(deny network-outbound (require-all (remote ip \"*:*\") \
+                 (require-not (remote ip \"localhost:*\"))))\n"
+            ),
+            "{profile}"
+        );
+        for port in [3128, 1080] {
+            let closed = format!("(deny network-outbound (remote ip \"localhost:{port}\"))\n");
+            assert!(profile.contains(&closed), "{profile}");
+        }
     }
 }
 
@@ -1661,6 +1728,7 @@ mod macos_tests {
             sockets: Vec::new(),
             read_only: Vec::new(),
             network: None,
+            loopback_only: None,
         };
         let script = format!(
             "echo ok > {m}/a.txt && echo gone > /dev/null && \
@@ -1702,6 +1770,7 @@ mod macos_tests {
             sockets: Vec::new(),
             read_only: Vec::new(),
             network: None,
+            loopback_only: None,
         };
         let script = format!(
             "cat {s}/key {d}/keys.json {w}/.ssh/id 2>/dev/null; \
@@ -1720,6 +1789,66 @@ mod macos_tests {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(!secret.join("planted").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Held to the loopback (the allowed hosts, allowed-hosts-plan.md J07),
+    /// a command reaches a server there, but not the same server at this
+    /// computer's own address, nor a proxy's port on the loopback.
+    #[test]
+    fn held_to_the_loopback_a_command_reaches_it_alone() {
+        let root = fresh("sbloopback");
+        let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
+        // This computer's address on its way out: connecting a UDP socket
+        // sends nothing.
+        let address = std::net::UdpSocket::bind("0.0.0.0:0")
+            .and_then(|socket| {
+                socket.connect("192.0.2.1:80")?;
+                socket.local_addr()
+            })
+            .map(|local| local.ip())
+            .ok()
+            .filter(|ip| !ip.is_loopback());
+        let Some(address) = address else {
+            eprintln!("no address of this computer's own: skipped");
+            return;
+        };
+        let reach = |host: &str, port: u16| format!("nc -z -G 2 {host} {port}; echo $?");
+        let script = [
+            reach("127.0.0.1", port),
+            reach(&address.to_string(), port),
+            reach("127.0.0.1", proxy_port),
+        ]
+        .join("; ");
+        let free = Confine {
+            view: root.clone(),
+            project: root.clone(),
+            hide: Vec::new(),
+            writable: vec![root.clone()],
+            sockets: Vec::new(),
+            read_only: Vec::new(),
+            network: None,
+            loopback_only: None,
+        };
+        // Not held, it reaches all three.
+        let out = run(&free, &root, &script);
+        assert_eq!(
+            stdout(&out),
+            "0\n0\n0\n",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = run(&free.to_loopback(vec![proxy_port]), &root, &script);
+        assert_eq!(
+            stdout(&out),
+            "0\n1\n1\n",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        drop((server, proxy));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -1744,6 +1873,7 @@ mod tests {
             sockets: Vec::new(),
             read_only: Vec::new(),
             network: None,
+            loopback_only: None,
         };
         (root, c)
     }
