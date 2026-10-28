@@ -3337,3 +3337,44 @@ with its folders, all or none, how the notice names the workspace, and which fol
 window leaving a workspace at work keeps. The Git panel item says a repository that is one
 of the folders goes by the folder's name. Getting started (H01) and the chats across
 folders (E–G) were written with their tasks. `npm run format:check` passes.
+
+**H03 — the e2e steps.** `run.mjs` runs section 8's steps after the project's restart
+(`workspaceSteps`) on `web`, set up beside demo: a repository of its own on a branch
+`trunk`, with a `README.md` as demo has and a line search finds in each, added through
+the dialog's path field. Create a workspace… made from the open project is named "demo +
+web" and shows a row per folder; each folder's README.md opens in a tab told apart by "·
+demo" and "· web"; a search lists demo's match, then web's, under their names; the Git
+tab has a section per repository with its branch (main, trunk), and one commit lands in
+each; New chat with web checked (`newChatIn`) writes a file that lands in web alone; New
+chat with both checked writes a file in each through a workspace chat, and both land (on
+Linux; elsewhere New chat must say why it can't check a second folder); Remove from
+workspace closes web's tabs and keeps demo's; a Rovik started on demo brings this window
+to the front; and a restart brings the workspace back with demo's tabs. `e2e.yml`
+installs `fuse3` in the Linux job.
+Fixes: since the branch offer, a new chat's first message with its repository on main
+asks whether to make a branch for the chat, and nothing answered it, so the project's
+first chat step waited out its reply: it now answers No and not again
+(`answerBranchQuestion`); the workspace's chats answer it if they're asked. Step 2 waits
+for each folder's `.rovik` row: web's ID file is written as the workspace opens, and its
+row coming moved the rows under it, so a click opened web's notes.txt.
+Departures: section 8 keeps the project's steps unchanged, but with FUSE every chat on
+the Linux job is isolated, which they weren't there before, so two of them now go as
+they're meant to with isolated chats: the Autopilot step ticks the project's tests on
+Settings → Project checks first (and unticks them after), as Autopilot lands only what a
+check ran on (V02); and the project's restart compares the tabs of the project's files,
+as a tab of a file in an isolated chat's view (its write, opened behind) can't come
+back: a start doesn't mount the view.
+Run here on Linux (xvfb, WebKitWebDriver, FUSE): 51 of 53 steps pass, every workspace
+step among them, step 6 landing in both folders. The other two fail without workspaces:
+the approval step's **By you** for file edits is below the settings dialog's visible
+part at 1200×800, and the click helper takes the window's visible part, not the
+dialog's, so the click misses (scrolling the button into view first fixes it); and the
+publish step reads the branch's upstream as soon as the remote has the commit, before
+the push has written it (a race of the step's own; it passed in the run before). macOS
+and Windows weren't run here: there step 6 checks New chat's reason, and on Windows,
+whose chats run in WSL, step 5 goes as the project's chat steps do. Found, left as it
+is: with **Open the files the agent edits** on, an isolated chat's write opens a tab of
+the file in the chat's view (`/tmp/rovik-ide-<uid>/chats/<id>/…`), not the project's
+file with the landing, as the agent-write step's comment expects. A workspace chat is
+always isolated, so its writes do so too, and the message box then says the file isn't
+in the window's folders (F14e).

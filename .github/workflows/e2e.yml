@@ -350,6 +350,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      # fuse3: the virtual files a chat across a workspace's folders works in
+      # (the workspace steps), as the isolated chats' views are.
       - name: Install the system's packages
         run: |
           sudo apt-get update
@@ -357,7 +359,7 @@ jobs:
             libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev \
             librsvg2-dev libayatana-appindicator3-dev libssl-dev \
             libsoup-3.0-dev libxdo-dev pkg-config \
-            webkit2gtk-driver xvfb xdotool imagemagick dbus-x11
+            webkit2gtk-driver xvfb xdotool imagemagick dbus-x11 fuse3
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

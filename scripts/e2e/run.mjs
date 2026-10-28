@@ -38,6 +38,8 @@ const SHOTS = join(OUT, 'shots');
 const WORK = join(OUT, 'work');
 const PROJECTS = join(WORK, 'projects');
 const DEMO = join(PROJECTS, 'demo');
+// A workspace's second folder (the workspace steps): a repository of its own.
+const WEB = join(PROJECTS, 'web');
 const MODEL_PORT = Number(args['model-port'] ?? 18080);
 const ONLY = args.only ? new RegExp(args.only, 'i') : null;
 const DRIVER = args.driver ?? (PLATFORM === 'darwin' ? 'bridge' : 'webdriver');
@@ -171,6 +173,17 @@ function setupProject() {
   git(WORK, 'clone', '-q', remote, other);
   git(other, 'config', 'user.email', 'other@example.com');
   git(other, 'config', 'user.name', 'Other');
+  // The workspace's second folder, beside demo: a README.md as demo has
+  // one, a line search finds in each, and a branch of its own name.
+  write(join(WEB, 'README.md'), '# Web\n\nThe client, beside the demo project.\n');
+  write(join(WEB, 'notes.txt'), 'web notes\nfind me here too\n');
+  git(WEB, 'init', '-q');
+  git(WEB, 'checkout', '-q', '-b', 'trunk');
+  git(WEB, 'config', 'user.email', 'e2e@example.com');
+  git(WEB, 'config', 'user.name', 'E2E');
+  git(WEB, 'config', 'core.autocrlf', 'false');
+  git(WEB, 'add', '-A');
+  git(WEB, 'commit', '-qm', 'Initial commit');
 }
 
 // --- processes ------------------------------------------------------------
@@ -1998,6 +2011,9 @@ async function run() {
     await sidebar('AI Chat');
     await waitFor(() => d.exists('.chat-input-contenteditable'), 'the chat');
     await send('Hello there, what is this project?');
+    // The project is on main: a new chat is asked about a branch of its
+    // own first. No, and not again: the chats after this one aren't asked.
+    await answerBranchQuestion({ again: false });
     await waitFor(
       async () => (await chatText()).includes('Echo of your message'),
       'the reply',
@@ -2332,7 +2348,33 @@ async function run() {
     }
   );
 
+  /**
+   * Settings → Project checks: the project's tests ticked (`on`) or not.
+   * Each check is off until it's ticked.
+   */
+  async function projectTests(on) {
+    await click('.sidebar-settings-button');
+    await waitFor(() => d.exists('.settings-menu-item'), 'the settings menu');
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('.settings-menu-item')].find((b) => b.innerText.trim().startsWith('Project checks'));`,
+        'page'
+      )
+    );
+    // Found again each time: the list is drawn anew as it's saved.
+    const box = '.modal .project-check input[aria-label="Run Tests"]';
+    await waitFor(() => d.exists(box), "the project's tests");
+    const checked = () => d.exec('return document.querySelector(arguments[0])?.checked', box);
+    if ((await checked()) !== on) await click(box);
+    await waitFor(async () => (await checked()) === on, `the tests ${on ? 'ticked' : 'unticked'}`);
+    await closeModal();
+  }
+
   await step('autopilot: a task runs to its delivery, each stage shown as it goes', async () => {
+    // Autopilot lands only what a check ran on: a task in a chat of its own
+    // view (isolated, as with the Linux job's FUSE) is delivered once the
+    // project's tests pass on it. Unticked after, as the steps after had it.
+    await projectTests(true);
     try {
       await autopilotTask();
     } finally {
@@ -2340,6 +2382,9 @@ async function run() {
       // provider's model.
       await click(await buttonByText('Agent', '.mode-selector')).catch(() => {});
       await pickModel('Fake').catch(() => {});
+      await projectTests(false).catch((e) =>
+        note(`the project's tests stayed ticked: ${e?.message ?? e}`)
+      );
     }
   });
 
@@ -2541,7 +2586,15 @@ async function run() {
   });
 
   await step('restart: the project and its tabs come back', async () => {
-    const open = (await tabs()).filter((t) => !t.includes('(')).map((t) => t.replace(' •', ''));
+    // The tabs of the project's files. One of a file in an isolated chat's
+    // own view (its write, opened behind; the Linux job has FUSE) isn't
+    // one: a start doesn't mount the view, so it can't come back.
+    const open = (
+      await d.exec(
+        `return [...document.querySelectorAll('.tab')].filter((t) => t.title.startsWith(arguments[0])).map((t) => t.innerText.split('\\n')[0])`,
+        DEMO
+      )
+    ).map((t) => t.replace(' •', ''));
     await d.quit();
     await sleep(2000);
     await startApp();
@@ -2549,6 +2602,318 @@ async function run() {
     const now = await tabs();
     for (const name of open)
       assert(now.includes(name), `tab ${name} not restored (${now.join(', ')})`);
+  });
+
+  await workspaceSteps();
+}
+
+/**
+ * A new chat's first message, its repository on its main branch, asks
+ * whether to make a branch for the chat first (lib/chatBranch.ts): No, if
+ * it's asked, and with `again` false not again in this run. Waits for the
+ * run to start, or for the question.
+ */
+async function answerBranchQuestion({ again = true } = {}) {
+  const asked = () =>
+    d.exec(
+      `return [...document.querySelectorAll('.confirm-dialog')].some((el) => el.innerText.includes('ask again'))`
+    );
+  await waitFor(
+    async () => (await asked()) || (await d.exists('.chat-send-button.stop')),
+    'the run, or the branch question',
+    30_000
+  );
+  if (!(await asked())) return;
+  if (!again) await click('.confirm-dialog .pull-strategy-remember input[type=checkbox]');
+  await click(await buttonByText('No', '.confirm-dialog'));
+}
+
+/**
+ * New chat's menu, with several folders (D2): the folders `names` checked,
+ * the others not, then Start chat. Without virtual files a box checked
+ * unchecks the one checked before, so the boxes are gone over twice.
+ */
+async function newChatIn(names) {
+  await click('.chat-controls button[title="New chat"]');
+  await waitFor(() => d.exists('.folder-menu .new-chat-start'), "New chat's menu");
+  const boxes = () =>
+    d.exec(
+      `return [...document.querySelectorAll('.folder-menu li[role=menuitemcheckbox]:not(.folder-menu-all)')].map((li) => ({ name: li.querySelector('.context-menu-label')?.textContent, checked: li.getAttribute('aria-checked') === 'true' }))`
+    );
+  for (let pass = 0; pass < 2; pass++) {
+    for (const box of await boxes()) {
+      if (names.includes(box.name) === box.checked) continue;
+      await click(
+        await mark(
+          `return [...document.querySelectorAll('.folder-menu li[role=menuitemcheckbox]')].find((li) => li.querySelector('.context-menu-label')?.textContent === ${JSON.stringify(box.name)});`,
+          'box'
+        )
+      );
+    }
+  }
+  const checked = (await boxes()).filter((box) => box.checked).map((box) => box.name);
+  assert(
+    checked.join() === names.join(),
+    `checked ${checked.join(', ') || 'none'}, not ${names.join(', ')}`
+  );
+  await click('.folder-menu .new-chat-start');
+}
+
+/**
+ * Workspaces (docs/design/workspaces-plan.md, section 8): demo and a second
+ * folder, web, in one window, made from the project the steps before
+ * opened, which they leave as it was. A chat across both folders needs
+ * virtual files: on Linux the job has FUSE, and elsewhere New chat says why
+ * it can't check a second folder.
+ */
+async function workspaceSteps() {
+  await step(
+    'workspace: create one from the open project, add a second folder; each is a row in the tree',
+    async () => {
+      await sidebar('Files');
+      await click('.project-switcher-trigger');
+      await click(await buttonByText('Create a workspace…'));
+      await waitFor(() => d.exists('.new-workspace-dialog'), 'the New workspace dialog');
+      await waitFor(
+        async () => (await panelText('.new-workspace-folders')).includes(DEMO),
+        'the open folder listed'
+      );
+      // The native picker can't be driven: the second folder by its path.
+      await setInput('.new-workspace-path', WEB);
+      await click(await buttonByText('Add', '.new-workspace-dialog'));
+      await waitFor(
+        () =>
+          d.exec(
+            `return document.querySelectorAll('.new-workspace-folder').length === 2 &&
+              !document.querySelector('.new-workspace-folder .new-project-note.error') &&
+              !document.querySelector('.new-workspace-dialog button.primary').disabled`
+          ),
+        'both folders checked, and Create on',
+        15_000
+      );
+      const name = await d.exec(`return document.querySelector('#new-workspace-name').value`);
+      assert(name === 'demo + web', `the name the folders give it: ${name}`);
+      await click('.new-workspace-dialog button.primary');
+      await waitFor(
+        async () => (await panelText('.project-switcher-name')) === 'demo + web',
+        'the switcher to name the workspace',
+        15_000
+      );
+      await waitFor(
+        async () => {
+          const shown = await rows();
+          return shown.includes(DEMO) && shown.includes(WEB);
+        },
+        'a row for each folder',
+        15_000
+      );
+    }
+  );
+
+  await step(
+    'workspace: the same file name in each folder opens two tabs, told apart',
+    async () => {
+      // web's .rovik (its project ID, written as the workspace opens) shows
+      // up a moment later and moves the rows under it: the rows are clicked
+      // once each folder's is there.
+      await waitFor(
+        async () => (await rows()).filter((title) => title === '.rovik').length === 2,
+        "each folder's .rovik in the tree"
+      );
+      // The first README.md row is demo's, under its folder's row; the second web's.
+      for (const at of [1, 0]) {
+        await click(
+          await mark(
+            `return [...document.querySelectorAll('.tree-row')].filter((r) => r.title === 'README.md')[${at}];`,
+            'readme'
+          )
+        );
+        await sleep(500);
+      }
+      const hints = () =>
+        d.exec(
+          `return [...document.querySelectorAll('.tab')].filter((t) => t.innerText.startsWith('README.md')).map((t) => t.querySelector('.tab-hint')?.textContent ?? '')`
+        );
+      await waitFor(
+        async () => (await hints()).sort().join() === '· demo,· web',
+        'two README.md tabs, told apart by their folders'
+      );
+    }
+  );
+
+  await step('workspace: search finds a match in each folder', async () => {
+    await click('input[placeholder="Search in files"]');
+    await typeKeys('find me');
+    try {
+      // Each folder's results under its own name: demo's line, then web's.
+      const found = () =>
+        d.exec(
+          `return [...document.querySelectorAll('.search-folder-header, .search-line')].map((e) => e.textContent.trim())`
+        );
+      await waitFor(
+        async () => {
+          const shown = await found();
+          const web = shown.indexOf('web');
+          return (
+            shown[0] === 'demo' &&
+            web > 1 &&
+            shown.slice(1, web).some((line) => line.includes('find me here')) &&
+            shown.slice(web + 1).some((line) => line.includes('find me here too'))
+          );
+        },
+        "each folder's match under its name",
+        15_000
+      );
+    } finally {
+      // The tree comes back for the steps after.
+      await click('input[placeholder="Search in files"]');
+      await keys([MOD, 'a'], Keys.BACKSPACE, Keys.ESC);
+    }
+  });
+
+  await step(
+    'workspace: git lists both repositories with their branches; one commit lands in each',
+    async () => {
+      write(join(DEMO, 'workspace.txt'), 'demo, in a workspace\n');
+      write(join(WEB, 'workspace.txt'), 'web, in a workspace\n');
+      await sidebar('Git');
+      const sections = () =>
+        d.exec(
+          `return [...document.querySelectorAll('.git-repo-section')].map((s) => ({
+            name: s.querySelector('.git-repo-name')?.textContent,
+            branch: s.querySelector('.git-branch-name')?.textContent,
+            files: s.querySelectorAll('.git-file-row').length,
+          }))`
+        );
+      await waitFor(
+        async () => {
+          const found = await sections();
+          const of = (name) => found.find((s) => s.name === name);
+          return (
+            found.length === 2 &&
+            of('demo')?.branch === 'main' &&
+            of('web')?.branch === 'trunk' &&
+            found.every((s) => s.files > 0)
+          );
+        },
+        'a section per repository, with its branch and its changes',
+        20_000
+      );
+      await click('textarea[placeholder="Commit message"], input[placeholder="Commit message"]');
+      await typeKeys('E2E workspace changes');
+      await click(await buttonByText('Commit'));
+      await waitFor(
+        () =>
+          git(DEMO, 'log', '-1', '--format=%s') === 'E2E workspace changes' &&
+          git(WEB, 'log', '-1', '--format=%s') === 'E2E workspace changes',
+        'one commit in each repository',
+        30_000
+      );
+    }
+  );
+
+  await step(
+    'workspace: New chat with the second folder checked starts a chat there, which changes a file there',
+    async () => {
+      await sidebar('AI Chat');
+      await newChatIn(['web']);
+      await send(
+        'Write in web.\n@tool write {"path":"from-chat.txt","content":"from a chat of web\\n"}\n@text Wrote it.'
+      );
+      await answerBranchQuestion();
+      await waitFor(
+        () => existsSync(join(WEB, 'from-chat.txt')),
+        'the file in web, landed',
+        60_000
+      );
+      assert(!existsSync(join(DEMO, 'from-chat.txt')), 'demo has none of it');
+    }
+  );
+
+  await step(
+    'workspace: New chat with both folders checked starts a workspace chat, which changes a file in each, and both land',
+    async () => {
+      await click('.chat-controls button[title="New chat"]');
+      await waitFor(() => d.exists('.folder-menu .new-chat-start'), "New chat's menu");
+      const why = await d.exec(
+        `return document.querySelector('.folder-menu .folder-menu-all.folder-menu-off .folder-menu-why')?.textContent ?? null`
+      );
+      await keys(Keys.ESC);
+      if (why) {
+        // No virtual files here (macOS without macFUSE; Windows, whose
+        // runner can't run WSL): New chat can't check a second folder, and
+        // says why. The Linux job has FUSE, so there it must work.
+        assert(PLATFORM !== 'linux', `a chat across folders can't start: ${why}`);
+        note(`a chat across folders can't start here: ${why}`);
+        return;
+      }
+      await newChatIn(['demo', 'web']);
+      await send(
+        'Write in both.\n@tool write {"path":"demo/both.txt","content":"demo side\\n"}\n@tool write {"path":"web/both.txt","content":"web side\\n"}\n@text Wrote both.'
+      );
+      await answerBranchQuestion();
+      await waitFor(
+        () => existsSync(join(DEMO, 'both.txt')) && existsSync(join(WEB, 'both.txt')),
+        'a file landed in each folder',
+        120_000
+      );
+      assert(
+        readFileSync(join(WEB, 'both.txt'), 'utf8') === 'web side\n',
+        "web's file as the chat wrote it"
+      );
+    }
+  );
+
+  await step('workspace: a folder removed closes its tabs; the other folder stays', async () => {
+    await sidebar('Files');
+    const opened = async () => (await tabTitles()).filter((title) => title?.startsWith(WEB));
+    assert((await opened()).length > 0, "a tab of web's open");
+    await contextMenu(row(WEB), 'Remove from workspace');
+    await waitFor(async () => !(await rows()).includes(WEB), 'web gone from the tree', 15_000);
+    await waitFor(async () => (await opened()).length === 0, "web's tabs closed");
+    assert((await rows()).includes(DEMO), "demo's row stays");
+    assert(
+      (await tabTitles()).some((title) => title?.startsWith(DEMO)),
+      "demo's tabs stay"
+    );
+  });
+
+  if (SECOND_APP) {
+    await step(
+      "instances: the workspace's folder opened in another window brings this one to the front",
+      async () => {
+        const before = askedToFront(join(OUT, 'app.log'));
+        const second = launchRovik([DEMO], 'second-on-workspace-folder');
+        const code = await exited(second, 60_000);
+        assert(code === 0, `the second Rovik ended with ${code}`);
+        await waitFor(
+          async () => askedToFront(join(OUT, 'app.log')) > before,
+          'this window to be asked to the front',
+          10_000
+        );
+      }
+    );
+  }
+
+  await step('restart: the workspace and its tabs come back', async () => {
+    const open = (await tabTitles()).filter((title) => title?.startsWith(DEMO));
+    await d.quit();
+    await sleep(2000);
+    await startApp();
+    await waitFor(
+      async () => (await panelText('.project-switcher-name')) === 'demo + web',
+      'the workspace restored',
+      30_000
+    );
+    await waitFor(async () => (await rows()).includes(DEMO), "its folder's row", 30_000);
+    await waitFor(
+      async () => {
+        const now = await tabTitles();
+        return open.every((title) => now.includes(title));
+      },
+      `its tabs (${open.join(', ')})`,
+      15_000
+    );
   });
 }
 
