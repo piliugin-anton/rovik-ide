@@ -55,7 +55,7 @@ const MAX_PAGES: usize = 50;
 
 /// Where a server's secret values come from: the app's keychain (Q02).
 /// Given the server's id and the value's key (`env/NAME`, `header/Name`),
-/// its value, or none when it isn't saved.
+/// its value, or none when it isn't saved. Called on a blocking thread.
 pub type SecretSource = Arc<dyn Fn(&str, &str) -> Result<Option<String>, String> + Send + Sync>;
 
 /// What a server offers a run (Q06).
@@ -710,7 +710,7 @@ impl McpState {
         folder: Option<&Path>,
         given: Option<&HashMap<String, String>>,
     ) -> Result<Session, String> {
-        let values = self.values(server, given)?;
+        let values = self.values(server, given).await?;
         let link = match &server.transport {
             McpTransport::Command { command, args, .. } => {
                 Link::Stdio(stdio::Stdio::start(command, args, &values, folder)?)
@@ -721,43 +721,51 @@ impl McpState {
     }
 
     /// A server's env vars or headers, each secret's value from `given`
-    /// or the keychain.
-    fn values(
+    /// or the keychain: read off the async threads, as the proxies'
+    /// passwords are (net), since the keychain may take a moment or ask
+    /// the user.
+    async fn values(
         &self,
         server: &McpServer,
         given: Option<&HashMap<String, String>>,
     ) -> Result<Vec<(String, String)>, String> {
         let source = lock(&self.0.secrets).clone();
-        server
-            .transport
-            .values()
-            .iter()
-            .filter(|v| !v.name.trim().is_empty())
-            .map(|value| {
-                if !value.secret {
-                    return Ok((value.name.clone(), value.value.clone()));
-                }
-                let key = server.transport.secret_key(&value.name);
-                if let Some(given) = given.and_then(|g| g.get(&key)) {
-                    return Ok((value.name.clone(), given.clone()));
-                }
-                let saved = match &source {
-                    Some(source) => source(&server.id, &key),
-                    None => Ok(None),
-                };
-                match saved {
-                    Ok(Some(secret)) => Ok((value.name.clone(), secret)),
-                    Ok(None) => Err(format!(
-                        "{}'s value isn't saved: enter it in Settings → MCP servers.",
-                        value.name
-                    )),
-                    Err(e) => Err(format!(
-                        "{}'s value couldn't be read from the keychain: {e}",
-                        value.name
-                    )),
-                }
-            })
-            .collect()
+        let server = server.clone();
+        let given = given.cloned().unwrap_or_default();
+        crate::rt::spawn_blocking(move || {
+            server
+                .transport
+                .values()
+                .iter()
+                .filter(|v| !v.name.trim().is_empty())
+                .map(|value| {
+                    if !value.secret {
+                        return Ok((value.name.clone(), value.value.clone()));
+                    }
+                    let key = server.transport.secret_key(&value.name);
+                    if let Some(given) = given.get(&key) {
+                        return Ok((value.name.clone(), given.clone()));
+                    }
+                    let saved = match &source {
+                        Some(source) => source(&server.id, &key),
+                        None => Ok(None),
+                    };
+                    match saved {
+                        Ok(Some(secret)) => Ok((value.name.clone(), secret)),
+                        Ok(None) => Err(format!(
+                            "{}'s value isn't saved: enter it in Settings → MCP servers.",
+                            value.name
+                        )),
+                        Err(e) => Err(format!(
+                            "{}'s value couldn't be read from the keychain: {e}",
+                            value.name
+                        )),
+                    }
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| format!("The server's secret values couldn't be read: {e}"))?
     }
 }
 

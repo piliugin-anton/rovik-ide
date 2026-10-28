@@ -135,6 +135,76 @@ async fn a_refused_or_missing_secret_says_what_to_fix() {
     );
 }
 
+/// A running server keeps the secrets it started with; once the page
+/// saves others (`forget`), its next use starts it again with them (Q02).
+#[tokio::test]
+async fn a_server_starts_again_with_its_new_secrets_once_forgotten() {
+    let (rovik, _calls) = RovikServer::start(&rovik_tools(), "", None).await.unwrap();
+    let token = Arc::new(Mutex::new(rovik.authorization()));
+    let saved = token.clone();
+    let state = McpState::default();
+    state.set_secrets(Arc::new(move |_, _| {
+        Ok(Some(saved.lock().unwrap().clone()))
+    }));
+    let rovik_server = server(
+        "rovik",
+        McpTransport::Url {
+            url: rovik.url(),
+            headers: vec![header("Authorization", "", true)],
+        },
+    );
+    let servers = std::slice::from_ref(&rovik_server);
+    assert!(state.list(servers, None).await[0].tools.is_ok());
+    *token.lock().unwrap() = "Bearer wrong".into();
+    assert!(
+        state.list(servers, None).await[0].tools.is_ok(),
+        "the running server keeps its token"
+    );
+    state.forget(&rovik_server.id);
+    let error = state.list(servers, None).await[0]
+        .tools
+        .clone()
+        .unwrap_err();
+    assert!(error.contains("refused Rovik's credentials"), "{error}");
+}
+
+/// The keychain may take a moment, or ask the user: it's read on a
+/// blocking thread, and the async threads go on meanwhile (Q02).
+#[tokio::test]
+async fn the_keychain_is_read_off_the_async_threads() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    drop(listener);
+    let slow = server(
+        "slow",
+        McpTransport::Url {
+            url,
+            headers: vec![header("Authorization", "", true)],
+        },
+    );
+    let state = McpState::default();
+    state.set_secrets(Arc::new(|_, _| {
+        std::thread::sleep(Duration::from_millis(300));
+        Ok(Some("Bearer token".into()))
+    }));
+    // The test's runtime has one thread: a keychain read on it would
+    // hold the ticks back until it's done.
+    let ticks = Arc::new(AtomicUsize::new(0));
+    let counted = ticks.clone();
+    let ticker = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            counted.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    let listed = state.list(&[slow], None).await;
+    ticker.abort();
+    assert!(listed[0].tools.is_err(), "nothing answers there");
+    let ticks = ticks.load(Ordering::SeqCst);
+    assert!(ticks >= 3, "{ticks} ticks while the keychain was read");
+}
+
 /// What a modern HTTP server saw of each request.
 #[derive(Clone, Debug, Default)]
 struct Seen {
