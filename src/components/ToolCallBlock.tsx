@@ -422,6 +422,14 @@ function describe(name: string, args: Args, status: CallStatus, meta?: ToolMeta)
       return { title, meta: !failed && meta?.pageTitle ? meta.pageTitle.slice(0, 40) : undefined };
     }
 
+    // The server's tool (docs/design/mcp-plan.md, Q05).
+    case 'mcp': {
+      const tool = str(args.tool)?.trim() || 'an MCP tool';
+      if (args.describe === true)
+        return { title: `${active ? 'Reading about' : 'Read about'} ${tool}` };
+      return { title: `${active ? 'Calling' : 'Called'} ${tool}` };
+    }
+
     case 'restore_context': {
       const revision = str(args.revision) ?? num(args.revision)?.toString();
       const what =
