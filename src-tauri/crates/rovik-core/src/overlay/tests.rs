@@ -1,4 +1,4 @@
-use super::fs::{OverlayChange, OverlayFs};
+use super::fs::{Budget, OverlayChange, OverlayFs};
 use crate::vfs::backend::Backend;
 use crate::vfs::store::{Kind, RenameMode, SetAttr, VfsError, ROOT};
 use std::fs;
@@ -282,6 +282,87 @@ fn the_limit_counts_changes_but_not_build_output() {
         panic!()
     };
     assert!(by_product);
+}
+
+/// Two folders of one workspace chat, each with its file `a.txt`, sharing
+/// one budget of `limit` bytes (workspaces-plan.md, 4.2).
+fn two_parts(limit: u64) -> (Dirs, Dirs, OverlayFs, OverlayFs) {
+    let (one, two) = (setup(&[("a.txt", "")]), setup(&[("a.txt", "")]));
+    let budget = Budget::new(limit);
+    let api = OverlayFs::open_in(&one.project(), &one.store(), budget.clone()).unwrap();
+    let web = OverlayFs::open_in(&two.project(), &two.store(), budget).unwrap();
+    (one, two, api, web)
+}
+
+#[test]
+fn parts_of_one_chat_share_its_limit() {
+    let (_one, _two, api, web) = two_parts(1000);
+    api.write(ino(&api, "a.txt"), 0, &[b'x'; 600]).unwrap();
+    assert_eq!(
+        web.write(ino(&web, "a.txt"), 0, &[b'x'; 600]).unwrap_err(),
+        VfsError::NoSpace,
+        "the chat's room, not each folder's"
+    );
+    web.write(ino(&web, "a.txt"), 0, &[b'x'; 400]).unwrap();
+    assert_eq!(api.used(), (1000, 1000));
+    assert_eq!(web.used(), (1000, 1000));
+}
+
+#[test]
+fn two_parts_writing_at_once_cant_both_pass_the_limit() {
+    for _ in 0..20 {
+        let (_one, _two, api, web) = two_parts(1000);
+        let start = std::sync::Barrier::new(2);
+        let (start, parts) = (&start, [&api, &web]);
+        let (first, second) = std::thread::scope(|s| {
+            let write = move |part: &OverlayFs| {
+                let at = ino(part, "a.txt");
+                start.wait();
+                part.write(at, 0, &[b'x'; 600])
+            };
+            let first = s.spawn(move || write(parts[0]));
+            let second = s.spawn(move || write(parts[1]));
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_eq!(
+            [first.is_ok(), second.is_ok()]
+                .iter()
+                .filter(|ok| **ok)
+                .count(),
+            1,
+            "one of them fits: {first:?}, {second:?}"
+        );
+        assert_eq!(api.used().0, 600);
+    }
+}
+
+#[test]
+fn the_warning_comes_once_per_chat_from_whichever_part_reaches_80_percent() {
+    let (_one, _two, api, web) = two_parts(1000);
+    let warned = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let w = warned.clone();
+    api.on_warn(Box::new(move |used, limit| {
+        w.lock().unwrap().push((used, limit))
+    }));
+    api.write(ino(&api, "a.txt"), 0, &[b'x'; 500]).unwrap();
+    assert!(warned.lock().unwrap().is_empty());
+    web.write(ino(&web, "a.txt"), 0, &[b'x'; 350]).unwrap();
+    assert_eq!(
+        *warned.lock().unwrap(),
+        [(850, 1000)],
+        "web's write reached it"
+    );
+    api.write(ino(&api, "a.txt"), 500, &[b'x'; 50]).unwrap();
+    assert_eq!(warned.lock().unwrap().len(), 1, "once per chat");
+}
+
+#[test]
+fn a_part_that_goes_gives_its_share_back() {
+    let (_one, _two, api, web) = two_parts(1000);
+    api.write(ino(&api, "a.txt"), 0, &[b'x'; 300]).unwrap();
+    web.write(ino(&web, "a.txt"), 0, &[b'x'; 200]).unwrap();
+    drop(web);
+    assert_eq!(api.used().0, 300, "a folder that left isn't counted");
 }
 
 #[test]
@@ -1682,5 +1763,331 @@ mod second_review {
         assert!(land::plan(&d.project(), &landable(&o), false)
             .conflicts
             .is_empty());
+    }
+}
+
+/// A workspace chat's landing (workspaces-plan.md, 4.6, D24): its changes in
+/// two folders, `api` and `web`, each its own overlay over its own project,
+/// land under one journal, all or nothing.
+mod across_folders {
+    use super::*;
+    use crate::folders::{Folder, Folders};
+    use crate::overlay::land::{self, LandError};
+    use std::path::Path;
+
+    /// Where the landings are kept: beside api's project.
+    fn data(api: &Dirs) -> PathBuf {
+        api.root.join("data")
+    }
+
+    fn folders(api: &Path, web: &Path) -> Folders {
+        Folders::named(vec![
+            Folder {
+                name: "api".into(),
+                path: api.to_path_buf(),
+            },
+            Folder {
+                name: "web".into(),
+                path: web.to_path_buf(),
+            },
+        ])
+        .unwrap()
+    }
+
+    /// One folder's changes as the chat's view names them: its name first.
+    fn named(name: &str, changes: Vec<OverlayChange>) -> Vec<OverlayChange> {
+        changes
+            .into_iter()
+            .filter(|c| !c.by_product())
+            .map(|c| c.under(name))
+            .collect()
+    }
+
+    /// The chat's changes across both folders.
+    fn both(api: &OverlayFs, web: &OverlayFs) -> Vec<OverlayChange> {
+        let mut all = named("api", api.changes());
+        all.extend(named("web", web.changes()));
+        all
+    }
+
+    fn read(project: &Path, rel: &str) -> Option<String> {
+        fs::read_to_string(project.join(rel)).ok()
+    }
+
+    /// api with `a.txt`, web with `b.txt`, each changed by the chat.
+    fn changed() -> (Dirs, Dirs, OverlayFs, OverlayFs) {
+        let (api_dirs, web_dirs) = (setup(&[("a.txt", "one\n")]), setup(&[("b.txt", "b\n")]));
+        let (api, web) = (overlay(&api_dirs), overlay(&web_dirs));
+        write_all(&api, "a.txt", "ONE\n");
+        write_all(&web, "b.txt", "B\n");
+        (api_dirs, web_dirs, api, web)
+    }
+
+    fn journal(data: &Path, chat: &str, id: &str) -> serde_json::Value {
+        let file = data
+            .join("landings")
+            .join(chat)
+            .join(id)
+            .join("journal.json");
+        serde_json::from_slice(&fs::read(file).unwrap()).unwrap()
+    }
+
+    /// As if the app died after writing the journal, before the files: each
+    /// folder's file back as it was, the journal still applying.
+    fn interrupt(data: &Path, chat: &str, id: &str) {
+        let file = data
+            .join("landings")
+            .join(chat)
+            .join(id)
+            .join("journal.json");
+        let text = fs::read_to_string(&file)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
+        fs::write(&file, text).unwrap();
+    }
+
+    #[test]
+    fn changes_in_two_folders_land_under_one_landing() {
+        let (a, w, api, web) = changed();
+        let n = web
+            .create(ROOT, "n.txt", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
+        web.write(n.ino, 0, b"N\n").unwrap();
+        let ws = folders(&a.project(), &w.project());
+        let landed = land::land_in(&data(&a), "ws", &ws, &both(&api, &web), false)
+            .unwrap()
+            .unwrap();
+        let mut paths = landed.paths.clone();
+        paths.sort();
+        assert_eq!(paths, ["api/a.txt", "web/b.txt", "web/n.txt"]);
+        assert_eq!(read(&a.project(), "a.txt").as_deref(), Some("ONE\n"));
+        assert_eq!(read(&w.project(), "b.txt").as_deref(), Some("B\n"));
+        assert_eq!(read(&w.project(), "n.txt").as_deref(), Some("N\n"));
+        let landings = data(&a).join("landings").join("ws");
+        let ids: Vec<_> = fs::read_dir(&landings)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .collect();
+        assert_eq!(ids.len(), 1, "one landing");
+        // Its folders are kept for recovery and undo; no project.txt.
+        assert!(landings.join("folders.json").exists());
+        assert!(!landings.join("project.txt").exists());
+        assert_eq!(
+            journal(&data(&a), "ws", &landed.id)["folders"],
+            serde_json::json!(["api", "web"])
+        );
+
+        let kept = land::undo_in(&data(&a), "ws", &ws, &landed.id).unwrap();
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(read(&a.project(), "a.txt").as_deref(), Some("one\n"));
+        assert_eq!(read(&w.project(), "b.txt").as_deref(), Some("b\n"));
+        assert_eq!(read(&w.project(), "n.txt"), None);
+    }
+
+    #[test]
+    fn a_conflict_in_one_folder_lands_nothing_in_any() {
+        let (a, w, api, web) = changed();
+        fs::write(w.project().join("b.txt"), "theirs\n").unwrap();
+        let ws = folders(&a.project(), &w.project());
+        let Err(LandError::Conflicts(conflicts)) =
+            land::land_in(&data(&a), "ws", &ws, &both(&api, &web), false)
+        else {
+            panic!("a conflict stops it");
+        };
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].path, "web/b.txt", "named under its folder");
+        assert_eq!(read(&a.project(), "a.txt").as_deref(), Some("one\n"));
+    }
+
+    #[test]
+    fn a_move_within_a_folder_lands_as_a_move() {
+        let (a, w) = (setup(&[("old.txt", "x\n")]), setup(&[]));
+        let (api, web) = (overlay(&a), overlay(&w));
+        api.rename(ROOT, "old.txt", ROOT, "new.txt", RenameMode::Replace)
+            .unwrap();
+        let ws = folders(&a.project(), &w.project());
+        land::land_in(&data(&a), "ws", &ws, &both(&api, &web), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(read(&a.project(), "new.txt").as_deref(), Some("x\n"));
+        assert_eq!(read(&a.project(), "old.txt"), None);
+    }
+
+    #[test]
+    fn a_failed_write_in_the_second_folder_puts_the_first_back() {
+        let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (a, w, api, web) = changed();
+        let ws = folders(&a.project(), &w.project());
+        *land::FAIL_WRITING.lock().unwrap() = Some((w.project(), "b.txt".into()));
+        let failed = land::land_in(&data(&a), "ws", &ws, &both(&api, &web), false);
+        *land::FAIL_WRITING.lock().unwrap() = None;
+        let Err(LandError::Failed(why)) = failed else {
+            panic!("the write fails: {failed:?}");
+        };
+        assert!(why.contains("nothing landed"), "{why}");
+        assert_eq!(read(&a.project(), "a.txt").as_deref(), Some("one\n"));
+        assert_eq!(read(&w.project(), "b.txt").as_deref(), Some("b\n"));
+    }
+
+    #[test]
+    fn an_interrupted_two_folder_landing_is_finished_at_start() {
+        let (a, w, api, web) = changed();
+        let ws = folders(&a.project(), &w.project());
+        let landed = land::land_in(&data(&a), "ws", &ws, &both(&api, &web), false)
+            .unwrap()
+            .unwrap();
+        fs::write(a.project().join("a.txt"), "one\n").unwrap();
+        fs::write(w.project().join("b.txt"), "b\n").unwrap();
+        interrupt(&data(&a), "ws", &landed.id);
+        let mut done = land::recover(&data(&a));
+        done.sort();
+        assert_eq!(done, ["api/a.txt", "web/b.txt"]);
+        assert_eq!(read(&a.project(), "a.txt").as_deref(), Some("ONE\n"));
+        assert_eq!(read(&w.project(), "b.txt").as_deref(), Some("B\n"));
+    }
+
+    #[test]
+    fn a_landing_whose_folder_is_missing_at_start_waits_for_it_where_its_found() {
+        let (a, w, api, web) = changed();
+        let ws = folders(&a.project(), &w.project());
+        let landed = land::land_in(&data(&a), "ws", &ws, &both(&api, &web), false)
+            .unwrap()
+            .unwrap();
+        fs::write(a.project().join("a.txt"), "one\n").unwrap();
+        fs::write(w.project().join("b.txt"), "b\n").unwrap();
+        interrupt(&data(&a), "ws", &landed.id);
+        // web moved away while the app was closed.
+        let moved = w.root.join("moved");
+        fs::rename(w.project(), &moved).unwrap();
+        let done = land::recover(&data(&a));
+        assert!(done.contains(&"api/a.txt".to_string()), "{done:?}");
+        assert!(
+            done.contains(&"web/b.txt (not finished: its folder isn't there)".to_string()),
+            "{done:?}"
+        );
+        assert!(!w.project().exists(), "web isn't made anew");
+        assert_eq!(read(&a.project(), "a.txt").as_deref(), Some("ONE\n"));
+        assert_eq!(
+            journal(&data(&a), "ws", &landed.id)["state"],
+            "applying",
+            "web's part waits"
+        );
+
+        // Located where it went: finished there.
+        land::relocate(&data(&a), "ws", "web", &moved).unwrap();
+        assert_eq!(land::recover(&data(&a)), ["web/b.txt"]);
+        assert_eq!(read(&moved, "b.txt").as_deref(), Some("B\n"));
+        assert_eq!(journal(&data(&a), "ws", &landed.id)["state"], "done");
+    }
+
+    #[test]
+    fn undo_puts_back_every_folder_also_once_the_chats_store_is_gone() {
+        let (a, w, api, web) = changed();
+        let ws = folders(&a.project(), &w.project());
+        let landed = land::land_in(&data(&a), "ws", &ws, &both(&api, &web), false)
+            .unwrap()
+            .unwrap();
+        drop((api, web));
+        fs::remove_dir_all(a.store()).unwrap();
+        fs::remove_dir_all(w.store()).unwrap();
+        let kept_folders = land::folders_of(&data(&a), "ws").unwrap();
+        assert_eq!(kept_folders, ws);
+        let kept = land::undo_in(&data(&a), "ws", &kept_folders, &landed.id).unwrap();
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(read(&a.project(), "a.txt").as_deref(), Some("one\n"));
+        assert_eq!(read(&w.project(), "b.txt").as_deref(), Some("b\n"));
+    }
+
+    #[test]
+    fn land_and_undo_are_refused_while_a_folder_is_missing() {
+        let (a, w, api, web) = changed();
+        let ws = folders(&a.project(), &w.project());
+        let changes = both(&api, &web);
+        let landed = land::land_in(&data(&a), "ws", &ws, &changes, false)
+            .unwrap()
+            .unwrap();
+        let moved = w.root.join("moved");
+        fs::rename(w.project(), &moved).unwrap();
+        let refused = land::undo_in(&data(&a), "ws", &ws, &landed.id).unwrap_err();
+        assert!(refused.starts_with("web isn't there"), "{refused}");
+        let Err(LandError::Failed(refused)) = land::land_in(&data(&a), "ws", &ws, &changes, false)
+        else {
+            panic!("refused");
+        };
+        assert!(refused.starts_with("web isn't there"), "{refused}");
+        assert!(!w.project().exists(), "nothing made in its place");
+        assert_eq!(read(&a.project(), "a.txt").as_deref(), Some("ONE\n"));
+    }
+
+    /// Landings that share a folder wait for each other, whatever order
+    /// their chats list their folders in, and neither waits forever.
+    #[test]
+    fn two_chats_landing_at_once_both_finish() {
+        let (a, w) = (
+            setup(&[("a1.txt", "1\n"), ("a2.txt", "2\n")]),
+            setup(&[("b1.txt", "1\n"), ("b2.txt", "2\n")]),
+        );
+        let (one_api, one_web) = (overlay(&a), overlay(&w));
+        write_all(&one_api, "a1.txt", "ONE\n");
+        write_all(&one_web, "b1.txt", "ONE\n");
+        let first = both(&one_api, &one_web);
+        let second_store = a.root.join("second");
+        let alone = OverlayFs::open(&a.project(), &second_store, 1 << 30).unwrap();
+        write_all(&alone, "a2.txt", "TWO\n");
+        let (other_api, other_web) = (
+            OverlayFs::open(&a.project(), &a.root.join("third-api"), 1 << 30).unwrap(),
+            OverlayFs::open(&w.project(), &w.root.join("third-web"), 1 << 30).unwrap(),
+        );
+        write_all(&other_web, "b2.txt", "TWO\n");
+        let third = both(&other_api, &other_web);
+        let in_order = folders(&a.project(), &w.project());
+        // The same folders, the other way round.
+        let reversed = Folders::named(in_order.iter().rev().cloned().collect()).unwrap();
+        let data = data(&a);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            let jobs: Vec<Box<dyn FnOnce() -> bool + Send + '_>> = vec![
+                Box::new(|| land::land_in(&data, "first", &in_order, &first, false).is_ok()),
+                Box::new(|| {
+                    let changes = alone.changes();
+                    land::land(&data, "alone", &a.project(), &changes, false).is_ok()
+                }),
+                Box::new(|| land::land_in(&data, "third", &reversed, &third, false).is_ok()),
+            ];
+            for job in jobs {
+                let tx = tx.clone();
+                s.spawn(move || tx.send(job()).unwrap());
+            }
+            for _ in 0..3 {
+                let finished = rx
+                    .recv_timeout(std::time::Duration::from_secs(20))
+                    .expect("a landing waited forever");
+                assert!(finished);
+            }
+        });
+        assert_eq!(read(&a.project(), "a1.txt").as_deref(), Some("ONE\n"));
+        assert_eq!(read(&a.project(), "a2.txt").as_deref(), Some("TWO\n"));
+        assert_eq!(read(&w.project(), "b1.txt").as_deref(), Some("ONE\n"));
+        assert_eq!(read(&w.project(), "b2.txt").as_deref(), Some("TWO\n"));
+    }
+
+    #[test]
+    fn a_folder_chats_journal_has_no_folders() {
+        let d = setup(&[("a.txt", "one\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "ONE\n");
+        let data = d.root.join("data");
+        let landed = land::land(&data, "chat", &d.project(), &o.changes(), false)
+            .unwrap()
+            .unwrap();
+        assert!(journal(&data, "chat", &landed.id).get("folders").is_none());
+        let landings = data.join("landings").join("chat");
+        assert!(landings.join("project.txt").exists());
+        assert!(!landings.join("folders.json").exists());
+        assert_eq!(
+            land::folders_of(&data, "chat").unwrap().single(),
+            Some(d.project().as_path())
+        );
     }
 }

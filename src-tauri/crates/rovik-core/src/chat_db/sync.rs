@@ -56,7 +56,7 @@ const MESSAGE_COLUMNS: &str = "m.id, m.dialog_id, m.seq, m.role, m.body_external
 
 const DIALOG_COLUMNS: &str =
     "id, title, created_at, updated_at, message_count, preview, archived, \
-     parent_id, parent_call_id, kind, context_mode, model_provider, model_id, effort, rev";
+     parent_id, parent_call_id, kind, context_mode, model_provider, model_id, effort, folders, rev";
 
 const CLM_STATE_COLUMNS: &str = "dialog_id, anchor_id, rendered_anchor_id, rendered_revision, \
      tokens, budget, nudged, updated_at, projection, rendered_messages, rendered, task, rev";
@@ -436,6 +436,7 @@ fn dialog_from_row(r: &Row) -> rusqlite::Result<StoredDialog> {
         model_provider: r.get(11)?,
         model_id: r.get(12)?,
         effort: r.get(13)?,
+        folders: r.get(14)?,
     })
 }
 
@@ -749,7 +750,8 @@ fn apply_dialog(
             conn.execute(
                 "UPDATE dialogs SET title = ?2, created_at = ?3, updated_at = ?4, message_count = ?5,
                    preview = ?6, archived = ?7, parent_id = ?8, parent_call_id = ?9, kind = ?10,
-                   context_mode = ?11, model_provider = ?12, model_id = ?13, effort = ?14
+                   context_mode = ?11, model_provider = ?12, model_id = ?13, effort = ?14,
+                   folders = ?15
                  WHERE id = ?1",
                 params![
                     dialog.id,
@@ -766,6 +768,7 @@ fn apply_dialog(
                     dialog.model_provider,
                     dialog.model_id,
                     dialog.effort,
+                    dialog.folders,
                 ],
             )
             .map_err(err)?;
@@ -797,8 +800,8 @@ fn apply_dialog(
             conn.execute(
                 "INSERT INTO dialogs (id, title, created_at, updated_at, message_count, preview, archived,
                    parent_id, parent_call_id, kind, context_mode, model_provider, model_id, effort,
-                   project_id, location)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                   folders, project_id, location)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 params![
                     dialog.id,
                     dialog.title,
@@ -814,6 +817,7 @@ fn apply_dialog(
                     dialog.model_provider,
                     dialog.model_id,
                     dialog.effort,
+                    dialog.folders,
                     project_id,
                     location,
                 ],

@@ -67,13 +67,28 @@ pub fn run() {
             // this one ends before it has a window.
             let folder = startup_folder();
             if let Some(path) = &folder {
-                if instances.claim(Some(path), true, false).open_elsewhere {
+                let target = instances::Target::Folder(path.clone());
+                if instances.claim(Some(&target), true, &[]).open_elsewhere {
+                    std::process::exit(0);
+                }
+            }
+            // A workspace's own key, before the window exists: its folders
+            // are claimed as the window opens it (3.3).
+            let workspace = startup_workspace();
+            if let Some(id) = &workspace {
+                let target = instances::Target::Workspace {
+                    id: id.clone(),
+                    name: String::new(),
+                    folders: Vec::new(),
+                };
+                if instances.claim(Some(&target), true, &[]).open_elsewhere {
                     std::process::exit(0);
                 }
             }
             app.manage(instances);
             app.manage(Startup {
                 folder,
+                workspace,
                 new_window: std::env::args().any(|a| a == NEW_WINDOW),
             });
             // What only one process at a time can have (the virtual files'
@@ -242,6 +257,7 @@ pub fn run() {
             filesystem::save_ai_settings,
             filesystem::ai_settings_stamp,
             commands::chat::chat_list_dialogs,
+            commands::chat::chat_move_empty_dialog,
             commands::chat::chat_open_project,
             commands::chat::chats_at_work_elsewhere,
             commands::chat::chat_unsettled_sends,
@@ -303,6 +319,13 @@ pub fn run() {
             commands::chat::chat_get_composer_draft,
             commands::chat::chat_set_model,
             commands::chat::chat_get_model,
+            commands::workspace::workspace_list,
+            commands::workspace::workspace_create,
+            commands::workspace::workspace_add_folders,
+            commands::workspace::workspace_remove_folder,
+            commands::workspace::workspace_relocate_folder,
+            commands::workspace::workspace_check_folder,
+            commands::workspace::chat_set_folders,
             filesystem::load_last_project,
             filesystem::save_last_project,
             shared_state::shared_state_read,
@@ -329,6 +352,7 @@ pub fn run() {
             git_sync::git_conflict_file,
             git_sync::git_conflict_resolve,
             git::git_commit,
+            git::git_commit_many,
             git::git_hooks,
             git::git_hook_create,
             git::git_hook_make_executable,
@@ -338,6 +362,7 @@ pub fn run() {
             git::git_branches,
             git::git_head,
             git::git_status,
+            git::git_repos,
             git::git_base_content,
             git::git_revert_file,
             git::git_revert_folder,
@@ -521,16 +546,20 @@ fn cascade(window: &tauri::WebviewWindow, slot: usize) {
 }
 
 /// How this window was started: the folder given on the command line
-/// (`rovik-ide <folder>`), claimed, and whether it's another window
-/// started from one (`new_window`).
+/// (`rovik-ide <folder>`) or the workspace (`--workspace <id>`), claimed,
+/// and whether it's another window started from one (`new_window`).
 struct Startup {
     folder: Option<std::path::PathBuf>,
+    workspace: Option<String>,
     new_window: bool,
 }
 
 /// What `new_window` starts the other Rovik with: a window that starts
 /// without a project (the last one is open in this one).
 const NEW_WINDOW: &str = "--new-window";
+
+/// What an update's restart passes to open a workspace again (3.3): its ID.
+const WORKSPACE: &str = "--workspace";
 
 /// Whether this process is at work on a chat of the project `project`
 /// (None: of the chats without a project): a run, Autopilot's driver, a
@@ -546,8 +575,22 @@ async fn at_work_in(core: &Core, project: Option<String>) -> bool {
         .unwrap_or(false)
 }
 
+/// The workspace the command line asked for (`--workspace <id>`), if one:
+/// an update's restart passes it to open the same workspace again (3.3).
+fn startup_workspace() -> Option<String> {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == WORKSPACE {
+            let id = args.next()?;
+            let id = id.to_string_lossy().trim().to_string();
+            return (!id.is_empty()).then_some(id);
+        }
+    }
+    None
+}
+
 /// The first argument that's a folder: others (macOS's `-psn_…`, a
-/// WebDriver's flags) aren't for Rovik.
+/// WebDriver's flags, `--workspace` and its ID) aren't for Rovik.
 fn startup_folder() -> Option<std::path::PathBuf> {
     std::env::args_os()
         .skip(1)
@@ -564,6 +607,8 @@ fn startup_folder() -> Option<std::path::PathBuf> {
 struct StartupInfo {
     /// The folder the command line asked this window to open, if any.
     folder: Option<String>,
+    /// The workspace it asked for (`--workspace <id>`), if any.
+    workspace: Option<String>,
     /// Started by another window's "New window": no project to restore.
     new_window: bool,
 }
@@ -575,33 +620,95 @@ fn startup_info(startup: tauri::State<'_, Startup>) -> StartupInfo {
             .folder
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned()),
+        workspace: startup.workspace.clone(),
         new_window: startup.new_window,
     }
 }
 
+/// What a window asks to open (instances::Target): a folder, or a workspace,
+/// whose folders are read from the database.
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum ClaimTarget {
+    Folder { path: std::path::PathBuf },
+    Workspace { id: String },
+}
+
+/// The target a command was asked to claim, its workspace's folders read
+/// from the database (D7). None: the chats without a project.
+async fn claim_target(
+    core: &Core,
+    target: Option<ClaimTarget>,
+) -> Result<Option<instances::Target>, String> {
+    Ok(match target {
+        None => None,
+        Some(ClaimTarget::Folder { path }) => Some(instances::Target::Folder(path)),
+        Some(ClaimTarget::Workspace { id }) => {
+            let found = core
+                .db
+                .read(move |c| chat_db::workspaces::get(c, &id))
+                .await?
+                .ok_or("That workspace isn't there any more.")?;
+            Some(instances::Target::Workspace {
+                id: found.id,
+                name: found.name,
+                folders: found
+                    .folders
+                    .iter()
+                    .map(|folder| std::path::PathBuf::from(&folder.path))
+                    .collect(),
+            })
+        }
+    })
+}
+
 /// Claims a project for this window before it opens (instances.rs; no
-/// `path`: the chats without a project): when another window has it, or a
+/// `target`: the chats without a project): when another window has it, or a
 /// copy of it sharing its chats, it isn't opened here, and that window is
-/// asked to come to the front (`focus_other`). The project open here stays
-/// this window's while its chats are at work.
+/// asked to come to the front (`focus_other`). A workspace is claimed with
+/// every one of its folders, all or none. The projects open here stay this
+/// window's while their chats are at work.
 #[tauri::command]
 async fn project_claim(
     app: tauri::AppHandle,
     core: tauri::State<'_, Core>,
-    path: Option<String>,
+    target: Option<ClaimTarget>,
     focus_other: bool,
 ) -> Result<instances::Claim, String> {
-    let open = app.state::<Instances>().open_project();
-    let keep_open = match open {
-        Some(project) => at_work_in(&core, project).await,
-        None => false,
+    let mut at_work = Vec::new();
+    for owner in app.state::<Instances>().owners() {
+        if at_work_in(&core, owner.clone()).await {
+            at_work.push(owner);
+        }
+    }
+    let target = claim_target(&core, target).await?;
+    let workspace = match &target {
+        Some(instances::Target::Workspace { id, .. }) => Some(id.clone()),
+        _ => None,
     };
-    rt::spawn_blocking(move || {
-        let path = path.as_deref().map(std::path::Path::new);
-        app.state::<Instances>().claim(path, focus_other, keep_open)
+    let claiming = app.clone();
+    let claim = rt::spawn_blocking(move || {
+        claiming
+            .state::<Instances>()
+            .claim(target.as_ref(), focus_other, &at_work)
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    // The cloud client lands results by themselves in the folders open now.
+    if claim.claimed {
+        commands::chat::follow_claims(&app);
+    }
+    // A workspace opened here is the most recent one in the project list
+    // (workspaces-plan.md, 3.3).
+    if claim.claimed {
+        if let Some(id) = workspace {
+            let _ = core
+                .db
+                .write(move |c| chat_db::workspaces::opened(c, &id))
+                .await;
+        }
+    }
+    Ok(claim)
 }
 
 /// Whether another window has a project open (instances.rs), without
@@ -609,15 +716,14 @@ async fn project_claim(
 #[tauri::command]
 async fn project_check(
     app: tauri::AppHandle,
-    path: Option<String>,
+    core: tauri::State<'_, Core>,
+    target: Option<ClaimTarget>,
     focus_other: bool,
 ) -> Result<instances::Claim, String> {
-    rt::spawn_blocking(move || {
-        let path = path.as_deref().map(std::path::Path::new);
-        app.state::<Instances>().check(path, focus_other)
-    })
-    .await
-    .map_err(|e| e.to_string())
+    let target = claim_target(&core, target).await?;
+    rt::spawn_blocking(move || app.state::<Instances>().check(target.as_ref(), focus_other))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Starts another Rovik: a window of its own, for a project of its own.

@@ -238,6 +238,12 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* A folder that couldn't be searched, under its header: the others still show. */
+.search-folder-error {
+  margin: 2px 8px 4px;
+  font-size: 11px;
+}
+
 .search-results {
   flex: 1;
   min-height: 0;
@@ -296,6 +302,16 @@ body {
   white-space: nowrap;
   color: var(--fg-dim);
   font-size: 11px;
+}
+
+/* A workspace's results say which folder each file of them is in (C02). */
+.search-folder-header {
+  padding: 6px 8px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
 }
 
 .search-file-count {
@@ -412,6 +428,23 @@ body.tree-dragging {
 }
 
 .tree-row.ignored .tree-row-name {
+  color: var(--fg-dim);
+}
+
+/* A window folder's own row names a whole folder: a step brighter, in bold. */
+.tree-root-row .tree-row-name {
+  font-weight: 600;
+}
+
+/* A folder that isn't there: nothing of it is read, and it can't be opened. */
+.tree-root-missing .tree-row-name {
+  color: var(--fg-dim);
+}
+
+.tree-root-missing-note {
+  margin-left: 8px;
+  font-size: 11px;
+  font-style: italic;
   color: var(--fg-dim);
 }
 
@@ -598,6 +631,12 @@ body.tree-dragging {
 .tab-icon {
   flex-shrink: 0;
   margin-right: -2px;
+}
+
+/* Where a tab whose name another tab has is: "api", "a/src" (C03). */
+.tab-hint {
+  color: var(--fg-dim);
+  font-size: 11px;
 }
 
 .tab-close:hover {
@@ -1634,6 +1673,26 @@ body.tree-dragging {
   padding: 0 12px 4px;
   font-size: 11px;
   color: var(--fg-dim);
+}
+
+/* Why a file isn't the open chat's: another folder's (workspaces-plan.md, 3.8). */
+.chat-folder-note {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+/* The chat panel with no chat in a window of several folders: New chat's menu, in place. */
+.chat-start {
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-start-text {
+  margin: 12px 12px 0;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 /* Status of a pending reply: waiting, retrying with a countdown. */
@@ -4025,6 +4084,7 @@ body.tree-dragging {
 .file-context-menu .context-menu-icon,
 .terminal-context-menu .context-menu-icon,
 .terminal-new-menu .context-menu-icon,
+.folder-menu .context-menu-icon,
 .opened-port-menu .context-menu-icon,
 .chat-input-context-menu .context-menu-icon {
   display: inline-flex;
@@ -4035,6 +4095,7 @@ body.tree-dragging {
 .file-context-menu .context-menu-label,
 .terminal-context-menu .context-menu-label,
 .terminal-new-menu .context-menu-label,
+.folder-menu .context-menu-label,
 .opened-port-menu .context-menu-label,
 .chat-input-context-menu .context-menu-label {
   flex: 1;
@@ -4054,11 +4115,13 @@ body.tree-dragging {
    ▾ (OpenedPorts.tsx) take the keyboard: the item in focus looks as the
    hovered one does. */
 .terminal-new-menu .context-menu-item:focus,
+.folder-menu .context-menu-item:focus,
 .opened-port-menu .context-menu-item:focus {
   outline: none;
 }
 
 .terminal-new-menu .context-menu-item:focus-visible,
+.folder-menu .context-menu-item:focus-visible,
 .opened-port-menu .context-menu-item:focus-visible {
   background: var(--hover-strong);
 }
@@ -4074,6 +4137,7 @@ body.tree-dragging {
 
 .file-context-menu .context-menu-item.disabled,
 .terminal-context-menu .context-menu-item.disabled,
+.folder-menu .context-menu-item.disabled,
 .opened-port-menu .context-menu-item.disabled,
 .chat-input-context-menu .context-menu-item.disabled {
   cursor: default;
@@ -4082,6 +4146,7 @@ body.tree-dragging {
 
 .file-context-menu .context-menu-item.disabled:hover,
 .terminal-context-menu .context-menu-item.disabled:hover,
+.folder-menu .context-menu-item.disabled:hover,
 .opened-port-menu .context-menu-item.disabled:hover,
 .chat-input-context-menu .context-menu-item.disabled:hover {
   background: none;
@@ -4089,10 +4154,72 @@ body.tree-dragging {
 
 .file-context-menu .context-menu-separator,
 .terminal-context-menu .context-menu-separator,
+.folder-menu .context-menu-separator,
 .chat-input-context-menu .context-menu-separator {
   height: 1px;
   margin: 4px 6px;
   background: var(--border);
+}
+
+/* A folder's box in New chat's menu (FolderMenu.tsx, D2). */
+.folder-menu .folder-menu-box {
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 1px solid var(--fg-muted);
+  border-radius: 3px;
+}
+
+.folder-menu .folder-menu-box.checked {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* A box that can't be checked, with why on its row (FolderMenu.tsx): the
+   box and the name are dimmed, the reason isn't, and a click on it opens
+   the page that says how. */
+.folder-menu .context-menu-item.folder-menu-off {
+  flex-wrap: wrap;
+}
+
+.folder-menu .folder-menu-off .folder-menu-box,
+.folder-menu .folder-menu-off .context-menu-label {
+  opacity: 0.4;
+}
+
+.folder-menu .folder-menu-why {
+  flex-basis: 100%;
+  max-width: 260px;
+  padding-left: 22px;
+  white-space: normal;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+/* Why Apply is off (NewChatMenu.tsx): the chat is at work, or has commands
+   running. */
+.folder-menu .folder-menu-note {
+  max-width: 260px;
+  padding: 0 8px 4px;
+  white-space: normal;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+/* The menu shown in place: the chat panel with no chat to show. */
+.folder-menu.folder-menu-inline {
+  position: static;
+  z-index: auto;
+  margin: 12px;
+  box-shadow: none;
+}
+
+/* What New chat's menu is for: Start chat, which names the folder. */
+.folder-menu .new-chat-start {
+  font-weight: 600;
 }
 
 /* Terminal panel */
@@ -5149,6 +5276,73 @@ body.is-resizing * {
 .git-skip-hooks {
   font-size: 11px;
   padding: 2px 8px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Sections: one per repository (GitRepoSection.tsx)                      */
+/* ---------------------------------------------------------------------- */
+
+/* One section is laid out as the whole panel always was: its parts are the
+   panel's own. */
+.git-repo-sections,
+.git-repo-section {
+  display: contents;
+}
+
+/* Several stack, each as tall as its changes (up to a share of the panel),
+   and the list of them scrolls. */
+.git-repo-sections-several {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.git-repo-section-several {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-repo-section-several .git-files {
+  flex: none;
+  max-height: 40vh;
+}
+
+.git-repo-section-several .git-panel-loading,
+.git-repo-section-several .git-panel-empty {
+  flex: none;
+  padding: 12px 16px;
+}
+
+.git-repo-section-several > .empty-state {
+  margin: 0;
+  padding: 8px 16px;
+}
+
+.git-repo-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 8px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.git-repo-include {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.git-repo-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .git-inline-error svg {
@@ -7651,6 +7845,29 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   min-width: 0;
 }
 
+/* Which folder the chat works in, with several: a label, not a control. */
+.chat-model-select-row .chat-folders-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* A workspace chat's label opens its folders' menu (D32). */
+.chat-model-select-row button.chat-folders-label {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.chat-model-select-row button.chat-folders-label:hover {
+  color: var(--fg);
+}
+
 .effort-selector {
   position: relative;
   flex-shrink: 0;
@@ -8386,6 +8603,70 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .new-project-open-existing:hover {
   background: var(--bg-control-hover);
+}
+
+/* New workspace dialog (components/NewWorkspaceDialog.tsx): New project's
+   labels, inputs and notes, and the list of its folders, each with why it
+   can't join when it can't */
+
+.modal.confirm-dialog.new-workspace-dialog {
+  width: 520px;
+}
+
+.new-workspace-folders {
+  max-height: 220px;
+  margin: 0 0 6px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.new-workspace-folder,
+.new-workspace-empty {
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.new-workspace-folder + .new-workspace-folder {
+  border-top: 1px solid var(--border);
+}
+
+.new-workspace-empty {
+  color: var(--fg-dim);
+}
+
+.new-workspace-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.new-workspace-folder-name {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.new-workspace-folder.refused .new-workspace-folder-name {
+  color: var(--error);
+}
+
+.new-workspace-folder-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-workspace-folder-remove {
+  flex-shrink: 0;
+}
+
+.new-workspace-folder .new-project-note {
+  margin-top: 2px;
 }
 
 .modal .confirm-dialog-actions button:disabled {
@@ -10303,6 +10584,15 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .chat-history-item-meta .chat-history-item-date {
   flex-shrink: 0;
+}
+
+/* Which folders a chat works in, in a window with several (workspaces-plan.md, 3.8). */
+.chat-history-item-folders {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  color: var(--fg-muted);
 }
 
 .chat-badge {

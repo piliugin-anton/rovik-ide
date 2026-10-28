@@ -25,6 +25,7 @@ use crate::chat_db::store::{self, MessagePatch, MessageRow, NewMessage, ToolCall
 use crate::chat_db::DbState;
 use crate::chat_request::{ChatError, ErrorKind};
 use crate::core::Core;
+use crate::folders::Folders;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -147,9 +148,11 @@ pub struct Run {
     pub(super) history_window: Option<crate::chat_db::history::Window>,
     pub(super) context_mode: String,
     pub(super) root: Option<String>,
-    /// The project folder itself. Differs from `root` in an isolated chat,
-    /// whose tools and commands work in its overlay's view.
-    pub(super) project_root: Option<String>,
+    /// The folders the chat works in (folders.rs): a folder chat's one, or a
+    /// workspace chat's; None with no folder open. `root` differs from a
+    /// folder chat's folder in an isolated chat, whose tools and commands
+    /// work in its overlay's view.
+    pub(super) folders: Option<Folders>,
     /// An isolated chat's changes landed at the end of this run.
     pub(super) landed: bool,
     /// Files the project's newer changes were just merged into, for the
@@ -547,6 +550,43 @@ pub(super) struct TurnOutput {
     pub(super) read: Vec<super::steer::Queued>,
 }
 
+/// A workspace chat's folders at its last run, as that run recorded them on
+/// its message (`Run::record_folders`); None before its first.
+fn folders_at_last_run(recent: &[MessageRow]) -> Option<Vec<String>> {
+    recent.iter().rev().find_map(|m| {
+        let names = m.meta.as_ref()?.get("folders")?.as_array()?;
+        names
+            .iter()
+            .map(|n| n.as_str().map(str::to_string))
+            .collect()
+    })
+}
+
+/// Why a workspace chat's run doesn't start without its view
+/// (workspaces-plan.md, D23): the driver mounts it.
+pub(super) const NEEDS_VIEW: &str = "A chat across folders needs the virtual files driver (Settings → Virtual files), or start a chat in one folder.";
+
+/// A workspace chat's view of `folders` (each run's start matches it to
+/// them), where its run works: the view's path. Refused when isolation is
+/// off, or the view can't be opened: it never works in a folder instead.
+fn workspace_view(
+    dialog_id: &str,
+    folders: &Folders,
+    isolate: bool,
+    on_warn: crate::overlay::fs::OnWarn,
+) -> Result<String, String> {
+    if !isolate {
+        return Err("A chat across folders works isolated, in its own view of them, and isolation is off for this run (ROVIK_ISOLATE_CHATS=0): turn it on, or start a chat in one folder.".into());
+    }
+    match crate::overlay::chats::open(dialog_id, folders, on_warn) {
+        Ok(o) => Ok(o.view.to_string_lossy().into_owned()),
+        Err(e) if e.contains("couldn't mount") => Err(format!("{NEEDS_VIEW} ({e})")),
+        Err(e) => Err(format!(
+            "This chat's view of its folders couldn't be opened: {e}."
+        )),
+    }
+}
+
 /// Whether a run goes on with a message waiting where it would end with
 /// this outcome (3.3). The ends that can't hand it back instead: a stop,
 /// an error, a reply that kept repeating itself, checks waiting for the
@@ -767,7 +807,20 @@ impl Run {
             || stage
                 .as_ref()
                 .is_some_and(|s| s.stage == super::autopilot::Stage::Plan);
-        let project_root = request.root.clone().filter(|r| !r.trim().is_empty());
+        // The chat's folders as they are now (workspaces-plan.md, 4.1): a
+        // folder chat's root, or a workspace chat's, from the database here
+        // and from its start on a daemon.
+        let folders = super::check_project(
+            &core.db,
+            &dialog_id,
+            request.root.as_deref(),
+            &request.folders,
+        )
+        .await?;
+        let project_root = folders
+            .as_ref()
+            .and_then(Folders::single)
+            .map(|folder| folder.to_string_lossy().into_owned());
         // An isolated chat works in its overlay: the project with its own
         // changes on top, mounted as a folder (src/overlay). Plan mode
         // changes nothing, so it reads the project itself, unless the chat
@@ -776,22 +829,35 @@ impl Run {
         let isolate = request
             .isolate
             .unwrap_or_else(crate::overlay::chats::enabled);
-        let root = match &project_root {
-            Some(r) if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) => {
-                let (core_, chat) = (core.clone(), dialog_id.clone());
-                let on_warn = Box::new(move |used: u64, limit: u64| {
-                    core_.emit(AgentEvent::Notice {
-                        dialog_id: Some(chat.clone()),
-                        kind: "warning".into(),
-                        title: "This chat's changes are near their limit".into(),
-                        message: format!(
-                            "{} MB of {} MB. Past the limit, its writes fail until its changes land or are discarded.",
-                            used >> 20,
-                            limit >> 20
-                        ),
-                    })
-                });
-                match crate::overlay::chats::open(&dialog_id, std::path::Path::new(r), on_warn) {
+        let near_limit = || -> crate::overlay::fs::OnWarn {
+            let (core, chat) = (core.clone(), dialog_id.clone());
+            Box::new(move |used: u64, limit: u64| {
+                core.emit(AgentEvent::Notice {
+                    dialog_id: Some(chat.clone()),
+                    kind: "warning".into(),
+                    title: "This chat's changes are near their limit".into(),
+                    message: format!(
+                        "{} MB of {} MB. Past the limit, its writes fail until its changes land or are discarded.",
+                        used >> 20,
+                        limit >> 20
+                    ),
+                })
+            })
+        };
+        let root = match (&folders, &project_root) {
+            // A workspace chat works in its view of its folders, every run,
+            // Plan mode too (D23): there's no one folder it could work in
+            // instead. On a daemon it works in its worktree, where they are
+            // (4.11).
+            (Some(folders), None) => match folders.root() {
+                Some(worktree) => Some(worktree.to_string_lossy().into_owned()),
+                None => Some(workspace_view(&dialog_id, folders, isolate, near_limit())?),
+            },
+            (_, Some(r))
+                if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) =>
+            {
+                let folders = Folders::one(std::path::PathBuf::from(r));
+                match crate::overlay::chats::open(&dialog_id, &folders, near_limit()) {
                     Ok(o) => Some(o.view.to_string_lossy().into_owned()),
                     Err(e) => {
                         isolation_problem = Some(e);
@@ -1017,9 +1083,9 @@ impl Run {
         // starts, and show in the chat.
         if implements_plan && !plan_mode {
             if let Some((file, problems)) =
-                plan_check_at_start(&recent, root.as_deref(), project_root.as_deref())
+                plan_check_at_start(&recent, root.as_deref(), folders.as_ref())
             {
-                let shown = plan::relative_plan_path(&file, project_root.as_deref());
+                let shown = plan::plan_path_in(&file, folders.as_ref());
                 append_carry_note(
                     core,
                     &dialog_id,
@@ -1032,14 +1098,42 @@ impl Run {
             }
         }
 
-        let (checks, project_context, restricted) = match &root {
-            Some(r) => {
+        // A workspace chat's folders at its last run, for those that joined
+        // or left since.
+        let since = folders_at_last_run(&recent);
+        // A candidate follows its task chat's folders' settings (T05): its
+        // own folder is a copy of them, under the same names.
+        let settings_of = core
+            .agents
+            .candidate_folders(&dialog_id)
+            .or_else(|| folders.clone());
+        let (checks, project_context, restricted) = match (&root, &settings_of) {
+            (Some(view), Some(chat_folders)) if chat_folders.single().is_none() => {
+                let (config_dir, view) = (
+                    core.paths.config_dir.clone(),
+                    std::path::PathBuf::from(view),
+                );
+                let (folders, verify) = (chat_folders.clone(), config.permissions.verify_changes);
+                crate::rt::spawn_blocking(move || {
+                    project::load_folders(
+                        &config_dir,
+                        Some(&view),
+                        &folders,
+                        verify,
+                        autopilot,
+                        since.as_deref(),
+                    )
+                })
+                .await
+                .unwrap_or_default()
+            }
+            (Some(r), _) => {
                 // Settings are kept by the project's folder, not the view's;
                 // a candidate's, by its task chat's (T05).
-                let settings_root = core
-                    .agents
-                    .candidate_project(&dialog_id)
-                    .or_else(|| project_root.clone())
+                let settings_root = settings_of
+                    .as_ref()
+                    .and_then(Folders::single)
+                    .map(|folder| folder.to_string_lossy().into_owned())
                     .unwrap_or_else(|| r.clone());
                 let config_dir = core.paths.config_dir.clone();
                 let (r, verify) = (r.clone(), config.permissions.verify_changes);
@@ -1054,7 +1148,7 @@ impl Run {
                 .await
                 .unwrap_or_default()
             }
-            None => Default::default(),
+            (None, _) => Default::default(),
         };
         let restricted = Arc::new(restricted);
         // V02 (D7): an Autopilot implementation in a project with no checks
@@ -1080,7 +1174,7 @@ impl Run {
             None => checks,
         };
         let plan_context = if plan_mode {
-            plan::current_plan_context(chat_plan_file(&recent).as_deref(), root.as_deref())
+            plan::current_plan_context(chat_plan_file(&recent).as_deref(), folders.as_ref())
         } else {
             String::new()
         };
@@ -1182,7 +1276,7 @@ impl Run {
                 .context_mode
                 .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
             root,
-            project_root,
+            folders,
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),
@@ -1210,6 +1304,11 @@ impl Run {
                 Role::Lead,
             )
         };
+        // A workspace chat's folders, recorded on its run's message: its
+        // next run tells which joined or left since.
+        if let Some(chat_folders) = run.folders.as_ref().filter(|f| f.single().is_none()) {
+            run.record_folders(&recent, chat_folders).await;
+        }
         // Balanced Autopilot's plan reviews go on by the plan-fix limits.
         if run.balanced_autopilot() {
             let fix = run.plan_fix();
@@ -1249,7 +1348,7 @@ impl Run {
             history_window: None,
             context_mode: crate::clm::MODE_TRIMMING.into(),
             root: None,
-            project_root: None,
+            folders: None,
             merged_from_project: None,
             marker_reminders: 0,
             landed: false,
@@ -1402,7 +1501,7 @@ impl Run {
         };
         Run {
             root: parent.root.clone(),
-            project_root: parent.project_root.clone(),
+            folders: parent.folders.clone(),
             local_date: parent.local_date.clone(),
             project_context: parent.project_context.clone(),
             restricted: parent.restricted.clone(),
@@ -2307,6 +2406,7 @@ impl Run {
                     &self.overlay_owner(),
                     self.core.agents.on_server(),
                 ),
+                folders_view: self.folders.as_ref().is_some_and(|f| f.single().is_none()),
                 tool_asks,
                 command_checks,
                 restricted: Some(self.restricted.clone()),
@@ -3194,6 +3294,30 @@ impl Run {
         self.store_meta(message_id, meta).await
     }
 
+    /// Records a workspace chat's folders on its run's message (the latest
+    /// one of the user's, or the IDE's own for a stage), for its next run to
+    /// compare with (`folders_at_last_run`).
+    async fn record_folders(&self, recent: &[MessageRow], folders: &Folders) {
+        let names: Vec<&str> = folders.iter().map(|f| f.name.as_str()).collect();
+        let Some(message) = recent.iter().rev().find(|m| m.role == "user") else {
+            return;
+        };
+        let mut meta = message.meta.clone().unwrap_or_else(|| json!({}));
+        let Some(fields) = meta.as_object_mut() else {
+            return;
+        };
+        if fields.get("folders") == Some(&json!(names)) {
+            return;
+        }
+        fields.insert("folders".into(), json!(names));
+        if let Err(e) = self.store_meta(&message.id, meta).await {
+            eprintln!(
+                "agent: chat {}: its folders weren't recorded: {e}",
+                self.dialog_id
+            );
+        }
+    }
+
     /// Stores a message's meta as given and shows it.
     async fn store_meta(&self, message_id: &str, meta: Value) -> Result<(), String> {
         let id = message_id.to_string();
@@ -4030,33 +4154,16 @@ pub(super) fn lead_profile(mut profile: ModelProfile, agent_mode: bool) -> Model
 }
 
 /// B07b: the plan file a "Implement the plan in `…`" request names (or the
-/// chat's own), and what the checker finds in it as it is now.
+/// chat's own), read through the chat's `folders`, and what the checker
+/// finds in it as it is now, its files against the run's `root`.
 fn plan_check_at_start(
     recent: &[MessageRow],
     root: Option<&str>,
-    project_root: Option<&str>,
+    folders: Option<&Folders>,
 ) -> Option<(String, Vec<String>)> {
-    let named = recent
-        .iter()
-        .rev()
-        .find(|m| plan::is_request(m))
-        .and_then(|m| {
-            let rest = m.content.strip_prefix("Implement the plan in `")?;
-            Some(rest[..rest.find('`')?].to_string())
-        });
-    let file = match named {
-        Some(rel) => {
-            let base = project_root.or(root)?;
-            let p = std::path::Path::new(&rel);
-            if p.is_absolute() {
-                rel
-            } else {
-                std::path::Path::new(base)
-                    .join(p)
-                    .to_string_lossy()
-                    .into_owned()
-            }
-        }
+    let request = recent.iter().rev().find(|m| plan::is_request(m));
+    let file = match request.filter(|m| m.content.starts_with("Implement the plan in `")) {
+        Some(m) => super::worker::plan_file_named(&m.content, folders)?,
         None => chat_plan_file(recent)?,
     };
     if !plan::is_plan_file(&file) {

@@ -6,9 +6,10 @@ use crate::git::stash::{delta_status, GitStashFile, GitStashFilePreview};
 use crate::util::blocking;
 use git2::Repository;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GitCommitEntry {
@@ -94,19 +95,46 @@ pub async fn git_log(
     offset: Option<usize>,
     tip: Option<String>,
 ) -> Result<GitLogPage, String> {
-    // Each call supersedes the ones before it (the panel shows only the
-    // latest reply): an older search still scanning stops at its next
-    // commit instead of finishing hundreds of diffs nobody will see.
-    let generation = GIT_LOG_LATEST.fetch_add(1, Ordering::SeqCst) + 1;
+    // Each call supersedes the ones before it for the same repository (its
+    // section shows only the latest reply): an older search still scanning
+    // stops at its next commit instead of finishing hundreds of diffs nobody
+    // will see. Another repository's section reads its own history meanwhile.
+    let generation = GIT_LOG_LATEST.begin(&path);
+    let key = path.clone();
     blocking(move || {
-        let superseded = || GIT_LOG_LATEST.load(Ordering::SeqCst) != generation;
+        let superseded = || !GIT_LOG_LATEST.is_latest(&key, generation);
         git_log_scan(path, limit, query, offset, tip.as_deref(), &superseded)
     })
     .await
 }
 
-/// The latest `git_log` call's generation (see `git_log`).
-static GIT_LOG_LATEST: AtomicU64 = AtomicU64::new(0);
+/// The latest `git_log` call of each repository (see `git_log`), by the
+/// folder its section asks from: one per repository.
+static GIT_LOG_LATEST: Generations = Generations::new();
+
+/// A count of calls per key: each call takes the next number, and learns
+/// whether a newer call for its key has come since.
+pub(super) struct Generations(Mutex<BTreeMap<String, u64>>);
+
+impl Generations {
+    pub(super) const fn new() -> Generations {
+        Generations(Mutex::new(BTreeMap::new()))
+    }
+
+    /// A new call for `key`: the ones before it are superseded.
+    pub(super) fn begin(&self, key: &str) -> u64 {
+        let mut latest = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let next = latest.get(key).copied().unwrap_or(0) + 1;
+        latest.insert(key.to_string(), next);
+        next
+    }
+
+    /// Whether `generation` is still `key`'s latest call.
+    pub(super) fn is_latest(&self, key: &str, generation: u64) -> bool {
+        let latest = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        latest.get(key) == Some(&generation)
+    }
+}
 
 /// One page of history: the matches plus the cursor for the next page.
 /// `offset`/`next_offset` count scanned (raw) commits, so pages resume

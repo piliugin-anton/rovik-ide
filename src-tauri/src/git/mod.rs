@@ -19,6 +19,7 @@ mod history;
 mod hook_files;
 pub(crate) mod hooks;
 mod remote;
+pub mod repos;
 mod stash;
 
 pub use branches::*;
@@ -26,6 +27,7 @@ pub use changes::*;
 pub use history::*;
 pub use hook_files::*;
 pub use remote::*;
+pub use repos::*;
 pub use stash::*;
 
 use crate::util::{blocking, ErrText};
@@ -96,53 +98,180 @@ pub(crate) fn blob_text(repo: &Repository, id: git2::Oid, file: &str) -> Result<
     Ok(String::from_utf8_lossy(blob.content()).into_owned())
 }
 
-/// The project's folder within `repo`'s working folder, `/`-separated, with
-/// git's wildcards escaped: "" when the project is the working folder. The
-/// repository is found upward from the project (`open_repo`), so a project
-/// can be a package of a monorepo, or a folder under a home folder kept in
-/// git (dotfiles): the panel's actions on the whole tree (its list of
-/// changes, Commit's staging, Discard all) keep to this folder, and never
-/// list, commit or throw away what's beside the project. "" too where the
-/// two can't be compared (a path that's gone).
-pub(crate) fn project_scope(repo: &Repository, project: &str) -> String {
-    let (Some(workdir), Ok(project)) = (repo.workdir(), Path::new(project).canonicalize()) else {
+/// `folder`'s path inside the repository's working folder, "/"-separated: ""
+/// when the folder is the working folder (all of it), and when the two can't
+/// be compared (a path that's gone). The repository is found upward from the
+/// folder (`open_repo`), so a folder can be a package of a monorepo, or a
+/// folder under a home folder kept in git (dotfiles): the panel's actions on
+/// the whole tree (its list of changes, Commit's staging, Discard all) keep to
+/// the window's folders, and never list, commit or throw away what's beside
+/// them.
+pub(crate) fn relative_folder(repo: &Repository, folder: &str) -> String {
+    let (Some(workdir), Ok(folder)) = (repo.workdir(), Path::new(folder).canonicalize()) else {
         return String::new();
     };
     let Ok(workdir) = workdir.canonicalize() else {
         return String::new();
     };
-    match project.strip_prefix(&workdir) {
-        Ok(rel) if rel.as_os_str().is_empty() => String::new(),
-        Ok(rel) => {
-            let rel: Vec<String> = rel
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .collect();
-            changes::literal_pathspec(Path::new(&rel.join("/")))
-        }
-        Err(_) => String::new(),
+    let Ok(rel) = folder.strip_prefix(&workdir) else {
+        return String::new();
+    };
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    parts.join("/")
+}
+
+/// The scopes a command works in: those the frontend gave (the window's
+/// folders in the repository, relative to its working folder, "" for all of
+/// it), or the folder `path` is in — a project's one folder, as before (D10).
+pub(crate) fn scopes_in(repo: &Repository, path: &str, scopes: Option<Vec<String>>) -> Vec<String> {
+    match scopes {
+        Some(given) if !given.is_empty() => given,
+        _ => vec![relative_folder(repo, path)],
     }
 }
 
-/// The pathspec of `scope` ([`project_scope`]): everything in it.
-fn scope_pathspec(scope: &str) -> String {
+/// The pathspec of `scope` ([`relative_folder`]): everything in it.
+pub(crate) fn scope_pathspec(scope: &str) -> String {
     if scope.is_empty() {
         "*".to_string()
     } else {
-        scope.to_string()
+        changes::literal_pathspec(Path::new(scope))
     }
 }
-
-/// Every change in `scope` ([`project_scope`]) into the index, as
-/// `git add -A` does: new and modified files staged, deleted ones dropped;
-/// .gitignore respected by both.
-pub(crate) fn stage_all(index: &mut git2::Index, scope: &str) -> Result<(), String> {
-    let spec = [scope_pathspec(scope)];
-    index
-        .add_all(spec.iter(), git2::IndexAddOption::DEFAULT, None)
-        .err_text()?;
-    index.update_all(spec.iter(), None).err_text()?;
+/// Everything the working tree of `scope` ([`relative_folder`]) has into the
+/// index, as `git add -A` would: new and modified files staged, deleted ones
+/// dropped, .gitignore respected (the status leaves ignored files out). What's
+/// staged already, with nothing more in the working tree, is left as it is (a
+/// terminal's `git add`). A file renamed in a terminal is staged by the name
+/// it has now — its status entry is named by the old one, which is gone from
+/// disk — and what was changed or deleted after the rename with it. A folder
+/// that is a repository of its own is never taken (D12): `add_all` would
+/// refuse the whole scope for it.
+pub(crate) fn stage_all(
+    index: &mut git2::Index,
+    repo: &Repository,
+    scope: &str,
+) -> Result<(), String> {
+    let statuses = statuses_in(repo, &[scope.to_string()])?;
+    stage_entries(index, repo, &statuses, None)?;
     index.write().err_text()
+}
+
+/// Stages what the working tree has, entry by entry (see [`stage_all`]).
+/// `within`: the folder whose read this is (a folder row's own read), which
+/// stops a row naming that folder from being read again.
+fn stage_entries(
+    index: &mut git2::Index,
+    repo: &Repository,
+    statuses: &git2::Statuses<'_>,
+    within: Option<&Path>,
+) -> Result<(), String> {
+    let workdir = workdir(repo).ok();
+    for entry in statuses.iter() {
+        let status = entry.status();
+        if status.is_ignored() || other_repository(repo, &entry) {
+            continue;
+        }
+        // What the working tree has that the index doesn't. The entry's own
+        // path is its head-to-index one: for a file renamed in a terminal
+        // that's the OLD name, gone from disk, so staging by it would fail or
+        // stage the wrong file. The working tree's side names the file as it
+        // is now (a deleted one by the name the index has). An untracked
+        // folder listed as one row has no working-tree delta at all: its own
+        // path is the one the working tree has.
+        let touches_worktree = status.intersects(
+            Status::WT_NEW
+                | Status::WT_MODIFIED
+                | Status::WT_DELETED
+                | Status::WT_RENAMED
+                | Status::WT_TYPECHANGE,
+        );
+        if !touches_worktree {
+            // Staged already, and nothing more in the working tree: the index
+            // has it (a `git mv`'s old path isn't on disk to be added again).
+            continue;
+        }
+        let (deleted, path) = match entry.index_to_workdir() {
+            Some(delta) => {
+                let deleted = delta.status() == git2::Delta::Deleted;
+                let file = if deleted {
+                    delta.old_file()
+                } else {
+                    delta.new_file()
+                };
+                let path = file
+                    .path()
+                    .or_else(|| delta.old_file().path())
+                    .map(Path::to_path_buf);
+                (deleted, path)
+            }
+            None => (status.is_wt_deleted(), entry.path().ok().map(PathBuf::from)),
+        };
+        let Some(path) = path else {
+            continue;
+        };
+        let text = path.to_string_lossy();
+        let rel = Path::new(text.trim_end_matches(['/', '\\']));
+        if deleted {
+            // Gone from the working tree: out of the index if it's in it.
+            if index.get_path(rel, 0).is_some() {
+                index.remove_path(rel).err_text()?;
+            }
+            continue;
+        }
+        match workdir
+            .as_ref()
+            .and_then(|workdir| std::fs::symlink_metadata(workdir.join(rel)).ok())
+        {
+            // A folder listed as one row: an untracked folder the read didn't
+            // descend into, because something in the scope (elsewhere) is a
+            // repository of its own. Its own files are read on their own, so
+            // git's ignore rules still apply and they're not left out of the
+            // commit; a folder of its own inside it is left out as ever.
+            Some(meta) if meta.is_dir() => {
+                // A submodule: what's recorded is the commit it has checked
+                // out, which `add_path` writes as a gitlink, as `git add`
+                // does. Its files aren't this repository's.
+                if is_submodule(repo, rel) {
+                    index.add_path(rel).err_text()?;
+                    continue;
+                }
+                if within.is_some_and(|within| within == rel) {
+                    continue; // the folder this read is of: read already
+                }
+                let inside = statuses_in_folder(repo, rel)?;
+                stage_entries(index, repo, &inside, Some(rel))?;
+            }
+            // A file that's there: new, changed, or a link.
+            Some(_) => index.add_path(rel).err_text()?,
+            // Gone since the status was read: nothing to add.
+            None => {}
+        }
+    }
+    Ok(())
+}
+
+/// The changes in `folder` (relative to the working folder) alone: a read of
+/// its own, so a folder the scope's read couldn't descend into can be, git's
+/// ignore rules still applying. A repository of its own deeper inside it makes
+/// this read fall back too, and its folder row again (see [`read_statuses`]),
+/// so every level is read until one of them is a repository of its own. A
+/// failure says which folder's files weren't staged, rather than leaving them
+/// out of the commit silently.
+fn statuses_in_folder<'r>(
+    repo: &'r Repository,
+    folder: &Path,
+) -> Result<git2::Statuses<'r>, String> {
+    let read = read_statuses(repo, |recurse| {
+        let mut options = status_options();
+        options.pathspec(scope_pathspec(&folder.to_string_lossy()));
+        options.recurse_untracked_dirs(recurse);
+        options
+    });
+    read.map_err(|err| format!("{}: its files can't be staged: {err}", folder.display()))
 }
 
 /// Every file git has an opinion on, untracked ones included.
@@ -154,13 +283,119 @@ pub(crate) fn status_options() -> StatusOptions {
     opts
 }
 
-/// [`status_options`] for the files in `scope` ([`project_scope`]) only.
-pub(crate) fn status_options_in(scope: &str) -> StatusOptions {
+/// [`status_options`] for the files in `scopes` ([`relative_folder`]) only:
+/// git matches the pathspecs, so `app` doesn't take `app2/` (D10).
+pub(crate) fn status_options_in_scopes(scopes: &[String]) -> StatusOptions {
     let mut opts = status_options();
-    if !scope.is_empty() {
-        opts.pathspec(scope);
+    for scope in scopes {
+        // "" is all of the working folder: no pathspec narrows it.
+        if !scope.is_empty() {
+            opts.pathspec(scope_pathspec(scope));
+        }
     }
     opts
+}
+
+/// The changes in `scopes`, as the panel lists them. A repository of its own
+/// inside an untracked folder is listed as that folder alone (one row), not
+/// as its files; a read that can't walk such a folder at all is read again
+/// without descending into untracked folders (see [`read_statuses`]).
+pub(crate) fn statuses_in<'r>(
+    repo: &'r Repository,
+    scopes: &[String],
+) -> Result<git2::Statuses<'r>, String> {
+    read_statuses(repo, |recurse| {
+        let mut options = status_options_in_scopes(scopes);
+        options.recurse_untracked_dirs(recurse);
+        options
+    })
+}
+
+/// Reads the status with `options(recurse)`: descending into untracked folders,
+/// or listing each one as a single row. A read that's refused — libgit2 builds
+/// differ on a folder holding a repository of its own, and an unreadable one
+/// can refuse too — is made again without descending, which always works: each
+/// row is then read on its own (`statuses_in_folder`), so nothing is left out
+/// of what the caller does with the changes (D12).
+pub(crate) fn read_statuses<'r>(
+    repo: &'r Repository,
+    options: impl Fn(bool) -> StatusOptions,
+) -> Result<git2::Statuses<'r>, String> {
+    let mut full = options(true);
+    match repo.statuses(Some(&mut full)) {
+        Ok(statuses) => Ok(statuses),
+        Err(err) => {
+            let mut shallow = options(false);
+            repo.statuses(Some(&mut shallow))
+                .map_err(|_| err.message().to_string())
+        }
+    }
+}
+
+/// Whether a status entry is another repository's business (D12): an untracked
+/// folder that is a repository of its own, or a submodule whose only change is
+/// inside its own working tree. Committing the outer repository would stage
+/// the whole of the first (its `.git` included), or record a change of the
+/// second that it can't see.
+pub(crate) fn other_repository(repo: &Repository, entry: &git2::StatusEntry) -> bool {
+    let Ok(path) = entry.path() else {
+        return false;
+    };
+    // A folder's entry may come with a trailing separator; git's index takes
+    // a plain relative path.
+    let rel = Path::new(path.trim_end_matches(['/', '\\']));
+    let status = entry.status();
+    if is_submodule(repo, rel) {
+        // The commit the module has checked out against the one this
+        // repository records: a newer commit is this repository's change (git
+        // records the submodule's commit, and `git add` stages it), while
+        // edits inside it alone are the module's own. Both arrive as
+        // `WT_MODIFIED`, so the status can't tell them apart.
+        if let Ok(sub) = repo.find_submodule(&rel.to_string_lossy()) {
+            if let (Some(checked_out), Some(recorded)) = (sub.workdir_id(), sub.index_id()) {
+                return checked_out == recorded;
+            }
+        }
+        // No commit to compare (not checked out, no `.gitmodules` entry, or
+        // its folder gone): what's added, changed or deleted here is this
+        // repository's, and the rest is the module's.
+        return !status.intersects(
+            Status::INDEX_NEW | Status::INDEX_MODIFIED | Status::INDEX_DELETED | Status::WT_DELETED,
+        );
+    }
+    if !(status.is_wt_new() || status.is_index_new()) {
+        return false;
+    }
+    repo.workdir()
+        .is_some_and(|workdir| inside_repository_of_its_own(workdir, rel))
+}
+
+/// Whether `rel` (relative to the repository's working folder) is recorded in
+/// the index as a submodule's commit. A folder's entry may come with a
+/// separator at the end, which the index refuses.
+pub(crate) fn is_submodule(repo: &Repository, rel: &Path) -> bool {
+    let trimmed = rel.to_string_lossy();
+    let rel = Path::new(trimmed.trim_end_matches(['/', '\\']));
+    repo.index()
+        .ok()
+        .and_then(|index| index.get_path(rel, 0).map(|entry| entry.mode))
+        .is_some_and(|mode| mode == 0o160000)
+}
+
+/// Whether `rel` is in a folder that is a repository of its own: a `.git` in
+/// it, or in a folder above it — down to `workdir`, which isn't one of them.
+pub(crate) fn inside_repository_of_its_own(workdir: &Path, rel: &Path) -> bool {
+    let mut dir = workdir.join(rel);
+    while dir.starts_with(workdir) && dir != *workdir {
+        if dir.join(".git").exists() {
+            return true;
+        }
+        match dir.parent() {
+            Some(parent) if parent.starts_with(workdir) => dir = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -254,12 +489,14 @@ pub(crate) fn delta_path(diff: &git2::Diff, i: usize) -> Option<String> {
     })
 }
 
-/// Added/removed lines vs HEAD for every dirty file (`git diff --numstat`).
+/// Added/removed lines vs HEAD for every dirty file in `scopes`
+/// (`git diff --numstat`), scoped as the status is: a folder of a
+/// repository counts its own lines, not its neighbours' (D10).
 /// Merges the staged (HEAD→index) and unstaged (index→workdir) diffs so a
 /// file changed in both places reports the total. Untracked files report
 /// their line count as additions (when readable); anything that fails
 /// (binary, missing, diff error) stays 0/0 rather than failing status.
-fn workdir_line_stats(repo: &Repository) -> HashMap<String, (usize, usize)> {
+fn workdir_line_stats_in(repo: &Repository, scopes: &[String]) -> HashMap<String, (usize, usize)> {
     let mut merged: HashMap<String, (usize, usize)> = HashMap::new();
     // Files that are new, the only ones the fallback below may count: a
     // tracked file at 0/0 changed only its mode (or type), not its lines.
@@ -279,17 +516,27 @@ fn workdir_line_stats(repo: &Repository) -> HashMap<String, (usize, usize)> {
         }
     };
     let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-    // Staged: HEAD → index.
-    if let Ok(diff) = repo.diff_tree_to_index(head_tree.as_ref(), None, None) {
-        count(&diff);
-    }
-    // Unstaged: index → workdir, with untracked content so new files get
-    // real counts instead of 0/0.
-    let mut opts = git2::DiffOptions::new();
-    opts.include_untracked(true)
+    // Staged: HEAD → index, and unstaged: index → workdir, with untracked
+    // content so new files get real counts instead of 0/0.
+    let mut staged = git2::DiffOptions::new();
+    let mut unstaged = git2::DiffOptions::new();
+    unstaged
+        .include_untracked(true)
         .recurse_untracked_dirs(true)
         .show_untracked_content(true);
-    if let Ok(diff) = repo.diff_index_to_workdir(None, Some(&mut opts)) {
+    for scope in scopes {
+        // "" is all of the working folder: no pathspec narrows it.
+        if scope.is_empty() {
+            continue;
+        }
+        let spec = scope_pathspec(scope);
+        staged.pathspec(&spec);
+        unstaged.pathspec(&spec);
+    }
+    if let Ok(diff) = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut staged)) {
+        count(&diff);
+    }
+    if let Ok(diff) = repo.diff_index_to_workdir(None, Some(&mut unstaged)) {
         count(&diff);
     }
     // Fallback for untracked files libgit2 didn't emit content for
@@ -361,11 +608,17 @@ pub(crate) fn compute_ahead_behind(repo: &Repository) -> Option<(usize, usize)> 
 }
 
 #[tauri::command]
-pub async fn git_status(path: String) -> Result<GitStatus, String> {
-    blocking(move || git_status_blocking(path)).await
+pub async fn git_status(path: String, scopes: Option<Vec<String>>) -> Result<GitStatus, String> {
+    blocking(move || git_status_in(path, scopes)).await
 }
 
+/// The status of one folder, in that folder's scope: a project's Git panel.
+#[cfg(test)]
 pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
+    git_status_in(path, None)
+}
+
+fn git_status_in(path: String, scopes: Option<Vec<String>>) -> Result<GitStatus, String> {
     let repo = open_repo(&path)?;
 
     let branch = match repo.head() {
@@ -386,15 +639,17 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
 
     let (ahead, behind) = compute_ahead_behind(&repo).unwrap_or((0, 0));
     let (upstream, push_remote) = branch_remotes(&repo);
-    let scope = project_scope(&repo, &path);
-    let statuses = repo
-        .statuses(Some(&mut status_options_in(&scope)))
-        .err_text()?;
-    let stats = workdir_line_stats(&repo);
+    let scopes = scopes_in(&repo, &path, scopes);
+    let statuses = statuses_in(&repo, &scopes)?;
+    let stats = workdir_line_stats_in(&repo, &scopes);
 
     let files = statuses
         .iter()
         .filter(|entry| !entry.status().is_ignored())
+        // Another repository's own changes aren't this one's: an untracked
+        // folder that is a repository of its own, or a submodule changed only
+        // inside its own working tree (D12).
+        .filter(|entry| !other_repository(&repo, entry))
         .map(|entry| {
             let s = entry.status();
             // Not UTF-8: shown as near as it gets, not as an empty row.

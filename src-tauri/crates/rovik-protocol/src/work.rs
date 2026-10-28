@@ -44,6 +44,12 @@ pub struct ChatResult {
     /// as a local chat's does, without going back to be checked (6.6).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unchecked: bool,
+    /// A workspace chat's (workspaces-plan.md, 4.11): what its runs made at
+    /// the top of its worktree, outside every one of its folders, by name.
+    /// It isn't in the result, as no folder holds it: it stays on the
+    /// server.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outside: Vec<String>,
     /// The branch a server that pushes its results (autopilot-plan D15,
     /// H04) pushed it to, on the project's remote, and the pull request it
     /// opened for it.

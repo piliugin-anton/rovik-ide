@@ -49,6 +49,9 @@ pub enum VfsError {
     Loop,
     NoAttr,
     Range,
+    /// Across file systems: a rename or link between two folders of a
+    /// chat's view, which `mv` takes as a copy and a delete (EXDEV).
+    CrossDevice,
 }
 
 impl fmt::Display for VfsError {
@@ -66,6 +69,7 @@ impl fmt::Display for VfsError {
             VfsError::Loop => "too many levels of symbolic links",
             VfsError::NoAttr => "no such attribute",
             VfsError::Range => "buffer too small",
+            VfsError::CrossDevice => "can't move or link across folders",
         })
     }
 }

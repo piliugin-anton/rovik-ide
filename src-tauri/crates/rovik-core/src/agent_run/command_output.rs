@@ -18,6 +18,7 @@
 //! Plain text heuristics that work across tsc, eslint, cargo, rustc, jest,
 //! vitest, pytest and go test, without parsing any one tool's format.
 
+use crate::folders::OutputRoots;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -747,13 +748,55 @@ pub struct Failed {
     pub lines: std::collections::BTreeSet<String>,
 }
 
-/// The failures in a failed check's `output`, run in one of `roots`.
-pub fn failed_in(kind: &str, output: &str, roots: &[String]) -> Failed {
-    let text = without_roots(output, roots);
+/// The failures in a failed check's `output`, run in `folder` (`cd api &&
+/// …`; "" at the top), its paths read through `roots` as the chat's.
+pub fn failed_in(kind: &str, output: &str, roots: &OutputRoots, folder: &str) -> Failed {
+    let text = roots.in_text(output);
     Failed {
-        keys: all_failure_keys(kind, &text, false).into_iter().collect(),
+        keys: keys_in_folder(all_failure_keys(kind, &text, false), roots, folder)
+            .into_iter()
+            .collect(),
         lines: failure_lines(&text),
     }
+}
+
+/// [`failure_keys`] of a failed check's `output`, run in `folder` (`cd api
+/// && …`; "" at the top), its paths read through `roots` as the chat's.
+pub fn check_keys(
+    kind: &str,
+    output: &str,
+    timed_out: bool,
+    roots: &OutputRoots,
+    folder: &str,
+) -> Vec<String> {
+    let keys = failure_keys(kind, &roots.in_text(output), timed_out);
+    keys_in_folder(keys, roots, folder)
+}
+
+/// `keys` of a check run in `folder`, each file one names read as that
+/// folder's first ([`OutputRoots::from_folder`]), so that keys name files by
+/// their chat paths whichever folder's check printed them. Each key once.
+fn keys_in_folder(keys: Vec<String>, roots: &OutputRoots, folder: &str) -> Vec<String> {
+    if folder.is_empty() {
+        return keys;
+    }
+    let mut out: Vec<String> = Vec::with_capacity(keys.len());
+    for key in keys {
+        let key = match key.splitn(4, '|').collect::<Vec<_>>().as_slice() {
+            // `kind|test|name` is a test's; `kind|file|code|message` an error's.
+            [kind, file, code, message] if *file != "test" && !file.is_empty() => {
+                format!(
+                    "{kind}|{}|{code}|{message}",
+                    roots.from_folder(folder, file)
+                )
+            }
+            _ => key.clone(),
+        };
+        if !out.contains(&key) {
+            out.push(key);
+        }
+    }
+    out
 }
 
 /// `now`'s failure keys split into those `before` doesn't have, the
@@ -766,21 +809,6 @@ pub fn split_by_before(kind: &str, now: &Failed, before: &Failed) -> (Vec<String
         before.keys.contains(k) && (*k != alone || now.lines.is_subset(&before.lines))
     });
     (own, known)
-}
-
-/// `text` with each of `roots` (folders, absolute) taken off the paths in
-/// it: `/home/me/app/src/a.ts` is `src/a.ts` in a check run in
-/// `/home/me/app`. The longest first, so one inside another goes whole.
-pub fn without_roots(text: &str, roots: &[String]) -> String {
-    let mut roots: Vec<String> = roots
-        .iter()
-        .map(|r| r.replace('\\', "/").trim_end_matches('/').to_string())
-        .filter(|r| r.len() > 1)
-        .collect();
-    roots.sort_by_key(|r| std::cmp::Reverse(r.len()));
-    roots.iter().fold(text.to_string(), |text, root| {
-        text.replace(&format!("{root}/"), "")
-    })
 }
 
 /// A duration in a line (`(12 ms)`, `2.5 s`, `Done in 1.79s`): it differs
@@ -1335,30 +1363,56 @@ mod tests {
     /// is the change's.
     #[test]
     fn failures_compare_with_the_code_before_the_change() {
+        let app = crate::folders::Folders::one("/home/me/app".into());
         let before = failed_in(
             "lint",
             "/tmp/red-1/src/a.ts\n  2:7  error  'x' is never used  no-unused-vars\n",
-            &["/tmp/red-1".into(), "/home/me/app".into()],
+            &app.output_roots(std::path::Path::new("/tmp/red-1")),
+            "",
         );
         let now = failed_in(
             "lint",
             "/tmp/chat/src/a.ts\n  3:7  error  'x' is never used  no-unused-vars\n\n/tmp/chat/src/b.ts\n  1:1  error  'y' is never used  no-unused-vars\n",
-            &["/tmp/chat".into(), "/home/me/app".into()],
+            &app.output_roots(std::path::Path::new("/tmp/chat")),
+            "",
         );
         let (own, known) = split_by_before("lint", &now, &before);
         assert_eq!(own, ["lint|src/b.ts|no-unused-vars|'y' is never used"]);
         assert_eq!(known, ["lint|src/a.ts|no-unused-vars|'x' is never used"]);
-        // The longest root first: one inside another goes whole.
-        assert_eq!(
-            without_roots(
-                "/a/b/c/x.ts /a/b/y.ts /a/bc/z.ts",
-                &["/a/b".into(), "/a/b/c/".into()]
-            ),
-            "x.ts y.ts /a/bc/z.ts"
+    }
+
+    /// A workspace chat's check run in a folder (`cd api && …`) prints its
+    /// paths relative to there, or absolute: either way its keys name the
+    /// folder's files by their chat paths, a test's name as it is.
+    #[test]
+    fn a_folders_check_names_its_files_by_their_chat_paths() {
+        let base = crate::testing::temp_dir();
+        let view = base.0.join("view");
+        std::fs::create_dir_all(view.join("api/src")).unwrap();
+        std::fs::write(view.join("api/src/a.ts"), "").unwrap();
+        let folders = crate::folders::Folders::named(vec![crate::folders::Folder {
+            name: "api".into(),
+            path: base.0.join("api"),
+        }])
+        .unwrap();
+        let roots = folders.output_roots(&view);
+        let output = format!(
+            "src/a.ts(3,1): error TS2322: Type 'number' is not assignable to type 'string'.\n{}/src/a.ts(4,1): error TS2322: Type 'number' is not assignable to type 'string'.\n",
+            base.0.join("api").display()
         );
         assert_eq!(
-            without_roots("/x.ts", &["/".into(), String::new()]),
-            "/x.ts"
+            check_keys("typecheck", &output, false, &roots, "api"),
+            ["typecheck|api/src/a.ts|TS2322|Type 'number' is not assignable to type 'string'."]
+        );
+        let failed = failed_in("typecheck", &output, &roots, "api");
+        assert_eq!(
+            failed.keys.into_iter().collect::<Vec<_>>(),
+            ["typecheck|api/src/a.ts|TS2322|Type 'number' is not assignable to type 'string'."]
+        );
+        let test = "--- FAIL: TestA (0.00s)\n";
+        assert_eq!(
+            check_keys("test", test, false, &roots, "api"),
+            ["test|test|TestA"]
         );
     }
 

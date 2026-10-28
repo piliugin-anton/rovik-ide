@@ -37,6 +37,34 @@ pub fn command_problem(command: &str) -> Option<String> {
     ))
 }
 
+/// The files a chat on a server changed that haven't landed, earlier runs'
+/// too: its worktree's own `git status`, whose index the daemon keeps on
+/// the chat's landing base (rovik-agentd's sync.rs and results.rs). An
+/// untracked folder is named once, `dir/`. None where `root` isn't a
+/// worktree.
+pub fn unlanded(root: &std::path::Path) -> Vec<String> {
+    let Ok(repo) = git2::Repository::open(root) else {
+        return Vec::new();
+    };
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(false);
+    let statuses = match repo.statuses(Some(&mut opts)) {
+        Ok(statuses) => statuses,
+        Err(e) => {
+            eprintln!(
+                "agent: {}: the changes that haven't landed weren't read: {}",
+                root.display(),
+                e.message()
+            );
+            return Vec::new();
+        }
+    };
+    let paths = statuses
+        .iter()
+        .filter_map(|entry| entry.path().ok().map(str::to_string));
+    paths.collect()
+}
+
 /// Whether a command names the daemon's folder, quotes and escapes aside.
 pub fn names_daemon_folder(command: &str) -> bool {
     let plain: String = command
@@ -79,6 +107,35 @@ mod tests {
         ] {
             assert!(!names_daemon_folder(command), "{command}");
         }
+    }
+
+    #[test]
+    fn a_worktrees_unlanded_changes_are_its_git_status() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.as_path();
+        std::fs::create_dir_all(root.join("api")).unwrap();
+        std::fs::write(root.join("api/a.txt"), "1\n").unwrap();
+        std::fs::write(root.join("web.txt"), "w\n").unwrap();
+        let repo = git2::Repository::init(root).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let me = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &me, &me, "base", &tree, &[])
+            .unwrap();
+        assert_eq!(unlanded(root), Vec::<String>::new(), "all landed");
+
+        std::fs::write(root.join("api/a.txt"), "2\n").unwrap();
+        std::fs::create_dir_all(root.join("web/src")).unwrap();
+        std::fs::write(root.join("web/src/b.ts"), "b\n").unwrap();
+        let mut found = unlanded(root);
+        found.sort();
+        assert_eq!(found, ["api/a.txt", "web/"]);
+        let elsewhere = crate::testing::temp_dir();
+        assert!(unlanded(&elsewhere.0).is_empty(), "no worktree");
     }
 
     #[test]

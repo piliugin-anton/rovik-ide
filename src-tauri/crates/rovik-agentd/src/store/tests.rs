@@ -72,6 +72,7 @@ fn start(dialog: &str, key: &str, config: Option<AgentConfig>) -> StartRequest {
         config,
         isolate: None,
         project_settings: None,
+        folders: Vec::new(),
     }
 }
 
@@ -389,6 +390,7 @@ fn results_are_numbered_and_the_same_one_keeps_its_number() {
         pending: None,
         marked: Vec::new(),
         unchecked: false,
+        outside: Vec::new(),
         branch: None,
         pr: None,
     };

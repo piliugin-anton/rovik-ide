@@ -109,6 +109,7 @@ import {
 import { draftWaits, recoverDrafts, resumesHere, sendKeepingInput } from '../lib/remoteGuards';
 import ChatLocation from './ChatLocation';
 import OpenedPorts from './OpenedPorts';
+import { backgroundTasksOf, stopBackgroundTask } from '../lib/backgroundTasks';
 import UploadProgress from './UploadProgress';
 import { waitingChats } from '../lib/chatBadges';
 import { isSettled, latestChecklist } from '../lib/todo';
@@ -120,9 +121,14 @@ import {
   settledChecklist,
 } from '../lib/checklist';
 import {
+  chatForPlan,
   implementationMessage,
   onImplementPlanRequest,
+  peekImplementPlanRequest,
+  planFolders,
+  readPlan,
   takeImplementPlanRequest,
+  type ImplementPlanRequest,
 } from '../lib/plans';
 import QuestionPanel from './QuestionPanel';
 import {
@@ -157,7 +163,7 @@ import { chatsAtWorkElsewhere } from '../lib/instances';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
 import { askForChatBranch } from './NewBranchDialog';
-import { offerChatBranch } from '../lib/chatBranch';
+import { foldersAtLastRun, offerChatBranch, type BranchFolder } from '../lib/chatBranch';
 import ChatList, { type ChatListRow } from './ChatList';
 import MessageList, { type MessageListController } from './MessageList';
 import {
@@ -174,7 +180,18 @@ import {
   loadComposerDraft,
   scheduleComposerDraft,
 } from '../lib/composerDraft';
-import { toRelativePath } from '../lib/fileTools';
+import {
+  chatFolderNames,
+  chatPathOf,
+  chatRootOf,
+  folderOf,
+  listedBy,
+  runPlace,
+  sameOwners,
+  type ChatOwners,
+  type OpenFolder,
+} from '../lib/openFolders';
+import NewChatMenu, { cantChatIn } from './NewChatMenu';
 import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/permissions';
 import {
   runsSubagents,
@@ -262,15 +279,33 @@ const resumed = new Set<string>();
 const usageCache = new Map<string, ContextUsage>();
 const clmBudgetCache = new Map<string, number | null>();
 
+/**
+ * Where Implement carries out a plan (D28): `'open'`, the open chat; else how
+ * to start the chat that does, which gives null when none could start.
+ */
+type PlanStart = 'open' | (() => Promise<DialogSummary | null>);
+
 interface ChatProps {
-  rootPath: Accessor<string | null>;
+  /**
+   * The window's folders, each with the project it is once resolved
+   * (lib/openFolders.ts): a chat works in the folder whose project it is,
+   * and names its files as paths in it (docs/design/workspaces-plan.md, 3.8).
+   */
+  folders: Accessor<readonly OpenFolder[]>;
+  /**
+   * The window's workspace's id; null in a folder's window. Its chats work
+   * across its folders, and name their files under the folders' names (D2).
+   */
+  workspace: Accessor<string | null>;
+  /** The folder the user is working in: New chat's choice to begin with (D2). */
+  activeFolder: Accessor<OpenFolder | null>;
   activeFileContext: Accessor<ActiveFileContext | null>;
   files: Accessor<TreeRow[]>;
   /**
-   * The open project, whose chats are shown (lib/projects.ts, resolved by
-   * App): undefined while it's being resolved, null with no folder open.
+   * Whose chats are shown (lib/openFolders.ts, `chatOwners`): the window's
+   * owners, undefined while one of its folders is being resolved.
    */
-  projectId: Accessor<string | null | undefined>;
+  owners: Accessor<ChatOwners | undefined>;
 }
 
 export default function ChatPanel(props: ChatProps) {
@@ -595,6 +630,69 @@ export default function ChatPanel(props: ChatProps) {
 
   const activeDialog = () => store.state.active;
 
+  /**
+   * Where a chat works (lib/openFolders.ts, 3.8): the window's folder whose
+   * project it is, or a workspace chat's folders. Null when it doesn't work
+   * here, and for a chat with no project (no folder open).
+   */
+  const rootOf = (dialogId: string | null | undefined) =>
+    dialogId ? chatRootOf(store.summaryOf(dialogId), props.folders(), props.workspace()) : null;
+  /** Where the open chat works. */
+  const chatRoot = () => rootOf(activeDialogId());
+  /**
+   * What `dialogId`'s run is sent (`runPlace`): its folder, none for a
+   * workspace chat; or why it can't run here.
+   */
+  const placeOf = (dialogId: string) => runPlace(store.summaryOf(dialogId), rootOf(dialogId));
+  /**
+   * The root `dialogId`'s run is sent: its folder; none for a workspace
+   * chat, or for one that can't run here.
+   */
+  const runRootOf = (dialogId: string) => {
+    const place = placeOf(dialogId);
+    return 'root' in place ? place.root : null;
+  };
+  /** Several folders: New chat asks which a chat works in, and a chat says which (D2). */
+  const severalFolders = () => props.folders().length > 1;
+  /**
+   * A chat's folders for its row in the list: "api", "api, web", "All
+   * folders"; "No folder" for a workspace chat whose folders all left the
+   * workspace (D19), which asks for one before its next run.
+   */
+  const rowFolders = (dialog: DialogSummary) => {
+    const names = chatFolderNames(dialog, props.folders(), props.workspace());
+    if (names === 'all') return 'All folders';
+    return names?.length === 0 ? 'No folder' : (names?.join(', ') ?? null);
+  };
+  /** The open chat's folders for the label by the input: "api", "all folders", "no folder". */
+  const activeFolders = () => {
+    const dialog = activeDialog();
+    const names = dialog ? chatFolderNames(dialog, props.folders(), props.workspace()) : null;
+    if (names === 'all') return 'all folders';
+    return names?.length === 0 ? 'no folder' : (names?.join(', ') ?? null);
+  };
+  /** The label's tooltip: where the open chat's folders are. */
+  const activeFoldersTitle = () => {
+    const paths = chatRoot()?.folders.map((folder) => folder.path);
+    if (!paths) return undefined;
+    return paths.length ? `This chat works in ${paths.join(', ')}` : 'This chat has no folder';
+  };
+  /**
+   * No chat to show, in a window with folders, once its chats are loaded:
+   * the panel shows New chat's menu to start one (3.8). With one folder a
+   * chat is made in it instead, unless it can't have one (it's missing).
+   * While chats are listed one is about to show (the open one was deleted,
+   * and the next opens): no menu meanwhile.
+   */
+  const startsFromMenu = () =>
+    !activeDialog() &&
+    props.folders().length > 0 &&
+    (severalFolders() || cantChatIn(props.folders()[0], props.folders()) !== null) &&
+    !loadingHistory() &&
+    !historyLoadError() &&
+    store.state.list.loaded &&
+    store.state.list.items.length === 0;
+
   /*
    * A connector's commands (lib/connectorCommands.ts): listed for the chat's
    * connector, in its project folder (a host chat's: on its host), as the
@@ -605,7 +703,8 @@ export default function ChatPanel(props: ChatProps) {
       const args = profileConnectorArgs(activeProfile());
       if (!args) return null;
       const place = activeDialog()?.place;
-      return { args, cwd: place ? null : props.rootPath() || null, host: place?.host ?? null };
+      const id = activeDialogId();
+      return { args, cwd: place || !id ? null : runRootOf(id), host: place?.host ?? null };
     },
     null,
     { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) }
@@ -698,7 +797,7 @@ export default function ChatPanel(props: ChatProps) {
    * as segments, so file/paste chips come back as chips. The DOM is read
    * here (not the signal text, which flattens chips into labels).
    * Programmatic clears for a dialog switch schedule an empty save for the
-   * old chat; selectRow/startNewChat cancel it after switching (see below).
+   * old chat; selectRow/startChatIn cancel it after switching (see below).
    */
   createEffect(
     on(
@@ -728,7 +827,9 @@ export default function ChatPanel(props: ChatProps) {
           list.length,
           list[list.length - 1]?.finalized,
           sending(),
-          props.rootPath(),
+          chatRoot()
+            ?.folders.map((folder) => folder.path)
+            .join('\n'),
           efforts(),
           chatMode(),
           permissions(),
@@ -772,7 +873,7 @@ export default function ChatPanel(props: ChatProps) {
             const estimate = await estimateContext({
               profile,
               dialogId,
-              root: props.rootPath(),
+              root: runRootOf(dialogId),
               mode: chatMode(),
               reasoningEffort: reasoningOptions(profile)?.reasoning_effort,
             });
@@ -828,7 +929,7 @@ export default function ChatPanel(props: ChatProps) {
         return;
       }
       chatApi
-        .search(query, store.projectId())
+        .search(query, store.owners()?.projects ?? null)
         .then((hits) => {
           if (run !== searchRun) return;
           setSearchRows(
@@ -874,8 +975,67 @@ export default function ChatPanel(props: ChatProps) {
     const ctx = props.activeFileContext();
     if (!ctx?.selection) return null;
     const id = props.files().find((f) => f.path === ctx.path)?.id ?? ctx.path;
-    return selectionReference(ctx.path, props.rootPath(), ctx.selection, id);
+    return inChat(selectionReference(ctx.path, null, ctx.selection, id));
   });
+
+  /**
+   * How the open chat names the file at `path` (3.8): its path in the
+   * chat's folder, or under its folder's name in a workspace chat. With no
+   * folder open the chat has none, and the path is as it is; a file outside
+   * the chat's folders has no name: the chat can't read it.
+   */
+  function chatName(path: string): string | null {
+    if (props.folders().length === 0) return path;
+    return chatPathOf(chatRoot(), path);
+  }
+
+  /** `reference` as the open chat names its file, or null when it isn't the chat's to read. */
+  function inChat(reference: FileSuggestion): FileSuggestion | null {
+    const named = chatName(reference.path);
+    return named === null ? null : { ...reference, relativePath: named };
+  }
+
+  /**
+   * The editor's place as the open chat names its file (3.8); none when the
+   * file isn't the chat's to read (another folder's, D13): the note above
+   * the input says so.
+   */
+  const chatContext = createMemo<ActiveFileContext | null>(() => {
+    const ctx = props.activeFileContext();
+    const path = ctx ? chatName(ctx.path) : null;
+    return ctx && path !== null ? { ...ctx, path } : null;
+  });
+
+  /**
+   * Why a file the user gave the open chat (Add to chat, a paste) didn't go
+   * in: it isn't the chat's to read. Shown above the input until the input
+   * or the chat changes.
+   */
+  const [refused, setRefused] = createSignal<string | null>(null);
+  createEffect(on([input, activeDialogId], () => setRefused(null), { defer: true }));
+  /** What the note above the input says: a file left out, or the editor's file not named to the chat. */
+  const folderNote = () => {
+    if (refused()) return refused();
+    const ctx = props.activeFileContext();
+    if (!ctx || !activeDialog() || chatContext()) return null;
+    return `${notTheChats(ctx.path)} It isn’t named to the chat.`;
+  };
+
+  /**
+   * Why the file at `path` isn't the open chat's (3.8): it's in another
+   * folder, or in none of the window's.
+   */
+  function notTheChats(path: string): string {
+    const names = chatRoot()?.folders.map((folder) => folder.name);
+    const at = folderOf(props.folders(), path);
+    const where = names?.length
+      ? `this chat works in ${names.join(', ')}`
+      : 'this chat has no folder open here';
+    if (!at) return `${path} isn’t in this window’s folders; ${where}.`;
+    // Named as a chat across the window's folders would: under its folder's name.
+    const named = chatPathOf({ kind: 'workspace', folders: [at] }, path);
+    return `${named} is in ${at.name}; ${where}.`;
+  }
 
   const fileSuggestions = createMemo<FileSuggestion[]>(() => {
     if (!fileSuggestionsOpen()) return [];
@@ -912,27 +1072,42 @@ export default function ChatPanel(props: ChatProps) {
   });
 
   /*
-   * Every file in the project, for "@": the backend lists them all
-   * (.gitignore respected, but .rovik/plans/ always: a plan is there to be
-   * referenced, even when the project ignores .rovik/). The file tree only
-   * knows folders it has loaded, so in a newly opened project it offered
-   * just the root's files. Fetched when "@" opens, at most every few
-   * seconds, merged with the tree's.
+   * Every file in the chat's folders, for "@": the backend lists each
+   * folder's (.gitignore respected, but .rovik/plans/ always: a plan is
+   * there to be referenced, even when the project ignores .rovik/). The
+   * file tree only knows folders it has loaded, so in a newly opened project
+   * it offered just the root's files. Fetched when "@" opens, at most every
+   * few seconds, merged with the tree's.
    */
   const [projectFiles, setProjectFiles] = createSignal<{
-    root: string;
+    /** The folders listed, one path a line. */
+    roots: string;
     files: string[];
     at: number;
   } | null>(null);
   let projectFilesLoading = false;
+  /** The open chat's folders that are there (D20), one path a line: what "@" lists. */
+  const listedRoots = () =>
+    (chatRoot()?.folders ?? [])
+      .filter((folder) => !folder.missing)
+      .map((folder) => folder.path)
+      .join('\n');
   function refreshProjectFiles() {
-    const root = props.rootPath();
+    const roots = listedRoots();
     const cached = projectFiles();
-    if (!root || projectFilesLoading) return;
-    if (cached && cached.root === root && Date.now() - cached.at < 5000) return;
+    if (!roots || projectFilesLoading) return;
+    if (cached && cached.roots === roots && Date.now() - cached.at < 5000) return;
     projectFilesLoading = true;
-    invoke<{ files: string[]; truncated: boolean }>('list_project_files', { root })
-      .then((r) => setProjectFiles({ root, files: r.files, at: Date.now() }))
+    Promise.all(
+      roots
+        .split('\n')
+        .map((root) =>
+          invoke<{ files: string[]; truncated: boolean }>('list_project_files', { root })
+        )
+    )
+      .then((lists) =>
+        setProjectFiles({ roots, files: lists.flatMap((list) => list.files), at: Date.now() })
+      )
       .catch((err) => console.error('Listing project files failed:', err))
       .finally(() => (projectFilesLoading = false));
   }
@@ -940,28 +1115,27 @@ export default function ChatPanel(props: ChatProps) {
     if (fileSuggestionsOpen()) refreshProjectFiles();
   });
 
+  // The open chat's folders' files only (D13): it can't read the others.
   const referenceableFiles = createMemo<FileSuggestion[]>(() => {
-    const root = props.rootPath();
+    const roots = listedRoots();
     const byPath = new Map<string, FileSuggestion>();
     // The tree's rows first: they carry the ids the rest of the app uses.
     for (const file of props.files()) {
       if (file.isDir || file.ignored) continue;
-      byPath.set(file.path, {
-        id: file.id,
-        path: file.path,
-        name: file.name,
-        relativePath: toRelativePath(file.path, root),
-      });
+      const relativePath = chatName(file.path);
+      if (relativePath === null) continue;
+      byPath.set(file.path, { id: file.id, path: file.path, name: file.name, relativePath });
     }
     const listed = projectFiles();
-    if (listed && listed.root === root) {
+    if (listed && listed.roots === roots) {
       for (const path of listed.files) {
-        if (byPath.has(path)) continue;
+        const relativePath = chatName(path);
+        if (byPath.has(path) || relativePath === null) continue;
         byPath.set(path, {
           id: path,
           path,
           name: path.split(/[\\/]/).pop() ?? path,
-          relativePath: toRelativePath(path, root),
+          relativePath,
         });
       }
     }
@@ -982,8 +1156,9 @@ export default function ChatPanel(props: ChatProps) {
       setSelection(reconcileSelection(settings.providers, settings.active));
 
       try {
-        // This project's chats (or, with no folder open, the ones with none).
-        await store.switchProject(await projectReady());
+        // The window's chats: its folders' and its workspace's (or, with no
+        // folder open, the ones with none).
+        await store.showOwners(await ownersReady());
       } catch (err) {
         console.error('Failed to load chats:', err);
         setHistoryLoadError(String(err));
@@ -998,79 +1173,113 @@ export default function ChatPanel(props: ChatProps) {
       await initAgentRuns();
       await recoverDraftsAfterRestart();
       await recoverSteerDrafts(false);
-      await recoverUnsettledSends(store.projectId());
+      const owners = store.owners();
+      for (const id of owners ? ownerIds(owners) : []) await recoverUnsettledSends(id);
       setDraftsJudged(true);
       const active = activeDialogId();
       if (active) await restoreComposerDraft(active);
     } finally {
       if (isMounted) {
         setLoadingHistory(false);
-        // Another folder was opened while the chats loaded: its project.
-        await catchUpWithProject();
+        // Another folder was opened while the chats loaded: its chats.
+        await catchUpWithOwners();
       }
       if (isMounted) {
         // "Add to chat" may have opened this panel: its references waited
         // until the chat was loaded (opening one resets the composer).
         insertPendingReferences();
-        takePlanFromEditor();
+        void takePlanFromEditor();
       }
     }
   });
 
-  /** The project, once App has resolved it. */
-  function projectReady(): Promise<string | null> {
-    const now = props.projectId();
+  /** The window's owners, once App has resolved its folders. */
+  function ownersReady(): Promise<ChatOwners> {
+    const now = props.owners();
     if (now !== undefined) return Promise.resolve(now);
     return new Promise((resolve) => {
       createRoot((dispose) => {
         createEffect(() => {
-          const id = props.projectId();
-          if (id === undefined) return;
+          const owners = props.owners();
+          if (owners === undefined) return;
           dispose();
-          resolve(id);
+          resolve(owners);
         });
       });
     });
   }
 
+  /** The projects of `owners` whose sends a crash may have left unanswered (null: no project). */
+  const ownerIds = (owners: ChatOwners): (string | null)[] => owners.projects ?? [null];
+
+  /**
+   * The newest chat, open; with none, the chat the window starts in
+   * (`startDefaultChat`).
+   */
   async function openNewestChat() {
     const first = store.state.list.items[0];
     if (first) {
       await store.openChat(first);
       await restoreComposerDraft(first.id);
-    } else createNewDialog();
+    } else startDefaultChat();
   }
 
-  // Another project (another folder, or a copy given its own history): its chats.
+  /**
+   * With no chat to show, an empty one in the window's folder, as a project
+   * always had (none with no folder open). With several folders none is
+   * made in folders the panel would have to guess: it shows New chat's menu
+   * (3.8), as it does when its one folder can't have a chat (it's missing).
+   */
+  function startDefaultChat() {
+    if (severalFolders()) return;
+    const folder = props.folders()[0] ?? null;
+    if (folder && cantChatIn(folder, props.folders())) return;
+    createNewDialog(folder?.project?.id ?? null);
+  }
+
+  // Another target, or the same one's projects changing (a folder resolved,
+  // added, removed or located, a copy given its own history): its chats.
   createEffect(
     on(
-      () => props.projectId(),
-      (id) => {
-        if (id === undefined || id === store.projectId() || loadingHistory()) return;
-        void switchToProject(id);
+      () => props.owners(),
+      (next) => {
+        if (next === undefined || loadingHistory()) return;
+        const was = store.owners();
+        if (was && sameOwners(was, next)) return;
+        void showChats(next);
       },
       { defer: true }
     )
   );
 
   /**
-   * Shows the project's chats. A folder opened while this (or the first
-   * load) was still going is caught up with at the end: the effect above
-   * leaves a change alone while history loads, and it doesn't run again
-   * for a project that is already the current one.
+   * Shows the chats of `next` (3.8). Another target's: its own, from the
+   * start, the input cleared for its chat (what's typed stays the chat's it
+   * was typed in, as when another chat is picked). The same target's with
+   * other projects: the open chat stays, its input with it, unless its own
+   * folder left. The sends a crash left unanswered come back for each
+   * project new here. Owners that change meanwhile are caught up with at the
+   * end: the effect above leaves a change alone while history loads.
    */
-  async function switchToProject(id: string | null) {
-    // What's typed stays the chat's it was typed in (as when another chat
-    // is picked): the input is cleared for the project's own chat.
+  async function showChats(next: ChatOwners) {
+    const was = store.owners();
+    const sameTarget = !!was && was.target === next.target;
+    const active = activeDialog();
+    const keeps = sameTarget && !!active && listedBy(next, active.projectId ?? null);
     const prevId = activeDialogId();
-    if (prevId) await flushComposerDom(prevId);
-    resetComposerState();
+    if (prevId && !keeps) {
+      await flushComposerDom(prevId);
+      resetComposerState();
+    }
     setLoadingHistory(true);
     try {
-      await store.switchProject(id);
-      if (isMounted && props.projectId() === id) {
-        await openNewestChat();
-        await recoverUnsettledSends(id);
+      await store.showOwners(next);
+      if (isMounted && sameOwners(props.owners(), next)) {
+        if (!store.state.activeId) await openNewestChat();
+        const before = was && sameTarget ? ownerIds(was) : [];
+        for (const id of ownerIds(next)) {
+          if (!before.includes(id)) await recoverUnsettledSends(id);
+        }
       }
     } catch (err) {
       setHistoryLoadError(String(err));
@@ -1080,14 +1289,16 @@ export default function ChatPanel(props: ChatProps) {
     // The reset cleared the input while the old chat was still active,
     // scheduling an empty save for it: dropped, the flush kept it.
     if (prevId && prevId !== activeDialogId()) cancelComposerDraft(prevId);
-    await catchUpWithProject();
+    await catchUpWithOwners();
   }
 
-  /** The project changed while chats were loading: load that one instead. */
-  async function catchUpWithProject() {
-    const now = props.projectId();
-    if (!isMounted || now === undefined || now === store.projectId() || loadingHistory()) return;
-    await switchToProject(now);
+  /** The owners changed while chats were loading: show theirs instead. */
+  async function catchUpWithOwners() {
+    const now = props.owners();
+    const was = store.owners();
+    if (!isMounted || now === undefined || loadingHistory()) return;
+    if (was && sameOwners(was, now)) return;
+    await showChats(now);
   }
 
   const stopAddToChat = onAddToChat(() => {
@@ -1096,6 +1307,8 @@ export default function ChatPanel(props: ChatProps) {
   onCleanup(stopAddToChat);
 
   function insertPendingReferences() {
+    // With no chat yet they wait for the one started from the menu (3.8).
+    if (!activeDialog()) return;
     for (const reference of takeChatReferences()) insertReferenceChip(reference);
   }
 
@@ -1164,31 +1377,137 @@ export default function ChatPanel(props: ChatProps) {
     );
   }
 
+  /** The New chat button whose menu is open: with several folders it asks which (D2). */
+  const [newChatFrom, setNewChatFrom] = createSignal<HTMLElement | null>(null);
+  /** The workspace chat's label whose menu is open: its folders change (D32). */
+  const [foldersFrom, setFoldersFrom] = createSignal<HTMLElement | null>(null);
+
   /**
-   * "New chat" from the UI. When the current chat is still empty it is
-   * reused instead of piling up empty chats in the history.
+   * Why the open chat's folders can't change now (D32): it's at work (a run,
+   * its Autopilot task between two of its runs or waiting out a rate
+   * limit), or has commands running, named. Null when they can.
    */
-  function startNewChat(): DialogSummary {
+  const foldersBusy = (): string | null => {
+    if (sending() || taskWaits(taskStages())) {
+      return 'This chat is at work: its folders can change once it stops.';
+    }
+    const tasks = backgroundTasksOf(activeDialogId());
+    if (tasks.length === 0) return null;
+    const commands = tasks.map((task) => task.command).join(', ');
+    return tasks.length === 1
+      ? `${commands} is running: stop it to change the chat’s folders.`
+      : `${commands} are running: stop them to change the chat’s folders.`;
+  };
+
+  /** Stops the open chat's running commands, so its folders can change. */
+  function stopChatCommands() {
+    const dialogId = activeDialogId();
+    if (!dialogId) return;
+    for (const task of backgroundTasksOf(dialogId)) {
+      void stopBackgroundTask(dialogId, task.id).catch((err) =>
+        notify({ kind: 'error', title: 'Couldn’t stop the command', message: String(err) })
+      );
+    }
+  }
+
+  /**
+   * Apply in a workspace chat's menu (D32): the open chat works in `folders`
+   * from now on, unless the backend refuses, which says why.
+   */
+  async function applyFolders(folders: OpenFolder[] | 'all') {
+    const dialogId = activeDialogId();
+    setFoldersFrom(null);
+    if (!dialogId) return;
+    const names = folders === 'all' ? 'all' : JSON.stringify(folders.map((f) => f.name));
+    const refused = await store.setFolders(dialogId, names);
+    if (refused) {
+      notify({ kind: 'warning', title: 'Folders not changed', message: refused, timeout: 10_000 });
+    }
+  }
+
+  /**
+   * New chat, from either of its buttons: with several folders, its menu asks
+   * which folder the chat works in (D2); with one, a chat in it, and with no
+   * folder open, a chat with none, as always.
+   */
+  function newChat(button: HTMLElement) {
+    if (severalFolders()) {
+      setNewChatFrom((open) => (open === button ? null : button));
+      return;
+    }
+    void startChatIn(props.folders()[0] ?? null);
+  }
+
+  /**
+   * A new chat in `folder` (null: no folder open). The open chat, while it's
+   * still empty, is reused rather than piling up empty chats in the history:
+   * moved to the folder's project when it's another's, which a chat with a
+   * message never is, nor one whose draft names files (3.8). Null when no
+   * chat could be started there.
+   */
+  async function startChatIn(folder: OpenFolder | null): Promise<DialogSummary | null> {
+    setNewChatFrom(null);
+    const why = folder && cantChatIn(folder, props.folders());
+    if (why) {
+      notify({ kind: 'warning', title: 'No chat started', message: why, timeout: 6000 });
+      return null;
+    }
+    return startChatOf(folder?.project?.id ?? null, null);
+  }
+
+  /**
+   * Start chat in New chat's menu (D2): a folder chat in the one folder
+   * checked; else a workspace chat across those checked, or following the
+   * workspace for All folders.
+   */
+  async function startChatFrom(folders: OpenFolder[] | 'all'): Promise<DialogSummary | null> {
+    if (folders !== 'all' && folders.length === 1) return startChatIn(folders[0]);
+    setNewChatFrom(null);
+    const names = folders === 'all' ? 'all' : JSON.stringify(folders.map((folder) => folder.name));
+    return startChatOf(props.workspace(), names);
+  }
+
+  /**
+   * A new chat of `owner` (a folder's project, null with none open; a
+   * workspace's, working in `folders`: `"all"` or names as JSON), the open
+   * chat reused while it's empty, as `startChatIn` says.
+   */
+  async function startChatOf(
+    owner: string | null,
+    folders: string | null
+  ): Promise<DialogSummary | null> {
     const current = activeDialog();
     if (current && isEmptyChat(current.id)) {
-      setHistoryOpen(false);
-      setFocusMessageId(null);
-      inputTextareaRef?.focus();
-      return current;
+      const same = (current.projectId ?? null) === owner && (current.folders ?? null) === folders;
+      // One on a host stays the project's it is there, and a draft naming
+      // files stays with the chat of their folder: another's can't read them.
+      const movable = !current.place && composerReferences().length === 0;
+      if (same || (movable && (await store.moveEmpty(current.id, owner, folders)))) {
+        setHistoryOpen(false);
+        setFocusMessageId(null);
+        inputTextareaRef?.focus();
+        return store.summaryOf(current.id) ?? current;
+      }
     }
-    const prevId = current?.id;
+    const prevId = activeDialogId();
     if (prevId) void flushComposerDom(prevId);
     resetComposerState();
-    const dialog = createNewDialog();
+    const dialog = createNewDialog(owner, folders);
     // The reset cleared `input` while the old chat was still active,
     // scheduling an empty save for it; drop it, the flush kept it.
     if (prevId && prevId !== dialog.id) cancelComposerDraft(prevId);
+    // Add to chat while there was no chat: its references go in this one.
+    insertPendingReferences();
     inputTextareaRef?.focus();
     return dialog;
   }
 
-  function createNewDialog(): DialogSummary {
-    const dialog = store.createDialog(NEW_CHAT_TITLE);
+  /**
+   * A new chat of `projectId`: the folder it works in's project (null: none
+   * open), or a workspace's, working in `folders`.
+   */
+  function createNewDialog(projectId: string | null, folders: string | null = null): DialogSummary {
+    const dialog = store.createDialog(NEW_CHAT_TITLE, projectId, folders);
     setHistoryOpen(false);
     setFocusMessageId(null);
     // References belong to the current composer, not to the new dialog.
@@ -1269,13 +1588,7 @@ export default function ChatPanel(props: ChatProps) {
     setSearchRows((rows) => rows?.filter((r) => r.dialog.id !== id) ?? null);
     await store.deleteDialog(id);
 
-    if (wasActive) {
-      const next = store.state.list.items[0];
-      if (next) {
-        await store.openChat(next);
-        await restoreComposerDraft(next.id);
-      } else createNewDialog();
-    }
+    if (wasActive) await openNewestChat();
   }
 
   /*
@@ -1497,9 +1810,15 @@ export default function ChatPanel(props: ChatProps) {
    * editor): at the caret when the composer has it, otherwise at the end.
    * A reference that's already there isn't added twice.
    */
-  function insertReferenceChip(reference: FileSuggestion) {
+  function insertReferenceChip(given: FileSuggestion) {
     const container = inputTextareaRef;
     if (!container) return;
+    // Named as the chat names its files; another folder's isn't its to read.
+    const reference = inChat(given);
+    if (!reference) {
+      setRefused(notTheChats(given.path));
+      return;
+    }
     const key = referenceKey(reference);
     const alreadyThere = composerReferences().some((r) => referenceKey(r) === key);
 
@@ -2359,13 +2678,25 @@ export default function ChatPanel(props: ChatProps) {
    * chips, the images and PDFs among them as far as admit() lets them.
    */
   function insertSegments(segments: DraftSegment[]) {
-    const admitted = admit(segments, segmentKind);
-    if (admitted.length === 0) return;
-    addReferencedFiles(admitted);
-    insertAtCaret(segmentNodes(admitted));
-    syncInput();
-    scheduleComposerDraftSave();
-    recordComposerHistory('other');
+    // A file reference is named as this chat names its files: one copied
+    // from another folder's chat isn't this one's to read.
+    const outside: string[] = [];
+    const named = segments.flatMap((segment): DraftSegment[] => {
+      if (segment.type !== 'file') return [segment];
+      const file = inChat(segment.file);
+      if (file) return [{ ...segment, file }];
+      outside.push(segment.file.path);
+      return [];
+    });
+    const admitted = admit(named, segmentKind);
+    if (admitted.length > 0) {
+      addReferencedFiles(admitted);
+      insertAtCaret(segmentNodes(admitted));
+      syncInput();
+      scheduleComposerDraftSave();
+      recordComposerHistory('other');
+    }
+    if (outside.length > 0) setRefused(notTheChats(outside[0]));
   }
 
   /** The attach button: the file picker, then what's picked is attached at the caret. */
@@ -2779,10 +3110,11 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /**
-   * The sends another window left unanswered in the chats shown now, as it
-   * ended mid-run (a crash): its drafts were its own (localStorage isn't
-   * shared between windows), so this one judges them as its own after a
-   * restart: each is marked failed and its text comes back in the input.
+   * The sends another window left unanswered in the chats of `projectId`
+   * (null: those with no project), one of the owners shown now, as it ended
+   * mid-run (a crash): its drafts were its own (localStorage isn't shared
+   * between windows), so this one judges them as its own after a restart:
+   * each is marked failed and its text comes back in the input.
    */
   async function recoverUnsettledSends(projectId: string | null) {
     let sends: UnsettledSend[];
@@ -2792,7 +3124,7 @@ export default function ChatPanel(props: ChatProps) {
       console.error('Looking for unanswered sends failed:', err);
       return;
     }
-    if (!isMounted || store.projectId() !== projectId) return;
+    if (!isMounted || !store.listsOwner(projectId)) return;
     const pending = new Set(listPendingDrafts().map((d) => d.messageId));
     // A message sent to a run is judged by its own draft (recoverSteerDrafts).
     const steering = new Set(listSteerDrafts().map((d) => d.messageId));
@@ -3050,6 +3382,18 @@ export default function ChatPanel(props: ChatProps) {
       notify({ title: 'This chat can’t change now', message: readOnly, timeout: 6000 });
       return false;
     }
+    // A chat works in its own folders (3.8): one whose folder isn't open in
+    // this window, or is missing, has nowhere to work here.
+    const place = placeOf(dialogId);
+    if ('why' in place) {
+      notify({
+        kind: 'warning',
+        title: 'This chat can’t run now',
+        message: place.why,
+        timeout: 8000,
+      });
+      return false;
+    }
     listController?.followLatest();
     try {
       await store.flush();
@@ -3061,7 +3405,7 @@ export default function ChatPanel(props: ChatProps) {
         options: reasoningOptions(profile),
         mode: chatMode(),
         contextMode: ensureContextMode(dialogId),
-        root: props.rootPath(),
+        root: place.root,
         currentUserContent,
         localDate: localDate(),
         config: agentConfig(),
@@ -3082,8 +3426,14 @@ export default function ChatPanel(props: ChatProps) {
   /** The chats an approval or a question waits in, for the list's badges (U03). */
   const waitingIds = createMemo(waitingChats);
 
-  /** Why the open chat can't change now: one that's moving is read-only (U02). */
-  const readOnly = () => readOnlyReason(activeDialog()?.place, cloud.hosts);
+  /**
+   * Why the open chat can't change now: one that's moving is read-only
+   * (U02). With no chat yet, the composer waits for the one the menu above
+   * starts (3.8).
+   */
+  const readOnly = () =>
+    readOnlyReason(activeDialog()?.place, cloud.hosts) ??
+    (startsFromMenu() ? 'Start a chat above to write to it' : null);
 
   /**
    * How a Continue would start `dialogId`, once what's queued for it is
@@ -3101,11 +3451,32 @@ export default function ChatPanel(props: ChatProps) {
       options: reasoningOptions(profile),
       mode: chatMode(),
       contextMode: ensureContextMode(dialogId),
-      root: props.rootPath(),
+      root: runRootOf(dialogId),
       currentUserContent: lastUserWireContent(dialogId),
       localDate: localDate(),
       config: agentConfig(),
     };
+  }
+
+  /**
+   * What a send of `dialogId` asks about for the branch offer (D29): the
+   * chat's folders that are there, and its folders at its last run, whose
+   * repositories it was asked about then. A new chat's all; a workspace
+   * chat's when folders joined it since. Null when there's none to ask.
+   */
+  function branchOffer(
+    dialogId: string
+  ): { folders: BranchFolder[]; since: string[] | null } | null {
+    const root = rootOf(dialogId);
+    const folders = (root?.folders ?? [])
+      .filter((folder) => !folder.missing)
+      .map(({ path, name }) => ({ path, name }));
+    if (folders.length === 0) return null;
+    if (isEmptyChat(dialogId)) return { folders, since: null };
+    if (root?.kind !== 'workspace') return null;
+    const since = foldersAtLastRun(store.messagesOf(dialogId));
+    const joined = since && folders.some((folder) => !since.includes(folder.name));
+    return joined ? { folders, since } : null;
   }
 
   /** Sends a user message (shown at once; the run stores it first thing). */
@@ -3114,12 +3485,12 @@ export default function ChatPanel(props: ChatProps) {
     message: { id: string; content: string; meta: ChatMessage['meta']; attachments?: string[] },
     wireContent: string | undefined
   ): Promise<boolean> {
-    // A new chat's first message, on this computer: before its run starts,
-    // a project on its main branch offers the chat a branch of its own.
-    const root =
-      isEmptyChat(dialogId) && !store.summaryOf(dialogId)?.place ? props.rootPath() : null;
+    // On this computer, before the run starts: a new chat's folders, or those
+    // that joined a workspace chat, on their main branch, are offered a
+    // branch for the chat's work (D29).
+    const offer = store.summaryOf(dialogId)?.place ? null : branchOffer(dialogId);
     store.addLocal(dialogId, { ...message, role: 'user', finalized: true });
-    if (root) await offerChatBranch(root, askForChatBranch);
+    if (offer) await offerChatBranch(offer.folders, askForChatBranch, offer.since);
     const started = await beginRun(dialogId, { kind: 'send', message }, wireContent);
     // Never stored: shown as failed.
     if (!started) store.applyPatch(dialogId, message.id, { failed: true });
@@ -3136,13 +3507,26 @@ export default function ChatPanel(props: ChatProps) {
     return chatMode();
   }
 
-  /** "Implement this plan" under the plan in the chat: its file. */
-  function implementPlan() {
+  /**
+   * "Implement this plan" under the plan in the chat: its file, in this chat.
+   * A workspace chat's plan names the folders it was made across (D28): a
+   * chat that works in each of them carries it out, this one while it does.
+   */
+  async function implementPlan() {
     const dialogId = activeDialogId();
     if (!dialogId) return;
     const last = store.messagesOf(dialogId).find((m) => m.id === planMessageId());
     const file = last?.meta?.planFile;
-    if (file) startImplementation(dialogId, file);
+    if (!file) return;
+    // A plan that can't be read goes to this chat, whose run says why.
+    const named = store.summaryOf(dialogId)?.folders
+      ? planFolders(await readPlan(dialogId, file).catch(() => ''))
+      : null;
+    // Another chat opened meanwhile: the plan was this one's.
+    if (activeDialogId() !== dialogId) return;
+    const start = named ? chatForWorkspacePlan(named) : 'open';
+    const chat = start === 'open' ? dialogId : (await start())?.id;
+    if (chat) startImplementation(chat, file);
   }
 
   /**
@@ -3154,7 +3538,9 @@ export default function ChatPanel(props: ChatProps) {
   function startImplementation(dialogId: string, file: string) {
     if (!activeProfile() || isRunning(dialogId)) return;
     setChatMode('agent');
-    const { content, meta } = implementationMessage(file, props.rootPath());
+    // Named as the chat names files; a host's worktree's, as it is.
+    const shown = chatPathOf(rootOf(dialogId), file) ?? file;
+    const { content, meta } = implementationMessage(file, shown);
     void sendMessage(dialogId, { id: crypto.randomUUID(), content, meta }, undefined);
   }
 
@@ -3180,14 +3566,66 @@ export default function ChatPanel(props: ChatProps) {
     );
   }
 
-  /** "Implement this plan" on a plan file in the editor (App sends it). */
-  function takePlanFromEditor() {
-    const dialogId = activeDialogId();
-    if (!dialogId || sending() || loadingHistory()) return;
-    const request = takeImplementPlanRequest();
-    if (request) startImplementation(dialogId, request.path);
+  /**
+   * The chat that carries out a plan from the editor (D28): `'open'`, the
+   * open chat; else how to start the one that does. A plan with a `Folders:`
+   * line goes to a workspace chat (`chatForWorkspacePlan`); one without, to
+   * a chat of its folder, the open chat when the plan is its folder's: a
+   * folder's plan names its files as paths in it.
+   */
+  function chatForEditorPlan(request: ImplementPlanRequest): PlanStart {
+    if (request.folders) return chatForWorkspacePlan(request.folders);
+    const folder = severalFolders() ? folderOf(props.folders(), request.path) : null;
+    const root = chatRoot();
+    if (!folder || (root?.kind === 'folder' && root.folders[0].path === folder.path)) return 'open';
+    return () => startChatIn(folder);
   }
-  const stopPlanRequests = onImplementPlanRequest(() => takePlanFromEditor());
+
+  /**
+   * The chat that carries out a plan whose `Folders:` line names `named`
+   * (D28, `chatForPlan`): `'open'`, the open chat, a workspace chat of the
+   * window's that works in each of them; else a new workspace chat across
+   * them, or none, saying why, when the window's workspace lacks one.
+   */
+  function chatForWorkspacePlan(named: readonly string[]): PlanStart {
+    const open = activeDialog();
+    const id = props.workspace();
+    const workspace = id ? { id, names: props.folders().map((folder) => folder.name) } : null;
+    const names = open ? chatFolderNames(open, props.folders(), id) : null;
+    const choice = chatForPlan(
+      named,
+      workspace,
+      open ? { projectId: open.projectId, names } : null
+    );
+    if (choice.kind === 'open') return 'open';
+    if (choice.kind === 'new') return () => startChatOf(id, JSON.stringify(choice.folders));
+    return async () => {
+      notify({ kind: 'warning', title: 'No chat started', message: choice.why, timeout: 8000 });
+      return null;
+    };
+  }
+
+  /**
+   * "Implement this plan" on a plan file in the editor (App sends it), in the
+   * chat D28 gives it (`chatForEditorPlan`). The open chat waits while it's
+   * at work, and the request with it.
+   */
+  async function takePlanFromEditor() {
+    const request = peekImplementPlanRequest();
+    if (!request || loadingHistory()) return;
+    const start = chatForEditorPlan(request);
+    if (start === 'open') {
+      const dialogId = activeDialogId();
+      if (!dialogId || sending()) return;
+      takeImplementPlanRequest();
+      startImplementation(dialogId, request.path);
+      return;
+    }
+    takeImplementPlanRequest();
+    const chat = await start();
+    if (chat) startImplementation(chat.id, request.path);
+  }
+  const stopPlanRequests = onImplementPlanRequest(() => void takePlanFromEditor());
   onCleanup(stopPlanRequests);
 
   /** The running request's checklist, for the panel.
@@ -3475,7 +3913,7 @@ export default function ChatPanel(props: ChatProps) {
   function buildWireContent(text: string, files: FileSuggestion[]): string | undefined {
     const contextParts: string[] = [];
 
-    const contextHeader = buildContextHeader(props.activeFileContext());
+    const contextHeader = buildContextHeader(chatContext());
     if (contextHeader) contextParts.push(contextHeader);
 
     if (files.length > 0) {
@@ -4481,11 +4919,47 @@ export default function ChatPanel(props: ChatProps) {
         </Show>
 
         <div class="chat-controls">
-          <button class="icon-button" onClick={() => startNewChat()} title="New chat">
+          <button
+            class="icon-button"
+            onClick={(e) => newChat(e.currentTarget)}
+            title="New chat"
+            aria-haspopup={severalFolders() ? 'menu' : undefined}
+            aria-expanded={severalFolders() ? newChatFrom() !== null : undefined}
+          >
             ＋
           </button>
         </div>
       </div>
+      {/* Which folders the open workspace chat works in, changed with Apply (D32). */}
+      <Show when={foldersFrom()}>
+        {(anchor) => (
+          <NewChatMenu
+            anchor={anchor()}
+            folders={props.folders()}
+            initial={null}
+            chat={{
+              folders:
+                chatFolderNames(activeDialog() ?? {}, props.folders(), props.workspace()) ?? [],
+              busy: foldersBusy(),
+              stop: backgroundTasksOf(activeDialogId()).length > 0 ? stopChatCommands : undefined,
+            }}
+            onStart={(folders) => void applyFolders(folders)}
+            onClose={() => setFoldersFrom(null)}
+          />
+        )}
+      </Show>
+      {/* Which folder a new chat works in, with several (D2). */}
+      <Show when={newChatFrom()}>
+        {(anchor) => (
+          <NewChatMenu
+            anchor={anchor()}
+            folders={props.folders()}
+            initial={props.activeFolder()}
+            onStart={(folders) => void startChatFrom(folders)}
+            onClose={() => setNewChatFrom(null)}
+          />
+        )}
+      </Show>
       {/* The ports a remote chat's servers opened on its host (D20). */}
       <OpenedPorts dialogId={activeDialogId()} />
       <Show when={historyOpen()}>
@@ -4493,7 +4967,12 @@ export default function ChatPanel(props: ChatProps) {
           <div class="chat-history-header">
             <span>Chats</span>
 
-            <button class="chat-new-button" onClick={() => startNewChat()}>
+            <button
+              class="chat-new-button"
+              onClick={(e) => newChat(e.currentTarget)}
+              aria-haspopup={severalFolders() ? 'menu' : undefined}
+              aria-expanded={severalFolders() ? newChatFrom() !== null : undefined}
+            >
               New chat
             </button>
           </div>
@@ -4509,6 +4988,7 @@ export default function ChatPanel(props: ChatProps) {
             runningIds={runningListIds()}
             waitingIds={waitingIds()}
             hosts={cloud.hosts}
+            folders={severalFolders() ? rowFolders : undefined}
             onSelect={(row) => void selectRow(row)}
             onDelete={(dialog) => void confirmAndDeleteDialog(dialog)}
             onNearEnd={() => {
@@ -4531,8 +5011,19 @@ export default function ChatPanel(props: ChatProps) {
           </div>
         )}
       </Show>
-      <Show when={!props.rootPath()}>
+      <Show when={props.folders().length === 0}>
         <div class="chat-tools-hint">Open a folder to let the model read and edit your files.</div>
+      </Show>
+      {/* No chat to show in folders it would have to guess: New chat's menu, in place (3.8). */}
+      <Show when={startsFromMenu()}>
+        <div class="chat-start">
+          <p class="chat-start-text">Which folders does the chat work in?</p>
+          <NewChatMenu
+            folders={props.folders()}
+            initial={props.activeFolder()}
+            onStart={(folders) => void startChatFrom(folders)}
+          />
+        </div>
       </Show>
       <MessageList
         dialogId={activeDialogId()}
@@ -4591,6 +5082,7 @@ export default function ChatPanel(props: ChatProps) {
         {(id) => (
           <IsolationBar
             dialogId={id}
+            root={rootOf(id)}
             revision={isolationRevision()}
             running={isRunning(id)}
             canAskChat={!!activeProfile() && !isRunning(id)}
@@ -4635,6 +5127,13 @@ export default function ChatPanel(props: ChatProps) {
       </Show>
       {/* A remote send's files going up before its message (6.11). */}
       <UploadProgress dialogId={activeDialogId()} />
+      <Show when={folderNote()}>
+        {(note) => (
+          <div class="chat-folder-note" role="note">
+            {note()}
+          </div>
+        )}
+      </Show>
       <div class="chat-input-row">
         <div class="chat-input-container">
           <div
@@ -4866,6 +5365,33 @@ export default function ChatPanel(props: ChatProps) {
       <div class="chat-model-select">
         <div class="chat-model-select-row">
           <ModeSelector unavailable={(mode) => modeUnavailable(mode, activeProfile())} />
+          {/* Where the chat works, with several folders (3.8): a folder chat's
+              is a label only; a workspace chat's opens its folders' menu (D32). */}
+          <Show when={severalFolders() && activeFolders()}>
+            {(names) => (
+              <Show
+                when={chatRoot()?.kind === 'workspace'}
+                fallback={
+                  <span class="chat-folders-label" title={activeFoldersTitle()}>
+                    in {names()}
+                  </span>
+                }
+              >
+                <button
+                  class="chat-folders-label"
+                  title={`${activeFoldersTitle()}: change them`}
+                  aria-haspopup="menu"
+                  aria-expanded={foldersFrom() !== null}
+                  onClick={(e) => {
+                    const label = e.currentTarget;
+                    setFoldersFrom((open) => (open === label ? null : label));
+                  }}
+                >
+                  in {names()} ▾
+                </button>
+              </Show>
+            )}
+          </Show>
         </div>
         <div class="chat-model-select-row">
           <ModelPicker

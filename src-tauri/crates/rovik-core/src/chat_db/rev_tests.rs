@@ -85,6 +85,7 @@ fn new_dialog(id: &str, project: Option<&str>) -> NewDialog {
         created_at: 1,
         updated_at: 1,
         project_id: project.map(String::from),
+        folders: None,
     }
 }
 
@@ -162,6 +163,14 @@ fn the_chat_stores_writes_raise_the_rows_revisions() {
         &mut conn,
         "set_dialog_project",
         |c| set_dialog_project(c, "d", Some("proj")).unwrap(),
+        &[&|c| dialog_rev(c, "d")],
+        &[&other],
+    );
+    // A workspace chat's folders are part of what a mirror follows.
+    check(
+        &mut conn,
+        "set_dialog_folders",
+        |c| set_dialog_folders(c, "d", Some(r#"["api","web"]"#)).unwrap(),
         &[&|c| dialog_rev(c, "d")],
         &[&other],
     );

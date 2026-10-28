@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import { GitPanel } from './GitPanel';
 import type { GitStatus } from '../types';
+import { oneRepository } from '../test/gitRepos';
 
 const callbacks = new Map<number, (event: unknown) => void>();
 const listeners: { event: string; handler: number }[] = [];
@@ -29,6 +30,7 @@ let status: GitStatus;
       return args.handler;
     }
     if (cmd === 'plugin:event|unlisten') return null;
+    if (cmd === 'git_repos') return oneRepository('/p');
     if (cmd === 'git_status') return status;
     throw new Error(`no app: ${cmd}`);
   },
@@ -51,7 +53,11 @@ for (const key of ['clientHeight', 'clientWidth', 'offsetHeight', 'offsetWidth']
 /** The watcher says git's status may have changed (here: a save). */
 function gitChanged() {
   for (const l of listeners.filter((l) => l.event === 'git-changed')) {
-    callbacks.get(l.handler)!({ event: 'git-changed', id: 1, payload: null });
+    callbacks.get(l.handler)!({
+      event: 'git-changed',
+      id: 1,
+      payload: { folder: '/p', repositories: false },
+    });
   }
 }
 
@@ -85,7 +91,10 @@ after(() => dispose());
 
 test("a listed file's line counts follow its next save", async () => {
   status = changed(2, 0);
-  dispose = render(() => <GitPanel projectPath="/p" />, container());
+  dispose = render(
+    () => <GitPanel folders={[{ path: '/p', name: 'p' }]} session="/p" />,
+    container()
+  );
   await flush();
   assert.deepEqual(rows(), [
     ['src', '+2'],

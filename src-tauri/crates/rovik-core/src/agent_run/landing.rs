@@ -100,9 +100,10 @@ fn running_in_view(dialog_id: &str) -> Option<String> {
 }
 
 /// Whether checks would run on a result merged with the project's newer
-/// changes: set up, enabled, and allowed by the command rules. Without
-/// them, a merge lands as it is, for a local chat and for a daemon's
-/// result alike (6.5).
+/// changes: set up, enabled, and allowed by the command rules (a
+/// workspace chat's, those of the folders it changed: `Run::enabled_checks`).
+/// Without them, a merge lands as it is, for a local chat and for a
+/// daemon's result alike (6.5).
 pub fn checks_would_run(permissions: &Permissions, checks: &[ProjectCheck]) -> bool {
     permissions.verify_changes
         && checks.iter().any(|c| {
@@ -131,7 +132,7 @@ impl Run {
         // S04) land nothing yet: what they did lands with it; a Thorough
         // task's lands at its Pick, the winner's change taken (T06).
         let lands_nothing = self.harness_stage() && !self.picks();
-        if self.root == self.project_root || self.plan_mode || lands_nothing {
+        if !self.isolated() || self.plan_mode || lands_nothing {
             return None;
         }
         let overlay = chats::get(&self.dialog_id)?;
@@ -206,8 +207,9 @@ impl Run {
         }
 
         let plan = {
-            let project = overlay.project.clone();
-            match crate::rt::spawn_blocking(move || land::plan(&project, &changes, false)).await {
+            let folders = overlay.folders();
+            match crate::rt::spawn_blocking(move || land::plan_in(&folders, &changes, false)).await
+            {
                 Ok(plan) => plan,
                 Err(e) => {
                     self.notice(
@@ -239,7 +241,7 @@ impl Run {
             return Some(("waits: conflicts", count));
         }
         let p = self.config().permissions;
-        let has_checks = checks_would_run(&p, &self.checks);
+        let has_checks = checks_would_run(&p, &self.enabled_checks());
         if plan.merged && has_checks && p.command_approval.required && !self.in_autopilot() {
             // The merged result's checks are commands too: not without the
             // user's go. Land (in the bar) lands it as it is. In Autopilot
@@ -406,10 +408,7 @@ impl Run {
         &mut self,
         outcome: &str,
     ) -> Result<Option<String>, String> {
-        if !lands_after(outcome, self.in_autopilot())
-            || self.root == self.project_root
-            || self.plan_mode
-        {
+        if !lands_after(outcome, self.in_autopilot()) || !self.isolated() || self.plan_mode {
             return Ok(None);
         }
         let Some(overlay) = chats::get(&self.dialog_id) else {
@@ -419,7 +418,7 @@ impl Run {
         let (o, id) = (overlay.clone(), self.dialog_id.clone());
         let files = crate::rt::spawn_blocking(move || {
             o.fs.flush();
-            let plan = land::plan(&o.project, &chats::changes(&id), false);
+            let plan = land::plan_in(&o.folders(), &chats::changes(&id), false);
             // Conflicts are the user's (or the chat's, if it's handed them).
             if !plan.merged || !plan.conflicts.is_empty() {
                 return Ok(Vec::new());
@@ -453,7 +452,7 @@ impl Run {
         let id = self.dialog_id.clone();
         let left = match self.core.agents.markers_resolver() {
             Some(left) => crate::rt::spawn_blocking(move || left(&id)).await,
-            None if self.root != self.project_root => {
+            None if self.isolated() => {
                 crate::rt::spawn_blocking(move || chats::markers_left(&id)).await
             }
             None => return Ok(false),
@@ -479,15 +478,11 @@ impl Run {
     /// switch, a pull): the chat's view would show a half-switched project.
     /// Says so, once, if it has to wait.
     pub(super) async fn wait_while_project_busy(&self) {
-        let Some(project) = self
-            .project_root
-            .as_deref()
-            .filter(|_| self.root != self.project_root)
-        else {
+        let Some(folders) = self.folders.as_ref().filter(|_| self.isolated()) else {
             return;
         };
-        let project = std::path::Path::new(project);
-        if !chats::is_busy(project) {
+        let busy = || folders.iter().any(|folder| chats::is_busy(&folder.path));
+        if !busy() {
             return;
         }
         let started = std::time::Instant::now();
@@ -497,7 +492,7 @@ impl Run {
             "Many files are changing in the project (a branch switch or a pull?). This chat goes on once they settle.",
         );
         // Not forever: a watcher that keeps reporting must not hang the run.
-        while chats::is_busy(project) && !self.stopped() && started.elapsed() < MAX_BUSY_WAIT {
+        while busy() && !self.stopped() && started.elapsed() < MAX_BUSY_WAIT {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
         super::log::write(

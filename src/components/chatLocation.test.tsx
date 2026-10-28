@@ -263,6 +263,45 @@ test('a move that can’t happen now says why, and offers no Move', async () => 
   assert.equal(button('Move')?.disabled, true);
 });
 
+test('a chat across folders: the dialog lists them, says their history stays here, and their notes', async () => {
+  await app(HOSTS, {
+    cloud_move_preflight: () => ({
+      ...PREFLIGHT,
+      folders: ['api', 'web'],
+      notes: ["web/run.sh has Windows line endings: it won't run on the server."],
+    }),
+  });
+  const { dialog, button, text } = await moveDialog('there');
+  assert.match(
+    text(),
+    /and its folders go too, as they are now, with this chat’s changes in them\./
+  );
+  assert.doesNotMatch(text(), /the project goes too/);
+  const folders = dialog.querySelector('.move-chat-folders')!;
+  assert.deepEqual(
+    [...folders.querySelectorAll('li')].map((li) => li.textContent),
+    ['api', 'web']
+  );
+  assert.match(text(), /Their git history stays on this computer: the first push carries all/);
+  assert.match(text(), /About its folders/);
+  assert.match(text(), /web\/run\.sh has Windows line endings/);
+  assert.equal(button('Move')?.disabled, false);
+});
+
+test('a chat across folders, one of them missing: the dialog says which, and offers no Move', async () => {
+  await app(HOSTS, {
+    cloud_move_preflight: () => ({
+      ...PREFLIGHT,
+      blocked:
+        "web isn't there: locate it, or remove it from the workspace, to go on with this chat.",
+    }),
+  });
+  const { button, text } = await moveDialog('there');
+  assert.match(text(), /web isn't there: locate it/);
+  assert.doesNotMatch(text(), /Its folders/);
+  assert.equal(button('Move')?.disabled, true);
+});
+
 test('a host too old to take chats: its administrator upgrades it for everyone from the dialog', async () => {
   let upgraded = false;
   await app(HOSTS, {

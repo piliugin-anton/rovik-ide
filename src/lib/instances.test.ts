@@ -29,8 +29,14 @@ let calls: { cmd: string; args: any }[] = [];
   },
 };
 
-const { chatsAtWorkElsewhere, checkProject, claimNoProject, claimProject, openElsewhereNotice } =
-  await import('./instances');
+const {
+  chatsAtWorkElsewhere,
+  checkProject,
+  claimNoProject,
+  claimProject,
+  openElsewhereNotice,
+  openElsewhereReason,
+} = await import('./instances');
 const { notifications, dismiss } = await import('./notifications');
 const { chatsBlocked, currentProject, resolveProject } = await import('./projects');
 
@@ -42,6 +48,8 @@ const free = {
   atWork: false,
   focused: false,
 };
+const folder = (path: string) => ({ kind: 'folder' as const, path });
+const workspace = (id: string) => ({ kind: 'workspace' as const, id });
 const theirs = (over: Record<string, unknown> = {}) => ({
   claimed: false,
   openElsewhere: true,
@@ -54,7 +62,7 @@ const theirs = (over: Record<string, unknown> = {}) => ({
 
 function app(answers: Record<string, (args: any) => unknown>) {
   calls = [];
-  backend = answers;
+  backend = { workspace_list: () => [], ...answers };
   dismiss('open-elsewhere');
 }
 
@@ -62,9 +70,9 @@ const shown = () => notifications().map((n) => ({ title: n.title, message: n.mes
 
 test('a project another window has stays there: that window comes to the front, and this one says so', async () => {
   app({ project_claim: () => theirs() });
-  assert.equal(await claimProject('/work/app'), false);
+  assert.equal(await claimProject(folder('/work/app')), false);
   assert.deepEqual(calls, [
-    { cmd: 'project_claim', args: { path: '/work/app', focusOther: true } },
+    { cmd: 'project_claim', args: { target: folder('/work/app'), focusOther: true } },
   ]);
   assert.deepEqual(shown(), [
     {
@@ -76,21 +84,21 @@ test('a project another window has stays there: that window comes to the front, 
 
 test('a free project is claimed, and nothing is said', async () => {
   app({ project_claim: () => free });
-  assert.equal(await claimProject('/work/other'), true);
+  assert.equal(await claimProject(folder('/work/other')), true);
   assert.deepEqual(shown(), []);
 });
 
 test('checking asks without claiming; at start, a window still closing is waited for', async () => {
   app({ project_check: () => theirs({ focused: false }) });
-  assert.equal(await checkProject('/work/app', { focusOther: false }), false);
+  assert.equal(await checkProject(folder('/work/app'), { focusOther: false }), false);
   assert.deepEqual(calls, [
-    { cmd: 'project_check', args: { path: '/work/app', focusOther: false } },
+    { cmd: 'project_check', args: { target: folder('/work/app'), focusOther: false } },
   ]);
 
   // The last project, restored right after Rovik was quit: free a moment later.
   let asked = 0;
   app({ project_claim: () => (++asked < 2 ? theirs({ focused: false }) : free) });
-  assert.equal(await claimProject('/work/app', { focusOther: false, retries: 2 }), true);
+  assert.equal(await claimProject(folder('/work/app'), { focusOther: false, retries: 2 }), true);
   assert.equal(asked, 2);
   assert.deepEqual(shown(), []);
 });
@@ -100,27 +108,51 @@ test('the app failing to answer opens the project anyway', async () => {
   const quiet = console.error;
   console.error = () => {};
   try {
-    assert.equal(await claimProject('/work/app'), true);
+    assert.equal(await claimProject(folder('/work/app')), true);
   } finally {
     console.error = quiet;
   }
 });
 
 test('what the user is told: a copy sharing the chats, a project whose chats are at work', () => {
-  assert.deepEqual(openElsewhereNotice('/work/app-copy', theirs({ copy: true })), {
+  assert.deepEqual(openElsewhereNotice(folder('/work/app-copy'), theirs({ copy: true })), {
     title: 'app-copy’s chats are open in another window',
     message:
       '/work/app shares its chats, and it’s open there. Each window has a project of its own.',
   });
-  assert.deepEqual(openElsewhereNotice('C:\\work\\app', theirs({ atWork: true })), {
+  assert.deepEqual(openElsewhereNotice(folder('C:\\work\\app'), theirs({ atWork: true })), {
     title: 'app’s chats are at work in another window',
     message:
       'That window went on to another project while they work. Go back to app there, or open it here once they’re done.',
   });
   assert.equal(
-    openElsewhereNotice('/work/app', theirs({ focused: false })).message,
+    openElsewhereNotice(folder('/work/app'), theirs({ focused: false })).message,
     'Each window has a project of its own: open another one here.'
   );
+});
+
+test('a workspace says its own name, and a folder of one says which', () => {
+  // A workspace open in another window: it has no folder to name.
+  assert.deepEqual(
+    openElsewhereNotice(workspace('w1'), theirs({ openAs: null, workspace: 'Shop' })),
+    {
+      title: 'Shop is open in another window',
+      message: 'That window is in front now. Each window has a project of its own.',
+    }
+  );
+  // A folder of another window's workspace names both.
+  assert.deepEqual(openElsewhereNotice(folder('/work/api'), theirs({ workspace: 'Shop' })), {
+    title: 'api is open in another window, in Shop',
+    message: 'That window is in front now. Each window has a project of its own.',
+  });
+});
+
+test('a workspace is claimed by its ID: its folders are the backend’s to read', async () => {
+  app({ project_claim: () => free });
+  assert.equal(await claimProject(workspace('w1')), true);
+  assert.deepEqual(calls, [
+    { cmd: 'project_claim', args: { target: { kind: 'workspace', id: 'w1' }, focusOther: true } },
+  ]);
 });
 
 test('the chats without a project are claimed quietly, and the chat panel says why it has none', async () => {
@@ -129,7 +161,7 @@ test('the chats without a project are claimed quietly, and the chat panel says w
     chat_list_projects: () => [],
   });
   assert.equal(await claimNoProject(), false);
-  assert.deepEqual(calls[0], { cmd: 'project_claim', args: { path: null, focusOther: false } });
+  assert.deepEqual(calls[0], { cmd: 'project_claim', args: { target: null, focusOther: false } });
   assert.deepEqual(shown(), []);
 
   await resolveProject(null);
@@ -178,4 +210,17 @@ test('the chats another window is at work on are asked about, only when there ar
   calls = [];
   assert.equal((await chatsAtWorkElsewhere([])).size, 0);
   assert.deepEqual(calls, []);
+});
+
+test('a folder another window has is told on its row: that window stays where it is, and nothing is said', async () => {
+  app({ project_check: () => theirs({ workspace: 'Shop', focused: false }) });
+  assert.equal(await openElsewhereReason('/work/api'), 'api is open in another window, in Shop');
+  assert.deepEqual(calls[0], {
+    cmd: 'project_check',
+    args: { target: folder('/work/api'), focusOther: false },
+  });
+  assert.deepEqual(shown(), [], 'no notice');
+
+  app({ project_check: () => free });
+  assert.equal(await openElsewhereReason('/work/web'), null);
 });

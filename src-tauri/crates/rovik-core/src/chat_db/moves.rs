@@ -279,6 +279,7 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             project_id: None,
+            folders: None,
         };
         store::create_dialog(&mut conn, &dialog).unwrap();
         let kid = NewChildDialog {

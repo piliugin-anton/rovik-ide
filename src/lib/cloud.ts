@@ -85,6 +85,11 @@ export interface MovePreflight {
    * administrators there, who upgrade it for everyone.
    */
   upgrade?: boolean;
+  /**
+   * A chat across a workspace's folders: its folders, by name, which go to the
+   * host without their git history. None for a chat of one folder.
+   */
+  folders?: string[];
 }
 
 export const movePreflight = (dialogId: string, host: string) =>
@@ -149,7 +154,18 @@ export interface HostSummary {
   autonomous?: boolean;
   /** The effort its tasks take while it works on its own, when it sets one (H01). */
   effort?: AutopilotEffort;
+  /**
+   * What its daemon serves beyond protocol 1 (`rovik_protocol::features`),
+   * as its welcome said: none until it has connected.
+   */
+  features?: string[];
 }
+
+/**
+ * A daemon works across folders: workspace chats run there
+ * (`rovik_protocol::features::FOLDERS`, workspaces-plan.md 4.11).
+ */
+export const FOLDERS_FEATURE = 'folders';
 
 export const hostSummaries = () => invoke<HostSummary[]>('hosts_summaries');
 
@@ -277,11 +293,13 @@ function track(event: CloudEvent) {
     case 'host':
       // A host the list doesn't have yet (the list read before it was
       // added, or before the app's hosts connected): read again, which
-      // brings its state with it.
+      // brings its state with it. One that's ready again may be another
+      // daemon (an update): what it serves is read again.
       if (!cloud.hosts.some((h) => h.id === event.host)) {
         void refreshHosts();
       } else {
         setCloud('hosts', (h) => h.id === event.host, 'state', event.state);
+        if (event.state === 'ready') void refreshHosts();
       }
       // Away, it has to catch up again once it's back.
       if (event.state !== 'ready') {

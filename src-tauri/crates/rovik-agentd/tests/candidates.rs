@@ -11,8 +11,7 @@ use common::task::*;
 use common::{commit_all, write};
 use git2::Repository;
 use rovik_core::agent_run::autopilot::Effort;
-use rovik_core::agent_run::{breaker, judge, planning, report};
-use rovik_core::testing::{model_routed, Reply};
+use rovik_core::testing::Reply;
 use rovik_protocol::packs::result_ref;
 use rovik_protocol::work::Project;
 use rovik_protocol::Request;
@@ -72,45 +71,6 @@ fn npm_project_with_a_dependency(setup: &Setup) {
     commit_all(&setup.project);
 }
 
-/// A candidate's implementation: ok.txt says ok, and the files `more`
-/// names say what they say.
-fn implementation(more: &[(&'static str, &'static str)]) -> Vec<Reply> {
-    let mut replies = vec![
-        Reply::Call {
-            id: "t1",
-            name: "todo",
-            args: json!({ "items": [
-                { "title": "Write ok", "status": "in_progress" },
-                { "title": "Check", "status": "pending" },
-            ] }),
-        },
-        Reply::Call {
-            id: "w1",
-            name: "write",
-            args: json!({ "path": "ok.txt", "content": "ok" }),
-        },
-    ];
-    for ((path, content), id) in more.iter().zip(["w2", "w3"]) {
-        replies.push(Reply::Call {
-            id,
-            name: "write",
-            args: json!({ "path": path, "content": content }),
-        });
-    }
-    replies.extend([
-        Reply::Call {
-            id: "t2",
-            name: "todo",
-            args: json!({ "items": [
-                { "title": "Write ok", "status": "done" },
-                { "title": "Check", "status": "done" },
-            ] }),
-        },
-        Reply::Text("Done: ok.txt says ok."),
-    ]);
-    replies
-}
-
 /// T05: on a server, a Thorough task's two candidates each get a worktree
 /// beside the chat's and implement the plan there, one after the other;
 /// each leaves a result commit of its own. The smaller change wins: it's
@@ -124,9 +84,9 @@ async fn two_candidates_implement_in_worktrees_beside_the_chats() {
     }
     let setup = Setup::new().await;
     let root = worktree_chat(&setup).await;
-    let mut implementations = implementation(&[]);
-    implementations.extend(implementation(&[("notes.txt", "Wrote ok.\n")]));
-    let url = thorough_model(implementations).await;
+    let mut implementations = implementation("ok.txt", &[]);
+    implementations.extend(implementation("ok.txt", &[("notes.txt", "Wrote ok.\n")]));
+    let url = thorough_model(PLAN, implementations).await;
     let mut start = task_start(&url, &setup.project);
     start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
     let started = setup
@@ -232,67 +192,6 @@ async fn two_candidates_implement_in_worktrees_beside_the_chats() {
     }
 }
 
-/// The model of a Thorough task whose replies after the plan's are
-/// `implementations`, its subagents each answered apart.
-async fn thorough_model(implementations: Vec<Reply>) -> String {
-    let blocked = |why: &'static str| vec![Reply::Text(why)];
-    let mut script = vec![
-        Reply::Call {
-            id: "p1",
-            name: "submit_plan",
-            args: json!({ "plan": PLAN }),
-        },
-        Reply::Text("Saved the plan."),
-    ];
-    script.extend(implementations);
-    let view = format!("last:{}", report::VIEW_HEADING);
-    let report = format!("last:{}", report::REPORT_HEADING);
-    let (url, _) = model_routed(
-        vec![
-            (Box::leak(view.into_boxed_str()), blocked("")),
-            (
-                Box::leak(report.into_boxed_str()),
-                blocked("## What changed\n\nok.txt says ok."),
-            ),
-            (PLAN_REVIEW, blocked("## Findings\n\nNone.")),
-            (TESTS_FIRST, vec![nothing_to_test()]),
-            ("# Write tests for this change", vec![nothing_to_test()]),
-            (
-                planning::CRITERIA_HEADING,
-                blocked("## Blocked\n\nNo criteria here."),
-            ),
-            (
-                judge::JUDGE_CRITERIA_HEADING,
-                blocked("## Blocked\n\nNo criteria here."),
-            ),
-            (
-                planning::PLAN_HEADING,
-                blocked("## Blocked\n\nNo plan here."),
-            ),
-            (
-                judge::JUDGE_PLANS_HEADING,
-                blocked("## Blocked\n\nNo judgment here."),
-            ),
-            (
-                judge::JUDGE_CANDIDATES_HEADING,
-                blocked("## Blocked\n\nNo judgment here."),
-            ),
-            (
-                breaker::BREAK_HEADING,
-                blocked("## Blocked\n\nNothing to break here."),
-            ),
-            (
-                "# Check this change against its criteria",
-                blocked("## Blocked\n\nNothing to judge here."),
-            ),
-            ("# Review this change", blocked("## Findings\n\nNone.")),
-        ],
-        script,
-    )
-    .await;
-    url
-}
-
 /// A chat with its worktree on the daemon: its root there.
 async fn worktree_chat(setup: &Setup) -> std::path::PathBuf {
     worktree_chat_of(setup, npm_project).await
@@ -328,9 +227,9 @@ async fn each_candidates_worktree_gets_its_installs_before_it_starts() {
     }
     let setup = Setup::new().await;
     let root = worktree_chat_of(&setup, npm_project_with_a_dependency).await;
-    let mut implementations = implementation(&[]);
-    implementations.extend(implementation(&[("notes.txt", "Wrote ok.\n")]));
-    let url = thorough_model(implementations).await;
+    let mut implementations = implementation("ok.txt", &[]);
+    implementations.extend(implementation("ok.txt", &[("notes.txt", "Wrote ok.\n")]));
+    let url = thorough_model(PLAN, implementations).await;
     let mut start = task_start(&url, &setup.project);
     start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
     let started = setup
@@ -393,9 +292,9 @@ async fn a_candidate_cut_by_a_kill_goes_on_in_its_worktree() {
     let mut setup = Setup::new().await;
     let root = worktree_chat(&setup).await;
     let mut implementations = vec![Reply::Hang(Some("Looking at ok.txt"))];
-    implementations.extend(implementation(&[]));
-    implementations.extend(implementation(&[("notes.txt", "Wrote ok.\n")]));
-    let url = thorough_model(implementations).await;
+    implementations.extend(implementation("ok.txt", &[]));
+    implementations.extend(implementation("ok.txt", &[("notes.txt", "Wrote ok.\n")]));
+    let url = thorough_model(PLAN, implementations).await;
     let mut start = task_start(&url, &setup.project);
     start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
     let started = setup
@@ -470,9 +369,9 @@ async fn a_candidate_paused_by_the_servers_stop_goes_on_after_it_starts_again() 
         name: "bash",
         args: json!({ "command": "sleep 2" }),
     }];
-    implementations.extend(implementation(&[]));
-    implementations.extend(implementation(&[("notes.txt", "Wrote ok.\n")]));
-    let url = thorough_model(implementations).await;
+    implementations.extend(implementation("ok.txt", &[]));
+    implementations.extend(implementation("ok.txt", &[("notes.txt", "Wrote ok.\n")]));
+    let url = thorough_model(PLAN, implementations).await;
     let mut start = task_start(&url, &setup.project);
     start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
     let started = setup
@@ -545,7 +444,7 @@ async fn a_chat_without_a_worktree_has_one_implementer_and_says_why() {
     }
     let daemon = common::Daemon::start(&["--same-machine"]).await;
     let folder = project(&daemon);
-    let url = thorough_model(implementation(&[])).await;
+    let url = thorough_model(PLAN, implementation("ok.txt", &[])).await;
     let mut start = task_start(&url, &folder);
     start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
     let reply = daemon

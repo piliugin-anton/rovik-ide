@@ -7,12 +7,15 @@
 // One marker listener covers every owner: both the TS worker and the LSP
 // client publish through monaco.editor.setModelMarkers, which fires
 // onDidChangeMarkers. Reports are debounced and fire-and-forget; the
-// backend caps, evicts and marks them stale on its side.
+// backend caps, evicts and marks them stale on its side. A file's markers
+// are reported under the folder the file is in: a workspace's folders are
+// kept apart, and a project is the list of one (D14).
 import * as monaco from 'monaco-editor';
 import { invoke } from '@tauri-apps/api/core';
 import { typesScopeCovers } from './intellisense';
+import { innermostFolder } from './openFolders';
 
-let root: string | null = null;
+let folders: readonly string[] = [];
 let registered = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
 const pending = new Set<string>();
@@ -36,11 +39,9 @@ function normalizePath(p: string): string {
   return /^[A-Za-z]:\//.test(slashed) ? slashed[0].toLowerCase() + slashed.slice(1) : slashed;
 }
 
-function underRoot(abs: string): boolean {
-  if (!root) return false;
-  const path = normalizePath(abs);
-  const base = normalizePath(root).replace(/\/+$/, '');
-  return path === base || path.startsWith(`${base}/`);
+/** The folder whose diagnostics a file's markers are (its own), or null. */
+function rootOf(abs: string): string | null {
+  return innermostFolder(folders, normalizePath(abs));
 }
 
 interface Marker {
@@ -76,11 +77,12 @@ function markersOf(uri: monaco.Uri): Marker[] {
 }
 
 async function push(uriStr: string): Promise<void> {
-  if (!root) return;
+  if (folders.length === 0) return;
   const uri = monaco.Uri.parse(uriStr);
   if (uri.scheme !== 'file') return;
   const abs = fsPathOf(uri);
-  if (!underRoot(abs)) return;
+  const root = rootOf(abs);
+  if (!root) return;
   // Outside the worker's program (a file of another config is active, and
   // the program is that config's): its markers are stale. They are
   // recomputed, and reported, once one of its own config's files is active.
@@ -111,13 +113,14 @@ function schedule(): void {
 }
 
 /**
- * Reports this project's editor markers to the backend. Call from every
- * Editor mount (like ensureOutlineIntelliSense); the listener registers
- * once, the root follows the open project. Existing markers under the new
- * root are pushed so the agent sees them without waiting for an edit.
+ * Reports the window's editor markers to the backend, each file's under the
+ * folder the file is in. Call from every Editor mount (like
+ * ensureOutlineIntelliSense); the listener registers once, the folders follow
+ * the window's. Existing markers under the new folders are pushed so the
+ * agent sees them without waiting for an edit.
  */
-export function ensureDiagnosticsReporting(projectDir: string | null): void {
-  if (projectDir) root = projectDir;
+export function ensureDiagnosticsReporting(projectDirs: readonly string[]): void {
+  if (projectDirs.length > 0) folders = [...projectDirs];
   if (!registered) {
     registered = true;
     monaco.editor.onDidChangeMarkers((uris) => {
@@ -125,10 +128,10 @@ export function ensureDiagnosticsReporting(projectDir: string | null): void {
       schedule();
     });
   }
-  if (!root) return;
+  if (folders.length === 0) return;
   for (const model of monaco.editor.getModels()) {
     if (model.uri.scheme !== 'file') continue;
-    if (underRoot(fsPathOf(model.uri))) pending.add(model.uri.toString());
+    if (rootOf(fsPathOf(model.uri))) pending.add(model.uri.toString());
   }
   schedule();
 }

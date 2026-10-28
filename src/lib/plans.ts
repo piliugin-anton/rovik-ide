@@ -13,6 +13,10 @@
 // A remote chat's plan is in its worktree on its host: it's read through
 // `chat_read_plan`, which reads a local chat's file too, and opens
 // read-only (K09).
+//
+// A workspace chat's plan is saved in its first folder, with a line under
+// its title naming the chat's folders (`Folders: api, web`), by which
+// Implement chooses the chat that carries it out (D28, `chatForPlan`).
 
 import type { ChatMessage } from '../types';
 import { chatApi } from './chatApi';
@@ -21,29 +25,84 @@ import { cloud, hostName } from './cloud';
 import { openInEditor } from './openInEditor';
 import { notify } from './notifications';
 
+/**
+ * Starts the line under a workspace chat's plan's title that names its
+ * folders (D28; `FOLDERS_LINE` in plan.rs).
+ */
+const FOLDERS_LINE = 'Folders: ';
+
+/**
+ * The folders a plan names on the line under its title (`Folders: api, web`):
+ * a workspace chat wrote it, across them. Null for a plan without the line.
+ */
+export function planFolders(text: string): string[] | null {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  if (!lines[0]?.startsWith('# ')) return null;
+  const line = lines.slice(1).find((l) => l.trim() !== '') ?? '';
+  if (!line.startsWith(FOLDERS_LINE)) return null;
+  const names = line
+    .slice(FOLDERS_LINE.length)
+    .split(',')
+    .map((name) => name.trim())
+    .filter((name) => name !== '');
+  return names.length > 0 ? names : null;
+}
+
+/** Where Implement carries out a plan whose `Folders:` line names folders (D28). */
+export type PlanChat =
+  /** The open chat: a workspace chat of the window's workspace with every folder named. */
+  | { kind: 'open' }
+  /** A new workspace chat across the folders named, one folder too. */
+  | { kind: 'new'; folders: string[] }
+  /** None: the window has no workspace, or it lacks a folder named; `why` says which. */
+  | { kind: 'none'; why: string };
+
+/**
+ * D28: the chat that carries out a plan naming the folders `named`. The open
+ * chat when it's a workspace chat of the window's workspace (`workspace`, its
+ * id and its folders' names) that works in each of them (`open.names`: the
+ * names it checked, or `all`); otherwise a new workspace chat across them,
+ * even one folder: a folder chat would read `api/src/x.ts` as
+ * `api/api/src/x.ts`. A name the workspace lacks (a folder may be in several
+ * workspaces, D5) starts nothing, nor does a window without a workspace.
+ */
+export function chatForPlan(
+  named: readonly string[],
+  workspace: { id: string; names: readonly string[] } | null,
+  open: { projectId?: string | null; names: readonly string[] | 'all' | null } | null
+): PlanChat {
+  if (!workspace) {
+    const why = `The plan works in a workspace’s folders (${named.join(', ')}): open the workspace to implement it.`;
+    return { kind: 'none', why };
+  }
+  const lacking = named.filter((name) => !workspace.names.includes(name));
+  if (lacking.length > 0) {
+    return {
+      kind: 'none',
+      why: `The plan works in ${lacking.join(', ')}, which this workspace doesn’t have.`,
+    };
+  }
+  const names = open?.projectId === workspace.id ? open.names : null;
+  const inOpen = names === 'all' || (names !== null && named.every((n) => names.includes(n)));
+  return inOpen ? { kind: 'open' } : { kind: 'new', folders: [...named] };
+}
+
 /** A path inside the project's plans folder. */
 export function isPlanFile(path: string): boolean {
   return /[\\/]\.rovik[\\/]plans[\\/][^\\/]+\.md$/i.test(path);
 }
 
-/** The plan's path for display: relative to the project. */
-export function relativePlanPath(path: string, root: string | null): string {
-  if (!root) return path;
-  const r = root.replace(/[\\/]+$/, '');
-  return path.startsWith(r) ? path.slice(r.length + 1) : path;
-}
-
 /**
  * The message that implements a saved plan, in Agent mode: a short line for
- * the chat, and the plan's path, from which the backend sends the model the
- * plan in full.
+ * the chat, naming it as the chat does (`shown`, `chatPathOf`), and the
+ * plan's path, from which the backend sends the model the plan in full.
  */
 export function implementationMessage(
   file: string,
-  root: string | null
+  shown: string
 ): { content: string; meta: NonNullable<ChatMessage['meta']> } {
   return {
-    content: `Implement the plan in \`${relativePlanPath(file, root)}\`.`,
+    content: `Implement the plan in \`${shown}\`.`,
     meta: { mode: 'agent', implementsPlan: true, planPath: file },
   };
 }
@@ -96,6 +155,8 @@ export async function openPlan(dialogId: string | null, path: string): Promise<v
 export interface ImplementPlanRequest {
   /** The plan file (absolute), saved. */
   path: string;
+  /** The folders its `Folders:` line names (`planFolders`): a workspace chat's plan. */
+  folders?: string[] | null;
 }
 
 const pending: ImplementPlanRequest[] = [];
@@ -113,4 +174,9 @@ export function onImplementPlanRequest(listener: () => void): () => void {
 
 export function takeImplementPlanRequest(): ImplementPlanRequest | undefined {
   return pending.splice(0).pop();
+}
+
+/** The request `takeImplementPlanRequest` would take, left waiting: which chat takes it decides whether it can now. */
+export function peekImplementPlanRequest(): ImplementPlanRequest | undefined {
+  return pending[pending.length - 1];
 }

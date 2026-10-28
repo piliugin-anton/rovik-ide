@@ -6,11 +6,16 @@
 // that one file, so it wins over Monaco's built-in TS/JSON/CSS/HTML
 // formatters there, and those stay for files with no formatter of their own.
 //
+// A file is formatted with the config of the folder it's in (its `.prettierrc`
+// and the like, looked for from the file up): a workspace's folders each
+// format their own files (D14).
+//
 // The provider returns the whole new text as one edit; Monaco cuts it down
 // to the lines that changed, so the cursor and undo history stay sensible.
 
 import * as monaco from 'monaco-editor';
 import { formatFile, formatterForFile, type FormatterInfo } from './commands';
+import { innermostFolder } from './openFolders';
 import { notify } from './notifications';
 
 const NOTICE_ID = 'file-formatter';
@@ -20,16 +25,26 @@ function failed(title: string, message: string) {
 }
 
 /**
- * Looks up the formatter for the model's file and registers it. Resolves to
- * what was registered (dispose it when the file closes), or null when the
- * file has no formatter of its own.
+ * The folder whose formatter config formats `path`: the folder the file is
+ * in, so a workspace's folders each format their own files (D14). Null for a
+ * file in none of them (it gets no formatter of the window's).
+ */
+export function formatterRoot(folders: readonly string[], path: string): string | null {
+  return innermostFolder(folders, path);
+}
+
+/**
+ * Looks up the formatter for the model's file, in the folder the file is in,
+ * and registers it. Resolves to what was registered (dispose it when the
+ * file closes), or null when the file has no formatter of its own.
  */
 export async function registerFileFormatter(
   model: monaco.editor.ITextModel,
   path: string,
   language: string,
-  root: string | null
+  folders: readonly string[]
 ): Promise<{ formatter: FormatterInfo | null; disposable: monaco.IDisposable } | null> {
+  const root = formatterRoot(folders, path);
   const { formatter, missing } = await formatterForFile(path, language, root);
   if (!formatter && !missing) return null;
   const name = formatter?.name ?? missing!;

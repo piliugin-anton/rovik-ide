@@ -253,6 +253,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             project_id: None,
+            folders: None,
         };
         let d = id.clone();
         test.core
@@ -310,6 +311,7 @@ mod tests {
             config: None,
             isolate: Some(false),
             project_settings: None,
+            folders: Vec::new(),
         }
     }
 

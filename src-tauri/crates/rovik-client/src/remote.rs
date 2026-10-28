@@ -13,10 +13,13 @@ use git2::Oid;
 use results::Job;
 use rovik_core::agent_run::events::{self, AgentEvent, ApprovalRequest};
 use rovik_core::agent_run::subagent::Kind;
-use rovik_core::agent_run::{self, AgentConfig, AgentStatus, StartKind, StartRequest, UserMessage};
+use rovik_core::agent_run::{
+    self, AgentConfig, AgentStatus, RunFolder, StartKind, StartRequest, UserMessage,
+};
 use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::store::{self, NewChildDialog, NewMessage};
 use rovik_core::chat_db::{api, attachments, moves};
+use rovik_core::folders::Folders;
 use rovik_core::{project_profile, Core};
 use rovik_protocol::autopilot::{AutonomyConfig, AutonomySettings, DeliveryTest};
 use rovik_protocol::network::HostNetwork;
@@ -37,6 +40,8 @@ const HOSTS_WAIT: Duration = Duration::from_secs(15);
 
 mod back;
 mod bar;
+mod files;
+mod held;
 mod mirror;
 mod moving;
 mod pages;
@@ -236,8 +241,11 @@ struct State {
     /// commands are sandboxed. A chat of a project moves there before its
     /// first start (remote/moving.rs, `go_home`).
     home: Option<String>,
-    /// The project open in the app: its id and folder (6.5).
-    open: Option<(String, PathBuf)>,
+    /// The projects open in the app's window, each by its id and folder:
+    /// its folders' (a workspace's are several), as the window's claims
+    /// record them (the app's instances.rs; workspaces-plan.md, 3.8).
+    /// Results land by themselves only in them (6.5).
+    open: Vec<(String, PathBuf)>,
     /// Each chat's snapshot as its last sync took it (6.7).
     last_sync: HashMap<String, Oid>,
     /// The projects ensured on each host this session: (host, project).
@@ -337,12 +345,7 @@ impl Remote {
         let Some(project) = self.chat_project(dialog_id).await else {
             return false;
         };
-        let open_here = self
-            .lock()
-            .open
-            .as_ref()
-            .is_some_and(|(id, _)| *id == project);
-        if open_here {
+        if self.is_open(&project) {
             return false;
         }
         if let Some((at, seen)) = self.lock().elsewhere_seen.get(&project) {
@@ -486,15 +489,18 @@ impl Remote {
         state.ensured.retain(|(ensured, _)| ensured != host);
     }
 
-    /// "Test delivery" (H05): the host pushes an empty branch to the open
-    /// project's remote, as a task's result would go, and deletes it.
+    /// "Test delivery" (H05): the host pushes an empty branch to the remote
+    /// of the first open folder whose repository has an `origin` one, as a
+    /// task's result would go, and deletes it.
     pub async fn test_delivery(&self, host: &str) -> Result<DeliveryTest, String> {
-        let folder = self.lock().open.clone().map(|(_, folder)| folder);
-        let remote = folder
-            .as_deref()
-            .and_then(sync::origin_of)
-            .as_deref()
-            .and_then(rovik_protocol::autopilot::push_url)
+        let folders: Vec<PathBuf> = self.lock().open.iter().map(|(_, at)| at.clone()).collect();
+        let remote = folders
+            .iter()
+            .find_map(|folder| {
+                sync::origin_of(folder)
+                    .as_deref()
+                    .and_then(rovik_protocol::autopilot::push_url)
+            })
             .ok_or(
                 "Open a project whose repository has an `origin` remote: the test pushes there.",
             )?;
@@ -561,6 +567,13 @@ impl Remote {
     pub fn serves(&self, host: &str, feature: &str) -> bool {
         let daemon = self.hosts.client(host).and_then(|c| c.daemon());
         daemon.is_some_and(|d| d.serves(feature))
+    }
+
+    /// What the host's daemon serves beyond protocol 1 (4.5), as its
+    /// `Welcome` said: none until it has.
+    pub fn features(&self, host: &str) -> Vec<String> {
+        let daemon = self.hosts.client(host).and_then(|c| c.daemon());
+        daemon.map(|d| d.features).unwrap_or_default()
     }
 
     pub(crate) fn policy(&self, host: &str) -> ApprovalPolicy {
@@ -749,7 +762,10 @@ impl Remote {
     /// message (6.7), local paths taken out of the request's text (K08),
     /// the project's settings added (K03), the host's approval policy
     /// applied (6.9), and the text left out when the host has it already
-    /// (K50).
+    /// (K50). A chat across a workspace's folders goes only to a host that
+    /// runs such chats (`features::FOLDERS`), with its folders, each by its
+    /// name and with its settings, and the paths under each written from
+    /// its name (workspaces-plan.md, 4.11).
     pub async fn start(&self, mut request: StartRequest) -> Result<Response, Fail> {
         if self.host_of(&request.dialog_id).is_none() {
             self.go_home(&request.dialog_id).await?;
@@ -761,17 +777,36 @@ impl Remote {
             return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
         }
         let client = self.client(&host)?;
-        agent_run::check_project(&self.core.db, &request.dialog_id, request.root.as_deref())
-            .await
-            .map_err(internal)?;
+        let folders = agent_run::check_project(
+            &self.core.db,
+            &request.dialog_id,
+            request.root.as_deref(),
+            &[],
+        )
+        .await
+        .map_err(internal)?;
+        let across = folders.filter(|folders| folders.single().is_none());
+        if across.is_some() {
+            self.runs_folders(&host)?;
+        }
         if matches!(request.start, StartKind::Send { .. }) {
             self.sync_before_send(&host, &request.dialog_id).await;
         }
         if let Some(root) = request.root.clone().filter(|r| !r.trim().is_empty()) {
-            relative_paths(&mut request, &root);
+            relative_paths(&mut request, &Folders::one(root.clone().into()));
             let settings =
                 project_profile::load_project_settings(&self.core.paths.config_dir, &root);
             request.project_settings = Some(settings).filter(|s| !s.is_null());
+        }
+        if let Some(folders) = &across {
+            relative_paths(&mut request, folders);
+            let config = &self.core.paths.config_dir;
+            request.folders = (folders.iter())
+                .map(|folder| RunFolder {
+                    name: folder.name.clone(),
+                    settings: sync::settings(config, &folder.path),
+                })
+                .collect();
         }
         // A chat of a project runs in its worktree there, which the daemon
         // names: no local path goes to it, a drive letter least of all (R04).
@@ -801,9 +836,11 @@ impl Remote {
 
     /// A message for the chat's run while it works (steering-plan.md, 3.8).
     /// A chat here goes to `dispatch`. For a chat on a host, the editor
-    /// context's local paths are written from the open project's folder,
-    /// as a start's are (K08), and its files go up first, in an upload of
-    /// its own that Stop cancels. Then the host's run takes it.
+    /// context's local paths are written from the chat's own folders (its
+    /// project's here, workspaces-plan.md 3.8; a workspace chat's each from
+    /// its name, 4.11), as a start's are (K08), and its files go up first,
+    /// in an upload of its own that Stop cancels. Then the host's run takes
+    /// it.
     pub async fn steer(&self, dialog_id: &str, mut message: UserMessage) -> Result<Response, Fail> {
         let Some(host) = self.host_of(dialog_id) else {
             let request = Request::AgentSteer {
@@ -813,11 +850,11 @@ impl Remote {
             return rovik_core::dispatch(&self.core, request).await;
         };
         let client = self.client(&host)?;
-        let root = self.lock().open.clone().map(|(_, folder)| folder);
-        if let Some(root) = root.as_deref().and_then(Path::to_str) {
+        let files = self.files_of(dialog_id).await.map_err(internal)?;
+        if let Some(files) = files {
             let sent = message.meta.as_mut().and_then(|m| m.get_mut("sentContent"));
             if let Some(serde_json::Value::String(text)) = sent {
-                *text = relative_to(text, root);
+                *text = relative_to_folders(text, &files.folders);
             }
         }
         if !message.attachments.is_empty() {
@@ -1599,11 +1636,12 @@ fn takes_projects(client: &Client) -> bool {
         .is_some_and(|d| d.serves(features::PROJECTS))
 }
 
-/// The editor context names files from the project's root, not by a local
-/// path that means nothing on the server (K08), and with `/` between their
-/// folders, as the server's do (R04).
-fn relative_paths(request: &mut StartRequest, root: &str) {
-    let relative = |text: &str| relative_to(text, root);
+/// The editor context names files as the chat names them, not by a local
+/// path that means nothing on the server (K08): from its project's root,
+/// or a workspace chat's from each folder's name (4.11), with `/` between
+/// their folders, as the server's do (R04).
+fn relative_paths(request: &mut StartRequest, folders: &Folders) {
+    let relative = |text: &str| relative_to_folders(text, folders);
     if let Some(text) = &mut request.current_user_content {
         *text = relative(text);
     }
@@ -1615,11 +1653,29 @@ fn relative_paths(request: &mut StartRequest, root: &str) {
     }
 }
 
-/// `text` with each path under `root` written from it: `root` and the
-/// separator after it go, and the path's own separators are `/` up to the
-/// space or bracket that ends it. `/` and `\` are one in `root`, as a
-/// Windows path may have either.
-fn relative_to(text: &str, root: &str) -> String {
+/// `text` with each path in one of `folders` written as the chat names it
+/// (`relative_to`): a folder chat's from its folder, a workspace chat's
+/// from the name of its folder (`api/src/x.ts`). Folders don't hold one
+/// another (D5), so each path is in one at most.
+fn relative_to_folders(text: &str, folders: &Folders) -> String {
+    folders.iter().fold(text.to_string(), |text, folder| {
+        let name = match folder.name.is_empty() {
+            true => String::new(),
+            false => format!("{}/", folder.name),
+        };
+        match folder.path.to_str() {
+            Some(root) => relative_to(&text, root, &name),
+            None => text,
+        }
+    })
+}
+
+/// `text` with each path under `root` written from it, after `under` ("",
+/// or a workspace chat's folder's name and a `/`): `root` and the separator
+/// after it go, and the path's own separators are `/` up to the space or
+/// bracket that ends it. `/` and `\` are one in `root`, as a Windows path
+/// may have either.
+fn relative_to(text: &str, root: &str, under: &str) -> String {
     let slashed = |s: &str| s.replace('\\', "/");
     let root = slashed(root.trim_end_matches(['/', '\\']));
     if root.is_empty() {
@@ -1637,6 +1693,7 @@ fn relative_to(text: &str, root: &str) -> String {
             continue;
         }
         out.push_str(&text[from..at]);
+        out.push_str(under);
         let path = after + 1;
         let end = haystack[path..]
             .find(|c: char| c.is_whitespace() || "]\"'<>()`,;".contains(c))

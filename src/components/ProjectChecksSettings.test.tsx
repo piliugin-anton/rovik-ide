@@ -40,9 +40,13 @@ const DETECTED = {
 };
 
 /** The page for a project whose saved settings are `saved` (none: null). */
-async function page(saved: unknown = null, permissions: Partial<AgentPermissions> = {}) {
+async function page(
+  saved: unknown = null,
+  permissions: Partial<AgentPermissions> = {},
+  profile: unknown = DETECTED
+) {
   backend = {
-    project_profile: () => DETECTED,
+    project_profile: () => profile,
     load_project_settings: () => saved,
   };
   saves = [];
@@ -164,6 +168,22 @@ test('project checks: the user’s list stands; back to the detected ones, none 
     [false, false]
   );
   assert.equal(status(root).warning, true);
+});
+
+test("the members' heading reads Packages (N)", async () => {
+  const root = await page(
+    null,
+    {},
+    {
+      ...DETECTED,
+      workspaces: [
+        { path: 'packages/a', name: 'a', kind: 'node', scripts: ['test'] },
+        { path: 'packages/b', name: 'b', kind: 'node', scripts: ['test'] },
+      ],
+    }
+  );
+  const summary = root.querySelector('.workspace-summary .settings-section-title')!;
+  assert.equal(summary.textContent!.replace(/\s+/g, ' ').trim(), 'Packages (2)');
 });
 
 test('project checks: a check in a folder runs when what it runs there is allowed, and Allow it adds just that', async () => {

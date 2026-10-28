@@ -78,9 +78,13 @@ async function page(
 }
 
 export const chatApi = {
-  /** A project's chats (`projectId` null: the chats with no project). */
-  listDialogs: (projectId: string | null, cursor: DialogCursor | null, limit = 50) =>
-    invoke<DialogPage>('chat_list_dialogs', { projectId, cursor, limit }),
+  /**
+   * The chats of a window's owners, newest first: each open folder's project
+   * and its workspace's own, interleaved by recency (`owners` null: the chats
+   * with no project, a window with no folder open).
+   */
+  listDialogs: (owners: string[] | null, cursor: DialogCursor | null, limit = 50) =>
+    invoke<DialogPage>('chat_list_dialogs', { owners, cursor, limit }),
   /**
    * The project a folder is: by the ID file in it (.rovik/project.json),
    * so renaming or moving the folder keeps its chats; else by its path;
@@ -100,6 +104,27 @@ export const chatApi = {
   relinkProject: (projectId: string, root: string, merge: boolean) =>
     invoke<Relinked>('chat_relink_project', { projectId, root, merge }),
   deleteProject: (projectId: string) => invoke<void>('chat_delete_project', { projectId }),
+
+  /* Workspaces (src-tauri/src/chat_db/workspaces.rs) */
+  /** Every workspace, most recently opened first. */
+  listWorkspaces: () => invoke<WorkspaceSummary[]>('workspace_list'),
+  /** Makes a workspace holding these folders, in this order; then switchTarget opens it. */
+  createWorkspace: (name: string, folders: string[]) =>
+    invoke<Workspace>('workspace_create', { name, folders }),
+  addWorkspaceFolders: (workspaceId: string, folders: string[]) =>
+    invoke<Workspace>('workspace_add_folders', { workspaceId, folders }),
+  /** Refused for the workspace's last folder. */
+  removeWorkspaceFolder: (workspaceId: string, name: string) =>
+    invoke<void>('workspace_remove_folder', { workspaceId, name }),
+  /** Locate…: the folder named `name` is at `to` from now on, by its name. */
+  relocateWorkspaceFolder: (workspaceId: string, name: string, to: string) =>
+    invoke<Workspace>('workspace_relocate_folder', { workspaceId, name, to }),
+  /**
+   * Why `folder` can't join the workspace beside `others`, the folders joining
+   * with it (a new workspace's, or those picked with it); null when it can.
+   */
+  checkWorkspaceFolder: (workspaceId: string | null, folder: string, others: string[] = []) =>
+    invoke<FolderProblem | null>('workspace_check_folder', { workspaceId, folder, others }),
 
   getMessages: (dialogId: string, beforeSeq?: number, limit = 50): Promise<MessagePage> =>
     page(invoke('chat_get_messages', { dialogId, beforeSeq, limit })),
@@ -121,7 +146,17 @@ export const chatApi = {
     createdAt: number;
     updatedAt: number;
     projectId: string | null;
+    /** A workspace chat's folders: `"all"`, or the names checked as JSON. */
+    folders?: string | null;
   }) => invoke<void>('chat_create_dialog', { dialog }),
+
+  /**
+   * New chat reuses the empty chat open for the folder chosen: it belongs to
+   * `projectId` from now on (a workspace's, with its `folders`, for a
+   * workspace chat). Refused once the chat has a message.
+   */
+  moveEmptyDialog: (dialogId: string, projectId: string | null, folders: string | null = null) =>
+    invoke<void>('chat_move_empty_dialog', { dialogId, projectId, folders }),
 
   updateMessage: (
     messageId: string,
@@ -134,6 +169,14 @@ export const chatApi = {
       finalize?: boolean;
     }
   ) => invoke<void>('chat_update_message', { messageId, patch }),
+
+  /**
+   * Apply (D32): a workspace chat works in `folders` from now on (`"all"`,
+   * or the names checked as JSON); refused, saying why, while it's at work,
+   * has commands running, or would leave changes that haven't landed.
+   */
+  setFolders: (dialogId: string, folders: string) =>
+    invoke<void>('chat_set_folders', { dialogId, folders }),
 
   renameDialog: (dialogId: string, title: string) =>
     invoke<void>('chat_rename_dialog', { dialogId, title }),
@@ -155,9 +198,9 @@ export const chatApi = {
   /** One chat's summary as it is now: where it is after a move. */
   getDialog: (dialogId: string) => invoke<DialogSummary | null>('chat_get_dialog', { dialogId }),
 
-  /** Searches one project's chats (`projectId` null: the chats with no project). */
-  search: (query: string, projectId: string | null, limit = 50) =>
-    invoke<ChatSearchHit[]>('chat_search', { query, projectId, limit }),
+  /** Searches the chats of a window's owners together (`owners` null: the chats with no project). */
+  search: (query: string, owners: string[] | null, limit = 50) =>
+    invoke<ChatSearchHit[]>('chat_search', { query, owners, limit }),
 
   messagesAnswered: (messageIds: string[]) =>
     invoke<string[]>('chat_messages_answered', { messageIds }),
@@ -260,3 +303,53 @@ export interface OpenedProject {
 
 export type Relinked =
   { kind: 'done'; project: ProjectInfo } | { kind: 'isOtherProject'; other: ProjectSummary };
+
+/* Workspaces (src-tauri/src/chat_db/workspaces.rs, D8) */
+
+/** A folder of a workspace: the name its chats write, and the path it was opened as. */
+export interface WorkspaceFolder {
+  name: string;
+  path: string;
+  /** The folder isn't there (deleted, or a drive that isn't mounted). */
+  missing: boolean;
+}
+
+/** A workspace, as the window opens it. */
+export interface Workspace {
+  id: string;
+  name: string;
+  folders: WorkspaceFolder[];
+}
+
+/** A workspace as the project list offers it. */
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  folders: WorkspaceFolder[];
+  chatCount: number;
+  lastOpenedAt: number;
+}
+
+/** Why a folder can't join a workspace (D5), naming the folder it's about. */
+export type FolderProblem =
+  | { kind: 'duplicate'; other: string }
+  | { kind: 'inside'; other: string }
+  | { kind: 'contains'; other: string }
+  | { kind: 'sameProject'; other: string }
+  | { kind: 'notAFolder' };
+
+/** What to tell the user about a folder that can't join. */
+export function folderProblemMessage(problem: FolderProblem): string {
+  switch (problem.kind) {
+    case 'duplicate':
+      return `It's a folder of this workspace already, as ${problem.other}.`;
+    case 'inside':
+      return `It's inside ${problem.other}, another folder of this workspace: a workspace holds folders side by side.`;
+    case 'contains':
+      return `It holds ${problem.other}, another folder of this workspace: a workspace holds folders side by side.`;
+    case 'sameProject':
+      return `It's a copy of ${problem.other}: the two share their chats, and a workspace holds that project once.`;
+    case 'notAFolder':
+      return `That isn't a folder.`;
+  }
+}

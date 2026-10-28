@@ -807,7 +807,8 @@ async fn run_turn(
             .one_shot
             .then(|| turn.system_prompt.trim().to_string())
             .filter(|p| !p.is_empty()),
-        developer: None,
+        // A workspace chat's view has no AGENTS.md at its top (4.10).
+        developer: turn.own_tools_context.clone(),
         hooks: &events,
         ephemeral: turn.one_shot,
     };
@@ -1236,6 +1237,7 @@ async fn test_request(args: &ProbeRequestArgs) -> Result<ProbeRequest, String> {
         prompt: "Reply with the single word: pong".into(),
         cwd: None,
         isolated: false,
+        own_tools_context: None,
         rovik_tools: false,
         session: None,
         recap: None,

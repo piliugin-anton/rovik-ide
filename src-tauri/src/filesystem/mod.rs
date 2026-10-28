@@ -62,13 +62,15 @@ fn stable_file_id(path: &Path) -> String {
     file_identity(path).unwrap_or_else(|| format!("p:{}", path.to_string_lossy().to_lowercase()))
 }
 
-/// What the file tree's commands share: the project's watcher, its
-/// .gitignore, and the path each id was last seen at.
+/// What the file tree's commands share: the window's folders' watcher, their
+/// .gitignore matchers, and the path each id was last seen at.
 #[derive(Default)]
 pub struct WatcherState {
     /// Dropping the watcher stops its watch loop.
     active_watcher: Mutex<Option<notify::RecommendedWatcher>>,
-    gitignore: Mutex<Option<(PathBuf, Arc<Gitignore>)>>,
+    /// The tree's matcher per folder read: a workspace's folders each have
+    /// their own files and their own .gitignore.
+    gitignore: Mutex<HashMap<PathBuf, Arc<Gitignore>>>,
     /// Maps a stable_file_id() back to the last path we saw it at, with the
     /// identity of what was there then. Populated whenever we hand an id to
     /// the frontend (read_dir_entries, get_path_id) and updated on
@@ -77,6 +79,10 @@ pub struct WatcherState {
     /// onto with stale or differently-cased casing. After a cross-device
     /// move the old id maps to the copy, whose identity is the copy's own.
     id_to_path: Mutex<HashMap<String, (PathBuf, Option<String>)>>,
+    /// The window's folders, as `start_file_watch` was given them: the tree's
+    /// commands never delete, rename or move one of them, they leave the
+    /// workspace instead (docs/design/workspaces-plan.md C01).
+    folders: Mutex<Vec<PathBuf>>,
 }
 
 fn resolve_id(state: &WatcherState, id: &str) -> Result<PathBuf, String> {
@@ -127,16 +133,15 @@ fn build_gitignore(root: &Path) -> Result<Gitignore, String> {
 }
 
 /// Returns the matcher for `root`, building (and caching) it if this is the
-/// first time we've seen this root, or the root has changed since last time.
+/// first time we've seen this root. A folder opened in the window keeps its
+/// own, so reading a second folder's listing doesn't rebuild the first's.
 fn get_or_build_gitignore(state: &WatcherState, root: &Path) -> Result<Arc<Gitignore>, String> {
     let mut cached = state.gitignore.lock().unwrap();
-    if let Some((cached_root, matcher)) = cached.as_ref() {
-        if cached_root == root {
-            return Ok(matcher.clone());
-        }
+    if let Some(matcher) = cached.get(root) {
+        return Ok(matcher.clone());
     }
     let matcher = Arc::new(build_gitignore(root)?);
-    *cached = Some((root.to_path_buf(), matcher.clone()));
+    cached.insert(root.to_path_buf(), matcher.clone());
     Ok(matcher)
 }
 
@@ -443,7 +448,11 @@ pub async fn save_ai_settings(
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LastProjectData {
+    /// The folder open (empty for a workspace, which has none).
     path: Option<String>,
+    /// The workspace open, if one is (docs/design/workspaces-plan.md, D17).
+    #[serde(default)]
+    workspace: Option<String>,
     opened_files: Option<Vec<OpenFile>>,
     expanded_paths: Option<Vec<String>>,
     terminal_collapsed: bool,
@@ -464,6 +473,7 @@ pub fn load_last_project(app: AppHandle) -> Result<String, String> {
     if !path.exists() {
         let defaults = LastProjectData {
             path: None,
+            workspace: None,
             opened_files: None,
             expanded_paths: None,
             terminal_collapsed: true,
@@ -487,6 +497,7 @@ pub struct OpenFile {
 pub fn save_last_project(
     app: AppHandle,
     path: String,
+    workspace: Option<String>,
     opened_files: Option<Vec<OpenFile>>,
     expanded_paths: Option<Vec<String>>,
     terminal_collapsed: bool,
@@ -494,6 +505,7 @@ pub fn save_last_project(
     let project_path = last_project_path(&app)?;
     let data = LastProjectData {
         path: Some(path),
+        workspace,
         opened_files,
         expanded_paths,
         terminal_collapsed,

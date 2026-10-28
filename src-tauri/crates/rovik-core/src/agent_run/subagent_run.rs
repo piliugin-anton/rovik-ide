@@ -1643,17 +1643,17 @@ impl Run {
     /// The plan this run implements: its path and text.
     pub(super) async fn implementing_plan(&self) -> Option<(String, String)> {
         let recent = self.recent().await.ok()?;
-        let base = self.project_root.as_deref().or(self.root.as_deref());
+        let folders = self.folders.as_ref();
         // The latest request that named a plan (a follow-up in the chat
         // still works on it), else the chat's own plan file.
         let path = recent
             .iter()
             .rev()
             .filter(|m| super::plan::is_request(m))
-            .find_map(|m| worker::plan_file_named(&m.content, base))
+            .find_map(|m| worker::plan_file_named(&m.content, folders))
             .or_else(|| super::run::chat_plan_file(&recent))?;
         let text = std::fs::read_to_string(&path).ok()?;
-        let shown = super::plan::relative_plan_path(&path, base);
+        let shown = super::plan::plan_path_in(&path, folders);
         Some((shown, text))
     }
 
@@ -2122,7 +2122,7 @@ impl Run {
     /// S05: the light check of a step's files as its worker ends: their
     /// syntax (where a file parsed before the step, or is new: V04's
     /// rule), then the stack's light commands on them
-    /// (`project::light_check_for`: a linter on a file, `go vet` on a
+    /// (`project::light_checks`: a linter on a file, `go vet` on a
     /// package; never a build or a test run). None: it found nothing.
     async fn light_check_step(&self, n: usize, writes: &[ChildWrite]) -> Option<String> {
         let root = self.root.clone()?;
@@ -2162,7 +2162,12 @@ impl Run {
             found.push(lines.join("\n"));
         }
         let permissions = self.config().permissions;
-        let commands = super::project::light_check_for(std::path::Path::new(&root), &files);
+        let commands = match &self.folders {
+            Some(folders) => {
+                super::project::light_checks(std::path::Path::new(&root), folders, &files)
+            }
+            None => Vec::new(),
+        };
         let mut ran = 0;
         for command in commands {
             if self.stopped() {

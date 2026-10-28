@@ -4,7 +4,9 @@
 //! `save_project_settings`), and those win once saved. Until then every
 //! detected check is off: detection never turns one on for the user.
 
+use crate::folders::Folders;
 use crate::project_profile::{self, ProjectProfile};
+use crate::restricted_files::RestrictedFiles;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -96,55 +98,227 @@ pub fn project_context(
     if let Some(services) = services {
         parts.push(services.to_string());
     }
-
-    let enabled: Vec<ProjectCheck> = ordered_checks(checks)
-        .into_iter()
-        .filter(|c| c.enabled)
-        .collect();
-    if !enabled.is_empty() {
-        let mut list = vec![if verify_on {
-            "Checks: when you finish and have changed files, the IDE runs these itself and sends you any failures to fix:"
-        } else {
-            "Checks you can run with bash after changing code:"
-        }
-        .to_string()];
-        list.extend(
-            enabled
-                .iter()
-                .map(|c| format!("- {}: `{}`", check_label(&c.kind), c.command)),
-        );
-        parts.push(list.join("\n"));
-        if verify_on && enabled.iter().any(|c| !c.command.trim().is_empty()) {
-            parts.push(
-                "Run a relevant check yourself before finishing when it helps you get the change right. \
-                 If a check fails for reasons unrelated to your change (it fails on the original code too), \
-                 say so plainly and don't change unrelated code to make it pass. \
-                 Do not add a verification step (running checks, tests, build, or lint) to your todo checklist: \
-                 the IDE runs the checks above itself after you finish and sends any failures back to you to fix. \
-                 Keep the checklist to the work itself. \
-                 In your final message, say what was verified."
-                    .into(),
-            );
-        }
-    }
-
+    parts.extend(checks_part(checks, verify_on));
     if let Some(notes) = &profile.instructions {
         let label = format!(
             "The project's instructions for agents ({}); follow them:",
             notes.file
         );
-        let more = if notes.truncated {
-            "\n[…truncated]"
-        } else {
-            ""
-        };
-        parts.push(format!("{label}\n\n{}{more}", notes.text));
+        parts.push(instructions_part(&label, &notes.text, notes.truncated));
     }
     if parts.len() > 1 {
         parts.join("\n\n")
     } else {
         String::new()
     }
+}
+
+/// The project section's checks: those turned on, and what the IDE does
+/// with them when verification is on. Nothing without one.
+fn checks_part(checks: &[ProjectCheck], verify_on: bool) -> Vec<String> {
+    let enabled: Vec<ProjectCheck> = ordered_checks(checks)
+        .into_iter()
+        .filter(|c| c.enabled)
+        .collect();
+    if enabled.is_empty() {
+        return Vec::new();
+    }
+    let mut parts = Vec::new();
+    let mut list = vec![if verify_on {
+        "Checks: when you finish and have changed files, the IDE runs these itself and sends you any failures to fix:"
+    } else {
+        "Checks you can run with bash after changing code:"
+    }
+    .to_string()];
+    list.extend(
+        enabled
+            .iter()
+            .map(|c| format!("- {}: `{}`", check_label(&c.kind), c.command)),
+    );
+    parts.push(list.join("\n"));
+    if verify_on && enabled.iter().any(|c| !c.command.trim().is_empty()) {
+        parts.push(
+            "Run a relevant check yourself before finishing when it helps you get the change right. \
+             If a check fails for reasons unrelated to your change (it fails on the original code too), \
+             say so plainly and don't change unrelated code to make it pass. \
+             Do not add a verification step (running checks, tests, build, or lint) to your todo checklist: \
+             the IDE runs the checks above itself after you finish and sends any failures back to you to fix. \
+             Keep the checklist to the work itself. \
+             In your final message, say what was verified."
+                .into(),
+        );
+    }
+    parts
+}
+
+/// Instructions for agents under `label`, marked when they were cut.
+fn instructions_part(label: &str, text: &str, truncated: bool) -> String {
+    let more = if truncated { "\n[…truncated]" } else { "" };
+    format!("{label}\n\n{text}{more}")
+}
+
+/// What a workspace chat's run is told of its folders (4.4, D25), with
+/// their checks and restricted files. Each folder is read where the run
+/// sees it (`root`, the chat's view: `root/<name>`; None: at its own path)
+/// as when it's open alone, by its own settings, and said under its name:
+/// its stack (`below`: V09's one level down inside it), its services, its
+/// checks run in it (`cd api && …`) and its instructions, the folders
+/// sharing [`project_profile::WORKSPACE_INSTRUCTIONS_MAX_CHARS`]. Then where
+/// git works, and (`since`: the folders' names at the chat's last run)
+/// which joined and which left.
+pub fn load_folders(
+    config_dir: &Path,
+    root: Option<&Path>,
+    folders: &Folders,
+    verify_on: bool,
+    below: bool,
+    since: Option<&[String]>,
+) -> (Vec<ProjectCheck>, String, RestrictedFiles) {
+    let mut stack = Vec::new();
+    let mut checks = Vec::new();
+    let mut services = Vec::new();
+    let mut notes = Vec::new();
+    let mut restricted = Vec::new();
+    for folder in folders.iter() {
+        let name = folder.name.as_str();
+        let dir = root.map_or_else(|| folder.path.clone(), |r| r.join(name));
+        let settings =
+            project_profile::load_project_settings(config_dir, &folder.path.to_string_lossy());
+        let profile = project_profile::detect(&dir);
+        let own = effective_checks(&profile, &settings);
+        checks.extend(own.iter().map(|c| ProjectCheck {
+            kind: c.kind.clone(),
+            command: in_folder(name, &c.command),
+            enabled: c.enabled,
+        }));
+        stack.extend(profile.stack.iter().map(|s| format!("{s} ({name}/)")));
+        if below && saved_checks(&settings).is_none() {
+            for (sub, found) in project_profile::detect_below(&dir, &profile) {
+                let at = format!("{name}/{sub}");
+                stack.extend(found.stack.iter().map(|s| format!("{s} ({at}/)")));
+                checks.extend(found.checks.iter().map(|c| ProjectCheck {
+                    kind: c.kind.clone(),
+                    command: in_folder(&at, &c.command),
+                    enabled: false,
+                }));
+            }
+        }
+        if let Some(line) = crate::services::prompt_line(&dir) {
+            services.push(format!("{name}: {line}"));
+        }
+        if let Some((file, text)) = project_profile::instructions_file(&dir) {
+            notes.push((name, file, text));
+        }
+        restricted.push((name.to_string(), RestrictedFiles::from_settings(&settings)));
+    }
+    let mut parts = vec![
+        "## Project".to_string(),
+        workspace_paragraph(folders),
+        git_line(folders),
+    ];
+    parts.extend(joined_and_left(folders, since));
+    if !stack.is_empty() {
+        parts.push(format!("Stack: {}.", stack.join(", ")));
+    }
+    parts.extend(services);
+    parts.extend(checks_part(&checks, verify_on));
+    let lengths: Vec<usize> = notes.iter().map(|(_, _, t)| t.chars().count()).collect();
+    let rooms = shares(&lengths, project_profile::WORKSPACE_INSTRUCTIONS_MAX_CHARS);
+    for ((name, file, text), room) in notes.iter().zip(rooms) {
+        let (text, truncated) = project_profile::cut(text, room);
+        let label =
+            format!("{name}'s instructions for agents ({name}/{file}); follow them in {name}:");
+        parts.push(instructions_part(&label, &text, truncated));
+    }
+    (
+        checks,
+        parts.join("\n\n"),
+        RestrictedFiles::of_folders(restricted),
+    )
+}
+
+/// Each of several texts' room in `limit` characters, for texts of
+/// `lengths`: an even share, what one doesn't use going to the others
+/// (D25).
+fn shares(lengths: &[usize], limit: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..lengths.len()).collect();
+    order.sort_by_key(|&i| lengths[i]);
+    let mut rooms = vec![0; lengths.len()];
+    let mut left = limit;
+    for (done, i) in order.into_iter().enumerate() {
+        rooms[i] = lengths[i].min(left / (lengths.len() - done));
+        left -= rooms[i];
+    }
+    rooms
+}
+
+/// How a workspace chat's paths and commands go (4.4).
+fn workspace_paragraph(folders: &Folders) -> String {
+    let names: Vec<String> = folders.iter().map(|f| format!("`{}`", f.name)).collect();
+    let first = &folders.first().name;
+    format!(
+        "This chat works in folders of a workspace: each is a top-level folder of the project root ({}), and every path starts with one (`{first}/src/main.rs`); nothing can be made at the root itself. Run a folder's commands with `cd {first} && …`. A folder's checks and instructions are for its files.",
+        names.join(", ")
+    )
+}
+
+/// Where git works in the chat's view: in a folder that's a repository,
+/// and not in one inside a repository, whose root isn't in the view.
+fn git_line(folders: &Folders) -> String {
+    let said: Vec<String> = folders
+        .iter()
+        .map(|f| {
+            let name = &f.name;
+            if f.path.join(".git").exists() {
+                format!("`{name}` is a repository (`git -C {name} status`)")
+            } else if git2::Repository::discover(&f.path).is_ok() {
+                format!("`{name}` is a folder of a repository whose root isn't in the view, so git doesn't work in it")
+            } else {
+                format!("`{name}` isn't in a repository")
+            }
+        })
+        .collect();
+    format!("Git: {}.", said.join("; "))
+}
+
+/// The folders that joined the chat and those that left it since its last
+/// run (`since`: their names then). None when they're as they were, or it's
+/// the chat's first run.
+fn joined_and_left(folders: &Folders, since: Option<&[String]>) -> Option<String> {
+    let since = since?;
+    let named = |names: Vec<&str>| {
+        names
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let joined: Vec<&str> = folders
+        .iter()
+        .map(|f| f.name.as_str())
+        .filter(|n| !since.iter().any(|s| s == n))
+        .collect();
+    let left: Vec<&str> = since
+        .iter()
+        .map(String::as_str)
+        .filter(|s| !folders.iter().any(|f| f.name == *s))
+        .collect();
+    let mut changed = Vec::new();
+    if !joined.is_empty() {
+        changed.push(format!("{} joined", named(joined)));
+    }
+    if !left.is_empty() {
+        changed.push(format!(
+            "{} left, so earlier messages may name files that aren't here any more",
+            named(left)
+        ));
+    }
+    (!changed.is_empty()).then(|| {
+        format!(
+            "Since this chat's last run, its folders changed: {}.",
+            changed.join("; ")
+        )
+    })
 }
 
 /// Detected fresh (a few file reads): the project's checks and its prompt section.
@@ -198,8 +372,12 @@ pub fn load_for(
     (checks, context)
 }
 
-/// V09: `command` run in `folder` of the project: `cd api && go test ./...`.
+/// V09: `command` run in `folder` of the project: `cd api && go test ./...`;
+/// in the project's own folder (""), as it is.
 pub fn in_folder(folder: &str, command: &str) -> String {
+    if folder.is_empty() {
+        return command.to_string();
+    }
     let folder = if folder
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
@@ -227,23 +405,70 @@ pub fn folder_of(command: &str) -> String {
     }
 }
 
-/// The project section for estimates (the context meter), re-detected at
-/// most every few seconds: estimates follow every message of a run.
-pub fn cached_context(config_dir: &Path, root: &str, verify_on: bool) -> String {
+/// A chat's `files` (chat paths) by the folder they're in, each by its path
+/// there, in the order they come: a workspace chat's by their first part
+/// (`api/src/a.ts` is `src/a.ts` in `api`), a folder chat's all in "" as
+/// they are. A file in none of the chat's folders is left out.
+fn by_folder(folders: &Folders, files: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for file in files {
+        let Some((folder, path)) = folders.split(file) else {
+            continue;
+        };
+        match groups.iter_mut().find(|(name, _)| *name == folder.name) {
+            Some((_, paths)) => paths.push(path.to_string()),
+            None => groups.push((folder.name.clone(), vec![path.to_string()])),
+        }
+    }
+    groups
+}
+
+/// The command `command_for` gives a chat's `file` (a chat path) in the
+/// folder it's in, at its place in `root` (the chat's view) and by its path
+/// there, run in that folder (`cd api && npx vitest run src/a.test.ts`); a
+/// folder chat's at `root` as it is. None for a file in none of the chat's
+/// folders, or one `command_for` has none for.
+pub fn in_files_folder(
+    root: &Path,
+    folders: &Folders,
+    file: &str,
+    command_for: impl FnOnce(&Path, &str) -> Option<String>,
+) -> Option<String> {
+    let (folder, path) = folders.split(file)?;
+    let command = command_for(&root.join(&folder.name), path)?;
+    Some(in_folder(&folder.name, &command))
+}
+
+/// The project section for estimates (the context meter): a folder chat's
+/// folder's, or what a workspace chat's run is told of its folders
+/// ([`load_folders`]), re-detected at most every few seconds for the same
+/// folders: estimates follow every message of a run.
+pub fn cached_context(config_dir: &Path, folders: &Folders, verify_on: bool) -> String {
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::{LazyLock, Mutex};
     use std::time::{Duration, Instant};
-    type Cache = HashMap<(String, bool), (Instant, String)>;
+    type Cache = HashMap<(Vec<(String, PathBuf)>, bool), (Instant, String)>;
     static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Default::default);
     const FRESH: Duration = Duration::from_secs(5);
 
-    let key = (root.to_string(), verify_on);
+    let listed = folders
+        .iter()
+        .map(|folder| (folder.name.clone(), folder.path.clone()))
+        .collect();
+    let key = (listed, verify_on);
     if let Some((at, text)) = CACHE.lock().ok().and_then(|c| c.get(&key).cloned()) {
         if at.elapsed() < FRESH {
             return text;
         }
     }
-    let (_, text) = load(config_dir, root, root, verify_on);
+    let text = match folders.single() {
+        Some(root) => {
+            let root = root.to_string_lossy();
+            load(config_dir, &root, &root, verify_on).1
+        }
+        None => load_folders(config_dir, None, folders, verify_on, false, None).1,
+    };
     if let Ok(mut cache) = CACHE.lock() {
         cache.retain(|_, (at, _)| at.elapsed() < FRESH);
         cache.insert(key, (Instant::now(), text.clone()));
@@ -488,11 +713,26 @@ pub fn ran_no_tests(output: &str) -> bool {
     none && !some
 }
 
+/// F05b's light checks of a chat's `files` at `root` (its view), each
+/// folder's run in it with its own tools (`cd api && npx eslint src/a.ts`).
+pub fn light_checks(root: &Path, folders: &Folders, files: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (folder, files) in by_folder(folders, files) {
+        for check in light_check_for(&root.join(&folder), &files) {
+            let check = in_folder(&folder, &check);
+            if !out.contains(&check) {
+                out.push(check);
+            }
+        }
+    }
+    out
+}
+
 /// F05b: light checks a parallel worker may run on its files, per stack:
 /// a file or a package at a time, never a build or a test run. Tools that
 /// aren't installed are left out; a stack with nothing gets only the
 /// language server's diagnostics.
-pub fn light_check_for(root: &Path, files: &[String]) -> Vec<String> {
+fn light_check_for(root: &Path, files: &[String]) -> Vec<String> {
     let installed = |tool: &str| {
         root.join("node_modules/.bin").join(tool).is_file()
             || crate::process::child_var("PATH").is_some_and(|path| {
@@ -897,5 +1137,223 @@ mod tests {
         assert_eq!(in_folder("my app", "npm test"), "cd 'my app' && npm test");
         assert_eq!(folder_of("npm test"), "");
         assert_eq!(folder_of("cd api"), "");
+        // The project's own folder: the command as it is.
+        assert_eq!(in_folder("", "npm test"), "npm test");
+    }
+
+    /// `api` (eslint installed) and `web` (none) of a workspace chat at
+    /// `view`.
+    fn shop_view() -> (crate::testing::TempDir, std::path::PathBuf, Folders) {
+        let dir = crate::testing::temp_dir();
+        let view = dir.0.join("view");
+        std::fs::create_dir_all(view.join("api/node_modules/.bin")).unwrap();
+        std::fs::write(view.join("api/node_modules/.bin/eslint"), "").unwrap();
+        std::fs::create_dir_all(view.join("web")).unwrap();
+        let folders = Folders::named(
+            ["api", "web"]
+                .map(|name| crate::folders::Folder {
+                    name: name.into(),
+                    path: dir.0.join(name),
+                })
+                .to_vec(),
+        )
+        .unwrap();
+        (dir, view, folders)
+    }
+
+    /// F05b in a workspace chat: each folder's files are checked in it, with
+    /// its own tools; a folder without them gets none.
+    #[test]
+    fn a_workspace_chats_light_checks_run_in_each_folder() {
+        let (_dir, view, folders) = shop_view();
+        let files = [
+            "api/src/a.ts".to_string(),
+            "web/src/b.ts".to_string(),
+            "web/pkg/c.go".to_string(),
+        ];
+        assert_eq!(
+            light_checks(&view, &folders, &files),
+            ["cd api && npx eslint src/a.ts", "cd web && go vet ./pkg"]
+        );
+        // A folder chat's, at its root as before.
+        let one = Folders::one(view.join("api"));
+        assert_eq!(
+            light_checks(&view.join("api"), &one, &["src/a.ts".to_string()]),
+            ["npx eslint src/a.ts"]
+        );
+    }
+
+    /// A file's command runs in its folder, by the file's path there; a
+    /// file in none of the chat's folders has none.
+    #[test]
+    fn a_files_command_runs_in_its_folder() {
+        let (_dir, view, folders) = shop_view();
+        let go_test = |dir: &Path, file: &str| {
+            assert!(dir.ends_with("web"), "{}", dir.display());
+            Some(format!("go test ./{file}"))
+        };
+        assert_eq!(
+            in_files_folder(&view, &folders, "web/pkg/c_test.go", go_test).as_deref(),
+            Some("cd web && go test ./pkg/c_test.go")
+        );
+        assert_eq!(
+            in_files_folder(&view, &folders, "docs/a.md", |_, _| Some("x".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn instructions_share_their_room_evenly_and_a_short_one_leaves_its_rest_to_the_others() {
+        assert_eq!(shares(&[20_000, 20_000], 12_000), [6_000, 6_000]);
+        assert_eq!(
+            shares(&[20_000, 1_000, 20_000], 12_000),
+            [5_500, 1_000, 5_500]
+        );
+        assert_eq!(shares(&[100, 200], 12_000), [100, 200], "room to spare");
+        assert!(shares(&[], 12_000).is_empty());
+    }
+
+    fn named(list: &[(&str, &Path)]) -> Folders {
+        let list = list
+            .iter()
+            .map(|(name, path)| crate::folders::Folder {
+                name: name.to_string(),
+                path: path.to_path_buf(),
+            })
+            .collect();
+        Folders::named(list).unwrap()
+    }
+
+    /// F12: the estimate's project section is what the chat's run is told:
+    /// a workspace chat's folders together (`load_folders`), not each one's
+    /// section alone, kept by the folder list, so a list with one of them
+    /// is its own; a folder chat's, its folder's.
+    #[test]
+    fn the_estimates_section_is_the_chats_folders_as_its_run_is_told_them() {
+        let dir = crate::testing::temp_dir();
+        let config = dir.0.join("config");
+        for (path, content) in [
+            ("api/AGENTS.md", "Use pnpm in api.\n"),
+            ("web/AGENTS.md", "Keep web small.\n"),
+        ] {
+            let p = dir.0.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        }
+        let (api, web) = (dir.0.join("api"), dir.0.join("web"));
+        let both = named(&[("api", &api), ("web", &web)]);
+        let together = cached_context(&config, &both, true);
+        assert_eq!(
+            together,
+            load_folders(&config, None, &both, true, false, None).1
+        );
+        assert!(
+            together.contains("Use pnpm in api.") && together.contains("Keep web small."),
+            "{together}"
+        );
+        let api_alone = cached_context(&config, &named(&[("api", &api)]), true);
+        assert!(
+            api_alone.contains("Use pnpm in api.") && !api_alone.contains("Keep web small."),
+            "{api_alone}"
+        );
+        let root = api.to_string_lossy().into_owned();
+        assert_eq!(
+            cached_context(&config, &Folders::one(api.clone()), true),
+            load(&config, &root, &root, true).1
+        );
+    }
+
+    /// 4.4: each of a workspace chat's folders is read as when it's open
+    /// alone, by its own settings, and said under its name: its stack, its
+    /// services, its checks run in it, its own folders one level down for an
+    /// Autopilot task (V09), and whether git works in it. Its Compose is a
+    /// shell script.
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_chats_folders_are_each_read_as_when_open_alone_under_their_names() {
+        use std::os::unix::fs::PermissionsExt;
+        let _services = crate::services::test_lock();
+        let dir = crate::testing::temp_dir();
+        let config = dir.0.join("config");
+        for (path, content) in [
+            ("api/go.mod", "module example.com/api\n"),
+            ("api/compose.yaml", "services: {}\n"),
+            (
+                "api/worker/package.json",
+                r#"{"scripts":{"test":"vitest run"}}"#,
+            ),
+            (
+                "outer/web/package.json",
+                r#"{"scripts":{"test":"vitest run"}}"#,
+            ),
+            ("docs/README.md", "Docs.\n"),
+        ] {
+            let p = dir.0.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        }
+        git2::Repository::init(dir.0.join("api")).unwrap();
+        git2::Repository::init(dir.0.join("outer")).unwrap();
+        let compose = dir.0.join("fake-compose");
+        let json = r#"{"name": "api", "services": {"db": {"image": "postgres:16-alpine", "ports": [{"target": 5432, "published": "5432", "protocol": "tcp"}]}}}"#;
+        std::fs::write(&compose, format!("#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\n")).unwrap();
+        std::fs::set_permissions(&compose, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::services::compose::use_program(Some(crate::services::compose::Program::Standalone(
+            compose,
+        )));
+        let web = dir.0.join("outer/web");
+        std::fs::create_dir_all(&config).unwrap();
+        project_profile::save_project_settings(
+            &config,
+            web.to_string_lossy().into_owned(),
+            serde_json::json!({ "checks": [{ "kind": "test", "command": "npm test", "enabled": true }] }),
+        )
+        .unwrap();
+        let folders = named(&[
+            ("api", &dir.0.join("api")),
+            ("web", &web),
+            ("docs", &dir.0.join("docs")),
+        ]);
+
+        let (checks, context, _) = load_folders(&config, None, &folders, true, true, None);
+        let commands: Vec<&str> = checks.iter().map(|c| c.command.as_str()).collect();
+        assert!(
+            commands.contains(&"cd api && go test ./..."),
+            "{commands:?}"
+        );
+        assert!(
+            commands.contains(&"cd api/worker && npm test"),
+            "{commands:?}"
+        );
+        assert!(commands.contains(&"cd web && npm test"), "{commands:?}");
+        for said in [
+            "Go (api/)",
+            "JavaScript (api/worker/)",
+            "JavaScript (web/)",
+            "- Tests: `cd web && npm test`",
+            "api: Services (compose.yaml): `db`",
+            "`api` is a repository (`git -C api status`)",
+            "`web` is a folder of a repository whose root isn't in the view",
+            "`docs` isn't in a repository",
+            "every path starts with one (`api/src/main.rs`)",
+        ] {
+            assert!(context.contains(said), "{said}: {context}");
+        }
+        // Its own V09 checks are off, as the folder's are alone.
+        assert!(!context.contains("cd api && go test"), "{context}");
+    }
+
+    #[test]
+    fn the_folders_that_joined_and_left_since_the_last_run_are_named() {
+        let folders = named(&[("api", Path::new("/w/api")), ("docs", Path::new("/w/docs"))]);
+        assert_eq!(joined_and_left(&folders, None), None, "its first run");
+        let same = ["api".to_string(), "docs".to_string()];
+        assert_eq!(joined_and_left(&folders, Some(&same)), None);
+        let before = ["api".to_string(), "web".to_string()];
+        let line = joined_and_left(&folders, Some(&before)).unwrap();
+        assert!(
+            line.contains("`docs` joined") && line.contains("`web` left"),
+            "{line}"
+        );
     }
 }

@@ -22,7 +22,8 @@
 //!   way; the variables that name them are left out of the command's
 //!   environment ([`SESSION_VARIABLES`]).
 //! - **The redirect**: an isolated chat's commands see its view at the
-//!   project's own path too, so one that names the project by its full
+//!   project's own path too (a workspace chat's, each folder's place in the
+//!   view at that folder's path), so one that names the project by its full
 //!   path (`cd /home/me/app`, a build script) still stays in the chat.
 //! - **Tool homes**: a tool that keeps a login in the folder it writes its
 //!   other state to (Expo's CLI) is pointed at a folder of its own, by the
@@ -68,13 +69,17 @@ pub use crate::vfs::driver::InstallOutcome;
  */
 
 /// What a confined command may see. The project's path shows the chat's
-/// `view` (no redirect when the two are the same: the command already runs
-/// in its own copy, as on a server), the folders and files in `hide` are
-/// empty to it, and it may write only under the folders in `writable`.
+/// `view` (`redirects`; none when the command already runs in its own copy,
+/// as on a server), the folders and files in `hide` are empty to it, and it
+/// may write only under the folders in `writable`.
 #[derive(Clone, Debug)]
 pub struct Confine {
     pub view: PathBuf,
-    pub project: PathBuf,
+    /// Real paths shown in place of themselves: each a place in the view
+    /// (`from`) and the path it shows at (`to`). A folder chat's project
+    /// shows its view; each of a workspace chat's folders, its folder in the
+    /// view (workspaces-plan.md, 4.5).
+    pub redirects: Vec<Redirect>,
     /// Folders and files made inaccessible to the command.
     pub hide: Vec<PathBuf>,
     /// Directories the command may write to; the rest is read-only.
@@ -96,18 +101,39 @@ pub struct Confine {
     pub loopback_only: Option<Vec<u16>>,
 }
 
+/// A place in a chat's view (`from`) shown at a real path (`to`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Redirect {
+    /// The place in the view: the view itself, or one of its folders.
+    pub from: PathBuf,
+    /// The real path the command sees it at.
+    pub to: PathBuf,
+}
+
 impl Confine {
     /// An isolated chat's command: the project's path shows its view, and
     /// it may write to the view and the usual folders ([`writable_dirs`]).
     pub fn redirecting(view: PathBuf, project: PathBuf) -> Confine {
+        let redirect = Redirect {
+            from: view.clone(),
+            to: project,
+        };
+        Confine::redirecting_all(view, vec![redirect])
+    }
+
+    /// A command in `view` with each of `redirects` (a workspace chat's
+    /// folders, each at its own path), writing to the view and the usual
+    /// folders. One that's no redirect (its place shown at itself) is left
+    /// out.
+    pub fn redirecting_all(view: PathBuf, redirects: Vec<Redirect>) -> Confine {
         let writable = writable_dirs(&view);
         Confine {
             sockets: local_sockets(&writable),
             writable,
             hide: secret_paths(),
             read_only: read_only_paths(),
+            redirects: redirects.into_iter().filter(|r| r.from != r.to).collect(),
             view,
-            project,
             network: None,
             loopback_only: None,
         }
@@ -117,18 +143,7 @@ impl Confine {
     /// A command that already runs in its own copy (a server worktree, or a
     /// chat that works in the project directly): nothing is redirected.
     pub fn hiding(root: PathBuf) -> Confine {
-        let writable = writable_dirs(&root);
-        Confine {
-            sockets: local_sockets(&writable),
-            writable,
-            hide: secret_paths(),
-            read_only: read_only_paths(),
-            view: root.clone(),
-            project: root,
-            network: None,
-            loopback_only: None,
-        }
-        .in_agents_network()
+        Confine::redirecting_all(root, Vec::new())
     }
 
     /// In the agent's network, where there's one ([`network::agents`]):
@@ -181,9 +196,14 @@ impl Confine {
         self
     }
 
-    /// Whether the project's path is pointed at the view.
+    /// Whether a real path is pointed at the view.
     pub fn redirects(&self) -> bool {
-        self.view != self.project
+        !self.redirects.is_empty()
+    }
+
+    /// Whether `path` shows the view to the command.
+    pub fn redirects_path(&self, path: &Path) -> bool {
+        self.redirects.iter().any(|r| r.to == path)
     }
 }
 
@@ -928,7 +948,8 @@ mod linux {
         fn command(&self, c: &Confine, program: &str, args: &[&str]) -> Command {
             // bwrap applies the mounts in order, each over the ones before:
             // the writable folders over the read-only system, the view over
-            // the project's path, the hidden directories over all. A folder
+            // the project's path (each folder's place in it over the folder's,
+            // for a workspace chat), the hidden directories over all. A folder
             // gone since the policy was made is skipped: bwrap would refuse
             // to start otherwise. The working folder is kept (found again
             // in the namespace).
@@ -937,8 +958,8 @@ mod linux {
             for dir in c.writable.iter().filter(|d| d.is_dir()) {
                 cmd.arg("--bind").arg(dir).arg(dir);
             }
-            if c.redirects() {
-                cmd.arg("--bind").arg(&c.view).arg(&c.project);
+            for redirect in &c.redirects {
+                cmd.arg("--bind").arg(&redirect.from).arg(&redirect.to);
             }
             // What runs outside the sandbox later, back to read-only over
             // the writable folder it's in.
@@ -1549,7 +1570,7 @@ mod seatbelt_profile_tests {
         std::fs::write(&config, "").unwrap();
         let c = Confine {
             view: root.clone(),
-            project: root.clone(),
+            redirects: Vec::new(),
             hide: Vec::new(),
             writable: vec![cargo.clone()],
             sockets: Vec::new(),
@@ -1575,7 +1596,7 @@ mod seatbelt_profile_tests {
         }
         let c = Confine {
             view: work.clone(),
-            project: work.clone(),
+            redirects: Vec::new(),
             hide: vec![daemon.clone(), secret.clone(), root.join("gone")],
             writable: vec![work.clone(), root.join("gone-too")],
             sockets: Vec::new(),
@@ -1630,7 +1651,7 @@ mod seatbelt_socket_tests {
         std::fs::write(&netrc, "").unwrap();
         let c = Confine {
             view: root.clone(),
-            project: root.clone(),
+            redirects: Vec::new(),
             hide: vec![netrc.clone()],
             writable: vec![root.clone()],
             sockets: vec![runtime.clone(), agent.clone(), root.join("gone")],
@@ -1658,7 +1679,7 @@ mod seatbelt_socket_tests {
         let root = std::env::temp_dir();
         let c = Confine {
             view: root.clone(),
-            project: root.clone(),
+            redirects: Vec::new(),
             hide: Vec::new(),
             writable: Vec::new(),
             sockets: Vec::new(),
@@ -1735,7 +1756,7 @@ mod macos_tests {
         }
         let c = Confine {
             view: mine.clone(),
-            project: mine.clone(),
+            redirects: Vec::new(),
             hide: Vec::new(),
             writable: vec![mine.clone()],
             sockets: Vec::new(),
@@ -1777,7 +1798,7 @@ mod macos_tests {
         std::fs::write(deep.join("id"), "TOPSECRET\n").unwrap();
         let c = Confine {
             view: work.clone(),
-            project: work.clone(),
+            redirects: Vec::new(),
             hide: vec![secret.clone(), daemon.clone(), deep.clone()],
             writable: vec![work.clone(), secret.clone()],
             sockets: Vec::new(),
@@ -1819,7 +1840,7 @@ mod macos_tests {
         let proxy_port = proxy.local_addr().unwrap().port();
         let held = Confine {
             view: root.clone(),
-            project: root.clone(),
+            redirects: Vec::new(),
             hide: Vec::new(),
             writable: vec![root.clone()],
             sockets: Vec::new(),
@@ -1888,7 +1909,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let c = Confine {
             view: root.clone(),
-            project: root.clone(),
+            redirects: Vec::new(),
             hide: Vec::new(),
             writable: writable.iter().map(|p| p.to_path_buf()).collect(),
             sockets: Vec::new(),
@@ -1921,6 +1942,51 @@ mod tests {
 
     fn stdout(out: &std::process::Output) -> String {
         String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A workspace chat's view (workspaces-plan.md, 4.5): each folder's own
+    /// path shows its place in the view, written there, and neither folder
+    /// is touched.
+    #[test]
+    fn each_folders_path_shows_its_place_in_the_view() {
+        let (root, mut c) = fresh("confinews", &[]);
+        let view = root.join("view");
+        for name in ["api", "web"] {
+            std::fs::create_dir_all(view.join(name)).unwrap();
+            std::fs::write(
+                view.join(name).join("a.txt"),
+                format!("{name} in the view\n"),
+            )
+            .unwrap();
+            std::fs::create_dir_all(root.join(name)).unwrap();
+            std::fs::write(root.join(name).join("a.txt"), format!("{name} itself\n")).unwrap();
+        }
+        let redirects = ["api", "web"]
+            .map(|name| Redirect {
+                from: view.join(name),
+                to: root.join(name),
+            })
+            .to_vec();
+        (c.view, c.redirects, c.writable) = (view.clone(), redirects, vec![view.clone()]);
+        let script = format!(
+            "cat {0}/api/a.txt {0}/web/a.txt && echo written > {0}/web/b.txt",
+            root.display()
+        );
+        let Some(out) = run(&c, &view, &script) else {
+            return;
+        };
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(stdout(&out), "api in the view\nweb in the view\n");
+        assert_eq!(
+            std::fs::read_to_string(view.join("web/b.txt")).unwrap(),
+            "written\n"
+        );
+        assert!(!root.join("web/b.txt").exists(), "web wasn't touched");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Inside a writable folder, what stays read-only can't be changed: no
@@ -1969,7 +2035,11 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("a.txt"), "project\n").unwrap();
         std::fs::write(view.join("a.txt"), "view\n").unwrap();
-        (c.view, c.project, c.writable) = (view.clone(), project.clone(), vec![view.clone()]);
+        c.redirects = vec![Redirect {
+            from: view.clone(),
+            to: project.clone(),
+        }];
+        (c.view, c.writable) = (view.clone(), vec![view.clone()]);
         let script = format!(
             "cat {0}/a.txt && echo written > {0}/b.txt && pwd && exit 3",
             project.display()
@@ -2427,7 +2497,10 @@ mod tests {
         let project = root.join("project");
         std::fs::create_dir_all(&project).unwrap();
         c.view = root.join("gone");
-        c.project = project;
+        c.redirects = vec![Redirect {
+            from: c.view.clone(),
+            to: project,
+        }];
         let out = BWRAP
             .command(&c, "/bin/sh", &["-c", "echo ran"])
             .output()

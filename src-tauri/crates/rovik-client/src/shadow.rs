@@ -34,16 +34,26 @@
 //! say they have it; which one it was, with its number, is the chat's
 //! `mirror_state`'s to say.
 //!
+//! A chat across a workspace's folders snapshots each folder into its own
+//! shadow, and the workspace's composite shadow puts them together, one
+//! tree for the chat (composite.rs).
+//!
 //! Each operation holds the shadow for itself: two at once would race on
 //! its index.
 
+mod composite;
 mod fold;
 mod guards;
+mod rules;
 
+pub use composite::Composite;
 pub use fold::Folded;
 pub use guards::{Guards, LARGE_FILE, LARGE_HISTORY};
+pub use rules::workspace_excludes;
 
-use git2::{Commit, Config, Oid, Reference, Repository, RepositoryInitOptions, Signature};
+use git2::{
+    Commit, Config, ObjectType, Oid, Reference, Repository, RepositoryInitOptions, Signature,
+};
 use rovik_core::overlay::import::{self, ImportError, Imported};
 use rovik_core::staging::{self, Base, Staged};
 use rovik_protocol::work::ChatResult;
@@ -76,9 +86,34 @@ const HISTORY: &str = "rovik.history";
 const PACKED_AT: &str = "rovik.packedat";
 const DAY: i64 = 24 * 60 * 60;
 
-/// Where a project's shadow is kept, in the app's data folder.
+/// Where a project's shadow is kept, in the app's data folder; a
+/// workspace's composite, by the workspace's ID.
 pub fn dir(data_dir: &Path, project: &str) -> PathBuf {
     data_dir.join("shadow").join(format!("{project}.git"))
+}
+
+/// Where the shadow of the workspace's folder `name` is kept: beside the
+/// workspace's composite, one for each folder the workspace has had (its
+/// names are never another folder's, D8), apart from the shadow of the
+/// project the folder is when it's opened alone.
+pub fn folder_dir(data_dir: &Path, workspace: &str, name: &str) -> PathBuf {
+    data_dir
+        .join("shadow")
+        .join(workspace)
+        .join(format!("{name}.git"))
+}
+
+/// The shadows of the workspace's folders that are there, in order: those
+/// of every folder it has had, so that its composite reads what its
+/// chats' earlier snapshots hold, which a push leaves out by them.
+pub fn folder_dirs(data_dir: &Path, workspace: &str) -> Vec<PathBuf> {
+    let folder = data_dir.join("shadow").join(workspace);
+    let mut dirs: Vec<PathBuf> = (fs::read_dir(folder).into_iter().flatten().flatten())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "git") && path.join("HEAD").is_file())
+        .collect();
+    dirs.sort();
+    dirs
 }
 
 /// A project's shadow repository.
@@ -211,12 +246,12 @@ impl Shadow {
         });
         let commit = match same {
             Some(previous) => previous.id(),
-            None => self.commit(tree, parent, chat)?,
+            None => rovik_commit(&self.repo, tree, parent, &snapshot_message(chat))?,
         };
         self.repo
             .reference(&name, commit, true, "snapshot")
             .map_err(git)?;
-        self.upkeep()?;
+        upkeep(&self.repo)?;
         Ok(Snapshot {
             commit,
             tree,
@@ -224,6 +259,20 @@ impl Shadow {
             hashed,
             nested,
         })
+    }
+
+    /// The project's own tree in `tree`, a snapshot's: the tree at its
+    /// folder in its repository (K31), or an empty one when it has nothing
+    /// there.
+    pub fn folder_tree(&self, tree: Oid) -> Result<Oid> {
+        let tree = self.repo.find_tree(tree).map_err(git)?;
+        if self.subpath.is_empty() {
+            return Ok(tree.id());
+        }
+        match tree.get_path(Path::new(&self.subpath)) {
+            Ok(entry) if entry.kind() == Some(ObjectType::Tree) => Ok(entry.id()),
+            _ => empty_tree(&self.repo),
+        }
     }
 
     /// Whether snapshots carry the project's history.
@@ -277,7 +326,7 @@ impl Shadow {
     /// returning how many there were. Snapshots do it once a day.
     pub fn pack_loose(&self) -> Result<usize> {
         let _held = hold(&self.busy);
-        self.pack()
+        pack(&self.repo)
     }
 
     /// The project's `HEAD`, when the shadow can read it and its tree.
@@ -298,53 +347,66 @@ impl Shadow {
                 .all(|parent| self.repo.find_commit(parent).is_ok());
         (readable && self.with_history()).then(|| head.id())
     }
+}
 
-    fn commit(&self, tree: Oid, parent: Option<Oid>, chat: &str) -> Result<Oid> {
-        let tree = self.repo.find_tree(tree).map_err(git)?;
-        let parent = parent
-            .map(|id| self.repo.find_commit(id))
-            .transpose()
-            .map_err(git)?;
-        let parents: Vec<&Commit> = parent.iter().collect();
-        let rovik = Signature::now("Rovik", "snapshots@rovik.invalid").map_err(git)?;
-        let message = format!("Snapshot for chat {chat}");
-        self.repo
-            .commit(None, &rovik, &rovik, &message, &tree, &parents)
-            .map_err(git)
-    }
+/// The empty tree, written to `repo`.
+fn empty_tree(repo: &Repository) -> Result<Oid> {
+    repo.treebuilder(None)
+        .and_then(|empty| empty.write())
+        .map_err(git)
+}
 
-    /// Packs the loose objects, once a day.
-    fn upkeep(&self) -> Result<()> {
-        let mut config = self.repo.config().map_err(git)?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs() as i64);
-        if !due(config.get_i64(PACKED_AT).ok(), now) {
-            return Ok(());
-        }
-        self.pack()?;
-        config.set_i64(PACKED_AT, now).map_err(git)
-    }
+/// A chat's snapshot commit's message.
+fn snapshot_message(chat: &str) -> String {
+    format!("Snapshot for chat {chat}")
+}
 
-    fn pack(&self) -> Result<usize> {
-        let objects = self.repo.path().join("objects");
-        let loose = loose_objects(&objects);
-        if loose.is_empty() {
-            return Ok(0);
-        }
-        let mut builder = self.repo.packbuilder().map_err(git)?;
-        for (id, _) in &loose {
-            builder.insert_object(*id, None).map_err(git)?;
-        }
-        builder.write(&objects.join("pack"), 0).map_err(git)?;
-        for (_, file) in &loose {
-            let _ = fs::remove_file(file);
-        }
-        for dir in loose.iter().filter_map(|(_, file)| file.parent()) {
-            let _ = fs::remove_dir(dir);
-        }
-        Ok(loose.len())
+/// Commits `tree` on `parent` in `repo`, as Rovik, with `message`.
+fn rovik_commit(repo: &Repository, tree: Oid, parent: Option<Oid>, message: &str) -> Result<Oid> {
+    let tree = repo.find_tree(tree).map_err(git)?;
+    let parent = parent
+        .map(|id| repo.find_commit(id))
+        .transpose()
+        .map_err(git)?;
+    let parents: Vec<&Commit> = parent.iter().collect();
+    let rovik = Signature::now("Rovik", "snapshots@rovik.invalid").map_err(git)?;
+    repo.commit(None, &rovik, &rovik, message, &tree, &parents)
+        .map_err(git)
+}
+
+/// Packs `repo`'s loose objects, once a day.
+fn upkeep(repo: &Repository) -> Result<()> {
+    let mut config = repo.config().map_err(git)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64);
+    if !due(config.get_i64(PACKED_AT).ok(), now) {
+        return Ok(());
     }
+    pack(repo)?;
+    config.set_i64(PACKED_AT, now).map_err(git)
+}
+
+/// Packs `repo`'s loose objects into one pack and deletes them, returning
+/// how many there were.
+fn pack(repo: &Repository) -> Result<usize> {
+    let objects = repo.path().join("objects");
+    let loose = loose_objects(&objects);
+    if loose.is_empty() {
+        return Ok(0);
+    }
+    let mut builder = repo.packbuilder().map_err(git)?;
+    for (id, _) in &loose {
+        builder.insert_object(*id, None).map_err(git)?;
+    }
+    builder.write(&objects.join("pack"), 0).map_err(git)?;
+    for (_, file) in &loose {
+        let _ = fs::remove_file(file);
+    }
+    for dir in loose.iter().filter_map(|(_, file)| file.parent()) {
+        let _ = fs::remove_dir(dir);
+    }
+    Ok(loose.len())
 }
 
 /// A new shadow: bare until `configure` gives it the project's folder as

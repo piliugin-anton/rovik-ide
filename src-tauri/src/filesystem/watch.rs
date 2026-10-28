@@ -9,7 +9,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::event::ModifyKind;
 use notify::{self, Event, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,9 +54,23 @@ fn may_bring_folder(kind: &EventKind) -> bool {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, Hash)]
 pub struct FileWatchPayload {
+    /// The window's folder the change is in, as the window spells it.
+    folder: String,
     path: String,
     operation: WatchOp,
     is_dir: bool, // Helps frontend know if it's a file or folder immediately
+}
+
+/// What `git-changed` carries: whose repository changed, so each of a
+/// workspace's repositories refreshes on its own.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, Hash)]
+pub struct GitChangedPayload {
+    folder: String,
+    /// The folder may have become a repository of its own, or stopped being
+    /// one (a `git init` here, a `.git` taken away): the window reads which
+    /// repositories its folders are in again. A commit, a checkout or a save
+    /// isn't one — the folder stays in the same repository.
+    repositories: bool,
 }
 
 /// What a changed path is, for the watcher.
@@ -145,6 +159,138 @@ fn watch_path_kind(root: &Path, ignores: &WatchIgnores, path: &Path) -> WatchPat
         return WatchPath::Ignored;
     }
     WatchPath::Visible
+}
+
+/// One folder the window has open: watched, with its own .gitignore files.
+struct WatchFolder {
+    /// The folder as the window spells it: one opened through a link is
+    /// reported under that link, as the tree, the tabs and the chats have it.
+    root: PathBuf,
+    /// The same folder as the disk names paths in it (links resolved): an
+    /// event's path is turned back into the window's spelling.
+    canonical: PathBuf,
+    /// Its repository's working folder: a checkout there holds the isolated
+    /// chats of every folder in the repository (3.7).
+    workdir: Option<PathBuf>,
+    /// Its .gitignore files: the folder's at once, all of them when found.
+    ignores: Arc<WatchIgnores>,
+}
+
+/// One folder being watched, as `start_file_watch` handed it over.
+struct StartedFolder {
+    root: PathBuf,
+    canonical: PathBuf,
+    /// Its repository's git folder, and the `refs/` a push writes in, when
+    /// they're outside the folder (the folder is in a subfolder of the
+    /// repository): commits and pushes from a terminal anywhere in the
+    /// repository are otherwise never seen. Empty when the git folder is
+    /// inside the folder, whose own watch sees it.
+    git_dirs: Vec<PathBuf>,
+    /// Its repository's working folder (the folder itself in a repository of
+    /// its own).
+    workdir: Option<PathBuf>,
+}
+
+impl StartedFolder {
+    fn watch_folder(&self) -> WatchFolder {
+        WatchFolder {
+            ignores: Arc::new(WatchIgnores::root_only(&self.root)),
+            root: self.root.clone(),
+            canonical: self.canonical.clone(),
+            workdir: self.workdir.clone(),
+        }
+    }
+}
+/// The folder a changed path is in, with the path under that folder's own
+/// spelling: a change the disk reports through a link's target is the
+/// window's path, in the folder it opened. The innermost folder decides: a
+/// workspace's rules refuse a folder inside another (D5), but the state it's
+/// restored from can hold one, and a change there is that folder's.
+fn folder_of(folders: &[WatchFolder], path: &Path) -> Option<(usize, PathBuf)> {
+    let mut found: Option<(usize, PathBuf, usize)> = None;
+    for (at, folder) in folders.iter().enumerate() {
+        let hit = match path.strip_prefix(&folder.canonical) {
+            // The folder itself (its own watch sees it go, or its name
+            // change): its path as the window spells it, no separator at the
+            // end to join nothing onto.
+            Ok(rest) if rest.as_os_str().is_empty() => folder.root.clone(),
+            Ok(rest) => folder.root.join(rest),
+            Err(_) if path.strip_prefix(&folder.root).is_ok() => path.to_path_buf(),
+            Err(_) => continue,
+        };
+        let depth = folder.root.as_os_str().len();
+        if found.as_ref().is_none_or(|(_, _, best)| depth > *best) {
+            found = Some((at, hit, depth));
+        }
+    }
+    found.map(|(at, hit, _)| (at, hit))
+}
+
+/// A folder's repository, as the watch needs it: its git folder (where
+/// `HEAD` and the index are), the shared folder whose `refs/` the branches
+/// live in (the same as the git folder, but not in a linked worktree), and
+/// the working folder (what a checkout rewrites). None outside a repository.
+struct RepoDirs {
+    git_dir: PathBuf,
+    common_dir: PathBuf,
+    workdir: PathBuf,
+}
+
+fn repo_dirs_of(folder: &Path) -> Option<RepoDirs> {
+    let repo = git2::Repository::discover(folder).ok()?;
+    let resolved = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    Some(RepoDirs {
+        git_dir: resolved(repo.path()),
+        common_dir: resolved(repo.commondir()),
+        workdir: resolved(repo.workdir()?),
+    })
+}
+
+/// The dirs to watch for a repository above `folder`, and how: the git
+/// folder (`HEAD`, `index`, `packed-refs`), and the `refs/` a branch push
+/// writes in — the shared one, which a linked worktree's own git folder
+/// doesn't hold. None when the git folder is inside the folder, whose own
+/// watch sees it. `folder` is named as the disk names it, as `dirs` are.
+fn git_dirs_beside(folder: &Path, dirs: &RepoDirs) -> Vec<(PathBuf, RecursiveMode)> {
+    if dirs.git_dir.starts_with(folder) {
+        return Vec::new();
+    }
+    let mut watched = vec![(dirs.git_dir.clone(), RecursiveMode::NonRecursive)];
+    // A linked worktree's refs are the common folder's: its own has none.
+    for refs in [dirs.common_dir.join("refs"), dirs.git_dir.join("refs")] {
+        if refs.is_dir() && !watched.iter().any(|(dir, _)| dir == &refs) {
+            watched.push((refs, RecursiveMode::Recursive));
+        }
+    }
+    watched
+}
+
+/// Watches each folder in turn. One that can't be watched (gone, or a
+/// permissions error) is named and left out; the others are watched still:
+/// one bad folder of a workspace mustn't leave the window unwatched.
+fn watch_folders(
+    watcher: &mut notify::RecommendedWatcher,
+    roots: Vec<PathBuf>,
+) -> Vec<(PathBuf, PathBuf)> {
+    let mut watched = Vec::new();
+    for root in roots {
+        match watch_recursive_lenient(watcher, &root) {
+            Ok(skipped) => {
+                if !skipped.is_empty() {
+                    eprintln!(
+                        "file watch: watching {:?} without {} unreadable dirs (e.g. {:?})",
+                        root,
+                        skipped.len(),
+                        skipped.first()
+                    );
+                }
+                let canonical = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+                watched.push((root, canonical));
+            }
+            Err(err) => eprintln!("file watch: {:?} isn't watched: {err}", root),
+        }
+    }
+    watched
 }
 
 /// More changes than this in one burst (a branch switch, an unpacked
@@ -397,45 +543,83 @@ fn keep_watcher<W>(
 
 /// The watcher is gone (`disconnected`) and nothing is left to report: no
 /// event can arrive any more, so the watch's task can end.
-fn watch_finished(disconnected: bool, batch: &WatchBatch, git_touched: Option<Instant>) -> bool {
-    disconnected && batch.is_empty() && git_touched.is_none()
+fn watch_finished(disconnected: bool, batch: &WatchBatch, git_pending: bool) -> bool {
+    disconnected && batch.is_empty() && !git_pending
 }
 
-/// Watches the project folder `path_str`, in place of the one watched
-/// before: its changes go to the frontend as `fs-changes` and `git-changed`
-/// events until another folder is watched.
+/// Watches one folder, and the dirs its repository needs beside it. The git
+/// folder is a real path, resolved: `canonical` is the folder as the disk
+/// names it, so a folder opened through a link is compared as the disk's own
+/// path, and its `.git` isn't registered twice (its own watch sees it).
+/// Returns the folder as started, and the git dirs registered on their own.
+fn start_folder(
+    watcher: &mut notify::RecommendedWatcher,
+    root: PathBuf,
+    canonical: PathBuf,
+) -> StartedFolder {
+    let dirs = repo_dirs_of(&canonical);
+    let mut git_dirs = Vec::new();
+    if let Some(dirs) = &dirs {
+        for (path, mode) in git_dirs_beside(&canonical, dirs) {
+            // Best effort: the folder's own files are watched anyway.
+            match watcher.watch(&path, mode) {
+                Ok(()) => git_dirs.push(path),
+                Err(err) => eprintln!("file watch: {:?} isn't watched: {err}", path),
+            }
+        }
+    }
+    StartedFolder {
+        root,
+        canonical,
+        git_dirs,
+        workdir: dirs.map(|dirs| dirs.workdir),
+    }
+}
+
+/// Watches the window's folders, in place of those watched before: their
+/// changes go to the frontend as `fs-changes` and `git-changed` events until
+/// another set of folders is watched. A workspace has several; a project is
+/// the list of one.
 #[tauri::command]
 pub async fn start_file_watch(
     app_handle: AppHandle,
     state: State<'_, WatcherState>,
-    path_str: String,
+    paths: Vec<String>,
 ) -> Result<(), String> {
-    let root = PathBuf::from(path_str);
-    // The old watcher goes first (dropping it stops its events), and its
-    // task ends on its own once it sees the generation change: dropping
-    // the watcher alone only stops new events, and its loop would keep
-    // waking every 50 ms forever, one more per project opened.
+    // The folders watched before go first (dropping the watcher stops their
+    // events), and their task ends on its own once it sees the generation
+    // change: dropping the watcher alone only stops new events, and its loop
+    // would keep waking every 50 ms forever, one more per window switched.
     let generation = begin_watch(&state.active_watcher, &WATCH_GENERATION);
+    // The folders watched before had their own .gitignore files: another
+    // folder's, or the same folder as it was, isn't what the tree reads now.
+    if let Ok(mut cached) = state.gitignore.lock() {
+        cached.clear();
+    }
 
     let (tx, rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
+    let roots: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    // Stored before the watch starts, so a folder that can't be watched (an
+    // empty drive, say) is still the window's and stays un-deletable.
+    // A poisoned lock (a panic while it was held) still holds a list that
+    // is read: it's taken over, so the guard never sees the folders before.
+    *state.folders.lock().unwrap_or_else(|e| e.into_inner()) = roots.clone();
     // Off the main thread: watching a big tree folder by folder takes a
     // while (inotify), and nothing else must wait for it.
-    let watch_root = root.clone();
-    let watcher = crate::util::blocking(move || {
+    let (watcher, started) = crate::util::blocking(move || {
         let mut watcher = notify::recommended_watcher(tx).err_text()?;
         // One unreadable subdir (a database owned by another user, a FUSE
-        // mount with restricted permissions) must not fail the whole
-        // project's watch.
-        let skipped = watch_recursive_lenient(&mut watcher, &watch_root)?;
-        if !skipped.is_empty() {
-            eprintln!(
-                "file watch: watching {:?} without {} unreadable dirs (e.g. {:?})",
-                watch_root,
-                skipped.len(),
-                skipped.first()
-            );
+        // mount with restricted permissions) must not fail the watch, and
+        // one folder that can't be watched must not fail the others.
+        let mut started: Vec<StartedFolder> = Vec::new();
+        for (root, canonical) in watch_folders(&mut watcher, roots) {
+            let folder = start_folder(&mut watcher, root, canonical);
+            for dir in &folder.git_dirs {
+                println!("Watching (git): {:?}", dir);
+            }
+            started.push(folder);
         }
-        Ok(watcher)
+        Ok((watcher, started))
     })
     .await?;
     // Kept alive until the next switch, unless that came while this one
@@ -448,74 +632,186 @@ pub async fn start_file_watch(
     ) {
         return Ok(());
     }
-    println!("Watching: {:?}", root);
+    for folder in &started {
+        println!("Watching: {:?}", folder.root);
+    }
     // A thread of its own: what it does with each change (a new folder's
     // listing and watches, the isolated chats' conflict checks) is disk
     // work, which would hold up the async threads every other command
     // and run shares.
     std::thread::Builder::new()
         .name("file-watch".into())
-        .spawn(move || Watch::new(app_handle, root, generation, rx).run())
+        .spawn(move || Watch::new(app_handle, started, generation, rx).run())
         .err_text()?;
     Ok(())
 }
 
-/// One project's watch: the events notify sends, batched and reported.
+/// The folders' .gitignore files, found off the runtime: the folder each is
+/// for, and its matchers.
+type IgnoreFinder = (
+    Sender<(usize, WatchIgnores)>,
+    Receiver<(usize, WatchIgnores)>,
+);
+
+/// The started folders' watch, with each folder's own state.
+fn watch_folders_of(started: &[StartedFolder]) -> Vec<WatchFolder> {
+    started.iter().map(StartedFolder::watch_folder).collect()
+}
+
+/// The dirs watched on their own, with the folders they serve: a repository
+/// whose git folder is above its folder (the folder is in a subfolder of the
+/// repository), so a commit or a push from a terminal anywhere in the
+/// repository is seen — every dir of it, the shared `refs/` a linked
+/// worktree's push writes included, so that change is credited too. A dir
+/// inside any watched folder is left out: that folder's own watch reports it,
+/// as git's bookkeeping (a hold on the chats included). Every folder a dir
+/// serves gets an entry: two folders of one repository both hear of its
+/// commits.
+fn watched_git_dirs(started: &[StartedFolder], folders: &[WatchFolder]) -> Vec<(PathBuf, usize)> {
+    let mut dirs: Vec<(PathBuf, usize)> = Vec::new();
+    for (at, folder) in started.iter().enumerate() {
+        for dir in &folder.git_dirs {
+            if folders
+                .iter()
+                .any(|watched| dir.starts_with(&watched.canonical))
+            {
+                continue;
+            }
+            dirs.push((dir.clone(), at));
+        }
+    }
+    dirs
+}
+
+/// The folders a change in a watched git folder is credited to: every folder
+/// in that repository, not the first found.
+fn git_folders_touched(git_dirs: &[(PathBuf, usize)], path: &Path) -> Vec<usize> {
+    let mut at: Vec<usize> = git_dirs
+        .iter()
+        .filter(|(dir, _)| path.starts_with(dir))
+        .map(|(_, at)| *at)
+        .collect();
+    at.sort_unstable();
+    at.dedup();
+    at
+}
+
+/// Whether this change can change which repository the folder at `root` is in:
+/// the folder's own `.git` made or taken away (a `git init`, a repository
+/// removed), or, for a folder inside a repository, the git folder watched for
+/// it above. `HEAD` stands in for the git folder itself: a platform need not
+/// report a folder that went, but it reports the `HEAD` git made or a
+/// `rm -rf .git` took with it. A commit, a checkout or a push only changes
+/// them, which leaves the folder in the repository it's in.
+fn repository_boundary(
+    operation: &WatchOp,
+    path: &Path,
+    root: &Path,
+    git_dirs: &[(PathBuf, usize)],
+    at: usize,
+) -> bool {
+    if !matches!(operation, WatchOp::Create | WatchOp::Remove) {
+        return false;
+    }
+    let own = root.join(".git");
+    path == own
+        || path == own.join("HEAD")
+        || git_dirs
+            .iter()
+            .any(|(dir, owner)| *owner == at && (path == *dir || path == dir.join("HEAD")))
+}
+
+/// Whether `path` is a moved `HEAD` or `ORIG_HEAD` of one of the watched git
+/// folders: a commit, a checkout, a merge or a rebase, which rewrites the
+/// working tree the isolated chats read.
+fn is_head_or_orig_head(path: &Path, git_dirs: &[(PathBuf, usize)]) -> bool {
+    let moved = path
+        .file_name()
+        .is_some_and(|name| name == "HEAD" || name == "ORIG_HEAD");
+    moved
+        && git_dirs
+            .iter()
+            .any(|(dir, _)| path.parent() == Some(dir.as_path()))
+}
+
+/// One window's folders, watched: the events notify sends, batched and
+/// reported. A project is the list of one; a workspace has several, each
+/// with its own .gitignore files and its own repository.
 struct Watch {
     app: AppHandle,
-    root: PathBuf,
+    /// The window's folders, in its order.
+    folders: Vec<WatchFolder>,
+    /// The dirs the folders' repositories are watched at, each with the folder
+    /// it serves (its git folder is above the folder): commits and pushes from
+    /// a terminal anywhere in the repository, and a repository removed.
+    git_dirs: Vec<(PathBuf, usize)>,
     generation: u64,
     events: Receiver<NotifyResult<Event>>,
-    /// The project's .gitignore files: the root's at once, all of them when
-    /// found (and again whenever one changes).
-    ignores: Arc<WatchIgnores>,
-    found_ignores: (Sender<WatchIgnores>, Receiver<WatchIgnores>),
+    /// The folders' .gitignore files, found off the runtime, by folder.
+    found_ignores: IgnoreFinder,
     batch: WatchBatch,
-    /// Last activity inside .git/ (a commit writes hundreds of files there).
-    git_touched: Option<Instant>,
+    /// Last activity in each folder's repository, by folder (a commit writes
+    /// hundreds of files there).
+    git_touched: HashMap<usize, Instant>,
+    /// The folders whose own `.git` was made or taken away since the last
+    /// report: which repository they are in may have changed, and the window
+    /// reads them again.
+    repo_changed: HashSet<usize>,
 }
 
 impl Watch {
     fn new(
         app: AppHandle,
-        root: PathBuf,
+        started: Vec<StartedFolder>,
         generation: u64,
         events: Receiver<NotifyResult<Event>>,
     ) -> Self {
         let watch = Watch {
-            ignores: Arc::new(WatchIgnores::root_only(&root)),
             found_ignores: std::sync::mpsc::channel(),
+            folders: watch_folders_of(&started),
+            git_dirs: Vec::new(),
             app,
-            root,
             generation,
             events,
             batch: WatchBatch::default(),
-            git_touched: None,
+            git_touched: HashMap::new(),
+            repo_changed: HashSet::new(),
         };
-        watch.find_ignores();
+        // A repository's git folder inside a watched folder is that folder's
+        // own watch's: it comes through `watch_path_kind` as git's bookkeeping.
+        let mut watch = watch;
+        watch.git_dirs = watched_git_dirs(&started, &watch.folders);
+        for at in 0..watch.folders.len() {
+            watch.find_ignores(at);
+        }
         watch
     }
 
-    /// Every .gitignore of the project, looked for off the runtime.
-    fn find_ignores(&self) {
-        let (root, tx) = (self.root.clone(), self.found_ignores.0.clone());
+    /// One folder's .gitignore files, looked for off the runtime.
+    fn find_ignores(&self, at: usize) {
+        let Some(folder) = self.folders.get(at) else {
+            return;
+        };
+        let (root, tx) = (folder.root.clone(), self.found_ignores.0.clone());
         tauri::async_runtime::spawn_blocking(move || {
-            let _ = tx.send(WatchIgnores::all(&root));
+            let _ = tx.send((at, WatchIgnores::all(&root)));
         });
     }
 
     fn run(mut self) {
         loop {
-            // Another project's watch replaced this one: stop.
+            // Another set of folders replaced this watch: stop.
             if watch_replaced(self.generation) {
                 break;
             }
-            if let Ok(found) = self.found_ignores.1.try_recv() {
-                self.ignores = Arc::new(found);
+            if let Ok((at, found)) = self.found_ignores.1.try_recv() {
+                if let Some(folder) = self.folders.get_mut(at) {
+                    folder.ignores = Arc::new(found);
+                }
             }
             let disconnected = self.drain();
             self.report();
-            if watch_finished(disconnected, &self.batch, self.git_touched) {
+            if watch_finished(disconnected, &self.batch, !self.git_touched.is_empty()) {
                 break;
             }
             // A short pause to rest the CPU before polling again.
@@ -545,22 +841,66 @@ impl Watch {
         false
     }
 
-    /// One changed path. Git's own files and ignored paths (target/,
-    /// node_modules/) aren't the user's files: reporting each one flooded
-    /// the app. `brings_folder`: the change can put a folder there (made,
-    /// or moved in), whose contents are then reported too.
+    /// One changed path, in the folder it's in. Git's own files and ignored
+    /// paths (target/, node_modules/) aren't the user's files: reporting each
+    /// one flooded the app. `brings_folder`: the change can put a folder
+    /// there (made, or moved in), whose contents are then reported too.
     fn saw(&mut self, operation: &WatchOp, path: PathBuf, brings_folder: bool) {
-        match watch_path_kind(&self.root, &self.ignores, &path) {
+        // A repository above its folders (the git folder is outside them, so
+        // it's watched on its own): a commit or a push from a terminal
+        // anywhere in the repository, every folder's Git panel hears of it.
+        let touched = git_folders_touched(&self.git_dirs, &path);
+        if !touched.is_empty() {
+            let now = Instant::now();
+            // The watched dir itself made or taken away (the repository
+            // removed): the folders it serves may be in another repository
+            // now, or in none.
+            for at in &touched {
+                self.git_touched.insert(*at, now);
+                if repository_boundary(
+                    operation,
+                    &path,
+                    &self.folders[*at].root,
+                    &self.git_dirs,
+                    *at,
+                ) {
+                    self.repo_changed.insert(*at);
+                }
+            }
+            // A checkout, merge or rebase moves HEAD and rewrites the working
+            // tree: isolated chats on every folder in that repository wait it
+            // out (3.7), as they do for a `.git` inside a folder below.
+            if is_head_or_orig_head(&path, &self.git_dirs) {
+                for at in &touched {
+                    if let Some(workdir) = &self.folders[*at].workdir {
+                        rovik_core::overlay::chats::project_busy(workdir);
+                    }
+                }
+            }
+            return;
+        }
+        let Some((at, path)) = folder_of(&self.folders, &path) else {
+            return; // none of the window's folders: a watch left over
+        };
+        let root = self.folders[at].root.clone();
+        let ignores = self.folders[at].ignores.clone();
+        match watch_path_kind(&root, &ignores, &path) {
             WatchPath::Git => {
-                self.git_touched = Some(Instant::now());
+                self.git_touched.insert(at, Instant::now());
+                // The folder's own `.git` made or taken away (a `git init`
+                // here, a repository removed): which repository the folder is
+                // in may have changed.
+                if repository_boundary(operation, &path, &root, &self.git_dirs, at) {
+                    self.repo_changed.insert(at);
+                }
                 // A checkout, merge or rebase is rewriting the working
                 // tree: isolated chats wait it out.
-                if path.parent() == Some(self.root.join(".git").as_path())
+                if path.parent() == Some(root.join(".git").as_path())
                     && path
                         .file_name()
                         .is_some_and(|n| n == "HEAD" || n == "ORIG_HEAD")
                 {
-                    rovik_core::overlay::chats::project_busy(&self.root);
+                    rovik_core::overlay::chats::project_busy(&root);
                 }
                 return;
             }
@@ -569,98 +909,150 @@ impl Watch {
         }
         let state = self.app.state::<WatcherState>();
         if path.file_name().is_some_and(|n| n == ".gitignore") {
-            self.find_ignores();
+            self.find_ignores(at);
             // The tree's listing re-reads it too.
             if let Ok(mut cached) = state.gitignore.lock() {
-                *cached = None;
+                cached.clear();
             }
         }
         let is_dir = path.is_dir();
-        let appeared = brings_folder && is_dir && path.starts_with(&self.root);
+        let appeared = brings_folder && is_dir && path.starts_with(&root);
         // A new dir isn't covered when the initial watch fell back to
         // per-dir watches: cover it now, best effort. (Under a recursive
         // watcher this re-watch is harmless.) Nor is one moved in.
         if appeared {
             watch_new_dir(&state, &path);
         }
-        let payload = FileWatchPayload {
-            path: path.to_string_lossy().into_owned(),
-            operation: operation.clone(),
-            is_dir,
-        };
-        self.batch.add(payload, Instant::now());
+        let folder = spelling(&root);
+        self.batch.add(
+            payload(&folder, &path, operation.clone(), is_dir),
+            Instant::now(),
+        );
         // What it holds already, which no event will report (watched first,
         // so whatever comes after this look is reported by itself). Past a
         // flush's worth, the batch turns into "re-check everything".
         if appeared {
             for (inner, inner_is_dir) in
-                folder_contents(&self.root, &self.ignores, &path, MAX_EVENTS_PER_FLUSH + 1)
+                folder_contents(&root, &ignores, &path, MAX_EVENTS_PER_FLUSH + 1)
             {
-                let payload = FileWatchPayload {
-                    path: inner.to_string_lossy().into_owned(),
-                    operation: WatchOp::Create,
-                    is_dir: inner_is_dir,
-                };
-                self.batch.add(payload, Instant::now());
+                self.batch.add(
+                    payload(&folder, &inner, WatchOp::Create, inner_is_dir),
+                    Instant::now(),
+                );
             }
         }
     }
 
-    /// What's due, reported. A flood is one "re-check everything"
-    /// (operation "unknown", the project root). Git activity once it has
-    /// settled, or a change to the working tree: the Git tab refreshes.
+    /// What's due, reported. A flood is one "re-check everything" per folder
+    /// (operation "unknown", the folder itself). Git activity once it has
+    /// settled, or a change in a folder's working tree: that folder's Git
+    /// panel refreshes.
     fn report(&mut self) {
         let now = Instant::now();
         let flush = self.batch.take_due(now);
-        // A visible file changed: git's status of the working tree did too.
-        let tree_changed = flush != WatchFlush::Nothing;
+        // Folders whose git status is read again: a repository's activity
+        // that has settled, the working tree of a folder with a change in
+        // it, or every folder after a flood.
+        let mut refresh: Vec<usize> = Vec::new();
+        self.git_touched.retain(|at, touched| {
+            if now.duration_since(*touched) >= WATCH_DEBOUNCE {
+                refresh.push(*at);
+                return false;
+            }
+            true
+        });
         match flush {
             WatchFlush::Nothing => {}
             WatchFlush::Everything => {
-                // Isolated chats on this project read it afresh.
-                rovik_core::overlay::chats::project_changed(&self.root, &[], true);
-                let _ = self.app.emit(
-                    "fs-changes",
-                    FileWatchPayload {
-                        path: self.root.to_string_lossy().into_owned(),
-                        operation: WatchOp::Unknown,
-                        is_dir: true,
-                    },
-                );
+                for folder in &self.folders {
+                    // Isolated chats on this folder read it afresh.
+                    rovik_core::overlay::chats::project_changed(&folder.root, &[], true);
+                }
+                for payload in everything_payloads(&self.folders) {
+                    let _ = self.app.emit("fs-changes", payload);
+                }
+                refresh = (0..self.folders.len()).collect();
             }
             WatchFlush::Events(events) => {
-                let paths: Vec<PathBuf> = events.iter().map(|p| PathBuf::from(&p.path)).collect();
-                // Isolated chats on this project: see it as it is now, and
-                // hear right away when their own change conflicts.
-                for (chat, path) in
-                    rovik_core::overlay::chats::project_changed(&self.root, &paths, false)
-                {
-                    self.app.state::<rovik_core::Core>().emit(
-                        rovik_core::agent_run::events::AgentEvent::Notice {
-                            dialog_id: Some(chat),
-                            kind: "warning".into(),
-                            title: "A chat's change conflicts with the project".into(),
-                            message: format!(
-                                "{path} changed in the project on lines an isolated chat changed too. That chat's changes won't land without you deciding."
-                            ),
-                        },
-                    );
+                for (at, folder) in self.folders.iter().enumerate() {
+                    let name = spelling(&folder.root);
+                    let paths: Vec<PathBuf> = events
+                        .iter()
+                        .filter(|p| p.folder == name)
+                        .map(|p| PathBuf::from(&p.path))
+                        .collect();
+                    if paths.is_empty() {
+                        continue;
+                    }
+                    refresh.push(at);
+                    // Isolated chats on this folder: see it as it is now, and
+                    // hear right away when their own change conflicts.
+                    for (chat, path) in
+                        rovik_core::overlay::chats::project_changed(&folder.root, &paths, false)
+                    {
+                        self.app.state::<rovik_core::Core>().emit(
+                            rovik_core::agent_run::events::AgentEvent::Notice {
+                                dialog_id: Some(chat),
+                                kind: "warning".into(),
+                                title: "A chat's change conflicts with the project".into(),
+                                message: format!(
+                                    "{path} changed in the project on lines an isolated chat changed too. That chat's changes won't land without you deciding."
+                                ),
+                            },
+                        );
+                    }
                 }
                 for payload in events {
                     let _ = self.app.emit("fs-changes", payload);
                 }
             }
         }
-        let git_settled = self
-            .git_touched
-            .is_some_and(|t| now.duration_since(t) >= WATCH_DEBOUNCE);
-        if git_settled {
-            self.git_touched = None;
-        }
-        if git_settled || tree_changed {
-            let _ = self.app.emit("git-changed", ());
+        refresh.sort_unstable();
+        refresh.dedup();
+        for at in refresh {
+            let Some(root) = self.folders.get(at).map(|folder| folder.root.clone()) else {
+                continue;
+            };
+            let _ = self.app.emit(
+                "git-changed",
+                GitChangedPayload {
+                    folder: spelling(&root),
+                    repositories: self.repo_changed.remove(&at),
+                },
+            );
         }
     }
+}
+
+/// A path as the frontend spells it.
+fn spelling(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+/// One change, for the frontend, naming the folder it's in.
+fn payload(folder: &str, path: &Path, operation: WatchOp, is_dir: bool) -> FileWatchPayload {
+    FileWatchPayload {
+        folder: folder.to_string(),
+        path: path.to_string_lossy().into_owned(),
+        operation,
+        is_dir,
+    }
+}
+
+/// What a flood reports: one "re-check everything" per folder, each naming
+/// its folder, so each folder's part of the window is read again.
+fn everything_payloads(folders: &[WatchFolder]) -> Vec<FileWatchPayload> {
+    folders
+        .iter()
+        .map(|folder| {
+            payload(
+                &spelling(&folder.root),
+                &folder.root,
+                WatchOp::Unknown,
+                true,
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -694,11 +1086,7 @@ mod tests {
     }
 
     fn change(path: &str) -> FileWatchPayload {
-        FileWatchPayload {
-            path: path.into(),
-            operation: WatchOp::Modify,
-            is_dir: false,
-        }
+        payload("", Path::new(path), WatchOp::Modify, false)
     }
 
     /// Two watches begun at once: the older one's watcher, built last,
@@ -727,21 +1115,21 @@ mod tests {
         let t0 = Instant::now();
         let mut b = WatchBatch::default();
         assert!(b.is_empty());
-        assert!(!watch_finished(false, &b, None), "still connected");
-        assert!(watch_finished(true, &b, None));
+        assert!(!watch_finished(false, &b, false), "still connected");
+        assert!(watch_finished(true, &b, false));
         b.add(change("a"), t0);
         assert!(!b.is_empty());
-        assert!(!watch_finished(true, &b, None), "a change still to report");
+        assert!(!watch_finished(true, &b, false), "a change still to report");
         assert!(matches!(
             b.take_due(t0 + Duration::from_secs(5)),
             WatchFlush::Events(_)
         ));
         assert!(b.is_empty(), "reported");
         assert!(
-            !watch_finished(true, &b, Some(t0)),
+            !watch_finished(true, &b, true),
             "git activity still to report"
         );
-        assert!(watch_finished(true, &b, None));
+        assert!(watch_finished(true, &b, false));
     }
 
     #[test]
@@ -781,11 +1169,7 @@ mod tests {
     fn a_burst_is_reported_in_the_order_it_happened() {
         let t0 = Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
-        let op = |path: &str, operation: WatchOp| FileWatchPayload {
-            path: path.into(),
-            operation,
-            is_dir: false,
-        };
+        let op = |path: &str, operation: WatchOp| payload("", Path::new(path), operation, false);
         let mut b = WatchBatch::default();
         // git checkout: the file removed, then written again...
         b.add(op("a.ts", WatchOp::Remove), ms(0));
@@ -970,5 +1354,513 @@ mod tests {
         assert_eq!(kind("dist/index.js"), WatchPath::Visible);
         assert_eq!(kind("server.log"), WatchPath::Ignored);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder as the watch keeps it: its own .gitignore files, its root as
+    /// spelled and as the disk has it, and its repository's working folder
+    /// once it has a git folder.
+    fn open_folder(root: &Path) -> WatchFolder {
+        WatchFolder {
+            root: root.to_path_buf(),
+            canonical: std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+            workdir: None,
+            ignores: Arc::new(WatchIgnores::root_only(root)),
+        }
+    }
+
+    #[test]
+    fn a_change_is_reported_in_the_folder_that_holds_it() {
+        let base = std::env::temp_dir().join(format!("watch-folders-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        for d in ["api/src", "web/src"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let folders = vec![
+            open_folder(&base.join("api")),
+            open_folder(&base.join("web")),
+        ];
+        let (at, path) = folder_of(&folders, &base.join("web/src/a.ts")).unwrap();
+        assert_eq!((at, path), (1, base.join("web/src/a.ts")));
+        let (at, _) = folder_of(&folders, &base.join("api/src/a.ts")).unwrap();
+        assert_eq!(at, 0);
+        // In no folder of this window: a watch left over.
+        assert_eq!(folder_of(&folders, &base.join("other/a.ts")), None);
+        // A folder's own root, as the remove of a folder that went: its path
+        // as the window spells it, with no separator joined onto nothing.
+        let own = folder_of(&folders, &base.join("api")).unwrap();
+        assert_eq!(own, (0, base.join("api")));
+        assert!(
+            !own.1.to_string_lossy().ends_with('/'),
+            "no trailing separator for the folder itself"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_watched_folder_that_went_is_reported_as_removed() {
+        let base = std::env::temp_dir().join(format!("watch-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("app/src")).unwrap();
+        let folders = vec![open_folder(&base.join("app"))];
+        // The folder's own watch sees the folder go: notify names its root.
+        std::fs::remove_dir_all(base.join("app")).unwrap();
+        let (at, path) = folder_of(&folders, &base.join("app")).unwrap();
+        assert_eq!((at, path.clone()), (0, base.join("app")));
+        assert_eq!(
+            watch_path_kind(&folders[0].root, &folders[0].ignores, &path),
+            WatchPath::Visible,
+            "a folder that went is the window's to drop, not git's or ignored"
+        );
+        // It's reported, naming that folder and no other: its tree goes, and
+        // what it held is read again where it went. `is_dir` as the disk has
+        // it, which for a folder that went is no longer a folder.
+        let reported = payload(
+            &spelling(&folders[0].root),
+            &path,
+            WatchOp::Remove,
+            path.is_dir(),
+        );
+        assert_eq!(reported.folder, spelling(&folders[0].root));
+        assert_eq!(reported.path, spelling(&folders[0].root));
+        assert_eq!(reported.operation, WatchOp::Remove);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_moved_head_in_a_repository_above_a_folder_holds_the_chats() {
+        let base = std::env::temp_dir().join(format!("watch-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("app")).unwrap();
+        let git_dir =
+            std::fs::canonicalize(base.join(".git")).unwrap_or_else(|_| base.join(".git"));
+        let dirs = vec![(git_dir.clone(), 0usize)];
+        // A commit or a checkout moves HEAD or ORIG_HEAD in the git folder.
+        assert!(is_head_or_orig_head(&git_dir.join("HEAD"), &dirs));
+        assert!(is_head_or_orig_head(&git_dir.join("ORIG_HEAD"), &dirs));
+        // The index (a `git add`) doesn't rewrite the working tree, and a
+        // ref update under refs/ isn't the checkout itself.
+        assert!(!is_head_or_orig_head(&git_dir.join("index"), &dirs));
+        assert!(!is_head_or_orig_head(
+            &git_dir.join("refs/heads/main"),
+            &dirs
+        ));
+        // A HEAD deeper in (a worktree's own) is that worktree's, not this.
+        assert!(!is_head_or_orig_head(
+            &git_dir.join("worktrees/other/HEAD"),
+            &dirs
+        ));
+        // A HEAD of no watched repository: nothing to hold.
+        assert!(!is_head_or_orig_head(&base.join("HEAD"), &dirs));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_opened_through_a_link_is_reported_under_its_own_path() {
+        let base = std::env::temp_dir().join(format!("watch-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("real/src")).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+        let folders = vec![open_folder(&base.join("link"))];
+        // The disk names the change through the link's target, links
+        // resolved (macOS's temp folder is under `/private`); the window
+        // knows the folder as the link.
+        let real = std::fs::canonicalize(base.join("real")).unwrap();
+        let (at, path) = folder_of(&folders, &real.join("src/a.ts")).unwrap();
+        assert_eq!((at, path), (0, base.join("link/src/a.ts")));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn one_unwatchable_folder_leaves_the_other_watched() {
+        let base = std::env::temp_dir().join(format!("watch-one-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("ok/src")).unwrap();
+        std::fs::create_dir_all(base.join("locked/src")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(base.join("locked"), std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+        }
+        let (tx, _rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
+        let mut watcher = notify::recommended_watcher(tx).expect("watcher");
+        // Those that can't be watched come first: the one after them is
+        // watched still.
+        let watched = watch_folders(
+            &mut watcher,
+            vec![base.join("gone"), base.join("locked"), base.join("ok")],
+        );
+        let roots: Vec<PathBuf> = watched.into_iter().map(|(root, _)| root).collect();
+        // inotify can't watch a folder it can't read (root reads any);
+        // macOS's FSEvents watches any path.
+        #[cfg(target_os = "linux")]
+        let unreadable = fs::read_dir(base.join("locked")).is_err();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(base.join("locked"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        assert!(
+            roots.contains(&base.join("ok")),
+            "the readable one is watched"
+        );
+        // A folder that isn't there can't be watched.
+        assert!(!roots.contains(&base.join("gone")));
+        #[cfg(target_os = "linux")]
+        if unreadable {
+            assert!(!roots.contains(&base.join("locked")));
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_flood_names_each_folder() {
+        let base = std::env::temp_dir().join(format!("watch-flood-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        for d in ["api", "web"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let folders = vec![
+            open_folder(&base.join("api")),
+            open_folder(&base.join("web")),
+        ];
+        let payloads = everything_payloads(&folders);
+        assert_eq!(
+            payloads
+                .iter()
+                .map(|p| p.folder.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                base.join("api").to_string_lossy().as_ref(),
+                base.join("web").to_string_lossy().as_ref(),
+            ]
+        );
+        assert!(payloads
+            .iter()
+            .all(|p| p.operation == WatchOp::Unknown && p.is_dir));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_innermost_folder_a_change_is_in_gets_it() {
+        let base = std::env::temp_dir().join(format!("watch-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("packages/web/src")).unwrap();
+        // A workspace's state can hold a folder inside another (D5 refuses
+        // making one, not restoring it): a change in the inner folder is the
+        // inner folder's, so its own chats, its git refresh and its .git hold
+        // are right, whichever order the folders were opened in.
+        for folders in [
+            vec![open_folder(&base), open_folder(&base.join("packages/web"))],
+            vec![open_folder(&base.join("packages/web")), open_folder(&base)],
+        ] {
+            let (at, path) = folder_of(&folders, &base.join("packages/web/src/a.ts")).unwrap();
+            assert_eq!(
+                folders[at].root,
+                base.join("packages/web"),
+                "the innermost folder has it"
+            );
+            assert_eq!(path, base.join("packages/web/src/a.ts"));
+            // A change above it is the outer folder's still.
+            let (at, _) = folder_of(&folders, &base.join("a.ts")).unwrap();
+            assert_eq!(folders[at].root, base);
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_opened_through_a_link_does_not_watch_its_git_folder_twice() {
+        let base = std::env::temp_dir().join(format!("watch-link-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("real/app")).unwrap();
+        git2::Repository::init(base.join("real")).expect("a repository");
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
+        let mut watcher = notify::recommended_watcher(tx).expect("watcher");
+        // The window opened the folder through the link: its own watch covers
+        // the real folder's `.git`, so nothing is registered twice.
+        let link = base.join("link");
+        let canonical = std::fs::canonicalize(&link).unwrap();
+        let folder = start_folder(&mut watcher, link.clone(), canonical.clone());
+        assert_eq!(folder.root, link, "reported as the window spells it");
+        assert!(
+            folder.git_dirs.is_empty(),
+            "the folder's own watch sees its .git: {:?}",
+            folder.git_dirs
+        );
+        // The git folder is still found, for the folders it serves.
+        assert!(repo_dirs_of(&canonical).is_some());
+        let folders = vec![StartedFolder::watch_folder(&folder)];
+        assert!(watched_git_dirs(&[folder], &folders).is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_repository_above_a_folder_is_watched_for_its_commits_and_pushes() {
+        let base = std::env::temp_dir().join(format!("watch-repo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        std::fs::create_dir_all(repo.join("app/src")).unwrap();
+        std::fs::create_dir_all(base.join("loose")).unwrap();
+        git2::Repository::init(&repo).expect("a repository");
+        // The folders as `start_folder` has them: as the disk names them.
+        let repo = std::fs::canonicalize(&repo).unwrap();
+        let app = repo.join("app");
+        let dirs = repo_dirs_of(&app).expect("the repository above it");
+        let git_dir = std::fs::canonicalize(repo.join(".git")).unwrap();
+        assert_eq!(dirs.git_dir, git_dir);
+        assert_eq!(dirs.workdir, std::fs::canonicalize(&repo).unwrap());
+        // Commits and pushes from a terminal anywhere in the repository
+        // write in the git folder and its refs: both watched.
+        let beside = git_dirs_beside(&app, &dirs);
+        assert!(beside
+            .iter()
+            .any(|(dir, mode)| dir == &git_dir && *mode == RecursiveMode::NonRecursive));
+        assert!(beside
+            .iter()
+            .any(|(dir, mode)| dir == &git_dir.join("refs") && *mode == RecursiveMode::Recursive));
+        // A folder that's the repository's own is watched by itself.
+        assert!(git_dirs_beside(&repo, &dirs).is_empty());
+        // Outside any repository: nothing to watch beside it.
+        assert!(repo_dirs_of(&base.join("loose")).is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A linked worktree's branches are the shared folder's: its own git
+    /// folder has no `refs/` to watch, so a push there was never seen.
+    #[test]
+    fn a_linked_worktree_watches_the_refs_a_push_writes() {
+        let base = std::env::temp_dir().join(format!("watch-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let main = git2::Repository::init(&repo).expect("a repository");
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        {
+            let mut index = main.index().unwrap();
+            index
+                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            index.write().unwrap();
+            let tree = main.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig = git2::Signature::now("t", "t@t").unwrap();
+            main.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+        }
+        let head = main.head().unwrap().peel_to_commit().unwrap();
+        let branch = main.branch("other", &head, false).unwrap();
+        let worktree = base.join("worktree");
+        let mut opts = git2::WorktreeAddOptions::new();
+        opts.reference(Some(branch.get()));
+        main.worktree("other", &worktree, Some(&opts)).unwrap();
+
+        let dirs = repo_dirs_of(&worktree).expect("the worktree's repository");
+        // Its own git folder, and the refs a push writes: the shared ones.
+        assert!(
+            dirs.git_dir.ends_with("worktrees/other"),
+            "{:?}",
+            dirs.git_dir
+        );
+        assert_eq!(
+            dirs.common_dir,
+            std::fs::canonicalize(repo.join(".git")).unwrap()
+        );
+        let beside = git_dirs_beside(&worktree, &dirs);
+        assert!(
+            beside
+                .iter()
+                .any(|(dir, mode)| dir == &dirs.common_dir.join("refs")
+                    && *mode == RecursiveMode::Recursive),
+            "the shared refs are watched: {beside:?}"
+        );
+        // And a push written there is the worktree's folder's: the dirs
+        // watched on its own are credited to it, its own git folder's
+        // `refs/` or the shared one.
+        let (tx, _rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
+        let mut watcher = notify::recommended_watcher(tx).expect("watcher");
+        let canonical = std::fs::canonicalize(&worktree).unwrap();
+        let folder = start_folder(&mut watcher, worktree.clone(), canonical);
+        let folders = vec![StartedFolder::watch_folder(&folder)];
+        let watched = watched_git_dirs(&[folder], &folders);
+        let pushed = dirs.common_dir.join("refs/heads/other");
+        assert_eq!(
+            git_folders_touched(&watched, &pushed),
+            [0],
+            "a push in the shared refs is the worktree folder's: {watched:?}"
+        );
+        drop(branch);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A folder as `start_file_watch` hands it over: its root, its canonical
+    /// path, its repository's git folder, and that repository's working
+    /// folder.
+    /// A folder as `start_file_watch` hands it over: its root, its canonical
+    /// path, the dirs of its repository watched beside it, and that
+    /// repository's working folder.
+    fn started(root: &Path, git_dir: Option<&Path>) -> StartedFolder {
+        StartedFolder {
+            root: root.to_path_buf(),
+            canonical: std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+            git_dirs: git_dir.map(Path::to_path_buf).into_iter().collect(),
+            workdir: git_dir
+                .map(|_| std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())),
+        }
+    }
+
+    /// Whether a change can change which repository a folder is in: its own
+    /// `.git` made or gone, or the git folder it's watched at above it gone.
+    /// A commit, a checkout or a save only writes inside them.
+    #[test]
+    fn a_gits_boundary_is_what_may_change_a_folders_repository() {
+        let base = std::env::temp_dir().join(format!("watch-boundary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo_git = base.join("repo/.git");
+        std::fs::create_dir_all(&repo_git).unwrap();
+        let app = base.join("repo/app");
+        std::fs::create_dir_all(&app).unwrap();
+        let dirs = vec![(repo_git.clone(), 0usize)];
+        let made = WatchOp::Create;
+        let gone = WatchOp::Remove;
+        // A `git init` in the folder makes its own `.git`, and `HEAD` with
+        // it; taking it away makes the folder a plain one again.
+        assert!(repository_boundary(
+            &made,
+            &app.join(".git"),
+            &app,
+            &dirs,
+            0
+        ));
+        assert!(repository_boundary(
+            &made,
+            &app.join(".git/HEAD"),
+            &app,
+            &dirs,
+            0
+        ));
+        assert!(repository_boundary(
+            &gone,
+            &app.join(".git/HEAD"),
+            &app,
+            &dirs,
+            0
+        ));
+        // A commit, a checkout or a push writes inside the git folder, and a
+        // checkout only changes the `HEAD` that's there.
+        assert!(!repository_boundary(
+            &WatchOp::Modify,
+            &app.join(".git/HEAD"),
+            &app,
+            &dirs,
+            0
+        ));
+        assert!(!repository_boundary(
+            &made,
+            &app.join(".git/refs/heads/main"),
+            &app,
+            &dirs,
+            0
+        ));
+        assert!(!repository_boundary(
+            &WatchOp::Modify,
+            &app.join(".git/index"),
+            &app,
+            &dirs,
+            0
+        ));
+        // A file saved or made beside it isn't one either.
+        assert!(!repository_boundary(
+            &made,
+            &app.join("src/a.ts"),
+            &app,
+            &dirs,
+            0
+        ));
+        // The repository above the folder taken away: the watched git folder,
+        // or the `HEAD` removed with it, for the folder it serves and no
+        // other.
+        assert!(repository_boundary(&gone, &repo_git, &app, &dirs, 0));
+        assert!(repository_boundary(
+            &gone,
+            &repo_git.join("HEAD"),
+            &app,
+            &dirs,
+            0
+        ));
+        assert!(!repository_boundary(&gone, &repo_git, &app, &dirs, 1));
+        // A folder that's a repository of its own has nothing watched beside
+        // it: its own `.git` is the boundary, deeper files aren't.
+        let own: Vec<(PathBuf, usize)> = Vec::new();
+        assert!(repository_boundary(&made, &app.join(".git"), &app, &own, 0));
+        assert!(!repository_boundary(
+            &made,
+            &app.join("src/a.ts"),
+            &app,
+            &own,
+            0
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn every_folder_of_one_repository_hears_of_its_commits() {
+        let base = std::env::temp_dir().join(format!("watch-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        for d in ["app", "web"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        git2::Repository::init(&base).expect("a repository");
+        let git_dir = std::fs::canonicalize(base.join(".git")).unwrap();
+        let started = vec![
+            started(&base.join("app"), Some(&git_dir)),
+            started(&base.join("web"), Some(&git_dir)),
+        ];
+        let folders: Vec<WatchFolder> = started.iter().map(StartedFolder::watch_folder).collect();
+        // The repository's git folder is above both folders: watched on its
+        // own, once for each of them.
+        let dirs = watched_git_dirs(&started, &folders);
+        assert_eq!(dirs.len(), 2, "{dirs:?}");
+        // A commit or a push from a terminal: BOTH folders' panels refresh,
+        // not the first one's alone.
+        assert_eq!(git_folders_touched(&dirs, &git_dir.join("HEAD")), [0, 1]);
+        assert_eq!(
+            git_folders_touched(&dirs, &git_dir.join("refs/heads/main")),
+            [0, 1]
+        );
+        // A change in the folders themselves isn't git activity.
+        assert!(git_folders_touched(&dirs, &base.join("web/a.ts")).is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_repositorys_git_folder_inside_a_folder_is_that_folders_own() {
+        let base = std::env::temp_dir().join(format!("watch-inside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("app")).unwrap();
+        git2::Repository::init(&base).expect("a repository");
+        let git_dir = std::fs::canonicalize(base.join(".git")).unwrap();
+        // A workspace of the repository's folder and a folder in it.
+        let started = vec![
+            started(&base, Some(&git_dir)),
+            started(&base.join("app"), Some(&git_dir)),
+        ];
+        let folders: Vec<WatchFolder> = started.iter().map(StartedFolder::watch_folder).collect();
+        // The repository's folder watches its own .git: an entry for the
+        // folder inside it would answer first, and that folder would never
+        // see the checkout hold its isolated chats.
+        assert!(watched_git_dirs(&started, &folders).is_empty());
+        // The disk names the change as git does; the folder's own spelling
+        // is what's classified.
+        let (at, head) = folder_of(&folders, &git_dir.join("HEAD")).unwrap();
+        assert_eq!(at, 0, "the folder that holds the repository");
+        assert_eq!(
+            watch_path_kind(&folders[0].root, &folders[0].ignores, &head),
+            WatchPath::Git,
+            "git's own bookkeeping, where the checkout hold is taken"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

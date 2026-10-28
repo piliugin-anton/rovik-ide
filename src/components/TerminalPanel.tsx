@@ -9,8 +9,10 @@ import {
   type Accessor,
 } from 'solid-js';
 import Terminal from './Terminal';
-import TerminalNewMenu from './TerminalNewMenu';
+import TerminalNewMenu, { TerminalHostItems } from './TerminalNewMenu';
+import FolderMenu from './FolderMenu';
 import { cloud } from '../lib/cloud';
+import { onSessionCarried, type OpenFolder } from '../lib/openFolders';
 import {
   remoteLabel,
   terminalHosts,
@@ -23,8 +25,15 @@ interface TerminalPanelProps {
   /** The current project's panel is closed. */
   collapsed: Accessor<boolean>;
   onCollapsedChange: (value: boolean) => void;
-  /** The current project's folder; null with none open. */
-  rootPath: Accessor<string | null>;
+  /**
+   * The window's session the panel belongs to (a folder, or a workspace by
+   * its ID): its terminals are the ones shown (C04).
+   */
+  session: Accessor<string | null>;
+  /** The window's folders, which a new terminal starts in one of. */
+  folders: Accessor<readonly OpenFolder[]>;
+  /** The folder the user is working in: a new terminal starts there (D15). */
+  activeFolder: Accessor<OpenFolder | null>;
 }
 
 /**
@@ -35,12 +44,16 @@ interface TerminalPanelProps {
 interface TerminalTab {
   readonly key: number;
   /**
-   * The project it was opened in, whose terminals it's among: shown while
-   * that project is, kept running while another is.
+   * The window's session it was opened in, whose terminals it's among: shown
+   * while that session is, kept running while another is. It changes only
+   * when that session goes on under another key (`carrySession`), on the same
+   * object, so its shell keeps running.
    */
-  readonly project: string | null;
-  /** Folder it was opened in: its project's, here; none on a host. */
+  session: string | null;
+  /** Folder it was opened in: that folder's, here; none on a host. */
   readonly cwd: string | null;
+  /** That folder's name, as the tab's tooltip says it (C04). */
+  readonly folderName: string | null;
   /**
    * The cloud host it runs on, named as it was when it opened; null on this
    * computer.
@@ -85,25 +98,39 @@ function panelAction(e: KeyboardEvent): PanelAction | null {
 export default function TerminalPanel(props: TerminalPanelProps) {
   const [height, setHeight] = createSignal(DEFAULT_HEIGHT);
   const [dragging, setDragging] = createSignal(false);
-  /** Every project's terminals, in the order they opened. */
+  /** Every session's terminals, in the order they opened. */
   const [tabs, setTabs] = createSignal<TerminalTab[]>([]);
-  /** Each project's terminal shown, by its folder ('' with none open). */
+  /** Each session's terminal shown, by its key ('' with none open). */
   const [activeKeys, setActiveKeys] = createSignal<Record<string, number>>({});
   const [details, setDetails] = createSignal<Record<number, TabDetails>>({});
-  /** The current project's terminals: the tabs shown. */
-  const shown = createMemo(() => tabs().filter((t) => t.project === props.rootPath()));
-  /** The terminal shown: the one last chosen in the project, else its last. */
+  /** The current session's terminals: the tabs shown. */
+  const shown = createMemo(() => tabs().filter((t) => t.session === props.session()));
+  /** The terminal shown: the one last chosen in the session, else its last. */
   const activeKey = () => {
     const list = shown();
-    const chosen = activeKeys()[props.rootPath() ?? ''];
+    const chosen = activeKeys()[props.session() ?? ''];
     return list.some((t) => t.key === chosen) ? chosen : (list[list.length - 1]?.key ?? null);
   };
-  /** `key` is the terminal shown in `project` (none: its last). */
-  function setActiveKey(key: number | null, project = props.rootPath()) {
-    setActiveKeys(({ [project ?? '']: _was, ...rest }) =>
-      key === null ? rest : { ...rest, [project ?? '']: key }
+  /** `key` is the terminal shown in `session` (none: its last). */
+  function setActiveKey(key: number | null, session = props.session()) {
+    setActiveKeys(({ [session ?? '']: _was, ...rest }) =>
+      key === null ? rest : { ...rest, [session ?? '']: key }
     );
   }
+  // A workspace made from the open folder takes the folder's terminals (D4):
+  // the same tabs, their shells running, the workspace's from now on.
+  onCleanup(
+    onSessionCarried((from, to) => {
+      if (!tabs().some((t) => t.session === from)) return;
+      batch(() => {
+        for (const tab of tabs()) if (tab.session === from) tab.session = to;
+        setTabs((all) => [...all]);
+        setActiveKeys(({ [from]: chosen, ...rest }) =>
+          chosen === undefined ? rest : { ...rest, [to]: chosen }
+        );
+      });
+    })
+  );
   /** Where "+"'s menu is open, if it is. */
   const [menu, setMenu] = createSignal<{ x: number; y: number } | null>(null);
   let nextKey = 1;
@@ -120,23 +147,47 @@ export default function TerminalPanel(props: TerminalPanelProps) {
   const nameOf = (host: TerminalHost) =>
     cloud.hosts.find((h) => h.id === host.id)?.name ?? host.name;
 
-  /** A new terminal of the current project's, on this computer or on `host`. */
-  function newTerminal(host: TerminalHost | null = null) {
+  /** A new terminal of the window's, on this computer or on `host`, in `folder`. */
+  function newTerminal(
+    host: TerminalHost | null = null,
+    folder: OpenFolder | null = props.activeFolder()
+  ) {
     const key = nextKey++;
-    const project = props.rootPath();
+    const session = props.session();
     batch(() => {
       setMenu(null);
-      setTabs((t) => [...t, { key, project, cwd: host ? null : project, host }]);
-      setActiveKey(key, project);
+      setTabs((t) => [
+        ...t,
+        {
+          key,
+          session,
+          cwd: host ? null : (folder?.path ?? null),
+          folderName: host ? null : (folder?.name ?? null),
+          host,
+        },
+      ]);
+      setActiveKey(key, session);
       if (props.collapsed()) props.onCollapsedChange(false);
     });
   }
 
-  /** "+": a terminal here, or once a host is connected, the menu of where. */
+  /** A workspace has several folders: "+" then asks which one starts the terminal (C04). */
+  const several = () => props.folders().length > 1;
+
+  /** "+" opens the menu of where when there's a choice: folders, or hosts. */
+  const asksWhere = () => several() || remoteHosts().length > 0;
+
+  /** The menu closes, and "+" has the focus again. */
+  function closeMenu() {
+    setMenu(null);
+    newButton?.focus();
+  }
+
+  /** "+": a terminal here, or the menu of where, once there's a choice. */
   function onNewClick() {
     if (menu()) {
       setMenu(null);
-    } else if (remoteHosts().length === 0) {
+    } else if (!asksWhere()) {
       newTerminal();
     } else {
       // Under "+", as wide as a menu is at least, until its size is known
@@ -187,18 +238,18 @@ export default function TerminalPanel(props: TerminalPanelProps) {
   function closeTerminal(key: number) {
     const tab = tabs().find((t) => t.key === key);
     if (!tab) return;
-    // Its project's, which may not be the one shown (its shell exited).
-    const list = tabs().filter((t) => t.project === tab.project);
+    // Its session's, which may not be the one shown (its shell exited).
+    const list = tabs().filter((t) => t.session === tab.session);
     const index = list.findIndex((t) => t.key === key);
     const remaining = list.filter((t) => t.key !== key);
     batch(() => {
       // Closing the last one shown hides the panel; opening it again starts
       // a fresh terminal (the effect below).
-      if (remaining.length === 0 && tab.project === props.rootPath()) {
+      if (remaining.length === 0 && tab.session === props.session()) {
         props.onCollapsedChange(true);
       }
-      if (activeKeys()[tab.project ?? ''] === key) {
-        setActiveKey(remaining[Math.min(index, remaining.length - 1)]?.key ?? null, tab.project);
+      if (activeKeys()[tab.session ?? ''] === key) {
+        setActiveKey(remaining[Math.min(index, remaining.length - 1)]?.key ?? null, tab.session);
       }
       setTabs((all) => all.filter((t) => t.key !== key));
       setDetails(({ [key]: _gone, ...rest }) => rest);
@@ -256,6 +307,19 @@ export default function TerminalPanel(props: TerminalPanelProps) {
 
   function toggle() {
     props.onCollapsedChange(!props.collapsed());
+  }
+
+  /**
+   * What a tab's tooltip says: the title the shell set, else where it runs;
+   * in a workspace, which folder it was opened in (C04).
+   */
+  function tabTitle(tab: TerminalTab): string | undefined {
+    const where =
+      details()[tab.key]?.title ??
+      (tab.host ? remoteLabel(nameOf(tab.host)) : tab.cwd) ??
+      undefined;
+    if (!where || !several() || !tab.folderName) return where;
+    return `${where} · ${tab.folderName}`;
   }
 
   function startResize(e: PointerEvent) {
@@ -330,11 +394,7 @@ export default function TerminalPanel(props: TerminalPanelProps) {
                   role="tab"
                   tabIndex={tab.key === activeKey() ? 0 : -1}
                   aria-selected={tab.key === activeKey()}
-                  title={
-                    details()[tab.key]?.title ??
-                    (tab.host ? remoteLabel(nameOf(tab.host)) : tab.cwd) ??
-                    undefined
-                  }
+                  title={tabTitle(tab)}
                   onClick={() => setActiveKey(tab.key)}
                   onAuxClick={(e) => {
                     // Middle click closes, like editor tabs in most apps.
@@ -393,10 +453,10 @@ export default function TerminalPanel(props: TerminalPanelProps) {
           type="button"
           class="terminal-new-button"
           onClick={onNewClick}
-          title={remoteHosts().length > 0 ? 'New terminal' : `New terminal (Ctrl+Shift+\`)`}
+          title={asksWhere() ? 'New terminal' : `New terminal (Ctrl+Shift+\`)`}
           aria-label="New terminal"
-          aria-haspopup={remoteHosts().length > 0 ? 'menu' : undefined}
-          aria-expanded={remoteHosts().length > 0 ? menu() !== null : undefined}
+          aria-haspopup={asksWhere() ? 'menu' : undefined}
+          aria-expanded={asksWhere() ? menu() !== null : undefined}
         >
           <svg
             width="14"
@@ -438,19 +498,32 @@ export default function TerminalPanel(props: TerminalPanelProps) {
       </div>
 
       <Show when={menu()}>
-        {(at) => (
-          <TerminalNewMenu
-            ref={placeMenu}
-            x={at().x}
-            y={at().y}
-            hosts={remoteHosts()}
-            onPick={newTerminal}
-            onClose={() => {
-              setMenu(null);
-              newButton?.focus();
-            }}
-          />
-        )}
+        {(at) =>
+          several() ? (
+            // A workspace: which folder, then the hosts a terminal can run on.
+            <FolderMenu
+              ref={placeMenu}
+              x={at().x}
+              y={at().y}
+              folders={props.folders()}
+              onPick={(folder) => newTerminal(null, folder)}
+              onClose={closeMenu}
+            >
+              {remoteHosts().length > 0 ? (
+                <TerminalHostItems hosts={remoteHosts()} onPick={newTerminal} />
+              ) : null}
+            </FolderMenu>
+          ) : (
+            <TerminalNewMenu
+              ref={placeMenu}
+              x={at().x}
+              y={at().y}
+              hosts={remoteHosts()}
+              onPick={newTerminal}
+              onClose={closeMenu}
+            />
+          )
+        }
       </Show>
     </div>
   );

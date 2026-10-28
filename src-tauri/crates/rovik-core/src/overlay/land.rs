@@ -16,8 +16,15 @@
 //! Only one landing per project at a time. A landing being written holds
 //! a lock in its folder (`APPLYING`), so another of Rovik's processes,
 //! starting meanwhile, doesn't take it for one a crash interrupted.
+//!
+//! A workspace chat's changes land in its folders all at once or not at all
+//! (workspaces-plan.md, 4.6, D24): its paths start with a folder's name
+//! (`api/src/x.ts`), one journal holds every folder's entries, and a
+//! conflict in any folder lands nothing. A folder chat's paths are its
+//! folder's own, as `Folders::one` has them.
 
 use super::fs::{DeletedBase, OverlayChange};
+use crate::folders::{Folder, Folders};
 use crate::vfs::store::{check_name, Kind};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -51,6 +58,10 @@ struct Journal {
     /// an undo.
     state: String,
     at: u64,
+    /// A workspace chat's landing: its folders' names, which its entries'
+    /// paths start with. Empty for a folder chat's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    folders: Vec<String>,
     entries: Vec<Entry>,
 }
 
@@ -74,7 +85,11 @@ pub struct Plan {
 
 #[derive(Clone, Debug)]
 struct Action {
+    /// The chat's path.
     path: String,
+    /// The folder it's in, and its path in that folder.
+    root: PathBuf,
+    rel: String,
     new: NewContent,
     /// The project's entry when planned, which must still be there when
     /// the landing writes.
@@ -139,6 +154,19 @@ fn abs(project: &Path, rel: &str) -> PathBuf {
 /// Plans landing `changes` (by-products already left out) in `project`.
 /// `keep_chat`: on a conflict, take the chat's version instead of stopping.
 pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan {
+    plan_in(&Folders::one(project.to_path_buf()), changes, keep_chat)
+}
+
+/// The real place of a chat path in `folders`: the folder it's in, and its
+/// path there.
+fn place(folders: &Folders, path: &str) -> Option<(PathBuf, String)> {
+    let (folder, rel) = folders.split(path)?;
+    Some((folder.path.clone(), rel.to_string()))
+}
+
+/// [`plan`] for a chat's folders: each change's path, and where a moved one
+/// came from, resolved by its first part, merged against that folder.
+pub fn plan_in(folders: &Folders, changes: &[OverlayChange], keep_chat: bool) -> Plan {
     let mut actions = Vec::new();
     let mut conflicts = Vec::new();
     let mut merged = false;
@@ -172,16 +200,28 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
             });
             continue;
         }
+        // In one of the chat's folders, not the view's top: nothing is made
+        // there.
+        let (root, rel) = match place(folders, &path) {
+            Some((root, rel)) if !rel.is_empty() => (root, rel),
+            _ => {
+                conflicts.push(Conflict {
+                    path,
+                    reason: "it isn't inside one of the chat's folders".into(),
+                });
+                continue;
+            }
+        };
         // A folder on its way that became a link in the project: what the
         // chat wrote there isn't where it would land.
-        if through_link(project, &path) {
+        if through_link(&root, &rel) {
             conflicts.push(Conflict {
                 path,
                 reason: "a folder on its way is a link in the project now".into(),
             });
             continue;
         }
-        let target = abs(project, &path);
+        let target = abs(&root, &rel);
         let now = snapshot(&target);
         match change {
             OverlayChange::Delete { base, .. } => {
@@ -211,6 +251,8 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                 deleting.insert(path.clone());
                 actions.push(Action {
                     path,
+                    root: root.clone(),
+                    rel: rel.clone(),
                     new: NewContent::Absent,
                     expected: now,
                     merged: false,
@@ -229,6 +271,8 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                 }
                 actions.push(Action {
                     path,
+                    root: root.clone(),
+                    rel: rel.clone(),
                     new: NewContent::Dir,
                     expected: now,
                     merged: false,
@@ -250,6 +294,8 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                 }
                 actions.push(Action {
                     path,
+                    root: root.clone(),
+                    rel: rel.clone(),
                     new: NewContent::Symlink(link),
                     expected: now,
                     merged: false,
@@ -265,9 +311,10 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                 perm_changed,
                 ..
             } => {
+                let from = |o: &str| place(folders, o).map(|(root, rel)| abs(&root, &rel));
                 let ours = match (upper, origin) {
                     (Some(file), _) => fs::read(file).ok(),
-                    (None, Some(o)) => fs::read(abs(project, o)).ok(),
+                    (None, Some(o)) => from(o).and_then(|o| fs::read(o).ok()),
                     (None, None) => Some(Vec::new()),
                 };
                 let Some(ours) = ours else {
@@ -298,7 +345,7 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                         });
                         continue;
                     }
-                    Some(o) => snapshot(&abs(project, o)),
+                    Some(o) => from(o).map_or(Snapshot::Absent, |o| snapshot(&o)),
                     None => now.clone(),
                 };
                 let theirs = match &source {
@@ -350,6 +397,8 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                 };
                 actions.push(Action {
                     path,
+                    root: root.clone(),
+                    rel: rel.clone(),
                     new: NewContent::File { bytes, perm },
                     expected: now,
                     merged: was_merged,
@@ -458,13 +507,48 @@ impl Plan {
 static PROJECT_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn project_lock(project: &Path) -> Arc<Mutex<()>> {
-    PROJECT_LOCKS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .entry(project.to_path_buf())
-        .or_default()
-        .clone()
+/// Each of the chat's folders' landing locks, by the folder's key
+/// (file_guard.rs: one per folder, whichever spelling of its path a chat
+/// has), in the keys' order: a folder chat and a workspace chat landing in
+/// one folder wait for each other, and two landings taking several always
+/// take them in the same order, so neither waits for the other forever.
+fn folder_locks(folders: &Folders) -> Vec<Arc<Mutex<()>>> {
+    let mut keys: Vec<PathBuf> = folders
+        .iter()
+        .map(|f| crate::file_guard::key(&f.path))
+        .collect();
+    keys.sort();
+    keys.dedup();
+    let mut all = PROJECT_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    keys.into_iter()
+        .map(|key| all.entry(key).or_default().clone())
+        .collect()
+}
+
+/// Why a chat's changes can't land or be undone now: one of its folders
+/// isn't there (D20), which landing would make anew with only the chat's
+/// files in it. None when each one is.
+fn missing(folders: &Folders) -> Option<String> {
+    let gone: Vec<&Folder> = folders.iter().filter(|f| !f.path.is_dir()).collect();
+    let (last, rest) = gone.split_last()?;
+    if folders.single().is_some() {
+        return Some(format!(
+            "The project's folder {} isn't there: bring it back to land or undo this chat's changes.",
+            last.path.display()
+        ));
+    }
+    let names: Vec<&str> = rest.iter().map(|f| f.name.as_str()).collect();
+    Some(match names.is_empty() {
+        true => format!(
+            "{} isn't there: locate it, or remove it from the workspace, to land or undo this chat's changes.",
+            last.name
+        ),
+        false => format!(
+            "{} and {} aren't there: locate them, or remove them from the workspace, to land or undo this chat's changes.",
+            names.join(", "),
+            last.name
+        ),
+    })
 }
 
 fn landings_dir(data_dir: &Path, dialog_id: &str) -> PathBuf {
@@ -548,6 +632,18 @@ pub fn land(
     land_checked(data_dir, dialog_id, project, changes, keep_chat, None, true)
 }
 
+/// [`land`] in a chat's folders, all or nothing.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn land_in(
+    data_dir: &Path,
+    dialog_id: &str,
+    folders: &Folders,
+    changes: &[OverlayChange],
+    keep_chat: bool,
+) -> Result<Option<Landed>, LandError> {
+    land_checked_in(data_dir, dialog_id, folders, changes, keep_chat, None, true)
+}
+
 /// Tests: landings into this folder find it changing under them this many
 /// more times (Busy); and how many were tried.
 #[cfg(test)]
@@ -571,21 +667,50 @@ pub fn land_checked(
     known: Option<&[String]>,
     allow_merge: bool,
 ) -> Result<Option<Landed>, LandError> {
+    let folders = Folders::one(project.to_path_buf());
+    land_checked_in(
+        data_dir,
+        dialog_id,
+        &folders,
+        changes,
+        keep_chat,
+        known,
+        allow_merge,
+    )
+}
+
+/// [`land_checked`] in a chat's folders: refused while one of them is
+/// missing, naming it, and written under each folder's lock.
+pub fn land_checked_in(
+    data_dir: &Path,
+    dialog_id: &str,
+    folders: &Folders,
+    changes: &[OverlayChange],
+    keep_chat: bool,
+    known: Option<&[String]>,
+    allow_merge: bool,
+) -> Result<Option<Landed>, LandError> {
     #[cfg(test)]
-    if let Some((left, calls)) = BUSY_TIMES.lock().unwrap().get_mut(project) {
+    if let Some((left, calls)) = BUSY_TIMES.lock().unwrap().get_mut(&folders.first().path) {
         *calls += 1;
         if *left > 0 {
             *left -= 1;
             return Err(LandError::Busy);
         }
     }
-    let lock = project_lock(project);
-    let _landing = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(why) = missing(folders) {
+        return Err(LandError::Failed(why));
+    }
+    let locks = folder_locks(folders);
+    let _landing: Vec<_> = locks
+        .iter()
+        .map(|lock| lock.lock().unwrap_or_else(|e| e.into_inner()))
+        .collect();
     for _ in 0..3 {
         if let (true, Some(known)) = (keep_chat, known) {
-            // Under the project's lock, so nothing lands in between: what
+            // Under the folders' locks, so nothing lands in between: what
             // conflicts now is what Land anyway would take over.
-            let unseen: Vec<Conflict> = plan(project, changes, false)
+            let unseen: Vec<Conflict> = plan_in(folders, changes, false)
                 .conflicts
                 .into_iter()
                 .filter(|c| !known.contains(&c.path))
@@ -594,7 +719,7 @@ pub fn land_checked(
                 return Err(LandError::Conflicts(unseen));
             }
         }
-        let plan = plan(project, changes, keep_chat);
+        let plan = plan_in(folders, changes, keep_chat);
         if !plan.conflicts.is_empty() {
             return Err(LandError::Conflicts(plan.conflicts));
         }
@@ -608,16 +733,16 @@ pub fn land_checked(
         }
         // Every touched file locked (each once, in order: no deadlock), then
         // checked.
-        let paths: Vec<PathBuf> = plan.actions.iter().map(|a| abs(project, &a.path)).collect();
+        let paths: Vec<PathBuf> = plan.actions.iter().map(|a| abs(&a.root, &a.rel)).collect();
         let _locks = crate::file_guard::lock_all(paths.iter().map(PathBuf::as_path));
         let unchanged = plan
             .actions
             .iter()
-            .all(|a| snapshot(&abs(project, &a.path)) == a.expected);
+            .all(|a| snapshot(&abs(&a.root, &a.rel)) == a.expected);
         if !unchanged {
             continue;
         }
-        return apply(data_dir, dialog_id, project, &plan)
+        return apply(data_dir, dialog_id, folders, &plan)
             .map(Some)
             .map_err(LandError::Failed);
     }
@@ -881,23 +1006,60 @@ fn same_tree(a: &Path, b: &Path) -> bool {
 /// The lock a landing holds while it's written (`apply`, `recover_where`).
 pub(super) const APPLYING: &str = "applying.lock";
 
-fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Result<Landed, String> {
+/// A workspace chat's folder as its landings keep it
+/// (`landings/<chat>/folders.json`), and its view's store: its name, and
+/// where it was.
+#[derive(Serialize, Deserialize)]
+pub(super) struct SavedFolder {
+    pub(super) name: String,
+    pub(super) path: PathBuf,
+}
+
+const FOLDERS_FILE: &str = "folders.json";
+
+/// Which folders, for recovery and undo after the overlay is gone: a folder
+/// chat's in `project.txt`, as always, a workspace chat's in `folders.json`,
+/// which an older Rovik's recovery doesn't read, so it leaves such a
+/// landing alone.
+fn keep_folders(data_dir: &Path, dialog_id: &str, folders: &Folders) -> Result<(), String> {
+    let dir = landings_dir(data_dir, dialog_id);
+    let (file, bytes) = match folders.single() {
+        Some(project) => (
+            "project.txt",
+            project.to_string_lossy().into_owned().into_bytes(),
+        ),
+        None => {
+            let saved: Vec<SavedFolder> = folders
+                .iter()
+                .map(|f| SavedFolder {
+                    name: f.name.clone(),
+                    path: f.path.clone(),
+                })
+                .collect();
+            let bytes = serde_json::to_vec_pretty(&saved).map_err(|e| e.to_string())?;
+            (FOLDERS_FILE, bytes)
+        }
+    };
+    crate::atomic_file::write_atomic(&dir.join(file), &bytes).map_err(|e| e.to_string())
+}
+
+fn apply(
+    data_dir: &Path,
+    dialog_id: &str,
+    folders: &Folders,
+    plan: &Plan,
+) -> Result<Landed, String> {
     let id = landing_id();
     let dir = landings_dir(data_dir, dialog_id).join(&id);
     fs::create_dir_all(dir.join("old")).map_err(|e| e.to_string())?;
     // A new folder: free. Without it (a lock that couldn't be made), the
     // landing goes on as before.
     let _applying = crate::os_lock::try_hold(&dir.join(APPLYING)).ok().flatten();
-    // Which project, for recovery and undo after the overlay is gone.
-    fs::write(
-        landings_dir(data_dir, dialog_id).join("project.txt"),
-        project.to_string_lossy().as_bytes(),
-    )
-    .map_err(|e| e.to_string())?;
+    keep_folders(data_dir, dialog_id, folders)?;
     fs::create_dir_all(dir.join("new")).map_err(|e| e.to_string())?;
     let mut entries = Vec::new();
     for (n, a) in plan.actions.iter().enumerate() {
-        let old = keep_old(&dir, n, &abs(project, &a.path))?;
+        let old = keep_old(&dir, n, &abs(&a.root, &a.rel))?;
         let new = match &a.new {
             NewContent::Absent => Content::Absent,
             NewContent::Dir => Content::Dir,
@@ -920,16 +1082,21 @@ fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Resul
         version: 1,
         state: "applying".into(),
         at: now_secs(),
+        folders: match folders.single() {
+            Some(_) => Vec::new(),
+            None => folders.iter().map(|f| f.name.clone()).collect(),
+        },
         entries,
     };
     save_journal(&dir, &journal)?;
-    for (i, e) in journal.entries.iter().enumerate() {
-        if let Err(err) = write_content(project, &e.path, &e.new, dialog_id) {
-            // Back to how the project was: what was written goes back, in
+    for (i, (e, a)) in journal.entries.iter().zip(&plan.actions).enumerate() {
+        if let Err(err) = write_content(&a.root, &a.rel, &e.new, dialog_id) {
+            // Back to how every folder was: what was written goes back, in
             // reverse, and the journal says the landing failed.
             let mut left = Vec::new();
-            for done in journal.entries[..=i].iter().rev() {
-                if write_content(project, &done.path, &done.old, dialog_id).is_err() {
+            let written = journal.entries[..=i].iter().zip(&plan.actions[..=i]);
+            for (done, a) in written.rev() {
+                if write_content(&a.root, &a.rel, &done.old, dialog_id).is_err() {
                     left.push(done.path.clone());
                 }
             }
@@ -957,11 +1124,43 @@ fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Resul
     })
 }
 
-/// The project a chat's landings went to.
-pub fn project_of(data_dir: &Path, dialog_id: &str) -> Option<PathBuf> {
-    fs::read_to_string(landings_dir(data_dir, dialog_id).join("project.txt"))
+/// The folders a chat's landings went to: a workspace chat's from
+/// `folders.json`, a folder chat's from `project.txt`.
+pub fn folders_of(data_dir: &Path, dialog_id: &str) -> Option<Folders> {
+    let dir = landings_dir(data_dir, dialog_id);
+    if let Ok(bytes) = fs::read(dir.join(FOLDERS_FILE)) {
+        let saved: Vec<SavedFolder> = serde_json::from_slice(&bytes).ok()?;
+        let named = saved
+            .into_iter()
+            .map(|f| Folder {
+                name: f.name,
+                path: f.path,
+            })
+            .collect();
+        return Folders::named(named).ok();
+    }
+    fs::read_to_string(dir.join("project.txt"))
         .ok()
-        .map(|p| PathBuf::from(p.trim()))
+        .map(|p| Folders::one(PathBuf::from(p.trim())))
+}
+
+/// A workspace's folder named `name` was located at `path`: its chats'
+/// landings are finished and undone there from now on.
+pub fn relocate(data_dir: &Path, dialog_id: &str, name: &str, path: &Path) -> Result<(), String> {
+    let Some(folders) = folders_of(data_dir, dialog_id).filter(|f| f.single().is_none()) else {
+        return Ok(());
+    };
+    let moved: Vec<Folder> = folders
+        .iter()
+        .map(|f| Folder {
+            name: f.name.clone(),
+            path: match f.name == name {
+                true => path.to_path_buf(),
+                false => f.path.clone(),
+            },
+        })
+        .collect();
+    keep_folders(data_dir, dialog_id, &Folders::named(moved)?)
 }
 
 /// P6.9: a child chat's landings go into its parent's view: the parent's
@@ -985,22 +1184,44 @@ fn into_chat(data_dir: &Path, dialog_id: &str) -> Option<String> {
 /// Finishes landings a crash interrupted: their journals say "applying".
 /// Returns the paths written.
 pub fn recover(data_dir: &Path) -> Vec<String> {
-    // A child chat's landing went into its parent's view, which isn't
-    // mounted yet: it's finished when the parent's view is (F01). Older
-    // records without the parent's id: by the path's look.
-    recover_where(data_dir, |id, project| {
-        (into_chat(data_dir, id).is_none() && !super::chats::is_chat_view(project))
-            .then(|| project.to_path_buf())
+    recover_where(data_dir, |id, folders| {
+        into_folders(data_dir, id, folders).then(|| folders.clone())
     })
+}
+
+/// Finishes the interrupted landings that wrote in `folder`, now that it's
+/// there again: found, or located (workspaces-plan.md, 4.6). Returns the
+/// paths written.
+pub fn recover_in(data_dir: &Path, folder: &Path) -> Vec<String> {
+    let found = folder.canonicalize().ok();
+    let is_it = |path: &Path| {
+        path == folder
+            || found
+                .as_deref()
+                .is_some_and(|found| path.canonicalize().is_ok_and(|p| p == found))
+    };
+    recover_where(data_dir, |id, folders| {
+        let wrote_there = folders.iter().any(|f| is_it(&f.path));
+        (wrote_there && into_folders(data_dir, id, folders)).then(|| folders.clone())
+    })
+}
+
+/// Whether a chat's landings went into project folders. A child chat's went
+/// into its parent's view, which isn't mounted yet at start: they're
+/// finished when the parent's view is (F01). Older records without the
+/// parent's id: by the path's look.
+fn into_folders(data_dir: &Path, dialog_id: &str, folders: &Folders) -> bool {
+    let into_view = folders.iter().any(|f| super::chats::is_chat_view(&f.path));
+    into_chat(data_dir, dialog_id).is_none() && !into_view
 }
 
 /// Finishes the interrupted landings into one chat's view (its children's),
 /// once that view (`view`) is mounted: into it, wherever it's mounted now.
 pub fn recover_into(data_dir: &Path, parent: &str, view: &Path) -> Vec<String> {
-    recover_where(data_dir, |id, project| {
+    recover_where(data_dir, |id, folders| {
         into_chat(data_dir, id)
-            .map_or(project == view, |p| p == parent)
-            .then(|| view.to_path_buf())
+            .map_or(folders.single() == Some(view), |p| p == parent)
+            .then(|| Folders::one(view.to_path_buf()))
     })
 }
 
@@ -1014,7 +1235,7 @@ pub fn interrupted_into(data_dir: &Path, parent: &str, view: &Path) -> bool {
         let id = chat.file_name().to_string_lossy().into_owned();
         let into = match into_chat(data_dir, &id) {
             Some(p) => p == parent,
-            None => project_of(data_dir, &id).is_some_and(|p| p == view),
+            None => folders_of(data_dir, &id).is_some_and(|f| f.single() == Some(view)),
         };
         into && fs::read_dir(chat.path()).is_ok_and(|landings| {
             landings.flatten().any(|l| {
@@ -1027,18 +1248,23 @@ pub fn interrupted_into(data_dir: &Path, parent: &str, view: &Path) -> bool {
     })
 }
 
-/// `wanted`: whether a chat's landings are finished here, and into where.
-fn recover_where(data_dir: &Path, wanted: impl Fn(&str, &Path) -> Option<PathBuf>) -> Vec<String> {
+/// `wanted`: whether a chat's landings are finished here, and into which
+/// folders. A folder that isn't there has nothing written in it, and isn't
+/// made anew: its entries wait, the landing still applying, until it's back.
+fn recover_where(
+    data_dir: &Path,
+    wanted: impl Fn(&str, &Folders) -> Option<Folders>,
+) -> Vec<String> {
     let mut done = Vec::new();
     let Ok(chats) = fs::read_dir(data_dir.join("landings")) else {
         return done;
     };
     for chat in chats.flatten() {
         let dialog_id = chat.file_name().to_string_lossy().into_owned();
-        let Some(recorded) = project_of(data_dir, &dialog_id) else {
+        let Some(recorded) = folders_of(data_dir, &dialog_id) else {
             continue;
         };
-        let Some(project) = wanted(&dialog_id, &recorded) else {
+        let Some(folders) = wanted(&dialog_id, &recorded) else {
             continue;
         };
         let Ok(landings) = fs::read_dir(chat.path()) else {
@@ -1079,25 +1305,32 @@ fn recover_where(data_dir: &Path, wanted: impl Fn(&str, &Path) -> Option<PathBuf
             // A write that failed (not a path changed since): the landing
             // stays to finish, tried again next time (P1.3).
             let mut unwritten = Vec::new();
+            // A path whose folder isn't there: likewise, until it's back.
+            let mut waiting = Vec::new();
             for path in order {
+                let Some((root, rel)) = place(&folders, path).filter(|(root, _)| root.is_dir())
+                else {
+                    waiting.push(path.to_string());
+                    continue;
+                };
                 let group = &by_path[path];
                 if group
                     .last()
-                    .is_some_and(|e| is_content(&project, path, &e.new))
+                    .is_some_and(|e| is_content(&root, &rel, &e.new))
                 {
                     continue;
                 }
                 let mut ok = true;
                 for (k, e) in group.iter().enumerate() {
-                    if is_content(&project, path, &e.new) {
+                    if is_content(&root, &rel, &e.new) {
                         continue;
                     }
                     let before = if k == 0 { &e.old } else { &group[k - 1].new };
-                    if !is_content(&project, path, before) {
+                    if !is_content(&root, &rel, before) {
                         ok = false;
                         break;
                     }
-                    if write_content(&project, path, &e.new, &dialog_id).is_err() {
+                    if write_content(&root, &rel, &e.new, &dialog_id).is_err() {
                         unwritten.push(path.to_string());
                         ok = false;
                         break;
@@ -1109,9 +1342,12 @@ fn recover_where(data_dir: &Path, wanted: impl Fn(&str, &Path) -> Option<PathBuf
                     skipped.push(path.to_string());
                 }
             }
-            if !unwritten.is_empty() {
+            if !unwritten.is_empty() || !waiting.is_empty() {
                 for p in unwritten {
                     done.push(format!("{p} (not finished: it couldn't be written)"));
+                }
+                for p in waiting {
+                    done.push(format!("{p} (not finished: its folder isn't there)"));
                 }
                 continue;
             }
@@ -1159,11 +1395,33 @@ pub fn undo(
     project: &Path,
     id: &str,
 ) -> Result<Vec<Conflict>, String> {
+    undo_in(
+        data_dir,
+        dialog_id,
+        &Folders::one(project.to_path_buf()),
+        id,
+    )
+}
+
+/// [`undo`] in a chat's folders: every one is put back, refused while one of
+/// them is missing, naming it.
+pub fn undo_in(
+    data_dir: &Path,
+    dialog_id: &str,
+    folders: &Folders,
+    id: &str,
+) -> Result<Vec<Conflict>, String> {
     if id.contains(['/', '\\']) || id.contains("..") {
         return Err("bad landing id".into());
     }
-    let lock = project_lock(project);
-    let _landing = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(why) = missing(folders) {
+        return Err(why);
+    }
+    let locks = folder_locks(folders);
+    let _landing: Vec<_> = locks
+        .iter()
+        .map(|lock| lock.lock().unwrap_or_else(|e| e.into_inner()))
+        .collect();
     let dir = landings_dir(data_dir, dialog_id).join(id);
     let mut journal: Journal =
         serde_json::from_slice(&fs::read(dir.join("journal.json")).map_err(|e| e.to_string())?)
@@ -1178,11 +1436,18 @@ pub fn undo(
         if !restored.insert(e.path.clone()) {
             continue;
         }
-        let path = abs(project, &e.path);
+        let Some((root, rel)) = place(folders, &e.path) else {
+            kept.push(Conflict {
+                path: e.path.clone(),
+                reason: "its folder isn't one of the chat's any more".into(),
+            });
+            continue;
+        };
+        let path = abs(&root, &rel);
         let _lock = crate::file_guard::lock(&path);
         // Already back (an earlier undo that stopped partway): done, so a
         // retry finishes the rest instead of calling these conflicts.
-        if is_content(project, &e.path, &e.old) {
+        if is_content(&root, &rel, &e.old) {
             continue;
         }
         let still = match (&e.new, snapshot(&path)) {
@@ -1215,7 +1480,7 @@ pub fn undo(
                 continue;
             }
         }
-        write_content(project, &e.path, &e.old, dialog_id)?;
+        write_content(&root, &rel, &e.old, dialog_id)?;
     }
     journal.state = "undone".into();
     save_journal(&dir, &journal)?;

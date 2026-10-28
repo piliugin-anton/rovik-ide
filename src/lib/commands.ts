@@ -21,9 +21,24 @@ export async function pickProjectFolder(): Promise<string | null> {
   return result ?? null;
 }
 
+/** Opens the native "select folders" dialog, several at once. Empty if the user cancels. */
+export async function pickFolders(title: string): Promise<string[]> {
+  const result = await open({ directory: true, multiple: true, title });
+  if (result === null) return [];
+  return Array.isArray(result) ? result : [result];
+}
+
 /** Lists the immediate children of a directory (non-recursive — call again per expand). */
 export async function readDirEntries(rootPath: string, path: string): Promise<DirEntryInfo[]> {
   return invoke<DirEntryInfo[]>('read_dir_entries', { rootPath, path });
+}
+
+/**
+ * Watches the window's folders, in place of those watched before: a project's
+ * one, or a workspace's (their changes come back as `fs-changes`).
+ */
+export async function startFileWatch(paths: string[]): Promise<void> {
+  return invoke<void>('start_file_watch', { paths });
 }
 
 export async function readFileContent(path: string): Promise<string> {
@@ -35,19 +50,22 @@ export async function readImageFile(path: string): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>('read_image_file', { path });
 }
 
-/** The project's JS/TS sources and the dependencies they reach, for IntelliSense. */
-export async function loadProjectDefinitions(root: string): Promise<ProjectDefinitions> {
-  return invoke<ProjectDefinitions>('load_project_definitions', { root });
+/** The project's JS/TS sources and the dependencies they reach, for IntelliSense.
+ *  `roots`: its folders — a workspace's several are read as one project (C06). */
+export async function loadProjectDefinitions(
+  roots: readonly string[]
+): Promise<ProjectDefinitions> {
+  return invoke<ProjectDefinitions>('load_project_definitions', { roots });
 }
 
 /** The project's JS/TS sources alone (within limits). */
-export async function loadProjectSources(root: string): Promise<LoadedFiles> {
-  return invoke<LoadedFiles>('load_project_sources', { root });
+export async function loadProjectSources(roots: readonly string[]): Promise<LoadedFiles> {
+  return invoke<LoadedFiles>('load_project_sources', { roots });
 }
 
 /** The dependencies the project's sources reach, read again (after an install). */
-export async function loadProjectTypings(root: string): Promise<LoadedTypings> {
-  return invoke<LoadedTypings>('load_project_typings', { root });
+export async function loadProjectTypings(roots: readonly string[]): Promise<LoadedTypings> {
+  return invoke<LoadedTypings>('load_project_typings', { roots });
 }
 
 /**

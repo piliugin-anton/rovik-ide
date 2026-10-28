@@ -1393,6 +1393,7 @@ fn no_mode_is_refused_on_a_connector_and_autopilot_is_on_a_model_without_tools()
         config: None,
         isolate: None,
         project_settings: None,
+        folders: Vec::new(),
     };
     let refusal = |r: StartRequest| super::super::mode_refusal(&r);
     for url in ["connector://claude-code", "connector://codex"] {

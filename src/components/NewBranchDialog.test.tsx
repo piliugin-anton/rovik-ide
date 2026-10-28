@@ -1,14 +1,20 @@
 // Component tests: the dialog that offers a new chat a branch of its own
 // (lib/chatBranch.ts): the name made up for it, Yes and No, a name git
-// can't take, a branch that can't be created, and "Don't ask again".
+// can't take, a branch that can't be created, and "Don't ask again"; for a
+// chat across folders, the repositories it's made in and those that stay.
 // Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import { askForChatBranch, NewBranchDialogHost } from './NewBranchDialog';
+import type { BranchOffer } from '../lib/chatBranch';
 
-const OFFER = { current: 'main', suggested: 'rovik-kind-torvalds-x7k2m9qa' };
+const OFFER: BranchOffer = {
+  repos: [{ name: 'p', branch: 'main' }],
+  staying: [],
+  suggested: 'rovik-kind-torvalds-x7k2m9qa',
+};
 
 const flush = async () => {
   for (let i = 0; i < 4; i++) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -59,6 +65,29 @@ test('the dialog names the main branch and offers the name made up for it', asyn
   assert.equal(await answer, true, 'asked again next time');
   assert.deepEqual(created, [OFFER.suggested]);
   assert.equal(dialog(), null, 'closed');
+  dispose();
+});
+
+test('across folders the dialog names each repository the branch is made in, and those that stay', async () => {
+  const { dispose, created, create } = mount();
+  const answer = askForChatBranch(
+    {
+      repos: [
+        { name: 'api', branch: 'main' },
+        { name: 'web', branch: 'master' },
+      ],
+      staying: [{ name: 'docs', branch: 'feature' }],
+      suggested: OFFER.suggested,
+    },
+    create
+  );
+  assert.equal(
+    dialog()!.querySelector('.confirm-dialog-message')!.textContent!.replace(/\s+/g, ' '),
+    'api (main) and web (master) are on their main branches: the new branch is made in each, and the chat’s changes stay off theirs until you merge them. docs stays on feature.'
+  );
+  button('No').click();
+  assert.equal(await answer, true);
+  assert.deepEqual(created, [], 'No makes none');
   dispose();
 });
 

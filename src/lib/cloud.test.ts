@@ -235,7 +235,7 @@ test('the store follows the hosts’ connections and a move’s steps, and the c
   emit({ type: 'host', host: 'h2', state: 'ready' });
   assert.equal(cloud.hosts[1].state, 'ready');
 
-  const chat = chatStore.createDialog('Moving chat');
+  const chat = chatStore.createDialog('Moving chat', null);
   emit({ type: 'moving', dialogId: chat.id, step: 'pausing' });
   await flush();
   assert.deepEqual(sent('chat_get_dialog'), [{ dialogId: chat.id }], 'where it is, as it starts');
@@ -265,7 +265,7 @@ test('starting a move: read-only at once, where it went once it ends, or why not
     },
   };
   await refreshHosts();
-  const chat = chatStore.createDialog('Chat to move');
+  const chat = chatStore.createDialog('Chat to move', null);
   await startMove(chat.id, 'there', 'h1', null);
   assert.deepEqual(sent('cloud_move_chat'), [{ dialogId: chat.id, host: 'h1', start: null }]);
   assert.deepEqual(chatStore.state.active?.place, { kind: 'host', host: 'h1' });
@@ -320,4 +320,21 @@ test('a host has caught up once it says so, and has to again after it was away (
   emit({ type: 'host', host: 'h1', state: 'ready' });
   emit({ type: 'caughtUp', host: 'h1' });
   assert.equal(cloud.caughtUp.h1, true);
+});
+
+test('a host ready again is read again, with what its daemon serves now', async () => {
+  await initCloud();
+  const updated = HOSTS.map((h) => (h.id === 'h1' ? { ...h, features: ['folders'] } : h));
+  backend = { hosts_summaries: () => updated };
+  calls = [];
+  emit({ type: 'host', host: 'h1', state: 'ready' });
+  await flush();
+  assert.equal(sent('hosts_summaries').length, 1, 'it may be another daemon: an update');
+  assert.deepEqual(cloud.hosts[0].features, ['folders']);
+  // Away, its state alone changes.
+  calls = [];
+  emit({ type: 'host', host: 'h1', state: 'offline' });
+  await flush();
+  assert.deepEqual(sent('hosts_summaries'), []);
+  assert.equal(cloud.hosts[0].state, 'offline');
 });

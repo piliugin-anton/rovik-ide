@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import { GitPanel } from './GitPanel';
 import type { GitStatus } from '../types';
+import { oneRepository } from '../test/gitRepos';
 
 /** How the app answers each command in the test running now. */
 let backend: Record<string, (args: any) => unknown> = {};
@@ -48,6 +49,7 @@ const BRANCHES = [
 function app() {
   calls = [];
   backend = {
+    git_repos: () => oneRepository('/work/app'),
     git_status: () => ON_FEATURE,
     git_branches: () => BRANCHES,
     git_stash_list: () => [],
@@ -64,7 +66,10 @@ after(() => dispose());
 
 async function panel() {
   dispose();
-  dispose = render(() => <GitPanel projectPath="/work/app" />, container());
+  dispose = render(
+    () => <GitPanel folders={[{ path: '/work/app', name: 'app' }]} session="/work/app" />,
+    container()
+  );
   await flush();
 }
 

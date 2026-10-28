@@ -351,8 +351,9 @@ const WINDOWS_DRIVE = /^[a-z]:[\\/]/i;
 
 /**
  * Where a path in a document points, as on GitHub: relative to the
- * document's folder, or with a leading `/` to the project's root. A full
- * path into the project works too.
+ * document's folder, or with a leading `/` to the folder the document is in
+ * (a project's root, or the workspace folder it's in: D14). A full path into
+ * the folder works too.
  */
 export function resolveDocumentPath(target: string, documentPath: string, root: string | null) {
   const sep = documentPath.includes('\\') && !documentPath.includes('/') ? '\\' : '/';

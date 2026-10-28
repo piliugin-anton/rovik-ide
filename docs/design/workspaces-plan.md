@@ -381,7 +381,7 @@ to)` (Locate…), `opened(id)`, `list()` (most recently opened first, each
 **Folder names** (D8): `folder_name(folder, taken)`, a pure function:
 
 1. The folder's last part as opened (`D:\` gives `D`).
-2. Made plain: separators, `:`, `$`, `~`, backticks, `*`, `?`, `[`, `]` and
+2. Made plain: separators, `:`, `$`, `%`, `~`, backticks, `*`, `?`, `[`, `]` and
    control characters become `-`; leading `.`, `@` and `-` are dropped (the
    view's top keeps `@context` for the agent-managed context); at most 64
    characters; empty becomes `folder`. So every name passes the `cd` rule
@@ -706,6 +706,14 @@ pub struct Repo {
   on a folder above it, or on one below it (today only on the same folder,
   `overlay/chats.rs:1294-1340`). So a checkout holds the isolated chats of
   every folder in the repository, those left at work included, with no list.
+  The hold is deliberately the working folder and not the folder a command
+  was asked from: a checkout rewrites every tracked file in the repository,
+  so the folders beside it in it must wait too. The price is that in a home
+  folder kept in git (`~/.git`), an operation in a project under `~` that
+  isn't a repository of its own holds `~`, and so makes the isolated chats of
+  the other projects under it wait for the operation and 2 s (`QUIET`) after
+  it; holding the folder alone would leave their files unwatched while a
+  checkout rewrites them, which is the failure this rule prevents.
 
 **What a commit takes (D12).**
 
@@ -1943,3 +1951,1430 @@ Left as they are, for issues of their own:
 ---
 
 ## Notes from implementation
+
+A project (one folder) behaves after every task as it did before. What reaches a
+user before H is the fixed bugs of section 12 and the README's Git panel
+section (A06). Each note says what the task changed, the tests that prove it,
+and where the code departs from its row.
+
+**A01 — one set of path helpers.** `src/lib/fileTools.ts` holds `isAtOrUnder`,
+`parentOf`, `normalizePath` and `samePath`, with one case rule (ignored on
+Windows and macOS, exact on Linux), drive roots (`D:\x`'s parent is `D:\`) and
+UNC roots (`\\server\share` is a root, `\\server` isn't). `tsconfig.ts`'s
+`samePath` and `startsWithPath`, and the private copies of `isAtOrUnder` and of
+"a path's parent" in `fileTree.ts` and `App.tsx`, are gone. `fileTools.test.ts`
+covers POSIX, Windows and UNC paths and the case rule; `fileTree.test.ts` has "a
+change at the top of a drive refreshes the drive root"; `tsconfig.test.ts`
+passes unchanged.
+
+**A02 — `openFolders.ts`.** `WindowTarget` (a folder, or a workspace's named
+folders), `target()`, `openFolders(target)`, `folderOf`, `activeFolder`,
+`innermostFolder` and `sessionKey`. App's `rootPath()` is a shim
+derived from `folders()` — a project is a list of one — and its callers stayed
+as they were: each has to name a folder of its own, which is milestone C's work
+(C01–C07). `openFolders.test.ts` covers a project as one folder, a workspace's
+folders under its stored names, and the session key.
+
+**A03 — the watcher.** `start_file_watch` takes `StartedFolder`s: a watch and
+its own `.gitignore` files per folder, one folder's error leaving the others
+watched, `fs-changes` naming the folder the change is in and spelling the path
+as that folder is spelled (a folder opened through a link reports under the
+link), `unknown` naming its folder for a flood, and `git-changed { folder,
+repositories }` — `repositories` true when a change makes or removes a
+boundary of the folder's repository (its own `.git`, the `HEAD` that comes or
+goes with it, or the git folder watched for it above), so the window reads
+which repositories its folders are in again; a commit, a checkout or a save is
+false.
+`folder_of` answers the innermost folder, and a folder's own path with no
+separator joined onto nothing — the event a folder's removal sends. A repository
+above a folder is watched at its git folder, at the `refs/` it shares
+(`common_dir/refs`: a linked worktree's branches live there) and at its own
+`refs/`, each of them credited to the folder it serves (a worktree's push is
+seen); a moved `HEAD` or `ORIG_HEAD` calls `project_busy` on that repository's
+working folder, so a checkout from a terminal in `repo/` holds the chats of
+`repo/app`. Switching folders empties the ignore cache. `watch.rs` covers two
+folders at once, an unwatchable folder, a watched folder that went, a flood
+naming each folder, a change under the innermost folder, a link's own spelling,
+a commit or a push from a terminal in a repository above a folder, a worktree's
+push in the shared refs, and which paths may change a folder's repository.
+
+**A04 — the tree's controller.** `createFileTreeController(roots)` takes
+`TreeRoot { path, name, row, id }`: a folder with `row` is a row of its own (a
+project's one root isn't), each listing is read through its own folder, and
+`refresh(path)` walks up to that folder's root only. With one root and no row
+the rows are what they were. `fileTree.test.ts` has "a workspace lists each
+folder as a row, each read from its own folder" and "a link in one folder to
+another lists rows of its own", beside the one-root tests.
+Departure from the row: a row's id is the backend's file id, and a folder row's
+is its `root.id` (else its path), not a folder-and-id pair. Two rows showing one
+file (a link to a file in another folder) are the same file on disk and share
+an id, which is what the editor wants; the visible quirk is that selecting one
+highlights both. Keying by folder would rename the identity the tabs, the
+selection and drag-and-drop share, so it stays as it is until something needs
+it.
+
+**A05 — the repositories.** `git/repos.rs`: `repos_of(folders)` → `Repos
+{ repos, without }`, with `Repo { key, workdir, name, scopes }` — one entry per
+repository, whose `scopes` are the window's folders in it relative to its
+working folder ("" for the working folder itself), a folder in no repository in
+`without`, and its stored name for a repository that is exactly one folder (else
+the working folder's name, with the parent's when two clash). `git_repos`
+exposes it. `git_status`, `git_commit` and `git_discard_all` take the scopes as
+pathspecs (today's one folder when none is given), so `app2` isn't taken with
+`app`; line counts are read per scope and count that scope only. A repository's
+rewrite holds its working folder, and `is_busy` counts holds above and below
+it: a folder inside a held repository is busy, one beside it isn't. `workdir`
+is spelled as the window spells the folder (its path with the scope's parts
+taken off, when that leads to the same folder): git resolves links (macOS's temp
+folders are under `/private`, Windows expands short names like `RUNNER~1`), and
+`repoFileOf` (A07) finds a tab's file in it by the window's path. A folder opened
+through a link inside the repository keeps git's spelling.
+
+**A06 — commits that keep outsiders out.** Before anything is staged, the index
+is compared with HEAD: an entry outside the scopes refuses the commit, naming
+it, and what's staged stays staged. Status leaves out an untracked folder that
+is a repository of its own, and a submodule whose only change is inside its own
+working tree (`other_repository`); revert refuses both (D12). A submodule moved
+to another commit is listed and committed here, as git records it (the gitlink);
+the status can't tell the two apart, so `workdir_id` against `index_id` decides.
+An empty commit isn't made. The README's Git panel section says all of this.
+
+**A07 — the editor's marks.** `repoFileOf(absPath, workdirs)` asks a file of
+`repo/app` as `app/package.json` in `repo`, the deepest of the window's working
+folders, and a tab holding a version of a file (`disk:`, `chat:`) keeps its base
+across a refresh. GitPanel's `onOpenFile` hands on the absolute path and the file
+it was given rather than a path re-made from one project. `gitMarks.test.ts`: a
+file of a project inside a repository is asked as its path in the repository, a
+file in no repository has no base, a tab holding a version is never refreshed, a
+base with no repository is never asked for, a tab opened before the read gets
+its marks, and the repositories are read once per set of folders.
+
+**A08 — the editor's services.** `formatterRoot(folders, path)` is the file's
+own folder, so a file of the second folder is formatted with the second's
+config; the Markdown preview's `/` links resolve in the file's folder; and the
+diagnostics' `rootOf` is `innermostFolder` over the window's folders, so a
+file's markers are reported for the folder that holds them.
+No `diagnostics.test.ts`: the node harness stubs `monaco-editor` as a namespace
+with a default export only, so `monaco.editor.getModelMarkers` and the editor's
+events aren't there to call. The choice it makes is `innermostFolder`'s, which
+`openFolders.test.ts` covers; `fileFormatters.test.ts` and
+`markdownPreview.test.ts` cover theirs.
+
+**B01 — schema 11, `workspaces.rs`.** The schema is 3.1's, to the letter:
+`projects.kind` (`folder`/`workspace`, rows from before a folder's),
+`workspace_folders` (key, name, path, position, `removed_at`, the unique
+per-workspace name index), and `dialogs.folders`. `upgrades_a_version_10_database`
+covers it: a project stays a folder, a chat has no folders of its own, a
+workspace's rows and its chat's folders read back, the name index folds ASCII
+case, and deleting the workspace takes its folder rows while its projects stay.
+`chat_db/workspaces.rs` has `prepare` (canonical path, whether it's a folder,
+its ID file: the file system read before a write transaction), `check_folder`
+(pure over prepared folders: Duplicate, Inside, Contains, SameProject,
+NotAFolder), `folder_name` (pure over the names given), `create`,
+`add_folders`, `remove_folder`, `relocate_folder`, `opened`, `list`, `members`
+and `get`. `add_folders` and `relocate_folder` take the workspace's folders as
+`api.rs` prepared them (`prepared_members`, on the blocking pool), so D5's check
+against them holds inside the write transaction without the database thread
+waiting on a slow share; Locate… checks the new place the same way (a place
+that isn't a folder, inside another member, holding one, or another member's
+project is refused). Names: a drive root is its drive (`D:\` gives `D`), a name the agent's
+walkers skip takes its parent's (`app-build`), another member's takes the
+parent's name then a number, and uniqueness folds case in Rust (`Ä` against
+`ä`), the index's `NOCASE` being ASCII only. A removed folder's row stays (its
+name is taken, D8), so a folder re-added comes back by its name, at the end of
+the order. `remove_folder` takes the folder out of the `folders` of the
+workspace's chats that had it (`[]` when it was the only one) and leaves
+`"all"` as it is. The list is by `last_opened_at` and then `rowid`, so two made
+in one millisecond still come in the order they were made.
+`store.rs`'s `DialogSummary` gains `projectId` and `folders` (each left out
+when absent), `NewDialog` gains `folders` (serde default) written by
+`create_dialog`, and `set_dialog_folders` changes them (the rev trigger bumps
+the chat's revision, which `rev_tests.rs` covers). `projects::list` and
+`summary` take `kind = 'folder'` only, so a workspace is never a missing project
+with **Relink**. `workspaces_tests.rs` covers D5's rules (a trailing separator,
+a link, a copy's ID, nested folders, what isn't a folder), D8's names, the last
+folder staying, a folder leaving the chats that had it, a removed name, a
+re-added folder's name, locating, and the list's order and missing folders;
+`projects_tests.rs` adds the workspace that isn't listed or summarised and the
+deleted workspace that leaves its folders' projects; `chat_db/tests.rs` reads a
+chat's project and folders back, `"all"` and names alike. A chat's folders are
+the chat's across a mirror too: `sync.rs`'s dialog columns, row and apply carry
+`folders` (`StoredDialog.folders`, with a serde default, so an older peer's row
+still parses and reads as no folders), and `sync_tests.rs` has "a workspace
+chat's folders reach the mirror".
+Departure: `NewDialog`'s new field needed `folders: None` at every construction
+in the other crates (agentd, client, headless, core's tests); a stored field
+still has a serde default, which is what an older peer's message needs (G).
+
+**B02 — the commands.** `chat_db/api.rs` adds `workspace_list`, `_create`,
+`_add_folders`, `_remove_folder`, `_relocate_folder`, `_check_folder`, each
+reading folders off the database thread (`rt::spawn_blocking`) before the write.
+`commands/workspace.rs` wraps them; `lib.rs` registers them; `chatApi.ts` wraps
+them with `Workspace`, `WorkspaceFolder`, `WorkspaceSummary`, `FolderProblem`
+and `folderProblemMessage` (the core's `FolderProblem::message` in the UI's
+words, one copy each side, as the protocol has no such type). The api tests use
+a `DbState` of their own: the calls reach `workspaces.rs`, and removing a
+workspace's last folder is refused.
+
+**B03 — the claims.** `instances.rs` keeps a target (`Target::Folder`,
+`Target::Workspace { id, name, folders }`) and a record per owner
+(`Owner { project, folder, workspace }`), not one folder and one project:
+`claim(target, focus_other, at_work)` takes the project IDs at work here (the
+window's owners whose chats are, asked of the database by `project_claim`),
+locks the target's keys under the claims' lock without duplicates, keeps the
+owners at work with their keys and lets the rest go. A workspace whose own
+chats are at work keeps every folder of it (D19). `reclaim(root, project)` is
+what `chat_open_project` and a copy or a move answer call: it records that
+folder's project and claims its key, and a folder the window has left takes
+nothing back; it replaces `claim` + `opened`, and `owners()` replaces
+`open_project()`. Holders name their own folder and their workspace, so a
+notice reads "api is open in another window, in Shop" or "Shop is open in
+another window", and `elsewhere()` reports a copy only for a key with a folder:
+another window's workspace isn't a copy. An `Owner` keeps the workspace as
+`WorkspaceRef { id, name }`: a folder is kept at work for its own workspace by
+that ID (two workspaces may be named alike; `instances.rs` tests one of each
+name), and the name is only what a holder's file says for a notice. `lib.rs`'s
+`project_claim` and
+`project_check` take a `ClaimTarget` (`{ kind: "folder", path }` or
+`{ kind: "workspace", id }`, null for no project), whose workspace's folders
+`claim_target` reads from the database; `commands/chat.rs`'s `reclaim` is the
+new call. `src/lib/instances.ts` wraps the target and words a workspace's
+notice. Claiming a workspace also records `workspaces.opened(id)`: the plan's
+step 6 of 3.3 has no command of its own, and claiming it is the moment the
+window opens it. `instances.rs`'s tests cover a workspace's key and its
+folders' or none, a target's keys without duplicates, a folder another process
+has stopping all of it, adding and removing folders, two folders resolved at
+once, a late answer, a workspace at work keeping its folders, two folders' chats
+at work, a folder opened alone kept for a workspace chat, and a workspace that
+isn't a copy; `instances.test.ts` covers the notices.
+
+**B04 — switching.** `src/lib/switchTarget.ts` has the steps of 3.3 in order —
+check, settle unsaved tabs, keep the tabs left, claim, show, resolve each folder
+that's there — as calls the window gives it, so a switch that doesn't happen
+changes nothing and the order is tested on its own (`switchTarget.test.ts`:
+the order, a refused check, a claim taken meanwhile, a cancelled tab, the tabs
+kept before the claim, a missing folder left out and resolved once it's back,
+no folder open, `presentFolders`'s marks, `claimTargetOf`). App.tsx's
+`openProjectAt` becomes `switchTo`, `showWithTabs` becomes `showTarget`, keyed
+by `sessionKey` for the target's tabs and tree. The tree's saved open folders
+are registered on the folder each is in (`openFolders.ts`'s `pathsByFolder`,
+App's `presetTreeExpansion`): the tree applies expansion per root, and its
+roots are the window's folders, never `workspace:<id>`, which would have
+dropped a workspace's expansion. The start is `openAtStart`
+(shown, then resolved), which resolves in every case, including a window that
+opens with nothing — a first start, a fresh **New window**, or a last project
+another window has: resolving no folders is what claims the chats without a
+project for it (D6), and `switchTarget.test.ts`'s "a window that opens with
+nothing resolves" says so. Folders are resolved in one
+place, `resolveFolders` (the switch's `resolve` step, and the start), which
+marks the folders that aren't there and resolves those that are
+(`switchTarget.ts`'s `resolvable`, D20): the effect that resolved on every
+change of folders is gone, so nothing resolves a folder that isn't there, and
+nothing resolves a folder twice on a switch. Each call makes a new generation
+(`newFoldersGeneration`), and `resolveProject` drops an answer asked in an
+earlier one: a folder the window has left since can't take the window's chats
+back, even though that folder itself asked only once. A missing folder is
+retried as the window comes
+to the front (`tryFolderAgain`, which checks it with `path_exists` first); its
+row's **Try again** is C01's. `projects.ts` counts runs per folder and ids its
+notifications `project-copy:<root>` and `project-moved:<root>`, naming the
+folder in the message, so two folders' copy questions are both asked; when the
+original is another folder of the window the question offers **Separate
+history** only (D5). `projects.test.ts` covers both.
+
+**B05 — what's saved.** `last-project.json` gains `workspace` (serde default;
+a file without it reads as before), `save_last_project` writes it, and
+`startup_workspace()` reads `--workspace <id>`; the backend claims the
+workspace's own key before the window exists, as it claims a command line's
+folder, and its folders are claimed when the window opens it (3.3).
+`restart_args(current, folder, workspace)` passes `--workspace <id>`, a
+workspace being the target even when a folder is open (a folder of it), and
+`update_restart` takes the workspace; `lib/updates.ts`'s hook is optional, so a
+window without one (the tests, another host) is as it was. App.tsx starts from
+`startup_info`'s workspace or folder, else the last project: its tabs from
+`last-project.json` when it's the one last left, else from `project-sessions`
+under `sessionKey`. `projectSessions.ts`'s `sessionInFolders` leaves out a tab
+(and a tree folder) of a folder that has left the workspace, as a file that's
+gone is left out (`projectSessions.test.ts`: a workspace's entry under its own
+key, and the tabs of a folder that left).
+Departure: the claim made before the window's database is open has no name for
+its holder file, so a notice for that first moment reads "api is open in
+another window" without "in Shop"; the claim the window makes as it opens the
+workspace writes the name.
+
+**B06 — Delete and open projects.** `ProjectList` takes `openIds` and hides
+**Delete** for every project the window has open, not only the one shown; App
+passes the workspace's ID and the resolved folder's project
+(`openProjectIds`). `chat_db`'s `chat_delete_project(core, id, open)` refuses a
+project among `open` (the window's own), with a message saying to open another
+first; `commands/chat.rs` passes `Instances::owners()`. `ProjectList.test.tsx`
+(new) has no Delete on any open project; the api test
+`a_project_the_window_has_open_isnt_deleted` sees the refusal and its chats
+kept, then the delete once another project is the open one.
+Departure: the guard is in the core's api, not the command, so it can be tested
+with a `TestCore`; the command only tells it which projects are the window's.
+
+**C01 — a window's folders in the tree and in App.** The backend refuses to
+delete, rename or move one of the window's folders: `WatcherState.folders` is
+what `start_file_watch` was given (stored before the watch starts, so a folder
+that can't be watched is guarded too), and `entries.rs`'s
+`refuse_window_folder` refuses `delete_path`, `rename_path` and `move_path`
+with "…: a folder of this window: remove it from the workspace instead". It
+compares paths under the platform's case rule, sharing the equality half of
+`is_at_or_under` (`same_path`), so a link to a folder is still the tree's to
+delete. `TreeRow` gains `folderRow` and `missing`, `TreeRoot` a `missing`;
+`createFileTreeController` gives a folder its row, reads nothing of a missing
+one (before, a root that failed was retried forever: `forget` never drops a
+root), and exports `withoutFolderRows` for the ids copy, cut and delete act on.
+`FileTree` takes `rootDrop` (a project has a project-root drop target, a
+workspace none), leaves folder rows out of a drag, won't toggle a missing row,
+refuses a drop on one, and draws a folder row with its path as its title
+(`tree-root-row`) and "Folder not found" when it's missing. The menu gets
+`folder`, `onRemoveFolder`, `onLocateFolder` and `onTryFolderAgain`:
+New file, New folder, Paste, Remove from workspace, and for a missing folder
+Locate…, Try again, Remove from workspace — never Rename, Copy, Cut or Delete.
+App has `activeFolderNow` (the `rootId` now uses it), sends a new entry into
+the active folder's row, pastes into a selected file's own folder, and its
+handlers, the clipboard keys and the menu's `hasSelection` go through
+`withoutFolderRows`. `removeFolder` and `locateFolder` live in
+`switchTarget.ts` as ordered calls (`FolderChangeCalls`), so their order is
+tested without App; `showFolderChange` changes the target in place, registering
+each remaining folder's expansion with `tree.presetExpanded` (else the tree's
+reset effect closes every folder), closes what left, and drops it from
+`missingFolders`. Both change the backend first and claim after it — the
+backend claims a workspace's folders as the database has them, so claiming
+first would claim the folder that's leaving or its old place — and a claim
+another window refuses doesn't stop the window from showing what the database
+keeps (the folder is gone, or at its new place; a row or a target for the old
+one would be a lie), with the claim's own "open elsewhere" notice and a later
+switch claiming or refusing as usual. So `true` means the workspace changed,
+whether or not this window could claim it again. `settleUnsavedTabs` takes
+`{ folder }`, settling only that folder's tabs, with a message saying they
+close as the folder leaves.
+Tests: `entries.rs` "a window's folder isn't deleted, renamed or moved" and "a
+folder inside a window's folder, or a link to one, is acted on"; `fileTree
+.test.ts` "a missing folder's row lists nothing and isn't read again until
+it's back", "a folder's row is never among the rows copied, cut or deleted",
+"removing one folder keeps the others' open folders open"; `FileTree.test.tsx`
+the five drag/drop and missing-row tests; `FileContextMenu.test.tsx` (new) two;
+`openFolders.test.ts` and `switchTarget.test.ts` five more.
+Departures: the folder menu's tests have their own file, as the menu is its own
+component; Remove asks for no confirmation (it touches nothing on disk) but
+settles the folder's tabs first; Locate… checks the new place with
+`project_check` before the backend relocates, so the database never points at
+a folder another window holds; the guard compares paths, not file identities.
+
+**C02 — search in every folder.** `SearchPanel` takes `folders` instead of
+`rootPath` and searches every folder at once; `mergeResults` keeps the matches
+in folder order under one limit for the whole search, adds the folders' totals
+and says more exist when any folder was truncated or the merge cut lines. The
+groups carry their folder (their collapsed state is keyed by folder and path),
+a workspace's results come under a header per folder, and a result opens
+`toAbsolutePath(path, folder.path)`. The folders are searched with
+`Promise.allSettled`: one that fails (its drive went between the window's check
+and the search, the backend refused) keeps its header with the reason under it
+(`search-folder-error`) while the others' results show; only when no folder
+answered at all does the panel show the error itself, as it did with one
+folder. `searchPanel.test.tsx` (new): two folders' results under their headers,
+the same relative path opening each folder's own file, one folder as it looks
+today, one folder's failure leaving the others' results, no folder answering,
+the limit for the whole search.
+Departure: `.search-folder-header` and `.search-folder-error` rules in
+`styles.css`, off the row's files.
+
+**C03 — tabs of one name told apart.** `tabHints` (editorTabs.ts) gives each
+tab a name another tab shares the shortest end of its parent path's segments
+that no other shares — "api" and "web" with several folders, "a/src" and
+"b/src" in one project — over the files of the window's folders alone. `Tabs`
+takes `folders` and shows the hint in a `tab-hint` span after the name; App
+passes the window's folders. Tests: `editorTabs.test.ts` three,
+`Tabs.test.tsx` one. Departure: a `.tab-hint` rule in `styles.css`.
+
+**C04 — terminals by session.** `FolderMenu` (new) is the pick-one menu of a
+workspace's folders, with the look and keys of `TerminalNewMenu` and a
+`children` slot; `TerminalNewMenu`'s hosts are `TerminalHostItems`, used by its
+own menu and by that slot. `TerminalPanel` takes `session`, `folders` and
+`activeFolder` in place of `rootPath`: its tabs belong to a `session` and carry
+the `folderName` they opened in, `newTerminal` starts in the active folder (or
+the one picked), and a workspace's "+" always opens `FolderMenu`, with the
+hosts after a separator. A tab's tooltip adds "· <folder>" in a workspace.
+Tests: "in a workspace, '+' lists the folders and the terminal starts in the
+one picked" and "a removed folder's terminal keeps running"; the existing tests
+pass a session and one folder.
+
+**C05 — settings pages with a folder select.** `SettingsDialog` takes `folders`
+and keeps a `selected` folder (the active one first); on the project and files
+pages with more than one folder it shows a `settings-folder-select`, and each
+page is rendered in a `<Show when={selected()} keyed>` so another folder reads
+it again. `ProjectChecksSettings`'s members' heading is "Packages (N)". Tests:
+`SettingsDialog.test.tsx` "with several folders the project pages show a
+folder select, the active one first", "one folder: the project pages ask
+nothing", "choosing another folder shows its restricted files";
+`ProjectChecksSettings.test.tsx` "the members' heading reads Packages (N)".
+`SettingsMenu` and `RestrictedFilesSettings` are unchanged; the menu's "This
+project · <name>" names the active folder. Departure: a
+`.settings-folder-row` rule in `styles.css`.
+
+**C06 — IntelliSense over the folders.** `sources::scan` takes `roots` and
+walks them into one `Collector`, so the 5,000-file / 40 MB limit is the
+project's, its folders' together, and `load_definitions`, `load_typings` and
+`load_sources` take `&[PathBuf]`; `util::blocking_in_folders` keeps the roots
+that are folders and errors only when none is, and the three typings commands
+take `roots`. `ActiveConfig` takes the folders, configures each one and gives a
+file its own folder's options (`innermostFolder`), its `covers` comparing the
+folder as well as the config; `IntelliSenseProject` takes `roots` and reads each
+folder's configs (`configPathsUnder`), warning by the folders' names.
+`ensureProjectIntelliSense` and `isIntelliSenseReady` compare by the folders'
+list, the definition opener only asks whether a project is loaded, and
+`Editor` takes `loadable` (the folders that are there) for the two. Tests:
+`sources.rs` "two roots' sources are both loaded" and "two roots share one
+limit", `util.rs` "a root that isn't a folder is left out, and none is an
+error", `activeConfig.test.ts` (new) two, `projectWorker.test.ts` "a second
+folder's sources are files of the program". Departure, and a big one: the
+Monaco stub in `scripts/test.mjs` now has its namespaces when a module is
+loaded (Node's ESM interop copies a CommonJS module's own keys, so the stub
+lists them), a `Uri` whose text is the key uris.ts builds, and an empty model
+list — without them no test could load the modules IntelliSense is built on.
+
+**C07 — rust-analyzer over the folders.** `LspClientOptions.root` is
+`folders`: the process runs in the first, `rootUri` and `rootPath` are the
+first, and `workspaceFolders` lists every one, in `initialize` and in the
+answer to `workspace/workspaceFolders`. `rustAnalyzer.ts`'s `activeFolders`
+replaces `activeRoot`, compared by `join('\n')`, and `launch`, `restartWith`,
+`install` and `offerDownload` take the list; `restartRustAnalyzer()` reads it,
+and only `offerRustSrc` gets `folders[0]` (the `rust-src` offer is still made
+once per first folder). When the folders that are there change (one removed,
+located, or back after Try again), App restarts a running server for them
+through `workspaceFoldersChanged`, so another set of folders is a restart, not
+a `didChangeWorkspaceFolders`; with none running it does nothing.
+`Editor` calls `ensureRustSupport(props.loadable())`. Tests: `client.test.ts`
+(new) "initialize lists both folders, the first one as the workspace root" and
+"workspace/workspaceFolders is answered with the folders sent in initialize" —
+the URI compared with the one sent, since the stub's URIs are opaque-ish.
+`rustAnalyzer.test.ts` (new) counts the binary lookups: a restart for a changed
+set, none for the same one, none when no server was started.
+By hand: the download offer with two folders starts rust-analyzer with both.
+
+**R01 — a section per repository.** `GitPanel.tsx` is the window's part: it
+reads `git_repos` for the folders that are there (App passes
+`resolvable(folders())`, so a missing folder is never offered **Initialize
+repository**), shows a `GitRepoSection` (new) per repository, keyed by
+`Repo.key`, and one per folder in none, keyed by `folder:<path>`, in the
+window's order, and keeps the commit message and its button.
+`GitRepoSection.tsx` is the old panel's body, moved as it was: status, header,
+banner, errors, changes, history, stash, hooks and the resolver, each command
+asked from the repository's first folder with its `scopes` — `Repo.folders`
+(new) lists the window's folders in it as the window gave them. The icons moved
+to `GitIcons.tsx`. One section has no title and is laid out as the panel always
+was (`display: contents`); with several, each has a title row with its name and
+its box for the commit, the sections scroll, and a section's changes take at
+most 40% of the window's height. A section hands the panel a `GitRepoHandle`
+(its status, busy, `run`, `refreshStatus`, `refreshHistory`, `push`,
+`offerSkip`), which the commit works it with, and waits while the panel commits
+across repositories (`locked`). Drafts are kept by `sessionKey` (a project's is
+its path, as before), publish answers by repository and branch,
+`GIT_LOG_LATEST` by the folder a section asks from (`Generations`, a count per
+key), and ConflictResolver's `opKey` is the repository's, as each section passes
+its own path. Tests: "two repositories' history reads don't stop each other"
+(`git/tests.rs`, beside the superseded scan's), `repos.rs`'s shared repository
+lists its `folders`, and `GitPanel.test.tsx` "one repository has no title of its
+own, and asks git from its folder as before" and "two repositories show two
+sections with their names and branches".
+Departures: the `GitPanel`, `gitBranchMenu`, `gitRebase` and `gitChangeCounts`
+tests mount the panel with one folder and a session and answer `git_repos`
+(`src/test/gitRepos.ts`'s `oneRepository`); their assertions are unchanged, and
+`gitChangeCounts`' event names its folder, as the watcher's has since A03.
+ConflictResolver and GitHooksView needed no change: they're given the
+section's path. A `git_repos` read that fails (it doesn't, in practice) shows
+the panel's error with Retry.
+
+**R02 — one commit across repositories.** `changes.rs`'s `git_commit_in` is now
+`Committing`'s steps — check (nothing in progress, no conflicts, someone to
+commit as), stage with the pre-commit hook, the message hooks, the commit,
+post-commit — and `git_commit_many(repos, message, noVerify)` takes them across
+repositories in D11's order: every repository checked first, every problem
+named (`Stopped { problems }`), then every pre-commit, then every message hook
+(the first failure: `Stopped`), then the commits (`Done { committed, failed }`:
+one that fails is reported with those made before it, and the rest are still
+made), then post-commit where one was made; "Nothing to commit." only when no
+repository had anything. It holds every repository's working folder for the
+whole run (`util::rewriting_all`, whose one-folder case is `rewriting`). The
+panel: one section commits as it always did (`git_commit`, then a push or the
+publish question); with several, `commitActionAcross` (`gitPublish.ts`) over
+the included repositories picks Commit, Push or Publish, a box follows
+`includable` (`includeBlocked` says why a merge, a rebase or conflicts keep one
+out; nothing to commit or push leaves it unticked), and `git_commit_many` gets
+the included repositories with changes. What stopped it shows above the commit
+bar by repository (`stoppedText`), with **Commit without hooks** when a hook
+did. After a commit that failed in some (`partialText`), the message stays and
+the repositories it was made in wait in `heldPushes` (by session) until a retry
+commits the rest — only the rest: a repository with the message already isn't
+given it again, whatever changed in it since; then each repository the message
+went to is pushed in its own section, where a failed push shows, one that was
+only ahead isn't, and the branches with no remote branch get one question
+(`publishQuestionAcross`). A Push that fails leaves its repository waiting with
+the rest. A commit belongs to the session it was made in: its draft, what
+waits for it and what stopped it are that session's, so a window switched to
+another project or workspace while the hooks run keeps its own, and a
+**Commit without hooks** shows only where its commit was. Each commit is dated
+as it's made, after every hook has run.
+Tests: `git/tests.rs`'s `commit_many_tests` — a pre-commit failing in the second
+repository leaves the first uncommitted; without hooks no check runs in any; a
+commit-msg hook changes its own repository's message only; each commit goes on
+its repository's branch; a detached HEAD gets its commit; a repository with no
+commit gets its branch; a held `refs/heads/main.lock` in the third reports the
+first two; every problem a check finds is named and nothing is committed;
+nothing to commit anywhere says so; a commit is dated when it's made, after its
+hooks. `gitPublish.test.ts` has four, and `GitPanel.test.tsx` eight: a
+repository in a merge is left out, saying why; a commit failing in one keeps
+the message and pushes nothing, and the retry pushes all three; a failed push
+shows in its own section; a repository that was only ahead isn't pushed by a
+commit; a commit keeps to its own workspace when the window switches while it
+runs; a hook that stopped one workspace's commit offers no skip in another; a
+retry commits the message only where it isn't yet; a push that fails keeps its
+repository waiting for the rest of its message.
+Departures: `commitAction` keeps its one-repository signature (its tests
+unchanged), and `commitActionAcross` is the several's. The identity is checked
+with the other checks, before any hook runs, for one repository too: a commit
+that can't be made no longer runs pre-commit first. A many-commit's problem
+says "Changes are staged outside this window's folders: …" without the
+repository's name, which the panel puts in front; `RepoCommit` carries no name,
+and the outcome names a repository by the folder it was asked from.
+
+**R03 — refreshing by repository.** A section listens to `git-changed` and
+reads its status again when the event's folder is one of its own (`samePath`),
+at most every 2 s, as the panel did for its one folder; the panel reads
+`git_repos` again when an event says a folder's repository came or went
+(`repositories`), and after **Initialize repository**. A section stays as the
+list is read again (keyed by repository), with its history, menus and scroll.
+A change that comes while the panel's commit keeps a section waiting is read
+once the commit is done. Tests: `GitPanel.test.tsx` "a folder's change
+refreshes its own repository's section only", "git init in a folder without a
+repository gives it a section of its own" and "a repository left out of a
+commit reads what changed in it while the commit ran".
+
+**E01 — the chats of several owners.** `chat_db`'s `list_dialogs`, `search` and
+`dialogs_of` (was `dialogs_in_project`) take the window's owners: a list of
+project IDs, as one JSON array (`json_each`), so a statement's text is the same
+for any number of them, or None for the chats with no project; the commands take
+`owners`. `projects.ts` keeps each folder's project (`folderProjects`, by path,
+started again with each new set of folders, kept on a copy's or a move's
+answer), App joins it to the folders (`resolvedFolders`, apart from `folders()`,
+so a folder resolving changes nothing in the tree, search or the editor) and
+works out the owners (`openFolders.ts`'s `chatOwners`: the workspace's ID first,
+then each folder's that's there; undefined while one resolves; `sameOwners`,
+`listedBy`). `chatStore.showOwners` replaces `switchProject`: another target
+lists its chats from the start, as before; the same target with other projects
+reads its list again without emptying it, and keeps the open chat while its
+project is listed, its loaded messages and its input with it. ChatPanel's
+`showChats` recovers the unanswered sends of each project new to the window
+(`unsettled_sends` keeps its one project). A row says its chat's folder with
+several (`chatFolderNames`: a folder's name, a workspace chat's names or "All
+folders"). Tests: `chat_db/tests.rs` "a window's owners' chats are listed
+together newest first", "… are searched together", "a subagent of a workspace
+chat belongs to the workspace"; `openFolders.test.ts` three for the owners;
+`chatStore.test.ts` "a folder added keeps the open chat; its folder removed lets
+it go"; `workspaceChat.test.tsx` (new) "adding a folder keeps the open chat and
+its draft", "after a crash, an unanswered send in the second folder's chat comes
+back" and "a row shows its chat's folders".
+Departures: the store's test has its own name, as the draft is the panel's
+(tested there). B06's `openProjectIds` now holds every folder's project, and
+`resolveProject` is given the folders with their projects on Try again and
+Locate…, so B04's "a copy of another folder of the window keeps its own history"
+sees the other folders' projects in the app too (it was given folders without
+them). The test DOM (`src/test/dom.ts`) gained `HTMLDivElement` and `NodeFilter`,
+which the chat input's references use and no test reached before.
+
+**E02 — a chat's folder.** With several folders both New chat buttons open
+`NewChatMenu` (new): `FolderMenu`'s new check mode (`menuitemcheckbox` rows, Space
+checks, Enter starts, a missing or unresolved folder listed but off, saying why,
+as is a copy that still has its original's chats: its chat would work in the
+original, the folder `chatRootOf` finds first), the folder worked in checked, one
+folder at a time until F14, and **Start chat in web**. With no chat to show, the
+panel shows the same menu in place instead of making an empty chat (Tab reaches
+its first folder), the input waits for the chat started, read-only and saying
+so, and **Add to chat**'s references go into that chat; while chats are listed
+one is about to show (the open one was deleted, the next opens), and the menu
+doesn't flash meanwhile. With one folder, nothing changes. An empty open chat is
+reused, moved to the folder's project by `chat_move_empty_dialog`
+(`store::move_empty_dialog`, which refuses a chat with a message, a subagent's,
+and one on a host or moving), unless its draft names files: they're its folder's,
+so the draft stays with it and the other folder gets a chat of its own. `openFolders.ts` has `chatRootOf` (the folder whose
+project the chat is), `chatPathToAbsolute` and `chatPathOf` (paths with `/`,
+null outside the chat's folder). ChatPanel goes through them for the run's
+root, the estimate, the connector's commands, `@` (its folder's files only), the
+selection, the branch offer and Implement; a reference from **Add to chat** or a
+paste is named as the chat names it, and one of another folder isn't added: the
+note above the input says "api/src/routes.ts is in api; this chat works in web.",
+as it does while the editor's file is another folder's, which the context then
+leaves out. A run of a chat whose folder isn't open here is refused. With several
+folders the label by the input says "in web" (a span). **Implement** on a plan in
+the editor uses the open chat when the plan is its folder's (waiting while it
+works), else starts a chat in the plan's folder (`peekImplementPlanRequest`
+leaves the request waiting until the chat that takes it can). Tests:
+`chat_db/tests.rs` "an empty chat moves to another owner and one with a message
+doesn't"; `openFolders.test.ts` six (a folder chat's root, its path joined to
+its folder, a file named from its folder and one outside named nothing, a Windows
+file named with `/` and found again, one whose folder is spelled in another case,
+a row's names); `workspaceChat.test.tsx` nineteen, from the boxes to Implement
+(the reuse that leaves a draft naming files, the input waiting with no chat, a
+deletion that never shows the menu, a copy that can't be checked, Tab); `chatBranchOffer.test.tsx` "a chat in the
+second folder is offered a branch for that folder's repository".
+Departures: no `runPlace` yet: a run's root is its chat's folder (`rootOf`), and
+`runPlace` comes with the workspace chats it tells apart (F14); **All folders**
+comes with F14 too. `fileReferences.ts` and `activeContext.ts` are unchanged: the
+panel names each reference as the chat does (`inChat`) wherever it comes from, so
+the editor needn't know the chat. The menu shows which folder Start chat makes the
+chat in ("Start chat in web"), there being one. `FolderMenu` gets the scoped
+styles C04's menu missed (its icon, label, focus, separator and off rows), in
+`styles.css` with the new rows' box, the note, the label and the menu in place.
+
+**E03 — a chat's paths, opened.** App's `folderForChat` is the folder of the chat
+a request names, else of the open chat (`chatFolderFor`): a subagent's chat
+isn't listed, and its tool calls show inside the open chat, whose folder it
+works in; the window's first folder when neither's is open here: a written file's comparison tab is `chat:<chat>:<its path in the chat>`
+(`chatPathOf`), and a path from the chat opens in its own folder
+(`chatPathToAbsolute`), as do the paths it mentions that become links
+(`setProjectFileResolver`). The isolation bar takes the chat's `root`: a file
+whose change landed since the list was read opens as itself, from the chat's
+folder, rather than as a comparison of two equal versions (a deletion that
+landed has no file to open, and is compared). Tests: `isolationBar.test.tsx` "a
+changed file of the second folder's chat opens from the second folder", and
+`openFolders.test.ts` "a file of a chat the list doesn't have, a subagent's, is
+in the open chat's folder". Departure: `overlay.ts` needed no change: its paths are the
+chat's, as the backend takes them.
+
+**E04 — the client's open projects.** `rovik_client`'s `State.open` is the
+window's open projects, a list (`set_open_projects`), each with its folder: the
+claims' record (`Instances::give_open_projects`, the target's folders whose
+project is known), which the app hands over after each claim (`project_claim`)
+and each `reclaim` (`commands/chat.rs`'s `follow_claims`), while the claims are
+held: two commands following them at once can't hand over the older list last.
+`chat_open_project` no longer sets it, and `folder_answered` is gone: an answer
+about a folder renames its project in the record, which the client follows, and
+an answer for a folder the window has left is in no record. `handled_elsewhere`, `land_waiting`,
+`project_of` and `is_open` look among them; a steering message's paths are made
+relative to its chat's own folder (`project_of`), and a steer whose chat's folder
+can't be read fails rather than send local paths; Test delivery pushes to the
+first open folder with an `origin`. Tests: `remote/tests.rs` (the delivery test
+with a first folder that's no repository, the steer of the second folder's chat,
+a steer whose chat's folder can't be read, events shown with the project as a
+workspace's second folder);
+`rovik-agentd/tests/landing.rs` "a result for the second folder's chat lands
+while the workspace is open"; app crate `instances.rs` "the open projects are the
+window's folders' projects" and "the open projects are given before another claim
+can change them", and `commands/chat.rs` "a folder resolved after the window
+moved on isn't the client's open project".
+Departures: the client test of `folder_answered` went with it, its case covered
+by the app crate's two; the daemon's tests call `set_open_projects`, and
+`landing.rs`'s answered folder is the list the claims give after the answer.
+
+**F01 — `Folders`.** `rovik-core/src/folders.rs` is 4.1's type: `one`, `named`
+(at least one folder, each a plain part, no two alike in any case), `single`,
+`first`, `iter`, `split`, `abs`, `chat_path` and `output_roots`. `split` matches
+a name as the file system does (folding case on macOS and Windows), `abs` refuses
+a path that leaves its folder, `chat_path` tries the folder's path with links
+resolved when the plain one doesn't hold the file, and `output_roots` lists the
+longest first, so a folder's place in the view reads before the view's root.
+`Run.project_root` is `Run.folders`; `isolated()` is the view always for a
+workspace chat and today's test for a folder chat, `project_file(key)` reads the
+project's copy through `abs` (the baselines, the rollback's targets and the
+originals), the busy wait loops over the folders, and the uses that F04 and F10
+to F12 give folders (plans, the code before a change, check roots, candidates)
+read the folder chat's folder through `project_root()`, None for a workspace
+chat's. Tests: `folders.rs` five (a chat path splits by its first part; `abs` and
+`chat_path` go and come back; a folder chat's paths are its folder's; a workspace
+chat's names are plain and none alike; `output_roots`), and every `agent_run`
+suite unchanged.
+
+**F02 — a run's folders from the chat.** `check_project` returns the run's
+`Folders`: a folder chat's root, checked as before (a candidate's copy keeps its
+exception, ahead of the rest), or a workspace chat's from `workspaces::chat_folders`
+(the names checked for it, in the workspace's order, every folder for `"all"`, a
+chat that names none taken as `"all"`, a name the workspace no longer holds left
+out), with its paths. A workspace chat's request with a root is refused, and so are
+a missing folder (every one named: "web isn't there: locate it, or remove it from
+the workspace, to go on with this chat.") and a chat with no folder left. `prepare`
+takes its folders from `check_project`, so every run, an Autopilot stage's or a
+retry's included, has the chat's folders as they are when it starts: a stage's
+settings hold no folders. The context estimate takes a folder chat's root as before
+and a workspace chat's folders through `check_project`, counting each folder's
+section. `features::FOLDERS` is defined for G02 to advertise; the frontend's
+`root` says a workspace chat sends none. Tests: `check_project_tests` (a workspace
+chat's run gets its folders at their paths, all of them for All folders, the new
+ones after they change; a missing folder or none is refused by name; a request with
+a root is refused; a folder chat's run is as before; an Autopilot stage started
+after the folders changed gets the new ones) and `workspaces_tests.rs` "a workspace
+chat's folders are those checked in the workspace's order". Departure: a workspace
+chat's run has no root until F07 opens its view.
+
+**F03 — what the view needs of the overlay.** `VfsError::CrossDevice` ("can't
+move or link across folders") reaches the kernel as EXDEV. `overlay/fs.rs`'s
+`Budget` holds a chat's limit, what its folders use together and the warning; each
+`OverlayFs` keeps its own share as well (`charge` checks the limit under the
+budget's lock, `count` adds what's there already, `uncount` gives back, never more
+than the share), and an overlay dropped gives its share back, so a folder that
+leaves the view or is opened again elsewhere isn't counted twice. The warning is
+marked given only once someone is there to give it to: before, one passed before
+`on_warn` was set was lost. `open(base, store, limit)` keeps its signature with a
+budget of its own; `open_in(base, store, budget)` shares one. `trait ChatFs:
+Backend` names what F05's view and F06 call besides the file system, implemented
+by `OverlayFs` through its own methods. Tests: `overlay/tests.rs` (parts of one
+chat share its limit; two writing at once can't both pass it, twenty times over;
+the warning comes once, from whichever part reaches 80%; a part that goes gives
+its share back) and `vfs/fuse.rs` "a cross-device error reaches the kernel as
+EXDEV".
+
+**F04 — landing across folders.** `land.rs` works on `Folders`: `plan_in`,
+`land_in`, `land_checked_in` and `undo_in`, with today's `plan`, `land`,
+`land_checked` and `undo` as one-folder wrappers. An action keeps its chat path
+and the folder and path it resolves to (a moved file's origin too); a path in no
+folder, or a folder's own name, is a conflict. Land and Undo are refused while a
+folder is missing, naming every one (a folder chat's too: landing made its folder
+anew with only the chat's files in it). The folders' locks are taken by
+`file_guard::key`, sorted, before any file's. A workspace landing writes
+`landings/<chat>/folders.json` (names and paths) in place of `project.txt`, its
+journal names its folders (`folders`, empty and left out for a folder chat), and
+a write that fails puts back every folder written before it. `folders_of` reads
+either file in place of `project_of`; `relocate` points a workspace chat's
+landings at a located folder (F06 calls it). Recovery resolves each entry
+through the chat's folders and writes nothing into one that isn't there, its
+entries waiting with the landing still applying ("not finished: its folder isn't
+there"), for every landing. Undo after the chat's store is gone works from
+`folders.json`; `overlay_undo` tells each folder's other chats of their files.
+Tests: `overlay/tests.rs`'s `across_folders` (changes in two folders land under
+one landing, with `folders.json` and no `project.txt`; a conflict in one folder
+lands nothing in either; a move within a folder; a failed write in the second
+folder puts the first back; an interrupted two-folder landing is finished at
+start; one whose folder is missing waits for it and is finished where it's
+located; undo once the store is gone; Land and Undo refused while a folder is
+missing; three chats landing at once, two workspace chats listing the folders in
+opposite orders and a folder chat, all finish; a folder chat's journal has no
+folders).
+
+**F05 — the view.** `overlay/composite.rs`'s `CompositeFs` is a `Backend` and a
+`ChatFs` over the chat's folders' `OverlayFs`s, its parts. A part's inode `n` is
+`(n << 16) | slot`; the root keeps 1, and is checked for before a number is
+decoded. The root (0o555) lists the folders by name, looks a name up as the
+overlays do (folding case on macOS and Windows), and refuses creating, linking,
+removing and renaming there and setting its attributes or extended attributes
+(EPERM); a rename or a link between two parts is `CrossDevice`. Calls hold the
+view's lock only to find their part. `changes` names each part's from the view's
+root (`OverlayChange::under`, which the land tests use too); `versions`,
+`rebase_file` and `revert_file` go by a path's first part; `usage` and `used` are
+the shared budget's. A part's notifications reach the kernel renumbered through
+the view's listener, a part added later's too. `matched(folders, open)` matches
+the view to a list of folders: one at the same name and place stays, one new or
+located elsewhere is opened (before the view changes, so one that can't be
+leaves it as it was) and gets a new slot, and one gone leaves, its part handed
+back for its store to go; the kernel is told of each name at the root, and the
+generation moves. `OverlayFs::base` names a part's project; the separator rule
+(`/`, and `\` on Windows only) is the overlay's in the view and in `Folders` too.
+Tests: `composite_tests.rs`, the plan's eleven.
+
+**F06 — a workspace chat's overlay.** `chats::open(chat, &Folders, on_warn)` opens
+either kind: a folder chat's store as before (`project.txt`, one `OverlayFs`), a
+workspace chat's with `folders.json` (its workspace's ID and its folders at its last
+run) and a part per folder (`parts/<name>/`), its view a `CompositeFs`. `Folders`
+carries the workspace's ID (`in_workspace`), which `check_project` sets. An open view
+is matched to the folders at every `open` (each run's start) and at Apply
+(`set_folders`): a folder that joined is opened, one located elsewhere is opened
+there from its saved list (saved first), and one that left goes with its store,
+refused while the chat has changes there; the folders that left while the view was
+closed lose their stores at its next opening, under the same rule, all or none. A
+store of the other kind is refused before anything is written, and a view is
+recorded only once it's mounted, so one that couldn't be leaves no workspace store
+behind (`exists`: `manifest.json` or `folders.json`). `ChatOverlay.fs` is an
+`Arc<dyn ChatFs>`, and `project` gave way to `folders()` (a child's: its parent's
+view) and `folder()`. `folders_of` (the open view's, else the store's record) replaces
+`project_of`, `saved_project` and `project.txt`'s other readers: `with_fs` opens a
+closed workspace chat's parts whose folders are there in an unmounted view, a closed
+chat's bar reads each part (a missing folder's from its saved list,
+`fs::saved_changes`), and the project's version of a chat path is read through
+`Folders::abs`. The watcher's `project_changed(folder, …)` reaches each open chat's
+part on that folder and names what it notes and marks by chat paths; clashes are kept
+per (chat, folder), compared by path in the folder, and refreshing one folder keeps
+the chat's others (and what it was told of them). Children stay one `OverlayFs` over
+the parent's view and land through it, scratch views take `&Folders`, `project_for`
+keys a workspace chat's commands' history by `workspace:<id>`, and `CARGO_TARGET_DIR`
+is shared by a workspace's chats. `changes_in_folder(chat, name)` reads the open
+view's part, else that part's saved list; `relocate` moves one chat's record of a
+located folder (its open view matched, its closed store's record, its landings'
+`folders.json`). D19's guard is in `chat_db::api`, which the commands call:
+`workspace_remove_folder` and `workspace_relocate_folder` are refused while a chat
+working in the folder (All folders, or checked) is at work on this computer, has
+background commands running, or (Remove, or Locate… to another project: the folder
+found's ID file isn't the project last opened where it was) has changes there, naming
+each chat and what to do. After Locate… each chat follows, and landings a crash cut in
+the folder are finished (`land::recover_in`), as `chat_open_project` (Try again) does
+for a folder found again. Tests: `overlay/workspace_chat_tests.rs` (common tools
+across the folders of one view; `mv` between folders lands as an add and a delete;
+the view's root is read-only to commands; a workspace chat reopens with each folder's
+changes, and its bar lists them while it's closed; opening its store as a folder
+chat's is refused and leaves the store as it was, and the other way; the view gains a
+folder checked and drops one unchecked with its store, but not one with changes; the
+project changing under one folder notes paths with its name; a folder chat and a
+workspace chat see each other's clashes; refreshing one folder keeps the other's
+clashes; `changes_in_folder` answers while the folder is missing; locating it as the
+same project keeps the changes, open and closed; a worker lands into the right
+folders; `CARGO_TARGET_DIR` and the commands' history are the workspace's for each of
+its chats), `chat_db::api` (removing a folder a workspace chat is at work in, runs
+commands in or has changes in is refused, naming it, and otherwise allowed, leaving
+the chats' folders; Locate… while a chat is at work is refused, and to another project
+while one has changes there, and to the same project the changes go with the folder;
+after Locate…, and when a folder is found again, a landing a crash cut there is
+finished), `check_project_tests` and `folders.rs` (the workspace's ID). Departures:
+the guard and its tests are the core's, beside the other workspace commands, and the
+app's commands stay wrappers (G05 asks the hosts there); a workspace chat's commands
+see its folders' own paths as they are, read-only, and naming one is refused, until
+F09 points them at the view; a folder located to another project keeps what the
+chat's commands built there (it has no changes there, D19); the run still opens folder
+chats only until F07.
+
+**F07 — a workspace chat's run in its view.** `prepare` opens a workspace chat's view
+for every run, Plan mode included (`workspace_view`): the view is matched to the
+chat's folders as `check_project` gives them, and the run's root is the view.
+Without the driver (the view can't be mounted) the run is refused with "A chat across
+folders needs the virtual files driver (Settings → Virtual files), or start a chat in
+one folder.", the mount's own reason after it; with isolation off it's refused saying
+so; any other reason the view doesn't open (its store a folder chat's, a folder left
+with changes) is named. It never works in a folder instead. Landing through `Folders`
+and the busy wait over every folder came with F06 and F01. Tests:
+`workspace_e2e_tests.rs` with `workspace_harness` (a workspace of folders by name and
+a chat of it, its folders checked or all): a workspace chat reads and edits two
+folders by their names and lands in each, nothing elsewhere; a folder not checked for
+it isn't in its view; Plan mode works in the view and changes nothing; it's refused
+without the driver (a file where its view would mount) or with isolation off, and
+works in no folder instead; Land and Undo are refused while a folder is missing.
+Departure: isolation off has a message of its own, as the driver's would mislead.
+
+**F08 — what the agent is told of a workspace chat's folders.**
+`project::load_folders(config_dir, root, &folders, verify, below, since)` gives a
+workspace chat's run its checks, its project section and its restricted files. Each
+folder is read in the view (`root/<name>`; at its own path without one) as when it's
+open alone, by its own settings: its stack as `"{stack} ({name}/)"`, V09's folders
+one level down inside it for an Autopilot task (`{name}/{sub}/`), its services line
+as `{name}: …`, its checks run in it (`cd api && …`), and its instructions under its
+name. The instructions share 12,000 characters (`WORKSPACE_INSTRUCTIONS_MAX_CHARS`):
+each folder an even share, a short one's rest going to the others (`shares`), each
+cut by `project_profile::cut`, which `read_instructions` now uses too;
+`project_context` and `load_folders` share its checks and instructions parts. The
+section opens with 4.4's paragraph, then a git line (a repository, `git -C api
+status`; a folder of one whose root isn't in the view; none) and, when the chat's
+folders changed since its last run, which joined and which left: each workspace
+chat's run records its folders' names in its message's `meta.folders` (the latest
+user message, or a stage's), which the next run compares with.
+`RestrictedFiles::of_folders` hands a path to its first part's folder's own list
+(`entry_for`, `blocks`, `blocks_file`, `skips`), so a folder named `examples` keeps
+the verdicts it has alone, and `denied` scans each folder from its own root, naming
+its files from the view's. Tests: `project.rs` (shares; each folder read as alone
+under its name, its stack, services, checks, V09 folders and git line; the folders
+that joined and left), `restricted_files.rs` (a workspace chat's lists go by a path's
+first part, a harness denied each folder's files by their paths in the view), and
+`workspace_e2e_tests.rs` (each folder's instructions, checks and git line are in the
+prompt under its name; the instructions share 12,000 characters and a short one's
+rest goes to the others; a folder's restricted files are refused by their paths in
+the view, and only its own, `examples` included; after the chat's folders change,
+the next prompt says which joined and which left, from the last run's message).
+Departures: the services line and V09's folders are tested on `load_folders` (a
+Compose of the test's, an Autopilot task's `below`), not through a run; the context
+estimate keeps adding each folder's own section until F12 caches `load_folders` by
+the chat's folders.
+
+**F09 — commands in a workspace chat's view.** A `cd` into the project passes the
+allowed commands, in every chat (D26, `permissions::cd_into_project`): a `cd` part
+with one relative argument, no `..` part, not starting with `-`, `~` or a separator,
+and with no `$`, backtick, `*`, `?`, `[`, `{` or `:` in it runs nothing, so it's let
+by and counts as read-only, and the command's other parts are checked as before;
+the README's Getting started, step 3, says so. `Confine` takes a list of `Redirect`s
+(a place in the view, shown at a real path) in place of its `project`: a folder
+chat's view at its project's path, a workspace chat's `<view>/<name>` at each
+folder's own path (`redirecting_all`), each a bubblewrap bind; `redirects_path`
+says whether a path is one. `command_problem(command, confined)` refuses a folder's
+real path in a command unless the chat's sandbox shows the view there, so always
+in a harness's commands (`execute.rs` passes `confined` false, as they run
+unconfined) and where the sandbox can't redirect (Seatbelt, Landlock: `confine()` is
+None, and the hiding-only policy applies). After a command fails for a missing package,
+`install_dependencies` keeps the installs of the folder the command `cd`s into
+(`project::folder_of`), of the project's own and of the folders below it: `cd web &&
+npm test` installs web's dependencies, not api's, and a command at the top every
+folder's, as before. Tests: `permissions.rs` (with the default allowed commands,
+`cd api && npm test`, `cd 'my app' && npm test` and `cd api/src && ls` are
+permitted, and `cd .. && npm test`, `cd api/../..`, `cd /tmp`, `cd ~`, `cd $X`,
+`cd -`, `cd *`, `cd {..,x}`, `cd {/tmp,x}`, `cd api && rm x` and a bare `cd` aren't;
+every name `folder_name` gives, as `in_folder` writes it, passes), `confine.rs`
+(each folder's path shows its place in the view, under bubblewrap),
+`workspace_chat_tests.rs` (a command naming a folder's own path is refused where it
+wouldn't see the view there, and a harness's always), `environment.rs` (a command in
+a folder needs that folder's install, one at the top every folder's) and
+`workspace_e2e_tests.rs` (a command in each folder runs there and sees the chat's
+changes; one naming a folder's real path sees the view or is refused). Departures:
+the rule refuses `{` too, since a brace expansion gets past the others (`cd {..,x}`
+is `cd .. x`, which some shells run as `cd ..`), so `folder_name` makes braces
+plain (`a{b,c}` is `a-b,c-`) and every name still passes; the refusal of a folder's
+path is tested beside the overlay that makes it (`workspace_chat_tests.rs`), not in
+`confine.rs`.
+
+**F10 — the checks of the folders a workspace chat changed.** `Run::enabled_checks`
+gives a workspace chat the checks of the folders it changed (the first parts of
+`touched_keys()`) and those in no folder, a plan's own commands (D27,
+`checks_changed`); a folder chat's all run, and the landing's `checks_would_run` gets
+the same list. With none, the record says "no checks are set up for the folders it
+changed". A folder's failed type check skips only that folder's tests, in every chat.
+Paths in output read through `OutputRoots` (folders.rs), which `Folders::output_roots`
+now gives: an absolute path in a folder, in its resolved spelling, in its place in the
+view or in the view itself is a chat path (`chat_path`, `in_text`), and `from_folder`
+tries a path a `cd api && …` check printed relative to its folder as `api/<path>` when
+that's in the view. `check_keys` and `failed_in` use both, so a check's keys name files
+by their chat paths. `Run::output_roots` replaces `check_roots` and the `[root,
+project]` lists in P3.2's slips (`printed_is_written`), V05's files behind and a
+failure's causes (`causes::resolve`, `path_context`); `without_roots` and `roots_of`
+went. The before-run opens a scratch view of the chat's folders under the same names
+(`code_before` gives `Folders`), its output read through that view's roots, and so does
+the red check, which was skipped in a workspace chat. File-to-command helpers:
+`in_folder("")` is the command as it is; `light_checks` groups a chat's files by folder
+and runs each folder's light checks in it; `in_files_folder` runs one file's command
+(the breaker's, the red check's) in its folder; the red check's fallback is the test
+check of the file's folder; V06's scoped tests are the timed-out suite's folder's, run
+there. Tests: `workspace_e2e_tests.rs` (only the changed folder's checks run, in it;
+with none in the folder it changed, none runs and the record says why; a failed type
+check in one folder doesn't skip the other's tests, and its failure names
+the folder's file; a check failing as before the change is set apart per folder,
+printing paths relative to its folder or absolute, the view's and then the copy's; a
+slip printed by a folder's real path, whose last part isn't its name (`y/app` is
+`y-app`), is the round's own; the red check runs each new test in its folder, Go's),
+`folders.rs` (a folder's path, its resolved spelling and its place in the view read as
+its name, the longest first; a path printed in a folder is tried as that folder's
+first), `command_output.rs` (a folder's check names its files by their chat paths),
+`causes.rs` and `repair.rs` (a folder's real path reads as its name for a cause, the
+files behind and a slip), `project.rs` (light checks and a file's command in each
+folder) and `verify.rs` (D27's filter; V06's scoped tests by the suite's folder).
+Departures: a plan's own commands running whatever changed, and `checks_would_run`'s
+filter, are tested on `checks_changed`, not through a run: a plan's commands are an
+Autopilot task's (F11, F12), and a local run merges the project's changes into its
+view and checks them before it lands (`take_project_changes`), so the landing merges
+only when the project changes a file in between; the mid-run check's locations keep
+`causes::resolve`'s tail matching; Thorough's candidates run a file alone at their
+copy's root until F12.
+
+**F11 — plans of workspace chats.** `submit_plan` saves a plan in the chat's first
+folder (`Folders::first`; a folder chat's is its folder, as before), and a workspace
+chat's with `Folders: api, web` under its title (`FOLDERS_LINE`, `with_folders_line`),
+which a revision rewrites; a folder chat's plan is saved without the line, even one its
+model wrote, as Implement goes by it. A revision replaces the chat's plan file while
+that's in one of the chat's folders; once its folder has left the chat, the next plan
+is a new one in the new first folder, and the earlier one stays where it was written.
+`plan_path_in` names a plan as the chat names files: a folder chat's relative to its
+folder (`relative_plan_path`, with the system's separators, as before), a workspace
+chat's by its chat path (`Folders::chat_path`). It replaces `relative_plan_path` with
+the request's root or the view in "Saved the plan to", the Plan-mode "Saved in" line
+(through the chat's folders, not the view: section 12, item 14), the implementation
+request (`expand_implementation`, which finds a relative `planPath` with
+`Folders::abs` and refuses one that leaves the chat's folders, which it used to join
+to the root as it was), the plan check at the start (`plan_file_named`, through `Folders::abs`
+too), the change reviewer's, the test writer's and a worker's plan, and Autopilot's
+Plan stage summary and the implementation it starts, through the chat's folders
+(`chat_folders`: `check_project`; a summary names the plan in full while a folder is
+missing, and an implementation that can't have them doesn't start, saying why); a
+candidate's names it from its task's project. `Files:` lines were already checked
+against the view. In the app, `planFolders` reads the line, App sends its folders with
+the editor's **Implement this plan**, and `chatForPlan` chooses (D28): the open chat
+when it's a workspace chat of this workspace that works in each folder named, else a
+new workspace chat across them, even one folder (an empty open chat is reused, moved to
+the workspace with them: `createDialog` and `moveEmpty` take folders), or none, saying
+which folders this workspace lacks, or that a folder's window has no workspace for it.
+**Implement this plan** under a workspace chat's plan reads its line, so a chat that no
+longer works in each of them hands the plan to one that does. `chatPlanPath` names the
+plan in the message as the chat does (`chatPathOf`, after the folder's name in a
+workspace chat), in place of `relativePlanPath`, which went. Tests:
+`workspace_e2e_tests.rs` (a workspace chat's plan is saved in its first folder's plans
+under its `Folders:` line, after one naming `src/a.ts` is sent back; the Plan-mode
+line, the implementation request and its plan check name the plan by its chat path, the
+check finding `web/src/gone.ts` by its folder; after the first folder is unchecked
+with `store::set_dialog_folders` the next plan goes to the new first folder, and the
+earlier stays; Autopilot's Plan stage summary and the implementation it starts name the
+plan by its chat path), `plan.rs` (the line under the title, rewritten once, a folder
+chat's left out; a plan named by its chat path; a relative `planPath` that leaves the
+folder refused), `worker.rs` (a workspace plan's chat
+path found in its folder), `plans.test.ts` (a plan named as the chat names files, on
+Windows too; the line read only under the title; the choice of chat, even for one
+folder; a lacking folder named, and a window without a workspace) and
+`workspaceChat.test.tsx` (Implement on a plan naming folders makes a workspace chat
+across them, even one, or uses the open one that works in them; an empty chat moves to
+the workspace with them, an empty workspace chat in other folders too; a lacking folder
+starts nothing and says which; Implement under a workspace chat's plan uses it while it
+works in each folder, else a new chat across them).
+Departures: a workspace chat started by Implement doesn't run until F14's `runPlace`:
+until then the panel refuses a run of a chat with no folder of its own open here, as it
+did (`beginRun`). The app names a folder chat's plan with `/` on every system
+(`chatPathOf`, 3.2), while the backend's keeps the system's separators (P4.9). The
+workspaceChat tests' window lists the workspace's own chats under its id, as
+`chatOwners` does (two tests that expected the harness's `workspace:` key changed with
+it), and Autopilot's test helpers are shared with the workspace tests.
+
+**F12 — Thorough, Autopilot, diagnostics and the estimate with folders.** Thorough's
+candidates take the task chat's `Folders` where they took its project: `copies_for`
+needs the chat's folders rather than a root (a workspace chat is always isolated, D23),
+`Copies::open` takes them to open the chat's view where it isn't open (the server's
+worktrees ignore them, as they did the project), `make` and the Pick open the copies
+so, and a candidate's record keeps the task chat's folders (`add_candidate`,
+`candidate_folders` in place of `candidate_project`), from which its run loads every
+folder's context, checks and restricted files (`load_folders` over its copy, which has
+the folders under their names); a folder chat's candidate loads its folder's as before.
+A candidate's implementation request names the plan as the task chat does
+(`api/.rovik/plans/…`, which its copy has at the same path), and the Pick runs each
+test written first alone in its folder of the copy (`in_files_folder`). Autopilot
+needed no change of its own: each stage's run takes the chat's folders from the chat
+(F02), and the delivery reads a closed chat's store of either kind (`pending`,
+`exists`). The diagnostics tool finds the editor's markers through the chat's folders
+(`CallContext.folders`): a workspace chat's `api/src/a.ts` as api's `src/a.ts`, a
+folder chat's path in its folder, so an isolated chat finds them (section 12, item
+10); they're given only for a file the run sees as the project has it (its bytes in the
+view are the folder's), and one the chat changed or made says so, in its diagnostics
+and the summary. The estimate's project section is what the chat's run is told
+(`cached_context` over `Folders`: `load_folders` for a workspace chat, no longer each
+folder's own section added up), kept for a few seconds by the folder list. Tests:
+`workspace_e2e_tests.rs` (a scout reads both folders, and a step's worker writes its
+step's folder and is refused the other's; an Autopilot task runs to its delivery, its
+check run in its folder, and, cut between two stages with its view closed as a restart
+leaves it, gets the chat's folders again; a Thorough task's candidates each work over
+the whole view, told every folder's instructions, checked by api's own check and given
+the plan by its chat path, and the smaller change lands while the other's file in web
+doesn't; the Pick runs a test written first in its folder, so the candidate that makes
+it pass wins over a smaller change that doesn't; the diagnostics tool finds the editor's
+markers through the view and none for a file the chat changed, and an isolated folder
+chat finds its folder's), `agent_tools.rs` (a view's file has its folder's markers
+unless the chat changed or made it) and `project.rs` (the estimate's section is the
+folders as the run is told them, by the folder list). Departures: 4.9's `folders` in
+Autopilot's `Settings` isn't needed, as a stage's run takes them from the chat (F02).
+A candidate's own folders stay its copy's (`Folders::one`), so D27's filter doesn't
+apply in it: it runs every folder's checks. "Hasn't changed" is read by content, which
+also covers a subagent's view over its lead's and a file changed back. The estimate
+leaves out the line on folders that joined or left (it has no last run to compare
+with), and the diagnostics' type-check hint still looks at the view's root, where a
+workspace chat's folders' stacks aren't. Reopening a workspace chat's view from
+`Copies::open` after a restart is tested for folder chats only (the candidates' restart
+tests); the Autopilot and subagent test helpers it uses are shared with the workspace
+tests.
+
+**F13 — connectors told the chat's section.** A workspace chat's run marks its request
+as made in a view of its folders (`ChatParams.folders_view`), and the connector's turn
+then carries the chat's section of the prompt for a harness with its own tools
+(`Turn.own_tools_context`), which finds no AGENTS.md or CLAUDE.md at the view's top to
+read: Claude Code keeps its own prompt with the section appended from a file
+(`--append-system-prompt-file`), and Codex gets it as its thread's developer
+instructions. A folder chat's turn gets nothing appended: the harness reads its
+folder's own instructions, as before; with Rovik's tools the section went already, in
+Rovik's prompt. The harness works in the view, the run's root, and resumes its session
+there, the view's path being the chat's own on every run. Tests:
+`workspace_e2e_tests.rs` (Claude Code works in the view, its change landing in its
+folder, keeps its session across two sends from the same path, and is told the
+folders; Codex is told them as its developer instructions) and `claude_code.rs` (a
+workspace chat's section is appended to Claude Code's own prompt from a file, and a
+folder chat's turn has none). Departures: a file rather than `--append-system-prompt`'s
+text, as Rovik's own prompt goes: the section can be long, and Windows' command line
+would overflow.
+
+**F14 — workspace chats in the UI.** A chat's root is `ChatRoot { kind, folders }`:
+a folder chat's folder, or a workspace chat's folders in the workspace's order (every
+one of them for All folders, else those checked that it still holds), a missing one
+among them. `chatRootOf(dialog, folders, workspace)` takes the window's workspace's
+ID, so a chat of another workspace works nowhere here; the chat panel gets it as a
+prop from the window's target, so a workspace chat's root doesn't come and go while a
+folder resolves. `chatPathToAbsolute` finds `api/src/x.ts` in the folder named `api`
+(an unknown name names no file), and `chatPathOf` names a file of any of its folders
+under that folder's name. `runPlace(dialog, root)` is what a run is sent: a folder
+chat's folder; no root for a workspace chat, whose folders the backend reads, or for
+a chat with no folder; or why it can't run here: its folder or workspace isn't open,
+or a workspace chat's folder is missing, named as the backend names it. The run, the
+estimate, a move's start and the connector's commands' folder go through it. `@`
+lists each of the chat's folders' files (`list_project_files` per folder), and the
+editor context, Add to chat and the note above the input name files as the chat
+does; `chatPlanPath` gave way to `chatPathOf`. New chat's menu has All folders, a
+separator and the folders' boxes: several checked, or All folders, make a workspace
+chat (`startChatOf` with the names or `"all"`, an empty chat reused). Checking All
+folders checks every box, unchecking a box unchecks it, unchecking All folders leaves
+the boxes, and every box checked by hand isn't All folders. `acrossFoldersBlocked`
+(`virtualFiles.ts`) says when a chat across folders can't start: without the driver
+here ("Needs FUSE: Settings → Virtual files", the driver's own name), or on Windows
+while WSL isn't connected or its Rovik doesn't serve `folders`, which the UI learns
+from `HostSummary.features` (`Remote::features`, from the daemon's `Welcome`, read
+again whenever a host is ready). A workspace chat's label is a button: it opens the
+same menu with the chat's folders checked and Apply. `chat_set_folders` is
+`chat_db::api::chat_set_folders`: refused for a folder chat and for no folder of the
+workspace checked; while the chat is at work (held here or in another window, or its
+Autopilot task's latest stage waiting out a rate limit, armed or not) or has
+background commands running; and when a folder it would leave has changes that
+haven't landed, naming the folders. It writes the folders, then matches the view
+(`overlay::chats::set_folders`), and puts the folders back if the view refuses. In the
+menu, Apply is off while the chat is at work, has commands running (named, with Stop
+its commands), or has no folder checked; a missing folder the chat has can be
+unchecked but not checked again; a refusal is shown and the chat keeps its folders.
+`workspaces::checked` is the filter `chat_folders` used, shared with Apply. The branch
+offer (D29) takes the chat's folders: one folder is its own repository, several are
+grouped by `git_repos`, and the repositories of the folders new to the chat (all of a
+new chat's; else those not among its folders at its last run, which its run records
+on its message, `meta.folders`) on their main branch are named in one question with
+one name, those on another branch said to stay. Yes makes the branch in each in turn;
+one that fails says which have it, and Yes again makes it in the rest. Tests:
+`openFolders.test.ts` (a workspace chat works in its folders checked or all of them,
+and nowhere outside its workspace; its path is found in the folder its first part
+names, and an unknown name names no file; a file is named under its folder's name, on
+Windows too; its run is sent no root and no folders, and a missing folder stops it,
+naming it; rows say its folders), `virtualFiles.test.ts` (new: a second folder needs
+the driver and says how to get it; on Windows, Rovik in WSL connected and serving
+`folders`), `cloud.test.ts` (a host ready again is read again, with its features),
+`hosts_page.rs` (a host's summary carries what its daemon serves), `chat_db::api`
+(Apply sets a workspace chat's folders and All folders, refuses none checked and a
+folder chat; it's refused while the chat is at work, its task waits out a rate limit,
+or it runs a command, and when a folder it leaves has changes, named, and a missing
+folder without changes is unchecked), `workspaceChat.test.tsx` (checking api and web
+makes a workspace chat across them; All folders checks every box, unchecking one
+unchecks it, and every box by hand isn't All folders; without the driver a second box
+can't be checked, and All folders says why and opens Settings; it's off while a
+folder is missing; a workspace chat's run is sent no root, and doesn't start with a
+folder missing; `@` lists its folders' files under their names; Add to chat from
+either folder names the file under its folder's name, and another folder's stays out;
+rows; the label opens its menu, whose Apply changes the folders and is off with none
+checked, with a command running, named and stopped from the menu, and while the chat
+is at work; a refusal is shown; a missing folder the chat has can be unchecked; a new
+workspace chat asks once about its repositories; a folder that joined on its main
+branch is offered the chat's branch at the next send), `isolationBar.test.tsx` (a
+workspace chat's changed file opens from the folder its path names),
+`chatBranch.test.ts` (repositories on their main branch are offered one branch, named
+once, one on another branch keeping it; two folders of one repository are asked about
+once; a branch that fails in one says which have it, and Yes again makes it in the
+rest; a folder that joined is offered the branch the chat's other repositories are
+on) and `NewBranchDialog.test.tsx` (the repositories it's made in, and those that
+stay). Departures: without the driver a second box isn't off: checking a folder moves
+the check, as in E02, and All folders carries the reason and the way to Settings,
+since every other folder's row saying "Needs FUSE" would read as if no chat could
+start in it; in the label's menu neither the driver nor a copy's shared history keeps
+a box from being checked, as the chat exists and names its folders. The guard and its
+tests are the core's, beside D19's, and the app's command is a wrapper. The branch a
+joined folder is offered is the one the chat's other repositories are on when they
+agree on one off their main branch, else a new name: nothing is stored for it. Found
+on the way, not changed: no TypeScript config checks the component tests
+(`*.test.tsx`: `tsconfig.json` excludes them and `tsconfig.test.json` takes
+`*.test.ts`), so those changed here were checked by hand.
+
+**G01 — a workspace chat's folders in a start.** `StartRequest.folders` is a list of
+`RunFolder` (its stored name, and its settings as `project_settings` is a folder
+chat's), in the workspace's order, for a daemon that serves `features::FOLDERS`. It's
+empty for a folder chat's start and for a run here, whose folders the app reads
+itself, and then it's left out, so a start without it, an older app's, parses as
+before. Every start built in Rust names it (`Vec::new()`), the Autopilot driver's
+stage requests included until G02 gives them the task's folders. Tests:
+`rovik-protocol` (a workspace chat's start round-trips with its folders; a start
+without them parses with none and writes none; a folder without settings has none).
+
+**G02 — the daemon runs workspace chats.** The daemon serves `features::FOLDERS`.
+`check_project` takes the start's folders: on a daemon a workspace chat's start names
+them, and they're `Folders::under(root, names)`, each a plain name, a top-level folder
+of the run's root, the chat's worktree (a Thorough candidate's the same, under its own
+worktree); folders without a root are refused. `Folders::root()` marks that form: its
+run works in the worktree, never a view (`run.rs`), and isn't isolated
+(`Run::isolated`), so, as for a folder chat there, no code before a change is compared
+(a check failing there is the change's), nothing lands and the red check is skipped.
+The folders a run's checks follow (D27) also take the worktree's own `git status`
+(`server::unlanded`): on a daemon that's what earlier runs and a merge changed that
+hasn't landed, the worktree's index being reset to the landing base (sync.rs,
+results.rs), as the overlay lists it here. Autopilot's `Settings` keep the start's
+folders, so its stages, retries and candidates (`main_settings`) run with them. The
+daemon checks and keeps a start's folders before the start itself (`keep_folders`):
+each is a folder at the top of the worktree, or nothing yet (made then, as git keeps
+no empty folder), never a file or a link; each one's settings are saved for
+`<worktree>/<name>`, and the names go in `StartSettings.folders` (serde default) for
+restarts and checked merges. The folders its last start named and this one doesn't
+leave the worktree, ignored files and all, under the chat's hold on its files: at that
+start rather than "at the next sync", as a sync names no folders and the start after
+it does. A workspace chat's result holds its folders and what its base has at its top;
+what its runs made there besides stays out, named in `ChatResult.outside` (serde
+default), but `.rovik`, which holds the ID file the server writes there; its changes
+(`WorkChanges`) leave out the same. `unchecked` is true only when no check of the
+folders the result changes (its top-level entries that differ from the base) would
+run, nor one that names no folder (`checks_changed`, now public). Its delivery isn't
+pushed to a branch and fails saying to land its result from the app (D30). Test
+helpers moved for sharing: `next_result` and `files` to `tests/common/project.rs`,
+`thorough_model` and `implementation` (now given the plan and the file) to
+`tests/common/task.rs`. Tests: `rovik-agentd/tests/folders.rs` (the daemon says it
+runs chats across folders; a two-folder chat's first sync gives one worktree with each
+folder under its name, and its run works there told each folder's checks by its
+settings, checking the folder it changed; a result lands unchecked only when none of
+its folders' checks would run; a merge checked on the server runs the changed folders'
+checks, not another's that would fail; a check failing there is reported as failing,
+not set apart; a file made at the worktree's top is named in `outside` and isn't in the
+result, nor the server's `.rovik`; a restart keeps the chat's folders; a folder a later
+start leaves out leaves the worktree with its ignored files; a start whose folder isn't
+`root/<name>`, or is a file there, is refused before anything changes; a Thorough
+task's candidates work with the chat's folders, so web's failing check never runs in
+them), `results.rs` (a chat across folders isn't delivered and says why: a unit test,
+as a whole task's delivery needs npm), `folders.rs`, `check_project_tests` (the daemon
+form; a folder that isn't at the top of the root, and folders without a root, are
+refused; an Autopilot stage on a daemon works in its start's folders), `server.rs` (a
+worktree's unlanded changes are its git status), `workspace_e2e_tests.rs` (on a daemon
+a workspace chat works in its worktree by its folders' names, no view; a check failing
+there is reported as failing, which a copy of the worktree, where FUSE works, would
+have set apart). The daemon tests run without virtual files, so the "not set apart"
+case only fails without the change in the core's test.
+
+**G03 — a workspace's composite shadow.** `shadow/composite.rs`: `Composite::open`
+makes a bare repository whose alternates are the folders' shadows' object folders,
+written only when they change, so it reads their objects and, through theirs, the
+folders' repositories'. `compose(chat, parts)` takes each folder's name and its own
+tree (`Shadow::folder_tree`: the tree at the folder's place in its repository's
+snapshot, K31) and commits one tree with each under its name, on the chat's previous
+one, at `refs/rovik/snapshots/<chat>`: the folders' history isn't the composite's
+(D30). An empty folder is left out, as git keeps no tree of it, and an unchanged tree
+keeps its commit. `graft(name, shadow, chat, (base, result))` copies the objects of
+the folder's part of a fetched result and of its base from the composite into the
+folder's shadow, each object after what it holds, so a tree there is whole; then it
+commits the base, and the result on it, there on the folder's own tree (the chat's
+snapshot in that shadow, with the part at the folder's place; a folder at its
+repository's root has the part as its tree), and returns the result's commit, for
+`Shadow::import`. The shadow's commit and packing became free functions
+(`rovik_commit`, `upkeep`, `pack`, `empty_tree`), shared by snapshots, folds and the
+composite. Where the composite lives (`shadow::dir` of the workspace's ID) and when it
+opens are G05's. Tests (`tests/shadow.rs`): composing two folders' trees puts each
+under its name, read through two levels of alternates; a chat's compose has only its
+folders, and none that's empty; an unchanged compose keeps its commit, and a changed
+one goes on it; grafting a folder's result copies its objects into the folder's shadow
+and commits on its current tree, a folder of a repository keeping the rest of that
+repository's tree.
+
+**G04 — ignore rules rebased under a folder's name.** `shadow/rules.rs`:
+`workspace_excludes(folders)` gives, for each folder in the workspace's order, what git
+ignores in it from outside it, rewritten to match under its name in the composite: the
+user's global excludes (`core.excludesfile` of the folder's repository's settings, else
+git's XDG file), the repository's `info/exclude` (of its common folder, for a linked
+worktree), and the `.gitignore` of each folder from the repository's root down to the
+folder's parent, in that order in one list, as a later rule wins and git weighs each of
+these files over the one before. A folder outside any repository gets the global
+excludes alone. The folder's own `.gitignore`s are in its tree and, deeper than the
+composite's `info/exclude`, still weigh most. A line is read as libgit2 reads it
+(`git_attr_fnmatch__parse`: one `\r`, a comment, `!`, trailing spaces but escaped ones,
+one leading slash, a trailing slash for folders only, anchored when a slash is left,
+wild for an unescaped `*`, `?` or `[`), and a rule's parts are matched against the
+folder's path part by part with a port of libgit2's `wildmatch` (`**` takes in any
+number of folders, an unanchored rule starts with one). What's left of it applies inside
+the folder (`apps/**/gen/` at `apps/web` is `/front/**/gen/`); a rule that ends at the
+folder or above it takes in all of it, as `/front/`, not `/front/**`: a walk doesn't go
+into an ignored folder, so, as in the repository, nothing inside can take a file back. A
+negated rule without wildcards that takes back no earlier rule of its file is left out,
+as libgit2 drops it when it reads the file (`does_negate_rule`, comparing patterns with
+escaped spaces unescaped, as libgit2 keeps them); a rebased negation without wildcards
+gets its own rule before it, which libgit2 needs to keep it, so it takes back just what
+it did. A folder's name is matched as it is (`*?[\` escaped). The rules are the
+workspace's, the same for each of its chats, as the daemon keeps one `info/exclude` per
+project; G05 sends them with every sync. Two of libgit2's own differences show in the
+tests: `is_path_ignored` reads a path's `.gitignore`s from the root down where a status
+walk reads the deepest first, and only a walk stops at an ignored folder, so the tests
+compare both. A difference that stays: `core.ignorecase` of the folder's repository
+(macOS, Windows) folds case where a rule meets the folder's path, but on a Linux daemon
+the rest of the rule matches the case it's written in, so `Dist/` ignores `dist` here and
+not there. Tests: `rules.rs` (a rule is rebased under the folder's name; read as libgit2
+reads it; a negation without wildcards is kept only after a rule it takes back; patterns
+match as libgit2's wildmatch does; a folder's name is matched as it is) and
+`tests/shadow.rs`, where a repository has rules at every level above its folder
+`apps/web`: `rebased_rules_ignore_what_git_ignores_in_the_folder` (28 paths, each
+ignored as libgit2's `is_path_ignored` says in the repository and in a composite's
+worktree with the rebased rules in its `info/exclude`, and the files made, both status
+walks list the same ones), `a_rule_naming_the_folder_or_one_above_it_takes_in_all_of_it`
+(a negation libgit2 keeps, one it drops, a monorepo's apps but this one, a folder's own
+rules under an ignored folder), `what_an_ancestors_gitignore_ignores_stays_out_of_the_result`
+(staging a run's changes there leaves `node_modules` out),
+`every_chat_of_a_workspace_sends_the_same_rules`.
+
+**G05 — chats across folders in WSL and on hosts.** `remote/files.rs`: `ChatFiles`
+(owner, name, `Folders`, and a workspace chat's workspace's folders) replaces
+`project_of` (`files_of`): a folder chat's is its project's folder as before (its
+project's shadow, the whole repository, with history); a workspace chat's are the
+folders checked for it, through `agent_run::workspace_folders` (now public), so a
+missing one is refused by name everywhere a chat's files are needed: sync, import, move,
+move back, the bar. The kinds differ only there (`snapshot`, `fold`, `import`, `ready`,
+`shadow`). Each folder of a workspace has a shadow of its own at
+`shadow/<workspace>/<name>.git` (a folder's name is never another's, D8), apart from
+its project's; the composite is `shadow/<workspace>.git`, its alternates every folder
+shadow there, those of folders that left included: a push hides the host's commits, and
+libgit2's pack builder reads their trees, which earlier snapshots hold. The host's
+project is named as the workspace is, with no settings or push address of its own (each
+folder's settings go with each start; nothing is pushed, D30), and the rules sent are
+the workspace's (G04). A host that doesn't serve `FOLDERS` is refused in `start`, in
+every sync (`snapshot`) and in `movable` (`runs_folders`): "… runs an older Rovik,
+which can't run a chat across folders yet: upgrade it first.", in the preflight with
+`too_old`'s words for whom to ask, and for the home host the plan's WSL sentence; a host
+that hasn't said what it serves isn't refused there, as what's asked of it then says it
+can't be reached. A start sends the chat's folders as `RunFolder`s with their settings,
+and writes the editor's paths under each folder from its name (`relative_to_folders`), a
+steer too. A result is fetched into the composite and imported by `Composite::import`:
+each folder's part is grafted into its shadow (G03) and built from there into its part
+of the chat's store by `overlay::import::Across` (`begin`, `add` per folder, `finish`),
+beside the store, then swapped in at once, so a store never holds part of a result. The
+store is laid out as a local workspace chat's (`folders.json`, `parts/<name>/`), so
+landing, Undo and the conflict resolver work on it unchanged (F04), its paths are the
+chat's (`api/x`), and `WorkLanded` names every folder's. `build` no longer writes
+`project.txt` and `import.json`; its callers do. What a result changed outside the chat's
+folders (`ChatResult.outside`, and a folder that left the chat) is `Imported.outside`,
+told in a notice as the paths left for their case are (`tell_left_there`): "`notes.md`
+is in none of the chat's folders, so it stays on …". The window's open list carries the
+workspace's ID with each of its folders (`Instances::give_open_projects`), so a
+workspace chat's result lands by itself while its workspace is open. A move folds each
+folder's changes (`chats::folder_changes`, new) into its shadow and composes the bases,
+the changes committed on them (`Composite::on`); a move back opens the chat's view over
+its folders; the move preflight leaves a workspace chat's push notes to G06. The bar
+reads a file's version here through `Folders::abs`, and a plan in the chat's folder by
+its name (`plan_in_worktree`). D19 and D32 on hosts (`remote/held.rs`): the app's
+`workspace_remove_folder`, `workspace_relocate_folder` (changes counting only for
+another project, `api::locates_same_project`) and `chat_set_folders` first ask
+`folder_held_there` and `leaving_held_there`: a chat on a host that works in the folder
+holds it while it's at work there (a run, or its Autopilot task), while its worktree has
+changes there that haven't landed (`WorkStatus`), and while its host can't be asked.
+Apply while a result is being imported is refused as at work, as the import holds the
+chat. Tests: `overlay/import/tests.rs` (a result across folders becomes each folder's
+changes and lands in both, each as its repository writes it; a folder its result doesn't
+change has no part; an import across folders that fails leaves the store as it was; files
+marked in a folder wait for their markers; a folder's changes are read as the folder
+names them), `remote/tests/folders.rs` with the fake daemon (a chat across folders isn't
+moved to a host that can't run it, the upgrade offered; it doesn't start in a WSL that
+can't, saying how to update it; a start across folders names each folder with its
+settings and its paths from its name, a steer too; a folder a host's chat has changes in,
+or is at work in, doesn't leave the workspace or the chat, nor one whose host can't
+say), `remote/bar.rs` (a plan is found in its folder of the worktree), `instances.rs`
+(the open projects are the window's folders' projects and its workspace's), and
+`rovik-agentd/tests/folders.rs` with the real daemon (a run across folders brings one
+result that lands in each folder, and the landing moves the base for both; a folder
+checked joins at the next message, its run reading it, and one unchecked leaves,
+ignored files and all; a chat across folders moved back waits with its changes in each
+folder; two chats with different folders keep each other's by-products out of their
+results; a folder inside a repository imports with its repository's attributes). The
+app's commands are wrappers of the `Remote` methods tested there.
+
+**G06 — the move dialog's folders and notes.** `MovePreflight.folders` (left out when
+empty) names a workspace chat's folders, and its notes are what each folder's first push
+carries that the user hears of first (`ChatFiles::guards`: each folder's guards, only
+what's in the folder, by the chat's paths, `web/run.sh`, and no history size, as their
+history stays here). The dialog says the chat's folders go, lists them under "Its
+folders", says that "Their git history stays on this computer: the first push carries all
+their files.", and heads its notes "About its folders". A missing folder and a host that
+can't run chats across folders block the move with G05's words (`movable`). Tests:
+`remote/tests/folders.rs` (a move's preflight lists the chat's folders and what their
+push carries, a script outside the folder left out; a missing folder blocks a chat across
+folders' move), `chatLocation.test.tsx` (a chat across folders: the dialog lists them,
+says their history stays here, and their notes; one of them missing: the dialog says
+which and offers no Move).
+
+Before H, a user of a project sees none of this either: a window still has one
+folder unless `--workspace` asks for one, and its Git panel and its chats look
+and work as they did. What does change is that two tabs of one name say where
+each one is, the project checks page says "Packages (N)", and a chat names the
+editor's file by its path in the project (an isolated chat's tools refuse a full
+path, section 12): a file from outside the project isn't named to the chat, and
+the message box says why.
+
+**H01 — the menu.** The project switcher's menu has **Create a workspace…**, and
+**Add folder to workspace…** while a workspace is open, between **New project…** and
+**New window**; in a workspace its trigger shows the workspace's name with stacked
+folders, and its tooltip lists the folders. `ProjectList` takes rows of both kinds
+(`Listed`, from `listed(projects, workspaces)`, most recently opened first): a workspace's
+shows its name, its folders' names, "Workspace · 3 folders" and "1 folder missing", and
+opens with a click though a folder is missing (D20); Delete asks `deleteQuestion`'s "Delete
+the workspace Shop? Its 4 workspace chats are deleted for good. Its folders, and their own
+chats, aren't touched." The filter (`listedMatches`) finds a workspace by its name or a
+folder's path. `projects.ts` keeps `workspaceList` beside `projectList`, read together,
+each unchanged summary keeping its object, and its row too (`listed` keeps one row object
+per summary), so a click isn't lost to the list read again under it; a list that can't be
+read leaves the other. Opening a workspace from the list reads it again
+(`workspaceTarget`), as the start does. `NewWorkspaceDialog.tsx`: the name follows the
+folders ("api + web", cut at 80 characters) until one is typed; the folders, the open one
+first, each with ✕; **Add folder…** picks several at once (`commands.ts`'s `pickFolders`),
+and the field beside it adds a path typed or pasted (out of the quotes a copied path comes
+in). Each folder is checked against those listed before it — `workspace_check_folder`
+takes `others`, the folders joining with it — and quietly against the other windows
+(`instances.ts`'s `openElsewhereReason`: `project_check` without bringing that window to
+the front): the reason shows on its row, and Create stays off while one has one. Create
+makes the workspace, and the window opens it: made from the folder the window has open
+(`growsInto`), it grows into it (`switchTarget.ts`'s `growTarget`: check, keep the tabs,
+claim, show in place, resolve only the new folders), and otherwise switches to it. Shown
+in place (`showGrown`), the tree keeps what was open, the tabs stay, and
+`openFolders.ts`'s `carrySession(from, to)` hands the folder's session to the
+workspace's in the same batch as the target changes: `TerminalPanel` moves its terminals
+(the same tabs, their shells running, so a tab's `session` is no longer read-only) and
+`GitPanel` its commit message. **Add folder to workspace…** (`addFolders`) checks each
+folder picked against the workspace and those picked before it (D5), told in a
+notification when it can't join; one another window has brings that window to the front;
+the others are added (`workspace_add_folders`), and the window grows into the workspace.
+Tests: `ProjectSwitcher.test.tsx` (new: the items' order, Add folder only in a workspace,
+the trigger, workspaces found by a folder's path and opened with Enter, no Delete on what
+the window has open), `NewWorkspaceDialog.test.tsx` (new: the open folder first and the
+name following the folders, a typed and a pasted path, each refusal on its row with Create
+off, a folder listed twice, the picker's several folders, Create, a refused create, the
+name cut), `ProjectList.test.tsx` (a workspace's row with its missing count, no Delete on
+the open one, the order, the rows kept, its delete question, the filter),
+`switchTarget.test.ts` (growing in place, refused, when the window grows; folders added
+checked in order, none joining, a project), `projects.test.ts` (the workspaces listed,
+rows kept, the projects listed without them), `instances.test.ts` (the quiet reason),
+`terminalPanel.test.tsx` and `GitPanel.test.tsx` (Create brings the folder's terminals and
+commit message along, and the folder alone again has none), and `chat_db/api.rs`'s
+`a_folder_is_checked_against_the_folders_listed_with_it`.
+Fixes: the switcher's list now hides Delete on what the window has open; since B06 it was
+given only the project shown, so its Delete showed on it (the backend refused it). And a
+folder opened from the list or with Ctrl+O was compared with the window's first folder, so
+in a workspace that folder couldn't be opened alone: `openFolders.ts`'s `sameTarget` (App's
+`sameWindowTarget`, moved) compares targets (`openFolders.test.ts`).
+Departures: in a workspace, the dialog lists no folder to begin with (D4 speaks of a
+project's open folder) and Create switches to the new workspace; and as the backend claims
+a workspace's folders as the database has them (B03), folders are added before they're
+claimed, so one another window takes between the check and the claim stays in the
+workspace while this window goes on without it, as the claim's notice says, until the
+workspace is opened again.
+
+**H02 — the README.** Features has a Workspaces item: what a workspace is, the menu's two
+items and the dialog's checks, what a workspace made from the open folder keeps, the
+folder rows and their menu, search, terminals, the settings pages' folder picker, the
+editor's services, and what deleting one deletes. The Several windows item says a project
+is open in one window alone or in a workspace, and its section how a workspace is claimed
+with its folders, all or none, how the notice names the workspace, and which folders a
+window leaving a workspace at work keeps. The Git panel item says a repository that is one
+of the folders goes by the folder's name. Getting started (H01) and the chats across
+folders (E–G) were written with their tasks. `npm run format:check` passes.
+
+**H03 — the e2e steps.** `run.mjs` runs section 8's steps after the project's restart
+(`workspaceSteps`) on `web`, set up beside demo: a repository of its own on a branch
+`trunk`, with a `README.md` as demo has and a line search finds in each, added through
+the dialog's path field. Create a workspace… made from the open project is named "demo +
+web" and shows a row per folder; each folder's README.md opens in a tab told apart by "·
+demo" and "· web"; a search lists demo's match, then web's, under their names; the Git
+tab has a section per repository with its branch (main, trunk), and one commit lands in
+each; New chat with web checked (`newChatIn`) writes a file that lands in web alone; New
+chat with both checked writes a file in each through a workspace chat, and both land (on
+Linux; elsewhere New chat must say why it can't check a second folder); Remove from
+workspace closes web's tabs and keeps demo's; a Rovik started on demo brings this window
+to the front; and a restart brings the workspace back with demo's tabs. `e2e.yml`
+installs `fuse3` in the Linux job.
+Fixes: since the branch offer, a new chat's first message with its repository on main
+asks whether to make a branch for the chat, and nothing answered it, so the project's
+first chat step waited out its reply: it now answers No and not again
+(`answerBranchQuestion`); the workspace's chats answer it if they're asked. Step 2 waits
+for each folder's `.rovik` row: web's ID file is written as the workspace opens, and its
+row coming moved the rows under it, so a click opened web's notes.txt.
+Departures: section 8 keeps the project's steps unchanged, but with FUSE every chat on
+the Linux job is isolated, which they weren't there before, so two of them now go as
+they're meant to with isolated chats: the Autopilot step ticks the project's tests on
+Settings → Project checks first (and unticks them after), as Autopilot lands only what a
+check ran on (V02); and the project's restart compares the tabs of the project's files,
+as a tab of a file in an isolated chat's view (its write, opened behind) can't come
+back: a start doesn't mount the view.
+Run here on Linux (xvfb, WebKitWebDriver, FUSE): 51 of 53 steps pass, every workspace
+step among them, step 6 landing in both folders. The other two fail without workspaces:
+the approval step's **By you** for file edits is below the settings dialog's visible
+part at 1200×800, and the click helper takes the window's visible part, not the
+dialog's, so the click misses (scrolling the button into view first fixes it); and the
+publish step reads the branch's upstream as soon as the remote has the commit, before
+the push has written it (a race of the step's own; it passed in the run before). macOS
+and Windows weren't run here: there step 6 checks New chat's reason, and on Windows,
+whose chats run in WSL, step 5 goes as the project's chat steps do. Found, left as it
+is: with **Open the files the agent edits** on, an isolated chat's write opens a tab of
+the file in the chat's view (`/tmp/rovik-ide-<uid>/chats/<id>/…`), not the project's
+file with the landing, as the agent-write step's comment expects. A workspace chat is
+always isolated, so its writes do so too, and the message box then says the file isn't
+in the window's folders (F14e).

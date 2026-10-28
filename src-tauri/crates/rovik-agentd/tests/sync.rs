@@ -50,7 +50,7 @@ async fn a_local_edit_is_in_the_worktree_before_the_next_turn() {
     let mut setup = Setup::new().await;
     write(&setup.project.join("src/lib.rs"), "pub fn lib() {}\n");
     let app = App::new(&mut setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     let root = ready_to_run(&setup).await;
     let (url, _) = model(vec![
@@ -84,7 +84,7 @@ async fn a_local_edit_is_in_the_worktree_before_the_next_turn() {
 async fn a_conflict_gets_markers_and_the_result_waits_for_them() {
     let mut setup = Setup::new().await;
     let app = App::new(&mut setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     let root = ready_to_run(&setup).await;
     let (url, asked) = model(vec![
@@ -132,7 +132,7 @@ async fn a_conflict_gets_markers_and_the_result_waits_for_them() {
     })
     .await;
     let open = (PROJECT.to_string(), setup.project.clone());
-    app.remote.set_open_project(Some(open));
+    app.remote.set_open_projects(vec![open]);
     let waits = until("the result waiting for its markers", || {
         chats::pending(CHAT).filter(|p| p.reason.contains("conflict markers"))
     })
@@ -155,7 +155,7 @@ async fn a_conflict_gets_markers_and_the_result_waits_for_them() {
 async fn a_run_reminded_of_its_markers_settles_them() {
     let mut setup = Setup::new().await;
     let app = App::new(&mut setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     ready_to_run(&setup).await;
     let (url, asked) = model(vec![
@@ -195,7 +195,7 @@ async fn a_run_reminded_of_its_markers_settles_them() {
     })
     .await;
     let open = (PROJECT.to_string(), setup.project.clone());
-    app.remote.set_open_project(Some(open));
+    app.remote.set_open_projects(vec![open]);
     let both = "fn main() { local(); remote() }\n";
     landed_as(&setup, "src/main.rs", both).await;
 }
@@ -204,7 +204,7 @@ async fn a_run_reminded_of_its_markers_settles_them() {
 async fn without_the_chat_resolving_the_sync_waits() {
     let mut setup = Setup::new().await;
     let app = App::new(&mut setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     let root = ready_to_run(&setup).await;
     let (url, _) = model(vec![
@@ -282,7 +282,7 @@ async fn without_the_chat_resolving_the_sync_waits() {
 async fn sync_now_brings_the_project_between_messages() {
     let mut setup = Setup::new().await;
     let app = App::new(&mut setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     let root = ready_to_run(&setup).await;
     let (url, _) = model(vec![
@@ -310,7 +310,7 @@ async fn a_binary_conflict_waits_whatever_the_setting() {
     let mut setup = Setup::new().await;
     write(&setup.project.join("logo.bin"), "\0logo\n");
     let app = App::new(&mut setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     let root = ready_to_run(&setup).await;
     let (url, _) = model(vec![

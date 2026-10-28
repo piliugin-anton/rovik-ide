@@ -878,6 +878,12 @@ mod tests {
             ["src/api/a.rs"]
         );
         let known = ["src/a.rs".to_string()];
+        // A chat of `<drive>\proj`, working in it.
+        let roots_of = |drive: &str| {
+            let project = format!("{drive}\\proj");
+            crate::folders::Folders::one(project.clone().into())
+                .output_roots(std::path::Path::new(&project))
+        };
         for text in [
             r"It fails in C:\proj\src\a.rs:12 now.",
             r"It fails in (C:\proj\src\a.rs:12:5), see above.",
@@ -889,12 +895,11 @@ mod tests {
             let found = paths_in(text);
             assert_eq!(found.len(), 1, "{text}: {found:?}");
             assert!(found[0].ends_with(":/proj/src/a.rs"), "{text}: {found:?}");
-            let roots = [found[0][..2].to_string() + r"\proj"];
+            let roots = roots_of(&found[0][..2]);
             assert_eq!(resolve(&found[0], &roots, &known), "src/a.rs", "{text}");
         }
-        let roots = [r"C:\proj".to_string()];
         assert_eq!(
-            resolve(r"C:\proj\src\a.rs:12:5", &roots, &known),
+            resolve(r"C:\proj\src\a.rs:12:5", &roots_of("C:"), &known),
             "src/a.rs"
         );
     }

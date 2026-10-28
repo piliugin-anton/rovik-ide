@@ -4,7 +4,7 @@
 
 use super::*;
 
-const REPORT: &str = "## Answer\nIt is in a.txt.\n\n## Evidence\n- `a.txt:1`: the line\n\n## Open questions\nNone\n\n## Web sources\nNone";
+pub(super) const REPORT: &str = "## Answer\nIt is in a.txt.\n\n## Evidence\n- `a.txt:1`: the line\n\n## Open questions\nNone\n\n## Web sources\nNone";
 
 fn scouts_on(extra: Value) -> subagent::SubagentConfig {
     let mut scout = json!({ "enabled": true });
@@ -14,7 +14,7 @@ fn scouts_on(extra: Value) -> subagent::SubagentConfig {
     serde_json::from_value(json!({ "enabled": true, "kinds": { "scout": scout } })).unwrap()
 }
 
-fn task(id: &'static str, goal: &str) -> Reply {
+pub(super) fn task(id: &'static str, goal: &str) -> Reply {
     Reply::Call {
         id,
         name: "task",
@@ -47,7 +47,7 @@ impl Harness {
         request
     }
 
-    async fn child_of(&self, call_id: &str) -> store::ChildDialog {
+    pub(super) async fn child_of(&self, call_id: &str) -> store::ChildDialog {
         let (id, call) = (self.dialog_id.clone(), call_id.to_string());
         let db = self.core.db.clone();
         db.read(move |c| store::child_for_call(c, &id, &call, None))
@@ -56,7 +56,7 @@ impl Harness {
             .unwrap_or_else(|| panic!("no subagent chat for {call_id}"))
     }
 
-    async fn messages_of(&self, dialog_id: &str) -> Vec<MessageRow> {
+    pub(super) async fn messages_of(&self, dialog_id: &str) -> Vec<MessageRow> {
         let id = dialog_id.to_string();
         let db = self.core.db.clone();
         db.read(move |c| store::get_messages(c, &id, None, 500))
@@ -824,12 +824,10 @@ fn record_order(messages: &[MessageRow]) -> Vec<String> {
 #[tokio::test]
 async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
     let h = harness(&[("a.txt", "old\n")]).await;
-    let resolved = "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\nNone.";
+    let resolved =
+        "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\nNone.";
     let (url, seen) = model_routed(
-        vec![(
-            REVIEW,
-            vec![Reply::Text(FINDING_A), Reply::Text(resolved)],
-        )],
+        vec![(REVIEW, vec![Reply::Text(FINDING_A), Reply::Text(resolved)])],
         vec![
             write_call("w1", "a.txt", "helo\n"),
             Reply::Text("Done."),
@@ -895,7 +893,11 @@ async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
     // Round 2, a follow-up: the earlier findings and the lead's answer.
     assert!(briefs[1].contains("## The earlier review"));
     assert!(briefs[1].contains("The greeting is wrong"));
-    assert!(briefs[1].contains("The agent's answer: fixed — it says hello now."), "{}", briefs[1]);
+    assert!(
+        briefs[1].contains("The agent's answer: fixed — it says hello now."),
+        "{}",
+        briefs[1]
+    );
     assert!(briefs[1].contains("+hello"));
     let tools = tool_names(&requests_with(&seen, REVIEW)[0]);
     assert!(tools.contains(&"read".to_string()) && tools.contains(&"callers".to_string()));
@@ -3752,7 +3754,7 @@ fn workers_on(extra: Value) -> subagent::SubagentConfig {
     .unwrap()
 }
 
-fn step(id: &'static str, n: usize) -> Reply {
+pub(super) fn step(id: &'static str, n: usize) -> Reply {
     Reply::Call {
         id,
         name: "task",
@@ -3760,7 +3762,7 @@ fn step(id: &'static str, n: usize) -> Reply {
     }
 }
 
-fn worker_report(summary: &str, files: &[&str]) -> Reply {
+pub(super) fn worker_report(summary: &str, files: &[&str]) -> Reply {
     let list = if files.is_empty() {
         "None".to_string()
     } else {
@@ -6688,7 +6690,8 @@ async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
     )
     .await;
     // P1.4: an earlier run of the chat changed src/util.rs (new in its view).
-    let chat = crate::overlay::chats::open(&h.dialog_id, &h.project, Box::new(|_, _| {})).unwrap();
+    let folders = crate::folders::Folders::one(h.project.clone());
+    let chat = crate::overlay::chats::open(&h.dialog_id, &folders, Box::new(|_, _| {})).unwrap();
     std::fs::write(chat.view.join("src/util.rs"), "util from run 1\n").unwrap();
     chat.fs.flush();
     h.start(h.implement_isolated(&url, true)).await;
@@ -7302,7 +7305,10 @@ async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
     // The third review, the run's last, found a new problem: it blocks.
     let last = all.last().unwrap();
     assert_eq!(last["blocked"], true, "{last}");
-    assert_eq!(last["findings"][0]["title"], "The greeting has no name", "{last}");
+    assert_eq!(
+        last["findings"][0]["title"], "The greeting has no name",
+        "{last}"
+    );
 }
 
 /// Round 2 (§4.2): the third round is the first green; its review's fix
@@ -8892,7 +8898,7 @@ async fn deleting_a_project_removes_its_subagents_chats_and_files() {
         }
     }
     let core = h.core.clone();
-    crate::chat_db::api::chat_delete_project(&core, project_id)
+    crate::chat_db::api::chat_delete_project(&core, project_id, Vec::new())
         .await
         .unwrap();
     for id in [&kid, &grandkid] {
@@ -11089,7 +11095,9 @@ async fn budget_used_record_shape() {
     );
     let mut third_meta = third.meta.clone().unwrap();
     // Step 7: the plan as checked is kept with the result.
-    assert!(third_meta["plan"].as_str().is_some_and(|p| p.starts_with("# Users")));
+    assert!(third_meta["plan"]
+        .as_str()
+        .is_some_and(|p| p.starts_with("# Users")));
     third_meta.as_object_mut().unwrap().remove("plan");
     assert_eq!(
         &third_meta,

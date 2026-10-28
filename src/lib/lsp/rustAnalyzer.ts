@@ -73,9 +73,15 @@ function savePrefs(patch: Partial<Prefs>) {
  * State
  * ------------------------------------------------------------------------- */
 
-let current: { root: string; client: LspClient; binary: RaBinary } | null = null;
-/** The project Rust support was started (or offered) for. */
-let activeRoot: string | null = null;
+let current: { folders: readonly string[]; client: LspClient; binary: RaBinary } | null = null;
+/**
+ * The folders Rust support was started (or offered) for: a project's one, or
+ * a workspace's several (C07). Replaced as a whole, and compared by key.
+ */
+let activeFolders: readonly string[] | null = null;
+/** The folders as one key: the same folders in the same order are one workspace. */
+const foldersKey = (folders: readonly string[]) => folders.join('\n');
+const activeKey = () => (activeFolders === null ? null : foldersKey(activeFolders));
 /** "Not now" on the download offer: don't ask again this session. */
 let downloadDeclined = false;
 /** Install or update in progress. */
@@ -86,19 +92,23 @@ const rustSrcOffered = new Set<string>();
 /** Health warnings already shown: each once per session, not on every change. */
 const warningsShown = new Set<string>();
 
-/** A Rust file was opened in `root`: start rust-analyzer if it isn't running. */
-export function ensureRustSupport(root: string | null) {
-  if (!root || root === activeRoot) return;
-  activeRoot = root;
+/**
+ * A Rust file was opened in the window's folders: start rust-analyzer for
+ * them if it isn't running for them already (a project's one folder, or a
+ * workspace's several, which it reads as one workspace).
+ */
+export function ensureRustSupport(folders: readonly string[]) {
+  if (folders.length === 0 || foldersKey(folders) === activeKey()) return;
+  activeFolders = folders;
   void (async () => {
     await stopRustSupport({ keepRoot: true });
     const binary = await find();
-    if (activeRoot !== root) return;
+    if (activeKey() !== foldersKey(folders)) return;
     if (!binary) {
-      offerDownload(root);
+      offerDownload(folders);
       return;
     }
-    await launch(root, binary);
+    await launch(folders, binary);
   })().catch((err) => {
     notify({
       id: NOTE_INSTALL,
@@ -109,9 +119,23 @@ export function ensureRustSupport(root: string | null) {
   });
 }
 
-/** The project closed or changed: stop the server. */
+/**
+ * The window's folders that are there changed (one came back, or left): a
+ * server started for the old ones starts again for these (C07). With no
+ * server started, there's nothing to change.
+ */
+export function workspaceFoldersChanged(folders: readonly string[]) {
+  if (activeFolders === null) return;
+  if (folders.length === 0) {
+    void stopRustSupport();
+    return;
+  }
+  ensureRustSupport(folders);
+}
+
+/** The window's folders closed or changed: stop the server. */
 export async function stopRustSupport(opts: { keepRoot?: boolean } = {}) {
-  if (!opts.keepRoot) activeRoot = null;
+  if (!opts.keepRoot) activeFolders = null;
   window.clearInterval(updateTimer);
   window.clearTimeout(statusTimer);
   updateTimer = undefined;
@@ -126,18 +150,18 @@ export function rustFileSaved(path: string) {
   if (path.endsWith('.rs')) current?.client.didSave(path);
 }
 
-/** Restarts rust-analyzer for the current project (finding the binary again). */
+/** Restarts rust-analyzer for the window's folders (finding the binary again). */
 export function restartRustAnalyzer() {
-  const root = activeRoot;
-  if (!root) return;
+  const folders = activeFolders;
+  if (!folders) return;
   void (async () => {
     const binary = await find();
     if (!binary) {
       downloadDeclined = false;
-      offerDownload(root);
+      offerDownload(folders);
       return;
     }
-    await restartWith(root, binary);
+    await restartWith(folders, binary);
   })();
 }
 
@@ -170,11 +194,11 @@ async function find(): Promise<RaBinary | null> {
   }
 }
 
-async function launch(root: string, binary: RaBinary) {
+async function launch(folders: readonly string[], binary: RaBinary) {
   const client = new LspClient({
     name: 'rust-analyzer',
     command: binary.path,
-    root,
+    folders,
     languageId: 'rust',
     extensions: ['.rs'],
     initializationOptions: {
@@ -196,23 +220,25 @@ async function launch(root: string, binary: RaBinary) {
         kind: 'error',
         title: 'rust-analyzer stopped',
         message: code === null ? 'It ended unexpectedly.' : `It ended with exit code ${code}.`,
-        actions: [{ label: 'Restart', primary: true, run: () => void restartWith(root, binary) }],
+        actions: [
+          { label: 'Restart', primary: true, run: () => void restartWith(folders, binary) },
+        ],
       });
     },
   });
-  current = { root, client, binary };
+  current = { folders, client, binary };
   await client.start();
   if (binary.source === 'managed') scheduleUpdateChecks();
-  void offerRustSrc(root);
+  void offerRustSrc(folders[0]);
 }
 
 /** Stops the running server and starts `binary`, which opens the Rust files again. */
-async function restartWith(root: string, binary: RaBinary) {
+async function restartWith(folders: readonly string[], binary: RaBinary) {
   const running = current;
   current = null;
   dismiss(NOTE_STATUS);
   await running?.client.stop();
-  if (activeRoot === root) await launch(root, binary);
+  if (activeKey() === foldersKey(folders)) await launch(folders, binary);
 }
 
 function showStatus(status: ServerStatus) {
@@ -255,7 +281,7 @@ function showStatus(status: ServerStatus) {
  * Installing and updating
  * ------------------------------------------------------------------------- */
 
-function offerDownload(root: string) {
+function offerDownload(folders: readonly string[]) {
   if (downloadDeclined || installing) return;
   notify({
     id: NOTE_INSTALL,
@@ -265,7 +291,7 @@ function offerDownload(root: string) {
       'Download it from its official GitHub release (about 15 MB)? It’s checked before it’s used.',
     actions: [
       { label: 'Not now', run: () => (downloadDeclined = true) },
-      { label: 'Download', primary: true, run: () => void install(root) },
+      { label: 'Download', primary: true, run: () => void install(folders) },
     ],
   });
 }
@@ -273,7 +299,7 @@ function offerDownload(root: string) {
 const mb = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`;
 
 /** Downloads the latest release and (re)starts rust-analyzer with it. */
-async function install(root: string, known?: RaRelease) {
+async function install(folders: readonly string[], known?: RaRelease) {
   if (installing) return;
   installing = true;
   const updating = current !== null;
@@ -298,7 +324,7 @@ async function install(root: string, known?: RaRelease) {
     dismiss(NOTE_UPDATE);
     // An update while a custom or system copy is in use doesn't switch to it.
     const chosen = (await find()) ?? binary;
-    if (activeRoot === root) await restartWith(root, chosen);
+    if (activeKey() === foldersKey(folders)) await restartWith(folders, chosen);
     note.update({
       kind: 'success',
       title: updating
@@ -319,7 +345,7 @@ async function install(root: string, known?: RaRelease) {
         : 'rust-analyzer couldn’t be downloaded',
       message: `${friendly(err)}${updating ? '\nThe current version keeps running.' : ''}`,
       progress: undefined,
-      actions: [{ label: 'Try again', primary: true, run: () => void install(root, known) }],
+      actions: [{ label: 'Try again', primary: true, run: () => void install(folders, known) }],
     });
   } finally {
     installing = false;
@@ -393,7 +419,7 @@ async function checkForUpdate({ manual }: { manual: boolean }) {
     actions: [
       { label: 'Skip this version', run: () => savePrefs({ skippedTag: release.tag }) },
       { label: 'Later', run: () => {} },
-      { label: 'Update', primary: true, run: () => void install(running.root, release) },
+      { label: 'Update', primary: true, run: () => void install(running.folders, release) },
     ],
   });
 }

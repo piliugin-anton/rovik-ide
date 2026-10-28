@@ -25,7 +25,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 **Editor**
 
 - Monaco editor (the editor used in VS Code) with syntax highlighting,
-  themes and tabs.
+  themes and tabs. Two tabs with the same file name show where each one is
+  (`api` · `package.json` in one folder of a workspace, `web` · `package.json`
+  in another).
 - Markdown files have a rendered preview, as GitHub shows them: beside the
   source (Ctrl+K V), instead of it (Ctrl+Shift+V), or switched with the
   buttons at the end of the tab strip. It scrolls with the editor, opens
@@ -44,11 +46,27 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   https page (see [Servers and pages on a cloud
   host](#servers-and-pages-on-a-cloud-host)).
 - Project-wide text search powered by ripgrep's engine.
-- Several windows, each with a project of its own: **New window** in the
-  project menu opens another, and `rovik-ide <folder>` opens a folder in a
-  window of its own. A project is open in one window at a time (a copy
-  sharing its chats too): opening it again brings that window to the front
-  (see [Several windows](#several-windows)).
+- Workspaces: several folders in one window, an API and its client say,
+  each still a project of its own, with its own chats and settings.
+  **Create a workspace…** in the project menu lists the folder open now and
+  takes the others from the folder picker or a typed path, each checked as
+  it's added (a folder inside another of them, or open in another window,
+  says so); made from the open folder, the workspace keeps its tabs, its
+  terminals and the commit message being written. **Add folder to
+  workspace…** adds more later. Each folder is a row at the top of the file
+  tree, under its name, with **Remove from workspace**, and **Locate…** and
+  **Try again** while it's missing: the rest of the workspace opens without
+  it. Search covers every folder, its results under each folder's name; the
+  terminal's **+** asks which folder; Project checks and Restricted files
+  have a folder picker; IntelliSense and rust-analyzer take every folder.
+  The project list shows workspaces among the projects, and deleting one
+  deletes its own chats, never its folders or theirs.
+- Several windows, each with a project or a workspace of its own: **New
+  window** in the project menu opens another, and `rovik-ide <folder>`
+  opens a folder in a window of its own. A project is open in one window
+  at a time, alone or in a workspace (a copy sharing its chats too):
+  opening it again brings that window to the front (see [Several
+  windows](#several-windows)).
 - A built-in terminal that uses your own shell, on this computer or on a
   connected [cloud host](#a-terminal-on-a-cloud-host). Each project has
   its own terminals: switching to another project, its terminals are shown,
@@ -77,7 +95,22 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   A project that is a folder of a larger repository (a monorepo's
   package, a home folder kept in git) lists, commits and discards only
   the changes in its own folder; Discard all sends new files, staged or
-  not, to the trash.
+  not, to the trash. A commit is refused while changes are staged outside
+  that folder (a terminal's `git add` beside it), naming them. A folder
+  that is a repository of its own is committed and reverted in that
+  repository, never by the one around it; a submodule's edits are its own
+  repository's too, while the commit it has checked out is listed and
+  committed in the repository around it, as git records it. A commit with
+  nothing in it isn't made. In a workspace, each repository its folders
+  are in has a section of its own (its branch, Pull, History and ⋯ menu),
+  under the folder's name when the repository is one of the folders, and a
+  folder in no repository offers to make one. One message commits
+  each repository ticked for it, on the branch that repository is on: a
+  merge, a rebase or conflicts in one leaves it unticked, saying why. If a
+  commit fails in one repository after others were made, the message stays
+  and nothing is pushed until that one is committed too; then every
+  repository the message went to is pushed, and a branch with no remote
+  branch yet is asked about once for all.
 
 **AI agent**
 
@@ -145,7 +178,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   switch to it. Its name is made up for it, and you can change it:
   `rovik-`, an adjective, a programmer's last name and 8 random letters
   and digits, such as `rovik-kind-torvalds-x7k2m9qa`. Your uncommitted
-  changes come along. **Don't ask again** turns the question
+  changes come along. A chat across a workspace's folders is asked once
+  about every repository of its folders on its main branch, with one name
+  for all, and told which stay on another branch; a folder that joins it
+  later is asked about at its next send, offered the branch the chat's
+  other repositories are on. **Don't ask again** turns the question
   off; Settings → Agent runs turns it back on.
 - **Long tasks stay on track.** Older history is trimmed automatically, or
   the agent can manage its own context (see
@@ -194,6 +231,33 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   the chat or the message box pastes back with its attachments.
 - Chats are saved and searchable, and they keep running in the background
   when you switch to another chat.
+- A chat works in its project's folder: the file open in the editor, `@`
+  and **Add to chat** name files by their path there, and a file from
+  outside it isn't sent (the message box says why). In a workspace,
+  **New chat** asks which folders a chat works in (the folder you're
+  working in is checked; a copied folder that still shares its original's
+  chats can be checked once its history is separated). One folder makes a
+  chat of that folder; several, or **All folders** (which takes folders
+  added to the workspace later too), a chat across them, which names
+  files by their folder's name (`api/src/x.ts`) and stops while one of
+  them is missing. A chat across folders needs the virtual files driver
+  (Settings → Virtual files), or runs in WSL or on a cloud host whose Rovik
+  runs such chats (on Windows, in WSL: one with an older Rovik says to
+  update it): without either, a chat works in one folder. The chat list and the
+  label by the message box say each chat's folders, and the chats of every
+  folder are listed together. A chat across folders changes its folders
+  from its label: **Apply** takes them, but not while it's at work or has
+  commands running, nor unchecking a folder it has changes in that haven't
+  landed. **Implement this plan** on a folder's plan starts in a chat of
+  that folder. A chat across several folders saves its plans in its first
+  folder, with a line under the title naming its folders
+  (`Folders: api, web`); **Implement this plan** carries such a
+  plan out in a chat across them, the open one if it works in each, else
+  a new one, and in a workspace without one of them starts none and says
+  which.
+  Its scouts, step workers, Autopilot tasks and Thorough's two
+  implementers work across its folders too, and Claude Code or Codex with
+  their own tools are told about them.
 
 ---
 
@@ -312,7 +376,11 @@ is brought to the app's version by itself.
 
 ## Getting started
 
-1. **Open a project:** choose a folder. It appears in the file tree.
+1. **Open a project:** choose a folder. It appears in the file tree. To
+   work in several folders in one window, an API and its client say,
+   choose **Create a workspace…** in the project menu, above the file tree:
+   the folder open now is listed, add the others, and each stays a project
+   of its own. **Add folder to workspace…** adds more later.
 2. **Add a model:** open **Settings → Model providers**, paste the
    provider's base URL and your API key, and choose the models you want.
 3. **Review permissions:** in **Settings → Permissions & approval**, choose
@@ -322,6 +390,9 @@ is brought to the app's version by itself.
    may start with a `cd` into one of the project's folders, as in
    `cd web && npm test`: only what runs there has to be on the list. Turn
    approvals on here if you want to review its edits and commands first.
+   A `cd` into a folder of the project, as in `cd api && npm test`, needs
+   no allowed command of its own: it runs nothing, and the rest of the
+   command is checked as usual.
 4. **Chat:** open the AI Chat tab, pick a model and a mode (Agent, Plan or
    Autopilot), and describe what you want. In Agent mode you can keep
    sending it messages while it works.
@@ -587,7 +658,9 @@ hooks, whatever their permission mode):
   stage runs it: once, at a workspace's root, only where Permissions &
   approval would let that install run without asking (in an Autopilot task,
   where its Prepare setting is on too), and never in Plan mode. Otherwise
-  the agent is told which install to run.
+  the agent is told which install to run. A command run in one folder
+  (`cd web && npm test`) needs that folder's install and the project's
+  own, not the other folders'.
 - **Services.** A project whose compose file (`compose.yaml`,
   `docker-compose.yml`) declares the databases, caches and queues its code
   needs gets them named in the agent's prompt, read with Docker Compose
@@ -629,6 +702,17 @@ A cloud host is a Linux server that your chats can move to and run on. You
 add one in **Settings → Cloud hosts**, and Rovik logs in to it over SSH as
 your own account there. If you run a server that several people share, see
 [Rovik on a team server](docs/cloud-hosts.md).
+
+A chat across a workspace's folders moves to a host whose Rovik runs such
+chats (an older one is offered the upgrade), and runs in WSL the same way.
+Its folders go there as one project, each under its name, without their git
+history: git there shows Rovik's snapshots of them, and nothing is pushed to
+a branch for the chat. Its results come back into each folder and land in
+each, as a local chat's would; what its runs make outside its folders stays
+on the host, and the chat says so. A folder it works in there isn't removed
+from the workspace, located as another project or unchecked for the chat
+while the chat is at work there, has changes in it there that haven't
+landed, or the host can't be reached to say.
 
 ### An SSH key for a cloud host
 
@@ -1021,6 +1105,14 @@ project while chats of the first are still at work (a run, an Autopilot
 task, a stage waiting out a rate limit) keeps the first claimed until they
 finish.
 
+A workspace is claimed with its folders, all or none: its own lock and each
+folder's. So a folder is open in one window at a time, alone or in a
+workspace, and opening it where it's taken brings that window to the front,
+saying which workspace has it ("api is open in another window, in Shop").
+A window that leaves a workspace while chats across its folders are at work
+keeps the workspace and its folders claimed until they finish, and one that
+leaves while a folder's own chats are at work keeps that folder.
+
 What one process must not do to another's work is guarded the same way:
 
 - A chat at work holds a lock in `<data>/chats-at-work`. No other window
@@ -1102,13 +1194,19 @@ stages is committed, and the message is what the message hooks leave in
 `.git/COMMIT_EDITMSG`. Hooks that run after can't stop anything; their
 failure is only logged, as git ignores it.
 
+A commit across a workspace's repositories runs pre-commit in each, then
+the message hooks in each, and only then makes the commits: a hook that
+fails in one repository stops it before any commit is made, and a message
+hook changes its own repository's message only.
+
 When a hook that checks stops a commit, a push or a merge's commit, the
 error has a button to try once more without it: **Commit without hooks**,
 **Push without hooks** or **Commit merge without hooks**, as git's
 `--no-verify`. That skips pre-commit, commit-msg, pre-merge-commit and
-pre-push for that one try. prepare-commit-msg and the hooks that come
-after still run, as with git, and a push after such a commit still runs
-pre-push. The panel tells the hook from the error (`src/lib/gitHooks.ts`).
+pre-push for that one try, in every repository of a commit across a
+workspace's. prepare-commit-msg and the hooks that come after still run,
+as with git, and a push after such a commit still runs pre-push. The
+panel tells the hook from the error (`src/lib/gitHooks.ts`).
 
 The file tree doesn't show `.git`, so the Git panel's ⋯ menu has
 **Git hooks…** (`src/components/GitHooksView.tsx`,
@@ -1143,7 +1241,11 @@ check, lint, tests) and sends what fails back to it. Detection only
 suggests them: each check found is off until the user ticks it in
 Settings → Project checks, which saves the project's list
 (`agent_run/project.rs`, `effective_checks`). An Autopilot task with no
-check on runs its plan's validation commands instead. What the checks know
+check on runs its plan's validation commands instead. A chat across a
+workspace's folders runs the checks of the folders it changed, each in its
+folder (`cd api && npm test`), and a plan's own commands; it's told every
+folder's checks, so it can run the others itself. A folder's failed type
+check skips that folder's tests only, in any chat. What the checks know
 lives in tables (paths under `src-tauri/crates/rovik-core/src/`), so
 teaching them a new tool is usually one row:
 
@@ -1156,9 +1258,11 @@ teaching them a new tool is usually one row:
 | a cache or home folder a tool must write to              | `TOOL_DIRS` or `TOOL_HOMES` in `overlay/confine.rs`                                                       |
 
 A check that fails runs once more on the code before the change
-(`agent_run/before.rs`): in an isolated chat, the project as it is, in a
-throwaway overlay. Failures are compared by key (an error's file, code and
-message, or a test's name, with paths relative to where each run was), and
+(`agent_run/before.rs`): in an isolated chat, the project as it is (a
+workspace chat's folders, under the same names), in a throwaway overlay.
+Failures are compared by key (an error's file, code and message, or a
+test's name, with each path as the chat names it: `api/src/a.ts`, whether
+the check printed it relative to its folder or by the folder's own path), and
 those that fail there too are set apart: a check that fails only as it did
 before is `preexisting` in its record and doesn't hold the change back.
 React Native apps, whose bundler never type-checks, often have such

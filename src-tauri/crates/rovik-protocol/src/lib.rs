@@ -77,6 +77,10 @@ pub mod features {
     /// A server that works on its own (autopilot-plan H02):
     /// `AutonomyConfigure`.
     pub const AUTONOMY: &str = "autonomy";
+    /// Workspace chats (workspaces-plan.md, 4.11): a start's `folders`, its
+    /// run working in the chat's worktree, each folder a top-level folder of
+    /// it. A chat across folders is never carried to a daemon without it.
+    pub const FOLDERS: &str = "folders";
 }
 
 #[cfg(test)]

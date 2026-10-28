@@ -7,6 +7,7 @@
 // Write one, hand its `realPath` to a command, and the command reads it with
 // ordinary system calls; what the command writes there the app can read back.
 import { Channel, invoke } from '@tauri-apps/api/core';
+import { FOLDERS_FEATURE, WSL_PAGE, type HostSummary } from './cloud';
 
 export interface DriverStatus {
   /** "FUSE" or "macFUSE"; "WSL" on Windows, which serves them. */
@@ -87,6 +88,32 @@ export function vfsSummary(status: VfsStatus): { text: string; warning: boolean 
   }
   if (status.problem) return { text: `${status.problem.title}: ${without}`, warning: true };
   return { text: `Mounts at ${status.defaultMountpoint} when first used`, warning: false };
+}
+
+/** Where virtual files are set up. */
+export const VFS_PAGE = 'Settings → Virtual files';
+
+/**
+ * Why a chat across folders can't start here, or null when it can
+ * (workspaces-plan.md, 4.12): it works in its own view of its folders, a
+ * virtual folder, so it needs the driver here (`driver`: null until it's
+ * known). On Windows chats run in WSL (`wsl`: its host), whose Rovik has to
+ * be connected and work across folders.
+ */
+export function acrossFoldersBlocked(
+  windows: boolean,
+  driver: DriverStatus | null,
+  wsl: HostSummary | undefined
+): string | null {
+  if (windows) {
+    if (wsl?.state !== 'ready') return `Needs WSL connected: ${WSL_PAGE}`;
+    if (!wsl.features?.includes(FOLDERS_FEATURE)) {
+      return `Rovik in WSL doesn’t work across folders yet: ${WSL_PAGE}`;
+    }
+    return null;
+  }
+  if (driver?.installed) return null;
+  return `Needs ${driver?.driver ?? 'the virtual files driver'}: ${VFS_PAGE}`;
 }
 
 export type InstallOutcome =

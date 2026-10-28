@@ -11,11 +11,10 @@
 //! back the same way, with `WorkRecheck`: the host merges them and runs the
 //! chat's checks on the merge (6.6).
 
+use super::files::{ChatFiles, Taken};
 use super::{takes_projects, Remote};
 use crate::client::Client;
-use crate::shadow::{self, Shadow};
 use git2::Oid;
-use rovik_core::chat_db::projects;
 use rovik_core::overlay::chats;
 use rovik_core::{project_profile, rt};
 use rovik_protocol::autopilot::{push_url, Delivery};
@@ -37,15 +36,28 @@ pub struct HandedSync {
     pub request: String,
 }
 
-/// A snapshot of a chat's project, and what goes to the host with it.
+/// A snapshot of a chat's files, and what goes to the host with it.
 pub(super) struct Snapshot {
-    pub(super) project: String,
-    pub(super) root: PathBuf,
-    /// The project's shadow.
+    /// What the chat works in here: its owner is the project there.
+    pub(super) files: ChatFiles,
+    /// Its project's shadow, or its workspace's composite.
     pub(super) shadow: PathBuf,
     pub(super) commit: Oid,
     pub(super) excludes: Vec<String>,
     pub(super) subpath: String,
+}
+
+impl Snapshot {
+    /// The chat's `files`, `taken` as one commit.
+    pub(super) fn of(files: ChatFiles, taken: Taken) -> Snapshot {
+        Snapshot {
+            files,
+            shadow: taken.shadow,
+            commit: taken.commit,
+            excludes: taken.excludes,
+            subpath: taken.subpath,
+        }
+    }
 }
 
 impl Remote {
@@ -151,7 +163,7 @@ impl Remote {
         if !takes_projects(&client) {
             return Err(NO_PROJECT.into());
         }
-        let snapshot = self.snapshot(dialog_id).await?.ok_or(NO_PROJECT)?;
+        let snapshot = self.snapshot(&host, dialog_id).await?.ok_or(NO_PROJECT)?;
         Ok((host, client, snapshot))
     }
 
@@ -159,12 +171,12 @@ impl Remote {
     /// worktree and check there (6.6).
     pub(super) async fn recheck(&self, host: &str, dialog_id: &str) -> Result<Synced, String> {
         let client = self.client(host).map_err(|fail| fail.message)?;
-        let snapshot = self.snapshot(dialog_id).await?;
+        let snapshot = self.snapshot(host, dialog_id).await?;
         let snapshot = snapshot.ok_or("its project has no folder on this computer")?;
         self.carry(host, &client, dialog_id, &snapshot).await?;
         let recheck = Request::WorkRecheck {
             dialog_id: dialog_id.to_string(),
-            project: snapshot.project.clone(),
+            project: snapshot.files.owner.clone(),
             snapshot: snapshot.commit.to_string(),
             excludes: snapshot.excludes.clone(),
         };
@@ -180,7 +192,7 @@ impl Remote {
         if !takes_projects(&client) {
             return Ok(());
         }
-        let Some(snapshot) = self.snapshot(dialog_id).await? else {
+        let Some(snapshot) = self.snapshot(host, dialog_id).await? else {
             return Ok(());
         };
         if self.lock().last_sync.get(dialog_id) == Some(&snapshot.commit) {
@@ -204,7 +216,7 @@ impl Remote {
         self.carry(host, client, dialog_id, snapshot).await?;
         let sync = Request::WorkSync {
             dialog_id: dialog_id.to_string(),
-            project: snapshot.project.clone(),
+            project: snapshot.files.owner.clone(),
             snapshot: snapshot.commit.to_string(),
             excludes: snapshot.excludes.clone(),
             changes: None,
@@ -214,29 +226,26 @@ impl Remote {
         Ok(self.keep_sync(dialog_id, snapshot.commit, &synced))
     }
 
-    /// The chat's project as it is now, in its shadow; none when the chat
-    /// has no project here.
-    pub(super) async fn snapshot(&self, dialog_id: &str) -> Result<Option<Snapshot>, String> {
-        let Some((project, root)) = self.project_of(dialog_id).await? else {
+    /// The chat's files as they are now, for `host`, in its shadow; none
+    /// when the chat has no project here. A chat across folders is refused
+    /// for a host that can't run it (`runs_folders`).
+    pub(super) async fn snapshot(
+        &self,
+        host: &str,
+        dialog_id: &str,
+    ) -> Result<Option<Snapshot>, String> {
+        let Some(files) = self.files_of(dialog_id).await? else {
             return Ok(None);
         };
-        let shadow = shadow::dir(&self.core.paths.data_dir, &project);
-        let (at, folder, chat) = (shadow.clone(), root.clone(), dialog_id.to_string());
+        if files.across().is_some() {
+            self.runs_folders(host).map_err(|fail| fail.message)?;
+        }
+        let (data, chat) = (self.core.paths.data_dir.clone(), dialog_id.to_string());
         let taken = rt::spawn_blocking(move || {
-            let shadow = Shadow::open(&at, &folder)?;
-            let commit = shadow.snapshot(&chat)?.commit;
-            let subpath = shadow.subpath().to_string();
-            Ok::<_, String>((commit, shadow.excludes(), subpath))
+            let taken = files.snapshot(&data, &chat)?;
+            Ok::<_, String>(Snapshot::of(files, taken))
         });
-        let (commit, excludes, subpath) = taken.await.map_err(|e| e.to_string())??;
-        Ok(Some(Snapshot {
-            project,
-            root,
-            shadow,
-            commit,
-            excludes,
-            subpath,
-        }))
+        taken.await.map_err(|e| e.to_string())?.map(Some)
     }
 
     /// The snapshot on the host, and its project there.
@@ -248,7 +257,7 @@ impl Remote {
         snapshot: &Snapshot,
     ) -> Result<(), String> {
         self.ensure(host, client, snapshot).await?;
-        let (project, shadow) = (&snapshot.project, &snapshot.shadow);
+        let (project, shadow) = (&snapshot.files.owner, &snapshot.shadow);
         let pushed = self.push_to(host, dialog_id, project, shadow, snapshot.commit);
         pushed.await.map(drop).map_err(|fail| fail.message)
     }
@@ -273,26 +282,27 @@ impl Remote {
 
     /// The project on the host, with its name, its folder in its
     /// repository, its settings and the ignore rules only this computer
-    /// has (K32): once a session.
+    /// has (K32): once a session. A workspace's is named as the workspace
+    /// is, and its folders' settings go with each start (4.11).
     async fn ensure(&self, host: &str, client: &Client, snapshot: &Snapshot) -> Result<(), String> {
-        let key = (host.to_string(), snapshot.project.clone());
+        let files = &snapshot.files;
+        let key = (host.to_string(), files.owner.clone());
         if self.lock().ensured.contains(&key) {
             return Ok(());
         }
-        let id = snapshot.project.clone();
-        let summary = self.core.db.read(move |c| projects::summary(c, &id));
-        let name = summary.await?.map(|s| s.name).unwrap_or_default();
-        let settings = settings(&self.core.paths.config_dir, &snapshot.root);
+        let root = files.root();
+        let settings = root.and_then(|root| settings(&self.core.paths.config_dir, root));
         // A host that pushes its results (D15, H04) is told where: the
-        // project's `origin`, as an SSH address without credentials.
+        // project's `origin`, as an SSH address without credentials. A
+        // workspace chat's aren't pushed (D30).
         let remote = match self.autonomy_config(host).delivery {
-            Delivery::PushBranch { .. } => origin_of(&snapshot.root).as_deref().and_then(push_url),
+            Delivery::PushBranch { .. } => root.and_then(origin_of).as_deref().and_then(push_url),
             Delivery::KeepOnHost => None,
         };
         let ensure = Request::ProjectEnsure {
             project: Project {
-                id: snapshot.project.clone(),
-                name,
+                id: files.owner.clone(),
+                name: files.name.clone(),
                 subpath: snapshot.subpath.clone(),
             },
             settings,

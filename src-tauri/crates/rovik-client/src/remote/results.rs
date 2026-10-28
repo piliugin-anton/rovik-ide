@@ -6,27 +6,26 @@
 //! imported last, as a `ResultReady` replayed after a connection, or the
 //! newest result again after the app restarts, can be, is passed over: the
 //! chat's `mirror_state` keeps which it was. It lands by itself under
-//! landing.rs's rules while the chat's project is the open project, and
-//! waits as "Ready to land" otherwise. Each landing is reported to the host
+//! landing.rs's rules while the chat's project is one the window has open,
+//! and waits as "Ready to land" otherwise. Each landing is reported to the host
 //! with `WorkLanded`, at once or after its next connection, which
 //! `mirror_state` remembers across a restart, so the next result doesn't
 //! bring back what the user undid (K34). A result that comes while the
 //! user resolves the chat's conflicts is held back: the bar offers it in
 //! their place, and it comes in by itself once they're settled.
 
+use super::files::ChatFiles;
 use super::{takes_projects, Remote};
-use crate::shadow::{self, Shadow};
 use git2::Oid;
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::chat_db::mirror::{self, MirrorState};
-use rovik_core::chat_db::{projects, store};
 use rovik_core::overlay::chats;
 use rovik_core::overlay::import::{self, ImportError, Imported};
 use rovik_core::overlay::land::{LandError, Landed};
 use rovik_core::rt;
 use rovik_protocol::work::{ChatResult, SyncState};
 use rovik_protocol::Request;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Weak;
 use tokio::sync::{mpsc, oneshot};
 
@@ -45,7 +44,7 @@ pub(super) enum Job {
         dialog_id: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
-    /// The open project changed: its results that waited for it land.
+    /// The projects open changed: the results that waited for one land.
     Opened,
     /// The bar's Land; `keep_chat`: Land anyway.
     Land {
@@ -69,21 +68,14 @@ pub(super) async fn work_through(me: Weak<Remote>, mut jobs: mpsc::UnboundedRece
 }
 
 impl Remote {
-    /// The project open in the app, by its id and folder: results land by
-    /// themselves only there (6.5). Those that waited for it land now.
-    pub fn set_open_project(&self, project: Option<(String, PathBuf)>) {
-        self.lock().open = project;
+    /// The projects open in the app's window, each by its id and folder:
+    /// its folders', as the window's claims record them (the app's
+    /// instances.rs, after each claim and each answer about a folder).
+    /// Results land by themselves only in them (6.5); those that waited for
+    /// one land now.
+    pub fn set_open_projects(&self, open: Vec<(String, PathBuf)>) {
+        self.lock().open = open;
         let _ = self.jobs.send(Job::Opened);
-    }
-
-    /// The user said what the folder at `root` is (a copy of another
-    /// project, or one that moved), which made it `project`'s: when it's
-    /// the open folder, results land there as that project's from now on.
-    pub fn folder_answered(&self, root: &Path, project: &str) {
-        let open = self.lock().open.clone();
-        if open.is_some_and(|(id, at)| at == root && id != project) {
-            self.set_open_project(Some((project.to_string(), root.to_path_buf())));
-        }
     }
 
     /// Lands the chat's imported result as the bar's Land does
@@ -268,17 +260,11 @@ impl Remote {
         if passed_over(seen, result.seq) {
             return Ok(());
         }
-        let (project, root) = self
-            .project_of(&chat)
+        let files = self
+            .files_of(&chat)
             .await?
             .ok_or("its project has no folder on this computer")?;
-        let commit = Oid::from_str(&result.commit).map_err(|e| e.message().to_string())?;
-        let dir = shadow::dir(&self.core.paths.data_dir, &project);
-        let opened = {
-            let dir = dir.clone();
-            rt::spawn_blocking(move || Shadow::open(&dir, &root))
-        };
-        let shadow = opened.await.map_err(|e| e.to_string())??;
+        let project = files.owner.clone();
         if mirrored.imported_result.as_deref() == Some(result.commit.as_str()) {
             // The same changes, after a run that changed nothing more: its
             // outcome decides again whether they land, while they wait
@@ -292,15 +278,11 @@ impl Remote {
             self.saw(&chat, &result).await;
             return Ok(());
         }
-        let client = self.client(host).map_err(|fail| fail.message)?;
-        let fetched = client.fetch(&project, &dir, &[commit]).await;
-        fetched.map_err(|fail| fail.message)?;
-        let told = result.clone();
-        let before = case_clashes(&chat);
-        let imported = rt::spawn_blocking(move || shadow.import(&told));
-        match imported.await.map_err(|e| e.to_string())? {
+        let (before, across) = (import::imported(&chat), files.across().is_some());
+        let imported = self.fetch_and_import(host, files, &result).await?;
+        match imported {
             Ok(imported) => {
-                self.tell_case_clashes(host, &chat, &before, &imported.case_clashes);
+                self.tell_left_there(host, &chat, before.as_ref(), &imported, across);
                 if !imported.changed.is_empty() {
                     self.decide(&chat, &project, result.pending.as_deref())
                         .await
@@ -318,6 +300,31 @@ impl Remote {
         Ok(())
     }
 
+    /// The chat's `result`, fetched from its host into its shadow (made
+    /// first if it isn't there, as after a snapshot), then imported as its
+    /// store here (`ChatFiles::import`).
+    async fn fetch_and_import(
+        &self,
+        host: &str,
+        files: ChatFiles,
+        result: &ChatResult,
+    ) -> Result<Result<Imported, ImportError>, String> {
+        let commit = Oid::from_str(&result.commit).map_err(|e| e.message().to_string())?;
+        let data = self.core.paths.data_dir.clone();
+        let dir = files.shadow(&data);
+        let ready = {
+            let data = data.clone();
+            rt::spawn_blocking(move || files.ready(&data).map(|()| files))
+        };
+        let files = ready.await.map_err(|e| e.to_string())??;
+        let client = self.client(host).map_err(|fail| fail.message)?;
+        let fetched = client.fetch(&files.owner, &dir, &[commit]).await;
+        fetched.map_err(|fail| fail.message)?;
+        let told = result.clone();
+        let imported = rt::spawn_blocking(move || files.import(&data, &told));
+        imported.await.map_err(|e| e.to_string())
+    }
+
     /// The chat's last result before it moves back (6.8): its worktree
     /// committed as it is, and imported as its store here unless it is
     /// already. It waits there, for the reason its run's outcome gives, or
@@ -329,29 +336,16 @@ impl Remote {
             dialog_id: dialog_id.to_string(),
         };
         let result: ChatResult = client.request(ask).await.map_err(|fail| fail.message)?;
-        let (project, root) = self
-            .project_of(dialog_id)
+        let files = self
+            .files_of(dialog_id)
             .await?
             .ok_or("its project has no folder on this computer")?;
         let mirrored = self.mirror_state(dialog_id).await?.unwrap_or_default();
         if mirrored.imported_result.as_deref() != Some(result.commit.as_str()) {
-            let commit = Oid::from_str(&result.commit).map_err(|e| e.message().to_string())?;
-            let dir = shadow::dir(&self.core.paths.data_dir, &project);
-            let opened = {
-                let dir = dir.clone();
-                rt::spawn_blocking(move || Shadow::open(&dir, &root))
-            };
-            let shadow = opened.await.map_err(|e| e.to_string())??;
-            let fetched = client.fetch(&project, &dir, &[commit]).await;
-            fetched.map_err(|fail| fail.message)?;
-            let told = result.clone();
-            let before = case_clashes(dialog_id);
-            let imported = rt::spawn_blocking(move || shadow.import(&told));
-            let imported = imported
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
-            self.tell_case_clashes(host, dialog_id, &before, &imported.case_clashes);
+            let (before, across) = (import::imported(dialog_id), files.across().is_some());
+            let imported = self.fetch_and_import(host, files, &result).await?;
+            let imported = imported.map_err(|e| e.to_string())?;
+            self.tell_left_there(host, dialog_id, before.as_ref(), &imported, across);
             self.saw(dialog_id, &result).await;
         }
         if chats::exists(dialog_id) && !import::resolving(dialog_id) {
@@ -397,9 +391,9 @@ impl Remote {
 
     /// The results that waited for their project, once it's open.
     async fn land_waiting(&self) {
-        let Some((open, _)) = self.lock().open.clone() else {
+        if self.lock().open.is_empty() {
             return;
-        };
+        }
         let remote: Vec<String> = {
             let state = self.lock();
             let chats = state.chats.keys();
@@ -410,8 +404,8 @@ impl Remote {
         };
         for chat in remote {
             let ready = chats::pending(&chat).is_some_and(|p| p.reason == import::READY);
-            let project = self.project_of(&chat).await.ok().flatten();
-            if ready && project.is_some_and(|(id, _)| id == open) {
+            let files = self.files_of(&chat).await.ok().flatten();
+            if ready && files.is_some_and(|files| self.is_open(&files.owner)) {
                 let _ = self.land_imported(&chat, None).await;
             }
         }
@@ -569,45 +563,37 @@ impl Remote {
         }
     }
 
-    /// The chat's project here, by its id and folder: the open folder when
-    /// it's the open project, else the folder it was last opened from.
-    pub(super) async fn project_of(
+    /// Whether `project` is one the window has open: a project, or a
+    /// workspace, whose folders the window lists under its ID too.
+    pub(super) fn is_open(&self, project: &str) -> bool {
+        self.lock().open.iter().any(|(id, _)| id == project)
+    }
+
+    /// Tells the user of what the chat's result `now` left on its host,
+    /// unless the result imported `before` it left the same: the paths
+    /// this computer takes for others that differ only in case (R04), and
+    /// those of a chat `across` folders that are in none of its folders
+    /// here (4.11), such as files its runs made at the top.
+    fn tell_left_there(
         &self,
+        host: &str,
         dialog_id: &str,
-    ) -> Result<Option<(String, PathBuf)>, String> {
-        let id = dialog_id.to_string();
-        let db = &self.core.db;
-        let Some(project) = db.read(move |c| store::dialog_project(c, &id)).await? else {
-            return Ok(None);
-        };
-        let open = self.lock().open.clone();
-        if let Some((_, root)) = open.filter(|(id, _)| *id == project) {
-            return Ok(Some((project, root)));
-        }
-        let id = project.clone();
-        let summary = db.read(move |c| projects::summary(c, &id)).await?;
-        Ok(summary
-            .filter(|s| !s.missing)
-            .map(|s| (project, PathBuf::from(s.path))))
-    }
-
-    fn is_open(&self, project: &str) -> bool {
-        self.lock()
-            .open
-            .as_ref()
-            .is_some_and(|(id, _)| id == project)
-    }
-
-    /// Tells the user of the paths of a result that stay on its host, as
-    /// this computer takes them for others that differ only in case (R04),
-    /// unless the last result's were the same.
-    fn tell_case_clashes(&self, host: &str, dialog_id: &str, before: &[String], now: &[String]) {
-        if now.is_empty() || now == before {
-            return;
-        }
-        let message = case_clashes_notice(now, &self.host_name(host));
+        before: Option<&Imported>,
+        now: &Imported,
+        across: bool,
+    ) {
         let title = "Some of this chat's changes stay on the server";
-        self.notice(dialog_id, "warning", title, &message);
+        let host = self.host_name(host);
+        let clashes = &now.case_clashes;
+        if !clashes.is_empty() && before.is_none_or(|b| b.case_clashes != *clashes) {
+            let message = case_clashes_notice(clashes, &host);
+            self.notice(dialog_id, "warning", title, &message);
+        }
+        let outside = &now.outside;
+        if across && !outside.is_empty() && before.is_none_or(|b| b.outside != *outside) {
+            let message = outside_notice(outside, &host);
+            self.notice(dialog_id, "warning", title, &message);
+        }
     }
 
     pub(super) fn notice(&self, dialog_id: &str, kind: &str, title: &str, message: &str) {
@@ -620,25 +606,38 @@ impl Remote {
     }
 }
 
-/// The paths the chat's last imported result left on its host for their
-/// case (R04).
-fn case_clashes(dialog_id: &str) -> Vec<String> {
-    import::imported(dialog_id).map_or_else(Vec::new, |i| i.case_clashes)
+/// The first few of `paths` by name, and how many more.
+fn listed(paths: &[String]) -> String {
+    let named: Vec<String> = paths.iter().take(3).map(|p| format!("`{p}`")).collect();
+    match (named.as_slice(), paths.len()) {
+        ([one], 1) => one.clone(),
+        ([init @ .., last], n) if n == named.len() => format!("{} and {last}", init.join(", ")),
+        (_, n) => format!("{} and {} more", named.join(", "), n - named.len()),
+    }
 }
 
 /// What the notice of paths left on `host` for their case says: the first
 /// few by name.
 fn case_clashes_notice(paths: &[String], host: &str) -> String {
-    let named: Vec<String> = paths.iter().take(3).map(|p| format!("`{p}`")).collect();
-    let list = match (named.as_slice(), paths.len()) {
-        ([one], 1) => one.clone(),
-        ([init @ .., last], n) if n == named.len() => format!("{} and {last}", init.join(", ")),
-        (_, n) => format!("{} and {} more", named.join(", "), n - named.len()),
-    };
     let stay = if paths.len() == 1 { "stays" } else { "stay" };
     format!(
-        "This computer can't tell apart names that differ only in case, so {list} {stay} \
-         on {host}; the chat's other changes come here."
+        "This computer can't tell apart names that differ only in case, so {} {stay} \
+         on {host}; the chat's other changes come here.",
+        listed(paths)
+    )
+}
+
+/// What the notice of a chat's paths in none of its folders, left on
+/// `host`, says: the first few by name.
+fn outside_notice(paths: &[String], host: &str) -> String {
+    let (are, stay) = match paths.len() {
+        1 => ("is", "it stays"),
+        _ => ("are", "they stay"),
+    };
+    format!(
+        "{} {are} in none of the chat's folders, so {stay} on {host}; the chat's other \
+         changes come here.",
+        listed(paths)
     )
 }
 
@@ -651,7 +650,7 @@ fn passed_over(seen: Option<u64>, seq: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{case_clashes_notice, passed_over};
+    use super::{case_clashes_notice, outside_notice, passed_over};
 
     #[test]
     fn the_paths_left_for_their_case_are_named() {
@@ -669,6 +668,19 @@ mod tests {
         assert_eq!(named(2), "`1.md` and `2.md` stay");
         assert_eq!(named(3), "`1.md`, `2.md` and `3.md` stay");
         assert_eq!(named(5), "`1.md`, `2.md`, `3.md` and 2 more stay");
+    }
+
+    #[test]
+    fn the_paths_in_none_of_a_chats_folders_are_named() {
+        let one = ["notes.md".to_string()];
+        assert_eq!(
+            outside_notice(&one, "build box"),
+            "`notes.md` is in none of the chat's folders, so it stays on build box; the \
+             chat's other changes come here."
+        );
+        let two = ["a.md".to_string(), "b.md".to_string()];
+        assert!(outside_notice(&two, "b").starts_with("`a.md` and `b.md` are in none"));
+        assert!(outside_notice(&two, "b").contains("so they stay on b;"));
     }
 
     #[test]

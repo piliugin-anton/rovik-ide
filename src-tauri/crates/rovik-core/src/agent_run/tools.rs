@@ -937,6 +937,9 @@ pub struct CallContext {
     /// background (bash's `background`, the background tool): the lead's
     /// own. None for a subagent, whose commands end with its work.
     pub background_chat: Option<String>,
+    /// The chat's folders, by which the editor's diagnostics are found
+    /// (`agent_tools::tool_diagnostics`). None: the root's own.
+    pub folders: Option<crate::folders::Folders>,
     /// The reply the call came in reached the model's output limit: when
     /// its arguments don't parse, that's where they were cut off.
     pub reply_cut_off: bool,
@@ -1279,7 +1282,7 @@ async fn run(
             };
             let stop = stop.clone();
             if let Some(problem) =
-                copy_command_problem(&ctx.owner, core.agents.on_server(), command)
+                copy_command_problem(&ctx.owner, core.agents.on_server(), command, true)
             {
                 return Ok(ToolResult::text(problem));
             }
@@ -1529,6 +1532,7 @@ async fn run(
             text(args, "path")
                 .filter(|p| !p.trim().is_empty())
                 .map(str::to_string),
+            ctx.folders.as_ref(),
         )?,
         _ => format!("Error: unknown tool \"{name}\"."),
     };
@@ -2102,10 +2106,16 @@ fn command_meta(result: &str) -> Map<String, Value> {
 /// chat works in its overlay, and a chat on a server in its own worktree
 /// (D8). Both change the project by landing, not through git, so git
 /// commands that change the repository are refused there. For Rovik's
-/// `bash`, and for a harness's shell commands, before they run.
-pub(super) fn copy_command_problem(owner: &str, on_server: bool, command: &str) -> Option<String> {
+/// `bash`, run in the chat's sandbox (`confined`), and for a harness's
+/// shell commands, which aren't, before they run.
+pub(super) fn copy_command_problem(
+    owner: &str,
+    on_server: bool,
+    command: &str,
+    confined: bool,
+) -> Option<String> {
     match crate::overlay::chats::get(owner) {
-        Some(o) => o.command_problem(command),
+        Some(o) => o.command_problem(command, confined),
         None if on_server => super::server::command_problem(command),
         None => None,
     }
@@ -2204,6 +2214,7 @@ mod tests {
             hidden: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: None,
+            folders: None,
             reply_cut_off: false,
         };
         let stop = Arc::new(StopSignal::new());
@@ -3339,6 +3350,7 @@ a.rs (3 matches)
             hidden: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: None,
+            folders: None,
             reply_cut_off: false,
         };
         let stop = Arc::new(StopSignal::new());

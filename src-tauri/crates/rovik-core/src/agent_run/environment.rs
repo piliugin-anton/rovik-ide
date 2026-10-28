@@ -410,10 +410,11 @@ fn nobody_installs(cx: &Context, program: &str) -> String {
 
 /// The project's dependency installs for `command`, where what they
 /// install isn't there: those of the ecosystems whose programs it starts,
-/// or every one's when it starts none of theirs (`make dev`). Each runs as
-/// Prepare's do, and isn't run again for [`INSTALL_AGAIN_AFTER`]; one the
-/// user's permissions would ask about first is the model's to run, which
-/// it's told.
+/// or every one's when it starts none of theirs (`make dev`), and of the
+/// folder it runs in (`cd web && …`: web's, and the project's own, not
+/// api's; workspaces-plan.md, 4.5). Each runs as Prepare's do, and isn't
+/// run again for [`INSTALL_AGAIN_AFTER`]; one the user's permissions would
+/// ask about first is the model's to run, which it's told.
 async fn install_dependencies(cx: &Context, command: &str) -> Vec<Outcome> {
     if cx.plan_mode {
         return Vec::new();
@@ -431,7 +432,14 @@ async fn install_dependencies(cx: &Context, command: &str) -> Vec<Outcome> {
         true => ecosystems::ALL.to_vec(),
         false => started,
     };
-    let installs = ecosystems::installs_of(&of, Path::new(&cx.root));
+    let ran_in = super::project::folder_of(command);
+    let installs: Vec<Install> = ecosystems::installs_of(&of, Path::new(&cx.root))
+        .into_iter()
+        .filter(|install| {
+            super::paths::under(&install.folder, &ran_in)
+                || super::paths::under(&ran_in, &install.folder)
+        })
+        .collect();
     let mut outcomes = Vec::new();
     for (index, install) in installs.iter().enumerate() {
         let place = match install.folder.as_str() {
@@ -1729,6 +1737,28 @@ mod tests {
             .await,
             Ready::default()
         );
+    }
+
+    /// A command run in one folder (`cd web && …`) needs that folder's
+    /// install, not every folder's; one run at the top needs them all.
+    #[tokio::test]
+    async fn a_command_in_a_folder_needs_that_folders_install() {
+        let (_test, cx, _) = project(&[
+            ("api/package.json", "{}"),
+            ("api/package-lock.json", "{}"),
+            ("web/package.json", "{}"),
+            ("web/package-lock.json", "{}"),
+        ]);
+        let said = "sh: 1: vitest: not found";
+        let in_web = after(&cx, "cd web && npm test", Some(127), said).await;
+        assert_eq!(
+            in_web.missing,
+            ["The project's dependencies aren't installed in web: run `npm ci --no-audit --no-fund` in web, then the command again."]
+        );
+        let at_the_top = after(&cx, "npm test", Some(127), said).await;
+        assert_eq!(at_the_top.missing.len(), 2, "{at_the_top:?}");
+        assert!(at_the_top.missing[0].contains(" in api"), "{at_the_top:?}");
+        assert!(at_the_top.missing[1].contains(" in web"), "{at_the_top:?}");
     }
 
     /// The user's permissions run it without asking: the install runs as

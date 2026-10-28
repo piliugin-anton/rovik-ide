@@ -200,3 +200,105 @@ pub fn asked(seen: &Mutex<Vec<Value>>, marker: &str) -> usize {
         .filter(|b| b.to_string().contains(marker))
         .count()
 }
+
+/// A Thorough candidate's implementation: `ok` says ok, and the files
+/// `more` names say what they say.
+pub fn implementation(ok: &str, more: &[(&'static str, &'static str)]) -> Vec<Reply> {
+    let mut replies = vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [
+                { "title": "Write ok", "status": "in_progress" },
+                { "title": "Check", "status": "pending" },
+            ] }),
+        },
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": ok, "content": "ok" }),
+        },
+    ];
+    for ((path, content), id) in more.iter().zip(["w2", "w3"]) {
+        replies.push(Reply::Call {
+            id,
+            name: "write",
+            args: json!({ "path": path, "content": content }),
+        });
+    }
+    replies.extend([
+        Reply::Call {
+            id: "t2",
+            name: "todo",
+            args: json!({ "items": [
+                { "title": "Write ok", "status": "done" },
+                { "title": "Check", "status": "done" },
+            ] }),
+        },
+        Reply::Text("Done: ok.txt says ok."),
+    ]);
+    replies
+}
+
+/// The model of a Thorough task whose plan is `plan` and whose replies
+/// after the plan's are `implementations`, its subagents each answered
+/// apart.
+pub async fn thorough_model(plan: &str, implementations: Vec<Reply>) -> String {
+    use rovik_core::agent_run::{breaker, judge, planning, report};
+    let blocked = |why: &'static str| vec![Reply::Text(why)];
+    let mut script = vec![
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": plan }),
+        },
+        Reply::Text("Saved the plan."),
+    ];
+    script.extend(implementations);
+    let view = format!("last:{}", report::VIEW_HEADING);
+    let report = format!("last:{}", report::REPORT_HEADING);
+    let (url, _) = model_routed(
+        vec![
+            (Box::leak(view.into_boxed_str()), blocked("")),
+            (
+                Box::leak(report.into_boxed_str()),
+                blocked("## What changed\n\nok.txt says ok."),
+            ),
+            (PLAN_REVIEW, blocked("## Findings\n\nNone.")),
+            (TESTS_FIRST, vec![nothing_to_test()]),
+            ("# Write tests for this change", vec![nothing_to_test()]),
+            (
+                planning::CRITERIA_HEADING,
+                blocked("## Blocked\n\nNo criteria here."),
+            ),
+            (
+                judge::JUDGE_CRITERIA_HEADING,
+                blocked("## Blocked\n\nNo criteria here."),
+            ),
+            (
+                planning::PLAN_HEADING,
+                blocked("## Blocked\n\nNo plan here."),
+            ),
+            (
+                judge::JUDGE_PLANS_HEADING,
+                blocked("## Blocked\n\nNo judgment here."),
+            ),
+            (
+                judge::JUDGE_CANDIDATES_HEADING,
+                blocked("## Blocked\n\nNo judgment here."),
+            ),
+            (
+                breaker::BREAK_HEADING,
+                blocked("## Blocked\n\nNothing to break here."),
+            ),
+            (
+                "# Check this change against its criteria",
+                blocked("## Blocked\n\nNothing to judge here."),
+            ),
+            ("# Review this change", blocked("## Findings\n\nNone.")),
+        ],
+        script,
+    )
+    .await;
+    url
+}

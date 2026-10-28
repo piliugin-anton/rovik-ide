@@ -853,7 +853,9 @@ fn matches_allowed(segment: &[String], allowed: &[Vec<String>]) -> bool {
 /// it is checked as usual. The project's checks in a folder are written so
 /// (project.rs `in_folder`). Not a folder outside the project (absolute,
 /// `~`, a drive, `..` past the root), one the shell would expand (`$HOME`,
-/// `*`), or `cd`'s options (`cd -`, `cd /d`).
+/// `*`), or `cd`'s options (`cd -`, `cd /d`). A workspace chat's folders
+/// are its view's top folders, so its `cd api && npm test` passes too, and
+/// every name a workspace gives a folder does (D8, D26).
 fn enters_project_folder(segment: &[String]) -> bool {
     let [cd, folder] = segment else {
         return false;
@@ -3026,5 +3028,91 @@ mod tests {
         }
         // cmd.exe has no background: its `&` only separates.
         assert!(!parse_command_in("a & b", Shell::Cmd).backgrounds);
+    }
+
+    /// D26: a `cd` into a folder of the project runs nothing, so the
+    /// default allowed commands let `cd api && npm test` by, checking
+    /// `npm test` as alone; a `cd` that could leave the project, and what
+    /// follows any `cd`, are checked as before. Read as the POSIX shells
+    /// that run such commands do; cmd.exe, which takes no single quotes,
+    /// lets a plain name by too, and refuses a variable as it does anywhere.
+    #[test]
+    fn a_cd_into_the_project_passes_the_allowed_commands() {
+        let p = Permissions::default();
+        let posix = |command: &str| check_command_in(command, &p, Shell::Posix);
+        for allowed in [
+            "cd api && npm test",
+            "cd 'my app' && npm test",
+            "cd api/src && ls",
+        ] {
+            assert_eq!(
+                posix(allowed),
+                Verdict::Permitted {
+                    modifies_files: false
+                },
+                "{allowed}"
+            );
+        }
+        assert_eq!(
+            check_command_in("cd api && npm test", &p, Shell::Cmd),
+            Verdict::Permitted {
+                modifies_files: false
+            }
+        );
+        for refused in ["cd %USERPROFILE% && npm test", "cd .. && npm test"] {
+            assert!(
+                matches!(
+                    check_command_in(refused, &p, Shell::Cmd),
+                    Verdict::Refused(_)
+                ),
+                "{refused}"
+            );
+        }
+        for refused in [
+            "cd .. && npm test",
+            "cd api/../.. && ls",
+            "cd /tmp && ls",
+            "cd ~ && ls",
+            "cd $X && ls",
+            "cd - && ls",
+            "cd * && ls",
+            "cd {..,x} && npm test",
+            "cd {/tmp,x} && ls",
+            "cd api && rm x",
+            "cd",
+        ] {
+            assert!(matches!(posix(refused), Verdict::Refused(_)), "{refused}");
+        }
+    }
+
+    /// Every name a workspace gives a folder (D8) passes the `cd` rule, as
+    /// `in_folder` writes it for the POSIX shell its commands run in.
+    #[test]
+    fn every_folder_name_passes_the_cd_rule() {
+        let p = Permissions::default();
+        for folder in [
+            "/w/api",
+            "/w/my app",
+            "/w/build",
+            "/w/.hidden",
+            "/w/@scope",
+            "/w/a:b$c`d*e?[f]{g}",
+            "/w/100%",
+            "/w/{..,x}",
+            "/w/-dash",
+            "/w/~tilde",
+            "/w/ünïcødé",
+            "/",
+        ] {
+            let name = crate::chat_db::workspaces::folder_name(folder, &[]);
+            let command = super::super::project::in_folder(&name, "npm test");
+            assert_eq!(
+                check_command_in(&command, &p, Shell::Posix),
+                Verdict::Permitted {
+                    modifies_files: false
+                },
+                "{folder}: {command}"
+            );
+        }
     }
 }

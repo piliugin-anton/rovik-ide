@@ -27,6 +27,11 @@ pub struct StoredDialog {
     pub model_provider: Option<String>,
     pub model_id: Option<String>,
     pub effort: Option<String>,
+    /// A workspace chat's folders: `"all"`, or the names checked as JSON
+    /// (workspaces-plan.md, 3.1). None for every other chat, and for a peer
+    /// from before it.
+    #[serde(default)]
+    pub folders: Option<String>,
 }
 
 /// A message as stored, with its whole body, its attachments in order, and

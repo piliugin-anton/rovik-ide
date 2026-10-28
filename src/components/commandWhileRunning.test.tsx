@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import ChatPanel from './ChatPanel';
 import { LATE_LABEL } from '../lib/steering';
+import type { OpenFolder } from '../lib/openFolders';
 
 const SETTINGS = {
   version: 2,
@@ -107,16 +108,26 @@ async function enter(root: HTMLElement) {
   await flush();
 }
 
+/** The window's one folder, resolved as its project. */
+const project: OpenFolder = {
+  path: '/p',
+  name: 'p',
+  missing: false,
+  project: { id: 'project-1', name: 'p', path: '/p', idFile: true },
+};
+
 test('a command picked while the run works waits for it to end, then goes as a command', async () => {
   localStorage.clear();
   const root = container();
   const dispose = render(
     () => (
       <ChatPanel
-        rootPath={() => '/p'}
+        folders={() => [project]}
+        workspace={() => null}
+        activeFolder={() => project}
         activeFileContext={() => null}
         files={() => []}
-        projectId={() => 'project-1'}
+        owners={() => ({ target: '/p', projects: ['project-1'] })}
       />
     ),
     root

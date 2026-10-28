@@ -32,12 +32,12 @@ use rovik_core::agent_run::{self, StartKind, StartRequest};
 use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::moves::{self, CloudMove};
 use rovik_core::chat_db::store;
+use rovik_core::folders::Folders;
 use rovik_core::overlay::chats;
 use rovik_core::rt;
 use rovik_protocol::agent::AgentStatus;
 use rovik_protocol::sync::Ownership;
 use rovik_protocol::{Fail, FailCode, Request};
-use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -66,7 +66,7 @@ impl Remote {
             .host_of(dialog_id)
             .ok_or_else(|| refused("This chat is on this computer already."))?;
         let client = self.ready(&host)?;
-        let root = self.returnable(dialog_id).await?;
+        let folders = self.returnable(dialog_id).await?;
         // Before its row, which a connection's settling then leaves alone,
         // here or in another of Rovik's processes.
         let hold = rovik_core::chat_hold::take(dialog_id)
@@ -117,7 +117,7 @@ impl Remote {
                 return Err(self.give_up(&host, dialog_id, fail, start).await);
             }
         }
-        self.finish_back(&client, dialog_id, &host, root, start)
+        self.finish_back(&client, dialog_id, &host, folders, start)
             .await
     }
 
@@ -186,15 +186,15 @@ impl Remote {
         Err(fail)
     }
 
-    /// Steps 5 to 7, once the host released the chat. A failure before the
-    /// flip leaves the move at its release, to be finished when the host is
-    /// next connected.
+    /// Steps 5 to 7, once the host released the chat, its changes to wait
+    /// in its `folders` here. A failure before the flip leaves the move at
+    /// its release, to be finished when the host is next connected.
     async fn finish_back(
         &self,
         client: &Client,
         dialog_id: &str,
         host: &str,
-        root: Option<PathBuf>,
+        folders: Option<Folders>,
         start: Option<StartRequest>,
     ) -> Result<(), Fail> {
         let flipped = self.pull_and_flip(dialog_id, host).await;
@@ -208,8 +208,8 @@ impl Remote {
             self.moving_back(dialog_id, "failed", Some(message.clone()));
             return Err(Fail::new(fail.code, message));
         }
-        let goes_on = match root {
-            Some(root) => self.settle_here(dialog_id, root, start.as_ref()).await,
+        let goes_on = match folders {
+            Some(folders) => self.settle_here(dialog_id, folders, start.as_ref()).await,
             None => true,
         };
         self.changed(dialog_id);
@@ -294,7 +294,8 @@ impl Remote {
         if self.pull_now(host, dialog_id).await.is_err() {
             return;
         }
-        self.pick_up(dialog_id, start, running, None, "stayed there").await;
+        self.pick_up(dialog_id, start, running, None, "stayed there")
+            .await;
     }
 
     /// Steps 5 and 6: the last pull, then the flip back, in the database
@@ -325,14 +326,15 @@ impl Remote {
         Ok(())
     }
 
-    /// The chat's changes, once it's here: they wait as a local isolated
-    /// chat's do when its runs here can see them, in a view of their own.
-    /// Otherwise they land first, or wait with their conflicts shown, and
-    /// its run doesn't go on by itself. Whether it may.
+    /// The chat's changes in its `folders`, once it's here: they wait as a
+    /// local isolated chat's do when its runs here can see them, in a view
+    /// of their own. Otherwise they land first, or wait with their
+    /// conflicts shown, and its run doesn't go on by itself. Whether it
+    /// may.
     async fn settle_here(
         &self,
         dialog_id: &str,
-        root: PathBuf,
+        folders: Folders,
         start: Option<&StartRequest>,
     ) -> bool {
         if !chats::exists(dialog_id) {
@@ -343,7 +345,7 @@ impl Remote {
             let chat = dialog_id.to_string();
             // The run opens the view again, with its own warnings.
             let viewed = rt::spawn_blocking(move || {
-                let opened = chats::open(&chat, &root, Box::new(|_, _| {}));
+                let opened = chats::open(&chat, &folders, Box::new(|_, _| {}));
                 chats::close(&chat);
                 opened.map(drop)
             });
@@ -491,15 +493,16 @@ impl Remote {
             };
             client.request::<bool>(release).await?;
         }
-        let root = self.project_of(chat).await.ok().flatten();
-        let root = root.map(|(_, root)| root);
-        self.finish_back(client, chat, &going.host, root, None)
+        let files = self.files_of(chat).await.ok().flatten();
+        let folders = files.map(|files| files.folders);
+        self.finish_back(client, chat, &going.host, folders, None)
             .await
     }
 
     /// The chat can move back: a lead's chat, and its project's folder here
-    /// to take its changes, if it has a project. That folder.
-    async fn returnable(&self, dialog_id: &str) -> Result<Option<PathBuf>, Fail> {
+    /// to take its changes, if it has a project, or its workspace's folders
+    /// checked for it, every one of them here. Those folders.
+    async fn returnable(&self, dialog_id: &str) -> Result<Option<Folders>, Fail> {
         let id = dialog_id.to_string();
         let read = self.core.db.read(move |c| {
             let lead = store::lead_chat(c, &id)?;
@@ -521,8 +524,8 @@ impl Remote {
         if project.is_none() {
             return Ok(None);
         }
-        let place = self.project_of(dialog_id).await.map_err(internal)?;
-        let Some((_, root)) = place else {
+        let place = self.files_of(dialog_id).await.map_err(|e| refused(&e))?;
+        let Some(place) = place else {
             return Err(refused(
                 "This chat's project has no folder on this computer: open it before moving the chat back.",
             ));
@@ -537,7 +540,7 @@ impl Remote {
                 "{conflicts} {files} of this chat conflict with the project's changes: settle them first."
             )));
         }
-        Ok(Some(root))
+        Ok(Some(place.folders))
     }
 
     async fn ownership(&self, client: &Client, dialog_id: &str) -> Result<Option<Ownership>, Fail> {

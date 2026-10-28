@@ -174,11 +174,13 @@ fn best_snippet(
     }
 }
 
-/// Searches the chats of one project (`project` None: the chats with no project).
+/// Searches the chats of `owners` together (None: the chats with no project):
+/// a window's owners are each open folder's project and its workspace's own
+/// (workspaces-plan.md, 3.8).
 pub fn search(
     conn: &Connection,
     query: &str,
-    project: Option<&str>,
+    owners: Option<&[String]>,
     limit: usize,
 ) -> DbResult<Vec<SearchHit>> {
     let terms = parse_query(query);
@@ -187,8 +189,8 @@ pub fn search(
     }
     let limit = limit.clamp(1, 200);
     // Filtered before ranking: the pool is cut to RANK_POOL, and other
-    // projects' chats mustn't take the places of this one's.
-    let in_project = super::store::dialogs_in_project(conn, project)?;
+    // projects' chats mustn't take the places of these ones'.
+    let in_project = super::store::dialogs_of(conn, owners)?;
 
     // 1. Per term, then intersect: every term somewhere in the chat.
     let mut per_term = Vec::with_capacity(terms.len());

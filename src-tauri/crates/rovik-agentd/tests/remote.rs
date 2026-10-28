@@ -30,6 +30,7 @@ async fn app(daemon: &Daemon) -> (TestCore, Arc<Remote>) {
         created_at: 0,
         updated_at: 0,
         project_id: None,
+        folders: None,
     };
     app.core
         .db

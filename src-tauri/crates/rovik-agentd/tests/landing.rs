@@ -1,6 +1,7 @@
 //! Remote chats' results, back on the desktop (T06, 6.5): the app imports
-//! each result as the chat's overlay store and lands it by itself in the
-//! open project, a conflict waits for the user, who resolves it or lands
+//! each result as the chat's overlay store and lands it by itself in a
+//! project the window has open (any of a workspace's folders), a conflict
+//! waits for the user, who resolves it or lands
 //! anyway, a newer result waits meanwhile unless the user takes it in
 //! their place, the daemon hears of every landing so an undone one stays
 //! undone, a result that ended while the app was away comes in when it
@@ -96,7 +97,7 @@ async fn conflicts_and_a_newer_result(setup: &mut Setup) -> (App, String) {
     let app = App::new(setup).await;
     app.connect(setup).await;
     ready_to_run(setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     let (url, _) = model(vec![
         writes("w1", "src/main.rs", "fn main() { remote() }\n"),
         writes("w2", "src/lib.rs", "pub fn lib() { remote() }\n"),
@@ -127,7 +128,7 @@ async fn conflicts_and_a_newer_result(setup: &mut Setup) -> (App, String) {
     );
 
     let open = (PROJECT.to_string(), setup.project.clone());
-    app.remote.set_open_project(Some(open));
+    app.remote.set_open_projects(vec![open]);
 
     let pending = until("the conflicts in the bar", || {
         chats::pending(CHAT).filter(|p| !p.conflicts.is_empty())
@@ -354,7 +355,7 @@ async fn a_result_lands_once_its_folder_is_said_to_be_its_project() {
     // The folder open as another project's, as a copy is until the user
     // answers what it is.
     let other = ("original".to_string(), setup.project.clone());
-    app.remote.set_open_project(Some(other));
+    app.remote.set_open_projects(vec![other]);
     app.connect(&setup).await;
     ready_to_run(&setup).await;
     let (url, _) = model(vec![
@@ -371,7 +372,35 @@ async fn a_result_lands_once_its_folder_is_said_to_be_its_project() {
     })
     .await;
 
-    app.remote.folder_answered(&setup.project, PROJECT);
+    // The user says what the folder is: the window's claims record it as
+    // PROJECT's, and the client follows them (the app's commands/chat.rs).
+    let answered = (PROJECT.to_string(), setup.project.clone());
+    app.remote.set_open_projects(vec![answered]);
+
+    assert_eq!(landed(&setup, "src/new.rs").await, "fn new() {}\n");
+}
+
+/// A workspace's window (workspaces-plan.md, 3.8): the chat is its second
+/// folder's, and its result lands by itself there, as a project's does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_result_for_the_second_folders_chat_lands_while_the_workspace_is_open() {
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    let first = ("api".to_string(), setup.project.with_file_name("api"));
+    let second = (PROJECT.to_string(), setup.project.clone());
+    app.remote.set_open_projects(vec![first, second]);
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    let (url, _) = model(vec![
+        writes("w1", "src/new.rs", "fn new() {}\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
 
     assert_eq!(landed(&setup, "src/new.rs").await, "fn new() {}\n");
 }
@@ -381,7 +410,7 @@ async fn a_moved_file_lands_with_the_users_edit_where_it_was() {
     let mut setup = Setup::new().await;
     write(&setup.project.join("src/old.rs"), "1\n2\n3\n4\n5\n6\n");
     let app = App::new(&mut setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     ready_to_run(&setup).await;
     let (url, _) = model(vec![
@@ -406,7 +435,7 @@ async fn a_moved_file_lands_with_the_users_edit_where_it_was() {
     write(&setup.project.join("src/old.rs"), "1\n2\n3\n4\n5\nSIX\n");
 
     let open = (PROJECT.to_string(), setup.project.clone());
-    app.remote.set_open_project(Some(open));
+    app.remote.set_open_projects(vec![open]);
 
     landed_as(&setup, "src/new.rs", "ONE\n2\n3\n4\n5\nSIX\n").await;
     assert!(!setup.project.join("src/old.rs").exists());
@@ -486,7 +515,7 @@ async fn a_landing_the_daemon_wasnt_told_of_is_told_after_a_restart() {
     let app = App::new(&mut setup).await;
     app.connect(&setup).await;
     ready_to_run(&setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     let snapshot = setup.base();
     let (url, _) = model(vec![
         writes("w1", "src/new.rs", "fn new() {}\n"),

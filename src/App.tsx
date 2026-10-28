@@ -18,12 +18,14 @@ import Editor from './components/Editor';
 import BrowserView from './components/BrowserView';
 import MarkdownViewSwitch from './components/MarkdownViewSwitch';
 import ChatPanel from './components/ChatPanel';
-import { createFileTreeController } from './lib/fileTree';
+import { actionableRows, createFileTreeController, withoutFolderRows } from './lib/fileTree';
 import { languageForFile, isLikelyBinary } from './lib/language';
 import {
+  pickFolders,
   pickProjectFolder,
   readFileContent,
   writeFileContent,
+  startFileWatch,
   CHANGED_ON_DISK,
   pathExists,
   dirEntryCount,
@@ -39,13 +41,20 @@ import {
 } from './lib/commands';
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
 import { checkProject, claimProject, openNewWindow, showNoProjectWindow } from './lib/instances';
-import type {
-  FileWatchPayload,
-  GitStashFilePreview,
-  LastProjectOpenFile,
-  OpenFile,
-  TreeRow,
-} from './types';
+import {
+  addFolders,
+  claimTargetOf,
+  growsInto,
+  growTarget,
+  locateFolder,
+  openAtStart,
+  removeFolder,
+  resolvable,
+  switchTarget,
+  type FolderChangeCalls,
+  type GrowCalls,
+} from './lib/switchTarget';
+import type { FileWatchPayload, GitStashFilePreview, OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext, CursorInfo } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
@@ -65,22 +74,33 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   rememberProjectSession,
   savedProjectSession,
+  sessionInFolders,
   type ProjectSession,
   type SessionFile,
 } from './lib/projectSessions';
 import NotificationHost from './components/NotificationHost';
 import ProjectSwitcher from './components/ProjectSwitcher';
 import NewProjectDialog from './components/NewProjectDialog';
-import ProjectList from './components/ProjectList';
+import NewWorkspaceDialog from './components/NewWorkspaceDialog';
+import ProjectList, {
+  deleteQuestion,
+  listed,
+  listedId,
+  type Listed,
+} from './components/ProjectList';
 import {
   chatsBlocked,
   currentProject,
+  folderProjects,
+  newFoldersGeneration,
   projectList,
   refreshProjects,
   resolveProject,
+  workspaceList,
+  workspaceTarget,
 } from './lib/projects';
-import { chatApi, type ProjectSummary } from './lib/chatApi';
-import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
+import { chatApi, folderProblemMessage, type ProjectSummary, type Workspace } from './lib/chatApi';
+import { rustFileSaved, stopRustSupport, workspaceFoldersChanged } from './lib/lsp/rustAnalyzer';
 import SearchPanel from './components/SearchPanel';
 import { notifyFileWritten, onFileDeleted, onFileWritten } from './lib/approvals';
 import { editorSettings } from './lib/editorSettings';
@@ -95,18 +115,26 @@ import {
   type Marks,
   type OpenInEditor,
 } from './lib/openInEditor';
-import { isPlanFile, requestImplementPlan } from './lib/plans';
+import { isPlanFile, planFolders, requestImplementPlan } from './lib/plans';
 import {
   isBrowserTab,
   isFileTab,
   navigated,
+  unsavedIn,
   withFiles,
   withPage,
   type EditorTab,
 } from './lib/editorTabs';
 import { closeTabsOfClosedPorts, frameUrl, onPageWanted, setPageOpener } from './lib/browserTabs';
 import { isMarkdownLanguage } from './lib/markdownView';
-import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
+import {
+  clearGitBase,
+  createWorkdirReads,
+  markedFiles,
+  refreshableFiles,
+  repoFileOf,
+  setGitBase,
+} from './lib/gitMarks';
 import { diffLines, splitLines, type DiffHunk } from './lib/lineDiff';
 import {
   isProjectSource,
@@ -118,12 +146,31 @@ import {
 } from './lib/intellisense';
 import { followDisk, scheduleModelPrune, syncTabModels, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
-import { movedPath, toAbsolutePath, toRelativePath } from './lib/fileTools';
+import { movedPath, isAtOrUnder, parentOf } from './lib/fileTools';
+import {
+  activeFolder,
+  carrySession,
+  chatFolderFor,
+  chatOwners,
+  chatPathOf,
+  chatPathToAbsolute,
+  folderOf,
+  openFolders,
+  pathsByFolder,
+  sameOwners,
+  sameTarget,
+  sessionKey,
+  workspaceAsTarget,
+  type ChatRoot,
+  type OpenFolder,
+  type WindowTarget,
+} from './lib/openFolders';
 import { contextRealPath, isContextPath, remoteContextText } from './lib/contextMode';
 import { isLiveContextPath } from './lib/contextDoc';
 import { chatStore } from './lib/chatStore';
 import { overlayFile } from './lib/overlay';
 import { notify } from './lib/notifications';
+import { fileName } from './lib/toolGroups';
 import {
   startVirtualFiles,
   vfsSettingsRequested,
@@ -156,7 +203,119 @@ import { dismissBootSplash } from './lib/bootSplash';
 let unlistenFSChanges: (() => void) | undefined;
 
 export default function App() {
-  const [rootPath, setRootPath] = createSignal<string | null>(null);
+  /** What the window has open: a folder (a project), or a workspace (D1). */
+  const [target, setTarget] = createSignal<WindowTarget | null>(null);
+  /** The folders that aren't there (deleted, or a drive that isn't mounted):
+   *  shown, not resolved, and tried again as the window comes to the front
+   *  or by their row's Try again (D20). */
+  const [missingFolders, setMissingFolders] = createSignal<ReadonlySet<string>>(new Set());
+  /** The folders it has open, each marked when it isn't there; a project is
+   *  the list of one. */
+  const folders = createMemo(() =>
+    openFolders(target()).map((folder) => ({
+      ...folder,
+      missing: missingFolders().has(folder.path),
+    }))
+  );
+  /**
+   * The window's first folder, for the parts that still take one folder and
+   * not a list. With one folder it is that folder.
+   */
+  const rootPath = () => {
+    const open = folders();
+    return open.length > 0 ? open[0].path : null;
+  };
+  /** The open folder `path` is in, or null when it's in none of them. */
+  const folderAt = (path: string) => folderOf(folders(), path);
+  /** The workspace the window has open; null for a folder's window or none. */
+  const workspaceId = () => {
+    const at = target();
+    return at?.kind === 'workspace' ? at.id : null;
+  };
+  /** The folders the Git panel shows: those that are there (D20). */
+  const gitFolders = createMemo(() => resolvable(folders()));
+  /**
+   * The window's folders with the project each is, once resolved: a
+   * workspace's folders are each a project of their own, with chats of their
+   * own (docs/design/workspaces-plan.md, 3.8). Apart from `folders()`, which
+   * the tree, search, the terminals and the editor take: a folder resolving
+   * changes nothing there.
+   */
+  const resolvedFolders = createMemo(() => {
+    const known = folderProjects();
+    return folders().map((folder) => {
+      const project = known.get(folder.path);
+      return project ? { ...folder, project } : folder;
+    });
+  });
+  /**
+   * Whose chats the chat panel shows (lib/openFolders.ts): each folder's
+   * project and the workspace's own; undefined while a folder resolves.
+   */
+  const owners = createMemo(
+    () => chatOwners(target(), resolvedFolders(), currentProject() === null),
+    undefined,
+    { equals: sameOwners }
+  );
+  /**
+   * The projects this window has open: its workspace, and each folder's
+   * project once resolved. The project list hides Delete for every one of
+   * them (B06); the backend refuses a project this window has open anyway
+   * (`chat_delete_project` with `Instances::owners()`).
+   */
+  const openProjectIds = createMemo(() => {
+    const ids = new Set<string>();
+    const at = target();
+    if (at?.kind === 'workspace') ids.add(at.id);
+    for (const folder of resolvedFolders()) if (folder.project) ids.add(folder.project.id);
+    return ids;
+  });
+
+  /**
+   * The working folders of the window's repositories: git takes a file's
+   * path relative to its repository, not to the project (D10). Read per set
+   * of folders, and again when git's state changes (`forget`), and waited on
+   * by a file's marks — a tab opened as the window opens gets them too.
+   */
+  const repoWorkdirs = createWorkdirReads(async () => {
+    const open = folders();
+    if (open.length === 0) return [];
+    try {
+      const found = await invoke<{ repos: { workdir: string }[] }>('git_repos', {
+        folders: open.map((folder) => ({ path: folder.path, name: folder.name })),
+      });
+      return found.repos.map((repo) => repo.workdir);
+    } catch (err) {
+      console.error('Failed to read the window’s repositories:', err);
+      return [];
+    }
+  });
+  /** The folders the repositories are read for, as a key. */
+  const foldersKey = () =>
+    folders()
+      .map((folder) => folder.path)
+      .join('\n');
+
+  /** The window's repositories, for the folders it shows. */
+  async function workdirsNow(): Promise<string[]> {
+    const key = foldersKey();
+    const workdirs = await repoWorkdirs.of(key);
+    // The window switched folders while the read was out: that answer is for
+    // the folders it left.
+    return key === foldersKey() ? workdirs : repoWorkdirs.of(foldersKey());
+  }
+
+  // A folder became a repository of its own, or its repository went (a `git
+  // init`, a `.git` taken away): the repositories are read again when next
+  // asked. A commit, a checkout or a save leaves every folder where it was.
+  onMount(() => {
+    let stop: (() => void) | undefined;
+    void listen<{ folder: string; repositories?: boolean }>('git-changed', ({ payload }) => {
+      if (payload.repositories) repoWorkdirs.forget();
+    }).then((unlisten) => (stop = unlisten));
+    onCleanup(() => stop?.());
+  });
+
   /** Until the last project is restored, the Files tab shows no empty state. */
   const [restoringProject, setRestoringProject] = createSignal(true);
   /** The project whose tabs are being opened again: until they are, the
@@ -177,37 +336,48 @@ export default function App() {
   // The web tools' browser: downloaded if it's missing (in the background).
   onMount(() => void startBrowser());
 
-  // Load last opened project on startup: the folder the command line asked
-  // for (`rovik-ide <folder>`, claimed for this window by the backend), else
-  // the last project, unless another window has it open (lib/instances.ts).
-  // A window another one started ("New window") starts without one.
+  // Load last opened project on startup: the workspace or folder the command
+  // line asked for (`--workspace <id>`, `rovik-ide <folder>`, claimed for
+  // this window by the backend), else the last project, unless another window
+  // has it open (lib/instances.ts). A window another one started ("New
+  // window") starts without one. A workspace's folders come from the
+  // database (D17, 3.11). A window that opens with nothing still has its
+  // chats — the ones without a project — which `openAtStart` has resolved
+  // too.
   onMount(async () => {
     try {
-      const startup = await invoke<{ folder: string | null; newWindow: boolean }>(
-        'startup_info'
-      ).catch(() => ({ folder: null, newWindow: false }));
-      if (startup.newWindow && !startup.folder) return;
-      const asked = startup.folder;
-      const projectData = await getLastProject(asked ?? undefined);
-      if (!projectData) {
-        if (asked) await openWithItsTabs(asked);
-        return;
-      }
-      const [path, openFiles, expandedPaths, terminalCollapsed] = projectData;
-      for (const m of monaco.editor.getModels()) m.dispose();
-      tree.presetExpanded(path, expandedPaths);
-      setRootPath(path);
-      setOpenFiles(openFiles);
-      setTerminalCollapsed(terminalCollapsed);
-      if (openFiles.length > 0) {
-        setActivePath(openFiles[openFiles.length - 1].path);
-      }
+      const startup = await invoke<{
+        folder: string | null;
+        workspace: string | null;
+        newWindow: boolean;
+      }>('startup_info').catch(() => ({ folder: null, workspace: null, newWindow: false }));
+      // Another window's "New window", with nothing asked for: nothing opens.
+      const asked = startup.newWindow && !startup.folder && !startup.workspace ? null : startup;
+      const opening = asked ? await targetToOpen(asked) : null;
+      await openAtStart(opening?.target ?? null, {
+        show: async (target) => {
+          if (!opening) return;
+          for (const m of monaco.editor.getModels()) m.dispose();
+          presetTreeExpansion(target, opening.expanded);
+          setTarget(target);
+          setTerminalCollapsed(!opening.terminalOpen);
+          const files = await reopenFiles(opening.files);
+          setOpenFiles(files);
+          if (files.length > 0) setActivePath(files[files.length - 1].path);
+        },
+        // Its folders as they are now: each that's there is its own project,
+        // and a missing one is shown as missing and asks nothing (D20). None
+        // open: the chats without a project are this window's.
+        resolve: resolveFolders,
+        exists: (path) => pathExists(path),
+      });
     } finally {
       setRestoringProject(false);
       dismissBootSplash();
     }
   });
-  const [rootId, setRootId] = createSignal<string | null>(null);
+  /** Each open folder's backend id, once resolved: what a file made or dropped at its top goes in. */
+  const [rootIds, setRootIds] = createSignal<Record<string, string>>({});
   /** The editor's tabs, files and browser tabs, in order (lib/editorTabs.ts). */
   const [tabs, setTabs] = createSignal<EditorTab[]>([]);
   /** The file tabs among them: a new list only when one of them changed. */
@@ -301,7 +471,17 @@ export default function App() {
   const [terminalCollapsed, setTerminalCollapsed] = createSignal(true);
   const [pendingOpenPath, setPendingOpenPath] = createSignal<string | null>(null);
 
-  const tree = createFileTreeController(rootPath);
+  const tree = createFileTreeController(() =>
+    folders().map((folder) => ({
+      path: folder.path,
+      name: folder.name,
+      // A workspace shows each folder as a row; a project's one root is the
+      // tree itself (D9).
+      row: target()?.kind === 'workspace',
+      id: rootIds()[folder.path],
+      missing: folder.missing,
+    }))
+  );
 
   const displayRows = createMemo<TreeRow[]>(() => {
     const rows = tree.rows();
@@ -366,25 +546,89 @@ export default function App() {
     return rows.length > 0 ? rows[0] : null;
   });
 
-  /** The last project, as it was left, if this window may open it; only
-   *  `folder` when given (its tabs come back if it was the last). */
-  async function getLastProject(
-    folder?: string
-  ): Promise<[string, OpenFile[], string[], boolean] | null> {
-    const lastProject = await loadLastProject();
-    if (!lastProject || !lastProject.path) return null;
-    if (folder !== undefined && lastProject.path !== folder) return null;
-    // Open in another window: this one starts without a project.
-    if (!(await claimProject(lastProject.path, { focusOther: false, retries: 2 }))) return null;
-    const openedFilesRaw: LastProjectOpenFile[] = lastProject.openedFiles ?? [];
-    const openFiles = await reopenFiles(openedFilesRaw);
+  /** The selected rows the actions act on: a folder's own row never is (D9). */
+  const actionable = createMemo<TreeRow[]>(() => actionableRows(effectiveSelectedRows()));
 
-    return [
-      lastProject.path,
-      openFiles,
-      lastProject.expandedPaths ?? [],
-      lastProject.terminalCollapsed,
-    ];
+  /**
+   * The folder the user is working in (D15): the active tab's, else the
+   * selected row's, else the first that's there. A new entry, a terminal or
+   * a settings page goes to it.
+   */
+  const activeFolderNow = createMemo(() =>
+    activeFolder(resolvable(folders()), activePath(), firstSelectedRow()?.path ?? null)
+  );
+
+  /**
+   * The folder a drop on the tree's empty space, or a new file at the top,
+   * lands in: the active folder's (D15's rule, as a terminal starts in it).
+   */
+  const rootId = () => {
+    const at = activeFolderNow();
+    return at ? (rootIds()[at.path] ?? null) : null;
+  };
+
+  /** What the window opens with at its start, and the tabs it comes back with. */
+  interface StartTarget {
+    target: WindowTarget;
+    files: SessionFile[];
+    expanded: string[];
+    /** Its terminal panel was open; false when none was kept. */
+    terminalOpen: boolean;
+  }
+
+  /**
+   * What this window starts with: the workspace or folder the command line
+   * asked for, else the last project, as it was left (last-project.json,
+   * 3.11). Null when another window has it: this one starts without a
+   * project.
+   */
+  async function targetToOpen(startup: {
+    folder: string | null;
+    workspace: string | null;
+  }): Promise<StartTarget | null> {
+    const last = await loadLastProject();
+    const asked: WindowTarget | null = startup.workspace
+      ? await workspaceTarget(startup.workspace)
+      : startup.folder
+        ? { kind: 'folder', path: startup.folder }
+        : null;
+    const lastTarget: WindowTarget | null = last?.workspace
+      ? await workspaceTarget(last.workspace)
+      : last?.path
+        ? { kind: 'folder', path: last.path }
+        : null;
+    // The last project is the one asked for (its tabs come back from
+    // last-project.json), or the one opened with none asked for at all.
+    const isLast = lastTarget !== null && (!asked || sameTarget(asked, lastTarget));
+    const target = asked ?? lastTarget;
+    if (!target) return null;
+    // Open in another window: this one starts without a project.
+    if (!(await claimProject(claimTargetOf(target), { focusOther: false, retries: 2 }))) {
+      return null;
+    }
+    if (isLast && last) {
+      return {
+        target,
+        files: last.openedFiles ?? [],
+        expanded: last.expandedPaths ?? [],
+        terminalOpen: !last.terminalCollapsed,
+      };
+    }
+    // Not the last project: its tabs are kept with it (project-sessions),
+    // but for those of a folder that has left the workspace (3.11).
+    const session = await savedProjectSession(sessionKey(target) ?? '').catch(() => null);
+    const kept = session
+      ? sessionInFolders(
+          session,
+          openFolders(target).map((folder) => folder.path)
+        )
+      : null;
+    return {
+      target,
+      files: kept?.files ?? [],
+      expanded: kept?.expanded ?? [],
+      terminalOpen: kept?.terminalOpen ?? false,
+    };
   }
 
   /** Tabs saved for later, read again from disk. */
@@ -406,13 +650,18 @@ export default function App() {
   }
 
   /**
-   * Tabs with unsaved text, before they close (another project opens, or
-   * the window closes): saved, or let go, as the user says. False: stay
-   * (cancelled, or a save didn't go through). Switching projects used to
-   * drop the text without a word, and so did closing the window.
+   * Tabs with unsaved text, before they close (another project opens, a
+   * folder leaves the workspace, or the window closes): saved, or let go, as
+   * the user says. False: stay (cancelled, or a save didn't go through).
+   * Switching projects used to drop the text without a word, and so did
+   * closing the window. `inFolder`: only that folder's tabs, which close as
+   * it leaves the workspace (D9).
    */
-  async function settleUnsavedTabs(leaving: 'project' | 'app'): Promise<boolean> {
-    const unsaved = openFiles().filter((f) => f.dirty && !f.readOnly);
+  async function settleUnsavedTabs(
+    leaving: 'project' | 'app',
+    inFolder?: { folder: OpenFolder }
+  ): Promise<boolean> {
+    const unsaved = unsavedIn(openFiles(), inFolder?.folder.path);
     if (unsaved.length === 0) return true;
     const choice = await chooseDialog({
       title:
@@ -424,7 +673,9 @@ export default function App() {
         `changes that aren’t saved. ` +
         (leaving === 'app'
           ? 'They’re lost when the window closes, unless they’re saved.'
-          : 'The tabs close when another project opens, so they’re lost unless they’re saved.'),
+          : inFolder
+            ? 'They close when the folder leaves the workspace, so they’re lost unless they’re saved.'
+            : 'The tabs close when another project opens, so they’re lost unless they’re saved.'),
       confirmLabel: 'Save',
       alternateLabel: 'Don’t save',
     });
@@ -436,7 +687,7 @@ export default function App() {
       await saveActiveFile();
     }
     // A save refused (changed on disk and kept to compare, or an error).
-    return !openFiles().some((f) => f.dirty && !f.readOnly);
+    return unsavedIn(openFiles(), inFolder?.folder.path).length === 0;
   }
 
   // Rovik's own updates (lib/updates.ts): a look every 30 minutes, and an
@@ -446,6 +697,7 @@ export default function App() {
   onMount(() => {
     void startUpdates({
       folder: () => rootPath(),
+      workspace: workspaceId,
       settle: async () => {
         if (!(await settleUnsavedTabs('app'))) return false;
         await keepTabsNow();
@@ -475,6 +727,7 @@ export default function App() {
   });
 
   const [newProjectOpen, setNewProjectOpen] = createSignal(false);
+  const [newWorkspaceOpen, setNewWorkspaceOpen] = createSignal(false);
 
   async function handlePickFolder() {
     const folder = await pickProjectFolder();
@@ -483,82 +736,249 @@ export default function App() {
 
   /** Opens a project folder: Files, Chat and Git switch to it. */
   async function openProjectAt(folder: string) {
-    if (folder === rootPath()) return;
-    // Open in another window (or a copy sharing its chats): that one comes
-    // to the front instead (lib/instances.ts).
-    if (!(await checkProject(folder))) return;
-    if (!(await settleUnsavedTabs('project'))) return;
-    // Chosen meanwhile (the dialog was open), or the same one again.
-    if (folder === rootPath()) return;
-    // Its tabs as the window that had it last left them, this one or
-    // another (checked above: none has it now).
-    const session = await savedProjectSession(folder);
-    // Claimed elsewhere since the check, if it came to that.
-    if (!(await claimProject(folder))) return;
-    // The project left keeps its tabs for coming back to it.
-    void keepTabsNow();
-    for (const m of monaco.editor.getModels()) m.dispose();
-    // The old project's change marks; its tabs close below.
-    for (const { absPath } of markedFiles()) clearGitBase(absPath);
-    setSelectedFileIds(new Set<string>());
-    setLastSelectedId(null);
-    await showWithTabs(folder, session);
+    const next: WindowTarget = { kind: 'folder', path: folder };
+    // A folder of the workspace open opens alone; the folder open already, not again.
+    if (sameTarget(target(), next)) return;
+    await switchTo(next);
   }
 
-  /** `folder` becomes the project shown, its tabs as they were left, if kept. */
-  async function showWithTabs(folder: string, session: ProjectSession | null) {
-    // Not kept until they're back: the tabs shown meanwhile aren't its.
-    setTabsComing(folder);
-    try {
-      if (session) tree.presetExpanded(folder, session.expanded);
-      // Its terminal panel as it was left, with its own terminals
-      // (TerminalPanel), or as it is now for a project that has none kept:
-      // set together, or the panel open on the project left would start a
-      // terminal in this one.
-      batch(() => {
-        if (session?.terminalOpen !== undefined) setTerminalCollapsed(!session.terminalOpen);
-        setRootPath(folder);
-      });
-      // The project left's tabs go, its browser tabs too.
-      setTabs([]);
-      setActivePath(null);
-      if (!session?.files.length) return;
-      const files = await reopenFiles(session.files);
-      // Another project chosen since, or a file opened meanwhile: leave it.
-      if (rootPath() !== folder || openFiles().length > 0 || files.length === 0) return;
-      setOpenFiles(files);
-      setActivePath(
-        files.some((f) => f.path === session.active) ? session.active : files[files.length - 1].path
-      );
-    } finally {
-      if (tabsComing() === folder) setTabsComing(null);
+  /**
+   * Opens a target in this window — a folder, or a workspace's folders — and
+   * says what happened (lib/switchTarget.ts, 3.3): another window with it
+   * keeps it and comes to the front, and the tabs with unsaved text are
+   * settled before anything changes.
+   */
+  async function switchTo(next: WindowTarget | null) {
+    await switchTarget(next, {
+      check: (target) => checkProject(claimTargetOf(target)),
+      settle: () => settleUnsavedTabs('project'),
+      keepTabs: () => void keepTabsNow(),
+      claim: (target) => claimProject(claimTargetOf(target)),
+      show: (target) => showTarget(target),
+      // Each folder that's there is its own project, with its own chats; a
+      // missing one isn't resolved, and asks nothing (D20).
+      resolve: (open) => resolveFolders(open),
+      exists: (path) => pathExists(path),
+    });
+  }
+
+  /**
+   * The window's folders as they are now, resolved in the one place that
+   * does it: each that's there is its own project, with its own chats, and a
+   * missing one is shown as missing and asks nothing (D20). A new generation
+   * first, so an answer for a folder the window has left since is dropped
+   * (lib/projects.ts).
+   */
+  function resolveFolders(open: readonly OpenFolder[]) {
+    newFoldersGeneration();
+    setMissingFolders(new Set(open.filter((folder) => folder.missing).map((f) => f.path)));
+    if (open.length === 0) {
+      void resolveProject(null);
+      return;
+    }
+    for (const folder of resolvable(open)) void resolveProject(folder.path, [...open]);
+  }
+
+  /**
+   * The tree's saved open folders, registered on the folder each is in: the
+   * tree's roots are the window's folders, never the key its session is kept
+   * under (`workspace:<id>` is no folder's path), so a workspace's saved
+   * expansion would otherwise be dropped (B04).
+   */
+  function presetTreeExpansion(target: WindowTarget | null, expanded: readonly string[]) {
+    const roots = openFolders(target).map((folder) => folder.path);
+    for (const { folder, paths } of pathsByFolder(expanded, roots)) {
+      tree.presetExpanded(folder, paths);
     }
   }
 
-  /** A folder asked for at the start that wasn't the last project: its own tabs. */
-  async function openWithItsTabs(folder: string) {
-    await showWithTabs(folder, await savedProjectSession(folder).catch(() => null));
+  /** `next` becomes what the window shows, its tabs as they were left here
+   *  or in the window that had it last (lib/projectSessions.ts). */
+  async function showTarget(next: WindowTarget | null) {
+    const key = sessionKey(next);
+    // Not kept until they're back: the tabs shown meanwhile aren't its.
+    setTabsComing(key);
+    try {
+      const session = key ? await savedProjectSession(key) : null;
+      presetTreeExpansion(next, session?.expanded ?? []);
+      // Its terminal panel as it was left, with its own terminals
+      // (TerminalPanel), or as it is now for a target that has none kept:
+      // set together, or the panel open on the target left would start a
+      // terminal in this one.
+      batch(() => {
+        if (session?.terminalOpen !== undefined) setTerminalCollapsed(!session.terminalOpen);
+        setTarget(next);
+      });
+      // The target left's tabs go, its browser tabs too; so do its models
+      // and the old folder's change marks.
+      setTabs([]);
+      setActivePath(null);
+      for (const m of monaco.editor.getModels()) m.dispose();
+      for (const { absPath } of markedFiles()) clearGitBase(absPath);
+      setSelectedFileIds(new Set<string>());
+      setLastSelectedId(null);
+      // A tab of a folder that has left the workspace isn't reopened (3.11).
+      const kept =
+        session &&
+        sessionInFolders(
+          session,
+          openFolders(next).map((f) => f.path)
+        );
+      if (!kept?.files.length) return;
+      const files = await reopenFiles(kept.files);
+      // Another target chosen since, or a file opened meanwhile: leave it.
+      if (sessionKey(target()) !== key || openFiles().length > 0 || files.length === 0) return;
+      setOpenFiles(files);
+      setActivePath(
+        files.some((f) => f.path === kept.active) ? kept.active : files[files.length - 1].path
+      );
+    } finally {
+      if (tabsComing() === key) setTabsComing(null);
+    }
   }
 
-  // Which project the open folder is, and so whose chats are shown: once
-  // the start has chosen the folder, so no other's chats are claimed first.
-  createEffect(
-    on([rootPath, restoringProject], ([root, restoring]) => {
-      if (!restoring) void resolveProject(root);
-    })
-  );
+  // Which project each open folder is, and so whose chats are shown, is
+  // `resolveFolders`'s: each switch, and the start, resolves the folders the
+  // target has (3.3). Nothing else resolves them, so nothing resolves a
+  // folder that isn't there.
+
   // The chats without a project were another window's: maybe they're free
-  // now, when this one comes to the front.
+  // now, when this one comes to the front. A folder that was missing is
+  // tried again too: its drive may be mounted (D20).
   onMount(() => {
     const again = () => {
       if (!rootPath() && chatsBlocked()?.kind === 'no-project-elsewhere') {
         void resolveProject(null);
       }
+      for (const path of missingFolders()) void tryFolderAgain(path);
     };
     window.addEventListener('focus', again);
     onCleanup(() => window.removeEventListener('focus', again));
   });
+
+  /**
+   * A folder that was missing is tried again (its row's **Try again**, or
+   * the window coming to the front): resolved once it's there, and still
+   * shown as missing until then. Whether it was found.
+   */
+  async function tryFolderAgain(path: string): Promise<boolean> {
+    const there = await pathExists(path).catch(() => false);
+    if (!there) return false;
+    setMissingFolders((was) => new Set([...was].filter((missing) => missing !== path)));
+    void resolveProject(path, resolvedFolders());
+    return true;
+  }
   onMount(() => onCleanup(rereadAiSettingsOnFocus()));
+
+  /** The window folder a tree row is, when the row is a folder row (D9). */
+  const folderOfRow = (row: TreeRow): OpenFolder | null =>
+    folders().find((folder) => folder.path === row.path) ?? null;
+
+  /** The menu is for one of the window's folders: exactly one folder row is selected. */
+  const menuFolderRow = createMemo<TreeRow | null>(() => {
+    const rows = effectiveSelectedRows();
+    return rows.length === 1 && rows[0].folderRow ? rows[0] : null;
+  });
+  const menuFolder = createMemo(() => {
+    const row = menuFolderRow();
+    return row ? { missing: !!row.missing } : undefined;
+  });
+
+  /**
+   * The window shows `next` after one of its folders left it or moved, in
+   * place: what is open in the folders that stay stays open (the tree's reset
+   * effect would close every folder otherwise), `gone`'s tabs close — a tab
+   * that followed its folder to a new place is already at its new path — and
+   * `gone` is no longer tried as missing, and the selection clears.
+   */
+  function showFolderChange(next: WindowTarget, gone: string) {
+    const roots = openFolders(next).map((folder) => folder.path);
+    for (const { folder, paths } of pathsByFolder([...tree.expanded()], roots)) {
+      tree.presetExpanded(folder, paths);
+    }
+    const closed = new Set(
+      openFiles()
+        .filter((f) => isAtOrUnder(f.path, gone))
+        .map((f) => f.path)
+    );
+    if (closed.size > 0) {
+      setOpenFiles((prev) => prev.filter((f) => !closed.has(f.path)));
+      const active = activePath();
+      if (active && closed.has(active)) setActivePath(null);
+    }
+    setMissingFolders((was) => new Set([...was].filter((path) => path !== gone)));
+    setSelectedFileIds(new Set<string>());
+    setLastSelectedId(null);
+    setTarget(next);
+  }
+
+  /** What Remove and Locate… need of the window, for the folder they act on. */
+  function folderChangeCalls(folder: OpenFolder): FolderChangeCalls {
+    return {
+      settle: (leaving) => settleUnsavedTabs('project', { folder: leaving }),
+      remove: (id, name) => chatApi.removeWorkspaceFolder(id, name),
+      check: (path) => checkProject({ kind: 'folder', path }),
+      relocate: (id, name, path) => chatApi.relocateWorkspaceFolder(id, name, path),
+      follow: (from, to) => followMoves([{ from, to }]),
+      claim: (next) => claimProject(claimTargetOf(next)),
+      show: (next) => showFolderChange(next, folder.path),
+      resolve: (path) => void resolveProject(path, resolvedFolders()),
+    };
+  }
+
+  /** Remove from workspace: the folder leaves it, and nothing on disk changes. */
+  async function handleRemoveFolder() {
+    setContextMenuVisible(false);
+    const row = menuFolderRow();
+    const at = target();
+    const folder = row ? folderOfRow(row) : null;
+    if (!folder || !at) return;
+    try {
+      await removeFolder(at, folder, folderChangeCalls(folder));
+    } catch (err) {
+      notify({
+        id: 'folder-remove',
+        kind: 'error',
+        title: `Couldn’t remove ${folder.name}`,
+        message: String(err),
+      });
+    }
+  }
+
+  /** Locate…: the folder that isn't there is at another place from now on. */
+  async function handleLocateFolder() {
+    setContextMenuVisible(false);
+    const row = menuFolderRow();
+    const at = target();
+    const folder = row ? folderOfRow(row) : null;
+    if (!folder || !at) return;
+    try {
+      const to = await pickProjectFolder();
+      if (!to) return;
+      await locateFolder(at, folder, to, folderChangeCalls(folder));
+    } catch (err) {
+      notify({
+        id: 'folder-locate',
+        kind: 'error',
+        title: `Couldn’t locate ${folder.name}`,
+        message: String(err),
+      });
+    }
+  }
+
+  /** Try again: a missing folder's row asks whether it's back. */
+  async function handleTryFolderAgain() {
+    setContextMenuVisible(false);
+    const row = menuFolderRow();
+    if (!row) return;
+    if (await tryFolderAgain(row.path)) return;
+    notify({
+      id: `folder-missing:${row.path}`,
+      kind: 'info',
+      title: `${row.name} still isn’t there`,
+      message: `${row.path} can’t be read. Locate it, or remove it from the workspace.`,
+    });
+  }
 
   /** A project whose folder is gone: point it at its folder (lib/projects.ts). */
   async function relinkProject(p: ProjectSummary) {
@@ -585,20 +1005,108 @@ export default function App() {
     }
   }
 
-  async function deleteProject(p: ProjectSummary) {
-    const ok = await confirmDialog({
-      title: `Delete ${p.name}'s chat history?`,
-      message: `Its ${p.chatCount} chat${p.chatCount === 1 ? '' : 's'} are deleted for good. The project folder itself isn't touched.`,
-      confirmLabel: 'Delete chats',
-      danger: true,
-    });
+  /** Delete: a project's chats, or a workspace with its own chats (3.4). */
+  async function deleteListed(entry: Listed) {
+    const ok = await confirmDialog({ ...deleteQuestion(entry), danger: true });
     if (!ok) return;
     try {
-      await chatApi.deleteProject(p.id);
+      await chatApi.deleteProject(listedId(entry));
       await refreshProjects();
     } catch (err) {
       window.alert(`Deleting failed: ${String(err)}`);
     }
+  }
+
+  /** A row of the project list: its folder opens, or the workspace, as the database keeps it now. */
+  async function openListed(entry: Listed) {
+    if (entry.kind === 'project') return openProjectAt(entry.project.path);
+    if (sameTarget(target(), workspaceAsTarget(entry.workspace))) return;
+    const next = await workspaceTarget(entry.workspace.id);
+    if (next) await switchTo(next);
+    else void refreshProjects();
+  }
+
+  /**
+   * Create: the workspace made in the dialog opens here (D4). Made from the
+   * folder the window has open, the window grows into it, keeping that
+   * folder's tabs, and its terminals and commit message come along; else it
+   * switches to it as to any other.
+   */
+  async function openCreated(workspace: Workspace) {
+    setNewWorkspaceOpen(false);
+    void refreshProjects();
+    const next = workspaceAsTarget(workspace);
+    const at = target();
+    if (growsInto(at, next)) await growTarget(at, next, growCalls());
+    else await switchTo(next);
+  }
+
+  /** What growing in place needs of the window (lib/switchTarget.ts). */
+  function growCalls(): GrowCalls {
+    return {
+      check: (next) => checkProject(claimTargetOf(next)),
+      keepTabs: () => void keepTabsNow(),
+      claim: (next) => claimProject(claimTargetOf(next)),
+      show: (next) => showGrown(next),
+      resolve: (added) => resolveAdded(added),
+      exists: (path) => pathExists(path),
+    };
+  }
+
+  /**
+   * The window shows `next`, which holds every folder it shows, in place:
+   * what's open in them stays open, tabs and all, and what the session kept
+   * — its terminals, its commit message — goes on under `next`'s.
+   */
+  function showGrown(next: WindowTarget) {
+    const from = sessionKey(target());
+    const to = sessionKey(next);
+    presetTreeExpansion(next, [...tree.expanded()]);
+    batch(() => {
+      if (from && to) carrySession(from, to);
+      setTarget(next);
+    });
+  }
+
+  /** Folders new to the window: each that's there resolved, a missing one shown missing (D20). */
+  function resolveAdded(added: readonly OpenFolder[]) {
+    const missing = added.filter((folder) => folder.missing).map((folder) => folder.path);
+    if (missing.length > 0) setMissingFolders((was) => new Set([...was, ...missing]));
+    for (const folder of resolvable(added)) void resolveProject(folder.path, resolvedFolders());
+  }
+
+  /** Add folder to workspace…: the folders picked join the open workspace (3.3). */
+  async function handleAddFolders() {
+    const at = target();
+    if (at?.kind !== 'workspace') return;
+    const picked = await pickFolders(`Add folders to ${at.name}`);
+    if (picked.length === 0) return;
+    try {
+      await addFolders(at, picked, {
+        ...growCalls(),
+        problem: async (id, path, others) => {
+          const problem = await chatApi.checkWorkspaceFolder(id, path, others);
+          return problem ? folderProblemMessage(problem) : null;
+        },
+        free: (path) => checkProject({ kind: 'folder', path }),
+        refused: (path, why) =>
+          notify({
+            id: `folder-refused:${path}`,
+            kind: 'error',
+            title: `${fileName(path)} can’t join ${at.name}`,
+            message: why,
+          }),
+        add: (id, folders) => chatApi.addWorkspaceFolders(id, folders),
+      });
+    } catch (err) {
+      notify({
+        id: 'folder-add',
+        kind: 'error',
+        title: `Couldn’t add folders to ${at.name}`,
+        message: String(err),
+      });
+    }
+    void refreshProjects();
   }
 
   // Ctrl/Cmd+O: open a project, also while typing (nothing else uses it).
@@ -688,17 +1196,19 @@ export default function App() {
   async function openRequested(request: OpenInEditor): Promise<void> {
     const { path, activate = true, focus = false, highlight = 'flash', marks = 'auto' } = request;
     if (typeof marks === 'object') return openComparison(path, marks.compare, request);
-    const root = rootPath();
-    if (!root && !isContextPath(path)) return;
+    const folder = folderForChat(request.dialogId);
+    if (!folder && !isContextPath(path)) return;
     // A written file as its chat has it, when that isn't the project's
     // file: an isolated chat's change that hasn't landed, a remote chat's.
     // Before the project's file is looked for: an isolated chat's new file
     // isn't there at all.
-    if (request.dialogId && root && marks !== 'none' && !isContextPath(path)) {
-      const rel = toRelativePath(toAbsolutePath(path, root), root);
-      if (await openChatVersion(request.dialogId, rel, request)) return;
+    if (request.dialogId && folder && marks !== 'none' && !isContextPath(path)) {
+      // A workspace chat's path whose first part names none of its folders names no file.
+      const abs = chatPathToAbsolute(folder, path);
+      const rel = abs === null ? null : chatPathOf(folder, abs);
+      if (rel !== null && (await openChatVersion(request.dialogId, rel, request))) return;
     }
-    const abs = await resolveOpenPath(path, root);
+    const abs = await resolveOpenPath(path, folder);
     if (!abs && (await openRemoteContext(path, request))) return;
     if (!abs) {
       notify({
@@ -767,7 +1277,7 @@ export default function App() {
       ...(compare.stash ? { stash: compare.stash } : {}),
       ...(compare.commit ? { commit: compare.commit } : {}),
     };
-    setGitBase(id, compare.fileName, compare.before);
+    setGitBase(id, '', compare.fileName, compare.before);
     setOpenFiles((prev) => (existed ? prev.map((f) => (f.path === id ? tab : f)) : [...prev, tab]));
     if (activate) setActivePath(id);
     if (focus) showEditor();
@@ -811,11 +1321,18 @@ export default function App() {
   // its file opens in a tab so the changes can be seen. In the background
   // while another file is being worked on, so a long run doesn't keep
   // switching tabs; focused when nothing else is open.
-  // Language servers belong to a project: a different one (or none) stops them.
+  // Language servers belong to the folders that are there: when one comes
+  // or goes (removed, located, tried again), a running server restarts for
+  // them (C07). Nothing starts one: a Rust file does that.
+  const loadableKey = createMemo(() =>
+    resolvable(folders())
+      .map((folder) => folder.path)
+      .join('\n')
+  );
   createEffect(
     on(
-      () => rootPath(),
-      () => void stopRustSupport(),
+      loadableKey,
+      () => workspaceFoldersChanged(resolvable(folders()).map((folder) => folder.path)),
       { defer: true }
     )
   );
@@ -888,21 +1405,32 @@ export default function App() {
     return true;
   }
   /**
-   * The file a path from the chat names: relative to the project, absolute,
+   * Where a path from the chat `dialogId` (else the open chat) is
+   * (docs/design/workspaces-plan.md, 3.8): the chat names its files in its
+   * own folders, and a subagent's chat, which isn't listed, in the open
+   * chat's (`chatFolderFor`).
+   */
+  function folderForChat(dialogId?: string | null): ChatRoot | null {
+    const listed = dialogId ? chatStore.summaryOf(dialogId) : undefined;
+    return chatFolderFor(listed, chatStore.state.active, resolvedFolders(), workspaceId());
+  }
+
+  /**
+   * The file a path from the chat names: in the chat's folder, absolute,
    * or in the active chat's context folder (`@context/…`, on the virtual
    * volume). Null when it can't be one.
    */
-  async function resolveOpenPath(path: string, root: string | null): Promise<string | null> {
+  async function resolveOpenPath(path: string, folder: ChatRoot | null): Promise<string | null> {
     if (isContextPath(path)) {
       const dialogId = chatStore.state.activeId;
       return dialogId ? contextRealPath(dialogId, path) : null;
     }
-    return root ? toAbsolutePath(path, root) : null;
+    return chatPathToAbsolute(folder, path);
   }
-  // Which paths mentioned in the chat are files in this project (or the
+  // Which paths mentioned in the chat are files in its folder (or the
   // agent's context folder).
   setProjectFileResolver(async (path) => {
-    const abs = await resolveOpenPath(path, rootPath());
+    const abs = await resolveOpenPath(path, folderForChat());
     if (!abs || !(await pathExists(abs))) return null;
     return (await dirEntryCount(abs, 1)) === null ? abs : null; // a file, not a folder
   });
@@ -1028,7 +1556,7 @@ export default function App() {
       language: file.language,
       readOnly: true,
     };
-    setGitBase(virtualPath, file.name, current.content);
+    setGitBase(virtualPath, '', file.name, current.content);
     // The user has now seen the version on disk: the tab is checked against
     // it from here on, so a save after merging by hand isn't refused again
     // (and saving the tab untouched replaces it, as Overwrite would).
@@ -1041,12 +1569,6 @@ export default function App() {
       tab,
     ]);
     setActivePath(virtualPath);
-  }
-
-  function isAtOrUnder(path: string, base: string) {
-    if (path === base) return true;
-    const trimmed = base.replace(/[\\/]+$/, '');
-    return path.startsWith(`${trimmed}/`) || path.startsWith(`${trimmed}\\`);
   }
 
   /**
@@ -1105,18 +1627,17 @@ export default function App() {
    * Loads the version of a project file that a revert would restore and
    * marks the file's changes against it (lib/gitMarks.ts). Null for a file
    * git doesn't have (everything is a change); undefined, with no marks,
-   * for a file outside the project, a binary, or git trouble.
+   * for a file in none of the window's repositories, a binary, or git
+   * trouble.
    */
-  async function loadGitBase(
-    abs: string,
-    file: string = toRelativePath(abs, rootPath())
-  ): Promise<string | null | undefined> {
-    const root = rootPath();
-    if (!root || file === abs) return undefined;
-    const base = await invoke<string | null>('git_base_content', { path: root, file }).catch(
-      () => undefined
-    );
-    if (base !== undefined) setGitBase(abs, file, base);
+  async function loadGitBase(abs: string): Promise<string | null | undefined> {
+    const at = repoFileOf(abs, await workdirsNow());
+    if (!at) return undefined;
+    const base = await invoke<string | null>('git_base_content', {
+      path: at.workdir,
+      file: at.file,
+    }).catch(() => undefined);
+    if (base !== undefined) setGitBase(abs, at.workdir, at.file, base);
     return base;
   }
 
@@ -1208,14 +1729,15 @@ export default function App() {
 
   /**
    * "Implement this plan" over a plan file: saves it, then hands it to the
-   * chat, which starts the run in Agent mode (lib/plans.ts).
+   * chat, which starts the run in Agent mode (lib/plans.ts), with the
+   * folders its `Folders:` line names, which choose the chat (D28).
    */
   async function implementOpenPlan() {
     const file = activeFile();
     if (!file || !isPlanFile(file.path)) return;
     if (file.dirty) await saveActiveFile();
     setSidebarTab('chat');
-    requestImplementPlan({ path: file.path });
+    requestImplementPlan({ path: file.path, folders: planFolders(file.content) });
   }
 
   /** A reverted file: its tab shows the restored text (unless it has unsaved edits). */
@@ -1244,15 +1766,15 @@ export default function App() {
   /** Git's state changed: the marked files' bases may have too. */
   let gitRefresh = 0;
   function refreshGitBases() {
-    const root = rootPath();
-    if (!root) return;
     const run = ++gitRefresh;
-    for (const { absPath, file } of markedFiles()) {
-      // Stash/commit preview tabs keep their own base commit, not HEAD.
-      if (absPath.startsWith('stash@') || absPath.startsWith('commit@')) continue;
-      void invoke<string | null>('git_base_content', { path: root, file })
+    // A base is asked of the file's own repository: in one checkout, a
+    // workspace's folders may be in one repository or in several (D10). A
+    // tab of a version of a file (disk:, chat:, a stash's, a commit's) keeps
+    // its base: git has nothing newer to say about it.
+    for (const { absPath, workdir, file } of refreshableFiles()) {
+      void invoke<string | null>('git_base_content', { path: workdir, file })
         .then((base) => {
-          if (run === gitRefresh) setGitBase(absPath, file, base);
+          if (run === gitRefresh) setGitBase(absPath, workdir, file, base);
         })
         .catch(() => clearGitBase(absPath));
     }
@@ -1412,8 +1934,9 @@ export default function App() {
   async function handleDeleteFile() {
     setContextMenuVisible(false);
     // Items inside a selected folder go with it: deleting them separately
-    // would fail once the folder is gone.
-    const selected = effectiveSelectedRows();
+    // would fail once the folder is gone. A folder's own row isn't deleted:
+    // it leaves the workspace instead (D9).
+    const selected = actionable();
     const selectedRows = selected.filter(
       (r) =>
         !selected.some(
@@ -1496,14 +2019,15 @@ export default function App() {
 
   function handleCopyFile() {
     setContextMenuVisible(false);
-    const selectedIds = Array.from(selectedFileIds());
+    // A window folder's row is never copied: it isn't the rows' to act on (D9).
+    const selectedIds = withoutFolderRows(selectedFileIds(), tree.rows());
     if (selectedIds.length === 0) return;
     setClipboard({ ids: selectedIds, mode: 'copy' });
   }
 
   function handleCutFile() {
     setContextMenuVisible(false);
-    const selectedIds = Array.from(selectedFileIds());
+    const selectedIds = withoutFolderRows(selectedFileIds(), tree.rows());
     if (selectedIds.length === 0) return;
     setClipboard({ ids: selectedIds, mode: 'cut' });
   }
@@ -1513,8 +2037,16 @@ export default function App() {
     const entry = clipboard();
     const target = firstSelectedRow();
     if (!entry) return;
+    // A folder row that isn't there has no id to paste into (D20).
+    if (target?.missing) return;
 
-    const destDirId = target?.isDir ? target.id : rootId();
+    // The top of a selected file's own folder, else the active folder's.
+    const folder = target ? folderAt(target.path) : null;
+    const destDirId = target?.isDir
+      ? target.id
+      : folder
+        ? (rootIds()[folder.path] ?? null)
+        : rootId();
     if (!destDirId) {
       window.alert('No destination directory available');
       return;
@@ -1581,7 +2113,7 @@ export default function App() {
         failures.push(`${src.name}: can't move a folder into itself`);
         continue;
       }
-      if (parentPathOf(src.path) === destPath) continue;
+      if (parentOf(src.path) === destPath) continue;
       try {
         const to = await movePathOnDisk(id, destDirId);
         moved.push({ id, from: src.path, to });
@@ -1628,16 +2160,8 @@ export default function App() {
     if (next) setActivePath(next);
   }
 
-  function parentPathOf(path: string): string | null {
-    const trimmed = path.replace(/[\\/]+$/, '');
-    const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
-    if (idx < 0) return null;
-    return idx === 0 ? trimmed.slice(0, 1) : trimmed.slice(0, idx);
-  }
-
   /**
    * The folder a new file or folder goes in: the clicked folder itself, the
-
    * folder a clicked file is in, or the project root. With several items
    * selected, the topmost one decides.
    */
@@ -1654,9 +2178,19 @@ export default function App() {
     return null;
   }
 
+  /** The tree's row for one of the window's folders: a workspace's folders have one (D9). */
+  function folderRowOf(folder: OpenFolder | null): TreeRow | null {
+    if (!folder) return null;
+    return tree.rows().find((row) => row.folderRow && row.path === folder.path) ?? null;
+  }
+
   function beginCreate(kind: 'file' | 'folder') {
     setContextMenuVisible(false);
-    const folder = creationFolder(firstSelectedRow());
+    const selected = firstSelectedRow();
+    // With nothing selected, the new entry goes into the active folder: in a
+    // workspace that is that folder's row, so the draft sits at depth 1 under
+    // it; a project's root has no row, and the draft is at the top (D15).
+    const folder = selected ? creationFolder(selected) : folderRowOf(activeFolderNow());
     const parentId = folder ? folder.id : rootId();
     if (!parentId) return;
 
@@ -1681,7 +2215,9 @@ export default function App() {
 
   function handleRenameFile() {
     setContextMenuVisible(false);
-    const target = firstSelectedRow();
+    // The rename goes to the selection's first row an action can act on: a
+    // folder's own row is left out, as Rename is enabled for one such row (D9).
+    const target = actionable()[0];
     if (!target) return;
     setEditingId(target.id);
   }
@@ -1737,17 +2273,19 @@ export default function App() {
     if (isTyping) return;
     if (!modKey) return;
 
-    const selected = selectedFileIds();
+    // A window folder's row isn't copied, cut or deleted: it leaves the
+    // workspace instead (D9).
+    const selected = withoutFolderRows(selectedFileIds(), tree.rows());
     const key = e.key.toLowerCase();
 
-    if (key === 'c' && selected.size > 0) {
+    if (key === 'c' && selected.length > 0) {
       e.preventDefault();
-      setClipboard({ ids: Array.from(selected), mode: 'copy' });
+      setClipboard({ ids: selected, mode: 'copy' });
     }
 
-    if (key === 'x' && selected.size > 0) {
+    if (key === 'x' && selected.length > 0) {
       e.preventDefault();
-      setClipboard({ ids: Array.from(selected), mode: 'cut' });
+      setClipboard({ ids: selected, mode: 'cut' });
     }
 
     if (key === 'v') {
@@ -1759,7 +2297,7 @@ export default function App() {
     }
 
     // Delete with Backspace or Delete key
-    if ((key === 'backspace' || key === 'delete') && selected.size > 0) {
+    if ((key === 'backspace' || key === 'delete') && selected.length > 0) {
       e.preventDefault();
       handleDeleteFile();
     }
@@ -1909,7 +2447,8 @@ export default function App() {
       // be a folder that went (renamed away, removed): its sources go too.
       // A folder that came is reported with what's in it.
       if (everything) updateWholeProject();
-      else if (!is_dir && isProjectSource(path, rootPath())) updateProjectSource(path);
+      else if (!is_dir && isProjectSource(path, folderAt(path)?.path ?? null))
+        updateProjectSource(path);
       else if (!is_dir) updateProjectPath(path);
       // A manifest write (package.json, lockfiles) means node_modules may
       // have changed (node_modules itself is watcher-ignored); a tsconfig
@@ -1927,28 +2466,31 @@ export default function App() {
   });
 
   createEffect(() => {
-    const root = rootPath();
+    const at = target();
     const expandedPaths = Array.from(tree.expanded());
     // Read-only preview tabs (stash content) live only for this session.
     const files = openFiles().filter((f) => !f.readOnly);
     const collapsedTerminal = terminalCollapsed();
-    if (!root) return;
-    saveLastProject(root, files, expandedPaths, collapsedTerminal).catch((err) => {
+    if (!at) return;
+    // A workspace has no path of its own: its ID opens it again (D17).
+    const path = at.kind === 'folder' ? at.path : '';
+    const workspace = at.kind === 'workspace' ? at.id : null;
+    saveLastProject(path, workspace, files, expandedPaths, collapsedTerminal).catch((err) => {
       console.error('Failed to save last project:', err);
     });
   });
 
-  /** The project's tabs shown now, as kept for coming back to it; none
+  /** The target's tabs shown now, as kept for coming back to it; none
    *  while they're being opened. Text: it changes when they do, not as
    *  their files are typed in. */
   const tabsNow = createMemo((): string | null => {
-    const root = rootPath();
-    if (!root || restoringProject() || tabsComing() === root) return null;
+    const key = sessionKey(target());
+    if (!key || restoringProject() || tabsComing() === key) return null;
     const files: SessionFile[] = openFiles()
       .filter((f) => !f.readOnly)
       .map(({ id, path, name, language }) => ({ id, path, name, language }));
     return JSON.stringify({
-      root,
+      root: key,
       files,
       active: activePath(),
       expanded: [...tree.expanded()],
@@ -1977,10 +2519,10 @@ export default function App() {
   onCleanup(() => clearTimeout(tabsTimer));
 
   createEffect(async () => {
-    const currentPath = rootPath();
-    if (!currentPath) return;
+    const open = folders().map((folder) => folder.path);
+    if (open.length === 0) return;
     try {
-      await invoke('start_file_watch', { pathStr: currentPath });
+      await startFileWatch(open);
     } catch (error) {
       console.error('Failed to start file watcher:', error);
     }
@@ -1999,18 +2541,34 @@ export default function App() {
     setPendingOpenPath(null);
   });
 
+  /**
+   * Each folder's backend id, read again as the folders change. Only the
+   * newest read sets them: a reply for a folder the window has left must not
+   * outlive the one for the folders it shows.
+   */
+  let rootIdsRead = 0;
   createEffect(() => {
-    const path = rootPath();
-    if (!path) {
-      setRootId(null);
+    const open = folders().map((folder) => folder.path);
+    const read = ++rootIdsRead;
+    if (open.length === 0) {
+      setRootIds({});
       return;
     }
-    getPathId(path)
-      .then(setRootId)
-      .catch((err) => {
-        console.error('Failed to resolve root id:', err);
-        setRootId(null);
-      });
+    void Promise.all(
+      open.map((path) =>
+        getPathId(path)
+          .then((id) => [path, id] as const)
+          .catch((err) => {
+            console.error(`Failed to resolve ${path}'s id:`, err);
+            return null;
+          })
+      )
+    ).then((found) => {
+      if (read !== rootIdsRead) return; // a newer read is out
+      const ids: Record<string, string> = {};
+      for (const one of found) if (one) ids[one[0]] = one[1];
+      setRootIds(ids);
+    });
   });
 
   createEffect(() => {
@@ -2081,12 +2639,16 @@ export default function App() {
       >
         <div class="sidebar-topbar">
           <ProjectSwitcher
+            target={target()}
+            openIds={openProjectIds()}
             onOpenFolder={() => void handlePickFolder()}
             onNewProject={() => setNewProjectOpen(true)}
+            onNewWorkspace={() => setNewWorkspaceOpen(true)}
+            onAddFolder={() => void handleAddFolders()}
             onNewWindow={() => void openNewWindow()}
-            onOpen={(p) => openProjectAt(p.path)}
+            onOpen={(entry) => void openListed(entry)}
             onRelink={(p) => void relinkProject(p)}
-            onDelete={(p) => void deleteProject(p)}
+            onDelete={(entry) => void deleteListed(entry)}
           />
           <button
             class="icon-button sidebar-settings-button"
@@ -2159,20 +2721,21 @@ export default function App() {
                   >
                     New project…
                   </button>
-                  <Show when={projectList().length > 0}>
+                  <Show when={projectList().length + workspaceList().length > 0}>
                     <div class="files-empty-heading">Recent projects</div>
                     <ProjectList
-                      projects={projectList()}
-                      onOpen={(p) => openProjectAt(p.path)}
+                      entries={listed(projectList(), workspaceList())}
+                      openIds={openProjectIds()}
+                      onOpen={(entry) => void openListed(entry)}
                       onRelink={(p) => void relinkProject(p)}
-                      onDelete={(p) => void deleteProject(p)}
+                      onDelete={(entry) => void deleteListed(entry)}
                     />
                   </Show>
                 </div>
               </Show>
             }
           >
-            <SearchPanel rootPath={rootPath} onActiveChange={setSearchActive} />
+            <SearchPanel folders={() => resolvable(folders())} onActiveChange={setSearchActive} />
           </Show>
           <Show when={rootPath() && !searchActive()}>
             <FileTree
@@ -2184,6 +2747,7 @@ export default function App() {
               onToggle={tree.toggle}
               onOpenFile={(row) => void openInEditor({ path: row.path, focus: true })}
               onDrop={(ids, destDir) => void handleTreeDrop(ids, destDir)}
+              rootDrop={() => target()?.kind !== 'workspace'}
               onSelect={handleFileTreeSelect}
               onClearSelection={handleFileTreeClearSelection}
               editingId={editingId}
@@ -2231,22 +2795,22 @@ export default function App() {
             }
           >
             <ChatPanel
-              rootPath={rootPath}
+              folders={resolvedFolders}
+              workspace={workspaceId}
+              activeFolder={activeFolderNow}
               activeFileContext={activeFileContext}
               files={tree.files}
-              projectId={() => {
-                const p = currentProject();
-                return p === undefined ? undefined : (p?.id ?? null);
-              }}
+              owners={owners}
             />
           </Show>
         </Show>
 
         <Show when={sidebarTab() === 'git'}>
           <Switch>
-            <Match when={!!rootPath()}>
+            <Match when={gitFolders().length > 0}>
               <GitPanel
-                projectPath={rootPath()!}
+                folders={gitFolders()}
+                session={sessionKey(target())!}
                 onOpenFile={(abs) => void openInEditor({ path: abs, focus: true, marks: 'git' })}
                 onOpenStashFile={(abs, file, index, message) =>
                   void openFromStash(abs, file, index, message)
@@ -2261,7 +2825,7 @@ export default function App() {
                 onOpenPath={(abs) => void openInEditor({ path: abs, focus: true, marks: 'none' })}
               />
             </Match>
-            <Match when={!rootPath()}>
+            <Match when={gitFolders().length === 0}>
               <p class="text-center">Open a project to see git panel</p>
             </Match>
           </Switch>
@@ -2273,6 +2837,7 @@ export default function App() {
           <Tabs
             tabs={tabs}
             activePath={activePath}
+            folders={() => folders()}
             onSelect={(path) => {
               requestEditorFocus(path);
               setActivePath(path);
@@ -2325,6 +2890,8 @@ export default function App() {
             {(path) => (
               <Editor
                 projectDir={rootPath}
+                folders={() => folders().map((folder) => folder.path)}
+                loadable={() => resolvable(folders()).map((folder) => folder.path)}
                 currentFilePath={path}
                 content={() => openFiles().find((f) => f.path === path)?.content}
                 language={() => openFiles().find((f) => f.path === path)?.language ?? 'plaintext'}
@@ -2343,7 +2910,9 @@ export default function App() {
         </div>
 
         <TerminalPanel
-          rootPath={rootPath}
+          session={() => sessionKey(target())}
+          folders={() => resolvable(folders())}
+          activeFolder={activeFolderNow}
           collapsed={terminalCollapsed}
           onCollapsedChange={setTerminalCollapsed}
         />
@@ -2354,8 +2923,9 @@ export default function App() {
           ref={setMenuEl}
           x={cursorPosition().x}
           y={cursorPosition().y}
-          hasSelection={selectedFileIds().size > 0}
-          singleSelection={selectedFileIds().size === 1}
+          hasSelection={withoutFolderRows(selectedFileIds(), tree.rows()).length > 0}
+          singleSelection={actionable().length === 1}
+          folder={menuFolder()}
           canPaste={!!clipboard()}
           onNewFile={handleNewFile}
           onNewFolder={handleNewFolder}
@@ -2364,10 +2934,23 @@ export default function App() {
           onCut={handleCutFile}
           onPaste={handlePasteFile}
           onDelete={handleDeleteFile}
+          onRemoveFolder={handleRemoveFolder}
+          onLocateFolder={handleLocateFolder}
+          onTryFolderAgain={handleTryFolderAgain}
         />
       </Show>
       <ConfirmDialogHost />
       <NewBranchDialogHost />
+      <Show when={newWorkspaceOpen()}>
+        <NewWorkspaceDialog
+          openFolder={(() => {
+            const at = target();
+            return at?.kind === 'folder' ? at.path : null;
+          })()}
+          onCreated={(workspace) => void openCreated(workspace)}
+          onCancel={() => setNewWorkspaceOpen(false)}
+        />
+      </Show>
       <Show when={newProjectOpen()}>
         <NewProjectDialog
           currentPath={rootPath()}
@@ -2385,7 +2968,12 @@ export default function App() {
       <NotificationHost />
       <Show when={appSettingsPage()} keyed>
         {(page) => (
-          <SettingsDialog initialPage={page} rootPath={rootPath()} onClose={closeAppSettings} />
+          <SettingsDialog
+            initialPage={page}
+            rootPath={activeFolderNow()?.path ?? null}
+            folders={resolvable(folders())}
+            onClose={closeAppSettings}
+          />
         )}
       </Show>
     </div>

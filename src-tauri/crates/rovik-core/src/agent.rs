@@ -889,6 +889,10 @@ pub struct ChatParams {
     // `cwd` is the chat's copy of the project (its overlay, or a server's
     // worktree): git that changes the repository isn't the harness's to run.
     pub isolated: bool,
+    // `cwd` is a workspace chat's view of its folders, whose top has no
+    // instructions file: a harness running its own tools is told the
+    // chat's section (`project_context`) as well (workspaces-plan.md, 4.10).
+    pub folders_view: bool,
     // A connector's model whose harness runs its own tools under Rovik's
     // permissions: where it asks before a call (the run answers each as
     // it would a call of its own tool, `agent_run` `answer_tool_ask`).
@@ -975,6 +979,7 @@ pub async fn run_chat(
         connector: _,
         cwd: _,
         isolated: _,
+        folders_view: _,
         tool_asks: _,
         command_checks: _,
         restricted: _,
@@ -1879,7 +1884,12 @@ pub async fn chat_context_estimate(
 ) -> Result<ContextEstimate, String> {
     let (db, vfs) = (&core.db, &core.vfs);
     let permissions = core.agents.config_for(&dialog_id).permissions;
-    let root = root.filter(|r| !r.trim().is_empty());
+    // A folder chat's folder as the window sends it; a workspace chat's
+    // folders as its run would take them (workspaces-plan.md, 4.1).
+    let folders = match root.filter(|r| !r.trim().is_empty()) {
+        Some(root) => Some(crate::folders::Folders::one(root.into())),
+        None => crate::agent_run::check_project(db, &dialog_id, None, &[]).await?,
+    };
     // An Autopilot message starts a task with its plan: a Plan-mode request,
     // without questions (D5).
     let autopilot = mode.as_deref() == Some(crate::agent_run::autopilot::MODE);
@@ -1891,7 +1901,7 @@ pub async fn chat_context_estimate(
         tools
     };
     let tools = offered(crate::agent_run::tools::tools_for(
-        root.is_some(),
+        folders.is_some(),
         vision,
         no_tools.unwrap_or(false),
         &permissions,
@@ -1918,7 +1928,7 @@ pub async fn chat_context_estimate(
         && crate::clm::availability(vfs).is_ok())
     .then(|| {
         let tools = offered(crate::agent_run::tools::tools_for(
-            root.is_some(),
+            folders.is_some(),
             vision,
             no_tools.unwrap_or(false),
             &permissions,
@@ -1928,16 +1938,17 @@ pub async fn chat_context_estimate(
         ));
         sent_chars(tools)
     });
-    let project_chars = match root {
-        Some(root) => {
+    // The project section of the prompt, as the chat's run is told it.
+    let project_chars = match folders {
+        Some(folders) => {
             let (config_dir, verify) = (core.paths.config_dir.clone(), permissions.verify_changes);
             crate::rt::spawn_blocking(move || {
-                crate::agent_run::project::cached_context(&config_dir, &root, verify)
+                crate::agent_run::project::cached_context(&config_dir, &folders, verify)
+                    .chars()
+                    .count()
             })
             .await
             .unwrap_or_default()
-            .chars()
-            .count()
         }
         None => 0,
     };

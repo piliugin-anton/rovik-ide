@@ -19,8 +19,9 @@
 //! its failure lines.
 //!
 //! Where the code before the change is ([`Run::code_before`]): an isolated
-//! chat's project, which a throwaway overlay shows as it is, the chat's
-//! changes left out ([`BeforeCopy`]). Not compared: a chat that works in
+//! chat's folders, which a throwaway overlay shows as they are under the
+//! names the chat's view gives them, the chat's changes left out
+//! ([`BeforeCopy`]). Not compared: a chat that works in
 //! the project itself or on a server (there's no copy of the code before),
 //! the round that checks the project's own new changes merged into the
 //! chat's (that merge is what it checks), and a check that timed out or
@@ -32,9 +33,9 @@ use super::command_output::{cap_keys, environment_failure, failed_in, split_by_b
 use super::run::Run;
 use super::verify::{check_timeout_ms, CheckResult};
 use crate::command_tool::CommandOutput;
+use crate::folders::{Folders, OutputRoots};
 use crate::overlay::chats::{self, ChatOverlay};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// What a check's record says while it runs on the code before the change.
@@ -53,9 +54,14 @@ pub enum Before {
 }
 
 impl Before {
-    /// What a check's run on the code before the change says, its paths
-    /// relative to one of `roots`.
-    pub fn of(kind: &str, out: Result<CommandOutput, String>, roots: &[String]) -> Before {
+    /// What a check's run on the code before the change says, run in
+    /// `folder` (`cd api && …`), its paths read through `roots`.
+    pub fn of(
+        kind: &str,
+        out: Result<CommandOutput, String>,
+        roots: &OutputRoots,
+        folder: &str,
+    ) -> Before {
         let Ok(out) = out else {
             return Before::Unknown;
         };
@@ -66,11 +72,11 @@ impl Before {
             return Before::Passed;
         }
         let text = out.text();
-        if environment_failure(out.exit_code, &text, roots).is_some() {
+        if environment_failure(out.exit_code, &text, &roots.paths()).is_some() {
             return Before::Unknown;
         }
         let whole = out.whole_text().unwrap_or(text);
-        Before::Failed(failed_in(kind, &whole, roots))
+        Before::Failed(failed_in(kind, &whole, roots, folder))
     }
 }
 
@@ -89,20 +95,21 @@ impl Befores {
     }
 }
 
-/// A failed check (`check`, its whole output `output`, run in one of
-/// `roots`) with what failed before the change set apart: the failures it
-/// had there too go to `preexisting`, out of its `failures`; when none is
-/// left, it's `preexisting` itself. True: some were set apart.
+/// A failed check (`check`, its whole output `output`, its paths read
+/// through `roots`) with what failed before the change set apart: the
+/// failures it had there too go to `preexisting`, out of its `failures`;
+/// when none is left, it's `preexisting` itself. True: some were set apart.
 pub fn set_apart(
     check: &mut CheckResult,
     before: Option<&Before>,
     output: &str,
-    roots: &[String],
+    roots: &OutputRoots,
 ) -> bool {
     let Some(Before::Failed(before)) = before else {
         return false;
     };
-    let now = failed_in(&check.kind, output, roots);
+    let folder = super::project::folder_of(&check.command);
+    let now = failed_in(&check.kind, output, roots, &folder);
     let (own, known) = split_by_before(&check.kind, &now, before);
     if known.is_empty() {
         return false;
@@ -156,35 +163,21 @@ pub fn note(results: &[CheckResult]) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// The folders a command may print paths under: each of `paths` as given
-/// and as the file system has it (a link resolved, macOS's `/private`).
-pub fn roots_of(paths: &[&Path]) -> Vec<String> {
-    let mut roots: Vec<String> = Vec::new();
-    for path in paths {
-        let canonical = path.canonicalize().ok();
-        for p in std::iter::once(path.to_path_buf()).chain(canonical) {
-            let p = p.to_string_lossy().into_owned();
-            if !p.is_empty() && !roots.contains(&p) {
-                roots.push(p);
-            }
-        }
-    }
-    roots
-}
-
-/// The throwaway overlay of the project a round's checks run in on the code
-/// before the change: opened for the first that needs it, removed when the
-/// round's checks are done ([`BeforeCopy::discard`]), or when it's dropped.
+/// The throwaway overlay of the chat's folders a round's checks run in on
+/// the code before the change: opened for the first that needs it, removed
+/// when the round's checks are done ([`BeforeCopy::discard`]), or when it's
+/// dropped.
 pub struct BeforeCopy {
     id: Option<String>,
     overlay: Arc<ChatOverlay>,
 }
 
 impl BeforeCopy {
-    /// A copy of `project` as it is, mounted; None where it can't be.
-    async fn open(project: &Path) -> Option<BeforeCopy> {
+    /// A copy of `folders` as they are, mounted under the names the chat's
+    /// view gives them; None where it can't be.
+    async fn open(folders: &Folders) -> Option<BeforeCopy> {
         let id = format!("{}{}", chats::SCRATCH_PREFIX, uuid::Uuid::new_v4());
-        let (open_id, base) = (id.clone(), project.to_path_buf());
+        let (open_id, base) = (id.clone(), folders.clone());
         let opened = crate::rt::spawn_blocking(move || chats::open_scratch(&open_id, &base)).await;
         match opened {
             Ok(Ok(overlay)) => Some(BeforeCopy {
@@ -219,37 +212,25 @@ impl Drop for BeforeCopy {
 
 impl Run {
     /// Where the code before the change is, when a failed check can be
-    /// compared with it: an isolated chat's project, except on the round
+    /// compared with it: an isolated chat's folders, except on the round
     /// that checks the project's new changes merged in (module docs).
-    pub(super) fn code_before(&self) -> Option<PathBuf> {
+    pub(super) fn code_before(&self) -> Option<Folders> {
         if !self.isolated() || self.merged_from_project.is_some() {
             return None;
         }
-        self.project_root.as_deref().map(PathBuf::from)
+        self.folders.clone()
     }
 
-    /// Where this run's checks run, as paths in their output may name it:
-    /// its root (an isolated chat's view) and the project, which its
-    /// sandbox may show the view at.
-    pub(super) fn check_roots(&self) -> Vec<String> {
-        let paths: Vec<&Path> = [self.root.as_deref(), self.project_root.as_deref()]
-            .into_iter()
-            .flatten()
-            .map(Path::new)
-            .collect();
-        roots_of(&paths)
-    }
-
-    /// `check`, failed, run on the code before the change at `project`
-    /// (in `copy`, opened if it isn't yet): how it went there.
+    /// `check`, failed, run on the code before the change in `folders` (in
+    /// `copy`, opened if it isn't yet): how it went there.
     pub(super) async fn check_before(
         &self,
         check: &CheckResult,
-        project: &Path,
+        folders: &Folders,
         copy: &mut Option<BeforeCopy>,
     ) -> Before {
         if copy.is_none() {
-            *copy = BeforeCopy::open(project).await;
+            *copy = BeforeCopy::open(folders).await;
         }
         let Some(c) = copy.as_ref() else {
             return Before::Unknown;
@@ -266,15 +247,17 @@ impl Run {
             Some(queued),
         )
         .await;
-        Before::of(&check.kind, out, &roots_of(&[&c.overlay.view, project]))
+        let roots = folders.output_roots(&c.overlay.view);
+        let folder = super::project::folder_of(&check.command);
+        Before::of(&check.kind, out, &roots, &folder)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_run::command_output::without_roots;
     use crate::agent_run::project::ProjectCheck;
+    use std::path::Path;
 
     fn failed(kind: &str, output: &str) -> CheckResult {
         let mut r = CheckResult::pending(&ProjectCheck {
@@ -303,10 +286,15 @@ mod tests {
         })
     }
 
-    const ROOTS: &[&str] = &["/run/chats/c1", "/home/me/app"];
+    /// How a chat of `/home/me/app` working in the view `view` reads its
+    /// checks' paths.
+    fn roots_in(view: &str) -> OutputRoots {
+        Folders::one("/home/me/app".into()).output_roots(Path::new(view))
+    }
 
-    fn roots() -> Vec<String> {
-        ROOTS.iter().map(|r| r.to_string()).collect()
+    /// The chat's own view's.
+    fn roots() -> OutputRoots {
+        roots_in("/run/chats/c1")
     }
 
     /// The same errors before the change, printed under the copy's own
@@ -319,10 +307,11 @@ mod tests {
                 1,
                 "/run/chats/red-1/src/a.ts\n  3:1  error  'x' is unused  no-unused-vars\n\n✖ 1 problem (1 error, 0 warnings)",
             ),
-            &["/run/chats/red-1".to_string()],
+            &roots_in("/run/chats/red-1"),
+            "",
         );
         let now = "/run/chats/c1/src/a.ts\n  4:1  error  'x' is unused  no-unused-vars\n\n✖ 1 problem (1 error, 0 warnings)";
-        let mut r = failed("lint", &without_roots(now, &roots()));
+        let mut r = failed("lint", &roots().in_text(now));
         assert!(set_apart(&mut r, Some(&before), now, &roots()));
         assert_eq!(r.status, "preexisting");
         assert_eq!(r.failures, None);
@@ -341,11 +330,17 @@ mod tests {
         let before = Before::of(
             "typecheck",
             output(2, "src/old.ts(1,1): error TS2304: Cannot find name 'a'."),
-            &[],
+            &OutputRoots::default(),
+            "",
         );
         let now = "src/old.ts(1,1): error TS2304: Cannot find name 'a'.\nsrc/new.ts(9,3): error TS2322: Type 'string' is not assignable to type 'number'.";
         let mut r = failed("typecheck", now);
-        assert!(set_apart(&mut r, Some(&before), now, &[]));
+        assert!(set_apart(
+            &mut r,
+            Some(&before),
+            now,
+            &OutputRoots::default()
+        ));
         assert_eq!(r.status, "failed");
         assert_eq!(
             r.failures,
@@ -372,16 +367,31 @@ mod tests {
             ..output(1, now).unwrap()
         });
         let befores = [
-            Before::of("typecheck", output(0, ""), &[]),
-            Before::of("typecheck", cut, &[]),
-            Before::of("typecheck", output(127, "sh: 1: tsc: not found"), &[]),
-            Before::of("typecheck", Err("couldn't start".into()), &[]),
+            Before::of("typecheck", output(0, ""), &OutputRoots::default(), ""),
+            Before::of("typecheck", cut, &OutputRoots::default(), ""),
+            Before::of(
+                "typecheck",
+                output(127, "sh: 1: tsc: not found"),
+                &OutputRoots::default(),
+                "",
+            ),
+            Before::of(
+                "typecheck",
+                Err("couldn't start".into()),
+                &OutputRoots::default(),
+                "",
+            ),
         ];
         assert_eq!(befores[0], Before::Passed);
         for before in &befores {
             let mut r = failed("typecheck", now);
             let kept = r.clone();
-            assert!(!set_apart(&mut r, Some(before), now, &[]));
+            assert!(!set_apart(
+                &mut r,
+                Some(before),
+                now,
+                &OutputRoots::default()
+            ));
             assert_eq!(r, kept);
         }
         assert_eq!(
@@ -389,7 +399,7 @@ mod tests {
             [Before::Unknown, Before::Unknown, Before::Unknown]
         );
         let mut r = failed("typecheck", now);
-        assert!(!set_apart(&mut r, None, now, &[]));
+        assert!(!set_apart(&mut r, None, now, &OutputRoots::default()));
     }
 
     /// Output with nothing to key: the same failure lines before the change
@@ -399,15 +409,26 @@ mod tests {
         let before = Before::of(
             "test",
             output(1, "Setup failed: no device\nDone in 1.2s."),
-            &[],
+            &OutputRoots::default(),
+            "",
         );
         let same = "Setup failed: no device\nDone in 3.4s.";
         let mut r = failed("test", same);
-        assert!(set_apart(&mut r, Some(&before), same, &[]));
+        assert!(set_apart(
+            &mut r,
+            Some(&before),
+            same,
+            &OutputRoots::default()
+        ));
         assert_eq!(r.status, "preexisting");
         let more = "Setup failed: no device\nAnother step failed\nDone in 3.4s.";
         let mut r = failed("test", more);
-        assert!(!set_apart(&mut r, Some(&before), more, &[]));
+        assert!(!set_apart(
+            &mut r,
+            Some(&before),
+            more,
+            &OutputRoots::default()
+        ));
         assert_eq!(r.status, "failed");
         assert_eq!(r.failures, Some(vec!["test|failed".to_string()]));
     }
@@ -433,19 +454,12 @@ mod tests {
         assert!(text.ends_with("and mention them in your final message."));
     }
 
-    /// A folder as given and as the file system has it, once; a check's
-    /// command by its text, trimmed.
+    /// The project's paths and the view's read as the chat's; a check's
+    /// command is known by its text, trimmed.
     #[test]
     fn roots_and_commands() {
-        let dir = std::env::temp_dir();
-        let roots = roots_of(&[&dir, &dir]);
-        assert_eq!(roots[0], dir.to_string_lossy());
-        assert!(roots.len() <= 2, "{roots:?}");
         assert_eq!(
-            without_roots(
-                "/home/me/app/src/a.ts and /run/chats/c1/src/b.ts",
-                &self::roots()
-            ),
+            roots().in_text("/home/me/app/src/a.ts and /run/chats/c1/src/b.ts"),
             "src/a.ts and src/b.ts"
         );
         let mut befores = Befores::default();

@@ -7,25 +7,34 @@
 //! mounted at a short path of its own (`$XDG_RUNTIME_DIR/rovik-ide/chats/…`
 //! on Linux), so commands can use it unquoted.
 //!
+//! A workspace chat's view (docs/design/workspaces-plan.md, 4.2) holds its
+//! folders by name, each its own overlay, kept in `parts/<name>/` of the
+//! chat's folder, with `folders.json` naming the workspace and the folders
+//! at its last run; a folder chat's is its folder's one overlay, with
+//! `project.txt`.
+//!
 //! Isolation needs the virtual-files driver (FUSE or macFUSE). If it can't
 //! mount, the chat works in the project directly, as before isolation, and
 //! the run says so. Windows has none: a chat of a project runs in WSL
 //! (the client's `Remote::go_home`), whose daemon gives it a worktree.
 
-use super::fs::{OverlayChange, OverlayFs, DEFAULT_LIMIT};
+use super::composite::CompositeFs;
+use super::fs::{Budget, ChatFs, OverlayChange, OverlayFs, DEFAULT_LIMIT};
 // The markers put in a chat's files for it to resolve.
 use super::markers::{
     self, BASE as MARK_BASE, CHAT as MARK_CHAT, PROJECT as MARK_PROJECT, SPLIT as MARK_SPLIT,
 };
+use crate::folders::{Folder, Folders};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 pub struct ChatOverlay {
-    pub fs: Arc<OverlayFs>,
-    /// The project folder underneath.
-    pub project: PathBuf,
+    /// The chat's files as its view shows them.
+    pub fs: Arc<dyn ChatFs>,
+    /// What the view is over.
+    under: Under,
     /// Where the chat sees it: the mount.
     pub view: PathBuf,
     /// The overlay's own folder (changes, build output of its commands).
@@ -35,13 +44,94 @@ pub struct ChatOverlay {
     held: Mutex<Option<crate::os_lock::Held>>,
 }
 
+/// What a chat's view is over.
+enum Under {
+    /// One folder's overlay: a folder chat's, a child's (over its parent's
+    /// view), a scratch view of one folder.
+    Folder(Arc<OverlayFs>),
+    /// A workspace chat's folders (or a scratch view of them), each its own
+    /// overlay in one view, and the folders the view was matched to last.
+    Workspace {
+        view: Arc<CompositeFs>,
+        folders: RwLock<Folders>,
+    },
+}
+
+impl Under {
+    fn chat_fs(&self) -> Arc<dyn ChatFs> {
+        match self {
+            Under::Folder(fs) => fs.clone(),
+            Under::Workspace { view, .. } => view.clone(),
+        }
+    }
+
+    fn backend(&self) -> Arc<dyn crate::vfs::backend::Backend> {
+        match self {
+            Under::Folder(fs) => fs.clone(),
+            Under::Workspace { view, .. } => view.clone(),
+        }
+    }
+}
+
 impl ChatOverlay {
+    /// The folders under the view: a folder chat's one (a child's, its
+    /// parent's view), or a workspace chat's, as its view has them now.
+    pub fn folders(&self) -> Folders {
+        match &self.under {
+            Under::Folder(fs) => Folders::one(fs.base().to_path_buf()),
+            Under::Workspace { folders, .. } => {
+                folders.read().unwrap_or_else(|e| e.into_inner()).clone()
+            }
+        }
+    }
+
+    /// A folder chat's folder (a child's: its parent's view); None for a
+    /// workspace chat's view.
+    pub fn folder(&self) -> Option<&Path> {
+        match &self.under {
+            Under::Folder(fs) => Some(fs.base()),
+            Under::Workspace { .. } => None,
+        }
+    }
+
+    /// The overlay of the chat's folder at `project` (`canonical`: its
+    /// path with links resolved), with its name in the chat ("" for a
+    /// folder chat's folder).
+    fn part_on(
+        &self,
+        project: &Path,
+        canonical: Option<&Path>,
+    ) -> Option<(String, Arc<OverlayFs>)> {
+        let on = |base: &Path| base == project || canonical == Some(base);
+        match &self.under {
+            Under::Folder(fs) => on(fs.base()).then(|| (String::new(), fs.clone())),
+            Under::Workspace { view, .. } => view
+                .folders()
+                .into_iter()
+                .find(|(_, base)| on(base))
+                .and_then(|(name, _)| Some((name.clone(), view.part(&name)?))),
+        }
+    }
+
+    /// What the chat's builds and its commands' history are kept by: its
+    /// folder, or its workspace, whose chats share them whichever of its
+    /// folders each works in.
+    fn shared_by(&self) -> String {
+        match &self.under {
+            Under::Folder(fs) => fs.base().to_string_lossy().into_owned(),
+            Under::Workspace { folders, .. } => {
+                let folders = folders.read().unwrap_or_else(|e| e.into_inner());
+                format!("workspace:{}", folders.workspace().unwrap_or_default())
+            }
+        }
+    }
+
     /// Variables for the chat's commands. Rust's build output goes to a
     /// folder on disk outside the mount, shared by the project's isolated
-    /// chats (so only the first chat builds from cold) but not with the
-    /// project's own `target/` (so the user never runs a chat's build).
-    /// Cargo locks it, and the queue for heavy work runs one build at a
-    /// time anyway.
+    /// chats (a workspace's, for a workspace chat), so only the first chat
+    /// builds from cold, but not with the project's own `target/` (so the
+    /// user never runs a chat's build). Cargo locks it, and the queue for
+    /// heavy work runs one build at a time anyway.
     pub fn command_env(&self) -> Vec<(String, String)> {
         vec![(
             "CARGO_TARGET_DIR".into(),
@@ -54,30 +144,47 @@ impl ChatOverlay {
         let shared = data_dir().map(|d| {
             d.join("overlays")
                 .join("targets")
-                .join(project_key(&self.project))
+                .join(shared_key(&self.shared_by()))
         });
         shared.unwrap_or_else(|| self.store.join("out").join("target"))
     }
 
-    /// The sandbox the chat's commands run in: the project's path shows
-    /// the chat's view to them, and they may write to the view and the
-    /// build folder, which is made here since they couldn't (confine.rs).
-    /// None where that isn't possible.
+    /// The sandbox the chat's commands run in: each of its folders' paths
+    /// shows the folder in its view to them (a folder chat's project, the
+    /// whole view), and they may write to the view and the build folder,
+    /// which is made here since they couldn't (confine.rs). None where that
+    /// isn't possible.
     pub fn confine(&self) -> Option<super::confine::Confine> {
+        use super::confine::{Confine, Redirect};
         let target = self.target_dir();
         let _ = std::fs::create_dir_all(&target);
-        let c = super::confine::Confine::redirecting(self.view.clone(), self.project.clone())
-            .also_writable(target);
+        let c = match &self.under {
+            Under::Folder(fs) => Confine::redirecting(self.view.clone(), fs.base().to_path_buf()),
+            Under::Workspace { .. } => {
+                let redirects = self
+                    .folders()
+                    .iter()
+                    .map(|f| Redirect {
+                        from: self.view.join(&f.name),
+                        to: f.path.clone(),
+                    })
+                    .collect();
+                Confine::redirecting_all(self.view.clone(), redirects)
+            }
+        }
+        .also_writable(target);
         super::confine::available(&c).then_some(c)
     }
 
     /// Why a command can't run in this chat as written, if it can't.
     /// Changes reach the project by landing, so git commands that change
     /// the repository are refused (reading it works: status, diff, log,
-    /// show, blame). Where commands can't be confined, so is the project's
-    /// own folder named by its full path, which would reach past the
-    /// chat's view.
-    pub fn command_problem(&self, command: &str) -> Option<String> {
+    /// show, blame). So is a folder of the chat named by its full path
+    /// where the command doesn't see the view there, which would reach past
+    /// the chat's view: where its sandbox can't redirect a path (Seatbelt,
+    /// Landlock), or for a command that isn't run in it (`confined` false:
+    /// a harness's).
+    pub fn command_problem(&self, command: &str, confined: bool) -> Option<String> {
         let parsed = crate::agent_run::permissions::parse_command(command);
         for segment in &parsed.segments {
             if let Some(what) = git_changes_repo(segment) {
@@ -86,12 +193,22 @@ impl ChatOverlay {
                 ));
             }
         }
-        let project = self.project.to_string_lossy();
-        if names_path(command, &project) && self.confine().is_none() {
-            return Some(format!(
-                "Error: this chat works in its own view of the project (the current folder, {}), not in {project} itself. Use paths relative to the current folder.",
-                self.view.display()
-            ));
+        let confine = confined.then(|| self.confine()).flatten();
+        let what = match self.under {
+            Under::Folder(_) => "the project",
+            Under::Workspace { .. } => "its folders",
+        };
+        for folder in self.folders().iter() {
+            let path = folder.path.to_string_lossy();
+            let redirected = confine
+                .as_ref()
+                .is_some_and(|c| c.redirects_path(&folder.path));
+            if names_path(command, &path) && !redirected {
+                return Some(format!(
+                    "Error: this chat works in its own view of {what} (the current folder, {}), not in {path} itself. Use paths relative to the current folder.",
+                    self.view.display()
+                ));
+            }
         }
         None
     }
@@ -314,9 +431,10 @@ pub fn enabled() -> bool {
     std::env::var("ROVIK_ISOLATE_CHATS").map_or(true, |v| v != "0")
 }
 
-/// A short, stable name for a project folder.
-fn project_key(project: &Path) -> String {
-    let hash = crate::file_guard::hash(project.to_string_lossy().as_bytes());
+/// A short, stable name for what chats share a build folder by: a project
+/// folder, or a workspace (`ChatOverlay::shared_by`).
+fn shared_key(owner: &str) -> String {
+    let hash = crate::file_guard::hash(owner.as_bytes());
     crate::file_guard::hex(&hash[..8])
 }
 
@@ -400,65 +518,56 @@ pub fn is_chat_view(path: &Path) -> bool {
     fskit || path.parent().is_some_and(|p| Some(p) == base.parent())
 }
 
-/// The chat's overlay, opened (and mounted) if it isn't yet. `on_warn`:
-/// told once when its changes pass 80% of its limit (used, limit).
+/// The chat's overlay over `folders`, opened (and mounted) if it isn't yet
+/// (workspaces-plan.md, 4.2): a folder chat's folder, or a workspace chat's
+/// folders, each its own overlay in one view. A workspace chat's view is
+/// matched to `folders` each time, as each run's start finds them: a folder
+/// that joined comes in, one that left goes with its store (not while the
+/// chat has changes there that haven't landed), and one located elsewhere
+/// is opened there with its changes. A store made for the other kind of
+/// chat is refused, and left as it was. `on_warn`: told once when its
+/// changes pass 80% of its limit (used, limit).
 pub fn open(
     dialog_id: &str,
-    project: &Path,
+    folders: &Folders,
     on_warn: super::fs::OnWarn,
 ) -> Result<Arc<ChatOverlay>, String> {
-    // One spelling of the folder (symlinks, `/private` on macOS, case on
+    // One spelling of each folder (symlinks, `/private` on macOS, case on
     // Windows): the watcher and later runs may use another.
-    let canonical = project
-        .canonicalize()
-        .unwrap_or_else(|_| project.to_path_buf());
-    let project = canonical.as_path();
+    let folders = canonical(folders)?;
     // Only this chat waits while its view is opened and mounted; the open
     // overlays stay free for everyone else.
     let gate = gate(dialog_id);
     let opening = gate.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(o) = get(dialog_id) {
-        if o.project == project {
-            return Ok(o);
-        }
-        return Err("this chat's isolated changes belong to another project folder".into());
+        return match (&o.under, folders.single()) {
+            (Under::Folder(fs), Some(project)) if fs.base() == project => Ok(o),
+            (Under::Folder(_), Some(_)) => {
+                Err("this chat's isolated changes belong to another project folder".into())
+            }
+            (Under::Workspace { .. }, None) => {
+                let changed = rematch(&o, dialog_id, &folders)?;
+                // Before the check: it may mark conflicts, which takes the
+                // gate.
+                drop(opening);
+                if changed {
+                    check_all(&o, dialog_id);
+                }
+                Ok(o)
+            }
+            (Under::Folder(_), None) => Err(FOLDER_STORE.into()),
+            (Under::Workspace { .. }, Some(_)) => Err(WORKSPACE_STORE.into()),
+        };
     }
     let store = store_dir(dialog_id).ok_or("the app's data folder isn't known yet")?;
     std::fs::create_dir_all(&store).map_err(|e| e.to_string())?;
-    // A chat stays with the project its changes were made in.
-    let marker = store.join("project.txt");
-    match std::fs::read_to_string(&marker) {
-        Ok(saved) if !same_folder(Path::new(saved.trim()), project) => {
-            return Err(format!(
-                "this chat's isolated changes belong to {}",
-                saved.trim()
-            ));
-        }
-        Ok(_) => {}
-        Err(_) => std::fs::write(&marker, project.to_string_lossy().as_bytes())
-            .map_err(|e| e.to_string())?,
-    }
+    // A chat stays with the project, or the workspace, its changes were
+    // made in.
+    check_store(&store, &folders)?;
     let held = hold_store(&store)?;
-    let fs = Arc::new(OverlayFs::open(project, &store, DEFAULT_LIMIT).map_err(|e| e.to_string())?);
-    // Files a crash left behind: only here, where nothing else has the
-    // chat's changes open (its gate is held, and its store's lock).
-    fs.sweep_orphans();
-    fs.on_warn(on_warn);
-    let at = mountpoint(dialog_id);
-    let (mount, view) = crate::vfs::platform_mount(fs.clone(), Some(&at))
-        .map_err(|e| format!("couldn't mount the chat's view: {}", e.message()))?;
-    let overlay = Arc::new(ChatOverlay {
-        fs,
-        project: project.to_path_buf(),
-        view,
-        store,
-        mount: Mutex::new(Some(mount)),
-        held: Mutex::new(held),
-    });
-    OPEN.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(dialog_id.to_string(), overlay.clone());
-    keep_saving();
+    let budget = Budget::new(DEFAULT_LIMIT);
+    budget.on_warn(on_warn);
+    let overlay = mount_view(dialog_id, &store, &folders, budget, held)?;
     // A child's landing into this view that a crash interrupted (F01).
     if let Some(data) = data_dir() {
         let finished = super::land::recover_into(&data, dialog_id, &overlay.view);
@@ -476,6 +585,422 @@ pub fn open(
     Ok(overlay)
 }
 
+/// Why a workspace chat's changes don't open as one folder's.
+const WORKSPACE_STORE: &str =
+    "this chat's isolated changes are across a workspace's folders, not in one folder";
+
+/// Why a folder chat's changes don't open across a workspace's folders.
+const FOLDER_STORE: &str =
+    "this chat's isolated changes are in one folder, not across a workspace's folders";
+
+/// A folder chat's store: the folder its changes are of.
+const PROJECT_FILE: &str = "project.txt";
+
+/// A workspace chat's store: its workspace, and its folders at its last
+/// run ([`SavedView`]).
+const FOLDERS_FILE: &str = "folders.json";
+
+/// Where a workspace chat's store keeps each folder's overlay, by name.
+const PARTS: &str = "parts";
+
+/// What a workspace chat's view was over at its last run.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedView {
+    workspace: String,
+    folders: Vec<super::land::SavedFolder>,
+}
+
+/// The store of a workspace chat's folder `name`.
+pub(super) fn part_store(store: &Path, name: &str) -> PathBuf {
+    store.join(PARTS).join(name)
+}
+
+/// `folders`, each spelled once: with links resolved, where it's there.
+fn canonical(folders: &Folders) -> Result<Folders, String> {
+    let spelled = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if let Some(folder) = folders.single() {
+        return Ok(Folders::one(spelled(folder)));
+    }
+    let list = folders
+        .iter()
+        .map(|f| Folder {
+            name: f.name.clone(),
+            path: spelled(&f.path),
+        })
+        .collect();
+    let named = Folders::named(list)?;
+    Ok(match folders.workspace() {
+        Some(id) => named.in_workspace(id),
+        None => named,
+    })
+}
+
+/// What a store's view is over, as [`record`] left it: a workspace chat's
+/// folders, or a folder chat's folder.
+fn recorded(store: &Path) -> Option<Folders> {
+    match std::fs::read(store.join(FOLDERS_FILE)) {
+        Ok(bytes) => {
+            let view: SavedView = serde_json::from_slice(&bytes).ok()?;
+            let list = view
+                .folders
+                .into_iter()
+                .map(|f| Folder {
+                    name: f.name,
+                    path: f.path,
+                })
+                .collect();
+            Some(Folders::named(list).ok()?.in_workspace(&view.workspace))
+        }
+        Err(_) => {
+            let text = std::fs::read_to_string(store.join(PROJECT_FILE)).ok()?;
+            Some(Folders::one(PathBuf::from(text.trim())))
+        }
+    }
+}
+
+/// Records what the store's view is over, for opening it again.
+pub(super) fn record(store: &Path, folders: &Folders) -> Result<(), String> {
+    match folders.single() {
+        Some(project) => std::fs::write(
+            store.join(PROJECT_FILE),
+            project.to_string_lossy().as_bytes(),
+        )
+        .map_err(|e| e.to_string()),
+        None => {
+            let view = SavedView {
+                workspace: folders.workspace().unwrap_or_default().to_string(),
+                folders: folders
+                    .iter()
+                    .map(|f| super::land::SavedFolder {
+                        name: f.name.clone(),
+                        path: f.path.clone(),
+                    })
+                    .collect(),
+            };
+            let bytes = serde_json::to_vec_pretty(&view).map_err(|e| e.to_string())?;
+            crate::atomic_file::write_atomic(&store.join(FOLDERS_FILE), &bytes)
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// Whether the chat's store can be opened over `folders`: it's new, or a
+/// folder chat's of the same folder, or a workspace chat's of the same
+/// workspace. It's only read.
+fn check_store(store: &Path, folders: &Folders) -> Result<(), String> {
+    let saved = recorded(store);
+    match folders.single() {
+        Some(project) => match saved.as_ref().map(|s| s.single()) {
+            Some(None) => Err(WORKSPACE_STORE.into()),
+            Some(Some(saved)) if !same_folder(saved, project) => Err(format!(
+                "this chat's isolated changes belong to {}",
+                saved.display()
+            )),
+            _ if saved.is_none() && store.join(FOLDERS_FILE).exists() => {
+                Err(WORKSPACE_STORE.into())
+            }
+            _ => Ok(()),
+        },
+        None => {
+            // A folder chat's changes are its store's own list.
+            let folder_store = store.join("manifest.json").is_file()
+                || saved.as_ref().is_some_and(|s| s.single().is_some());
+            if folder_store {
+                return Err(FOLDER_STORE.into());
+            }
+            let workspace = folders
+                .workspace()
+                .ok_or("a workspace chat's view needs its workspace")?;
+            match saved.as_ref().and_then(Folders::workspace) {
+                Some(other) if other != workspace => {
+                    Err("this chat's isolated changes belong to another workspace".into())
+                }
+                _ => Ok(()),
+            }
+        }
+    }
+}
+
+/// An overlay of `folders` kept in `store`, for `id`: its folders' overlays
+/// opened from their saved lists and swept (the store's lock is `held`,
+/// so nothing else has them open), what it's over recorded, mounted and
+/// registered as open.
+fn mount_view(
+    id: &str,
+    store: &Path,
+    folders: &Folders,
+    budget: Arc<Budget>,
+    held: Option<crate::os_lock::Held>,
+) -> Result<Arc<ChatOverlay>, String> {
+    let under = match folders.single() {
+        Some(base) => {
+            let fs = OverlayFs::open_in(base, store, budget).map_err(|e| e.to_string())?;
+            // Files a crash left behind: only here, where nothing else has
+            // the chat's changes open (its gate is held, and its store's
+            // lock).
+            fs.sweep_orphans();
+            Under::Folder(Arc::new(fs))
+        }
+        None => {
+            drop_left_parts(store, folders)?;
+            let view = Arc::new(CompositeFs::new(budget));
+            let budget = view.budget();
+            view.matched(folders, |folder| open_part(store, folder, &budget))
+                .map_err(|e| format!("couldn't open the chat's changes in {e}"))?;
+            for folder in folders.iter() {
+                if let Some(part) = view.part(&folder.name) {
+                    part.sweep_orphans();
+                }
+            }
+            Under::Workspace {
+                view,
+                folders: RwLock::new(folders.clone()),
+            }
+        }
+    };
+    let at = mountpoint(id);
+    let (mount, view) = crate::vfs::platform_mount(under.backend(), Some(&at))
+        .map_err(|e| format!("couldn't mount the chat's view: {}", e.message()))?;
+    // Recorded once it's there: a view that couldn't be mounted leaves no
+    // workspace chat's store behind (`exists`). An error unmounts it.
+    record(store, folders)?;
+    let overlay = Arc::new(ChatOverlay {
+        fs: under.chat_fs(),
+        under,
+        view,
+        store: store.to_path_buf(),
+        mount: Mutex::new(Some(mount)),
+        held: Mutex::new(held),
+    });
+    OPEN.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id.to_string(), overlay.clone());
+    keep_saving();
+    Ok(overlay)
+}
+
+/// The overlay of a workspace chat's folder, kept in its part of `store`
+/// and counted in the chat's `budget`.
+fn open_part(
+    store: &Path,
+    folder: &Folder,
+    budget: &Arc<Budget>,
+) -> std::io::Result<Arc<OverlayFs>> {
+    OverlayFs::open_in(
+        &folder.path,
+        &part_store(store, &folder.name),
+        budget.clone(),
+    )
+    .map(Arc::new)
+    .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", folder.name)))
+}
+
+/// What a chat would land of `changes`: the by-products left out, each
+/// named from the view's root (`name`: its folder's, "" for a folder
+/// chat's).
+fn landable(changes: Vec<OverlayChange>, name: &str) -> Vec<OverlayChange> {
+    changes
+        .into_iter()
+        .filter(|c| !c.by_product())
+        .map(|c| match name.is_empty() {
+            true => c,
+            false => c.under(name),
+        })
+        .collect()
+}
+
+/// Why a workspace chat's view can't leave its folder `name` out.
+fn left_with_changes(name: &str) -> String {
+    format!(
+        "this chat has changes in {name} that haven't landed, and {name} is no longer one of its folders: land or discard them, or check {name} for the chat again"
+    )
+}
+
+/// The stores of folders no longer among a workspace chat's (`folders`),
+/// left while its view was closed: removed, unless the chat has changes in
+/// one of them that haven't landed, which leaves them all, and keeps its
+/// view from opening without them.
+fn drop_left_parts(store: &Path, folders: &Folders) -> Result<(), String> {
+    let Ok(parts) = std::fs::read_dir(store.join(PARTS)) else {
+        return Ok(());
+    };
+    let left: Vec<(String, PathBuf)> = parts
+        .flatten()
+        .map(|part| (part.file_name().to_string_lossy().into_owned(), part.path()))
+        .filter(|(name, _)| !folders.iter().any(|f| f.name == *name))
+        .collect();
+    for (name, part) in &left {
+        let saved = super::fs::saved_changes(part)
+            .map_err(|e| format!("this chat's changes in {name} can't be read ({e})"))?;
+        if !landable(saved, name).is_empty() {
+            return Err(left_with_changes(name));
+        }
+    }
+    for (name, part) in left {
+        std::fs::remove_dir_all(part).map_err(|e| format!("{name}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Apply (D32): a workspace chat's folders are `folders` from now on. Its
+/// open view takes them at once: a folder checked comes in, and one
+/// unchecked goes, its store with it, refused while the chat has changes
+/// there that haven't landed. A closed chat's store lets go of the folders
+/// it no longer has, as its view would; the others come in at its next
+/// run.
+pub fn set_folders(dialog_id: &str, folders: &Folders) -> Result<(), String> {
+    let folders = canonical(folders)?;
+    let gate = gate(dialog_id);
+    let held = gate.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(o) = get(dialog_id) {
+        let changed = rematch(&o, dialog_id, &folders)?;
+        // Before the check: it may mark conflicts, which takes the gate.
+        drop(held);
+        if changed {
+            check_all(&o, dialog_id);
+        }
+        return Ok(());
+    }
+    // Nothing saved yet: its first run opens its view over them.
+    let Some(store) = store_dir(dialog_id).filter(|s| s.join(FOLDERS_FILE).is_file()) else {
+        return Ok(());
+    };
+    check_store(&store, &folders)?;
+    let _lock = hold_store(&store)?;
+    drop_left_parts(&store, &folders)?;
+    record(&store, &folders)
+}
+
+/// Locate… (D19): a workspace chat's folder `name` is at `path` from now
+/// on, as the same project: the chat's changes there go with it. Its open
+/// view opens the folder there from the changes' saved list; a closed
+/// one's store, and its landings, say where it is.
+pub fn relocate(dialog_id: &str, name: &str, path: &Path) -> Result<(), String> {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let moved = |folders: &Folders| -> Result<Folders, String> {
+        let list = folders
+            .iter()
+            .map(|f| Folder {
+                name: f.name.clone(),
+                path: match f.name == name {
+                    true => path.clone(),
+                    false => f.path.clone(),
+                },
+            })
+            .collect();
+        let named = Folders::named(list)?;
+        Ok(match folders.workspace() {
+            Some(id) => named.in_workspace(id),
+            None => named,
+        })
+    };
+    let gate = gate(dialog_id);
+    let held = gate.lock().unwrap_or_else(|e| e.into_inner());
+    match get(dialog_id) {
+        Some(o) => {
+            if matches!(o.under, Under::Workspace { .. }) {
+                let changed = rematch(&o, dialog_id, &moved(&o.folders())?)?;
+                drop(held);
+                if changed {
+                    check_all(&o, dialog_id);
+                }
+            }
+        }
+        None => {
+            let store = store_dir(dialog_id).filter(|s| s.join(FOLDERS_FILE).is_file());
+            if let Some(store) = store {
+                if let Some(folders) = recorded(&store).filter(|f| f.single().is_none()) {
+                    let _lock = hold_store(&store)?;
+                    record(&store, &moved(&folders)?)?;
+                }
+            }
+        }
+    }
+    match data_dir() {
+        Some(data) => super::land::relocate(&data, dialog_id, name, &path),
+        None => Ok(()),
+    }
+}
+
+/// A workspace chat's open view matched to `folders`, its gate held: a
+/// folder that joined is opened, one located elsewhere is opened there from
+/// its saved list, and one that left goes, its store with it, refused while
+/// the chat has changes there that haven't landed. Whether anything
+/// changed.
+fn rematch(o: &ChatOverlay, dialog_id: &str, folders: &Folders) -> Result<bool, String> {
+    let Under::Workspace {
+        view,
+        folders: current,
+    } = &o.under
+    else {
+        return Err(FOLDER_STORE.into());
+    };
+    let workspace = current
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .workspace()
+        .map(str::to_string);
+    if workspace.as_deref() != folders.workspace() {
+        return Err("this chat's isolated changes belong to another workspace".into());
+    }
+    let had = view.folders();
+    let wanted: Vec<(String, PathBuf)> = folders
+        .iter()
+        .map(|f| (f.name.clone(), f.path.clone()))
+        .collect();
+    let recorded = *current.read().unwrap_or_else(|e| e.into_inner()) == *folders;
+    if had == wanted && recorded {
+        return Ok(false);
+    }
+    for (name, _) in had
+        .iter()
+        .filter(|(n, _)| !folders.iter().any(|f| f.name == *n))
+    {
+        let left = view.part(name).map(|p| p.changes()).unwrap_or_default();
+        if !landable(left, name).is_empty() {
+            return Err(left_with_changes(name));
+        }
+    }
+    // Saved first: a folder located elsewhere is opened from its list.
+    view.flush();
+    let budget = view.budget();
+    let left = view
+        .matched(folders, |folder| open_part(&o.store, folder, &budget))
+        .map_err(|e| format!("couldn't open the chat's changes in {e}"))?;
+    for (name, path) in &wanted {
+        if !had.iter().any(|(n, p)| n == name && p == path) {
+            if let Some(part) = view.part(name) {
+                part.sweep_orphans();
+            }
+        }
+    }
+    for (name, part) in left {
+        part.close_handles();
+        // Its clashes there were of the folder it was over.
+        PEERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(dialog_id.to_string(), part.base().to_path_buf()));
+        drop(part);
+        crate::file_guard::forget_under(&o.view.join(&name));
+        // What's left of a store that can't be removed goes the next time
+        // the view opens (`drop_left_parts`).
+        if !folders.iter().any(|f| f.name == name) {
+            match std::fs::remove_dir_all(part_store(&o.store, &name)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    log::warn!("overlay: {name}'s store in {}: {e}", o.store.display())
+                }
+                _ => {}
+            }
+        }
+    }
+    // Kept as the view's only once recorded: one that couldn't be is
+    // recorded again at the next match.
+    record(&o.store, folders)?;
+    *current.write().unwrap_or_else(|e| e.into_inner()) = folders.clone();
+    Ok(true)
+}
+
 /// One lock per chat, held while its overlay is opened from its saved
 /// changes (to mount it, or for one call): never two at once on the same
 /// files. The open overlays' lock is only held to look one up.
@@ -490,14 +1015,15 @@ pub(super) fn gate(dialog_id: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-/// The project a folder belongs to: the project of a chat's view, or the
-/// folder itself.
-pub fn project_for(path: &Path) -> PathBuf {
+/// What a command run in `path` is kept by in the workload's history: the
+/// folder a chat's view is of, or its workspace (`workspace:<id>`), whose
+/// chats share it; any other folder is its own.
+pub fn project_for(path: &Path) -> String {
     let open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
     open.values()
         .find(|o| o.view == path)
-        .map(|o| o.project.clone())
-        .unwrap_or_else(|| path.to_path_buf())
+        .map(|o| o.shared_by())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 /// The chat's overlay if it's open.
@@ -508,10 +1034,12 @@ pub fn get(dialog_id: &str) -> Option<Arc<ChatOverlay>> {
         .cloned()
 }
 
-/// Whether the chat has an overlay, open or saved.
+/// Whether the chat has an overlay, open or saved: a folder chat's changes,
+/// or a workspace chat's view.
 pub fn exists(dialog_id: &str) -> bool {
     get(dialog_id).is_some()
-        || store_dir(dialog_id).is_some_and(|s| s.join("manifest.json").is_file())
+        || store_dir(dialog_id)
+            .is_some_and(|s| s.join("manifest.json").is_file() || s.join(FOLDERS_FILE).is_file())
 }
 
 /// Unmounts the chat's view; its changes stay saved.
@@ -552,13 +1080,14 @@ pub(super) fn let_go(dialog_id: &str) {
     for child in children_of(dialog_id) {
         discard_child(&child);
     }
-    // The project, so the chats left open on it stop warning about this one.
-    let project = project_of(dialog_id);
+    // Its folders, so the chats left open on them stop warning about this
+    // one.
+    let folders = folders_of(dialog_id);
     close(dialog_id);
     drop_peer_state(dialog_id);
     forget_shown(dialog_id, None);
-    if let Some(project) = project {
-        refresh_project_peers(&project);
+    for folder in folders.iter().flat_map(Folders::iter) {
+        refresh_project_peers(&folder.path);
     }
 }
 
@@ -686,7 +1215,7 @@ pub fn open_child_shared(
     // Of the parts, those not opened yet share what's left.
     let left = parts.saturating_sub(siblings.len()).max(1) as u64;
     let room = (limit.saturating_sub(used).saturating_sub(reserved) / left).max(MIN_CHILD_LIMIT);
-    let overlay = mount_on(child, &p.view, room, Some(parent))?;
+    let overlay = mount_on(child, &Folders::one(p.view.clone()), room, Some(parent))?;
     CHILDREN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -694,10 +1223,10 @@ pub fn open_child_shared(
     Ok(overlay)
 }
 
-/// E04: a throwaway overlay of `base` (the project, the code before a
-/// chat's change), for running something there without touching it.
-/// Removed with `discard_child`.
-pub fn open_scratch(id: &str, base: &Path) -> Result<Arc<ChatOverlay>, String> {
+/// E04: a throwaway overlay of `folders` (the project, the code before a
+/// chat's change; a workspace chat's folders in one view), for running
+/// something there without touching it. Removed with `discard_child`.
+pub fn open_scratch(id: &str, folders: &Folders) -> Result<Arc<ChatOverlay>, String> {
     if !valid_id(id) {
         return Err("not a chat id".into());
     }
@@ -707,7 +1236,7 @@ pub fn open_scratch(id: &str, base: &Path) -> Result<Arc<ChatOverlay>, String> {
         std::fs::create_dir_all(&store).map_err(|e| e.to_string())?;
         std::fs::write(store.join(SCRATCH_MARK), "").map_err(|e| e.to_string())?;
     }
-    mount_on(id, base, DEFAULT_LIMIT, None)
+    mount_on(id, folders, DEFAULT_LIMIT, None)
 }
 
 /// Scratch overlays' ids start with this (the test writer's red check).
@@ -759,10 +1288,11 @@ pub fn open_elsewhere(dialog_id: &str) -> bool {
         && store_dir(dialog_id).is_some_and(|s| crate::os_lock::held_elsewhere(&s.join(MOUNTED)))
 }
 
-/// An overlay of `base`, mounted, registered as open.
+/// An overlay of `folders`, mounted, registered as open: a child's, of its
+/// `parent`'s view, or a scratch view.
 fn mount_on(
     id: &str,
-    base: &Path,
+    folders: &Folders,
     limit: u64,
     parent: Option<&str>,
 ) -> Result<Arc<ChatOverlay>, String> {
@@ -771,27 +1301,8 @@ fn mount_on(
     if let Some(parent) = parent {
         std::fs::write(store.join("parent.txt"), parent).map_err(|e| e.to_string())?;
     }
-    std::fs::write(store.join("project.txt"), base.to_string_lossy().as_bytes())
-        .map_err(|e| e.to_string())?;
     let held = hold_store(&store)?;
-    let fs = Arc::new(OverlayFs::open(base, &store, limit).map_err(|e| e.to_string())?);
-    fs.sweep_orphans();
-    let at = mountpoint(id);
-    let (mount, view) = crate::vfs::platform_mount(fs.clone(), Some(&at))
-        .map_err(|e| format!("couldn't mount the view: {}", e.message()))?;
-    let overlay = Arc::new(ChatOverlay {
-        fs,
-        project: base.to_path_buf(),
-        view,
-        store,
-        mount: Mutex::new(Some(mount)),
-        held: Mutex::new(held),
-    });
-    OPEN.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(id.to_string(), overlay.clone());
-    keep_saving();
-    Ok(overlay)
+    mount_view(id, &store, folders, Budget::new(limit), held)
 }
 
 /// Saves each open overlay's list of changes once it changed, every
@@ -855,9 +1366,15 @@ fn land_child_paths(child: &str, except: &[String]) -> Result<Vec<String>, super
                 .map(|p| p.trim().to_string())
         })
         .unwrap_or_default();
-    if super::land::interrupted_into(&data, &parent, &o.project) {
-        super::land::recover_into(&data, &parent, &o.project);
-        if super::land::interrupted_into(&data, &parent, &o.project) {
+    // Its parent's view, as one folder: the composite routes a workspace
+    // chat's paths to their folders.
+    let into = o
+        .folder()
+        .ok_or_else(|| LandError::Failed("a worker's view is over one folder".into()))?
+        .to_path_buf();
+    if super::land::interrupted_into(&data, &parent, &into) {
+        super::land::recover_into(&data, &parent, &into);
+        if super::land::interrupted_into(&data, &parent, &into) {
             return Err(LandError::Failed(
                 "an earlier landing into the chat's view isn't finished".into(),
             ));
@@ -878,7 +1395,7 @@ fn land_child_paths(child: &str, except: &[String]) -> Result<Vec<String>, super
     if !parent.is_empty() {
         super::land::mark_into_chat(&data, child, &parent).map_err(LandError::Failed)?;
     }
-    let landed = super::land::land(&data, child, &o.project, &changes, false)?;
+    let landed = super::land::land(&data, child, &into, &changes, false)?;
     // The parent's overlay saves what came in.
     if let Some(parent) = parent_of(child).and_then(|p| get(&p)) {
         parent.fs.flush();
@@ -1069,35 +1586,34 @@ fn hand_to_running_chat(dialog_id: &str) -> Vec<String> {
 /// switch, a pull), not a list.
 const MANY: usize = 200;
 
-/// The project changed: `abs` paths in it, or (`everything`) too many to
-/// list. Every open chat on that project sees untouched files as they are
-/// now; its model is told about files it had looked at; a file it changed
-/// itself is merged with the new version right away, and a conflict is
-/// reported now instead of when the chat tries to land.
+/// The project folder `project` changed: `abs` paths in it, or
+/// (`everything`) too many to list. Every open chat with that folder sees
+/// untouched files as they are now; its model is told about files it had
+/// looked at; a file it changed itself is merged with the new version
+/// right away, and a conflict is reported now instead of when the chat
+/// tries to land. A workspace chat hears of them by its own paths: the
+/// folder's name, then the path in it.
 pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec<(String, String)> {
     // Open overlays keep the canonical spelling (`open`): one look at the
     // disk per event, not two per overlay.
     let canonical = project.canonicalize().ok();
-    let overlays: Vec<Arc<ChatOverlay>> = OPEN
+    let parts: Vec<(String, Arc<ChatOverlay>, String, Arc<OverlayFs>)> = OPEN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .values()
-        .filter(|o| o.project == project || canonical.as_deref() == Some(o.project.as_path()))
-        .cloned()
+        .iter()
+        .filter_map(|(id, o)| {
+            let (name, part) = o.part_on(project, canonical.as_deref())?;
+            Some((id.clone(), o.clone(), name, part))
+        })
         .collect();
     if everything || abs.len() > MANY {
         project_busy(project);
         check_after_quiet(project);
     }
     let mut conflicts_found = Vec::new();
-    for o in overlays {
-        let id = o
-            .store
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+    for (id, o, name, part) in parts {
         if everything || abs.len() > MANY {
-            o.fs.project_changed_everywhere();
+            part.project_changed_everywhere();
             NOTES
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1110,20 +1626,21 @@ pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec
             .iter()
             .filter_map(|p| {
                 p.strip_prefix(project)
-                    .or_else(|_| p.strip_prefix(&o.project))
+                    .or_else(|_| p.strip_prefix(part.base()))
                     .ok()
             })
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .filter(|r| !r.is_empty() && !r.starts_with(".git/") && r != ".git")
             .collect();
-        let (seen, touched) = o.fs.project_changed(&rels);
+        let (seen, touched) = part.project_changed(&rels);
         NOTES
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .entry(id.clone())
             .or_default()
             .changed
-            .extend(seen);
+            .extend(seen.iter().map(|rel| in_chat(&name, rel)));
+        let touched: Vec<String> = touched.iter().map(|rel| in_chat(&name, rel)).collect();
         conflicts_found.extend(
             record_conflicts(&o, &id, &touched)
                 .into_iter()
@@ -1131,6 +1648,15 @@ pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec
         );
     }
     conflicts_found
+}
+
+/// A chat's path for `rel` in its folder `name` ("" for a folder chat's,
+/// whose paths are its folder's own).
+fn in_chat(name: &str, rel: &str) -> String {
+    match name.is_empty() {
+        true => rel.to_string(),
+        false => format!("{name}/{rel}"),
+    }
 }
 
 /// Of the files the chat changed (`candidates`), those that now conflict
@@ -1237,11 +1763,12 @@ fn check_after_quiet(project: &Path) {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&key);
+            let canonical = project.canonicalize().ok();
             let overlays: Vec<(String, Arc<ChatOverlay>)> = OPEN
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .iter()
-                .filter(|(_, o)| same_folder(&o.project, &project))
+                .filter(|(_, o)| o.part_on(&project, canonical.as_deref()).is_some())
                 .map(|(id, o)| (id.clone(), o.clone()))
                 .collect();
             for (id, o) in overlays {
@@ -1311,11 +1838,16 @@ pub fn project_busy(project: &Path) {
 }
 
 /// Whether isolated chats on the project should wait: many files changed
-/// in the last moments, or a git operation is still going.
+/// in the last moments, or a git operation is still going. A git operation
+/// holds the repository's working folder, and a checkout there rewrites every
+/// folder in it: a hold counts for the folder itself, for one above it and for
+/// one below it (D10).
 pub fn is_busy(project: &Path) -> bool {
+    let key = busy_key(project);
     let busy = BUSY.lock().unwrap_or_else(|e| e.into_inner());
-    busy.get(&busy_key(project))
-        .is_some_and(|(at, held)| *held > 0 || at.elapsed() < QUIET)
+    busy.iter().any(|(held, (at, count))| {
+        (*count > 0 || at.elapsed() < QUIET) && (key.starts_with(held) || held.starts_with(&key))
+    })
 }
 
 /// Held while one of the app's git operations rewrites the working tree.
@@ -1351,7 +1883,7 @@ fn conflicts_now(o: &ChatOverlay, rel: &str) -> bool {
     let (Ok(ours), Ok(base)) = (std::fs::read(ours), std::fs::read(base)) else {
         return false;
     };
-    let theirs = std::fs::read(o.project.join(rel)).ok();
+    let theirs = read_in(&o.folders(), rel);
     match theirs {
         None => true,
         Some(t) if t == base || t == ours => false,
@@ -1429,14 +1961,18 @@ pub struct PeerConflict {
     pub same_lines: bool,
 }
 
-/// Live clashes: chat → path → (other chats, same lines).
-type PeerRows = HashMap<String, BTreeMap<String, (BTreeSet<String>, bool)>>;
+/// One chat's clashes in one folder: by path in the folder, the other
+/// chats and whether on the same lines.
+type FolderClashes = BTreeMap<String, (BTreeSet<String>, bool)>;
+/// Live clashes, by chat and folder (its canonical path): the folder's name
+/// in the chat ("" for a folder chat's) and the chat's clashes there.
+type PeerRows = HashMap<(String, PathBuf), (String, FolderClashes)>;
 static PEERS: LazyLock<Mutex<PeerRows>> = LazyLock::new(Default::default);
 
 /// Each open chat's generation, by its id.
 type Generations = Vec<(String, u64)>;
 
-/// Per project, each open chat's generation when its chats were last
+/// Per folder, each open chat's generation there when its chats were last
 /// compared.
 static LAST_COMPARED: LazyLock<Mutex<HashMap<PathBuf, Generations>>> =
     LazyLock::new(Default::default);
@@ -1542,67 +2078,70 @@ fn clash(a: &Side, b: &Side) -> Option<bool> {
     }
 }
 
-/// This chat's current clashes with other open chats.
+/// This chat's current clashes with other open chats, by its paths.
 pub fn peer_conflicts(dialog_id: &str) -> Vec<PeerConflict> {
-    PEERS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(dialog_id)
-        .map(|row| {
-            row.iter()
-                .map(|(path, (peers, same_lines))| PeerConflict {
-                    path: path.clone(),
-                    peers: peers.iter().cloned().collect(),
+    let peers = PEERS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all: BTreeMap<String, PeerConflict> = BTreeMap::new();
+    for ((id, _), (name, row)) in peers.iter() {
+        if id != dialog_id {
+            continue;
+        }
+        for (path, (others, same_lines)) in row {
+            let path = in_chat(name, path);
+            all.insert(
+                path.clone(),
+                PeerConflict {
+                    path,
+                    peers: others.iter().cloned().collect(),
                     same_lines: *same_lines,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+                },
+            );
+        }
+    }
+    all.into_values().collect()
 }
 
-/// Compares every open overlay on `project` with the others and keeps the
-/// result. Only files two chats both changed are merged.
+/// Compares the open chats that have `project` among their folders with
+/// each other, by path in it, and keeps the result for that folder: a
+/// workspace chat's other folders keep theirs. Only files two chats both
+/// changed are merged.
 fn refresh_project_peers(project: &Path) {
-    let on_project: Vec<(String, Arc<ChatOverlay>)> = OPEN
+    let key = busy_key(project);
+    let on_project: Vec<(String, String, Arc<OverlayFs>)> = OPEN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .filter(|(_, o)| same_folder(&o.project, project))
-        .map(|(id, o)| (id.clone(), o.clone()))
+        .filter_map(|(id, o)| {
+            let (name, part) = o.part_on(project, Some(&key))?;
+            Some((id.clone(), name, part))
+        })
         .collect();
-    // Nothing changed in any of its chats since the last comparison (a
-    // read, a search): the clashes are as they were.
+    // Nothing changed in any of its chats there since the last comparison
+    // (a read, a search): the clashes are as they were.
     let mut seen: Vec<(String, u64)> = on_project
         .iter()
-        .map(|(id, o)| (id.clone(), o.fs.generation()))
+        .map(|(id, _, part)| (id.clone(), part.generation()))
         .collect();
     seen.sort();
     {
         let mut last = LAST_COMPARED.lock().unwrap_or_else(|e| e.into_inner());
-        if last.get(project).is_some_and(|l| *l == seen) {
+        if last.get(&key).is_some_and(|l| *l == seen) {
             return;
         }
-        last.insert(project.to_path_buf(), seen);
+        last.insert(key.clone(), seen);
     }
-    let snapshots: Vec<(String, Arc<ChatOverlay>, Vec<OverlayChange>)> = on_project
-        .into_iter()
-        .map(|(id, o)| {
-            let changed =
-                o.fs.changes()
-                    .into_iter()
-                    .filter(|c| !c.by_product())
-                    .collect();
-            (id, o, changed)
-        })
-        .collect();
-    let mut rows: PeerRows = snapshots
+    let snapshots: Vec<(String, Arc<OverlayFs>, Vec<OverlayChange>)> = on_project
         .iter()
-        .map(|(id, _, _)| (id.clone(), BTreeMap::new()))
+        .map(|(id, _, part)| (id.clone(), part.clone(), landable(part.changes(), "")))
+        .collect();
+    let mut rows: HashMap<String, (String, FolderClashes)> = on_project
+        .iter()
+        .map(|(id, name, _)| (id.clone(), (name.clone(), BTreeMap::new())))
         .collect();
     for i in 0..snapshots.len() {
         for j in (i + 1)..snapshots.len() {
-            let (a_id, a_o, a_changes) = &snapshots[i];
-            let (b_id, b_o, b_changes) = &snapshots[j];
+            let (a_id, a_part, a_changes) = &snapshots[i];
+            let (b_id, b_part, b_changes) = &snapshots[j];
             let b_paths: BTreeSet<&str> = b_changes.iter().map(|c| c.path()).collect();
             let shared: BTreeSet<&str> = a_changes
                 .iter()
@@ -1611,39 +2150,43 @@ fn refresh_project_peers(project: &Path) {
                 .collect();
             for rel in shared {
                 let (Some(a), Some(b)) = (
-                    side_of(a_changes, &a_o.project, rel),
-                    side_of(b_changes, &b_o.project, rel),
+                    side_of(a_changes, a_part.base(), rel),
+                    side_of(b_changes, b_part.base(), rel),
                 ) else {
                     continue;
                 };
                 if let Some(same_lines) = clash(&a, &b) {
                     for (me, other) in [(a_id, b_id), (b_id, a_id)] {
-                        let cell = rows
-                            .entry(me.clone())
-                            .or_default()
-                            .entry(rel.to_string())
-                            .or_default();
-                        cell.0.insert(other.clone());
-                        cell.1 |= same_lines;
+                        if let Some((_, row)) = rows.get_mut(me) {
+                            let cell = row.entry(rel.to_string()).or_default();
+                            cell.0.insert(other.clone());
+                            cell.1 |= same_lines;
+                        }
                     }
                 }
             }
         }
     }
     let mut peers = PEERS.lock().unwrap_or_else(|e| e.into_inner());
+    // A chat no longer open on the folder has no clashes there.
+    peers.retain(|(id, at), _| *at != key || rows.contains_key(id));
     for (id, row) in &rows {
-        peers.insert(id.clone(), row.clone());
+        peers.insert((id.clone(), key.clone()), row.clone());
     }
     drop(peers);
-    // Forget what's no longer true, so a new clash is told again.
+    // Forget what's no longer true in this folder, so a new clash is told
+    // again; what was told of the chat's other folders stays.
     let mut told = TOLD_PEERS.lock().unwrap_or_else(|e| e.into_inner());
-    for (id, row) in &rows {
+    for (id, (name, row)) in &rows {
         let live: BTreeSet<String> = row
             .iter()
-            .flat_map(|(path, (others, _))| others.iter().map(|o| told_key(path, o)))
+            .flat_map(|(path, (others, _))| {
+                others.iter().map(|o| told_key(&in_chat(name, path), o))
+            })
             .collect();
+        let here = |k: &str| name.is_empty() || k.starts_with(&format!("{name}/"));
         if let Some(entry) = told.get_mut(id) {
-            entry.retain(|k| live.contains(k));
+            entry.retain(|k| live.contains(k) || !here(k));
         }
     }
 }
@@ -1653,7 +2196,7 @@ fn drop_peer_state(dialog_id: &str) {
     PEERS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .remove(dialog_id);
+        .retain(|(id, _), _| id != dialog_id);
     TOLD_PEERS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1665,23 +2208,20 @@ fn drop_peer_state(dialog_id: &str) {
         .clear();
 }
 
-/// Compares this chat with the other open chats on its project (after each
-/// of its tool calls); returns its clashes.
+/// Compares this chat with the other open chats on each of its folders
+/// (after each of its tool calls); returns its clashes.
 pub fn check_peer_conflicts(dialog_id: &str) -> Vec<PeerConflict> {
     if let Some(o) = get(dialog_id) {
-        refresh_project_peers(&o.project);
+        for folder in o.folders().iter() {
+            refresh_project_peers(&folder.path);
+        }
     }
     peer_conflicts(dialog_id)
 }
 
 /// The clashes this chat's model hasn't heard about yet, as one note.
 fn fresh_peer_note(dialog_id: &str) -> Option<String> {
-    let current = PEERS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(dialog_id)
-        .cloned()
-        .unwrap_or_default();
+    let current = peer_conflicts(dialog_id);
     if current.is_empty() {
         return None;
     }
@@ -1689,8 +2229,10 @@ fn fresh_peer_note(dialog_id: &str) -> Option<String> {
     let entry = told.entry(dialog_id.to_string()).or_default();
     let mut same = Vec::new();
     let mut file_level = Vec::new();
-    for (path, (others, same_lines)) in &current {
-        let new_here: Vec<&String> = others
+    for clash in &current {
+        let path = &clash.path;
+        let new_here: Vec<&String> = clash
+            .peers
             .iter()
             .filter(|o| !entry.contains(&told_key(path, o)))
             .collect();
@@ -1700,7 +2242,7 @@ fn fresh_peer_note(dialog_id: &str) -> Option<String> {
         for o in &new_here {
             entry.insert(told_key(path, o));
         }
-        if *same_lines {
+        if clash.same_lines {
             same.push(format!("`{path}`"));
         } else {
             file_level.push(format!("`{path}`"));
@@ -1725,36 +2267,103 @@ fn fresh_peer_note(dialog_id: &str) -> Option<String> {
 /// What the chat changed, for the UI: landable changes only.
 pub fn changes(dialog_id: &str) -> Vec<OverlayChange> {
     if let Some(o) = get(dialog_id) {
-        return o
-            .fs
-            .changes()
-            .into_iter()
-            .filter(|c| !c.by_product())
-            .collect();
+        return landable(o.fs.changes(), "");
     }
     // Not open: read from its saved list, with its gate held so the chat's
     // own overlay isn't opened on the same files meanwhile.
     let gate = gate(dialog_id);
     let _held = gate.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(o) = get(dialog_id) {
-        return o
-            .fs
-            .changes()
-            .into_iter()
-            .filter(|c| !c.by_product())
-            .collect();
+        return landable(o.fs.changes(), "");
     }
-    let (Some(store), Some(project)) = (store_dir(dialog_id), saved_project(dialog_id)) else {
+    let Some(store) = store_dir(dialog_id) else {
         return Vec::new();
     };
-    match OverlayFs::open(&project, &store, DEFAULT_LIMIT) {
-        Ok(fs) => fs
-            .changes()
-            .into_iter()
-            .filter(|c| !c.by_product())
-            .collect(),
-        Err(_) => Vec::new(),
+    stored_changes(&store)
+}
+
+/// A closed chat's landable changes, from its store: each folder's
+/// overlay opened from its saved list, or, for a workspace chat's folder
+/// that isn't there, the list as it was saved.
+fn stored_changes(store: &Path) -> Vec<OverlayChange> {
+    let Some(folders) = recorded(store) else {
+        return Vec::new();
+    };
+    if let Some(project) = folders.single() {
+        return match OverlayFs::open(project, store, DEFAULT_LIMIT) {
+            Ok(fs) => landable(fs.changes(), ""),
+            Err(_) => Vec::new(),
+        };
     }
+    folders
+        .iter()
+        .flat_map(|f| {
+            let part = part_store(store, &f.name);
+            let changes = match f.path.is_dir() {
+                true => OverlayFs::open(&f.path, &part, DEFAULT_LIMIT).map(|fs| fs.changes()),
+                false => super::fs::saved_changes(&part),
+            };
+            landable(changes.unwrap_or_default(), &f.name)
+        })
+        .collect()
+}
+
+/// The chat paths of a workspace chat's changes in its folder `name` that
+/// haven't landed (D19, D32): from its view while it's open, else from that
+/// folder's saved list, which needs nothing of the folder, so it answers
+/// while the folder is missing. Empty for a chat with nothing there; an
+/// error when the list can't be read.
+pub fn changes_in_folder(dialog_id: &str, name: &str) -> Result<Vec<String>, String> {
+    if !valid_id(dialog_id) || !valid_id(name) {
+        return Err(format!("{name}: not a folder of a chat"));
+    }
+    let gate = gate(dialog_id);
+    let _held = gate.lock().unwrap_or_else(|e| e.into_inner());
+    changes_there(dialog_id, name)
+}
+
+/// [`changes_in_folder`], the chat's gate held.
+fn changes_there(dialog_id: &str, name: &str) -> Result<Vec<String>, String> {
+    Ok(landable(part_changes(dialog_id, name)?, name)
+        .iter()
+        .map(|c| c.path().to_string())
+        .collect())
+}
+
+/// A workspace chat's changes in its folder `name` that haven't landed, as
+/// the folder names them (`src/x.ts`), build output and dependencies left
+/// out: from its view while it's open, else from that folder's saved list.
+/// What a move to a server folds into the folder's snapshot (4.11).
+pub fn folder_changes(dialog_id: &str, name: &str) -> Result<Vec<OverlayChange>, String> {
+    if !valid_id(dialog_id) || !valid_id(name) {
+        return Err(format!("{name}: not a folder of a chat"));
+    }
+    let gate = gate(dialog_id);
+    let _held = gate.lock().unwrap_or_else(|e| e.into_inner());
+    let changes = part_changes(dialog_id, name)?;
+    Ok(changes.into_iter().filter(|c| !c.by_product()).collect())
+}
+
+/// The changes of a workspace chat's folder `name`, by-products too, as the
+/// folder names them, the chat's gate held: none when it has none there.
+fn part_changes(dialog_id: &str, name: &str) -> Result<Vec<OverlayChange>, String> {
+    let changes =
+        match get(dialog_id) {
+            Some(o) => match &o.under {
+                Under::Workspace { view, .. } => view.part(name).map(|p| p.changes()),
+                Under::Folder(_) => None,
+            },
+            None => {
+                let part = store_dir(dialog_id).map(|s| part_store(&s, name));
+                match part.filter(|p| p.is_dir()) {
+                    Some(part) => Some(super::fs::saved_changes(&part).map_err(|e| {
+                        format!("this chat's changes in {name} can't be read ({e})")
+                    })?),
+                    None => None,
+                }
+            }
+        };
+    Ok(changes.unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -1994,13 +2603,10 @@ fn file_versions(dialog_id: String, path: String) -> Result<FileVersions, String
     if !changes.iter().any(|c| c.path() == path) {
         return Err(format!("{path}: this chat didn't change it"));
     }
-    let store_project =
-        store_dir(&dialog_id).and_then(|s| std::fs::read_to_string(s.join("project.txt")).ok());
-    let project_dir = get(&dialog_id)
-        .map(|o| o.project.clone())
-        .or(store_project.map(|p| PathBuf::from(p.trim())));
-    let project_dir = project_dir.ok_or("this chat has no isolated changes")?;
-    let in_project = |rel: &str| std::fs::read_to_string(project_dir.join(rel)).ok();
+    let folders = folders_of(&dialog_id).ok_or("this chat has no isolated changes")?;
+    let in_project = |rel: &str| {
+        read_in(&folders, rel).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    };
     let chat = changes
         .iter()
         .rev()
@@ -2084,12 +2690,33 @@ pub fn pending(dialog_id: &str) -> Option<Pending> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn project_of(dialog_id: &str) -> Option<PathBuf> {
-    get(dialog_id).map(|o| o.project.clone()).or_else(|| {
-        store_dir(dialog_id)
-            .and_then(|s| std::fs::read_to_string(s.join("project.txt")).ok())
-            .map(|p| PathBuf::from(p.trim()))
-    })
+/// The folders a chat's changes are in: its open view's, else as its store
+/// recorded them.
+fn folders_of(dialog_id: &str) -> Option<Folders> {
+    get(dialog_id)
+        .map(|o| o.folders())
+        .or_else(|| recorded(&store_dir(dialog_id)?))
+}
+
+/// The project's version of a chat path: its file in its folder now (None:
+/// not there, or in none of the chat's folders).
+fn read_in(folders: &Folders, path: &str) -> Option<Vec<u8>> {
+    std::fs::read(folders.abs(path)?).ok()
+}
+
+/// The other open chats on each of `folders` hear that `paths` (chat
+/// paths) changed there.
+fn tell_others(folders: &Folders, paths: &[String]) {
+    for folder in folders.iter() {
+        let abs: Vec<PathBuf> = paths
+            .iter()
+            .filter(|p| folders.split(p).is_some_and(|(f, _)| f.name == folder.name))
+            .filter_map(|p| folders.abs(p))
+            .collect();
+        if !abs.is_empty() {
+            project_changed(&folder.path, &abs, false);
+        }
+    }
 }
 
 /// Lands the chat's changes now. `keep_chat`: on conflicts, the chat's
@@ -2112,7 +2739,7 @@ pub fn land_now_with(
     use super::land::LandError;
     let data = data_dir()
         .ok_or_else(|| LandError::Failed("the app's data folder isn't known yet".into()))?;
-    let project = project_of(dialog_id)
+    let folders = folders_of(dialog_id)
         .ok_or_else(|| LandError::Failed("this chat has no isolated changes".into()))?;
     // A child's landing into this chat's view that a crash interrupted is
     // finished first, which needs the view: landing the half of it that
@@ -2125,7 +2752,7 @@ pub fn land_now_with(
                 super::land::recover_into(&data, dialog_id, &o.view);
             }
             None => {
-                open(dialog_id, &project, Box::new(|_, _| {})).map_err(|e| {
+                open(dialog_id, &folders, Box::new(|_, _| {})).map_err(|e| {
                     LandError::Failed(format!(
                         "a step that was landing into this chat when the app closed isn't finished, and the chat's view couldn't be opened to finish it ({e})"
                     ))
@@ -2165,10 +2792,10 @@ pub fn land_now_with(
         Vec::new()
     };
     let known_paths: Vec<String> = known.iter().map(|c| c.path.clone()).collect();
-    match super::land::land_checked(
+    match super::land::land_checked_in(
         &data,
         dialog_id,
-        &project,
+        &folders,
         &changes,
         keep_chat,
         keep_chat.then_some(known_paths.as_slice()),
@@ -2176,11 +2803,10 @@ pub fn land_now_with(
     ) {
         Ok(landed) => {
             let _ = discard(dialog_id);
-            // Other chats on the project hear about it now, not only when
-            // the project's watcher (if it's open in the editor) does.
+            // Other chats on its folders hear about it now, not only when
+            // a folder's watcher (if it's open in the editor) does.
             if let Some(l) = &landed {
-                let abs: Vec<PathBuf> = l.paths.iter().map(|p| project.join(p)).collect();
-                project_changed(&project, &abs, false);
+                tell_others(&folders, &l.paths);
             }
             Ok(landed)
         }
@@ -2283,15 +2909,14 @@ pub async fn overlay_undo(
             return Err("bad chat id".to_string());
         }
         let data = data_dir().ok_or("the app's data folder isn't known yet")?;
-        let project = super::land::project_of(&data, &dialog_id).ok_or("no landing to undo")?;
+        let folders = super::land::folders_of(&data, &dialog_id).ok_or("no landing to undo")?;
         let paths = super::land::latest(&data, &dialog_id)
             .filter(|(l, _, _)| *l == id)
             .map(|(_, p, _)| p)
             .unwrap_or_default();
-        let kept = super::land::undo(&data, &dialog_id, &project, &id)?;
-        // Other chats on the project see the files as they are again.
-        let abs: Vec<PathBuf> = paths.iter().map(|p| project.join(p)).collect();
-        project_changed(&project, &abs, false);
+        let kept = super::land::undo_in(&data, &dialog_id, &folders, &id)?;
+        // Other chats on each folder see its files as they are again.
+        tell_others(&folders, &paths);
         Ok(kept)
     })
     .await
@@ -2317,38 +2942,53 @@ fn state_lock(dialog_id: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-/// The project a chat's saved changes belong to, from its folder alone
-/// (without looking at the open overlays).
-fn saved_project(dialog_id: &str) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(store_dir(dialog_id)?.join("project.txt")).ok()?;
-    Some(PathBuf::from(text.trim()))
-}
-
 /// The chat's overlay, open or (between runs, after a restart) opened from
 /// its saved changes for this one call. Its gate stays held while a saved
 /// one is used, so the chat's own overlay isn't opened on the same files
 /// meanwhile: `f` mustn't open this chat's overlay.
-fn with_fs<T>(dialog_id: &str, f: impl FnOnce(&OverlayFs) -> T) -> Result<T, String> {
+fn with_fs<T>(dialog_id: &str, f: impl FnOnce(&dyn ChatFs) -> T) -> Result<T, String> {
     if let Some(o) = get(dialog_id) {
-        return Ok(f(&o.fs));
+        return Ok(f(&*o.fs));
     }
     let gate = gate(dialog_id);
     let held = gate.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(o) = get(dialog_id) {
         drop(held);
-        return Ok(f(&o.fs));
+        return Ok(f(&*o.fs));
     }
     let store = store_dir(dialog_id)
-        .filter(|s| s.join("manifest.json").is_file())
+        .filter(|s| s.join("manifest.json").is_file() || s.join(FOLDERS_FILE).is_file())
         .ok_or("this chat has no isolated changes")?;
-    let project = saved_project(dialog_id).ok_or("this chat has no isolated changes")?;
+    let folders = recorded(&store).ok_or("this chat has no isolated changes")?;
     let lock = hold_store(&store)?;
-    let fs = OverlayFs::open(&project, &store, DEFAULT_LIMIT).map_err(|e| e.to_string())?;
-    let out = f(&fs);
+    let fs = open_saved(&store, &folders)?;
+    let out = f(&*fs);
     fs.flush();
+    drop(fs);
     drop(lock);
     drop(held);
     Ok(out)
+}
+
+/// A closed chat's changes opened from its store for one call, unmounted:
+/// a folder chat's overlay, or a workspace chat's view of those of its
+/// folders that are there.
+fn open_saved(store: &Path, folders: &Folders) -> Result<Arc<dyn ChatFs>, String> {
+    if let Some(project) = folders.single() {
+        let fs = OverlayFs::open(project, store, DEFAULT_LIMIT).map_err(|e| e.to_string())?;
+        return Ok(Arc::new(fs));
+    }
+    let there: Vec<Folder> = folders
+        .iter()
+        .filter(|f| f.path.is_dir())
+        .cloned()
+        .collect();
+    let there = Folders::named(there).map_err(|_| "none of this chat's folders is there")?;
+    let view = Arc::new(CompositeFs::new(Budget::new(DEFAULT_LIMIT)));
+    let budget = view.budget();
+    view.matched(&there, |folder| open_part(store, folder, &budget))
+        .map_err(|e| format!("couldn't open the chat's changes in {e}"))?;
+    Ok(view)
 }
 
 fn check_rel(path: &str) -> Result<(), String> {
@@ -2368,7 +3008,7 @@ struct Sides {
 
 fn sides(dialog_id: &str, path: &str) -> Result<Sides, String> {
     check_rel(path)?;
-    let project_dir = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
+    let folders = folders_of(dialog_id).ok_or("this chat has no isolated changes")?;
     // Handed to the chat with markers: the conflict is between the chat's
     // own version (kept) and the project's.
     if marked(dialog_id).iter().any(|m| m == path) {
@@ -2376,7 +3016,7 @@ fn sides(dialog_id: &str, path: &str) -> Result<Sides, String> {
             return Ok(Sides {
                 base,
                 chat,
-                project: std::fs::read(project_dir.join(path)).ok(),
+                project: read_in(&folders, path),
             });
         }
     }
@@ -2396,19 +3036,19 @@ fn sides(dialog_id: &str, path: &str) -> Result<Sides, String> {
         ),
         OverlayChange::Write {
             origin: Some(o), ..
-        } => (std::fs::read(project_dir.join(o)).ok(), None),
+        } => (read_in(&folders, o), None),
         _ => (None, None),
     };
     Ok(Sides {
         base,
         chat,
-        project: std::fs::read(project_dir.join(path)).ok(),
+        project: read_in(&folders, path),
     })
 }
 
 /// The chat's version of `path` as it is now in its view.
 fn current_version(dialog_id: &str, path: &str) -> Option<Vec<u8>> {
-    let project_dir = project_of(dialog_id)?;
+    let folders = folders_of(dialog_id)?;
     match changes(dialog_id)
         .into_iter()
         .rev()
@@ -2419,7 +3059,7 @@ fn current_version(dialog_id: &str, path: &str) -> Option<Vec<u8>> {
         } => std::fs::read(file).ok(),
         OverlayChange::Write {
             origin: Some(o), ..
-        } => std::fs::read(project_dir.join(o)).ok(),
+        } => read_in(&folders, &o),
         _ => None,
     }
 }
@@ -2931,8 +3571,8 @@ pub fn undo_merge(dialog_id: &str, only: Option<&[String]>) -> Result<UndoneMerg
             .filter(|m| !done.restored.contains(m))
             .collect(),
     );
-    if let Some(project) = project_of(dialog_id) {
-        let plan = super::land::plan(&project, &changes(dialog_id), false);
+    if let Some(folders) = folders_of(dialog_id) {
+        let plan = super::land::plan_in(&folders, &changes(dialog_id), false);
         if plan.conflicts.is_empty() {
             set_pending(dialog_id, None);
         } else {
@@ -3143,7 +3783,7 @@ pub fn snapshot_each(dialog_id: &str, paths: &[String]) -> Result<PathSnapshots,
     let lock = state_lock(dialog_id);
     let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
     let changes = changes(dialog_id);
-    let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
+    let folders = folders_of(dialog_id).ok_or("this chat has no isolated changes")?;
     let mut out = Vec::new();
     for path in paths {
         let before = (|| -> Result<Before, String> {
@@ -3170,8 +3810,12 @@ pub fn snapshot_each(dialog_id: &str, paths: &[String]) -> Result<PathSnapshots,
                             (Some(file), _) => {
                                 std::fs::read(file).map_err(|e| format!("{path}: {e}"))?
                             }
-                            (None, Some(o)) => std::fs::read(project.join(o))
-                                .map_err(|e| format!("{path}: {e}"))?,
+                            (None, Some(o)) => {
+                                let from = folders.abs(o).ok_or_else(|| {
+                                    format!("{path}: {o} is in none of the chat's folders")
+                                })?;
+                                std::fs::read(from).map_err(|e| format!("{path}: {e}"))?
+                            }
                             (None, None) => Vec::new(),
                         };
                         let base = with_fs(dialog_id, |fs| fs.versions(path))?
@@ -3288,7 +3932,7 @@ pub fn group_redone(dialog_id: &str, name: &str) -> bool {
 }
 
 /// Makes the folders up to `rel`'s parent in the chat's view.
-fn make_parents(fs: &OverlayFs, rel: &str) -> Result<(), String> {
+fn make_parents(fs: &dyn ChatFs, rel: &str) -> Result<(), String> {
     use crate::vfs::backend::Backend;
     let mut at = String::new();
     let parts: Vec<&str> = rel.split('/').collect();
@@ -3324,14 +3968,14 @@ fn make_parents(fs: &OverlayFs, rel: &str) -> Result<(), String> {
 /// be, entirely.
 fn restore_path(
     dialog_id: &str,
-    fs: &OverlayFs,
-    project: &Path,
+    fs: &dyn ChatFs,
+    folders: &Folders,
     path: &str,
     was: &Before,
 ) -> Result<Option<String>, String> {
     use crate::vfs::backend::Backend;
     use crate::vfs::store::VfsError;
-    let in_project = project.join(path);
+    let in_project = folders.abs(path);
     let now = Backend::resolve(fs, path)
         .ok()
         .and_then(|ino| Backend::getattr(fs, ino).ok())
@@ -3373,12 +4017,13 @@ fn restore_path(
         }
         Before::Untouched | Before::Absent => {
             let project_file = in_project
-                .is_file()
-                .then(|| std::fs::read(&in_project).ok())
-                .flatten();
+                .as_ref()
+                .filter(|p| p.is_file())
+                .and_then(|p| std::fs::read(p).ok());
+            let project_dir = in_project.as_ref().is_some_and(|p| p.is_dir());
             match now {
                 Some(crate::vfs::store::Kind::Dir) => {
-                    if in_project.is_dir() && matches!(was, Before::Untouched) {
+                    if project_dir && matches!(was, Before::Untouched) {
                         Ok(None)
                     } else {
                         remove_dir(path)
@@ -3437,13 +4082,14 @@ pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
     if group.redone {
         return Err(format!("the group \"{name}\" was redone already"));
     }
-    let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
+    let folders = folders_of(dialog_id).ok_or("this chat has no isolated changes")?;
     // Files before folders, deepest first: a folder the group made is
     // empty by the time it's removed.
     let mut order: Vec<&(String, Before)> = group.before.iter().collect();
     order.sort_by_key(|(p, was)| {
         (
-            matches!(was, Before::Untouched | Before::Absent) && !project.join(p).is_file(),
+            matches!(was, Before::Untouched | Before::Absent)
+                && !folders.abs(p).is_some_and(|a| a.is_file()),
             std::cmp::Reverse(p.matches('/').count()),
         )
     });
@@ -3456,7 +4102,7 @@ pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
     let restored = with_fs(dialog_id, |fs| {
         order
             .iter()
-            .map(|(path, was)| restore_path(dialog_id, fs, &project, path, was))
+            .map(|(path, was)| restore_path(dialog_id, fs, &folders, path, was))
             .collect::<Vec<_>>()
     })?;
     for r in restored {
@@ -3922,11 +4568,14 @@ mod conflict_tests {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let id = "peer-note-chat";
         PEERS.lock().unwrap().insert(
-            id.to_string(),
-            BTreeMap::from([(
-                "a.txt".to_string(),
-                (BTreeSet::from(["other-chat".to_string()]), true),
-            )]),
+            (id.to_string(), PathBuf::from("/p")),
+            (
+                String::new(),
+                BTreeMap::from([(
+                    "a.txt".to_string(),
+                    (BTreeSet::from(["other-chat".to_string()]), true),
+                )]),
+            ),
         );
         let note = take_note(id).unwrap();
         assert!(
@@ -3959,6 +4608,36 @@ mod conflict_tests {
         claim_direct_writes(&dir, "chat-two").unwrap();
         release_direct_writes("chat-two");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_hold_counts_above_and_below_its_folder() {
+        let repo = std::env::temp_dir().join(format!("busy-repo-{}", std::process::id()));
+        let beside = std::env::temp_dir().join(format!("busy-beside-{}", std::process::id()));
+        for dir in [repo.join("app"), repo.join("web"), beside.clone()] {
+            std::fs::create_dir_all(&dir).unwrap();
+        }
+        // A git operation holds the repository's working folder: every folder
+        // in it waits, and a folder beside it doesn't.
+        let held = hold_busy(&repo);
+        assert!(is_busy(&repo));
+        assert!(is_busy(&repo.join("app")), "a folder inside it");
+        assert!(is_busy(&repo.join("web")));
+        assert!(!is_busy(&beside), "another folder isn't in the repository");
+        drop(held);
+        // The hold's aftermath is the repository's alone.
+        BUSY.lock().unwrap().remove(&busy_key(&repo));
+        assert!(!is_busy(&beside));
+        // A hold on a folder in a repository covers the folders above it too:
+        // what's rewritten there may be beside it.
+        let held = hold_busy(&repo.join("app"));
+        assert!(is_busy(&repo.join("app")));
+        assert!(is_busy(&repo), "a hold below the folder counts");
+        assert!(!is_busy(&repo.join("web")), "a folder beside it doesn't");
+        drop(held);
+        BUSY.lock().unwrap().remove(&busy_key(&repo.join("app")));
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&beside);
     }
 
     #[test]
@@ -4022,7 +4701,7 @@ mod hub_tests {
         project
     }
 
-    fn put(fs: &OverlayFs, rel: &str, content: &str) {
+    fn put(fs: &dyn ChatFs, rel: &str, content: &str) {
         let ino = match fs.resolve(rel) {
             Ok(ino) => ino,
             Err(_) => {
@@ -4255,10 +4934,15 @@ mod hub_tests {
         let project = root.join("project");
         std::fs::create_dir_all(&project).unwrap();
         let _data = test_data(&root.join("data"));
-        let o = open("saver-chat", &project, Box::new(|_, _| {})).unwrap();
-        put(&o.fs, "first.txt", "1\n");
+        let o = open(
+            "saver-chat",
+            &Folders::one(project.clone()),
+            Box::new(|_, _| {}),
+        )
+        .unwrap();
+        put(&*o.fs, "first.txt", "1\n");
         o.fs.flush();
-        put(&o.fs, "second.txt", "2\n");
+        put(&*o.fs, "second.txt", "2\n");
         let manifest = store_dir("saver-chat").unwrap().join("manifest.json");
         let saved = || std::fs::read_to_string(&manifest).unwrap_or_default();
         for _ in 0..100 {
@@ -4285,8 +4969,18 @@ mod hub_tests {
         std::fs::write(project.join("a.txt"), "1\n2\n3\n4\n5\n").unwrap();
         std::fs::write(project.join("b.txt"), "b\n").unwrap();
         let _data = test_data(&root.join("data"));
-        let a = open("hub-chat-a", &project, Box::new(|_, _| {})).unwrap();
-        let b = open("hub-chat-b", &project, Box::new(|_, _| {})).unwrap();
+        let a = open(
+            "hub-chat-a",
+            &Folders::one(project.clone()),
+            Box::new(|_, _| {}),
+        )
+        .unwrap();
+        let b = open(
+            "hub-chat-b",
+            &Folders::one(project.clone()),
+            Box::new(|_, _| {}),
+        )
+        .unwrap();
         // B looks at b.txt and changes line 1 of a.txt; A changes line 1 of
         // a.txt too, and b.txt.
         assert_eq!(
@@ -4311,7 +5005,12 @@ mod hub_tests {
         );
         assert!(take_note("hub-chat-b").is_none(), "told once");
         // Two running chats on the same line: both hear it before either lands.
-        let c = open("hub-chat-c", &project, Box::new(|_, _| {})).unwrap();
+        let c = open(
+            "hub-chat-c",
+            &Folders::one(project.clone()),
+            Box::new(|_, _| {}),
+        )
+        .unwrap();
         write(&c, "b.txt", "changed by c\n");
         // B now has b.txt as A landed it; C started from that too.
         write(&b, "b.txt", "changed by b\n");
@@ -4348,7 +5047,12 @@ mod bench {
             .to_path_buf();
         let data = std::env::temp_dir().join(format!("bench-{}", std::process::id()));
         super::init(&data);
-        let o = super::open("bench-chat", &project, Box::new(|_, _| {})).unwrap();
+        let o = super::open(
+            "bench-chat",
+            &crate::folders::Folders::one(project.clone()),
+            Box::new(|_, _| {}),
+        )
+        .unwrap();
         let time = |what: &str, dir: &std::path::Path, cmd: &str| {
             let t = std::time::Instant::now();
             let out = std::process::Command::new("sh")
@@ -4396,7 +5100,12 @@ mod child_tests {
             std::fs::write(project.join(f), format!("{f}\n")).unwrap();
         }
         let _data = test_data(&root.join("data"));
-        let parent = open("kids3-parent", &project, Box::new(|_, _| {})).unwrap();
+        let parent = open(
+            "kids3-parent",
+            &Folders::one(project.clone()),
+            Box::new(|_, _| {}),
+        )
+        .unwrap();
         let w = open_child("kids3-parent", "kids3-w").unwrap();
         std::fs::rename(w.view.join("a"), w.view.join("b")).unwrap();
         std::fs::remove_file(w.view.join("c")).unwrap();
@@ -4442,7 +5151,12 @@ mod child_tests {
         std::fs::write(project.join("a.rs"), "a\n").unwrap();
         let data = root.join("data");
         let _data = test_data(&data);
-        let parent = open("kidsmark-parent", &project, Box::new(|_, _| {})).unwrap();
+        let parent = open(
+            "kidsmark-parent",
+            &Folders::one(project.clone()),
+            Box::new(|_, _| {}),
+        )
+        .unwrap();
         let w = open_child("kidsmark-parent", "kidsmark-w").unwrap();
         std::fs::write(w.view.join("a.rs"), "a from w\n").unwrap();
         w.fs.flush();
@@ -4536,7 +5250,7 @@ mod child_tests {
             .unwrap()
             .unwrap();
         assert!(open_elsewhere(&chat));
-        let opened = open(&chat, &project, Box::new(|_, _| {}));
+        let opened = open(&chat, &Folders::one(project.clone()), Box::new(|_, _| {}));
         assert_eq!(opened.err().as_deref(), Some(OPEN_ELSEWHERE));
         assert_eq!(discard(&chat).err().as_deref(), Some(OPEN_ELSEWHERE));
         assert!(store.is_dir());
@@ -4560,7 +5274,12 @@ mod child_tests {
         std::fs::write(project.join("src/a.rs"), "a\n").unwrap();
         std::fs::write(project.join("src/b.rs"), "b\n").unwrap();
         let _data = test_data(&root.join("data"));
-        let parent = open("kids-parent", &project, Box::new(|_, _| {})).unwrap();
+        let parent = open(
+            "kids-parent",
+            &Folders::one(project.clone()),
+            Box::new(|_, _| {}),
+        )
+        .unwrap();
         // The parent changed a file before the workers start.
         std::fs::write(parent.view.join("src/a.rs"), "a from the lead\n").unwrap();
 
@@ -4638,7 +5357,8 @@ mod child_tests {
         std::fs::write(w4.view.join("src/new.rs"), "new from w4\n").unwrap();
         w4.fs.flush();
         let data = root.join("data");
-        super::super::land::land(&data, "kids-w4", &w4.project, &w4.fs.changes(), false).unwrap();
+        let under = w4.folder().unwrap();
+        super::super::land::land(&data, "kids-w4", under, &w4.fs.changes(), false).unwrap();
         // As if the app died mid-write: the journal says "applying" and
         // the parent's file is still the old one.
         let journals = data.join("landings").join("kids-w4");
@@ -4673,7 +5393,8 @@ mod child_tests {
         std::fs::write(w6.view.join("src/new.rs"), "new from w6\n").unwrap();
         std::fs::write(w6.view.join("src/b.rs"), "b from w6\n").unwrap();
         w6.fs.flush();
-        super::super::land::land(&data, "kids-w6", &w6.project, &w6.fs.changes(), false).unwrap();
+        let under = w6.folder().unwrap();
+        super::super::land::land(&data, "kids-w6", under, &w6.fs.changes(), false).unwrap();
         let journals = data.join("landings").join("kids-w6");
         let landing = std::fs::read_dir(&journals)
             .unwrap()
@@ -4710,7 +5431,12 @@ mod child_tests {
             &mountpoint("kids-parent")
         ));
         discard_child("kids-w6");
-        let _parent = open("kids-parent", &project, Box::new(|_, _| {})).unwrap();
+        let _parent = open(
+            "kids-parent",
+            &Folders::one(project.clone()),
+            Box::new(|_, _| {}),
+        )
+        .unwrap();
 
         // Two children opened together, before either writes, share
         // what's left: together they can't pass the parent's limit.
@@ -4743,3 +5469,7 @@ mod child_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_chat_tests.rs"]
+mod workspace_tests;

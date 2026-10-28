@@ -91,6 +91,7 @@ async fn app_connected(daemon: &Daemon) -> (TestCore, Arc<Remote>, Arc<Mutex<Vec
         created_at: 0,
         updated_at: 0,
         project_id: None,
+        folders: None,
     };
     app.core
         .db

@@ -255,6 +255,26 @@ pub struct StartRequest {
     /// them for the folder the run works in, as the app does for its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_settings: Option<serde_json::Value>,
+    /// A workspace chat's folders, for a daemon that serves
+    /// `features::FOLDERS` (workspaces-plan.md, 4.1): each a top-level
+    /// folder of the chat's worktree there, with its settings, in the
+    /// workspace's order. Empty for a folder chat's run, and for a run here,
+    /// whose folders the app reads itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<RunFolder>,
+}
+
+/// One folder of a workspace chat's run on a daemon (workspaces-plan.md,
+/// 4.1).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunFolder {
+    /// Its stored name (D8): a top-level folder of the chat's worktree.
+    pub name: String,
+    /// Its project settings, as `StartRequest::project_settings` is a
+    /// folder chat's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
 }
 
 /// A running subagent as its block shows it.

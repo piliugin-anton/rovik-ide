@@ -2,9 +2,9 @@
 
 `run.mjs` launches a built app, clicks and types through its main scenarios
 (project, tree, editor, Markdown, search, terminal, Git, settings, the AI
-chat against `fake-model.mjs`, restart) and writes `report.md`,
-`report.json`, `run.log` and a screenshot per step to `--out`. It exits
-with 1 when a step failed.
+chat against `fake-model.mjs`, restart, then a workspace of two folders)
+and writes `report.md`, `report.json`, `run.log` and a screenshot per step
+to `--out`. It exits with 1 when a step failed.
 
 ```sh
 node scripts/e2e/run.mjs --app <built binary> --out e2e-out [--only <regex>]
@@ -14,6 +14,21 @@ It needs `git`, Node 22 and TypeScript (`tsc` on PATH: the demo project's
 type check is one of the checks an agent's change has to pass before it
 lands). Everything else it starts itself: the fake model (port 18080), and
 `tauri-driver` (port 4444) unless `--driver bridge`.
+
+The `workspace:` steps, after the project's restart, make a workspace of
+the demo project and a second folder, `web`, a repository of its own, added
+through the dialog's path field (the native picker can't be driven): its
+folders' rows, two tabs of one name, search, a commit in each repository, a
+chat in `web`, a chat across both that lands in each, a folder removed, the
+workspace's folder opened by another Rovik, and a restart of their own. A
+chat across folders needs virtual files: the Linux job installs `fuse3`;
+on macOS and Windows that step checks that New chat says why it can't check
+a second folder.
+
+With virtual files every chat is isolated: it works in a view of its own,
+and its changes land in the project when it ends. The chat steps take
+either way. The Autopilot step ticks the project's tests first (and
+unticks them after), as Autopilot lands only what a check ran on.
 
 The `instances:` steps start other Rovik windows beside the driven one,
 with its data: one on the project the driven window has open (which comes

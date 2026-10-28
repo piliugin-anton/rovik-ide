@@ -250,11 +250,17 @@ pub async fn update_install(updates: State<'_, Updates>, version: String) -> Res
 }
 
 /// Starts the app again, on the version installed: this window opens
-/// `folder`, its project, again. Without one it starts as it started: a
-/// new window again if it was one, else with the project the app last had.
+/// `folder`, its project, or `workspace` again. Without one it starts as it
+/// started: a new window again if it was one, else with the project the app
+/// last had.
 #[tauri::command]
-pub fn update_restart(app: AppHandle, updates: State<'_, Updates>, folder: Option<String>) {
-    let args = restart_args(&app.env().args_os, folder.as_deref());
+pub fn update_restart(
+    app: AppHandle,
+    updates: State<'_, Updates>,
+    folder: Option<String>,
+    workspace: Option<String>,
+) {
+    let args = restart_args(&app.env().args_os, folder.as_deref(), workspace.as_deref());
     *lock(&updates.relaunch) = Some(args);
     // Through the app's exit, which lets go of what it has open first
     // (lib.rs), then `relaunch`.
@@ -401,10 +407,19 @@ fn in_app_bundle(exe: &Path) -> bool {
 }
 
 /// What the app starts again with (`current` being what it started with):
-/// its program, then the folder to open, or else the flag that started a
-/// new window, if it was one.
-fn restart_args(current: &[OsString], folder: Option<&str>) -> Vec<OsString> {
+/// its program, then the workspace (`--workspace <id>`) or the folder to
+/// open, or else the flag that started a new window, if it was one.
+fn restart_args(
+    current: &[OsString],
+    folder: Option<&str>,
+    workspace: Option<&str>,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = current.first().cloned().into_iter().collect();
+    if let Some(id) = workspace.filter(|id| !id.trim().is_empty()) {
+        args.push(crate::WORKSPACE.into());
+        args.push(id.into());
+        return args;
+    }
     match folder.filter(|f| !f.trim().is_empty()) {
         Some(folder) => args.push(folder.into()),
         None if current.iter().skip(1).any(|a| a == crate::NEW_WINDOW) => {
@@ -520,24 +535,42 @@ mod tests {
         let program = "/usr/bin/rovik-ide";
         // Its project, whatever it started with.
         assert_eq!(
-            restart_args(&os(&[program, "--new-window"]), Some("/home/ann/app")),
+            restart_args(&os(&[program, "--new-window"]), Some("/home/ann/app"), None),
             os(&[program, "/home/ann/app"])
         );
         assert_eq!(
-            restart_args(&os(&[program, "/home/ann/old"]), Some("/home/ann/app")),
+            restart_args(
+                &os(&[program, "/home/ann/old"]),
+                Some("/home/ann/app"),
+                None
+            ),
             os(&[program, "/home/ann/app"])
         );
         // Without one: a new window stays one; the first window takes the
         // project the app last had, as at its start.
         assert_eq!(
-            restart_args(&os(&[program, "--new-window"]), None),
+            restart_args(&os(&[program, "--new-window"]), None, None),
             os(&[program, "--new-window"])
         );
         assert_eq!(
-            restart_args(&os(&[program, "/home/ann/old"]), None),
+            restart_args(&os(&[program, "/home/ann/old"]), None, None),
             os(&[program])
         );
-        assert_eq!(restart_args(&os(&[program]), Some("  ")), os(&[program]));
+        assert_eq!(
+            restart_args(&os(&[program]), Some("  "), None),
+            os(&[program])
+        );
+        // A workspace comes back as itself, its folders claimed as it opens
+        // (3.3).
+        assert_eq!(
+            restart_args(&os(&[program, "/home/ann/old"]), None, Some("w-1")),
+            os(&[program, "--workspace", "w-1"])
+        );
+        assert_eq!(
+            restart_args(&os(&[program]), Some("/home/ann/app"), Some("w-1")),
+            os(&[program, "--workspace", "w-1"]),
+            "the workspace is the target"
+        );
     }
 
     #[test]

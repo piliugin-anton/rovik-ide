@@ -7,6 +7,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { createEffect, createSignal, on, onCleanup, onMount, Show } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import { createFolder, dirEntryCount, getPathId, pathExists } from '../lib/commands';
+import { parentOf } from '../lib/fileTools';
 
 const LAST_ROOT_KEY = 'rovik.newProject.lastRoot';
 
@@ -24,17 +25,6 @@ function saveLastRoot(root: string) {
   } catch {
     // Not remembering the folder is fine.
   }
-}
-
-/** The folder containing `path`, or null for a filesystem root. */
-function parentOf(path: string): string | null {
-  const trimmed = path.replace(/[\\/]+$/, '');
-  const i = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
-  if (i < 0) return null;
-  const parent = trimmed.slice(0, i);
-  // "/home" → "/", "C:\foo" → "C:\"
-  if (parent === '' || /^[A-Za-z]:$/.test(parent)) return parent + trimmed[i];
-  return parent;
 }
 
 type Existing = 'folder' | 'file' | null;

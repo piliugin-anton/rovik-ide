@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod folders;
 mod pages;
 
 const HOST: &str = "test-server";
@@ -80,6 +81,7 @@ impl App {
             created_at: 0,
             updated_at: 0,
             project_id: project.map(str::to_string),
+            folders: None,
         };
         let id = id.to_string();
         self.core
@@ -215,6 +217,7 @@ fn start(dialog_id: &str, kind: StartKind, current: Option<&str>) -> StartReques
         config: None,
         isolate: None,
         project_settings: None,
+        folders: Vec::new(),
     }
 }
 
@@ -543,10 +546,11 @@ async fn a_host_that_pushes_is_told_the_projects_remote() {
     );
 }
 
-/// H05: "Test delivery" asks the host to push to the open project's
-/// remote, as the host would push a result there: an SSH address without
-/// the credentials its `origin` has. With no such project open, or a
-/// daemon too old for it, it says what's missing.
+/// H05: "Test delivery" asks the host to push to the remote of the first
+/// open folder that has an `origin` (workspaces-plan.md, 3.8), as the host
+/// would push a result there: an SSH address without the credentials its
+/// `origin` has. With no such folder open, or a daemon too old for it, it
+/// says what's missing.
 #[tokio::test]
 async fn a_delivery_test_goes_to_the_open_projects_remote() {
     let app = App::new();
@@ -563,7 +567,10 @@ async fn a_delivery_test_goes_to_the_open_projects_remote() {
         none.starts_with("Open a project whose repository has an `origin`"),
         "{none}"
     );
-    remote.set_open_project(Some(("p1".into(), root.clone())));
+    // A workspace whose first folder is no repository: the second's remote.
+    let notes = app.dir.0.join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    remote.set_open_projects(vec![("p0".into(), notes), ("p1".into(), root.clone())]);
     let report = remote.test_delivery(HOST).await.unwrap();
     assert_eq!(report.remote, "git@github.com:acme/app.git");
     assert!(fake
@@ -575,7 +582,7 @@ async fn a_delivery_test_goes_to_the_open_projects_remote() {
         }));
 
     let (old, _) = connected(&app).await;
-    old.set_open_project(Some(("p1".into(), root)));
+    old.set_open_projects(vec![("p1".into(), root)]);
     let too_old = old.test_delivery(HOST).await.unwrap_err();
     assert!(too_old.contains("too old"), "{too_old}");
 }
@@ -729,25 +736,6 @@ async fn project_in(app: &App, name: &str) -> String {
 async fn settled(app: &App) {
     let written = app.core.db.write(|_| Ok::<(), String>(()));
     written.await.unwrap();
-}
-
-/// 6.5: results land by themselves in the open project, which the user's
-/// answer about its folder (a copy, or a project that moved) can change.
-#[tokio::test]
-async fn the_open_project_follows_what_the_user_says_its_folder_is() {
-    let app = App::new();
-    let remote = Remote::new(app.core.clone());
-    let folder = app.dir.0.join("copy");
-    remote.set_open_project(Some(("original".into(), folder.clone())));
-
-    remote.folder_answered(&app.dir.0.join("elsewhere"), "separate");
-    assert_eq!(
-        remote.lock().open,
-        Some(("original".into(), folder.clone()))
-    );
-
-    remote.folder_answered(&folder, "separate");
-    assert_eq!(remote.lock().open, Some(("separate".into(), folder)));
 }
 
 /// D11, D16: a setting goes to every connected host, a configuration
@@ -1375,14 +1363,15 @@ async fn a_chat_shows_its_events_in_the_window_its_project_is_open_in() {
         )
     );
 
-    // Open here now.
-    remote.set_open_project(Some((project.clone(), folder)));
+    // Open here now, as the second of a workspace's folders.
+    let first = app.dir.0.join("api");
+    remote.set_open_projects(vec![("api".into(), first), (project.clone(), folder)]);
     remote.receive(HOST, event(ask())).await;
     assert_eq!(app.sent().len(), 1);
     assert!(remote.check_here("chat").await.is_ok());
 
     // Open nowhere: every window's.
-    remote.set_open_project(None);
+    remote.set_open_projects(Vec::new());
     open_there.store(false, std::sync::atomic::Ordering::Relaxed);
     remote.lock().elsewhere_seen.clear();
     remote.receive(HOST, event(ask())).await;
@@ -1438,17 +1427,55 @@ async fn a_chat_is_pulled_by_one_window_at_a_time() {
     assert_eq!(took.unwrap().unwrap(), Ok(true));
 }
 
-/// steering-plan.md 3.8: a message for a run on a host goes there with the
-/// editor context's local paths written from the open project's folder,
-/// as a start's are (K08), and the host's status adds what waits there.
+/// A steer whose chat's folder can't be read fails, saying why, rather than
+/// sending the editor context's local paths to the host.
 #[tokio::test]
-async fn a_steer_goes_to_the_chats_host_with_its_paths_from_the_project() {
+async fn a_steer_whose_chats_folder_cant_be_read_fails_and_sends_nothing() {
     let app = App::new();
-    app.chat("chat", None, Vec::new()).await;
+    let web = project_in(&app, "web").await;
+    app.chat("chat", Some(&web), Vec::new()).await;
     let (remote, fake) = connected(&app).await;
     remote.place("chat", HOST);
-    let folder = app.dir.0.join("project");
-    remote.set_open_project(Some(("p".into(), folder.clone())));
+    app.core
+        .db
+        .write(|c| {
+            c.execute_batch("ALTER TABLE dialogs RENAME TO dialogs_gone")
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let message = UserMessage {
+        id: "s1".into(),
+        content: "use the client".into(),
+        meta: None,
+        attachments: Vec::new(),
+    };
+    assert!(remote.steer("chat", message).await.is_err());
+    assert!(
+        !fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| matches!(r, Request::AgentSteer { .. })),
+        "nothing went to the host"
+    );
+}
+
+/// steering-plan.md 3.8: a message for a run on a host goes there with the
+/// editor context's local paths written from its chat's own folder, as a
+/// start's are (K08), whichever of a workspace's folders that is
+/// (workspaces-plan.md, 3.8), and the host's status adds what waits there.
+#[tokio::test]
+async fn a_steer_goes_to_the_chats_host_with_its_paths_from_its_chats_folder() {
+    let app = App::new();
+    let api = project_in(&app, "api").await;
+    let web = project_in(&app, "web").await;
+    app.chat("chat", Some(&web), Vec::new()).await;
+    let (remote, fake) = connected(&app).await;
+    remote.place("chat", HOST);
+    let folder = app.dir.0.join("web");
+    remote.set_open_projects(vec![(api, app.dir.0.join("api")), (web, folder.clone())]);
     let local = folder.join("src").join("a.rs");
     let message = UserMessage {
         id: "s1".into(),
@@ -1525,7 +1552,10 @@ fn a_hosts_plan_fix_changes_only_the_fields_it_sets() {
     );
     let mut waiting = config.clone();
     ApprovalPolicy::WaitForMe.apply(&autonomy, &mut waiting);
-    assert_eq!(waiting.autopilot.plan_fix.max_rounds, 10, "only a host that works on its own");
+    assert_eq!(
+        waiting.autopilot.plan_fix.max_rounds, 10,
+        "only a host that works on its own"
+    );
     ApprovalPolicy::Autonomous.apply(&autonomy, &mut config);
     assert_eq!(
         config.autopilot.plan_fix,

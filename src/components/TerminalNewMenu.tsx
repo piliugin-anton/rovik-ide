@@ -10,21 +10,37 @@
 import { For, onMount, Show, type JSX } from 'solid-js';
 import { focusMenuItem, onMenuKey } from '../lib/menuKeys';
 import { remoteLabel, type TerminalHost } from '../lib/terminal';
+import { Icon } from './MenuIcon';
 
-function Icon(props: { children: JSX.Element }) {
+/**
+ * The connected hosts a terminal can open on, as menu items: this menu's,
+ * and the folder menu's slot when a workspace has several folders (C04).
+ */
+export function TerminalHostItems(props: {
+  hosts: TerminalHost[];
+  onPick: (host: TerminalHost | null) => void;
+}) {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    >
-      {props.children}
-    </svg>
+    <For each={props.hosts}>
+      {(host) => (
+        <li
+          class="context-menu-item"
+          role="menuitem"
+          tabIndex={-1}
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onPick({ id: host.id, name: host.name });
+          }}
+        >
+          <span class="context-menu-icon" aria-hidden="true">
+            <Icon>
+              <path d="M4.5 12.5h7a3 3 0 0 0 .4-5.97 4 4 0 0 0-7.7 1.07 2.5 2.5 0 0 0 .3 4.9Z" />
+            </Icon>
+          </span>
+          <span class="context-menu-label">{remoteLabel(host.name)}</span>
+        </li>
+      )}
+    </For>
   );
 }
 
@@ -84,17 +100,7 @@ export default function TerminalNewMenu(props: TerminalNewMenuProps) {
           </Icon>,
           'Ctrl+Shift+`'
         )}
-        <For each={props.hosts}>
-          {(host) =>
-            item(
-              remoteLabel(host.name),
-              { id: host.id, name: host.name },
-              <Icon>
-                <path d="M4.5 12.5h7a3 3 0 0 0 .4-5.97 4 4 0 0 0-7.7 1.07 2.5 2.5 0 0 0 .3 4.9Z" />
-              </Icon>
-            )
-          }
-        </For>
+        <TerminalHostItems hosts={props.hosts} onPick={props.onPick} />
       </ul>
     </div>
   );

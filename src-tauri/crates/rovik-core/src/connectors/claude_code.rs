@@ -375,9 +375,10 @@ fn git_deny_rules() -> Vec<String> {
 
 /// The arguments of one turn's `claude` run: the common ones, then the
 /// turn's. `session` is the session to resume, or the new one's id;
-/// `prompt_file` holds the system prompt (`system_text`), read from a file
-/// rather than the command line, which a long prompt would overflow on
-/// Windows; `mcp_config` is Rovik's tools' server, in that mode;
+/// `prompt_file` holds the system prompt (`system_text`), or with Claude
+/// Code's own prompt what's appended to it (`prompt_file`), read from a
+/// file rather than the command line, which a long prompt would overflow
+/// on Windows; `mcp_config` is Rovik's tools' server, in that mode;
 /// `hooks_file` is the settings with Rovik's hooks around its own shell's
 /// commands (`hook_settings`), when the run makes them ready.
 pub fn args_for(
@@ -423,8 +424,16 @@ pub fn args_for(
         args.push("--thinking-display".into());
         args.push(THINKING_DISPLAY.into());
     }
-    if let Some(file) = prompt_file.filter(|_| sends_rovik_prompt(turn)) {
-        args.push("--system-prompt-file".into());
+    // With its own prompt, a workspace chat's section after it (4.10).
+    let flag = match sends_rovik_prompt(turn) {
+        true => Some("--system-prompt-file"),
+        false => turn
+            .own_tools_context
+            .is_some()
+            .then_some("--append-system-prompt-file"),
+    };
+    if let (Some(file), Some(flag)) = (prompt_file, flag) {
+        args.push(flag.into());
         args.push(file.to_string_lossy().into_owned());
     }
     // A resumed session takes the prompt as it is now, not as it was at
@@ -1448,12 +1457,14 @@ fn cwd_of(turn: &Turn) -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-/// The system prompt's file, when there's a prompt.
+/// The system prompt's file, when there's a prompt: Rovik's, or with
+/// Claude Code's own the chat's section appended to it, which a workspace
+/// chat's view has no instructions file for it to read (4.10).
 fn prompt_file(turn: &Turn) -> Result<Option<TempFile>, String> {
-    if !sends_rovik_prompt(turn) {
-        return Ok(None);
-    }
-    let text = system_text(turn, turn.rovik_tools);
+    let text = match sends_rovik_prompt(turn) {
+        true => system_text(turn, turn.rovik_tools),
+        false => turn.own_tools_context.clone().unwrap_or_default(),
+    };
     if text.trim().is_empty() {
         return Ok(None);
     }
@@ -2741,6 +2752,7 @@ mod tests {
             prompt: prompt.into(),
             cwd: None,
             isolated: false,
+            own_tools_context: None,
             rovik_tools: false,
             session: None,
             recap: None,
@@ -2802,6 +2814,39 @@ mod tests {
                 other => format!("{other:?}"),
             })
             .collect()
+    }
+
+    /// 4.10: with its own tools, Claude Code keeps its own prompt, and a
+    /// workspace chat's section is appended to it from a file: the view's
+    /// top has no instructions for it to read. A folder chat's turn has
+    /// nothing appended: it reads its folder's own.
+    #[test]
+    fn a_workspace_chats_section_is_appended_to_claude_codes_own_prompt() {
+        let mut t = turn("Fix it");
+        assert!(prompt_file(&t).unwrap().is_none(), "a folder's turn");
+        t.own_tools_context = Some("## Your folders\napi, web".into());
+        let file = prompt_file(&t).unwrap().expect("the section's file");
+        assert_eq!(
+            std::fs::read_to_string(file.path()).unwrap(),
+            "## Your folders\napi, web"
+        );
+        let args = args_for(
+            &Settings::default(),
+            &t,
+            &Session::New("s-1".into()),
+            Some(file.path()),
+            None,
+            None,
+        );
+        let at = args
+            .iter()
+            .position(|a| a == "--append-system-prompt-file")
+            .unwrap_or_else(|| panic!("{args:?}"));
+        assert_eq!(args[at + 1], file.path().to_string_lossy());
+        assert!(
+            !args.iter().any(|a| a == "--system-prompt-file"),
+            "{args:?}"
+        );
     }
 
     #[test]

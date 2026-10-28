@@ -49,6 +49,7 @@ async fn rows(title: &str, messages: Vec<NewMessage>) -> ChangeSet {
             created_at: 1,
             updated_at: 1,
             project_id: None,
+            folders: None,
         };
         store::create_dialog(c, &dialog)?;
         for file in messages.iter().flat_map(|m| &m.attachments) {

@@ -42,14 +42,57 @@ pub async fn blocking_in<T: Send + 'static>(
     blocking(move || Ok(load(&root))).await
 }
 
-/// `work` off the main thread while the project's isolated chats wait: the
+/// `load`, off the async threads, on the window's folders: a project's one,
+/// or a workspace's several, walked as one project (C06). A folder that isn't
+/// there is left out — it has nothing to load, and D20 shows it as missing —
+/// and it's an error only when none of them is a folder.
+pub async fn blocking_in_folders<T: Send + 'static>(
+    roots: Vec<String>,
+    load: impl FnOnce(&[PathBuf]) -> T + Send + 'static,
+) -> Result<T, String> {
+    let folders: Vec<PathBuf> = roots
+        .iter()
+        .map(PathBuf::from)
+        .filter(|root| root.is_dir())
+        .collect();
+    if folders.is_empty() {
+        return Err(format!("{}: not a folder", roots.join(", ")));
+    }
+    blocking(move || Ok(load(&folders))).await
+}
+
+/// `work` off the main thread while the repository's folders wait: the
 /// working tree at `path` is being rewritten (rovik_core::overlay::chats).
+/// The hold is on the repository's working folder, not on `path` alone: a
+/// checkout, a pull or a discard rewrites every folder the repository holds,
+/// so the isolated chats of a workspace's folders beside it hold off too.
 pub async fn rewriting<T: Send + 'static>(
     path: &str,
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    let _busy = rovik_core::overlay::chats::hold_busy(Path::new(path));
+    rewriting_all(&[path.to_string()], work).await
+}
+
+/// [`rewriting`] in the repository of each of `paths` at once: a commit
+/// across repositories holds every one until its last commit is made.
+pub async fn rewriting_all<T: Send + 'static>(
+    paths: &[String],
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let _busy: Vec<_> = paths
+        .iter()
+        .map(|path| rovik_core::overlay::chats::hold_busy(&working_folder_of(Path::new(path))))
+        .collect();
     blocking(work).await
+}
+
+/// The working folder of the repository `folder` is in, or `folder` itself
+/// outside one: what a rewrite of the working tree touches.
+fn working_folder_of(folder: &Path) -> PathBuf {
+    git2::Repository::discover(folder)
+        .ok()
+        .and_then(|repo| repo.workdir().map(Path::to_path_buf))
+        .unwrap_or_else(|| folder.to_path_buf())
 }
 
 /// Live things by id, each shared with the threads that serve it. The lock
@@ -153,6 +196,30 @@ mod tests {
         assert_eq!(taken, [1, 2]);
         assert!(terminals.get("t1").is_err() && terminals.get("t2").is_err());
         assert!(terminals.take_all().is_empty());
+    }
+
+    #[test]
+    fn a_root_that_isnt_a_folder_is_left_out_and_none_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("folders-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let there = dir.to_string_lossy().into_owned();
+        let seen = rovik_core::rt::block_on(blocking_in_folders(
+            vec![there.clone(), "/no/such/folder".into()],
+            |folders| folders.to_vec(),
+        ));
+        assert_eq!(
+            seen.map(|folders| folders.len()),
+            Ok(1),
+            "the folder that is there, and only it"
+        );
+        let none = rovik_core::rt::block_on(blocking_in_folders(
+            vec!["/no/such/folder".into(), "/nor/this".into()],
+            |folders| folders.to_vec(),
+        ));
+        let err = none.unwrap_err();
+        assert!(err.ends_with("not a folder"), "{err}");
+        assert!(err.contains("/nor/this"), "says which folders: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

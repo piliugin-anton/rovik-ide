@@ -22,6 +22,7 @@ use super::verify::{with, CheckResult};
 use super::worker::WriteScope;
 use super::{log, tools};
 use crate::chat_db::store;
+use crate::folders::OutputRoots;
 use crate::overlay::chats;
 use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
@@ -439,17 +440,14 @@ impl Run {
         })
     }
 
-    /// For reading paths in a check's output (`causes::resolve`): the roots
-    /// absolute paths start with, and the files the run knows.
+    /// For reading paths in a check's output (`causes::resolve`): how its
+    /// absolute paths read as the chat's, and the files the run knows.
     pub(super) fn path_context(
         &self,
         owners: &[(String, usize, WriteScope)],
-    ) -> (Vec<String>, Vec<String>) {
+    ) -> (OutputRoots, Vec<String>) {
         let root = self.root.clone().unwrap_or_default();
-        let roots: Vec<String> = [self.root.clone(), self.project_root.clone()]
-            .into_iter()
-            .flatten()
-            .collect();
+        let roots = self.output_roots();
         let mut known: Vec<String> = self
             .changed_files
             .iter()

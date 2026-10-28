@@ -321,20 +321,43 @@ pub(super) fn passes_as_it_is(out: &CommandOutput) -> Option<bool> {
 }
 
 impl super::run::Run {
-    /// The red check's runs of `files` at `place`: one file at a time when
-    /// the stack can, else the project's test check once.
+    /// The red check's runs of `files` at `place`, each in its folder (`cd
+    /// api && …` in a workspace chat): one file at a time when the stack
+    /// can, else the test check of the files' folder once.
     async fn red(&self, place: RedPlace, files: &[String]) -> Red {
-        let test_check = self
-            .checks
-            .iter()
-            .find(|c| c.kind == "test" && c.enabled)
-            .map(|c| c.command.clone());
-        let alone =
-            |f: &String| project::test_command_for(&place.cwd, std::slice::from_ref(f), None);
+        let Some(folders) = self.folders.as_ref() else {
+            return Red::default();
+        };
+        // The test check whose folder holds `file` (`cd api && npm test`).
+        let test_check = |file: &str| {
+            self.checks
+                .iter()
+                .find(|c| {
+                    c.kind == "test"
+                        && c.enabled
+                        && super::paths::under(&project::folder_of(&c.command), file)
+                })
+                .map(|c| c.command.clone())
+        };
+        let alone = |f: &String| {
+            project::in_files_folder(&place.cwd, folders, f, |dir, path| {
+                project::test_command_for(dir, &[path.to_string()], None)
+            })
+        };
         let runs: Vec<(Vec<String>, Option<String>)> =
             match files.iter().all(|f| alone(f).is_some()) {
                 true => files.iter().map(|f| (vec![f.clone()], alone(f))).collect(),
-                false => vec![(files.to_vec(), test_check)],
+                false => {
+                    let mut runs: Vec<(Vec<String>, Option<String>)> = Vec::new();
+                    for f in files {
+                        let check = test_check(f);
+                        match runs.iter_mut().find(|(_, c)| *c == check) {
+                            Some((which, _)) => which.push(f.clone()),
+                            None => runs.push((vec![f.clone()], check)),
+                        }
+                    }
+                    runs
+                }
             };
         let mut red = Red::default();
         for (which, command) in runs {
@@ -363,8 +386,8 @@ impl super::run::Run {
     }
 
     /// E04: the test writer's new tests, run on the code before the change
-    /// (the project under an isolated chat), in a throwaway overlay. A test
-    /// file whose tests pass there is flagged.
+    /// (the chat's folders under an isolated chat), in a throwaway overlay of
+    /// them. A test file whose tests pass there is flagged.
     pub(super) async fn red_check(&self, result: &super::subagent::SubResult) -> Option<String> {
         let files: Vec<String> = result
             .writes
@@ -375,7 +398,7 @@ impl super::run::Run {
         if files.is_empty() {
             return None;
         }
-        let (Some(root), Some(project)) = (self.root.clone(), self.project_root.clone()) else {
+        let (Some(root), Some(folders)) = (self.root.clone(), self.folders.clone()) else {
             return None;
         };
         if !self.isolated() {
@@ -386,9 +409,9 @@ impl super::run::Run {
             crate::overlay::chats::SCRATCH_PREFIX,
             uuid::Uuid::new_v4()
         );
-        let (scratch_id, base) = (id.clone(), std::path::PathBuf::from(&project));
+        let scratch_id = id.clone();
         let scratch = crate::rt::spawn_blocking(move || {
-            crate::overlay::chats::open_scratch(&scratch_id, &base)
+            crate::overlay::chats::open_scratch(&scratch_id, &folders)
         })
         .await
         .ok()?
@@ -619,7 +642,7 @@ impl super::run::Run {
             self.end_own_stage(Status::Skipped, why, None).await?;
             return Ok("done".into());
         };
-        let shown = super::plan::relative_plan_path(&file, self.project_root.as_deref());
+        let shown = super::plan::plan_path_in(&file, self.folders.as_ref());
         let criteria = super::plan::criteria(&plan)
             .map(|c| c.items)
             .unwrap_or_default();

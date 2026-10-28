@@ -4,10 +4,12 @@
 // preflight says what moves, what will wait for you there (the permissions
 // with the host's approval policy), whether its CLM context becomes
 // trimming, that the server keeps your API keys, and what the project's
-// push carries that you'd want to know; a host whose Rovik is too old to
-// take chats is upgraded for everyone from here by its administrators
-// (R02). Then the move's steps as `cloud-event` tells them (lib/cloud.ts),
-// with "Cancel move" while it goes, and how it ended.
+// push carries that you'd want to know; a chat across a workspace's folders
+// lists them, whose git history stays here (workspaces-plan.md, 4.11); a
+// host whose Rovik is too old to take chats is upgraded for everyone from
+// here by its administrators (R02). Then the move's steps as `cloud-event`
+// tells them (lib/cloud.ts), with "Cancel move" while it goes, and how it
+// ended.
 import { createResource, createSignal, For, Match, onMount, Show, Switch } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { StartRequest } from '../lib/agentRuns';
@@ -223,6 +225,9 @@ export default function MoveChatDialog(props: {
   );
 }
 
+/** Whether the preflight is a chat's across a workspace's folders. */
+const across = (p: MovePreflight) => (p.folders?.length ?? 0) > 0;
+
 /** Before a move there: what it does, or why it can't happen now. */
 function Preflight(props: {
   state: 'unresolved' | 'pending' | 'ready' | 'refreshing' | 'errored';
@@ -241,13 +246,24 @@ function Preflight(props: {
         {(p) => (
           <div class="move-chat-preflight">
             <div class="confirm-dialog-message">
-              This chat moves with its messages and its subagents’ chats, and the project goes too,
-              as it is now, with this chat’s changes in it
+              This chat moves with its messages and its subagents’ chats, and{' '}
+              {across(p())
+                ? 'its folders go too, as they are now, with this chat’s changes in them'
+                : 'the project goes too, as it is now, with this chat’s changes in it'}
               {p().files > 0
                 ? `, as do ${plural(p().files, 'file')} its messages name (${formatBytes(p().fileBytes)})`
                 : ''}
               . A run going now pauses at a safe point and picks up there.
             </div>
+            <Show when={across(p())}>
+              <div class="move-chat-section">Its folders</div>
+              <ul class="move-chat-list move-chat-folders">
+                <For each={p().folders}>{(folder) => <li>{folder}</li>}</For>
+              </ul>
+              <div class="confirm-dialog-message move-chat-note">
+                Their git history stays on this computer: the first push carries all their files.
+              </div>
+            </Show>
             <div class="move-chat-section">What will wait for you there</div>
             <Show
               when={p().waits.length > 0}
@@ -273,7 +289,9 @@ function Preflight(props: {
               </div>
             </Show>
             <Show when={p().notes.length > 0}>
-              <div class="move-chat-section">About the project</div>
+              <div class="move-chat-section">
+                {across(p()) ? 'About its folders' : 'About the project'}
+              </div>
               <ul class="move-chat-list">
                 <For each={p().notes}>{(note) => <li>{note}</li>}</For>
               </ul>

@@ -8,6 +8,7 @@ import { render } from 'solid-js/web';
 import SettingsDialog from './SettingsDialog';
 import { DEFAULT_PERMISSIONS } from '../lib/permissions';
 import { DEFAULT_SUBAGENT_SETTINGS } from '../lib/subagentSettings';
+import type { OpenFolder } from '../lib/openFolders';
 import type { PersistedAiSettings } from '../lib/aiSettings';
 
 /** The saved AI settings, as the backend keeps them. */
@@ -128,7 +129,9 @@ const COMPUTER: typeof backend = {
 
 let dispose = () => {};
 
-async function dialog(options: { rootPath?: string | null; answers?: typeof backend } = {}) {
+async function dialog(
+  options: { rootPath?: string | null; folders?: OpenFolder[]; answers?: typeof backend } = {}
+) {
   dispose();
   calls = [];
   backend = { ...COMPUTER, ...options.answers };
@@ -138,6 +141,7 @@ async function dialog(options: { rootPath?: string | null; answers?: typeof back
     () => (
       <SettingsDialog
         rootPath={options.rootPath === undefined ? '/home/me/demo' : options.rootPath}
+        folders={options.folders}
         onClose={() => closed++}
       />
     ),
@@ -391,4 +395,65 @@ test('settings dialog: the pages open on the saved settings, cross-links between
     ),
     undefined
   );
+});
+
+const API_FOLDER: OpenFolder = { path: '/work/api', name: 'api', missing: false };
+const WEB_FOLDER: OpenFolder = { path: '/work/web', name: 'web', missing: false };
+
+test('with several folders the project pages show a folder select, the active one first', async () => {
+  const { root } = await dialog({
+    rootPath: '/work/web',
+    folders: [API_FOLDER, WEB_FOLDER],
+  });
+  assert.equal(root.querySelector('.settings-folder-select'), null, 'not on the menu');
+  item(root, 'Project checks').click();
+  await flush();
+  const select = root.querySelector<HTMLSelectElement>('.settings-folder-select');
+  assert.ok(select, 'the project pages ask which folder');
+  assert.deepEqual(
+    [...select.options].map((o) => [o.value, o.textContent]),
+    [
+      ['/work/web', 'web'],
+      ['/work/api', 'api'],
+    ],
+    'the active folder first'
+  );
+  assert.equal(select.value, '/work/web');
+});
+
+test('one folder: the project pages ask nothing', async () => {
+  const { root } = await dialog({ rootPath: '/work/api', folders: [API_FOLDER] });
+  item(root, 'Project checks').click();
+  await flush();
+  assert.equal(root.querySelector('.settings-folder-select'), null);
+});
+
+test('choosing another folder shows its restricted files', async () => {
+  const { root } = await dialog({
+    rootPath: '/work/web',
+    folders: [API_FOLDER, WEB_FOLDER],
+    answers: {
+      restricted_files: (args: { root: string }) => [
+        {
+          path: args.root === '/work/api' ? '.env.api' : '.env.web',
+          blockRead: true,
+          blockWrite: true,
+          detected: true,
+          listed: true,
+        },
+      ],
+    },
+  });
+  item(root, 'Restricted files').click();
+  await flush();
+  const names = () =>
+    [...root.querySelectorAll('.restricted-file-name')].map((el) => el.textContent);
+  assert.deepEqual(names(), ['.env.web'], "the active folder's files");
+
+  const select = root.querySelector<HTMLSelectElement>('.settings-folder-select')!;
+  select.value = '/work/api';
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  await flush();
+  assert.deepEqual(names(), ['.env.api'], "the other folder's, the page read again");
+  assert.match(root.querySelector('.settings-section-title')!.textContent ?? '', /in api/);
 });

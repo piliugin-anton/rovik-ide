@@ -1,5 +1,5 @@
 use super::branches::validate_branch_name;
-use super::history::{compact_contains, git_log_blocking, git_log_scan};
+use super::history::{compact_contains, git_log_blocking, git_log_scan, Generations};
 #[cfg(unix)]
 use super::remote::credential_fill;
 use super::*;
@@ -9,13 +9,25 @@ mod revert_tests {
     use super::*;
     use std::fs;
 
+    /// A number that differs between runs of the tests. A temp path reused
+    /// from an earlier run brings its trash with it (the system trash outlives
+    /// the run), and a test about the trash would count what that run trashed
+    /// from the same path as its own.
+    fn run_stamp() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or_default()
+    }
+
     fn repo_with_commit() -> (PathBuf, Repository) {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "git-revert-{}-{}",
+            "git-revert-{}-{}-{}",
             std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
+            N.fetch_add(1, Ordering::Relaxed),
+            run_stamp()
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
@@ -956,6 +968,26 @@ mod revert_tests {
         assert_eq!(page.commits.len(), 1);
     }
 
+    #[test]
+    fn two_repositories_history_reads_dont_stop_each_other() {
+        // A count of its own, not the app's: no other test shares it.
+        let latest = Generations::new();
+        let api = latest.begin("/w/api");
+        let web = latest.begin("/w/web");
+        assert!(
+            latest.is_latest("/w/api", api),
+            "another repository's read leaves it going"
+        );
+        assert!(latest.is_latest("/w/web", web));
+        let again = latest.begin("/w/api");
+        assert!(
+            !latest.is_latest("/w/api", api),
+            "a newer read of its own repository stops it"
+        );
+        assert!(latest.is_latest("/w/api", again));
+        assert!(latest.is_latest("/w/web", web), "and only its own");
+    }
+
     fn page_from(dir: &std::path::Path, offset: Option<usize>, tip: Option<&str>) -> GitLogPage {
         git_log_scan(path(dir), Some(2), None, offset, tip, &|| false).unwrap()
     }
@@ -1826,5 +1858,943 @@ mod hook_tests {
             fs::read_to_string(dir.join(".git/post-checkout-args")).unwrap(),
             format!("{main} {old} 1\n")
         );
+    }
+}
+
+mod scopes_tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static N: AtomicU32 = AtomicU32::new(0);
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "git-scopes-{name}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// A repository at a new folder, with a committed `a.ts` in each of
+    /// `folders`.
+    fn repo_with(folders: &[&str]) -> PathBuf {
+        let dir = temp("repo");
+        for folder in folders {
+            fs::create_dir_all(dir.join(folder)).unwrap();
+            fs::write(dir.join(folder).join("a.ts"), "a\n").unwrap();
+        }
+        let repo = Repository::init(&dir).unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index
+                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig = git2::Signature::now("t", "t@t").unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+        }
+        dir
+    }
+
+    fn path(dir: &std::path::Path) -> String {
+        dir.to_string_lossy().into_owned()
+    }
+
+    fn scopes(list: &[&str]) -> Option<Vec<String>> {
+        Some(list.iter().map(|scope| scope.to_string()).collect())
+    }
+
+    fn changed(status: &GitStatus) -> Vec<String> {
+        let mut paths: Vec<String> = status.files.iter().map(|file| file.path.clone()).collect();
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn a_status_with_two_scopes_lists_both_and_nothing_beside() {
+        let dir = repo_with(&["app/src", "web/src", "infra"]);
+        for file in ["app/src/a.ts", "web/src/a.ts", "infra/a.ts"] {
+            fs::write(dir.join(file), "changed\n").unwrap();
+        }
+        let status = git_status_in(path(&dir), scopes(&["app", "web"])).unwrap();
+        assert_eq!(changed(&status), ["app/src/a.ts", "web/src/a.ts"]);
+        // The line counts stay in scope too.
+        assert_eq!(
+            status
+                .files
+                .iter()
+                .map(|file| file.additions)
+                .sum::<usize>(),
+            2
+        );
+        // No scopes given: the whole working tree, as a project's panel reads it.
+        assert_eq!(changed(&git_status_in(path(&dir), None).unwrap()).len(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_line_counts_of_a_scope_count_that_folder_only() {
+        let dir = repo_with(&["app", "app2"]);
+        fs::write(dir.join("app/a.ts"), "one\n# two\n").unwrap();
+        fs::write(dir.join("app2/a.ts"), "one\n# two\n# three\n").unwrap();
+        let repo = Repository::open(&dir).unwrap();
+        // Counted directly: the status lists only the scope's files, so this
+        // is what proves the counts are the scope's too (counting the whole
+        // repository passes the status test alone).
+        let stats = workdir_line_stats_in(&repo, &["app".to_string()]);
+        let counted: Vec<&String> = stats.keys().collect();
+        assert_eq!(counted, ["app/a.ts"], "nothing of app2's is counted");
+        assert_eq!(stats["app/a.ts"], (2, 1), "its own lines alone");
+        // The whole working folder counts both, as a folder that is the
+        // repository reads it.
+        assert_eq!(workdir_line_stats_in(&repo, &[String::new()]).len(), 2);
+        // Two scopes count both, as one repository's section does.
+        let both = workdir_line_stats_in(&repo, &["app".to_string(), "app2".to_string()]);
+        assert_eq!(both.len(), 2, "{both:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_scope_does_not_take_a_folder_sharing_its_first_letters() {
+        let dir = repo_with(&["app", "app2"]);
+        fs::write(dir.join("app/a.ts"), "one\n").unwrap();
+        fs::write(dir.join("app2/a.ts"), "two\n").unwrap();
+        let status = git_status_in(path(&dir), scopes(&["app"])).unwrap();
+        assert_eq!(changed(&status), ["app/a.ts"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_commit_in_scopes_commits_those_folders_and_leaves_the_rest_changed() {
+        let dir = repo_with(&["app", "web"]);
+        fs::write(dir.join("app/a.ts"), "one\n").unwrap();
+        fs::write(dir.join("web/a.ts"), "two\n").unwrap();
+        git_commit_in(path(&dir), "two folders".into(), false, scopes(&["app"])).unwrap();
+        let status = git_status_in(path(&dir), None).unwrap();
+        assert_eq!(changed(&status), ["web/a.ts"]);
+        assert_eq!(
+            fs::read_to_string(dir.join("app/a.ts")).unwrap(),
+            "one\n",
+            "the commit kept its folder's change"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_discard_in_scopes_throws_away_those_folders_only() {
+        let dir = repo_with(&["app", "web"]);
+        fs::write(dir.join("app/a.ts"), "one\n").unwrap();
+        fs::write(dir.join("web/a.ts"), "two\n").unwrap();
+        git_discard_all_in(path(&dir), scopes(&["app"])).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("app/a.ts")).unwrap(), "a\n");
+        assert_eq!(
+            fs::read_to_string(dir.join("web/a.ts")).unwrap(),
+            "two\n",
+            "the other folder keeps its change"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_staged_in_a_terminal_is_committed_as_it_is() {
+        let dir = repo_with(&["app"]);
+        // As `git mv app/a.ts app/b.ts` leaves it: renamed on disk, both paths
+        // in the index (the old one gone).
+        fs::rename(dir.join("app/a.ts"), dir.join("app/b.ts")).unwrap();
+        {
+            let repo = Repository::open(&dir).unwrap();
+            let mut index = repo.index().unwrap();
+            index.remove_path(Path::new("app/a.ts")).unwrap();
+            index.add_path(Path::new("app/b.ts")).unwrap();
+            index.write().unwrap();
+        }
+        // libgit2 reports it as one staged rename, named by its OLD path, which
+        // is no longer on disk: adding that path back fails ("No such file"),
+        // so what's staged already is left to the index.
+        {
+            let repo = Repository::open(&dir).unwrap();
+            let statuses = statuses_in(&repo, &["app".to_string()]).unwrap();
+            let entries: Vec<(String, Status)> = statuses
+                .iter()
+                .map(|entry| (entry.path().unwrap_or_default().to_string(), entry.status()))
+                .collect();
+            assert_eq!(entries.len(), 1, "{entries:?}");
+            assert_eq!(entries[0].0, "app/a.ts", "the rename's old path");
+            assert!(entries[0].1.contains(Status::INDEX_RENAMED));
+            assert!(
+                !entries[0]
+                    .1
+                    .intersects(Status::WT_DELETED | Status::WT_RENAMED),
+                "nothing in the working tree is left to stage"
+            );
+            assert!(
+                !dir.join("app/a.ts").exists(),
+                "the old path isn't on disk to be added"
+            );
+        }
+        git_commit_in(path(&dir), "rename".into(), false, scopes(&["app"])).unwrap();
+        let repo = Repository::open(&dir).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        assert!(tree.get_path(Path::new("app/b.ts")).is_ok(), "the new name");
+        assert!(
+            tree.get_path(Path::new("app/a.ts")).is_err(),
+            "and not the old one"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_renamed_in_a_terminal_is_committed_under_its_new_name() {
+        let dir = repo_with(&["app"]);
+        // A plain `mv` in a terminal: gone at the old path, new at the other,
+        // nothing staged.
+        fs::rename(dir.join("app/a.ts"), dir.join("app/b.ts")).unwrap();
+        git_commit_in(path(&dir), "rename".into(), false, scopes(&["app"])).unwrap();
+        let repo = Repository::open(&dir).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        assert!(tree.get_path(Path::new("app/b.ts")).is_ok(), "the new name");
+        assert!(
+            tree.get_path(Path::new("app/a.ts")).is_err(),
+            "and not the old one"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_edit_to_a_file_renamed_in_a_terminal_is_committed() {
+        let dir = repo_with(&["app"]);
+        // `git mv app/a.ts app/b.ts` in a terminal, then the new file edited.
+        // libgit2 reports it as one entry named by the OLD path (which is gone
+        // from disk), with the working tree's change on the NEW one.
+        fs::rename(dir.join("app/a.ts"), dir.join("app/b.ts")).unwrap();
+        {
+            let repo = Repository::open(&dir).unwrap();
+            let mut index = repo.index().unwrap();
+            index.remove_path(Path::new("app/a.ts")).unwrap();
+            index.add_path(Path::new("app/b.ts")).unwrap();
+            index.write().unwrap();
+        }
+        fs::write(dir.join("app/b.ts"), "edited after the rename\n").unwrap();
+        git_commit_in(
+            path(&dir),
+            "rename and edit".into(),
+            false,
+            scopes(&["app"]),
+        )
+        .unwrap();
+        let repo = Repository::open(&dir).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let blob = tree
+            .get_path(Path::new("app/b.ts"))
+            .unwrap()
+            .to_object(&repo)
+            .unwrap();
+        assert_eq!(
+            blob.peel_to_blob().unwrap().content(),
+            b"edited after the rename\n",
+            "the edit made after the rename is in the commit"
+        );
+        assert!(
+            tree.get_path(Path::new("app/a.ts")).is_err(),
+            "and the old name isn't"
+        );
+        // Nothing left over: the working tree is committed.
+        let status = git_status_in(path(&dir), scopes(&["app"])).unwrap();
+        assert!(changed(&status).is_empty(), "{:?}", changed(&status));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_renamed_in_a_terminal_then_deleted_is_committed_as_gone() {
+        let dir = repo_with(&["app"]);
+        fs::rename(dir.join("app/a.ts"), dir.join("app/b.ts")).unwrap();
+        {
+            let repo = Repository::open(&dir).unwrap();
+            let mut index = repo.index().unwrap();
+            index.remove_path(Path::new("app/a.ts")).unwrap();
+            index.add_path(Path::new("app/b.ts")).unwrap();
+            index.write().unwrap();
+        }
+        // Removed after the rename: the commit must have neither name.
+        fs::remove_file(dir.join("app/b.ts")).unwrap();
+        git_commit_in(
+            path(&dir),
+            "rename then delete".into(),
+            false,
+            scopes(&["app"]),
+        )
+        .unwrap();
+        let repo = Repository::open(&dir).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        assert!(
+            tree.get_path(Path::new("app/b.ts")).is_err(),
+            "the deleted file isn't committed"
+        );
+        assert!(tree.get_path(Path::new("app/a.ts")).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_folder_beside_a_nested_repository_is_committed_too() {
+        let dir = repo_with(&["app"]);
+        // A repository of its own in the folder: its own work is left alone.
+        let inner = dir.join("app/inner");
+        fs::create_dir_all(&inner).unwrap();
+        Repository::init(&inner).unwrap();
+        fs::write(inner.join("x.ts"), "x\n").unwrap();
+        // A new folder of our own, beside it, with a file in a folder in it.
+        fs::create_dir_all(dir.join("app/newdir/deep")).unwrap();
+        fs::write(dir.join("app/newdir/a.ts"), "a\n").unwrap();
+        fs::write(dir.join("app/newdir/deep/b.ts"), "b\n").unwrap();
+        git_commit_in(path(&dir), "new folder".into(), false, scopes(&["app"])).unwrap();
+        let repo = Repository::open(&dir).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        for wanted in ["app/newdir/a.ts", "app/newdir/deep/b.ts"] {
+            assert!(
+                tree.get_path(Path::new(wanted)).is_ok(),
+                "{wanted} is in the commit"
+            );
+        }
+        assert!(
+            tree.get_path(Path::new("app/inner/x.ts")).is_err(),
+            "the nested repository's file isn't"
+        );
+        assert!(inner.join("x.ts").exists(), "and it's still on disk");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_repository_deep_inside_a_new_folder_does_not_stop_the_commit() {
+        let dir = repo_with(&["app"]);
+        // A new folder with our files, and a repository of its own two
+        // folders down: every read of the folder falls back, and the folder
+        // holding the `.git` is the one left out.
+        fs::create_dir_all(dir.join("app/newdir/vendor/lib")).unwrap();
+        fs::write(dir.join("app/newdir/a.ts"), "a\n").unwrap();
+        Repository::init(dir.join("app/newdir/vendor/lib")).unwrap();
+        fs::write(dir.join("app/newdir/vendor/lib/x.ts"), "x\n").unwrap();
+        git_commit_in(path(&dir), "new folder".into(), false, scopes(&["app"])).unwrap();
+        let repo = Repository::open(&dir).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        assert!(
+            tree.get_path(Path::new("app/newdir/a.ts")).is_ok(),
+            "our file is committed"
+        );
+        assert!(
+            tree.get_path(Path::new("app/newdir/vendor/lib/x.ts"))
+                .is_err(),
+            "the nested repository's file isn't"
+        );
+        assert!(
+            dir.join("app/newdir/vendor/lib/x.ts").exists(),
+            "and it's still on disk"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_listed_as_one_row_is_staged_by_reading_the_folder() {
+        let dir = repo_with(&["app"]);
+        fs::create_dir_all(dir.join("app/newdir/deep")).unwrap();
+        fs::write(dir.join("app/newdir/a.ts"), "a\n").unwrap();
+        fs::write(dir.join("app/newdir/deep/b.ts"), "b\n").unwrap();
+        let repo = Repository::open(&dir).unwrap();
+        // The shape a read without descending into untracked folders gives
+        // (the fallback `statuses_in` takes): the new folder as one row, with
+        // no file of it. Staging that row alone would leave every file out.
+        let mut options = status_options_in_scopes(&["app".to_string()]);
+        options.recurse_untracked_dirs(false);
+        let statuses = repo.statuses(Some(&mut options)).unwrap();
+        let rows: Vec<String> = statuses
+            .iter()
+            .map(|entry| entry.path().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(rows, ["app/newdir/"], "one row for the folder");
+        let mut index = repo.index().unwrap();
+        stage_entries(&mut index, &repo, &statuses, None).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        for wanted in ["app/newdir/a.ts", "app/newdir/deep/b.ts"] {
+            assert!(
+                tree.get_path(Path::new(wanted)).is_ok(),
+                "{wanted} was staged"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_change_staged_outside_the_folder_stops_the_commit_and_stays_staged() {
+        let dir = repo_with(&["app", "app2"]);
+        fs::write(dir.join("app/a.ts"), "one\n").unwrap();
+        fs::write(dir.join("app2/a.ts"), "two\n").unwrap();
+        // A terminal's `git add` beside the folder.
+        {
+            let repo = Repository::open(&dir).unwrap();
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("app2/a.ts")).unwrap();
+            index.write().unwrap();
+        }
+        let err = git_commit_in(path(&dir.join("app")), "wip".into(), false, None).unwrap_err();
+        assert!(err.contains("app2/a.ts"), "{err}");
+        assert!(err.contains("staged outside"), "{err}");
+        // What was staged stays staged, and nothing was committed.
+        let status = git_status_in(path(&dir), Some(vec![String::new()])).unwrap();
+        let staged: Vec<&str> = status
+            .files
+            .iter()
+            .filter(|file| file.staged)
+            .map(|file| file.path.as_str())
+            .collect();
+        assert_eq!(staged, ["app2/a.ts"]);
+        let repo = Repository::open(&dir).unwrap();
+        assert_eq!(
+            repo.head()
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .summary()
+                .unwrap(),
+            Some("init"),
+            "no commit was made"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_nested_repository_is_left_alone_by_the_status_and_the_commit() {
+        let dir = repo_with(&["app"]);
+        let inner = dir.join("app/inner");
+        fs::create_dir_all(&inner).unwrap();
+        Repository::init(&inner).unwrap();
+        fs::write(inner.join("x.ts"), "x\n").unwrap();
+        fs::write(dir.join("app/a.ts"), "changed\n").unwrap();
+        // The outer repository lists its own change only.
+        let status = git_status_in(path(&dir), scopes(&["app"])).unwrap();
+        assert_eq!(changed(&status), ["app/a.ts"]);
+        git_commit_in(path(&dir), "outer".into(), false, scopes(&["app"])).unwrap();
+        // The nested repository keeps its own work.
+        assert!(inner.join("x.ts").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reverting_a_nested_repository_is_refused() {
+        let dir = repo_with(&["app"]);
+        let inner = dir.join("app/inner");
+        fs::create_dir_all(&inner).unwrap();
+        Repository::init(&inner).unwrap();
+        fs::write(inner.join("x.ts"), "x\n").unwrap();
+        let err = git_revert_file_blocking(path(&dir), "app/inner/x.ts".into()).unwrap_err();
+        assert!(err.contains("a repository of its own"), "{err}");
+        assert!(inner.join("x.ts").exists(), "nothing was thrown away");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_commit_with_nothing_in_it_is_refused() {
+        let dir = repo_with(&["app"]);
+        let err = git_commit_in(path(&dir), "empty".into(), false, None).unwrap_err();
+        assert_eq!(err, "Nothing to commit.");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An outer repository with a submodule `sub`, as git makes one: the
+    /// module's own repository committed once, recorded as a gitlink with a
+    /// `.gitmodules` entry, and cloned into place.
+    fn repo_with_submodule() -> (PathBuf, PathBuf) {
+        let base = temp("submodule");
+        // The submodule's repository, at its first commit.
+        let sub_dir = base.join("sub");
+        fs::create_dir_all(&sub_dir).unwrap();
+        fs::write(sub_dir.join("a.ts"), "a\n").unwrap();
+        let sub = Repository::init(&sub_dir).unwrap();
+        let first = {
+            let mut index = sub.index().unwrap();
+            index
+                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            index.write().unwrap();
+            let tree = sub.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig = git2::Signature::now("t", "t@t").unwrap();
+            sub.commit(Some("HEAD"), &sig, &sig, "sub", &tree, &[])
+                .unwrap()
+        };
+        drop(sub);
+        // The outer repository: the module's commit as a gitlink, and the
+        // `.gitmodules` entry git writes with it.
+        let outer = base.join("outer");
+        fs::create_dir_all(&outer).unwrap();
+        let repo = Repository::init(&outer).unwrap();
+        fs::write(outer.join("top.ts"), "t\n").unwrap();
+        fs::write(
+            outer.join(".gitmodules"),
+            "[submodule \"sub\"]\n\tpath = sub\n\turl = ./sub\n",
+        )
+        .unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            let gitlink = git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode: 0o160000,
+                uid: 0,
+                gid: 0,
+                file_size: 0,
+                id: first,
+                flags: 0,
+                flags_extended: 0,
+                path: b"sub".to_vec(),
+            };
+            index.add(&gitlink).unwrap();
+            index.add_path(Path::new("top.ts")).unwrap();
+            index.add_path(Path::new(".gitmodules")).unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig = git2::Signature::now("t", "t@t").unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "outer", &tree, &[])
+                .unwrap();
+        }
+        // The module checked out, at the commit recorded for it.
+        let sub_dir = outer.join("sub");
+        Repository::clone(&base.join("sub").to_string_lossy(), &sub_dir).unwrap();
+        (outer, sub_dir)
+    }
+
+    /// One commit of everything in `dir`: the submodule's own history moving.
+    fn commit_in(dir: &std::path::Path, message: &str) {
+        let repo = Repository::open(dir).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head])
+            .unwrap();
+    }
+
+    #[test]
+    fn a_submodule_moved_to_a_new_commit_is_listed_and_committed() {
+        let (outer, sub) = repo_with_submodule();
+        // An edit inside the module: the module's own business, not a change
+        // of this repository's.
+        fs::write(sub.join("a.ts"), "a edited\n").unwrap();
+        let status = git_status_in(path(&outer), None).unwrap();
+        assert!(changed(&status).is_empty(), "{:?}", changed(&status));
+        // The module moves to a newer commit (`cd sub && git pull`). Both
+        // arrive as `WT_MODIFIED`; this one records the module's commit, so
+        // it's this repository's change, as `git add` makes it.
+        commit_in(&sub, "the module moves on");
+        let status = git_status_in(path(&outer), None).unwrap();
+        assert_eq!(changed(&status), ["sub"], "the module's new commit shows");
+        git_commit_in(path(&outer), "bump the module".into(), false, None).unwrap();
+        let repo = Repository::open(&outer).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let recorded = tree.get_path(Path::new("sub")).unwrap().id();
+        let checked_out = Repository::open(&sub)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap();
+        assert_eq!(
+            recorded, checked_out,
+            "the commit it has is the one recorded"
+        );
+        assert!(
+            !sub.join("a edited").exists(),
+            "the module's own files aren't the outer repository's"
+        );
+        let _ = fs::remove_dir_all(outer.parent().unwrap());
+    }
+
+    #[test]
+    fn a_submodule_with_only_edits_inside_is_left_alone_by_a_commit() {
+        let (outer, sub) = repo_with_submodule();
+        fs::write(sub.join("a.ts"), "a edited\n").unwrap();
+        // Something of our own to commit, beside it.
+        fs::write(outer.join("top.ts"), "changed\n").unwrap();
+        git_commit_in(path(&outer), "our change".into(), false, None).unwrap();
+        let repo = Repository::open(&outer).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let recorded = tree.get_path(Path::new("sub")).unwrap().id();
+        let index = repo.index().unwrap();
+        assert_eq!(
+            index.get_path(Path::new("sub"), 0).map(|e| e.id),
+            Some(recorded),
+            "the module's commit is unchanged"
+        );
+        assert!(
+            sub.join("a.ts").exists(),
+            "the module's edit is still there, uncommitted"
+        );
+        let _ = fs::remove_dir_all(outer.parent().unwrap());
+    }
+
+    #[test]
+    fn a_submodule_is_another_repositorys_business() {
+        let dir = repo_with(&["app"]);
+        let repo = Repository::open(&dir).unwrap();
+        assert!(!is_submodule(&repo, Path::new("app/a.ts")));
+        // A gitlink, as git records a submodule's commit, is a submodule.
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let entry = git2::IndexEntry {
+            ctime: git2::IndexTime::new(0, 0),
+            mtime: git2::IndexTime::new(0, 0),
+            dev: 0,
+            ino: 0,
+            mode: 0o160000,
+            uid: 0,
+            gid: 0,
+            file_size: 0,
+            id: head.id(),
+            flags: 0,
+            flags_extended: 0,
+            path: b"app/sub".to_vec(),
+        };
+        {
+            let mut index = repo.index().unwrap();
+            index.add(&entry).unwrap();
+            index.write().unwrap();
+        }
+        assert!(is_submodule(&repo, Path::new("app/sub")));
+        assert!(
+            is_submodule(&repo, Path::new("app/sub/")),
+            "a folder's entry"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// A commit across the window's repositories (D11): every check first, then
+/// every hook, then the commits, each on the branch its repository is on.
+mod commit_many_tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "git-commit-many-{tag}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn p(dir: &Path) -> String {
+        dir.to_string_lossy().into_owned()
+    }
+
+    /// Who commits, and where the hooks are, whatever the machine's global
+    /// config says.
+    fn configure(repo: &Repository) {
+        let mut c = repo.config().unwrap();
+        c.set_str("user.name", "t").unwrap();
+        c.set_str("user.email", "t@t").unwrap();
+        c.set_str("core.hooksPath", ".git/hooks").unwrap();
+    }
+
+    /// A repository on `main` with one commit, and `a.txt` changed since.
+    fn repo(tag: &str) -> (PathBuf, Repository) {
+        let dir = temp_dir(tag);
+        let repo = Repository::init(&dir).unwrap();
+        configure(&repo);
+        fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git_commit_blocking(p(&dir), "start".into()).unwrap();
+        if repo.head().unwrap().shorthand().ok() != Some("main") {
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch("main", &head, true).unwrap();
+            repo.set_head("refs/heads/main").unwrap();
+        }
+        fs::write(dir.join("a.txt"), "two\n").unwrap();
+        (dir, repo)
+    }
+
+    /// Each repository whole: a workspace whose folders are repositories.
+    fn whole(dirs: &[&Path]) -> Vec<RepoCommit> {
+        dirs.iter()
+            .map(|dir| RepoCommit {
+                path: p(dir),
+                scopes: vec![String::new()],
+            })
+            .collect()
+    }
+
+    fn head_id(repo: &Repository) -> git2::Oid {
+        head_commit(repo).unwrap().id()
+    }
+
+    fn head_message(repo: &Repository) -> String {
+        head_commit(repo).unwrap().message().unwrap().to_string()
+    }
+
+    fn tip(repo: &Repository, branch: &str) -> git2::Oid {
+        repo.find_branch(branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .target()
+            .unwrap()
+    }
+
+    /// Hook `name` of the repository at `dir`, a shell script running `body`.
+    #[cfg(unix)]
+    fn hook(dir: &Path, name: &str, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = dir.join(".git/hooks");
+        fs::create_dir_all(&folder).unwrap();
+        let file = folder.join(name);
+        fs::write(&file, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pre_commit_failing_in_the_second_repository_leaves_the_first_uncommitted() {
+        let (api, api_repo) = repo("pre-commit-api");
+        let (web, web_repo) = repo("pre-commit-web");
+        let (api_before, web_before) = (head_id(&api_repo), head_id(&web_repo));
+        hook(&web, "pre-commit", "echo 'lint: 2 errors' >&2\nexit 1");
+        let outcome = git_commit_many_in(whole(&[&api, &web]), "change".into(), false).unwrap();
+        assert_eq!(
+            outcome,
+            CommitOutcome::Stopped {
+                problems: vec![RepoProblem {
+                    path: p(&web),
+                    error:
+                        "Not committed: the pre-commit hook failed (exit code 1):\nlint: 2 errors"
+                            .into(),
+                }],
+            }
+        );
+        assert_eq!(
+            head_id(&api_repo),
+            api_before,
+            "the first repository's commit waited for every hook"
+        );
+        assert_eq!(head_id(&web_repo), web_before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn without_hooks_no_check_runs_in_any_repository() {
+        let (api, api_repo) = repo("no-verify-api");
+        let (web, web_repo) = repo("no-verify-web");
+        for dir in [&api, &web] {
+            hook(dir, "pre-commit", "echo pre-commit >> .git/ran\nexit 1");
+            hook(dir, "commit-msg", "echo commit-msg >> .git/ran\nexit 1");
+        }
+        let outcome = git_commit_many_in(whole(&[&api, &web]), "wip".into(), true).unwrap();
+        assert_eq!(
+            outcome,
+            CommitOutcome::Done {
+                committed: vec![p(&api), p(&web)],
+                failed: vec![],
+            }
+        );
+        for (dir, repo) in [(&api, &api_repo), (&web, &web_repo)] {
+            assert_eq!(head_message(repo), "wip");
+            assert!(
+                !dir.join(".git/ran").exists(),
+                "no check ran in {}",
+                dir.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_commit_msg_hook_changes_its_own_repositorys_message_only() {
+        let (api, api_repo) = repo("message-api");
+        let (web, web_repo) = repo("message-web");
+        hook(
+            &api,
+            "commit-msg",
+            "printf '[API] %s' \"$(cat \"$1\")\" > \"$1\"",
+        );
+        git_commit_many_in(whole(&[&api, &web]), "fix it".into(), false).unwrap();
+        assert_eq!(head_message(&api_repo), "[API] fix it\n");
+        assert_eq!(head_message(&web_repo), "fix it");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_commit_is_dated_when_it_is_made_after_its_hooks() {
+        let (api, api_repo) = repo("dated-api");
+        // A slow pre-commit, which notes when it finished.
+        hook(&api, "pre-commit", "sleep 1\ndate +%s > .git/hooked");
+        git_commit_many_in(whole(&[&api]), "change".into(), false).unwrap();
+        let hooked: i64 = fs::read_to_string(api.join(".git/hooked"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let head = head_commit(&api_repo).unwrap();
+        for (who, when) in [
+            ("author", head.author().when()),
+            ("committer", head.committer().when()),
+        ] {
+            assert!(
+                when.seconds() >= hooked,
+                "the {who} is dated {}, before its hook finished at {hooked}",
+                when.seconds()
+            );
+        }
+    }
+
+    #[test]
+    fn each_commit_goes_on_the_branch_its_repository_is_on() {
+        let (api, api_repo) = repo("branch-api");
+        let (web, web_repo) = repo("branch-web");
+        // api works on a branch of its own; web stays on main.
+        let start = head_id(&api_repo);
+        let at = api_repo.find_commit(start).unwrap();
+        api_repo.branch("feature", &at, false).unwrap();
+        api_repo.set_head("refs/heads/feature").unwrap();
+        git_commit_many_in(whole(&[&api, &web]), "change".into(), false).unwrap();
+        assert_eq!(tip(&api_repo, "main"), start, "api's main stayed");
+        let feature = api_repo.find_commit(tip(&api_repo, "feature")).unwrap();
+        assert_eq!(feature.parent_id(0).unwrap(), start, "api's is on feature");
+        assert_eq!(head_id(&web_repo), tip(&web_repo, "main"), "web's on main");
+        assert_eq!(head_message(&web_repo), "change");
+    }
+
+    #[test]
+    fn a_detached_head_gets_its_commit() {
+        let (api, api_repo) = repo("detached-api");
+        let (web, _web_repo) = repo("detached-web");
+        let start = head_id(&api_repo);
+        api_repo.set_head_detached(start).unwrap();
+        git_commit_many_in(whole(&[&api, &web]), "change".into(), false).unwrap();
+        assert!(api_repo.head_detached().unwrap(), "as git leaves it");
+        let head = head_commit(&api_repo).unwrap();
+        assert_eq!(head.parent_id(0).unwrap(), start);
+        assert_eq!(tip(&api_repo, "main"), start, "no branch moved");
+    }
+
+    #[test]
+    fn a_repository_with_no_commit_gets_its_branch() {
+        let (api, _api_repo) = repo("unborn-api");
+        let web = temp_dir("unborn-web");
+        let web_repo = Repository::init(&web).unwrap();
+        configure(&web_repo);
+        fs::write(web.join("b.txt"), "b\n").unwrap();
+        // The branch HEAD names before it has a commit (init.defaultBranch's).
+        let branch = web_repo
+            .find_reference("HEAD")
+            .unwrap()
+            .symbolic_target()
+            .unwrap()
+            .unwrap()
+            .to_string();
+        git_commit_many_in(whole(&[&api, &web]), "first".into(), false).unwrap();
+        let head = web_repo.head().unwrap();
+        assert_eq!(head.name().unwrap(), branch, "the commit made it");
+        assert_eq!(head.peel_to_commit().unwrap().parent_count(), 0);
+    }
+
+    #[test]
+    fn a_commit_that_fails_after_others_were_made_names_them() {
+        let (api, api_repo) = repo("lock-api");
+        let (web, web_repo) = repo("lock-web");
+        let (infra, infra_repo) = repo("lock-infra");
+        let before = [head_id(&api_repo), head_id(&web_repo), head_id(&infra_repo)];
+        // A terminal's git holds infra's branch.
+        fs::write(infra.join(".git/refs/heads/main.lock"), "").unwrap();
+        let outcome =
+            git_commit_many_in(whole(&[&api, &web, &infra]), "change".into(), false).unwrap();
+        let CommitOutcome::Done { committed, failed } = outcome else {
+            panic!("the first two are committed: {outcome:?}");
+        };
+        assert_eq!(committed, [p(&api), p(&web)]);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].path, p(&infra));
+        assert!(failed[0].error.contains("lock"), "{}", failed[0].error);
+        assert_ne!(head_id(&api_repo), before[0]);
+        assert_ne!(head_id(&web_repo), before[1]);
+        assert_eq!(head_id(&infra_repo), before[2], "infra wasn't committed");
+    }
+
+    #[test]
+    fn every_problem_a_check_finds_is_named_and_nothing_is_committed() {
+        let (api, api_repo) = repo("checks-api");
+        let (web, web_repo) = repo("checks-web");
+        let (docs, docs_repo) = repo("checks-docs");
+        // api is in the middle of a merge.
+        fs::write(
+            api.join(".git/MERGE_HEAD"),
+            format!("{}\n", head_id(&api_repo)),
+        )
+        .unwrap();
+        // The window has web's `app` folder, and a terminal staged a change
+        // beside it.
+        fs::create_dir_all(web.join("app")).unwrap();
+        fs::write(web.join("app/x.txt"), "x\n").unwrap();
+        {
+            let mut index = web_repo.index().unwrap();
+            index.add_path(Path::new("a.txt")).unwrap();
+            index.write().unwrap();
+        }
+        let docs_before = head_id(&docs_repo);
+        let repos = vec![
+            RepoCommit {
+                path: p(&api),
+                scopes: vec![String::new()],
+            },
+            RepoCommit {
+                path: p(&web.join("app")),
+                scopes: vec!["app".into()],
+            },
+            RepoCommit {
+                path: p(&docs),
+                scopes: vec![String::new()],
+            },
+        ];
+        let outcome = git_commit_many_in(repos, "change".into(), false).unwrap();
+        assert_eq!(
+            outcome,
+            CommitOutcome::Stopped {
+                problems: vec![
+                    RepoProblem {
+                        path: p(&api),
+                        error: "A merge is in progress: finish or abort it first.".into(),
+                    },
+                    RepoProblem {
+                        path: p(&web.join("app")),
+                        error: "Changes are staged outside this window's folders: a.txt. Commit or unstage them in a terminal first.".into(),
+                    },
+                ],
+            }
+        );
+        assert_eq!(head_id(&docs_repo), docs_before, "nothing anywhere");
+        assert!(
+            web_repo
+                .status_file(Path::new("a.txt"))
+                .unwrap()
+                .is_index_modified(),
+            "what was staged stays staged"
+        );
+    }
+
+    #[test]
+    fn nothing_to_commit_in_any_repository_is_said_so() {
+        let (api, _api_repo) = repo("nothing-api");
+        fs::write(api.join("a.txt"), "one\n").unwrap();
+        let err = git_commit_many_in(whole(&[&api]), "empty".into(), false).unwrap_err();
+        assert_eq!(err, "Nothing to commit.");
     }
 }

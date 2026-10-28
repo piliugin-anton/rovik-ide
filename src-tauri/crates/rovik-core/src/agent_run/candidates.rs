@@ -42,9 +42,10 @@ use super::events::AgentEvent;
 use super::judge;
 use super::run::{new_message, Run};
 use super::subagent::{self, Kind, SubOutcome, SubagentSettings};
-use super::StartKind;
+use super::{RunFolder, StartKind};
 use crate::chat_db::store::{self, char_prefix, NewChildDialog};
 use crate::core::Core;
+use crate::folders::Folders;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cmp::Reverse;
@@ -89,14 +90,14 @@ pub type Copying<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 /// it. Locally the chat's overlay makes them (`OverlayCopies`); a server's
 /// daemon sets its own (`AgentState::set_copies`).
 pub trait Copies: Send + Sync {
-    /// `chat`'s copy of `main`'s folder (`project`, `main`'s project folder,
-    /// where it's needed): made, or the one made before. Its folder, where
-    /// `chat`'s runs work.
+    /// `chat`'s copy of `main`'s folders as `main` sees them (`folders`,
+    /// `main`'s, for opening its view where it isn't open): made, or the
+    /// one made before. Its folder, where `chat`'s runs work.
     fn open(
         &self,
         main: String,
         chat: String,
-        project: Option<String>,
+        folders: Option<Folders>,
     ) -> Copying<Result<String, String>>;
     /// What `chat` changed in its copy: each file as `main`'s folder has
     /// it and as the copy has it.
@@ -120,14 +121,14 @@ impl Copies for OverlayCopies {
         &self,
         main: String,
         chat: String,
-        project: Option<String>,
+        folders: Option<Folders>,
     ) -> Copying<Result<String, String>> {
         Box::pin(async move {
             let opened = crate::rt::spawn_blocking(move || {
                 use crate::overlay::chats;
                 if chats::get(&main).is_none() {
-                    let project = project.ok_or("the chat has no project folder")?;
-                    chats::open(&main, Path::new(&project), Box::new(|_, _| {}))?;
+                    let folders = folders.ok_or("the chat has no folder")?;
+                    chats::open(&main, &folders, Box::new(|_, _| {}))?;
                 }
                 // A restart forgot them: the candidates share the room again.
                 let overlay = match chats::reopen_child(&main, &chat, LETTERS.len()) {
@@ -145,6 +146,11 @@ impl Copies for OverlayCopies {
             let read = crate::rt::spawn_blocking(move || {
                 use crate::overlay::chats;
                 let overlay = chats::get(&chat).ok_or("the candidate's copy isn't open")?;
+                // Its chat's view, which it's a copy of.
+                let under = overlay
+                    .folder()
+                    .ok_or("the candidate's copy isn't over one folder")?
+                    .to_path_buf();
                 overlay.fs.flush();
                 let text = |root: &Path, path: &str| {
                     std::fs::read(root.join(path))
@@ -155,8 +161,7 @@ impl Copies for OverlayCopies {
                 for change in chats::changes(&chat) {
                     let path = change.path().replace('\\', "/");
                     // Under it, the chat's own view: what it changes there.
-                    let (before, after) =
-                        (text(&overlay.project, &path), text(&overlay.view, &path));
+                    let (before, after) = (text(&under, &path), text(&overlay.view, &path));
                     if before != after {
                         files.push(FileChange {
                             path,
@@ -208,8 +213,13 @@ impl Copies for OverlayCopies {
 }
 
 /// The copies a task's candidates get here, or why there are none: a
-/// server's daemon's; locally, an isolated chat's overlay's.
-fn copies_for(core: &Core, settings: &Settings) -> Result<Arc<dyn Copies>, String> {
+/// server's daemon's; locally, an isolated chat's overlay's (a workspace
+/// chat's is always isolated, D23). `folders`: the chat's.
+fn copies_for(
+    core: &Core,
+    settings: &Settings,
+    folders: Option<&Folders>,
+) -> Result<Arc<dyn Copies>, String> {
     if let Some(copies) = core.agents.copies() {
         return Ok(copies);
     }
@@ -219,7 +229,7 @@ fn copies_for(core: &Core, settings: &Settings) -> Result<Arc<dyn Copies>, Strin
     let isolated = settings
         .isolate
         .unwrap_or_else(crate::overlay::chats::enabled);
-    if !isolated || settings.root.is_none() {
+    if !isolated || folders.is_none() {
         return Err(
             "the chat works in the project folder itself, so there's no copy of its work to give a second implementer"
                 .into(),
@@ -482,14 +492,20 @@ pub(super) async fn start(
 ) -> Result<Option<bool>, String> {
     let first = &records[0].record;
     let (task, effort) = (first.task.clone(), first.effort);
-    let made = make(
-        core,
+    // None when the chat's folders can't be had (one is missing): one
+    // implementer, whose run says why it can't start.
+    let folders = super::check_project(
+        &core.db,
         dialog_id,
-        records,
-        round,
-        settings.root.clone(),
-        || copies_for(core, settings),
+        settings.root.as_deref(),
+        &settings.folders,
     )
+    .await
+    .ok()
+    .flatten();
+    let made = make(core, dialog_id, records, round, folders.clone(), || {
+        copies_for(core, settings, folders.as_ref())
+    })
     .await?;
     let row = match made {
         Ok(row) => row,
@@ -535,14 +551,14 @@ pub(super) async fn start(
 }
 
 /// The candidates of an implementation's round: their copies first (Err:
-/// why none can be made), then their chats, and the task chat's record of
-/// them, whose row it returns.
+/// why none can be made) of the chat's `folders`, then their chats, and
+/// the task chat's record of them, whose row it returns.
 async fn make(
     core: &Core,
     dialog_id: &str,
     records: &[Recorded],
     round: u32,
-    project: Option<String>,
+    folders: Option<Folders>,
     copies: impl FnOnce() -> Result<Arc<dyn Copies>, String>,
 ) -> Result<Result<String, String>, String> {
     let task = records[0].record.task.clone();
@@ -562,7 +578,7 @@ async fn make(
         .collect();
     for (letter, chat) in LETTERS.iter().zip(&chats) {
         let opened = copies
-            .open(dialog_id.to_string(), chat.clone(), project.clone())
+            .open(dialog_id.to_string(), chat.clone(), folders.clone())
             .await;
         if let Err(why) = opened {
             for chat in &chats {
@@ -673,15 +689,16 @@ async fn how_it_went(
 }
 
 /// A candidate's implementation, recorded in its chat and started there,
-/// in its copy (`settings.root`). False: it couldn't start, and its record
-/// says why.
+/// in its copy (`settings.root`), its plan named as the task chat's
+/// `folders` name it, which its copy has the same. False: it couldn't
+/// start, and its record says why.
 async fn start_candidate(
     core: &Core,
     main: &str,
     records: &[Recorded],
     state: &CandidateState,
     settings: &Settings,
-    project: Option<&str>,
+    folders: Option<&Folders>,
 ) -> Result<bool, String> {
     let first = &records[0].record;
     let record = StageRecord {
@@ -694,7 +711,7 @@ async fn start_candidate(
         return Ok(true);
     }
     let built =
-        autopilot::implementation_message(core, main, records, &id, project, Some(&state.letter))
+        autopilot::implementation_message(core, main, records, &id, folders, Some(&state.letter))
             .await?;
     let why = match built {
         Ok(message) => {
@@ -786,8 +803,8 @@ impl Run {
                     &main,
                     &records,
                     record.record.round,
-                    self.project_root.clone(),
-                    || copies_for(&core, &settings),
+                    self.folders.clone(),
+                    || copies_for(&core, &settings, self.folders.as_ref()),
                 )
                 .await?;
                 let id = match made {
@@ -839,7 +856,7 @@ impl Run {
                 }
             }
             let opened = copies
-                .open(main.clone(), state.chat.clone(), self.project_root.clone())
+                .open(main.clone(), state.chat.clone(), self.folders.clone())
                 .await;
             let folder = match opened {
                 Ok(folder) => folder,
@@ -866,7 +883,7 @@ impl Run {
             core.agents.add_candidate(
                 &state.chat,
                 &main,
-                self.project_root.clone(),
+                self.folders.clone(),
                 &call,
                 info.clone(),
             );
@@ -959,9 +976,21 @@ impl Run {
             profile: self.profile.clone(),
             options: self.options.clone(),
             context_mode: Some(self.context_mode.clone()),
-            root: self.project_root.clone(),
+            root: self.project_root(),
             local_date: Some(self.local_date.clone()),
             isolate: Some(crate::overlay::chats::get(&self.dialog_id).is_some()),
+            // A daemon's workspace chat's folders, which its candidates have
+            // at the top of their own worktrees too.
+            folders: self
+                .folders
+                .iter()
+                .filter(|folders| folders.root().is_some())
+                .flat_map(Folders::iter)
+                .map(|folder| RunFolder {
+                    name: folder.name.clone(),
+                    settings: None,
+                })
+                .collect(),
         }
     }
 
@@ -1002,14 +1031,13 @@ impl Run {
                 if self.stopped() {
                     return Ok(Driven::Over);
                 }
-                let project = self.project_root.clone();
                 if !start_candidate(
                     &core,
                     &self.dialog_id,
                     records,
                     state,
                     settings,
-                    project.as_deref(),
+                    self.folders.as_ref(),
                 )
                 .await?
                 {
@@ -1553,7 +1581,7 @@ impl Run {
             // thrown away (R03).
             let folder = match started {
                 true => match (copies)
-                    .open(main.clone(), c.chat.clone(), self.project_root.clone())
+                    .open(main.clone(), c.chat.clone(), self.folders.clone())
                     .await
                 {
                     Ok(folder) => Some(folder),
@@ -1702,11 +1730,14 @@ impl Run {
         Ok(PickWork::Taken)
     }
 
-    /// Whether `file`'s tests pass alone in a candidate's copy (`root`),
-    /// with its chat's environment. None: there's no way to run it alone,
-    /// it timed out, or it ran no test.
+    /// Whether `file`'s tests pass alone in a candidate's copy (`root`), run
+    /// in its folder there (`project::in_files_folder`), with its chat's
+    /// environment. None: there's no way to run it alone, it timed out, or
+    /// it ran no test.
     async fn passes_in(&self, chat: &str, root: &str, file: &str) -> Option<bool> {
-        let command = super::breaker::alone(Path::new(root), file)?;
+        let folders = self.folders.as_ref()?;
+        let command =
+            super::project::in_files_folder(Path::new(root), folders, file, super::breaker::alone)?;
         let stop = self.stop.clone();
         let overlay = crate::overlay::chats::get(chat);
         let queued = crate::command_tool::Queued::check(&self.dialog_id, overlay.as_deref());

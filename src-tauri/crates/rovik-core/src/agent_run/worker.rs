@@ -22,6 +22,7 @@ use super::paths;
 use super::permissions::program_name;
 use super::plan::{self, PlanStep, TodoItem};
 use super::subagent::{self, Budget, Format, KindSpec};
+use crate::folders::Folders;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::time::Duration;
@@ -578,16 +579,21 @@ pub fn mark_step_done(
     Some(out)
 }
 
-/// The plan file a run implements, as an absolute path: the one its
-/// request names ("Implement the plan in `…`"), else the chat's plan file.
-pub fn plan_file_named(request: &str, base: Option<&str>) -> Option<String> {
+/// The plan file an implementation request names ("Implement the plan in
+/// `…`"), as an absolute path: a chat path read through the chat's
+/// `folders` (`api/.rovik/plans/a.md`), joined as it's written, so it's
+/// shown back so (on Windows a name written with `/` keeps it). None for
+/// another request, or a path that leaves the chat's folders.
+pub fn plan_file_named(request: &str, folders: Option<&Folders>) -> Option<String> {
     let rest = request.strip_prefix("Implement the plan in `")?;
-    let rel = &rest[..rest.find('`')?];
-    let p = Path::new(rel);
-    if p.is_absolute() {
-        return Some(rel.to_string());
+    let named = &rest[..rest.find('`')?];
+    if Path::new(named).is_absolute() {
+        return Some(named.to_string());
     }
-    Some(Path::new(base?).join(p).to_string_lossy().into_owned())
+    let folders = folders?;
+    folders.abs(named)?;
+    let (folder, rest) = folders.split(named)?;
+    Some(folder.path.join(rest).to_string_lossy().into_owned())
 }
 
 /*
@@ -1092,14 +1098,30 @@ mod tests {
             plan_head(PLAN),
             ("Add users".into(), "Serve users from the API.".into())
         );
+        let one = Folders::one("/p".into());
         let named = Path::new("/p").join(".rovik/plans/a.md");
         assert_eq!(
-            plan_file_named("Implement the plan in `.rovik/plans/a.md`.", Some("/p")).as_deref(),
+            plan_file_named("Implement the plan in `.rovik/plans/a.md`.", Some(&one)).as_deref(),
             Some(named.to_string_lossy().as_ref())
         );
         assert_eq!(
-            plan_file_named("Implement the plan above.", Some("/p")),
+            plan_file_named("Implement the plan above.", Some(&one)),
             None
+        );
+        // A workspace chat's plan, by its folder's name.
+        let workspace = Folders::named(vec![crate::folders::Folder {
+            name: "api".into(),
+            path: "/w/api".into(),
+        }])
+        .unwrap();
+        let named = Path::new("/w/api").join(".rovik/plans/a.md");
+        assert_eq!(
+            plan_file_named(
+                "Implement the plan in `api/.rovik/plans/a.md`.",
+                Some(&workspace)
+            )
+            .as_deref(),
+            Some(named.to_string_lossy().as_ref())
         );
         let ok = json!({ "paths": ["src/a.rs", "./src/b/"], "reason": "callers" });
         assert_eq!(

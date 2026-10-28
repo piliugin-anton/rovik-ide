@@ -15,6 +15,10 @@ export interface TreeRow {
   depth: number;
   loading?: boolean;
   ignored?: boolean;
+  /** A workspace folder's own row: never renamed, deleted, moved or dragged (D9). */
+  folderRow?: boolean;
+  /** That folder isn't there (deleted, or a drive that isn't mounted) (D20). */
+  missing?: boolean;
 }
 
 export interface OpenFile {
@@ -350,6 +354,11 @@ export interface ToolMeta {
   implementsPlan?: boolean;
   /** Its plan's file: the backend sends the model the plan from it (lib/plans.ts). */
   planPath?: string;
+  /**
+   * A workspace chat's user message: its folders' names as its run started
+   * (the backend records them; workspaces-plan.md, D32).
+   */
+  folders?: string[];
   /** The change reviewer's record (lib/changeReview.ts). */
   review?: import('./lib/changeReview').ReviewMeta;
   /** The plan checker's problems with a plan Agent mode was asked to implement (B07b). */
@@ -433,6 +442,10 @@ export interface DialogSummary {
   preview?: string | null;
   /** Absent for a chat on this computer. */
   place?: ChatPlace;
+  /** The project or workspace it belongs to (docs/design/workspaces-plan.md, 3.1). */
+  projectId?: string | null;
+  /** A workspace chat's folders: `"all"`, or the names checked as JSON. */
+  folders?: string | null;
 }
 
 export interface DialogCursor {
@@ -476,6 +489,8 @@ export type ChatStreamEvent =
 export type WatchOperation = 'create' | 'modify' | 'remove' | 'unknown';
 
 export interface FileWatchPayload {
+  /** The window's folder the change is in, as the window spells it. */
+  folder: string;
   path: string;
   operation: WatchOperation;
   is_dir: boolean;
@@ -528,7 +543,10 @@ export interface LastProjectOpenFile {
 }
 
 export interface LastProjectData {
+  /** The folder open (empty for a workspace, which has none). */
   path: string | null;
+  /** The workspace open, if one was (docs/design/workspaces-plan.md, D17). */
+  workspace?: string | null;
   openedFiles: LastProjectOpenFile[] | null;
   expandedPaths: string[] | null;
   terminalCollapsed: boolean;
@@ -562,6 +580,41 @@ export type GitStatus = {
    *  with no remote, and off a branch. */
   push_remote?: string | null;
 };
+
+/** A repository the window's folders are in (src-tauri/src/git/repos.rs, `git_repos`). */
+export interface GitRepo {
+  /** Its git folder: two folders in one repository share it; a linked worktree has its own. */
+  key: string;
+  workdir: string;
+  /** The folder's stored name when the repository is exactly one of the
+   *  window's folders; else its working folder's name. */
+  name: string;
+  /** The window's folders in it, relative to `workdir` ('' for all of it). */
+  scopes: string[];
+  /** The same folders as the window gave them, in its order. */
+  folders: string[];
+}
+
+/** The window's folders by repository (`git_repos`). */
+export interface GitRepos {
+  repos: GitRepo[];
+  /** The folders in no repository. */
+  without: { path: string; name: string }[];
+}
+
+/** What a repository of a commit across repositories said (`git_commit_many`). */
+export interface GitRepoProblem {
+  /** The folder it was asked from. */
+  path: string;
+  error: string;
+}
+
+/** What a commit across repositories did (src-tauri/src/git/changes.rs, D11). */
+export type GitCommitOutcome =
+  /** Nothing was committed: what a check or a hook found, by repository. */
+  | { result: 'stopped'; problems: GitRepoProblem[] }
+  /** Committed, but in `failed`; a repository in neither list had nothing to commit. */
+  | { result: 'done'; committed: string[]; failed: GitRepoProblem[] };
 
 /** Where HEAD is (src-tauri/src/git/branches.rs, `git_head`). */
 export interface GitHead {

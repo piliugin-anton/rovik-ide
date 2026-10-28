@@ -473,7 +473,7 @@ mod tests {
         std::os::unix::fs::symlink(&secret, home.join("keys")).unwrap();
         let c = Confine {
             view: work.clone(),
-            project: work.clone(),
+            redirects: Vec::new(),
             hide: vec![secret.clone(), root.join("gone")],
             writable: vec![cache.clone(), work.clone()],
             sockets: Vec::new(),
@@ -596,7 +596,7 @@ mod tests {
     fn policy(root: &Path, hide: &[&Path], writable: &[&Path]) -> Confine {
         Confine {
             view: root.to_path_buf(),
-            project: root.to_path_buf(),
+            redirects: Vec::new(),
             hide: hide.iter().map(|p| p.to_path_buf()).collect(),
             writable: writable.iter().map(|p| p.to_path_buf()).collect(),
             sockets: Vec::new(),
@@ -721,7 +721,7 @@ mod tests {
         let root = fresh("llplain");
         let c = Confine {
             view: root.clone(),
-            project: root.clone(),
+            redirects: Vec::new(),
             hide: Vec::new(),
             writable: vec![root.clone()],
             sockets: Vec::new(),

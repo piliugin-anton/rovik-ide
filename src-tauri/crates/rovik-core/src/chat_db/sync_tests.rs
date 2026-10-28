@@ -34,6 +34,7 @@ fn owner() -> Connection {
         created_at: 1,
         updated_at: 1,
         project_id: None,
+        folders: None,
     };
     store::create_dialog(&mut conn, &dialog).unwrap();
     conn
@@ -56,6 +57,7 @@ fn mirror() -> Connection {
         created_at: 1,
         updated_at: 1,
         project_id: Some("local-project".into()),
+        folders: None,
     };
     store::create_dialog(&mut conn, &dialog).unwrap();
     mirror::place(&mut conn, ROOT, HOST).unwrap();
@@ -360,6 +362,23 @@ fn applying_the_same_changes_twice_changes_nothing() {
     assert_eq!(clock(&mirror).unwrap(), clock_before, "nothing written");
 }
 
+/// A workspace chat's folders are the chat's: they travel to a mirror, and
+/// when they change between runs the mirror's change too (3.1, D32).
+#[test]
+fn a_workspace_chats_folders_reach_the_mirror() {
+    let mut owner = owner();
+    let mut mirror = mirror();
+    store::set_dialog_folders(&owner, ROOT, Some("all")).unwrap();
+
+    pull(&mut owner, &mut mirror, PAGE_BYTES);
+    let folders = |conn: &Connection| store::get_dialog(conn, ROOT).unwrap().unwrap().folders;
+    assert_eq!(folders(&mirror).as_deref(), Some("all"));
+
+    store::set_dialog_folders(&owner, ROOT, Some(r#"["api","web"]"#)).unwrap();
+    pull(&mut owner, &mut mirror, PAGE_BYTES);
+    assert_eq!(folders(&mirror).as_deref(), Some(r#"["api","web"]"#));
+}
+
 #[test]
 fn a_body_stored_apart_arrives_whole() {
     let mut owner = owner();
@@ -646,6 +665,7 @@ fn an_import_never_writes_over_another_chats_rows() {
         created_at: 1,
         updated_at: 1,
         project_id: None,
+        folders: None,
     };
     store::create_dialog(&mut host, &theirs).unwrap();
     store::append_messages(&mut host, "theirs", &[message("u1", "user", "Mine")]).unwrap();
@@ -683,6 +703,7 @@ fn host_with_chat(id: &str) -> Connection {
         created_at: 1,
         updated_at: 1,
         project_id: None,
+        folders: None,
     };
     store::create_dialog(&mut conn, &dialog).unwrap();
     conn

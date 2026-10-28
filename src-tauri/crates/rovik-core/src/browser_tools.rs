@@ -1352,6 +1352,7 @@ mod tests {
                     hidden: Vec::new(),
                     note: Arc::new(|_| {}),
                     background_chat: None,
+                    folders: None,
                     reply_cut_off: false,
                 };
                 let stop = Arc::new(StopSignal::new());

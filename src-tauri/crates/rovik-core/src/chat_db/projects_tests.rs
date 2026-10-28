@@ -25,13 +25,15 @@ fn chat(conn: &mut Connection, id: &str, project: Option<&str>) {
             created_at: 1,
             updated_at: 1,
             project_id: project.map(Into::into),
+            folders: None,
         },
     )
     .unwrap();
 }
 
 fn chats(conn: &Connection, project: Option<&str>) -> Vec<String> {
-    list_dialogs(conn, project, None, 50)
+    let owners = project.map(|id| vec![id.to_string()]);
+    list_dialogs(conn, owners.as_deref(), None, 50)
         .unwrap()
         .items
         .into_iter()
@@ -162,6 +164,7 @@ fn search_stays_in_the_project() {
             created_at: 1,
             updated_at: 1,
             project_id: Some(a.id.clone()),
+            folders: None,
         },
     )
     .unwrap();
@@ -173,11 +176,12 @@ fn search_stays_in_the_project() {
             created_at: 2,
             updated_at: 2,
             project_id: Some(b.id.clone()),
+            folders: None,
         },
     )
     .unwrap();
     let ids = |q: &str, p: &str| {
-        search(&conn, q, Some(p), 10)
+        search(&conn, q, Some(&[p.to_string()]), 10)
             .unwrap()
             .into_iter()
             .map(|h| h.dialog.id)
@@ -452,4 +456,84 @@ fn a_daemon_keeps_a_project_by_the_desktops_id() {
     forget_path(&conn, "desktop-id-1", &worktree).unwrap();
     assert!(!chat_may_use(&conn, Some("desktop-id-1"), &worktree).unwrap());
     assert!(chat_may_use(&conn, Some("desktop-id-1"), &repo).unwrap());
+}
+
+/// A workspace is a project of the database but not one of the folders it
+/// groups: it's never listed (nothing to Relink) nor summarised as one
+/// (workspaces-plan.md, 3.1).
+#[test]
+fn a_workspace_isnt_listed_or_summarised_as_a_project() {
+    let mut conn = db();
+    let dir = temp("workspace");
+    let api = dir.join("api");
+    fs::create_dir_all(&api).unwrap();
+    let workspace = crate::chat_db::workspaces::create(
+        &mut conn,
+        "Shop",
+        &[crate::chat_db::workspaces::prepare(&api.to_string_lossy())],
+    )
+    .unwrap();
+
+    assert!(
+        list(&conn).unwrap().is_empty(),
+        "a workspace isn't a project"
+    );
+    assert_eq!(summary(&conn, &workspace.id).unwrap(), None);
+    // Its folder, opened alone, is one.
+    open_project(&mut conn, &api).unwrap();
+    let listed = list(&conn).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, api.to_string_lossy());
+}
+
+/// Deleting a workspace deletes its own chats and leaves its folders'
+/// projects and chats (D6).
+#[test]
+fn deleting_a_workspace_leaves_its_folders_projects() {
+    let mut conn = db();
+    let dir = temp("delete-workspace");
+    let api = dir.join("api");
+    fs::create_dir_all(&api).unwrap();
+    let project = open_project(&mut conn, &api).unwrap().project;
+    chat(&mut conn, "folder-chat", Some(&project.id));
+    let workspace = crate::chat_db::workspaces::create(
+        &mut conn,
+        "Shop",
+        &[crate::chat_db::workspaces::prepare(&api.to_string_lossy())],
+    )
+    .unwrap();
+    create_dialog(
+        &mut conn,
+        &NewDialog {
+            id: "workspace-chat".into(),
+            title: "Across".into(),
+            created_at: 1,
+            updated_at: 1,
+            project_id: Some(workspace.id.clone()),
+            folders: Some("all".into()),
+        },
+    )
+    .unwrap();
+
+    delete(&mut conn, &workspace.id).unwrap();
+
+    let exists = |conn: &Connection, id: &str| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM dialogs WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            == 1
+    };
+    assert!(!exists(&conn, "workspace-chat"), "its own chat went");
+    assert!(exists(&conn, "folder-chat"), "its folder's chat stayed");
+    assert!(summary(&conn, &project.id).unwrap().is_some());
+    assert!(crate::chat_db::workspaces::get(&conn, &workspace.id)
+        .unwrap()
+        .is_none());
+    let folder_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM workspace_folders", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(folder_rows, 0, "its folder rows went with it");
 }

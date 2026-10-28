@@ -171,6 +171,12 @@ pub struct HostSummary {
     /// before it sends one (T09).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
+    /// What its daemon serves beyond protocol 1 (`rovik_protocol::features`),
+    /// as its welcome said: none until it has connected. A chat across
+    /// folders starts in WSL only when its Rovik works across folders
+    /// (workspaces-plan.md, 4.12).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 /// How a terminal reaches a host's shell (`HostsPage::shell_access`).
@@ -664,6 +670,7 @@ impl HostsPage {
                     wsl: host.wsl().is_some(),
                     autonomous,
                     effort: host.autonomy.effort.filter(|_| autonomous),
+                    features: self.remote.features(&host.id),
                     id: host.id,
                     name: host.name,
                 }
@@ -683,6 +690,7 @@ impl HostsPage {
                 wsl: false,
                 autonomous: false,
                 effort: None,
+                features: self.remote.features(id),
                 id: id.clone(),
             });
         }
@@ -1645,6 +1653,43 @@ mod tests {
         assert_eq!(summaries[1].id, socket);
     }
 
+    /// The chats learn what a host's daemon serves from its summary: a
+    /// chat across folders starts in WSL only where Rovik works across
+    /// folders (workspaces-plan.md, 4.12). A host not connected serves
+    /// nothing they know of.
+    #[tokio::test]
+    async fn a_hosts_summary_carries_what_its_daemon_serves() {
+        use crate::testing::{identity, Fake};
+        let setup = setup();
+        setup.page.save(new_host(), password("hunter2")).unwrap();
+        let socket = "/run/user/1000/rovik/agentd.sock";
+        let fake = Fake::default();
+        *fake.features.lock().unwrap() = vec![features::FOLDERS.into()];
+        setup.remote.connect(socket, fake, identity(socket));
+        let mut summaries = Vec::new();
+        for _ in 0..400 {
+            summaries = setup.page.summaries().unwrap();
+            if summaries
+                .get(1)
+                .is_some_and(|s| s.state == Some(HostState::Ready))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let served: Vec<_> = summaries
+            .iter()
+            .map(|s| (s.name.as_str(), s.features.clone()))
+            .collect();
+        assert_eq!(
+            served,
+            [
+                ("Build box", vec![]),
+                ("agentd.sock", vec![features::FOLDERS.to_string()]),
+            ]
+        );
+    }
+
     /// A terminal reaches a host as its daemon's connection does: Rovik's
     /// SSH with the saved way in, or the user's own ssh.
     #[tokio::test]
@@ -1893,6 +1938,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             project_id: None,
+            folders: None,
         };
         let db = &setup.app.core.db;
         db.write(move |c| store::create_dialog(c, &dialog))

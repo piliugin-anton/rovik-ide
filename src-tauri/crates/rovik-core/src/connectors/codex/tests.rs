@@ -15,6 +15,7 @@ fn turn(prompt: &str) -> Turn {
         prompt: prompt.into(),
         cwd: None,
         isolated: false,
+        own_tools_context: None,
         rovik_tools: false,
         session: None,
         recap: None,

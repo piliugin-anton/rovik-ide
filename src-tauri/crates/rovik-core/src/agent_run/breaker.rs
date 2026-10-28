@@ -445,12 +445,14 @@ impl Run {
         Ok(failed.then(|| findings_note(&round.files)))
     }
 
-    /// Whether `file`'s tests pass on the change, run alone. None: there's
-    /// no way to run it alone, or it couldn't run, or it ran no test (a
-    /// test file that doesn't compile, a filter that matches nothing: a
-    /// zero exit that says nothing about the change).
+    /// Whether `file`'s tests pass on the change, run alone in its folder
+    /// (`cd api && …` in a workspace chat). None: there's no way to run it
+    /// alone, or it couldn't run, or it ran no test (a test file that
+    /// doesn't compile, a filter that matches nothing: a zero exit that says
+    /// nothing about the change).
     async fn passes_alone(&self, root: &str, file: &str) -> Option<bool> {
-        let command = alone(Path::new(root), file)?;
+        let folders = self.folders.as_ref()?;
+        let command = project::in_files_folder(Path::new(root), folders, file, alone)?;
         let stop = self.stop.clone();
         let overlay = crate::overlay::chats::get(&self.dialog_id);
         let queued = crate::command_tool::Queued::check(&self.dialog_id, overlay.as_deref());

@@ -8,6 +8,7 @@ import {
   projectSession,
   rememberProjectSession,
   savedProjectSession,
+  sessionInFolders,
   type ProjectSession,
 } from './projectSessions';
 
@@ -64,4 +65,48 @@ test("a session kept before its terminal panel was: the panel's state unknown", 
   const older: ProjectSession = { files: [], active: null, expanded: [] };
   await rememberProjectSession('/p/older', older);
   assert.equal(projectSession('/p/older')?.terminalOpen, undefined);
+});
+
+test('a workspace keeps its entry under its own key', async () => {
+  await rememberProjectSession('workspace:w-1', {
+    files: [file('/p/api/x.ts'), file('/p/web/y.ts')],
+    active: '/p/api/x.ts',
+    expanded: ['/p/api/src'],
+    terminalOpen: false,
+  });
+  assert.deepEqual(await savedProjectSession('workspace:w-1'), {
+    files: [file('/p/api/x.ts'), file('/p/web/y.ts')],
+    active: '/p/api/x.ts',
+    expanded: ['/p/api/src'],
+    terminalOpen: false,
+  });
+  // Its folders' own entries are theirs, under their own paths.
+  assert.equal(projectSession('/p/api'), null);
+});
+
+test('a tab of a folder that left the workspace is not reopened', async () => {
+  const session: ProjectSession = {
+    files: [file('/p/api/x.ts'), file('/p/web/y.ts')],
+    active: '/p/web/y.ts',
+    expanded: ['/p/api/src', '/p/web/src'],
+    terminalOpen: true,
+  };
+  assert.deepEqual(sessionInFolders(session, ['/p/api']), {
+    files: [file('/p/api/x.ts')],
+    active: '/p/api/x.ts',
+    expanded: ['/p/api/src'],
+    terminalOpen: true,
+  });
+  // Both folders: nothing leaves, the active tab stays.
+  assert.deepEqual(sessionInFolders(session, ['/p/api', '/p/web']), session);
+  // A project is a list of one, and its own tabs are all under it.
+  assert.deepEqual(
+    sessionInFolders({ ...session, files: [file('/p/api/x.ts')], active: null }, ['/p/api']),
+    {
+      files: [file('/p/api/x.ts')],
+      active: '/p/api/x.ts',
+      expanded: ['/p/api/src'],
+      terminalOpen: true,
+    }
+  );
 });

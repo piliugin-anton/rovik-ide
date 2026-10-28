@@ -170,3 +170,59 @@ test('a message sent to a run waits in its chat until the run reads it (steering
   store.setSteerable('chat', false);
   assert.ok(!store.isSteerable('chat'));
 });
+
+test('a folder added keeps the open chat; its folder removed lets it go', async () => {
+  // A workspace's window: its own chats and each folder's are listed
+  // together (docs/design/workspaces-plan.md, 3.8).
+  const chat = (id: string, projectId: string, updatedAt: number) => ({
+    id,
+    title: id,
+    createdAt: 1,
+    updatedAt,
+    messageCount: 1,
+    projectId,
+  });
+  const all = [chat('web-1', 'web', 3), chat('api-1', 'api', 2), chat('api-2', 'api', 1)];
+  const listed: (string[] | null)[] = [];
+  let reads = 0;
+  (window as any).__TAURI_INTERNALS__ = {
+    invoke: async (cmd: string, args: any) => {
+      if (cmd === 'chat_list_dialogs') {
+        listed.push(args.owners);
+        const items = all.filter((d) => args.owners?.includes(d.projectId));
+        return { items, nextCursor: null };
+      }
+      if (cmd === 'chat_get_messages') {
+        reads++;
+        return { messages: [], hasOlder: false, hasNewer: false };
+      }
+      return null;
+    },
+  };
+  const store = createChatStore();
+  const ids = () => store.state.list.items.map((d) => d.id);
+  await store.showOwners({ target: 'workspace:shop', projects: ['shop', 'api'] });
+  assert.deepEqual(ids(), ['api-1', 'api-2']);
+  await store.openChat(store.state.list.items[0]);
+  assert.equal(reads, 1);
+
+  // web resolves: its chats join the list, and api's chat stays open as it was.
+  await store.showOwners({ target: 'workspace:shop', projects: ['shop', 'api', 'web'] });
+  assert.deepEqual(listed[1], ['shop', 'api', 'web']);
+  assert.deepEqual(ids(), ['web-1', 'api-1', 'api-2']);
+  assert.equal(store.state.activeId, 'api-1');
+  assert.ok(store.state.open['api-1'], 'its messages stay loaded');
+  assert.equal(reads, 1, 'and aren’t read again');
+
+  // api leaves the workspace: its chats leave the list, the open one too.
+  await store.showOwners({ target: 'workspace:shop', projects: ['shop', 'web'] });
+  assert.deepEqual(ids(), ['web-1']);
+  assert.equal(store.state.activeId, null);
+  assert.equal(store.state.open['api-1'], undefined);
+
+  // Another window's target: its chats from the start.
+  await store.openChat(store.state.list.items[0]);
+  await store.showOwners({ target: '/work/web', projects: ['web'] });
+  assert.equal(store.state.activeId, null, 'another target opens its own chat');
+  assert.deepEqual(ids(), ['web-1']);
+});

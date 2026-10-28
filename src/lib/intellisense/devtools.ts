@@ -10,7 +10,8 @@ import { workerLibs } from './libs';
 import type { ProgramInfo } from './projectWorker';
 
 export interface IntelliSenseState {
-  root: string | null;
+  /** The folders the worker has: a project's one, a workspace's several (C06). */
+  roots: readonly string[];
   ready: boolean;
   /** The compiler options in effect (types, configFilePath...). */
   compilerOptions: monaco.typescript.CompilerOptions;

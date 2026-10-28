@@ -5,11 +5,12 @@
 use super::project::{read, Setup, CHAT, PROJECT};
 use super::{until, COMPUTER};
 use rovik_client::{shadow, HostState, Identity, Remote, UnixConnector};
-use rovik_core::chat_db::projects;
 use rovik_core::chat_db::store::{self, NewDialog};
+use rovik_core::chat_db::{projects, workspaces};
 use rovik_core::overlay::chats::{self, OverlayStatus};
 use rovik_core::testing::TestCore;
 use rovik_protocol::Secret;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,6 +50,7 @@ impl App {
             created_at: 0,
             updated_at: 0,
             project_id: Some(PROJECT.into()),
+            folders: None,
         };
         let made = test.core.db.write(move |c| {
             projects::ensure(c, PROJECT, "app", &root)?;
@@ -56,12 +58,63 @@ impl App {
         });
         made.await.unwrap();
         let remote = Remote::new(test.core.clone());
-        remote.set_open_project(Some((PROJECT.into(), setup.project.clone())));
+        remote.set_open_projects(vec![(PROJECT.into(), setup.project.clone())]);
         App {
             test,
             remote,
             _overlays: overlays,
         }
+    }
+
+    /// The app, not connected yet, with a workspace "Shop" of `folders`,
+    /// each named by its folder's name, open in its window, and its chat
+    /// across those `checked` (JSON; none: all of them) on the daemon. The
+    /// workspace's ID.
+    pub async fn workspace(folders: &[&Path], checked: Option<&str>) -> (App, String) {
+        let overlays = chats::TEST_DATA.clone().lock_owned().await;
+        chats::close_all();
+        let test = TestCore::new();
+        chats::init(&test.core.paths.data_dir);
+        let prepared: Vec<workspaces::Prepared> = (folders.iter())
+            .map(|folder| workspaces::prepare(&folder.to_string_lossy()))
+            .collect();
+        let made = test
+            .core
+            .db
+            .write(move |c| workspaces::create(c, "Shop", &prepared));
+        let workspace = made.await.unwrap();
+        let remote = Remote::new(test.core.clone());
+        let app = App {
+            test,
+            remote,
+            _overlays: overlays,
+        };
+        app.chat_in(CHAT, &workspace.id, checked).await;
+        let open: Vec<(String, PathBuf)> = (workspace.folders.iter())
+            .map(|folder| (workspace.id.clone(), PathBuf::from(&folder.path)))
+            .collect();
+        app.remote.set_open_projects(open);
+        (app, workspace.id)
+    }
+
+    /// Another chat of the workspace, across the folders `checked` (JSON;
+    /// none: all of them), on the daemon.
+    pub async fn chat_in(&self, id: &str, workspace: &str, checked: Option<&str>) {
+        let dialog = NewDialog {
+            id: id.into(),
+            title: "Chat".into(),
+            created_at: 0,
+            updated_at: 0,
+            project_id: Some(workspace.into()),
+            folders: checked.map(str::to_string),
+        };
+        let made = self
+            .test
+            .core
+            .db
+            .write(move |c| store::create_dialog(c, &dialog));
+        made.await.unwrap();
+        self.remote.place(id, HOST);
     }
 
     /// The app started again: the same data, and a new `Remote`, which
@@ -76,7 +129,7 @@ impl App {
         drop(remote);
         let remote = Remote::new(test.core.clone());
         remote.load().await.unwrap();
-        remote.set_open_project(Some((PROJECT.into(), setup.project.clone())));
+        remote.set_open_projects(vec![(PROJECT.into(), setup.project.clone())]);
         App {
             test,
             remote,

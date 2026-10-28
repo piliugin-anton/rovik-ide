@@ -29,7 +29,7 @@ async fn checked(command: &str) -> (Setup, App) {
     let check = json!({ "kind": "test", "command": command, "enabled": true });
     let config = &app.test.core.paths.config_dir;
     project_profile::save_project_settings(config, root, json!({ "checks": [check] })).unwrap();
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     ready_to_run(&setup).await;
     (setup, app)
@@ -52,7 +52,7 @@ async fn changed_here_then_opened(setup: &Setup, app: &App, lines: &str) {
     .await;
     write(&setup.project.join("a.txt"), lines);
     let open = (PROJECT.to_string(), setup.project.clone());
-    app.remote.set_open_project(Some(open));
+    app.remote.set_open_projects(vec![open]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -168,7 +168,7 @@ async fn without_checks_the_merge_lands_here_at_once() {
     let mut setup = Setup::new().await;
     write(&setup.project.join("a.txt"), LINES);
     let app = App::new(&mut setup).await;
-    app.remote.set_open_project(None);
+    app.remote.set_open_projects(Vec::new());
     app.connect(&setup).await;
     ready_to_run(&setup).await;
     let (url, _) = model(vec![

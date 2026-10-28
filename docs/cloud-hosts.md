@@ -622,7 +622,10 @@ attach --stdio`, the byte bridge an SSH exec channel uses too.
 Every chat of a project moves there by itself when it first runs, as
 "Move to" a cloud host would (its project synced into a worktree there,
 its results landing back in the project), and is shown as "This computer
-(WSL)"; a move that fails is the start's failure, with the cause. A chat
+(WSL)"; so does a chat across a workspace's folders, its folders synced as
+one project without their history and its results landing back in each
+(a Rovik there too old to run it says to update it from this page); a move
+that fails is the start's failure, with the cause. A chat
 without a project stays on this computer, where the agent's commands are
 refused, as they are until WSL is set up. Deleting a project deletes its chats
 in WSL too; merging one into another brings its chats in WSL back to this

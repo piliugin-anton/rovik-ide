@@ -84,6 +84,7 @@ pub mod worker;
 use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewMessage};
 use crate::core::Core;
+use crate::folders::Folders;
 use events::{AgentEvent, ApprovalRequest, QuestionsRequest};
 use plan::QuestionsOutcome;
 use std::collections::HashMap;
@@ -93,10 +94,11 @@ use tokio::sync::{oneshot, watch};
 
 pub use landing::{checks_would_run, pending_reason, pending_reason_in};
 pub use rovik_protocol::agent::{
-    AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunningRun,
+    AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunFolder, RunningRun,
     RunningSubagent, StartKind, StartRequest, SteerReply, UserMessage,
 };
 pub use run::last_user_wire_content;
+pub use verify::checks_changed;
 
 /// Stop: set once, seen by the run between steps and by its current request.
 pub struct StopSignal {
@@ -292,9 +294,9 @@ struct Inner {
 struct Candidacy {
     /// The chat whose task it implements.
     main: String,
-    /// That chat's project folder, whose settings its runs follow (its own
-    /// folder is a copy).
-    project: Option<String>,
+    /// That chat's folders, whose settings its runs follow (its own folder
+    /// is a copy of them, under the same names).
+    folders: Option<Folders>,
     /// The call id its events and transcript go by in that chat.
     call: String,
     /// What its line in that chat shows, as a subagent's block does (P1.5).
@@ -855,20 +857,20 @@ impl AgentState {
     }
 
     /// T05: `candidate` is a chat implementing `main`'s task, in a copy of
-    /// `main`'s project folder `project`: it follows `main`'s configuration
-    /// and its Stop, and the project's settings; `call` is the id its
-    /// events go by in `main`, and `info` what its line there shows.
+    /// `main`'s `folders`: it follows `main`'s configuration and its Stop,
+    /// and the folders' settings; `call` is the id its events go by in
+    /// `main`, and `info` what its line there shows.
     pub(super) fn add_candidate(
         &self,
         candidate: &str,
         main: &str,
-        project: Option<String>,
+        folders: Option<Folders>,
         call: &str,
         info: ChildInfo,
     ) {
         let candidacy = Candidacy {
             main: main.to_string(),
-            project,
+            folders,
             call: call.to_string(),
             info,
         };
@@ -890,10 +892,11 @@ impl AgentState {
         Some((c.main.clone(), c.call.clone()))
     }
 
-    /// T05: the project folder whose settings a candidate's runs follow.
-    pub(super) fn candidate_project(&self, candidate: &str) -> Option<String> {
+    /// T05: the folders whose settings a candidate's runs follow: its task
+    /// chat's.
+    pub(super) fn candidate_folders(&self, candidate: &str) -> Option<Folders> {
         let inner = self.lock();
-        inner.candidates.get(candidate)?.project.clone()
+        inner.candidates.get(candidate)?.folders.clone()
     }
 
     /// T05: where a server's candidates implement, set by the daemon.
@@ -1302,38 +1305,121 @@ pub fn agent_configure(core: &Core, config: AgentConfig) {
     core.agents.set_config(config);
 }
 
+/// What `check_project` found the chat's run may work in.
+enum Checked {
+    /// The request's root: a folder chat's folder, or a daemon's workspace
+    /// chat's worktree; none with no folder open.
+    Folder(Option<String>),
+    /// A workspace chat's workspace and folders, as the database has them
+    /// now.
+    Workspace(String, Vec<crate::chat_db::workspaces::Folder>),
+    /// The folder is another project's.
+    Elsewhere,
+}
+
 /// A chat works in its own project only: its history, plan and changes are
-/// about that one. Its run's folder must be one of that project's.
+/// about that one. The folders its run works in (workspaces-plan.md, 4.1):
+/// a folder chat's `root`, which must be one of its project's folders, or
+/// a workspace chat's, read from the database, so a run always has the
+/// chat's folders as they are now (its request names none). On a daemon,
+/// a workspace chat's request names its folders (`named`), each a
+/// top-level folder of its `root`, the chat's worktree there
+/// ([`Folders::under`]). None with no folder open.
 pub async fn check_project(
     db: &crate::chat_db::DbState,
     dialog_id: &str,
     root: Option<&str>,
-) -> Result<(), String> {
-    let Some(root) = root.filter(|r| !r.trim().is_empty()).map(str::to_string) else {
-        return Ok(());
-    };
-    let id = dialog_id.to_string();
-    let ok = db
+    named: &[RunFolder],
+) -> Result<Option<Folders>, String> {
+    let root = root.filter(|r| !r.trim().is_empty()).map(str::to_string);
+    let (id, asked) = (dialog_id.to_string(), root.clone());
+    let checked = db
         .read(move |c| {
             // T05: a candidate's chat works in a copy the IDE made of its
             // task chat's folder, which is no project's.
             let child = store::child_dialog(c, &id)?;
             if child.is_some_and(|(d, _)| d.kind == candidates::KIND) {
-                return Ok(true);
+                return Ok(Checked::Folder(asked));
             }
+            if let Some(folders) = crate::chat_db::workspaces::chat_folders(c, &id)? {
+                let workspace = store::dialog_project(c, &id)?.unwrap_or_default();
+                return Ok(Checked::Workspace(workspace, folders));
+            }
+            let Some(root) = asked else {
+                return Ok(Checked::Folder(None));
+            };
             let project = store::dialog_project(c, &id)?;
-            crate::chat_db::projects::chat_may_use(
+            let mine = crate::chat_db::projects::chat_may_use(
                 c,
                 project.as_deref(),
                 std::path::Path::new(&root),
-            )
+            )?;
+            Ok(match mine {
+                true => Checked::Folder(Some(root)),
+                false => Checked::Elsewhere,
+            })
         })
         .await?;
-    if ok {
-        Ok(())
-    } else {
-        Err("This chat belongs to another project. Open that project to continue it.".into())
+    match checked {
+        Checked::Folder(root) if named.is_empty() => Ok(root.map(|r| Folders::one(r.into()))),
+        Checked::Folder(Some(root)) => {
+            let names = named.iter().map(|f| f.name.clone()).collect();
+            Folders::under(root.into(), names).map(Some)
+        }
+        Checked::Folder(None) => Err(
+            "A chat across folders runs in its worktree, which its start doesn't name: sync its project first."
+                .into(),
+        ),
+        Checked::Elsewhere => {
+            Err("This chat belongs to another project. Open that project to continue it.".into())
+        }
+        Checked::Workspace(..) if root.is_some() => Err(
+            "This chat works across a workspace's folders, not in one folder: open its workspace to continue it."
+                .into(),
+        ),
+        Checked::Workspace(workspace, folders) => workspace_folders(&workspace, folders).map(Some),
     }
+}
+
+/// A workspace chat's folders as its run takes them, of its `workspace`:
+/// refused while one is missing (D20), naming it, and when none is left
+/// (D19).
+pub fn workspace_folders(
+    workspace: &str,
+    folders: Vec<crate::chat_db::workspaces::Folder>,
+) -> Result<Folders, String> {
+    if folders.is_empty() {
+        return Err(
+            "This chat has no folders: check one for it (the label by its message box) to go on with it."
+                .into(),
+        );
+    }
+    let missing: Vec<&str> = folders
+        .iter()
+        .filter(|f| f.missing)
+        .map(|f| f.name.as_str())
+        .collect();
+    if let Some((last, rest)) = missing.split_last() {
+        return Err(match rest {
+            [] => format!(
+                "{last} isn't there: locate it, or remove it from the workspace, to go on with this chat."
+            ),
+            _ => format!(
+                "{} and {last} aren't there: locate them, or remove them from the workspace, to go on with this chat.",
+                rest.join(", ")
+            ),
+        });
+    }
+    Folders::named(
+        folders
+            .into_iter()
+            .map(|f| crate::folders::Folder {
+                name: f.name,
+                path: f.path.into(),
+            })
+            .collect(),
+    )
+    .map(|named| named.in_workspace(workspace))
 }
 
 /// A message's files, once each, and only ones that are stored.
@@ -1405,7 +1491,13 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
         if let Some(config) = request.config.clone() {
             core.agents.set_config(config);
         }
-        check_project(&core.db, &request.dialog_id, request.root.as_deref()).await?;
+        check_project(
+            &core.db,
+            &request.dialog_id,
+            request.root.as_deref(),
+            &request.folders,
+        )
+        .await?;
         if core.agents.draining() {
             return Err(RESTARTING.into());
         }
@@ -1472,7 +1564,7 @@ pub(super) async fn start_run(
         state.set_config(config);
     }
     let dialog_id = request.dialog_id.clone();
-    check_project(db, &dialog_id, request.root.as_deref()).await?;
+    let folders = check_project(db, &dialog_id, request.root.as_deref(), &request.folders).await?;
     // A message that starts an Autopilot task: its plan's record is written
     // before its run's start is told (`Run::prepare`), the driver at work
     // meanwhile.
@@ -1487,9 +1579,9 @@ pub(super) async fn start_run(
         check_attachments(db, message).await?;
         // "Implement this plan": the plan's text, from its file (A04), in
         // Agent mode, where a connector's harness has its own tools, not
-        // Rovik's `todo` (`run::lead_profile`).
+        // Rovik's `todo` (`run::lead_profile`); named as the chat names it.
         let todo = !run::lead_profile(request.profile.clone(), true).no_tools;
-        plan::expand_implementation(message, request.root.as_deref(), todo)?;
+        plan::expand_implementation(message, folders.as_ref(), todo)?;
     }
     // A change to the chat's files outside any run (a server's merge)
     // ends first: the run starts on them as they're left.
@@ -2261,5 +2353,312 @@ mod run_control_tests {
         drop(guard_a);
         assert!(state.is_running("chat"));
         assert_eq!(state.lock().runs["chat"].run_id, b.run_id);
+    }
+}
+
+#[cfg(test)]
+mod check_project_tests {
+    use super::{check_project, RunFolder, StartKind};
+    use crate::chat_db::store::{self, NewDialog};
+    use crate::chat_db::workspaces;
+    use crate::testing::TestCore;
+    use std::path::{Path, PathBuf};
+
+    /// A workspace of `api`, `web` and `docs` made in `base`, and its ID.
+    async fn shop(core: &crate::Core, base: &Path) -> String {
+        let paths: Vec<String> = ["api", "web", "docs"]
+            .iter()
+            .map(|name| {
+                std::fs::create_dir_all(base.join(name)).unwrap();
+                base.join(name).to_string_lossy().into_owned()
+            })
+            .collect();
+        core.db
+            .write(move |c| {
+                let prepared: Vec<_> = paths.iter().map(|p| workspaces::prepare(p)).collect();
+                workspaces::create(c, "Shop", &prepared).map(|w| w.id)
+            })
+            .await
+            .unwrap()
+    }
+
+    /// A chat of `project`, with these folders (`"all"`, or names as JSON).
+    async fn chat(core: &crate::Core, id: &str, project: Option<&str>, folders: Option<&str>) {
+        let dialog = NewDialog {
+            id: id.into(),
+            title: id.into(),
+            created_at: 1,
+            updated_at: 1,
+            project_id: project.map(Into::into),
+            folders: folders.map(Into::into),
+        };
+        core.db
+            .write(move |c| store::create_dialog(c, &dialog))
+            .await
+            .unwrap();
+    }
+
+    async fn set_folders(core: &crate::Core, id: &str, folders: &str) {
+        let (id, folders) = (id.to_string(), folders.to_string());
+        core.db
+            .write(move |c| store::set_dialog_folders(c, &id, Some(&folders)))
+            .await
+            .unwrap();
+    }
+
+    /// The folders `check_project` gives the chat's run with no root: each
+    /// name and path.
+    async fn folders_of(core: &crate::Core, id: &str) -> Result<Vec<(String, PathBuf)>, String> {
+        let folders = check_project(&core.db, id, None, &[]).await?.unwrap();
+        Ok(folders
+            .iter()
+            .map(|f| (f.name.clone(), f.path.clone()))
+            .collect())
+    }
+
+    #[tokio::test]
+    async fn a_workspace_chats_run_gets_its_folders_at_their_paths() {
+        let t = TestCore::new();
+        let base = t.dir.0.join("shop");
+        let workspace = shop(&t.core, &base).await;
+        chat(&t.core, "two", Some(&workspace), Some(r#"["web","api"]"#)).await;
+        chat(&t.core, "every", Some(&workspace), Some("all")).await;
+        assert_eq!(
+            folders_of(&t.core, "two").await.unwrap(),
+            [
+                ("api".to_string(), base.join("api")),
+                ("web".to_string(), base.join("web"))
+            ]
+        );
+        let names: Vec<String> = folders_of(&t.core, "every")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            names,
+            ["api", "web", "docs"],
+            "All folders: the workspace's"
+        );
+        let folders = check_project(&t.core.db, "two", None, &[]).await.unwrap();
+        assert_eq!(
+            folders.unwrap().workspace(),
+            Some(workspace.as_str()),
+            "its builds and commands' history are kept by workspace"
+        );
+
+        // The next run has the folders as they are then.
+        set_folders(&t.core, "two", r#"["docs"]"#).await;
+        assert_eq!(
+            folders_of(&t.core, "two").await.unwrap(),
+            [("docs".to_string(), base.join("docs"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_workspace_chat_missing_a_folder_or_with_none_is_refused_by_name() {
+        let t = TestCore::new();
+        let base = t.dir.0.join("shop");
+        let workspace = shop(&t.core, &base).await;
+        chat(&t.core, "two", Some(&workspace), Some(r#"["api","web"]"#)).await;
+        std::fs::remove_dir_all(base.join("web")).unwrap();
+        let refused = check_project(&t.core.db, "two", None, &[])
+            .await
+            .unwrap_err();
+        assert!(refused.starts_with("web isn't there"), "{refused}");
+        std::fs::remove_dir_all(base.join("api")).unwrap();
+        let refused = check_project(&t.core.db, "two", None, &[])
+            .await
+            .unwrap_err();
+        assert!(refused.starts_with("api and web aren't there"), "{refused}");
+
+        chat(&t.core, "none", Some(&workspace), Some("[]")).await;
+        let refused = check_project(&t.core.db, "none", None, &[])
+            .await
+            .unwrap_err();
+        assert!(refused.contains("has no folders"), "{refused}");
+    }
+
+    #[tokio::test]
+    async fn a_workspace_chats_request_with_a_root_is_refused() {
+        let t = TestCore::new();
+        let base = t.dir.0.join("shop");
+        let workspace = shop(&t.core, &base).await;
+        chat(&t.core, "two", Some(&workspace), Some(r#"["api","web"]"#)).await;
+        let root = base.join("api").to_string_lossy().into_owned();
+        let refused = check_project(&t.core.db, "two", Some(&root), &[])
+            .await
+            .unwrap_err();
+        assert!(refused.contains("not in one folder"), "{refused}");
+    }
+
+    /// A chat of a project whose folder is `worktree`, as a daemon's
+    /// worktree is one of its project's folders (6.4).
+    async fn daemon_chat(core: &crate::Core, id: &str, worktree: &Path) {
+        std::fs::create_dir_all(worktree).unwrap();
+        let at = worktree.to_path_buf();
+        let project = core
+            .db
+            .write(move |c| crate::chat_db::projects::resolve(c, &at).map(|r| r.opened.project.id))
+            .await
+            .unwrap();
+        chat(core, id, Some(&project), None).await;
+    }
+
+    /// A daemon's start's folders, without settings.
+    fn named(names: &[&str]) -> Vec<RunFolder> {
+        names
+            .iter()
+            .map(|name| RunFolder {
+                name: name.to_string(),
+                settings: None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_daemons_workspace_chat_works_in_its_folders_at_the_top_of_its_worktree() {
+        let t = TestCore::new();
+        let worktree = t.dir.0.join("work").join("chat-1");
+        daemon_chat(&t.core, "chat-1", &worktree).await;
+        let root = worktree.to_string_lossy().into_owned();
+        let folders = check_project(&t.core.db, "chat-1", Some(&root), &named(&["api", "web"]))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(folders.root(), Some(worktree.as_path()));
+        let found: Vec<(&str, &Path)> = folders
+            .iter()
+            .map(|f| (f.name.as_str(), f.path.as_path()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("api", worktree.join("api").as_path()),
+                ("web", worktree.join("web").as_path())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_daemons_start_is_refused_when_a_folder_isnt_at_the_top_of_its_root() {
+        let t = TestCore::new();
+        let worktree = t.dir.0.join("work").join("chat-1");
+        daemon_chat(&t.core, "chat-1", &worktree).await;
+        let root = worktree.to_string_lossy().into_owned();
+        for bad in ["../api", "api/src", "..", ".", ""] {
+            let refused = check_project(&t.core.db, "chat-1", Some(&root), &named(&["api", bad]))
+                .await
+                .unwrap_err();
+            assert!(
+                refused.contains("can't name a folder"),
+                "{bad:?}: {refused}"
+            );
+        }
+        let refused = check_project(&t.core.db, "chat-1", None, &named(&["api"]))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("runs in its worktree"), "{refused}");
+        // A root that isn't its project's is refused as a folder chat's is.
+        let elsewhere = t.dir.0.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let elsewhere = elsewhere.to_string_lossy().into_owned();
+        let refused = check_project(&t.core.db, "chat-1", Some(&elsewhere), &named(&["api"]))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("another project"), "{refused}");
+    }
+
+    /// On a daemon an Autopilot task's stages keep their start's folders,
+    /// which no database there holds.
+    #[tokio::test]
+    async fn an_autopilot_stage_on_a_daemon_works_in_its_starts_folders() {
+        let t = TestCore::new();
+        let worktree = t.dir.0.join("work").join("task");
+        daemon_chat(&t.core, "task", &worktree).await;
+        let settings = super::autopilot::Settings {
+            profile: serde_json::from_value(serde_json::json!({
+                "id": "m", "label": "m", "model": "m", "baseUrl": "http://x",
+            }))
+            .unwrap(),
+            options: None,
+            context_mode: None,
+            root: Some(worktree.to_string_lossy().into_owned()),
+            local_date: None,
+            isolate: Some(false),
+            folders: named(&["api", "web"]),
+        };
+        let stage = settings.request("task", StartKind::ContinueRun);
+        let folders = check_project(&t.core.db, "task", stage.root.as_deref(), &stage.folders)
+            .await
+            .unwrap()
+            .unwrap();
+        let names: Vec<&str> = folders.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["api", "web"]);
+        assert_eq!(folders.root(), Some(worktree.as_path()));
+    }
+
+    #[tokio::test]
+    async fn a_folder_chats_run_is_as_before() {
+        let t = TestCore::new();
+        let api = t.dir.0.join("api");
+        let other = t.dir.0.join("other");
+        std::fs::create_dir_all(&api).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let at = api.clone();
+        let project = t
+            .core
+            .db
+            .write(move |c| crate::chat_db::projects::resolve(c, &at).map(|r| r.opened.project.id))
+            .await
+            .unwrap();
+        chat(&t.core, "api-chat", Some(&project), None).await;
+        let root = api.to_string_lossy().into_owned();
+        let folders = check_project(&t.core.db, "api-chat", Some(&root), &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(folders.single(), Some(api.as_path()));
+        let elsewhere = other.to_string_lossy().into_owned();
+        let refused = check_project(&t.core.db, "api-chat", Some(&elsewhere), &[])
+            .await
+            .unwrap_err();
+        assert!(refused.contains("another project"), "{refused}");
+        // No folder open: none, as before.
+        assert!(check_project(&t.core.db, "api-chat", None, &[])
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// An Autopilot task's stage starts from its task's settings, which hold
+    /// no folders: it gets the chat's as they are when it starts.
+    #[tokio::test]
+    async fn an_autopilot_stage_started_after_the_chats_folders_changed_gets_the_new_ones() {
+        let t = TestCore::new();
+        let base = t.dir.0.join("shop");
+        let workspace = shop(&t.core, &base).await;
+        chat(&t.core, "task", Some(&workspace), Some(r#"["api"]"#)).await;
+        let settings = super::autopilot::Settings {
+            profile: serde_json::from_value(serde_json::json!({
+                "id": "m", "label": "m", "model": "m", "baseUrl": "http://x",
+            }))
+            .unwrap(),
+            options: None,
+            context_mode: None,
+            root: None,
+            local_date: None,
+            isolate: None,
+            folders: Vec::new(),
+        };
+        set_folders(&t.core, "task", r#"["api","web"]"#).await;
+        let stage = settings.request("task", StartKind::ContinueRun);
+        let folders = check_project(&t.core.db, "task", stage.root.as_deref(), &stage.folders)
+            .await
+            .unwrap()
+            .unwrap();
+        let names: Vec<&str> = folders.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["api", "web"]);
     }
 }

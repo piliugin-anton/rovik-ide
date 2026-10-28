@@ -11,6 +11,7 @@ import { render } from 'solid-js/web';
 import ChatPanel from './ChatPanel';
 import { NewBranchDialogHost } from './NewBranchDialog';
 import type { MessageRow } from '../lib/chatApi';
+import { workspaceIdOf, type ChatOwners, type OpenFolder } from '../lib/openFolders';
 import type { DialogSummary, GitHead } from '../types';
 
 const SETTINGS = {
@@ -83,11 +84,16 @@ function button(label: string): HTMLButtonElement {
   return found;
 }
 
-/**
- * The panel on a project of its own, with `text` sent: the test before's
- * send, never answered, isn't recovered into its input.
- */
-async function mountAndSend(projectId: string, text: string) {
+/** A folder the window has open, resolved as the project `id`. */
+const folder = (path: string, id: string): OpenFolder => ({
+  path,
+  name: path.split('/').pop()!,
+  missing: false,
+  project: { id, name: path.split('/').pop()!, path, idFile: true },
+});
+
+/** The panel on the window's `folders`, whose chats are those of `owners`. */
+async function mount(folders: OpenFolder[], owners: ChatOwners) {
   calls = [];
   localStorage.clear();
   const root = container();
@@ -95,10 +101,12 @@ async function mountAndSend(projectId: string, text: string) {
     () => (
       <>
         <ChatPanel
-          rootPath={() => '/p'}
+          folders={() => folders}
+          workspace={() => workspaceIdOf(owners.target)}
+          activeFolder={() => folders[0]}
           activeFileContext={() => null}
           files={() => []}
-          projectId={() => projectId}
+          owners={() => owners}
         />
         <NewBranchDialogHost />
       </>
@@ -106,12 +114,29 @@ async function mountAndSend(projectId: string, text: string) {
     root
   );
   await flush();
+  return { root, dispose };
+}
+
+/** `text` typed in the panel's input and sent. */
+async function send(root: HTMLElement, text: string) {
   const input = root.querySelector('.chat-input-contenteditable') as HTMLElement;
   input.textContent = text;
   input.dispatchEvent(new Event('input', { bubbles: true }));
   await flush();
   (root.querySelector('.chat-send-button') as HTMLButtonElement).click();
   await flush();
+}
+
+/**
+ * The panel on a project of its own, with `text` sent: the test before's
+ * send, never answered, isn't recovered into its input.
+ */
+async function mountAndSend(projectId: string, text: string) {
+  const { root, dispose } = await mount([folder('/p', projectId)], {
+    target: '/p',
+    projects: [projectId],
+  });
+  await send(root, text);
   return dispose;
 }
 
@@ -160,6 +185,7 @@ test('a message to a chat that has messages already starts its run at once', asy
       updatedAt: now,
       messageCount: 2,
       preview: 'Done.',
+      projectId: 'project-earlier',
     },
   ];
   const row = (id: string, seq: number, role: 'user' | 'assistant', content: string) => ({
@@ -190,4 +216,28 @@ test('a message to a chat that has messages already starts its run at once', asy
     dialogs = [];
     rows = [];
   }
+});
+
+test('a chat in the second folder is offered a branch for that folder’s repository', async () => {
+  // A workspace: the chat is started in web, so its first message asks
+  // about web's repository, not the first folder's (workspaces-plan.md, 3.8).
+  head = { branch: 'main', main_branch: 'main' };
+  const { root, dispose } = await mount(
+    [folder('/w/api', 'api-project'), folder('/w/web', 'web-project')],
+    { target: 'workspace:shop', projects: ['shop', 'api-project', 'web-project'] }
+  );
+  const boxes = [...root.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')];
+  boxes.find((box) => box.textContent === 'web')!.click();
+  await flush();
+  [...root.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+    .find((item) => item.textContent === 'Start chat in web')!
+    .click();
+  await flush();
+  assert.equal(sent('chat_create_dialog')[0]?.dialog.projectId, 'web-project');
+  await send(root, 'Fix the build');
+  assert.deepEqual(sent('git_head'), [{ path: '/w/web' }]);
+  button('No').click();
+  await flush();
+  assert.equal(sent('agent_start')[0]?.request.root, '/w/web', 'and its run works there');
+  dispose();
 });

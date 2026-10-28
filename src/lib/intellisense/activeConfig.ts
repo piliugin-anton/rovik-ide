@@ -16,12 +16,17 @@
 //     imports resolves on its own whatever `types` says, since the worker
 //     can read any dependency file, as tsc can read node_modules.
 //
+// A workspace's folders each have their own config: a file is given the
+// one of the folder it's in (C06), so a TSX file of `web` gets `web`'s
+// `jsx` and `lib` and not `api`'s.
+//
 // Switching between files of one config costs nothing; a file of another
 // config applies its options, which restarts the worker only when they
 // differ. Other open files are outside the program meanwhile; covers()
 // tells the diagnostics reporter which markers to trust (lib/diagnostics.ts).
 import type * as monaco from 'monaco-editor';
 import { projectFor, typesFor, type TsProject } from '../tsconfig';
+import { innermostFolder } from '../openFolders';
 import { workerLibs } from './libs';
 import { PROJECT_LIB, SOURCE_FILE } from './paths';
 import { sanitizeCompilerOptions, type ProjectConfig } from './compilerOptions';
@@ -30,21 +35,20 @@ import { installedTypesFor, typesPackagesByFolder } from './typeRoots';
 import { folderUriFor, modelUriFor } from './uris';
 
 export class ActiveConfig {
-  private projects: TsProject[] = [];
-  private typesDefaultAll = true;
-  private options: monaco.typescript.CompilerOptions = BASE_OPTIONS;
+  /** Each folder's configs and options: a workspace's folders differ (C06). */
+  private readonly configs = new Map<string, ProjectConfig>();
   /** @types package names by node_modules folder URI (typeRoots.ts). */
   private typesByFolder: ReadonlyMap<string, readonly string[]> = new Map();
   private activeFile: string | null = null;
   /** Owning config of a path (undefined: none), until the configs change. */
   private readonly owners = new Map<string, TsProject | undefined>();
 
-  constructor(private readonly root: string) {}
+  /** `roots`: the window's folders, a project's one or a workspace's several. */
+  constructor(private readonly roots: readonly string[]) {}
 
-  configure(config: ProjectConfig): void {
-    this.projects = config.projects;
-    this.typesDefaultAll = config.typesDefaultAll;
-    this.options = config.options;
+  /** The configs read in the folder `root`. */
+  configure(root: string, config: ProjectConfig): void {
+    this.configs.set(root, config);
     this.owners.clear();
   }
 
@@ -71,37 +75,60 @@ export class ActiveConfig {
   optionsFor(path: string | null): monaco.typescript.CompilerOptions {
     const owner = path === null ? undefined : this.ownerOf(path);
     return sanitizeCompilerOptions({
-      ...this.options,
-      types: this.typesOf(owner),
-      configFilePath: modelUriFor(this.configPathOf(owner)).toString(),
+      ...(this.configOf(path)?.options ?? BASE_OPTIONS),
+      types: this.typesOf(owner, path),
+      configFilePath: modelUriFor(this.configPathOf(owner, path)).toString(),
     });
   }
 
   /**
-   * Whether the worker's markers for `path` are current: its config is the
-   * active file's, so it is in the program (false while another config's
-   * file is active).
+   * Whether the worker's markers for `path` are current: its folder's config
+   * is the active file's, and it's a config of that folder, so it is in the
+   * program (false while another folder's, or another config's, file is
+   * active).
    */
   covers(path: string): boolean {
     // Other files (Markdown, Rust...) aren't validated by the worker.
     if (!SOURCE_FILE.test(path)) return true;
-    const active = this.activeFile === null ? undefined : this.ownerOf(this.activeFile);
-    return this.ownerOf(path) === active;
+    const active = this.activeFile;
+    const activeOwner = active === null ? undefined : this.ownerOf(active);
+    return this.folderOf(path) === this.folderOf(active) && this.ownerOf(path) === activeOwner;
   }
 
-  private typesOf(owner: TsProject | undefined): string[] {
-    const installed = installedTypesFor(folderUriFor(this.configPathOf(owner)), this.typesByFolder);
-    return typesFor(owner?.types, this.typesDefaultAll, installed);
+  /** The window folder `path` is in: its own, else the first (nothing open). */
+  private folderOf(path: string | null): string | undefined {
+    if (path === null) return this.roots[0];
+    return innermostFolder(this.roots, path) ?? this.roots[0];
   }
 
-  /** A file's config, or a nominal one in the root: TypeScript resolves `types` from its folder. */
-  private configPathOf(owner: TsProject | undefined): string {
-    return owner?.path ?? `${this.root.replace(/[\\/]+$/, '')}/tsconfig.json`;
+  /** The config `path`'s folder has, if one was read. */
+  private configOf(path: string | null): ProjectConfig | undefined {
+    const folder = this.folderOf(path);
+    return folder === undefined ? undefined : this.configs.get(folder);
+  }
+
+  private typesOf(owner: TsProject | undefined, path: string | null): string[] {
+    const installed = installedTypesFor(
+      folderUriFor(this.configPathOf(owner, path)),
+      this.typesByFolder
+    );
+    return typesFor(owner?.types, this.configOf(path)?.typesDefaultAll ?? true, installed);
+  }
+
+  /** A file's config, or a nominal one in its folder: TypeScript resolves `types` from its folder. */
+  private configPathOf(owner: TsProject | undefined, path: string | null): string {
+    if (owner) return owner.path;
+    const folder = this.folderOf(path) ?? '';
+    return `${folder.replace(/[\\/]+$/, '')}/tsconfig.json`;
   }
 
   private ownerOf(path: string): TsProject | undefined {
     if (!this.owners.has(path)) {
-      this.owners.set(path, projectFor(this.projects, path.replace(/\\/g, '/')));
+      const config = this.configOf(path);
+      this.owners.set(
+        path,
+        config ? projectFor(config.projects, path.replace(/\\/g, '/')) : undefined
+      );
     }
     return this.owners.get(path);
   }

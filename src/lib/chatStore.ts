@@ -17,6 +17,7 @@ import type { ChatMessage, ChatPlace, DialogCursor, DialogSummary, MessageStatus
 import { keptStage, readStage, type StageMeta } from './autopilot';
 import type { ChatMode } from './chatMode';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
+import { listedBy, sameOwners, type ChatOwners } from './openFolders';
 import { sharedMap, type Entries } from './sharedState';
 
 export type { MessageRow };
@@ -268,23 +269,37 @@ export function createChatStore() {
    */
 
   /*
-   * The project whose chats are listed and created (chat_db/projects.rs);
-   * null: no folder open, the chats with no project.
+   * Whose chats are listed (lib/openFolders.ts, `chatOwners`): the window's
+   * owners, each open folder's project and its workspace's own, or, with no
+   * folder open, the chats with no project. Null until the panel says.
    */
-  let projectId: string | null = null;
+  let owners: ChatOwners | null = null;
+
+  /** Whether `projectId` (null: no project) is one of the owners listed. */
+  function listsOwner(projectId: string | null): boolean {
+    return !!owners && listedBy(owners, projectId);
+  }
 
   /**
-   * Another project: its chat list, from the start. Chats with a run still
-   * going stay loaded (the run finishes in the background); the rest of the
-   * old project's chats are let go.
+   * Shows the chats of `next` (workspaces-plan.md, 3.8). Another target's:
+   * its chat list, from the start; chats with a run still going stay loaded
+   * (the run finishes in the background), the rest of the old one's are let
+   * go. The same target's, other projects (a folder resolved, added,
+   * removed or located): the list is read again for them, and the open chat
+   * stays while its own project is among them, its input with it.
    */
-  async function switchProject(id: string | null) {
-    if (id === projectId && state.list.loaded) return;
-    projectId = id;
+  async function showOwners(next: ChatOwners) {
+    if (owners && sameOwners(owners, next) && state.list.loaded) return;
+    const sameTarget = owners !== null && owners.target === next.target;
+    owners = next;
+    const keepsActive = sameTarget && listsOwner(state.active?.projectId ?? null);
     setState(
       produce((s) => {
-        s.list = { items: [], nextCursor: null, loading: false, loaded: false };
-        for (const chatId of Object.keys(s.open)) if (!s.running[chatId]) delete s.open[chatId];
+        if (!sameTarget) s.list = { items: [], nextCursor: null, loading: false, loaded: false };
+        if (keepsActive) return;
+        for (const chatId of Object.keys(s.open)) {
+          if (!s.running[chatId] && (!sameTarget || chatId === s.activeId)) delete s.open[chatId];
+        }
         s.activeId = null;
         s.active = null;
       })
@@ -294,10 +309,10 @@ export function createChatStore() {
 
   async function loadFirstPage() {
     setState('list', 'loading', true);
-    const forProject = projectId;
+    const listing = owners;
     try {
-      const page = await chatApi.listDialogs(forProject, null, LIST_PAGE);
-      if (forProject !== projectId) return; // switched meanwhile
+      const page = await chatApi.listDialogs(listing?.projects ?? null, null, LIST_PAGE);
+      if (listing !== owners) return; // others shown meanwhile
       setState('list', { items: page.items, nextCursor: page.nextCursor, loaded: true });
     } finally {
       setState('list', 'loading', false);
@@ -309,9 +324,9 @@ export function createChatStore() {
     if (!nextCursor || loading) return;
     setState('list', 'loading', true);
     try {
-      const forProject = projectId;
-      const page = await chatApi.listDialogs(forProject, nextCursor, LIST_PAGE);
-      if (forProject !== projectId) return;
+      const listing = owners;
+      const page = await chatApi.listDialogs(listing?.projects ?? null, nextCursor, LIST_PAGE);
+      if (listing !== owners) return;
       setState(
         produce((s) => {
           const known = new Set(s.list.items.map((d) => d.id));
@@ -544,7 +559,16 @@ export function createChatStore() {
    * -------------------------------------------------------------------------
    */
 
-  function createDialog(title: string): DialogSummary {
+  /**
+   * A new chat, open and active, of `projectId`: the folder it works in's
+   * project, or null with no folder open (workspaces-plan.md, 3.8); a
+   * workspace's, with the `folders` it works in (`"all"`, or names as JSON).
+   */
+  function createDialog(
+    title: string,
+    projectId: string | null,
+    folders: string | null = null
+  ): DialogSummary {
     const now = Date.now();
     const summary: DialogSummary = {
       id: crypto.randomUUID(),
@@ -553,6 +577,8 @@ export function createChatStore() {
       updatedAt: now,
       messageCount: 0,
       preview: null,
+      projectId,
+      folders,
     };
     setState(
       produce((s) => {
@@ -568,10 +594,58 @@ export function createChatStore() {
         s.active = { ...summary };
       })
     );
-    const forProject = projectId;
-    void persist(() => chatApi.createDialog({ ...summary, projectId: forProject }));
+    void persist(() => chatApi.createDialog({ ...summary, projectId, folders }));
     evictIfNeeded();
     return summary;
+  }
+
+  /**
+   * The empty chat `dialogId` works in the folder of `projectId` from now on
+   * (New chat reusing it for another folder, workspaces-plan.md 3.8), or in a
+   * workspace's `folders` when `projectId` is a workspace's, once the writes
+   * queued before it are in. False when the database refused it (it has a
+   * message by now): the chat stays where it was.
+   */
+  async function moveEmpty(
+    dialogId: string,
+    projectId: string | null,
+    folders: string | null = null
+  ): Promise<boolean> {
+    let moved = false;
+    await persist(async () => {
+      try {
+        await chatApi.moveEmptyDialog(dialogId, projectId, folders);
+        moved = true;
+      } catch (err) {
+        console.warn('The empty chat stays where it is:', err);
+      }
+    });
+    if (moved) {
+      updateSummary(dialogId, (d) => {
+        d.projectId = projectId;
+        d.folders = folders;
+      });
+    }
+    return moved;
+  }
+
+  /**
+   * Apply (D32): workspace chat `dialogId` works in `folders` from now on
+   * (`"all"`, or the names checked as JSON), after the writes queued so
+   * far. Null once it does; else the backend's refusal, which says why.
+   */
+  async function setFolders(dialogId: string, folders: string): Promise<string | null> {
+    const refused = await persist(() =>
+      chatApi.setFolders(dialogId, folders).then(
+        () => null,
+        (err: unknown) => String(err)
+      )
+    );
+    if (refused) return refused;
+    updateSummary(dialogId, (d) => {
+      d.folders = folders;
+    });
+    return null;
   }
 
   function renameDialog(dialogId: string, title: string) {
@@ -727,9 +801,10 @@ export function createChatStore() {
     flush,
     loadFirstPage,
     loadMoreDialogs,
-    switchProject,
-    /** The project being shown (null: none). */
-    projectId: () => projectId,
+    showOwners,
+    /** Whose chats are shown (null: the panel hasn't said yet). */
+    owners: () => owners,
+    listsOwner,
     openChat,
     openChatAround,
     loadOlder,
@@ -745,6 +820,8 @@ export function createChatStore() {
     unqueueSteer,
     markSteerLate,
     createDialog,
+    moveEmpty,
+    setFolders,
     renameDialog,
     deleteDialog,
     summaryOf,

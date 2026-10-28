@@ -11,6 +11,7 @@ import {
   type Accessor,
 } from 'solid-js';
 import type { TreeRow } from '../types';
+import { isAtOrUnder } from '../lib/fileTools';
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
 
 const ROW_HEIGHT = 22;
@@ -33,6 +34,11 @@ interface FileTreeProps {
   onOpenFile: (row: TreeRow) => void;
   /** A finished drag: move these ids into the folder, or the root when null. */
   onDrop: (sourceIds: string[], destDir: TreeRow | null) => void;
+  /**
+   * Whether empty space drops at the project root: a project's files sit at
+   * the top level, a workspace's are all in one of its folders (D9).
+   */
+  rootDrop: Accessor<boolean>;
 
   onSelect: (
     row: TreeRow,
@@ -76,12 +82,6 @@ export default function FileTree(props: FileTreeProps) {
     return props.rows().find((r) => r.id === id);
   }
 
-  function isAtOrUnder(path: string, base: string): boolean {
-    if (path === base) return true;
-    const trimmed = base.replace(/[\\/]+$/, '');
-    return path.startsWith(`${trimmed}/`) || path.startsWith(`${trimmed}\\`);
-  }
-
   /**
    * The folder a drop on `row` lands in: the folder itself, or the folder
    * containing a file row. Null means the project root (top-level files
@@ -107,6 +107,8 @@ export default function FileTree(props: FileTreeProps) {
         // Root is always fine (App skips items already at the top level).
         continue;
       }
+      // A folder that isn't there has no id the backend can resolve.
+      if (destDir.missing) return false;
       if (src.id === destDir.id) return false;
       // A folder can't go into itself or one of its descendants.
       if (isAtOrUnder(destDir.path, src.path)) return false;
@@ -117,7 +119,9 @@ export default function FileTree(props: FileTreeProps) {
   function hitTest(x: number, y: number): { dir: TreeRow | null; id: string } | null {
     const el = document.elementFromPoint(x, y) as HTMLElement | null;
     if (!el) return null;
-    if (el.closest('[data-root-drop]')) return { dir: null, id: ROOT_TARGET_ID };
+    if (props.rootDrop() && el.closest('[data-root-drop]')) {
+      return { dir: null, id: ROOT_TARGET_ID };
+    }
     const rowEl = el.closest<HTMLElement>('[data-file-id]');
     if (rowEl?.dataset.fileId) {
       const row = rowById(rowEl.dataset.fileId);
@@ -126,7 +130,9 @@ export default function FileTree(props: FileTreeProps) {
       return { dir, id: dir ? dir.id : ROOT_TARGET_ID };
     }
     // Empty tree area: dropping there means the project root.
-    if (scrollRef && el.closest('.file-tree')) return { dir: null, id: ROOT_TARGET_ID };
+    if (props.rootDrop() && scrollRef && el.closest('.file-tree')) {
+      return { dir: null, id: ROOT_TARGET_ID };
+    }
     return null;
   }
 
@@ -155,8 +161,9 @@ export default function FileTree(props: FileTreeProps) {
       return;
     }
     setDropTargetId(hit.id);
-    // Hover a collapsed folder to open it mid-drag.
-    if (hit.dir && !props.expanded().has(hit.dir.path)) {
+    // Hover a collapsed folder to open it mid-drag. A folder that isn't
+    // there has nothing to open.
+    if (hit.dir && !hit.dir.missing && !props.expanded().has(hit.dir.path)) {
       if (hoverTarget !== hit.id) {
         clearHoverTimer();
         hoverTarget = hit.id;
@@ -201,7 +208,8 @@ export default function FileTree(props: FileTreeProps) {
     const byId = new Map(props.rows().map((r) => [r.id, r]));
     const ids = wanted.filter((id) => {
       const r = byId.get(id);
-      return r && !r.loading && r.id !== '__draft__';
+      // A folder's own row isn't moved: it leaves the workspace instead (D9).
+      return r && !r.loading && !r.folderRow && r.id !== '__draft__';
     });
     if (ids.length === 0) return false;
 
@@ -329,6 +337,8 @@ export default function FileTree(props: FileTreeProps) {
     }
 
     if (row.isDir) {
+      // A folder that isn't there has nothing to open (D20).
+      if (row.missing) return;
       props.onToggle(row);
     } else {
       props.onOpenFile(row);
@@ -406,6 +416,8 @@ export default function FileTree(props: FileTreeProps) {
                       loading: currentRow().loading,
                       ignored: currentRow().ignored,
                       editing: isEditing(),
+                      'tree-root-row': currentRow().folderRow,
+                      'tree-root-missing': currentRow().missing,
                       'drag-source': dragIds()?.includes(currentRow().id) ?? false,
                       'drop-destination': dropTargetId() === currentRow().id,
                     }}
@@ -422,15 +434,24 @@ export default function FileTree(props: FileTreeProps) {
                     }}
                     onMouseDown={(e) => handleRowMouseDown(e, currentRow())}
                     onClick={(e) => handleRowClick(e, currentRow())}
-                    title={isEditing() ? undefined : currentRow().name}
+                    title={
+                      isEditing()
+                        ? undefined
+                        : // A folder's row is named like its tab's hint: where it is.
+                          currentRow().folderRow
+                          ? currentRow().path
+                          : currentRow().name
+                    }
                   >
                     <span class="tree-row-chevron">
-                      <Show when={currentRow().isDir && !currentRow().loading}>
+                      <Show
+                        when={currentRow().isDir && !currentRow().loading && !currentRow().missing}
+                      >
                         <ChevronIcon open={props.expanded().has(currentRow().path)} />
                       </Show>
                     </span>
                     <span class="tree-row-icon">
-                      <Show when={!currentRow().loading}>
+                      <Show when={!currentRow().loading && !currentRow().missing}>
                         <Show when={currentRow().isDir} fallback={<FileIcon />}>
                           <FolderIcon open={props.expanded().has(currentRow().path)} />
                         </Show>
@@ -474,6 +495,9 @@ export default function FileTree(props: FileTreeProps) {
                         }}
                       />
                     </Show>
+                    <Show when={currentRow().missing}>
+                      <span class="tree-root-missing-note">Folder not found</span>
+                    </Show>
                   </div>
                 )}
               </Show>
@@ -483,7 +507,7 @@ export default function FileTree(props: FileTreeProps) {
       </div>
       {/* After the rows, sticking to the bottom: above them, it pushed every
           row down as the drag began, and the drop landed a row too high. */}
-      <Show when={dragging()}>
+      <Show when={props.rootDrop() && dragging()}>
         <div
           class="tree-root-drop"
           data-root-drop={ROOT_TARGET_ID}
