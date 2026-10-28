@@ -287,6 +287,7 @@ impl Harness {
                 approval_profiles: Vec::new(),
                 subagents: Default::default(),
                 autopilot: Default::default(),
+                mcp_servers: Vec::new(),
                 network: None,
             }),
             isolate: Some(false),

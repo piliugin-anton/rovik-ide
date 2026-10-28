@@ -771,6 +771,56 @@ async fn a_configuration_goes_to_every_host_without_its_keys() {
     );
 }
 
+/// Q01 (docs/design/mcp-plan.md): the MCP servers run on this computer
+/// only, so this computer's runs keep them, and neither a host's
+/// configuration nor a start that goes to a host has any.
+#[tokio::test]
+async fn a_host_is_sent_no_mcp_servers() {
+    use rovik_protocol::mcp::{McpServer, McpTransport};
+    let app = App::new();
+    let (remote, fake) = connected(&app).await;
+    let config = AgentConfig {
+        mcp_servers: vec![McpServer {
+            id: "s1".into(),
+            name: "docs".into(),
+            enabled: true,
+            transport: McpTransport::Command {
+                command: "npx".into(),
+                args: vec!["docs-mcp".into()],
+                env: Vec::new(),
+            },
+            disabled_tools: Vec::new(),
+        }],
+        ..AgentConfig::default()
+    };
+    remote
+        .everywhere(Request::AgentConfigure(Box::new(config.clone())))
+        .await
+        .unwrap();
+    assert_eq!(app.core.agents.config().mcp_servers, config.mcp_servers);
+    remote.place("chat", HOST);
+    let mut request = start("chat", StartKind::Retry, None);
+    request.config = Some(config.clone());
+    remote.start(request).await.unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let configured: Vec<&AgentConfig> = requests
+        .iter()
+        .filter_map(|r| match r {
+            Request::AgentConfigure(config) => Some(config.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(configured.len(), 1, "{requests:?}");
+    assert!(configured[0].mcp_servers.is_empty());
+    let started = starts(&fake);
+    let start_config = started[0].config.as_ref().unwrap();
+    assert!(start_config.mcp_servers.is_empty());
+    assert_eq!(
+        start_config.permissions, config.permissions,
+        "the rest goes as it is"
+    );
+}
+
 /// Cloud hosts' rows in Settings → Network: the hosts' configuration
 /// carries how they connect, the proxy's password with it, and goes again
 /// when it changes. In a process of its own, as it sets the process's

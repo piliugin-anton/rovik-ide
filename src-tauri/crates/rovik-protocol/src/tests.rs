@@ -9,6 +9,7 @@ use crate::clm::{ClmStatus, RevisionRow};
 use crate::diff::Hunk;
 use crate::events::*;
 use crate::host::{HostInfo, Install, KeyInfo, Storage};
+use crate::mcp::{is_valid_name, McpServer, McpTransport, McpValue};
 use crate::network::{HostNetwork, ProxyEndpoint, ProxyKind, ProxyRoute};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
@@ -221,6 +222,20 @@ fn config() -> AgentConfig {
             denied_commands: vec!["git push".into()],
             plan_fix: PlanFix::default(),
         },
+        mcp_servers: vec![McpServer {
+            id: "s1".into(),
+            name: "github".into(),
+            enabled: true,
+            transport: McpTransport::Url {
+                url: "https://api.githubcopilot.com/mcp/".into(),
+                headers: vec![McpValue {
+                    name: "Authorization".into(),
+                    value: String::new(),
+                    secret: true,
+                }],
+            },
+            disabled_tools: vec!["delete_repository".into()],
+        }],
         network: None,
     }
 }
@@ -294,6 +309,93 @@ fn permissions_from_before_the_allowed_hosts_reach_any_host() {
     assert_eq!(json["allowAnyHost"], false);
     assert_eq!(json["allowedHosts"], json!(["docs.rs", "*.github.com"]));
     assert_eq!(serde_json::from_value::<Permissions>(json).unwrap(), listed);
+}
+
+/// Q07 (docs/design/mcp-plan.md): permissions saved before the MCP rule
+/// ask the user before each MCP call, whatever the other rules say.
+#[test]
+fn permissions_from_before_the_mcp_rule_ask_before_mcp_calls() {
+    let before: Permissions =
+        serde_json::from_str(r#"{"toolApproval": {"required": false, "by": "user"}}"#).unwrap();
+    assert_eq!(
+        before.mcp_approval,
+        ApprovalRule {
+            required: true,
+            by: Approver::User
+        }
+    );
+    assert!(!before.tool_approval.required);
+    let by_ai = Permissions {
+        mcp_approval: ApprovalRule {
+            required: true,
+            by: Approver::Ai,
+        },
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&by_ai).unwrap();
+    assert_eq!(json["mcpApproval"], json!({"required": true, "by": "ai"}));
+    assert_eq!(serde_json::from_value::<Permissions>(json).unwrap(), by_ai);
+}
+
+/// Q01: a server as the frontend keeps it, by its names; what it leaves out
+/// reads as on, nothing switched off and no env vars; a configuration from
+/// before the servers has none, and one without any doesn't name them.
+#[test]
+fn an_mcp_server_reads_as_the_frontend_keeps_it() {
+    let server: McpServer = serde_json::from_value(json!({
+        "id": "s2",
+        "name": "docs",
+        "transport": { "kind": "command", "command": "npx", "args": ["-y", "docs-mcp"] },
+    }))
+    .unwrap();
+    assert!(server.enabled);
+    assert!(server.disabled_tools.is_empty());
+    let McpTransport::Command { command, args, env } = &server.transport else {
+        panic!("{server:?}");
+    };
+    assert_eq!((command.as_str(), args.len(), env.len()), ("npx", 2, 0));
+    assert_eq!(server.transport.secret_key("TOKEN"), "env/TOKEN");
+    let url = McpTransport::Url {
+        url: "https://example.com/mcp".into(),
+        headers: Vec::new(),
+    };
+    assert_eq!(url.secret_key("Authorization"), "header/Authorization");
+    assert_eq!(
+        serde_json::to_value(&url).unwrap(),
+        json!({ "kind": "url", "url": "https://example.com/mcp", "headers": [] })
+    );
+    let before: AgentConfig = serde_json::from_str("{}").unwrap();
+    assert!(before.mcp_servers.is_empty());
+    assert!(serde_json::to_value(AgentConfig::default())
+        .unwrap()
+        .get("mcpServers")
+        .is_none());
+    let mut config = config();
+    assert!(!config.mcp_servers.is_empty());
+    config = config.for_host();
+    assert!(config.mcp_servers.is_empty());
+}
+
+/// Q01: a server's name is what the agent writes before the dot in
+/// `github.create_issue`: short, lower case, never a dot.
+#[test]
+fn a_server_name_is_short_lower_case_and_has_no_dot() {
+    for good in ["github", "my-docs", "db_2", "a"] {
+        assert!(is_valid_name(good), "{good}");
+    }
+    let long = "a".repeat(33);
+    for bad in [
+        "",
+        "GitHub",
+        "git.hub",
+        "2fa",
+        "-x",
+        "my docs",
+        "ü",
+        long.as_str(),
+    ] {
+        assert!(!is_valid_name(bad), "{bad}");
+    }
 }
 
 /// A message as a steer sends it: the text with its editor context, an

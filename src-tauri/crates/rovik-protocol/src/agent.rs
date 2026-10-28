@@ -5,6 +5,7 @@
 use crate::autopilot::AutopilotConfig;
 use crate::diff::Hunk;
 use crate::events::{ApprovalRequest, QuestionsRequest};
+use crate::mcp::McpServer;
 use crate::network::HostNetwork;
 use crate::permissions::Permissions;
 use crate::subagents::{ModelChoice, SubagentConfig};
@@ -119,6 +120,11 @@ pub struct AgentConfig {
     pub subagents: SubagentConfig,
     /// How Autopilot's tasks run: read only by chats in Autopilot.
     pub autopilot: AutopilotConfig,
+    /// The user's MCP servers, whose tools the agent calls with `mcp`
+    /// (docs/design/mcp-plan.md, Q01). They run on this computer: a host is
+    /// sent none (`for_host`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<McpServer>,
     /// How a host connects for this computer's chats (Settings → Network,
     /// "Cloud hosts"). The app sets it for its hosts, the frontend never
     /// does; a host keeps the proxies' passwords in memory only.
@@ -161,6 +167,13 @@ impl AgentConfig {
             model.api_key.clear();
         }
         config
+    }
+
+    /// The configuration as a host's runs take it: without the MCP
+    /// servers, which run on this computer only (mcp-plan.md, Q01).
+    pub fn for_host(mut self) -> AgentConfig {
+        self.mcp_servers.clear();
+        self
     }
 }
 
