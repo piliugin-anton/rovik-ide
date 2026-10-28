@@ -1318,6 +1318,14 @@ refused while the list is on; a project in WSL runs them there, held. On a
 cloud host, a project's services start on internal networks of their own
 while the list is on: they reach each other, and nothing outside.
 
+What the list can't promise: this computer's own services stay
+reachable, so one of yours that fetches pages for whoever asks (a proxy
+that neither the environment, the system nor Settings → Network names)
+could carry data out; on macOS a command can still look names up; and a
+listed host is reached in full, every port and path of it. A program that
+ignores the proxy variables doesn't get around the list: it reaches
+nothing.
+
 ### Steering
 
 In Agent mode, Enter (or the Send arrow beside Stop) sends what's typed to
