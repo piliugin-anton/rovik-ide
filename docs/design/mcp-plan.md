@@ -82,6 +82,7 @@ cloud host or in WSL runs on a daemon, which doesn't get the servers
 (`Remote` sends hosts none, and a daemon's core offers no `mcp` tool): its
 commands would have to be installed there and its secrets copied there.
 That can come later.
+(Taken up by mcp-plan-2.md Q11.)
 
 ## Q02. Secrets
 
@@ -295,7 +296,7 @@ asks. Settings → Permissions & approval shows it as **MCP tool calls**.
 
 ## Q10. Not in this plan
 
-Cloud hosts and WSL (Q01), a project's `.mcp.json`, OAuth sign-in and the
+Cloud hosts and WSL (Q01; taken up by mcp-plan-2.md Q11), a project's `.mcp.json`, OAuth sign-in and the
 old HTTP+SSE transport (both through a bridge command), resources, prompts,
 sampling, elicitation, roots and tasks, and parallel MCP calls.
 

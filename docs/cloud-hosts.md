@@ -374,10 +374,24 @@ freed.
   project's `Cargo.lock`. The toolchains themselves are root's, readable
   by all and writable by none but root.
 - Worktrees and API keys sit in the user's 0700 folders. Other users can't
-  read them, but root can. The app tells users: "Your API keys are stored in
-  your account on this server, so chats there run while this computer is
-  away. The agent's commands there and anyone with root on it can read
-  them." Each user can remove them there from Settings → Cloud hosts.
+  read them, but root can. The app tells users: "Your API keys and MCP
+  servers' secrets are stored in your account on this server, so chats
+  there run while this computer is away. The agent's commands there and
+  anyone with root on it can read them." Each user can remove them there
+  from Settings → Cloud hosts.
+- The user's MCP servers run on the server too, as the user and outside
+  the commands' sandbox, so they can read what the user can read there,
+  `~/.rovik` included, and nothing of other users'. A command's server
+  starts in the chat's own worktree, outside the user's private network
+  (the allowed hosts don't hold it); a URL server is posted to by the
+  daemon. The secrets of the servers are sent with each start and kept in
+  `~/.rovik/keys.json` with the API keys; removing the keys removes them
+  too, and a value cleared on the user's computer is cleared there at the
+  next start. A server unused for 30 minutes is stopped, and a chat's
+  servers stop when its worktree is deleted. The command (`npx`, `uvx`,
+  Docker...) must be installed on the server: Rovik installs and
+  translates nothing, and a server that can't start is listed unavailable
+  with why. A host on an older Rovik gets no MCP secrets.
 - Administrators can read the same things as before they became
   administrators, and nothing more, as long as `agentd.toml` says
   `allow_unsigned = false`, as it does unless someone changes it. With

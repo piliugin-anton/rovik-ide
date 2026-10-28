@@ -1351,7 +1351,8 @@ A value marked **Secret** (a new one is, until you untick it) is kept in
 your system's keychain, or where there's none in the encrypted file the API
 keys use, never in the settings file: the page only shows whether it's
 saved. **Test** starts the server as the form has it, in the open project's
-folder for a command, lists its tools, and stops it; a tool unticked there
+folder for a command, lists its tools, and stops it (**Test on** picks this
+computer or a connected host); a tool unticked there
 is left out of the agent's list.
 
 The agent gets one tool, `mcp`, however many servers and tools there are,
@@ -1361,7 +1362,8 @@ tool's full schema (`describe`) when the line isn't enough. The tools sent
 with each request stay the same, so prompt caching holds, and a server
 with many tools costs a few thousand tokens of prompt, not their schemas.
 The list is made as a run starts. A server starts when a run first needs it
-and keeps running while Rovik is open, a command's once per project folder;
+and keeps running while Rovik is open, a command's once per project folder
+(on a host, once per chat, stopped after 30 minutes unused);
 one that fails is tried again a minute later, and meanwhile the agent's
 list says why it's unavailable.
 
@@ -1384,8 +1386,15 @@ What to keep in mind:
   restricted files and the allowed hosts don't hold it.
 - What a server's tools say, their descriptions and results, reaches the
   model: add a server only as far as you trust its author.
-- Servers run on this computer: chats on a cloud host or in WSL don't use
-  them.
+- On a cloud host or in WSL, a chat runs your enabled servers there, as
+  you and outside the commands' sandbox, and each start sends their secret
+  values to the host, where they stay in `~/.rovik/keys.json` with the API
+  keys until you remove the keys. A command must be installed on the host
+  (`npx`, `uvx`, Docker...): Rovik installs and translates nothing, and a
+  server that can't start is listed unavailable with why. A `localhost`
+  URL server can't be reached from a host yet. A host on an older Rovik
+  gets no secrets, and **Test on** in Settings → MCP servers doesn't offer
+  it.
 - Values are used as written: `${VAR}` isn't read from the environment.
 
 ### Steering
