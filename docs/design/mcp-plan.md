@@ -123,27 +123,33 @@ Sampling are deprecated in 2026-07-28 anyway).
   `Mcp-Name` headers, on each request; a legacy session's `Mcp-Session-Id`
   echoed, and a 404 for it starts the session again once.
 
-**Both protocol eras** (the spec's "Versioning and Compatibility", a
-dual-era client):
+**Both protocol eras** (the spec's "Versioning and Compatibility"): the
+handshake first, the stateless protocol when a server refuses it.
 
-- stdio: `server/discover` first. A result, or a recognised modern error
-  (`UnsupportedProtocolVersion` with versions to pick from), means a modern
-  server: every request then carries its version and Rovik's identity in
-  `_meta`. Any other error, or no answer within 10 seconds, means a legacy
-  one: `initialize` with the newest legacy version (2025-11-25), then
-  `notifications/initialized`.
-- HTTP: a modern request first; a `4xx` whose body isn't a recognised
-  modern error means legacy: `initialize`, and its session.
-- The era is the server's: kept while its process (or the app) runs.
+- `initialize`, with the newest version that has it (2025-11-25), then
+  `notifications/initialized`: what nearly every server speaks, a dual-era
+  one included. Any of the versions before it that the server answers with
+  is taken. A legacy HTTP server's `Mcp-Session-Id` goes on every request
+  after it, and a 404 for it starts the session again, once.
+- An error to it (a modern-only server doesn't know `initialize`, and may
+  answer with `UnsupportedProtocolVersion`) is followed by
+  `server/discover`: a result that lists 2026-07-28 means a modern server,
+  and every request then carries that version, Rovik's identity and its
+  (no) capabilities in `_meta`, and on HTTP the `Mcp-Method`, `Mcp-Name`
+  and `Mcp-Param-…` (`x-mcp-header`) headers. Otherwise the error to
+  `initialize` is the server's.
+- Why not the spec's probe, `server/discover` first: it stalls on a legacy
+  server that doesn't answer an unknown request before the handshake (the
+  MCP Inspector doesn't probe by default for that reason), and on a server
+  `npx` is still downloading, whose late answer would be taken for none.
 
 **Messages.** `tools/list`, following its cursor, and `tools/call`. A
-server's requests to Rovik (a legacy server's `ping`, `roots/list`,
-`sampling/createMessage`, `elicitation/create`) are answered: `ping` with an
-empty result, the others "method not found". Notifications are read and
-dropped, but for `notifications/tools/list_changed`, which marks the
-server's list stale (Q04). A result asking for input (`input_required`,
-the multi round-trip pattern) is an error for the agent: Rovik can't give
-it.
+legacy server's requests to Rovik are answered: `ping` with an empty
+result, the others (`roots/list`, `sampling/createMessage`,
+`elicitation/create`, which Rovik's empty capabilities don't invite)
+"method not found". Notifications are read and dropped: a run lists the
+tools again (Q04). A result asking for input (`input_required`, the multi
+round-trip pattern) is an error for the agent: Rovik can't give it.
 
 **Time.** Starting and the handshake: 60 seconds (an `npx` server may
 download itself first). Listing: 30 seconds. A call: 10 minutes, or Stop,
@@ -165,13 +171,14 @@ don't hold it, and the page says so. The agent can't add or change one.
   or whose transport, env or headers changed, is stopped; the next run
   starts it with its new settings. A server whose only change is
   `disabledTools` keeps running.
-- Its tools are listed once and kept; `tools/list_changed`, or a server
-  that had to start again, lists them afresh. A run's list is what was
-  kept when it started (Q06).
-- A server that fails to start, or exits, is started again at the next run
-  that needs it (not more often than every 30 seconds); meanwhile the
-  agent's list says it's unavailable, and why, so the agent can tell the
-  user.
+- Each run lists its servers' tools as it starts (`tools/list`, the servers
+  side by side): a server's change of tools, or of the switches on the
+  page, reaches the next run with no notifications to follow. A run's list
+  stays as it was listed (Q06).
+- A server that fails to start or to list, or exits, is started again at
+  the next run that needs it, not more often than once a minute; meanwhile
+  the agent's list says it's unavailable, and why, so the agent can tell
+  the user, and a run doesn't wait on it.
 - The app's exit stops them all (`Core::shutdown`).
 - **Test** on the page (`mcp_test`) starts the server as edited, with the
   secrets typed or saved, lists its tools, and stops it: its name, version,
@@ -224,8 +231,9 @@ GitHub's MCP server. (the server's instructions, cut to 300 characters)
 
 A tool's line is its name, its schema's top-level properties (`?` for one
 not required), and the first sentence of its description, cut to 160
-characters. Servers in name order, tools in the order the server lists
-them. A server that couldn't start has one line saying so, and why.
+characters. Servers and tools in name order: the same text however a
+server orders its list. A server that couldn't start has one line saying
+so, and why.
 
 The list is made when the run starts and is the same on every request of
 the run; from one run to the next it changes only when a server or its

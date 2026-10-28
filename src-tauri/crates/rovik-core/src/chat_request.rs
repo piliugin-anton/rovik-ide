@@ -878,8 +878,9 @@ impl ReplyParser {
 
 /// The first blank line in `buffer`, which holds none before `from`: where
 /// it starts, and its length. The search goes back three bytes, where a
-/// blank line split between two chunks can start.
-fn find_sse_boundary(buffer: &[u8], from: usize) -> Option<(usize, usize)> {
+/// blank line split between two chunks can start. An MCP server's event
+/// stream is read with it too (crate::mcp).
+pub(crate) fn find_sse_boundary(buffer: &[u8], from: usize) -> Option<(usize, usize)> {
     let start = from.saturating_sub(3).min(buffer.len());
     let rest = &buffer[start..];
     let crlf = rest

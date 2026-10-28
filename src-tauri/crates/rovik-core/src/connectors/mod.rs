@@ -43,7 +43,7 @@
 
 mod claude_code;
 mod codex;
-mod harness;
+pub(crate) mod harness;
 mod live;
 pub mod mcp;
 pub mod sessions;

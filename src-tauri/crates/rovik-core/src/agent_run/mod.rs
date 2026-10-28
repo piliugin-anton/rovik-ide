@@ -1299,6 +1299,7 @@ const MAX_MESSAGE_ATTACHMENTS: usize = 20;
 pub fn agent_configure(core: &Core, config: AgentConfig) {
     crate::overlay::chats::set_chat_resolves(config.permissions.chat_resolves_conflicts);
     crate::allowed_hosts::configure(&config.permissions);
+    core.mcp.configure(&config.mcp_servers);
     core.agents.set_config(config);
 }
 
