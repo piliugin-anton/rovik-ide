@@ -49,6 +49,12 @@ export interface AgentPermissions {
   editApproval: ApprovalRule;
   /** Every other tool: reading and searching files, web access. */
   toolApproval: ApprovalRule;
+  /**
+   * The tools of the user's MCP servers (`mcp`, and a connector's own MCP
+   * calls): they change things outside the project, so they ask by default
+   * (docs/design/mcp-plan.md, Q07).
+   */
+  mcpApproval: ApprovalRule;
   /** The model that reviews actions approved "by AI". */
   approvalModel: ModelSelection | null;
   /** Tried in order when the approval model fails. */
@@ -119,6 +125,7 @@ export const DEFAULT_PERMISSIONS: AgentPermissions = {
   commandApproval: { required: false, by: 'user' },
   editApproval: { required: false, by: 'user' },
   toolApproval: { required: false, by: 'user' },
+  mcpApproval: { required: true, by: 'user' },
   approvalModel: null,
   approvalFallbacks: [],
   approvalTypedInput: false,
@@ -197,6 +204,8 @@ export function normalizePermissions(raw: unknown): AgentPermissions {
     commandApproval:
       normalizeRule(r.commandApproval) ?? legacy ?? DEFAULT_PERMISSIONS.commandApproval,
     toolApproval: normalizeRule(r.toolApproval) ?? legacy ?? DEFAULT_PERMISSIONS.toolApproval,
+    // Saved before the MCP rule: MCP calls ask, whatever the other rules say.
+    mcpApproval: normalizeRule(r.mcpApproval) ?? DEFAULT_PERMISSIONS.mcpApproval,
     // Edits used to follow the tool-calls rule.
     editApproval:
       normalizeRule(r.editApproval) ??
@@ -709,7 +718,7 @@ function parseToolArgs(argsJson: string): Record<string, unknown> {
 
 /** Whether some approval is set to be done by the AI reviewer. */
 export function usesAiReview(p: AgentPermissions): boolean {
-  return [p.commandApproval, p.editApproval, p.toolApproval].some(
+  return [p.commandApproval, p.editApproval, p.toolApproval, p.mcpApproval].some(
     (r) => r.required && r.by === 'ai'
   );
 }
@@ -759,6 +768,15 @@ export function describeToolCall(name: string, argsJson: string): string {
       return `Open ${str('url') ?? 'a web page'}`;
     case 'browser_screenshot':
       return `Take a screenshot of ${str('url') ?? 'a web page'}`;
+    case 'mcp': {
+      // The server's tool, as the backend's approval names it.
+      const tool = str('tool') ?? 'an MCP tool';
+      if (args.describe === true) return `Read about ${tool}`;
+      const given = args.arguments;
+      return given === undefined || given === null
+        ? `Call ${tool}`
+        : `Call ${tool} with ${JSON.stringify(given).slice(0, 200)}`;
+    }
     default:
       return `${name}(${argsJson.slice(0, 200)})`;
   }
@@ -781,7 +799,7 @@ export function permissionsSummary(p: AgentPermissions): string {
   const hosts = p.allowAnyHost ? 'any' : `${p.allowedHosts.length} listed`;
   return `Commands: ${commands}, ${describeRule(p.commandApproval)} · Hosts: ${hosts} · Edits: ${describeRule(
     p.editApproval
-  )} · Other tools: ${describeRule(p.toolApproval)}`;
+  )} · Other tools: ${describeRule(p.toolApproval)} · MCP tools: ${describeRule(p.mcpApproval)}`;
 }
 
 const CHECKLIST_SUMMARY: Record<ChecklistMode, string> = {

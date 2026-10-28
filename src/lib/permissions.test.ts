@@ -9,6 +9,8 @@ import {
   normalizeHostEntry,
   normalizePermissions,
   parseCommand,
+  permissionsSummary,
+  usesAiReview,
 } from './permissions';
 
 /*
@@ -104,4 +106,31 @@ test('saved allowed hosts are read again as entries, each once', () => {
   });
   assert.equal(saved.allowAnyHost, false);
   assert.deepEqual(saved.allowedHosts, ['docs.rs', '*.github.com']);
+});
+
+// docs/design/mcp-plan.md, Q07: MCP calls can change things outside the
+// project, so they ask unless the user says otherwise.
+test('MCP tool calls ask by default, also with permissions saved before their rule', () => {
+  const before = normalizePermissions({
+    commandApproval: { required: false, by: 'user' },
+    toolApproval: { required: false, by: 'user' },
+  });
+  assert.deepEqual(before.mcpApproval, { required: true, by: 'user' });
+  assert.match(permissionsSummary(before), / · MCP tools: your approval$/);
+  const free = normalizePermissions({ mcpApproval: { required: false, by: 'user' } });
+  assert.deepEqual(free.mcpApproval, { required: false, by: 'user' });
+  const reviewed = normalizePermissions({ mcpApproval: { required: true, by: 'ai' } });
+  assert.equal(usesAiReview(reviewed), true, 'the AI reviewer is set up for it');
+});
+
+test('an MCP call is described as the backend describes it: the server’s tool and its arguments', () => {
+  assert.equal(
+    describeToolCall('mcp', JSON.stringify({ tool: 'docs.read', arguments: { path: 'a' } })),
+    'Call docs.read with {"path":"a"}'
+  );
+  assert.equal(describeToolCall('mcp', JSON.stringify({ tool: 'docs.list' })), 'Call docs.list');
+  assert.equal(
+    describeToolCall('mcp', JSON.stringify({ tool: 'docs.read', describe: true })),
+    'Read about docs.read'
+  );
 });
