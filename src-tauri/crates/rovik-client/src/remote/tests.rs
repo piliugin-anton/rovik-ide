@@ -959,6 +959,37 @@ fn a_hosts_policy_sends_what_waits_for_the_user_to_the_ai_reviewer() {
     );
 }
 
+/// Q11: a host's policy covers the MCP rule as it covers the others: what
+/// asks the user for an MCP tool goes to the AI reviewer where a command
+/// would, and waits for the user where a command would.
+#[test]
+fn a_hosts_policy_treats_the_mcp_rule_as_the_others() {
+    let asks_the_user = ApprovalRule {
+        required: true,
+        by: Approver::User,
+    };
+    let config = AgentConfig {
+        permissions: Permissions {
+            command_approval: asks_the_user,
+            mcp_approval: asks_the_user,
+            ..Permissions::default()
+        },
+        approval_profiles: vec![start("c", StartKind::Retry, None).profile],
+        ..AgentConfig::default()
+    };
+    for (policy, by) in [
+        (ApprovalPolicy::AiReviewerThenMe, Approver::Ai),
+        (ApprovalPolicy::Autonomous, Approver::Ai),
+        (ApprovalPolicy::WaitForMe, Approver::User),
+    ] {
+        let mut applied = config.clone();
+        policy.apply(&AutonomySettings::default(), &mut applied);
+        let p = &applied.permissions;
+        assert_eq!(p.command_approval.by, by, "{policy:?}");
+        assert_eq!(p.mcp_approval.by, by, "{policy:?}: as a command");
+    }
+}
+
 /// H02: the configuration a host that works on its own gets: what would
 /// wait for the user goes to the AI reviewer, and the block's effort and
 /// budget, each where it sets one, are over the computer's. A message that

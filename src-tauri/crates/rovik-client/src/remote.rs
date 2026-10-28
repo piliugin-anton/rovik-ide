@@ -169,6 +169,7 @@ impl ApprovalPolicy {
             &mut p.command_approval,
             &mut p.edit_approval,
             &mut p.tool_approval,
+            &mut p.mcp_approval,
         ] {
             if rule.required && rule.by == Approver::User {
                 rule.by = Approver::Ai;
