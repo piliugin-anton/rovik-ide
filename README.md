@@ -1268,6 +1268,17 @@ listed, with the list and the setting named so the agent can ask you;
 that host is listed. `browse_url`'s description names the listed hosts,
 as `bash`'s names the allowed commands.
 
+What holds is Rovik's filter (`allowed_hosts/filter.rs`): a proxy of
+Rovik's own that passes a connection to a listed host on and refuses any
+other. The agent's browser goes through it while the list is on, so every
+request Chrome makes is checked: a page's scripts, images and frames, and
+a redirect to another host, while this computer's own pages load
+directly. A tool's result names the hosts a page was kept from ("Not
+loaded (not in the user's allowed hosts): fonts.googleapis.com"). Chrome
+starts again when the list is turned on or off, and the filter goes on
+the way Settings → Network says the agent's browser goes. A cloud host
+follows the list of the last of your computers to send it settings.
+
 ### Steering
 
 In Agent mode, Enter (or the Send arrow beside Stop) sends what's typed to

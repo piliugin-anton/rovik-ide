@@ -12,14 +12,131 @@
 //! The frontend keeps a copy of [`normalize`] for the settings page
 //! (src/lib/permissions.ts): the cases in test-fixtures/allowed-hosts.json
 //! hold both to the same answers.
+//!
+//! The list the agent's work follows is the process's ([`configure`]): the
+//! app's settings, or on a cloud host the last computer's to configure it
+//! (J12). While it's on, the agent's browser and commands reach the network
+//! through the filter ([`filter`], J03), one listening for each client where
+//! that client reaches it ([`filter_port`]).
 
+use crate::net::BrowserProxy;
+use crate::overlay::confine::network::Network;
+use filter::{Client, Denials, Filter, Routes};
 use rovik_protocol::permissions::Permissions;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::{Arc, LazyLock, Mutex, RwLock, Weak};
+use std::time::Instant;
 
 pub mod filter;
 
 /// The longest name a host has.
 const MAX_NAME: usize = 253;
+
+/// The list the agent's work follows, as the settings last set it
+/// ([`configure`]): None, any host.
+static LIST: RwLock<Option<Arc<AllowedHosts>>> = RwLock::new(None);
+
+/// What the filters refused, for the model's notes.
+static DENIALS: LazyLock<Arc<Denials>> = LazyLock::new(Default::default);
+
+/// The filters listening now.
+static LISTENING: Mutex<Vec<Listening>> = Mutex::new(Vec::new());
+
+/// A filter listening for a client.
+struct Listening {
+    client: Client,
+    /// Where: None, on this computer's 127.0.0.1; else in that network,
+    /// whose filters go with it.
+    network: Option<Weak<Network>>,
+    port: u16,
+    serving: tokio::task::JoinHandle<()>,
+}
+
+/// The settings the agent's work follows from now on: the app's, or on a
+/// cloud host the last computer's to configure it (J12).
+pub fn configure(permissions: &Permissions) {
+    let list = AllowedHosts::of(permissions).map(Arc::new);
+    *LIST.write().unwrap_or_else(|e| e.into_inner()) = list;
+}
+
+/// The list the agent's work follows now: None while any host may be
+/// reached.
+pub fn current() -> Option<Arc<AllowedHosts>> {
+    LIST.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The hosts the filters refused `client` since `since`, each once: for
+/// `chat`, those it named as its own and those no client named.
+pub fn refused_since(since: Instant, client: Client, chat: Option<&str>) -> Vec<String> {
+    DENIALS.since(since, client, chat)
+}
+
+/// The port of the filter for `client` in `network` (None: on this
+/// computer's 127.0.0.1), started the first time it's asked for. A
+/// network's filters end once the network is gone.
+pub fn filter_port(client: Client, network: Option<&Arc<Network>>) -> Result<u16, String> {
+    let mut listening = LISTENING.lock().unwrap_or_else(|e| e.into_inner());
+    listening.retain(|l| {
+        let gone = l.network.as_ref().is_some_and(|n| n.strong_count() == 0);
+        if gone {
+            l.serving.abort();
+        }
+        !gone
+    });
+    let same_place = |l: &Listening| match (&l.network, network) {
+        (None, None) => true,
+        (Some(theirs), Some(ours)) => std::ptr::eq(theirs.as_ptr(), Arc::as_ptr(ours)),
+        _ => false,
+    };
+    if let Some(found) = listening
+        .iter()
+        .find(|l| l.client == client && same_place(l))
+    {
+        return Ok(found.port);
+    }
+    let couldnt = |e: std::io::Error| format!("The allowed hosts' filter couldn't listen: {e}");
+    let socket = match network {
+        Some(network) => network.listen(),
+        None => std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),
+    }
+    .map_err(couldnt)?;
+    let port = socket.local_addr().map_err(couldnt)?.port();
+    socket.set_nonblocking(true).map_err(couldnt)?;
+    let listener = {
+        let _runtime = crate::rt::handle().enter();
+        tokio::net::TcpListener::from_std(socket).map_err(couldnt)?
+    };
+    let filter = Arc::new(Filter {
+        client,
+        list: Arc::new(current),
+        upstream: Arc::new(Routes(client)),
+        denials: DENIALS.clone(),
+    });
+    let serving = crate::rt::spawn(filter.serve(listener));
+    listening.push(Listening {
+        client,
+        network: network.map(Arc::downgrade),
+        port,
+        serving,
+    });
+    Ok(port)
+}
+
+/// The proxy the agent's browser starts with while the list is on: its
+/// filter, where Chrome reaches it (in `network`, the agent's network it
+/// joins, else on 127.0.0.1). None while any host may be reached: Chrome
+/// goes the way Settings → Network says (J09).
+pub fn browser_proxy(network: Option<&Arc<Network>>) -> Result<Option<BrowserProxy>, String> {
+    if current().is_none() {
+        return Ok(None);
+    }
+    let port = filter_port(Client::Browser, network)?;
+    Ok(Some(BrowserProxy {
+        server: format!("http://127.0.0.1:{port}"),
+        username: None,
+        password: None,
+    }))
+}
 
 /// The list `Permissions::allowed_hosts` names, read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -251,6 +368,63 @@ mod tests {
         let odd = listing(&["*", "docs.rs", "exa mple.com"]);
         assert_eq!(odd.shown(), "docs.rs");
         assert!(!odd.allows("example.com"));
+    }
+
+    /// The list the process follows, and the browser's filter: in a process
+    /// of their own, as the list is the process's.
+    #[test]
+    fn the_browsers_filter_follows_the_processs_list() {
+        crate::testing::in_a_process_of_its_own(
+            "allowed_hosts::tests::the_browsers_filter_in_a_process_of_its_own",
+        );
+    }
+
+    #[test]
+    #[ignore = "run in a process of its own by the_browsers_filter_follows_the_processs_list"]
+    fn the_browsers_filter_in_a_process_of_its_own() {
+        use crate::agent_run::{agent_configure, AgentConfig};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        assert_eq!(browser_proxy(None), Ok(None), "any host: Chrome's own way");
+        // As the app's settings come.
+        let test = crate::testing::TestCore::new();
+        let mut config = AgentConfig::default();
+        config.permissions.allow_any_host = false;
+        config.permissions.allowed_hosts = vec!["docs.rs".into()];
+        agent_configure(&test.core, config);
+        assert_eq!(
+            current().map(|list| list.shown()).as_deref(),
+            Some("docs.rs")
+        );
+        let proxy = browser_proxy(None).unwrap().expect("the filter");
+        let port: u16 = proxy
+            .server
+            .strip_prefix("http://127.0.0.1:")
+            .and_then(|port| port.parse().ok())
+            .unwrap_or_else(|| panic!("{}", proxy.server));
+        assert_eq!(browser_proxy(None).unwrap(), Some(proxy), "one, kept");
+        let started = Instant::now();
+        let answer = crate::rt::block_on(async move {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            stream
+                .write_all(b"CONNECT evil.example:443 HTTP/1.1\r\n\r\n")
+                .await
+                .unwrap();
+            let mut answer = String::new();
+            stream.read_to_string(&mut answer).await.unwrap();
+            answer
+        });
+        assert!(answer.starts_with("HTTP/1.1 403"), "{answer}");
+        assert_eq!(
+            refused_since(started, Client::Browser, None),
+            ["evil.example"]
+        );
+        assert!(refused_since(started, Client::Commands, None).is_empty());
+        // Any host again: Chrome goes its own way.
+        agent_configure(&test.core, AgentConfig::default());
+        assert_eq!(current(), None);
+        assert_eq!(browser_proxy(None), Ok(None));
     }
 
     #[test]

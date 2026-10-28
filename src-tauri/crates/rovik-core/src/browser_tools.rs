@@ -23,6 +23,10 @@
 //!   followed.
 //! - Only http(s) URLs. `file://` would let the model read any local file,
 //!   bypassing the project-root sandbox the file tools enforce.
+//! - While the user's allowed hosts are on, Chrome's proxy is Rovik's filter
+//!   (allowed_hosts/filter.rs): every request it makes, a page's resources
+//!   and redirects too, reaches only a listed host (allowed-hosts-plan.md,
+//!   J09).
 
 use crate::agent_run::StopSignal;
 use crate::overlay::confine::network::Network;
@@ -117,16 +121,23 @@ impl BrowserState {
         let run = async {
             let mut inner = self.0.lock().await;
 
-            // Started again on a proxy set since.
-            let proxy = crate::net::browser_proxy().await;
+            // Through the allowed hosts' filter while the list is on (J09),
+            // else the way Settings → Network says; started again on a
+            // proxy set since.
+            let network = crate::overlay::confine::network::current();
+            let filter = crate::allowed_hosts::browser_proxy(network.as_ref())?;
+            let filtered = filter.is_some();
+            let proxy = match filter {
+                Some(filter) => Some(filter),
+                None => crate::net::browser_proxy().await,
+            };
             if inner.live.as_ref().is_some_and(|live| live.proxy != proxy) {
                 if let Some(old) = inner.live.take() {
                     let _ = old.browser.close().await;
                 }
             }
             if inner.live.is_none() {
-                let network = crate::overlay::confine::network::current();
-                inner.live = Some(launch(proxy, network).await?);
+                inner.live = Some(launch(proxy, network, filtered).await?);
                 self.spawn_idle_watcher();
             }
             inner.last_used = Some(Instant::now());
@@ -264,11 +275,15 @@ fn no_browser() -> String {
 /// Network gives the browser one (eoka signs in to it), or directly with
 /// `direct://`; without, Chrome's own settings, which follow the system's
 /// proxy. In `network`, the user's private network on a team server (D20):
-/// Chrome joins it as it starts, as the agent's commands do.
+/// Chrome joins it as it starts, as the agent's commands do. `filtered`:
+/// the proxy is the allowed hosts' filter, which WebRTC's UDP mustn't go
+/// around, and which Chrome's background requests needn't reach
+/// (allowed-hosts-plan.md, J09).
 fn launch_config(
     chrome: &Path,
     proxy: Option<&crate::net::BrowserProxy>,
     network: Option<&Arc<Network>>,
+    filtered: bool,
 ) -> StealthConfig {
     let mut config = StealthConfig {
         headless: true,
@@ -289,6 +304,14 @@ fn launch_config(
         config.user_data_dir = Some(snap.profile.to_string_lossy().into_owned());
         config.runtime_dir = Some(snap.runtime.to_string_lossy().into_owned());
     }
+    // Behind the filter, Chrome's own background requests (updates, its
+    // services) would only be refused and named as a page's.
+    if filtered {
+        config.extra_args.extend([
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".into(),
+            "--disable-background-networking".into(),
+        ]);
+    }
     // Its localhost is then the user's, where the servers the agent started
     // listen; the server's own, every user's, isn't reached.
     if let Some(network) = network.cloned() {
@@ -301,9 +324,10 @@ fn launch_config(
 async fn launch(
     proxy: Option<crate::net::BrowserProxy>,
     network: Option<Arc<Network>>,
+    filtered: bool,
 ) -> Result<Live, String> {
     let chrome = chrome_path().ok_or_else(no_browser)?;
-    let config = launch_config(&chrome, proxy.as_ref(), network.as_ref());
+    let config = launch_config(&chrome, proxy.as_ref(), network.as_ref(), filtered);
     // The snap's profile is wiped on every launch so each session starts
     // clean.
     if let Some(profile) = &config.user_data_dir {
@@ -1034,14 +1058,19 @@ mod tests {
             username: Some("alice".into()),
             password: Some(rovik_protocol::Secret("pw".into())),
         };
-        let config = launch_config(chrome, Some(&proxy), None);
+        let config = launch_config(chrome, Some(&proxy), None, false);
         assert_eq!(
             config.proxy.as_deref(),
             Some("http://proxy.example.com:3128")
         );
         assert_eq!(config.proxy_username.as_deref(), Some("alice"));
         assert_eq!(config.proxy_password.as_deref(), Some("pw"));
-        let config = launch_config(chrome, Some(&crate::net::BrowserProxy::direct()), None);
+        let config = launch_config(
+            chrome,
+            Some(&crate::net::BrowserProxy::direct()),
+            None,
+            false,
+        );
         assert_eq!(
             (
                 config.proxy.as_deref(),
@@ -1050,11 +1079,37 @@ mod tests {
             ),
             (Some("direct://"), None, None)
         );
-        let config = launch_config(chrome, None, None);
+        let config = launch_config(chrome, None, None, false);
         assert_eq!(
             (config.proxy, config.proxy_username, config.proxy_password),
             (None, None, None)
         );
+    }
+
+    /// Behind the allowed hosts' filter, WebRTC's UDP doesn't go around the
+    /// proxy (allowed-hosts-plan.md, J09); behind another proxy it's as it
+    /// was.
+    #[test]
+    fn chrome_behind_the_filter_keeps_webrtc_to_the_proxy() {
+        let chrome = Path::new("/opt/rovik/browser/155.0.8059.39/chrome");
+        let filter = crate::net::BrowserProxy {
+            server: "http://127.0.0.1:4100".into(),
+            username: None,
+            password: None,
+        };
+        let flags = [
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--disable-background-networking",
+        ];
+        let config = launch_config(chrome, Some(&filter), None, true);
+        assert_eq!(config.proxy.as_deref(), Some("http://127.0.0.1:4100"));
+        for flag in flags {
+            assert!(config.extra_args.iter().any(|arg| arg == flag), "{flag}");
+        }
+        let config = launch_config(chrome, Some(&filter), None, false);
+        for flag in flags {
+            assert!(!config.extra_args.iter().any(|arg| arg == flag), "{flag}");
+        }
     }
 
     /// Off a team server's private network, Chrome starts as it is, its
@@ -1062,7 +1117,7 @@ mod tests {
     #[test]
     fn chrome_is_started_headless_over_a_pipe_with_no_port() {
         let chrome = Path::new("/opt/rovik/browser/155.0.8059.39/chrome");
-        let config = launch_config(chrome, None, None);
+        let config = launch_config(chrome, None, None, false);
         assert_eq!(config.chrome_path.as_deref(), chrome.to_str());
         assert!(config.headless);
         assert_eq!(config.pipe, cfg!(unix));
@@ -1226,6 +1281,65 @@ mod tests {
             });
         }
 
+        /// Behind the allowed hosts' filter, a page's resource from a host
+        /// that isn't listed is kept out, and the filter says so
+        /// (allowed-hosts-plan.md, J09): in a process of its own, as the
+        /// list is the process's.
+        #[test]
+        fn a_pages_resource_from_an_unlisted_host_is_kept_out() {
+            crate::testing::in_a_process_of_its_own(
+                "browser_tools::tests::real_chrome::a_pages_unlisted_resource_in_a_process_of_its_own",
+            );
+        }
+
+        #[test]
+        #[ignore = "run in a process of its own by a_pages_resource_from_an_unlisted_host_is_kept_out"]
+        fn a_pages_unlisted_resource_in_a_process_of_its_own() {
+            use crate::agent_run::tools::{execute, CallContext};
+            if chrome_path().is_none() {
+                eprintln!("no Chrome or Chromium here, skipping");
+                return;
+            }
+            crate::allowed_hosts::configure(&rovik_protocol::permissions::Permissions {
+                allow_any_host: false,
+                allowed_hosts: vec!["docs.rs".into()],
+                ..Default::default()
+            });
+            let test = crate::testing::TestCore::new();
+            crate::rt::block_on(async {
+                let url = serve(
+                    "<!doctype html><title>Kept out</title><p>A page.</p>\
+                     <img src=\"http://unlisted.example/pixel.png\">",
+                )
+                .await;
+                let ctx = CallContext {
+                    seen: crate::file_guard::Seen::new("kept-out"),
+                    restricted: Arc::default(),
+                    owner: "kept-out".into(),
+                    checks_owner: "kept-out".into(),
+                    hidden: Vec::new(),
+                    note: Arc::new(|_| {}),
+                    background_chat: None,
+                    reply_cut_off: false,
+                };
+                let stop = Arc::new(StopSignal::new());
+                let args = serde_json::json!({ "url": url }).to_string();
+                let result = execute(&test.core, None, "browse_url", &args, &stop, &ctx).await;
+                assert!(
+                    result.content.starts_with("# Kept out"),
+                    "{}",
+                    result.content
+                );
+                let note = result
+                    .content
+                    .lines()
+                    .find(|line| line.starts_with("Not loaded (not in the user's allowed hosts): "))
+                    .unwrap_or_else(|| panic!("{}", result.content));
+                assert!(note.contains("unlisted.example"), "{note}");
+                test.core.browser.shutdown().await;
+            });
+        }
+
         /// A private network for one test, where pasta is installed: as a
         /// team server's daemon makes one for its user (D20).
         #[cfg(target_os = "linux")]
@@ -1264,7 +1378,7 @@ mod tests {
             for (n, network) in networks.into_iter().enumerate() {
                 let profile = dir.0.join(format!("profile-{n}"));
                 crate::rt::block_on(async {
-                    let mut config = launch_config(&wrapper, None, network);
+                    let mut config = launch_config(&wrapper, None, network, false);
                     config.user_data_dir = Some(profile.to_string_lossy().into_owned());
                     let browser = Browser::launch_with_config(config).await.unwrap();
                     let pid = browser.process_id().unwrap();
@@ -1319,7 +1433,7 @@ mod tests {
                     )
                     .await;
                 }
-                let live = launch(None, Some(network.clone())).await.unwrap();
+                let live = launch(None, Some(network.clone()), false).await.unwrap();
                 open(&live.page, &format!("http://localhost:{port}/"))
                     .await
                     .unwrap();

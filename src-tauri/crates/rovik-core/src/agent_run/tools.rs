@@ -988,6 +988,38 @@ pub async fn execute(
     }
 }
 
+/// The hosts the browser's filter kept out since `started`, as a sentence
+/// for the model: a page's resources from other hosts, or the one a
+/// redirect led to (docs/design/allowed-hosts-plan.md, J09). None when it
+/// kept none out, as with the list off.
+fn kept_out(started: std::time::Instant) -> Option<String> {
+    use crate::allowed_hosts::filter::Client;
+    let hosts = crate::allowed_hosts::refused_since(started, Client::Browser, None);
+    (!hosts.is_empty()).then(|| {
+        format!(
+            "Not loaded (not in the user's allowed hosts): {}.",
+            hosts.join(", ")
+        )
+    })
+}
+
+/// A browser tool's result, with [`kept_out`]'s note after it.
+fn noting_kept_out(mut result: ToolResult, started: std::time::Instant) -> ToolResult {
+    if let Some(note) = kept_out(started) {
+        result.content.push_str("\n\n");
+        result.content.push_str(&note);
+    }
+    result
+}
+
+/// A browser tool's error, with [`kept_out`]'s note after it.
+fn error_kept_out(error: String, started: std::time::Instant) -> String {
+    match kept_out(started) {
+        Some(note) => format!("{error} {note}"),
+        None => error,
+    }
+}
+
 async fn run(
     core: &Core,
     root: Option<&str>,
@@ -1027,15 +1059,17 @@ async fn run(
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"query\" is required."));
             };
+            let started = std::time::Instant::now();
             let hits = crate::browser_tools::web_search_inner(
                 &core.browser,
                 query.into(),
                 uint(args, "max_results"),
                 Some(&**stop),
             )
-            .await?;
+            .await
+            .map_err(|e| error_kept_out(e, started))?;
             if hits.is_empty() {
-                return Ok(ToolResult::text("No results."));
+                return Ok(noting_kept_out(ToolResult::text("No results."), started));
             }
             let lines: Vec<String> = hits
                 .iter()
@@ -1049,19 +1083,24 @@ async fn run(
                     format!("{}. {}\n   {}{snippet}", i + 1, h.title, h.url)
                 })
                 .collect();
-            return Ok(ToolResult::text(lines.join("\n\n")));
+            return Ok(noting_kept_out(
+                ToolResult::text(lines.join("\n\n")),
+                started,
+            ));
         }
         "browse_url" => {
             let Some(url) = text(args, "url").filter(|u| !u.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"url\" is required."));
             };
+            let started = std::time::Instant::now();
             let page = crate::browser_tools::browse_url_inner(
                 &core.browser,
                 url.into(),
                 uint(args, "max_chars"),
                 Some(&**stop),
             )
-            .await?;
+            .await
+            .map_err(|e| error_kept_out(e, started))?;
             let title = if page.title.is_empty() {
                 "(untitled)"
             } else {
@@ -1091,29 +1130,32 @@ async fn run(
                         .map(|l| format!("- {}: {}", l.text, l.url)),
                 );
             }
-            return Ok(ToolResult::text(parts.join("\n")));
+            return Ok(noting_kept_out(ToolResult::text(parts.join("\n")), started));
         }
         "browser_screenshot" => {
+            let started = std::time::Instant::now();
             let shot = crate::browser_tools::browser_screenshot_inner(
                 &core.browser,
                 &core.db,
                 text(args, "url").map(str::to_string),
                 Some(&**stop),
             )
-            .await?;
+            .await
+            .map_err(|e| error_kept_out(e, started))?;
             let title = if shot.title.is_empty() {
                 "untitled"
             } else {
                 &shot.title
             };
-            return Ok(ToolResult {
+            let result = ToolResult {
                 content: format!(
                     "Screenshot of {} ({title}), {}x{}. The image is attached in the next message.",
                     shot.url, shot.width, shot.height
                 ),
                 attachments: vec![shot.attachment_id],
                 ..Default::default()
-            });
+            };
+            return Ok(noting_kept_out(result, started));
         }
         _ => {}
     }
