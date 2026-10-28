@@ -4687,6 +4687,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "http",
+ "httparse",
  "hyper-util",
  "ignore",
  "image",

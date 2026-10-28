@@ -50,7 +50,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tunnel::Hop;
+pub(crate) use tunnel::{open as open_tunnel, Hop};
 
 /// How long a connection the shared client keeps may wait for its next
 /// request: under the minute load balancers commonly give one.
@@ -321,6 +321,22 @@ pub async fn cloud_host_proxy(host: &str, port: u16) -> Result<Option<String>, S
 /// settings say. None: Chrome's own settings.
 pub async fn browser_proxy() -> Option<BrowserProxy> {
     NET.browser_proxy().await
+}
+
+/// How the agent's connection to `host:port` goes on from the allowed
+/// hosts' filter (docs/design/allowed-hosts-plan.md, J03): the browser's
+/// (`browser`) as Settings → Network's browser row says, on a cloud host as
+/// the app said, its own settings being the system's proxy; the commands'
+/// through the system's proxy, as their environment would have them go.
+pub(crate) async fn agent_hop(browser: bool, host: &str, port: u16) -> Result<Hop, String> {
+    NET.agent_hop(browser, host, port).await
+}
+
+/// How long connecting may take, as the settings say (on a cloud host, as
+/// the app said).
+pub(crate) async fn connect_timeout() -> Duration {
+    NET.current().await;
+    effective(&NET.lock()).timeout
 }
 
 /// How cloud hosts are to connect, as the settings say, the proxies'
@@ -646,6 +662,32 @@ impl Net {
         }
     }
 
+    async fn agent_hop(&self, browser: bool, host: &str, port: u16) -> Result<Hop, String> {
+        if !browser {
+            return system_hop(host, port, FILTER_THROUGH);
+        }
+        if let Some(hosted) = self.lock().hosted.clone() {
+            return match &hosted.browser {
+                Some(ProxyRoute::Direct) => Ok(Hop::Direct),
+                Some(ProxyRoute::Proxy(proxy)) => Ok(hop_of(proxy)),
+                None => system_hop(host, port, FILTER_THROUGH),
+            };
+        }
+        self.current().await;
+        let state = self.lock();
+        match &state.settings.routes.browser {
+            Route::Direct => Ok(Hop::Direct),
+            Route::Proxy(id) => match state.settings.proxy(id) {
+                Some(proxy) => Ok(hop_of(&endpoint_of(&state, proxy))),
+                None => Err(format!(
+                    "{} goes through a proxy that isn't saved.",
+                    Row::Browser.name()
+                )),
+            },
+            Route::Own | Route::Auto | Route::System => system_hop(host, port, FILTER_THROUGH),
+        }
+    }
+
     async fn host_network(&self) -> HostNetwork {
         self.current().await;
         let state = self.lock();
@@ -850,7 +892,7 @@ fn cloud_hop(state: &State, host: &str, port: u16) -> Result<Hop, String> {
     }
     let settings = &state.settings;
     match &settings.routes.ssh {
-        Route::System => system_hop(host, port),
+        Route::System => system_hop(host, port, SSH_THROUGH),
         Route::Proxy(id) => match settings.proxy(id) {
             Some(proxy) => Ok(hop_of(&endpoint_of(state, proxy))),
             None => Err(format!(
@@ -877,9 +919,29 @@ fn hop_of(proxy: &ProxyEndpoint) -> Hop {
     }
 }
 
+/// What goes through a tunnel, and what to choose instead of a system's
+/// proxy it can't go through: for [`system_hop`]'s errors.
+struct Through {
+    what: &'static str,
+    instead: &'static str,
+}
+
+/// A cloud host's SSH connection.
+const SSH_THROUGH: Through = Through {
+    what: "an SSH connection",
+    instead: "choose a saved HTTP or SOCKS5 proxy for SSH to cloud hosts, or no proxy",
+};
+
+/// The allowed hosts' filter going on.
+const FILTER_THROUGH: Through = Through {
+    what: "Rovik's filter for the allowed hosts",
+    instead: "set an HTTP or SOCKS5 proxy instead, or none",
+};
+
 /// The system's proxy for an HTTPS connection to `host:port`, which is
-/// what a tunnel to it is: an HTTP proxy's CONNECT, or SOCKS5.
-fn system_hop(host: &str, port: u16) -> Result<Hop, String> {
+/// what a tunnel to it is: an HTTP proxy's CONNECT, or SOCKS5. `through`
+/// says what the tunnel is for, in an error.
+fn system_hop(host: &str, port: u16, through: Through) -> Result<Hop, String> {
     let destination: http::Uri = format!("https://{}", authority(host, port))
         .parse()
         .map_err(|_| format!("{host} isn't a host's name or address."))?;
@@ -910,12 +972,12 @@ fn system_hop(host: &str, port: u16) -> Result<Hop, String> {
             remote_names: scheme == "socks5h",
         }),
         Some("https") => Err(format!(
-            "The system's proxy, {shown}, is reached over HTTPS, which an SSH connection \
-             can't go through: choose a saved proxy for SSH to cloud hosts, or no proxy."
+            "The system's proxy, {shown}, is reached over HTTPS, which {} can't go through: {}.",
+            through.what, through.instead
         )),
         _ => Err(format!(
-            "The system's proxy, {shown}, isn't one an SSH connection can go through: \
-             choose a saved HTTP or SOCKS5 proxy for SSH to cloud hosts, or no proxy."
+            "The system's proxy, {shown}, isn't one {} can go through: {}.",
+            through.what, through.instead
         )),
     }
 }

@@ -29,6 +29,8 @@ base64 = "0.23.1"
 # reqwest finds it for HTTP: the variables, and macOS's and Windows's settings.
 http = "1"
 hyper-util = { workspace = true, features = ["client-proxy", "client-proxy-system"] }
+# The requests the allowed hosts' filter takes (src/allowed_hosts/filter.rs).
+httparse = "1.10"
 rusqlite.workspace = true
 sha2.workspace = true
 # The pinned Chrome for Testing's archive (pinned_browser.rs, D19).

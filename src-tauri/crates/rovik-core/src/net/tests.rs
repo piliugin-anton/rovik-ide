@@ -1122,6 +1122,46 @@ async fn the_browser_starts_the_way_it_is_set() {
     assert_eq!(net.browser_proxy().await, None);
 }
 
+/// The allowed hosts' filter takes the browser's connections on the way
+/// the browser row says, on a cloud host the way the app said
+/// (allowed-hosts-plan.md, J03).
+#[tokio::test]
+async fn the_filter_takes_the_browser_on_its_own_way() {
+    let net = Net::default();
+    let mut settings = NetworkSettings {
+        proxies: vec![proxy(
+            "http",
+            ProxyKind::Http,
+            "proxy.example.com",
+            3128,
+            Some("alice"),
+        )],
+        ..NetworkSettings::default()
+    };
+    settings.routes.browser = Route::Direct;
+    net.save(settings.clone(), &passwords(&[("http", Some("s3cret"))]))
+        .unwrap();
+    assert_eq!(net.agent_hop(true, "docs.rs", 443).await, Ok(Hop::Direct));
+
+    settings.routes.browser = Route::Proxy("http".into());
+    net.save(settings, &none()).unwrap();
+    assert_eq!(
+        net.agent_hop(true, "docs.rs", 443).await,
+        Ok(Hop::http(
+            "proxy.example.com",
+            3128,
+            Some("alice"),
+            "s3cret"
+        ))
+    );
+
+    net.set_host_network(Some(HostNetwork {
+        browser: Some(ProxyRoute::Direct),
+        ..HostNetwork::default()
+    }));
+    assert_eq!(net.agent_hop(true, "docs.rs", 443).await, Ok(Hop::Direct));
+}
+
 /// The system's proxy goes to the browser as this computer's requests
 /// find it, signed in to with what its URL has.
 #[test]

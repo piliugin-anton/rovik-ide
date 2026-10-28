@@ -16,6 +16,8 @@
 use rovik_protocol::permissions::Permissions;
 use std::net::IpAddr;
 
+pub mod filter;
+
 /// The longest name a host has.
 const MAX_NAME: usize = 253;
 
