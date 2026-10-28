@@ -1,8 +1,9 @@
 //! What the agent may do, and what needs approval first. Two layers:
 //!
-//!   1. Permission: may this run at all? Only `bash` is restricted,
-//!      by the allowed-commands list (or "any command"). A refused call
-//!      never reaches approval.
+//!   1. Permission: may this run at all? `bash` is restricted by the
+//!      allowed-commands list (or "any command"), the web tools by the
+//!      allowed hosts (or "any host"). A refused call never reaches
+//!      approval.
 //!   2. Approval: commands, file edits and the other tool calls each have
 //!      their own rule: whether approval is required, and who gives it (the
 //!      user, or the AI reviewer model).
@@ -12,6 +13,7 @@
 //! this is where they're enforced. They travel to the daemon too, so their
 //! type is the protocol's (rovik-protocol).
 
+use crate::allowed_hosts::{self, AllowedHosts};
 use regex::Regex;
 use std::ops::Range;
 use std::sync::LazyLock;
@@ -1620,6 +1622,9 @@ pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -
             return ToolVerdict::Refused(reason);
         }
     }
+    if let Some(reason) = host_refusal(name, args_json, permissions) {
+        return ToolVerdict::Refused(reason);
+    }
 
     let rule = if name == "bash" {
         permissions.command_approval
@@ -1631,6 +1636,39 @@ pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -
     ToolVerdict::Permitted {
         approval: rule.required.then_some(rule.by),
     }
+}
+
+/// Why a web tool's call isn't permitted by the user's allowed hosts, if it
+/// isn't (docs/design/allowed-hosts-plan.md, J02): the page `browse_url`,
+/// `browser_screenshot` or a harness's `WebFetch` would open, or the
+/// search engine `web_search` asks. This computer's own pages are always
+/// permitted. A URL the tool can't open is left for the tool to refuse.
+fn host_refusal(name: &str, args_json: &str, permissions: &Permissions) -> Option<String> {
+    let list = AllowedHosts::of(permissions)?;
+    let host = match name {
+        "web_search" => crate::browser_tools::SEARCH_HOST.to_string(),
+        "browse_url" | "browser_screenshot" | "WebFetch" => {
+            let url = str_arg(args_json, "url").filter(|url| !url.trim().is_empty())?;
+            let url = crate::browser_tools::validate_url(&url).ok()?;
+            reqwest::Url::parse(&url).ok()?.host_str()?.to_string()
+        }
+        _ => return None,
+    };
+    if allowed_hosts::is_loopback(&host) || list.allows(&host) {
+        return None;
+    }
+    let ask = format!("ask the user to add {host} in Settings → Permissions & approval");
+    Some(match name {
+        "web_search" => format!(
+            "Web search goes to {host}, which isn't in the user's allowed hosts ({}). Open a page on \
+             a listed host with browse_url, or {ask}.",
+            list.shown()
+        ),
+        _ => format!(
+            "{host} isn't in the user's allowed hosts ({}). Use a listed host, or {ask}.",
+            list.shown()
+        ),
+    })
 }
 
 /// Whether the model should be offered bash at all.
@@ -2268,6 +2306,65 @@ mod tests {
         assert!(!modifies("npx eslint ."));
         assert!(modifies("find . -delete"));
         assert!(!modifies("node --version"));
+    }
+
+    /// With the list on, the web tools reach the user's allowed hosts and
+    /// this computer's own pages, nothing else (allowed-hosts-plan.md, J02).
+    #[test]
+    fn web_tools_reach_only_the_allowed_hosts() {
+        let listed = Permissions {
+            allow_any_host: false,
+            allowed_hosts: vec!["docs.rs".into(), "*.github.com".into()],
+            ..Permissions::default()
+        };
+        let refusal = |name: &str, args: serde_json::Value, p: &Permissions| match check_tool_call(
+            name,
+            &args.to_string(),
+            p,
+        ) {
+            ToolVerdict::Refused(why) => Some(why),
+            ToolVerdict::Permitted { .. } => None,
+        };
+        let refused = |name: &str, args: serde_json::Value| refusal(name, args, &listed);
+        let url = |url: &str| serde_json::json!({ "url": url });
+        assert_eq!(refused("browse_url", url("https://docs.rs/tokio")), None);
+        assert_eq!(refused("browse_url", url("DOCS.rs/tokio")), None);
+        assert_eq!(
+            refused("browser_screenshot", url("http://api.github.com/")),
+            None
+        );
+        // The page open now, whose host was checked as it opened.
+        assert_eq!(refused("browser_screenshot", serde_json::json!({})), None);
+        assert_eq!(refused("browse_url", url("http://localhost:1420/")), None);
+        assert_eq!(refused("WebFetch", url("http://127.0.0.1:3000/a")), None);
+        let why = refused("browse_url", url("https://evil.example/?q=secret")).unwrap();
+        assert!(
+            why.starts_with(
+                "evil.example isn't in the user's allowed hosts (docs.rs, *.github.com)"
+            ),
+            "{why}"
+        );
+        assert!(refused("WebFetch", url("https://github.com/")).is_some());
+        assert!(refused("browser_screenshot", url("https://github.io/")).is_some());
+        let search = refused("web_search", serde_json::json!({ "query": "tokio" })).unwrap();
+        assert!(
+            search.starts_with("Web search goes to html.duckduckgo.com"),
+            "{search}"
+        );
+        // A URL no web tool opens is the tool's to refuse.
+        assert_eq!(refused("browse_url", url("file:///etc/passwd")), None);
+        // The search engine listed, web search runs; any host, all do.
+        let mut searching = listed.clone();
+        searching.allowed_hosts.push("html.duckduckgo.com".into());
+        let query = serde_json::json!({ "query": "tokio" });
+        assert_eq!(refusal("web_search", query, &searching), None);
+        let any = Permissions::default();
+        assert_eq!(
+            refusal("browse_url", url("https://evil.example"), &any),
+            None
+        );
+        // Other tools have no host.
+        assert_eq!(refused("read", serde_json::json!({ "path": "a.rs" })), None);
     }
 
     #[test]

@@ -80,8 +80,11 @@ async fn start(
 ) -> Result<Started, String> {
     let program = resolve_program(&settings.program)?;
     let cwd = cwd_of(turn);
-    // As with Codex's own tools: the user's private network on a server.
-    let network = crate::overlay::confine::network::current();
+    // As with Codex's own tools: the agent's network, held to the allowed
+    // hosts.
+    let chat = turn.dialog_id.as_deref().unwrap_or_default();
+    let held = crate::allowed_hosts::hold_program(chat)?;
+    let network = held.network.clone();
     let (sender, calls) = mpsc::unbounded_channel();
     let tools = McpServer::start_sending(
         &turn.tools,
@@ -115,13 +118,12 @@ async fn start(
     env.push((TOOLS_TOKEN.into(), tools.token().into()));
     env.push((HOOKS_TOKEN.into(), hooks_server.token().into()));
     env.extend(loopback_env());
-    let chat = turn.dialog_id.as_deref().unwrap_or_default();
     let process = Process::spawn_with_input(
         &program,
         &args,
         &env,
         Some(&cwd),
-        network.as_deref().map(|network| (network, chat)),
+        Some((&held, chat)),
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
         Vec::new(),
     )?;

@@ -423,6 +423,13 @@ daemon's log say why. `ROVIK_PRIVATE_NETWORK=0` in a daemon's environment
 turns the network off, for troubleshooting. A WSL distribution, one
 person's computer, keeps its own network.
 
+While the user's allowed hosts are on (Settings → Permissions & approval →
+Network, the README's "Allowed hosts"), the network is sealed: pasta starts
+again with no addresses, routes or DNS, so its only way out is Rovik's
+filter, which listens inside and passes connections to listed hosts alone.
+Its servers stay as they were. A host follows the list of the last of the
+user's computers to send it settings.
+
 ### Pages
 
 A command that opens a page of one of its servers, as `vite --open` does,
@@ -552,6 +559,12 @@ chat for ten minutes.
   service isn't running. A service built from the project's own Dockerfile
   is the project's code, which the agent runs with its commands: it isn't
   started.
+- **Held to the allowed hosts.** While the user's allowed hosts are on,
+  each of the project's networks is internal: its services reach each
+  other, and nothing outside. A service on a network that isn't the
+  project's, or with another network mode than `none` or another
+  service's, isn't started, and the agent is told why. Containers made
+  before the list was turned on or off are made again.
 - **Its life.** A service runs until the user's daemon stops (a restart, an
   upgrade, a reboot), which stops it cleanly first; its volumes stay. Its
   containers make no cgroups of their own and stay under the daemon's

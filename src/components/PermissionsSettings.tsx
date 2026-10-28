@@ -2,11 +2,12 @@
 //
 // Settings → Permissions & approval (lib/permissions.ts): what the agent
 // may do in every chat on this computer, and what waits for an approval
-// first. Commands are restricted by an allowed list (or "any command");
-// commands, file edits and the other tool calls each have an approval
-// rule: none, by you, or by the AI reviewer model chosen at the end of the
-// page. The backend enforces them (agent_run/permissions.rs). What happens
-// while a run goes and when it ends is on Settings → Agent runs.
+// first. Commands are restricted by an allowed list (or "any command"),
+// the hosts the agent reaches by another (or "any host"); commands, file
+// edits and the other tool calls each have an approval rule: none, by
+// you, or by the AI reviewer model chosen at the end of the page. The
+// backend enforces them (agent_run/permissions.rs). What happens while a
+// run goes and when it ends is on Settings → Agent runs.
 import { createMemo, For, Show } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import type { SettingsPage } from '../lib/appSettings';
@@ -15,6 +16,7 @@ import { isConnector } from '../lib/connectors';
 import { APPROVE_AT, isJevModel, REJECT_AT } from '../lib/aiApproval';
 import {
   DEFAULT_ALLOWED_COMMANDS,
+  normalizeHostEntry,
   sameModel,
   splitWords,
   usesAiReview,
@@ -124,6 +126,33 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
   const isDefaultList = () =>
     p().allowedCommands.length === DEFAULT_ALLOWED_COMMANDS.length &&
     p().allowedCommands.every((c, i) => c === DEFAULT_ALLOWED_COMMANDS[i]);
+
+  /*
+   * Allowed hosts
+   */
+
+  const [newHost, setNewHost] = createSignal('');
+  const [hostProblem, setHostProblem] = createSignal<string | null>(null);
+
+  function addHost() {
+    const typed = newHost().trim();
+    if (!typed) return;
+    const entry = normalizeHostEntry(typed);
+    if (!entry) {
+      setHostProblem(
+        `“${typed}” isn’t a host: type a name (docs.rs), its subdomains (*.github.com) or an address.`
+      );
+      return;
+    }
+    if (!p().allowedHosts.includes(entry)) {
+      patch({ allowedHosts: [...p().allowedHosts, entry] });
+    }
+    setNewHost('');
+    setHostProblem(null);
+  }
+
+  const removeHost = (entry: string) =>
+    patch({ allowedHosts: p().allowedHosts.filter((h) => h !== entry) });
 
   /*
    * AI reviewer models: the enabled models, as in the chat's model picker.
@@ -295,6 +324,85 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
           offText="Allowed commands run right away."
           onChange={(commandApproval) => patch({ commandApproval })}
         />
+      </section>
+
+      {/* Network */}
+      <section class="settings-section">
+        <div class="settings-section-title">Network</div>
+        <p class="settings-hint">
+          Hosts the agent may reach: its web search, the pages it opens and screenshots, its
+          commands, and Claude Code’s and Codex’s runs, which have no other way out and need their
+          own service’s hosts listed. This computer’s own services (localhost) are always reachable.
+        </p>
+
+        <SettingRow label="Can reach">
+          <Segmented
+            label="Which hosts can be reached"
+            value={p().allowAnyHost ? 'any' : 'listed'}
+            options={[
+              { value: 'listed', label: 'Listed only', title: 'Only the hosts listed below' },
+              { value: 'any', label: 'Any host', title: 'No list: every host can be reached' },
+            ]}
+            onChange={(v) => patch({ allowAnyHost: v === 'any' })}
+          />
+        </SettingRow>
+
+        <Show when={!p().allowAnyHost}>
+          <div class="command-list">
+            <For
+              each={p().allowedHosts}
+              fallback={
+                <div class="command-list-empty">No hosts listed: only localhost is reached.</div>
+              }
+            >
+              {(entry) => (
+                <div class="command-row">
+                  <code class="command-row-text">{entry}</code>
+                  <button
+                    class="icon-button"
+                    onClick={() => removeHost(entry)}
+                    aria-label={`Remove ${entry}`}
+                    title="Remove"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+            </For>
+          </div>
+
+          <div class="provider-manual-row">
+            <input
+              value={newHost()}
+              onInput={(e) => {
+                setNewHost(e.currentTarget.value);
+                setHostProblem(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addHost();
+                }
+              }}
+              placeholder="Add a host, e.g. docs.rs or *.github.com"
+              aria-label="Host to allow"
+              spellcheck={false}
+            />
+            <button onClick={addHost} disabled={!newHost().trim()}>
+              Add
+            </button>
+          </div>
+          <Show when={hostProblem()}>
+            <p class="settings-hint setting-explain warning" role="alert">
+              {hostProblem()}
+            </p>
+          </Show>
+          <p class="settings-hint command-list-note">
+            <code>docs.rs</code> matches that host alone, <code>*.github.com</code> its subdomains.
+            Web search goes to <code>html.duckduckgo.com</code>. Other hosts are refused without
+            asking.
+          </p>
+        </Show>
       </section>
 
       {/* File edits */}

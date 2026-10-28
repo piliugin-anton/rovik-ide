@@ -315,6 +315,10 @@ fn args_for(
         set("include_permissions_instructions", json!(false));
         set("include_apps_instructions", json!(false));
         set("project_doc_max_bytes", json!(0));
+    } else if turn.allowed_hosts_on {
+        // OpenAI's servers run its web search, where the user's allowed
+        // hosts can't reach (allowed-hosts-plan.md, J10).
+        set("web_search", json!("disabled"));
     }
     if turn.rovik_tools {
         // Rovik's tools called as functions of their own, not from code.
@@ -746,9 +750,12 @@ async fn run_turn(
     let program = resolve_program(&settings.program)?;
     let cwd = cwd_of(turn);
     let events = hook_events(settings, turn);
-    // On a team server, the user's private network: Codex runs in it, and
-    // the servers it starts take their ports there.
-    let network = crate::overlay::confine::network::current();
+    // In the agent's network (on a team server the user's private one,
+    // where the servers it starts take their ports), held to the user's
+    // allowed hosts while they're on (allowed_hosts.rs).
+    let chat = turn.dialog_id.as_deref().unwrap_or_default();
+    let held = crate::allowed_hosts::hold_program(chat)?;
+    let network = held.network.clone();
     let (sender, mut calls) = mpsc::unbounded_channel::<McpCall>();
     let server = match events.is_empty() {
         true => None,
@@ -784,13 +791,12 @@ async fn run_turn(
         ));
     }
     let env_path = env_file.as_ref().map(|file| file.path().to_path_buf());
-    let chat = turn.dialog_id.as_deref().unwrap_or_default();
     let process = Process::spawn_with_input(
         &program,
         &args,
         &env,
         Some(&cwd),
-        network.as_deref().map(|network| (network, chat)),
+        Some((&held, chat)),
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
         env_file.into_iter().collect(),
     )?;
@@ -1236,6 +1242,7 @@ async fn test_request(args: &ProbeRequestArgs) -> Result<ProbeRequest, String> {
         asks: None,
         commands: None,
         denied: Default::default(),
+        allowed_hosts_on: false,
     };
     let settings = Settings::from_value(&args.settings);
     let started = Instant::now();

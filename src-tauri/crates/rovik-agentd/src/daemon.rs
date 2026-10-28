@@ -152,14 +152,17 @@ impl Daemon {
                 Ok(Response::Count(reached))
             }
             // Only this computer's configuration changes (D16). How this
-            // server connects (Settings → Network's cloud hosts' rows) is
-            // the process's: the last computer to say has it.
+            // server connects (Settings → Network's cloud hosts' rows) and
+            // the hosts its agent's work reaches (allowed-hosts-plan.md,
+            // J12) are the process's: the last computer to say has them.
             Request::AgentConfigure(config) => {
                 let network = config.network.clone();
+                let permissions = config.permissions.clone();
                 self.store
                     .configure(computer, *config)
                     .map(|()| {
                         rovik_core::net::set_host_network(network);
+                        rovik_core::allowed_hosts::configure(&permissions);
                         Response::Done
                     })
                     .map_err(|e| Fail::new(FailCode::Internal, e))

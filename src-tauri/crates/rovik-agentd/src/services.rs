@@ -16,7 +16,8 @@
 //! service starts it from its own copy of the project, and the others find
 //! it running (`--no-recreate`). What starts is checked first
 //! (rovik_core::services::policy), and the project's files a service reads
-//! are copies (copy.rs).
+//! are copies (copy.rs). While the user's allowed hosts are on, its
+//! services reach each other alone (`hold_networks`).
 
 mod copy;
 mod images;
@@ -171,6 +172,9 @@ struct Inner {
     /// One start at a time: two chats needing the same database start it
     /// once.
     starting: tokio::sync::Mutex<()>,
+    /// For each project this daemon started, whether its containers were
+    /// made held to the user's allowed hosts ([`hold_networks`]).
+    made_held: std::sync::Mutex<HashMap<String, bool>>,
 }
 
 impl Services {
@@ -189,6 +193,7 @@ impl Services {
                 relays: Relays::new(network),
                 images: images.map(images::Cache::new),
                 starting: tokio::sync::Mutex::new(()),
+                made_held: std::sync::Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -225,7 +230,14 @@ impl Inner {
         let plan = policy::check(model, names, &root)?;
         let project = project_name(&root, model);
         let running = self.podman.running(&project).await;
-        let raw = with_copies(&self.podman, &project, model, &plan, &running).await?;
+        let mut raw = with_copies(&self.podman, &project, model, &plan, &running).await?;
+        // While the user's allowed hosts are on, the services reach each
+        // other alone (allowed-hosts-plan.md, J11).
+        let held = rovik_core::allowed_hosts::current().is_some();
+        if held {
+            hold_networks(&mut raw)?;
+        }
+        let made = self.made_held().get(&project).copied();
         if let Some(cache) = &self.images {
             let wanted: Vec<String> = plan
                 .services
@@ -243,7 +255,7 @@ impl Inner {
             "--wait-timeout",
             WAIT_SECONDS,
             "--no-build",
-            "--no-recreate",
+            recreate(made, held),
             "--pull",
             "missing",
             "--quiet-pull",
@@ -264,6 +276,7 @@ impl Inner {
         if let Err(why) = up {
             return Err(self.why_not(&project, &plan.services, &why).await);
         }
+        self.made_held().insert(project.clone(), held);
         let mut reached = Vec::new();
         let mut busy = Vec::new();
         for name in &plan.services {
@@ -288,6 +301,11 @@ impl Inner {
             }
         }
         Ok(said(names, &reached, &busy))
+    }
+
+    /// Whether each project's containers were made held ([`Inner::made_held`]).
+    fn made_held(&self) -> std::sync::MutexGuard<'_, HashMap<String, bool>> {
+        self.made_held.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Why `services` of `project` didn't start: what Compose said, and
@@ -449,6 +467,55 @@ fn to_start(raw: &mut Value, copies: &HashMap<String, PathBuf>) {
     }
 }
 
+/// `raw`, as Rovik starts it while the user's allowed hosts are on
+/// (allowed-hosts-plan.md, J11): each of the project's networks internal,
+/// so its services reach each other and nothing outside, and named apart
+/// from the open one it has without them. A service on a network that isn't
+/// the project's, or in a network mode but none and another service's,
+/// would reach anything: it isn't started, and why is said.
+fn hold_networks(raw: &mut Value) -> Result<(), String> {
+    const WHY: &str = "while the user's allowed hosts are on, a project's services reach each \
+                       other alone";
+    let services = raw.get("services").and_then(Value::as_object);
+    for (name, service) in services.into_iter().flatten() {
+        let mode = service.get("network_mode").and_then(Value::as_str);
+        if let Some(mode) = mode.filter(|m| *m != "none" && !m.starts_with("service:")) {
+            return Err(format!(
+                "`{name}` has `network_mode: {mode}`, which reaches beyond the project: {WHY}."
+            ));
+        }
+    }
+    let networks = raw.get_mut("networks").and_then(Value::as_object_mut);
+    for (name, network) in networks.into_iter().flatten() {
+        let Some(network) = network.as_object_mut() else {
+            continue;
+        };
+        if network.get("external").and_then(Value::as_bool) == Some(true) {
+            return Err(format!(
+                "The network `{name}` isn't the project's own: {WHY}."
+            ));
+        }
+        let named = network.get("name").and_then(Value::as_str).unwrap_or(name);
+        let held = format!("{named}-held");
+        network.insert("name".into(), Value::String(held));
+        network.insert("internal".into(), Value::Bool(true));
+    }
+    Ok(())
+}
+
+/// How Compose treats a project's containers that exist: as they are
+/// (`--no-recreate`: a chat finds another's database running), but made
+/// again where they'd keep the network they were made with: the user's
+/// allowed hosts were turned on or off since this daemon made them, held or
+/// not (`made`), or they're on and it didn't make them.
+fn recreate(made: Option<bool>, held: bool) -> &'static str {
+    match (made, held) {
+        (Some(was), now) if was != now => "--force-recreate",
+        (None, true) => "--force-recreate",
+        _ => "--no-recreate",
+    }
+}
+
 /// What the agent is told of a start: where the services `asked` and what
 /// they depend on are reached (`reached`: each service with a port), and
 /// which ports couldn't be relayed and why (`busy`).
@@ -497,6 +564,60 @@ mod tests {
         assert_eq!(project_name(root, &own), "rovik-4f0a9c2e-77aa-4b1e");
         let below = Model::parse(&root.join("Api_2"), "Api_2/compose.yaml", printed).unwrap();
         assert_eq!(project_name(root, &below), "rovik-4f0a9c2e-77aa-4b1e-api-2");
+    }
+
+    /// While the user's allowed hosts are on, a project's networks are
+    /// internal and named apart from its open ones, and a service that
+    /// would reach beyond the project isn't started (allowed-hosts-plan.md,
+    /// J11). The models are as Compose prints them.
+    #[test]
+    fn held_a_projects_services_reach_each_other_alone() {
+        let mut raw = serde_json::json!({
+            "name": "x",
+            "networks": {
+                "back": {"name": "x_back", "ipam": {}},
+                "default": {"name": "x_default", "ipam": {}}
+            },
+            "services": {
+                "cache": {"image": "redis", "networks": {"default": null}},
+                "db": {"image": "postgres", "networks": {"back": null}},
+                "beside": {"image": "alpine", "network_mode": "service:db"},
+                "alone": {"image": "alpine", "network_mode": "none"}
+            }
+        });
+        hold_networks(&mut raw).unwrap();
+        for (key, name) in [("back", "x_back-held"), ("default", "x_default-held")] {
+            assert_eq!(raw["networks"][key]["name"], name);
+            assert_eq!(raw["networks"][key]["internal"], true);
+        }
+        assert_eq!(raw["services"]["beside"]["network_mode"], "service:db");
+
+        let mut bridged = serde_json::json!({
+            "services": {"web": {"image": "nginx", "network_mode": "bridge"}}
+        });
+        let why = hold_networks(&mut bridged).unwrap_err();
+        assert!(why.starts_with("`web` has `network_mode: bridge`"), "{why}");
+        let mut outside = serde_json::json!({
+            "networks": {"outside": {"name": "corp", "ipam": {}, "external": true}},
+            "services": {"web": {"image": "nginx", "networks": {"outside": null}}}
+        });
+        let why = hold_networks(&mut outside).unwrap_err();
+        assert!(
+            why.starts_with("The network `outside` isn't the project's own"),
+            "{why}"
+        );
+    }
+
+    /// A project's containers keep the network they were made with: they're
+    /// made again once the user's allowed hosts were turned on or off since.
+    #[test]
+    fn a_projects_containers_are_made_again_when_their_hold_changed() {
+        assert_eq!(recreate(None, false), "--no-recreate");
+        assert_eq!(recreate(Some(false), false), "--no-recreate");
+        assert_eq!(recreate(Some(true), true), "--no-recreate");
+        assert_eq!(recreate(None, true), "--force-recreate");
+        assert_eq!(recreate(Some(false), true), "--force-recreate");
+        assert_eq!(recreate(Some(true), false), "--force-recreate");
     }
 
     #[test]

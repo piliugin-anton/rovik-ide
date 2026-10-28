@@ -43,8 +43,18 @@
 //! network. Where pasta is missing or user namespaces are forbidden, a team
 //! server's commands share the server's network, as before, and
 //! `rovik-agentd doctor` says why.
+//!
+//! **Sealed** (docs/design/allowed-hosts-plan.md, J04-J06): while the
+//! user's allowed hosts are on, pasta attaches with no addresses, routes,
+//! forwards or DNS. It brings the loopback up, and nothing else: any other
+//! address is unreachable, and the allowed hosts' filter, listening inside,
+//! is the only way out. A team server's network switches to it
+//! ([`Network::seal`]); a desktop, and WSL, get one of their own while the
+//! list is on ([`seal_agents`]), its loopback bridged with the computer's
+//! (bridge.rs). [`agents`] is the network the agent's processes start in.
 
 use super::pages;
+use bridge::Bridge;
 use std::ffi::{CString, OsString};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -98,6 +108,10 @@ const MOST_BACKOFF: Duration = Duration::from_secs(30);
 /// This user's network, once a team server's daemon made it ([`enable`]).
 static CURRENT: Mutex<Option<Arc<Network>>> = Mutex::new(None);
 
+/// On a desktop, and in WSL, the sealed network the agent's processes start
+/// in while the allowed hosts are on, and its bridge ([`seal_agents`]).
+static SEALED_HERE: Mutex<Option<(Arc<Network>, Bridge)>> = Mutex::new(None);
+
 /// This user's private network from now on: what a team server's daemon
 /// calls once as it starts, with `dir` its folder (made again, empty) and
 /// `opener` the program its pages' shims run as `<opener> open URL` (the
@@ -112,6 +126,43 @@ pub fn enable(dir: &Path, opener: &Path) -> Result<(), String> {
 /// This user's private network, where a team server's daemon made one.
 pub fn current() -> Option<Arc<Network>> {
     CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The network the agent's processes start in (commands, the browser,
+/// connectors): a team server's private network, or on a desktop with the
+/// allowed hosts on, the sealed one made for them. None: the computer's.
+pub fn agents() -> Option<Arc<Network>> {
+    current().or_else(|| {
+        let here = SEALED_HERE.lock().unwrap_or_else(|e| e.into_inner());
+        here.as_ref().map(|(network, _)| network.clone())
+    })
+}
+
+/// Holds the agent's network to the allowed hosts' filter (`sealed`), or
+/// lets it go: a team server's switches its mode; on a desktop a sealed
+/// network is made, its loopback bridged with the computer's but for the
+/// ports in `closed` (the proxies' here), or dropped. Why not, when it
+/// can't be.
+pub fn seal_agents(sealed: bool, closed: Vec<u16>) -> Result<(), String> {
+    if let Some(team) = current() {
+        return team.seal(sealed);
+    }
+    let mut here = SEALED_HERE.lock().unwrap_or_else(|e| e.into_inner());
+    match (sealed, here.is_some()) {
+        (true, false) => {
+            // SAFETY: getuid can't fail.
+            let uid = unsafe { libc::getuid() };
+            let dir = std::env::temp_dir()
+                .join(format!("rovik-ide-{uid}"))
+                .join(format!("sealed-{}", std::process::id()));
+            let network = Arc::new(Network::start_with(&dir, None, None, &[], true)?);
+            let bridge = Bridge::start(Arc::downgrade(&network), closed);
+            *here = Some((network, bridge));
+        }
+        (false, true) => *here = None,
+        _ => {}
+    }
+    Ok(())
 }
 
 /// A network namespace of this user's, with its way out (module docs).
@@ -129,9 +180,26 @@ pub struct Network {
     /// Its folder: pasta's log, the resolv.conf, the pages' shims and
     /// socket.
     dir: PathBuf,
-    /// Told to stop, the watcher ends pasta and the holder.
-    stop: Arc<(Mutex<bool>, Condvar)>,
+    /// Its pages' shims are there: a team server's, whose daemon serves
+    /// them.
+    shims: bool,
+    /// What the watcher is told ([`Control`]).
+    control: Arc<(Mutex<Control>, Condvar)>,
     watcher: Option<std::thread::JoinHandle<()>>,
+}
+
+/// What a network's watcher is told, and how it answered.
+#[derive(Default)]
+struct Control {
+    /// Told to stop: it ends pasta and the holder.
+    stop: bool,
+    /// The mode asked for: sealed, or open.
+    sealed: bool,
+    /// Bumped by each ask ([`Network::seal`]); `answered` is the last one
+    /// the watcher answered, `failed` why it couldn't, if it couldn't.
+    asked: u64,
+    answered: u64,
+    failed: Option<String>,
 }
 
 /// A port something listens on in the network, and what holds it.
@@ -153,20 +221,30 @@ impl std::fmt::Debug for Network {
 }
 
 impl Network {
-    /// A new network, its folder `dir` (made again, empty), its pages'
-    /// shims running `opener`.
+    /// A new network, open, its folder `dir` (made again, empty), its
+    /// pages' shims running `opener`.
     pub fn start(dir: &Path, opener: &Path) -> Result<Network, String> {
-        let ports = loopback_proxy_ports(std::env::vars_os());
-        Network::start_with(dir, opener, Path::new(HOST_RESOLV), &ports)
+        let ports = crate::net::loopback_proxy_ports(std::env::vars_os());
+        Network::start_with(
+            dir,
+            Some(opener),
+            Some(Path::new(HOST_RESOLV)),
+            &ports,
+            false,
+        )
     }
 
-    /// `start`, reading the host's resolv.conf at `host_resolv`, the
-    /// network reaching `ports` of the host's loopback at the same address.
+    /// `start`, its pages' shims running `opener` where there's one,
+    /// reading the host's resolv.conf at `host_resolv` where it's given (a
+    /// sealed network has no resolver to reach), the network reaching
+    /// `ports` of the host's loopback at the same address while it's open,
+    /// and `sealed` from the start.
     fn start_with(
         dir: &Path,
-        opener: &Path,
-        host_resolv: &Path,
+        opener: Option<&Path>,
+        host_resolv: Option<&Path>,
         ports: &[u16],
+        sealed: bool,
     ) -> Result<Network, String> {
         let pasta = crate::distro::which(PASTA).ok_or_else(|| {
             "pasta isn't installed (the passt package), which carries a private network's \
@@ -194,12 +272,17 @@ impl Network {
                 .map_err(|e| format!("couldn't open the network's {kind} namespace: {e}"))
         };
         let (user, net) = (open("user")?, open("net")?);
-        let resolv = resolv_for(host_resolv, dir)?;
-        write_shims(dir, opener).map_err(|e| format!("{}: {e}", dir.join("bin").display()))?;
+        let resolv = match host_resolv {
+            Some(host) => resolv_for(host, dir)?,
+            None => None,
+        };
+        if let Some(opener) = opener {
+            write_shims(dir, opener).map_err(|e| format!("{}: {e}", dir.join("bin").display()))?;
+        }
         let ports = ports.to_vec();
-        let mut pasta_child = spawn_pasta(&pasta, pid, &ports, dir)
+        let mut pasta_child = spawn_pasta(&pasta, pid, &ports, dir, sealed)
             .map_err(|e| format!("couldn't start {}: {e}", pasta.display()))?;
-        if let Err(why) = wait_configured(&mut pasta_child, pid, &ports, dir) {
+        if let Err(why) = wait_configured(&mut pasta_child, pid, &ports, dir, sealed) {
             let _ = pasta_child.kill();
             let _ = pasta_child.wait();
             return Err(why);
@@ -207,20 +290,27 @@ impl Network {
         let holder = made.holder.take().expect("the holder was started above");
         made.keep();
         let pid_shared = Arc::new(AtomicU32::new(pid));
-        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let control = Arc::new((
+            Mutex::new(Control {
+                sealed,
+                ..Control::default()
+            }),
+            Condvar::new(),
+        ));
         let watched = Watched {
             holder,
             pasta: pasta_child,
+            sealed,
             program: pasta,
             ports,
             dir: dir.to_path_buf(),
             namespaces: (user.as_raw_fd(), net.as_raw_fd()),
             pid: pid_shared.clone(),
         };
-        let stopping = stop.clone();
+        let controlling = control.clone();
         let watcher = std::thread::Builder::new()
             .name("private network".into())
-            .spawn(move || watch(watched, &stopping))
+            .spawn(move || watch(watched, &controlling))
             .map_err(|e| format!("couldn't watch the private network: {e}"))?;
         Ok(Network {
             user,
@@ -228,9 +318,36 @@ impl Network {
             holder: pid_shared,
             resolv,
             dir: dir.to_path_buf(),
-            stop,
+            shims: opener.is_some(),
+            control,
             watcher: Some(watcher),
         })
+    }
+
+    /// Seals the network (`sealed`), or opens it again: pasta starts again
+    /// in that mode, and this waits until it has set the network up. Why
+    /// not, when it couldn't: sealed, nothing goes out anyway, the routes
+    /// gone with the pasta before.
+    pub fn seal(&self, sealed: bool) -> Result<(), String> {
+        let (control, wake) = &*self.control;
+        let mut asked = control.lock().unwrap_or_else(|e| e.into_inner());
+        if asked.sealed == sealed && asked.answered == asked.asked && asked.failed.is_none() {
+            return Ok(());
+        }
+        asked.sealed = sealed;
+        asked.asked += 1;
+        let ask = asked.asked;
+        wake.notify_all();
+        let (answered, waited) = wake
+            .wait_timeout_while(asked, READY_WITHIN * 2, |c| c.answered < ask)
+            .unwrap_or_else(|e| e.into_inner());
+        if waited.timed_out() {
+            return Err("the private network didn't change its mode in time".into());
+        }
+        match &answered.failed {
+            Some(why) => Err(why.clone()),
+            None => Ok(()),
+        }
     }
 
     /// Makes `cmd` start in the network, before anything else it does as
@@ -252,6 +369,10 @@ impl Network {
     /// network's browser in its environment ([`Network::env`]), on top of
     /// the PATH it's given or would inherit.
     pub fn give_browser(&self, cmd: &mut Command, chat: &str) {
+        // A desktop's sealed network has no shims: pages open as they did.
+        if !self.shims {
+            return;
+        }
         let path = cmd
             .get_envs()
             .find(|(key, _)| *key == "PATH")
@@ -476,8 +597,8 @@ fn socket_in(user: Option<RawFd>, net: RawFd, inside: Inside) -> io::Result<Owne
 
 impl Drop for Network {
     fn drop(&mut self) {
-        let (stopped, wake) = &*self.stop;
-        *stopped.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        let (control, wake) = &*self.control;
+        control.lock().unwrap_or_else(|e| e.into_inner()).stop = true;
         wake.notify_all();
         if let Some(watcher) = self.watcher.take() {
             let _ = watcher.join();
@@ -490,6 +611,8 @@ impl Drop for Network {
 struct Watched {
     holder: Child,
     pasta: Child,
+    /// The mode pasta was last started in.
+    sealed: bool,
     program: PathBuf,
     ports: Vec<u16>,
     dir: PathBuf,
@@ -499,22 +622,34 @@ struct Watched {
     pid: Arc<AtomicU32>,
 }
 
-/// Starts the holder or pasta again when either ends, until told to stop;
-/// then ends both.
-fn watch(mut w: Watched, stop: &(Mutex<bool>, Condvar)) {
+/// Starts the holder or pasta again when either ends, and pasta in the
+/// mode asked for when that changes ([`Network::seal`]), until told to
+/// stop; then ends both.
+fn watch(mut w: Watched, control: &(Mutex<Control>, Condvar)) {
     let mut backoff = WATCH_EVERY;
     let mut next_pasta: Option<Instant> = None;
     let mut pasta_since = Instant::now();
     loop {
-        let (stopped, wake) = stop;
-        let guard = stopped.lock().unwrap_or_else(|e| e.into_inner());
+        let (asked, wake) = control;
+        let guard = asked.lock().unwrap_or_else(|e| e.into_inner());
         let (guard, _) = wake
-            .wait_timeout_while(guard, WATCH_EVERY, |stopped| !*stopped)
+            .wait_timeout_while(guard, WATCH_EVERY, |c| !c.stop && c.answered == c.asked)
             .unwrap_or_else(|e| e.into_inner());
-        if *guard {
+        if guard.stop {
             break;
         }
+        let switch = (guard.answered < guard.asked).then_some((guard.asked, guard.sealed));
         drop(guard);
+        if let Some((ask, sealed)) = switch {
+            let failed = switch_pasta(&mut w, sealed).err();
+            next_pasta = failed.as_ref().map(|_| Instant::now() + backoff);
+            pasta_since = Instant::now();
+            let mut answered = asked.lock().unwrap_or_else(|e| e.into_inner());
+            answered.answered = ask;
+            answered.failed = failed;
+            wake.notify_all();
+            continue;
+        }
         if let Ok(Some(status)) = w.holder.try_wait() {
             log::warn!("the private network's holder ended ({status}): starting it again");
             match spawn_holder(Some(w.namespaces)) {
@@ -542,7 +677,8 @@ fn watch(mut w: Watched, stop: &(Mutex<bool>, Condvar)) {
             }
             (_, Some(at)) if Instant::now() >= at => {
                 next_pasta = None;
-                match spawn_pasta(&w.program, w.pid.load(Ordering::Relaxed), &w.ports, &w.dir) {
+                let holder = w.pid.load(Ordering::Relaxed);
+                match spawn_pasta(&w.program, holder, &w.ports, &w.dir, w.sealed) {
                     Ok(pasta) => {
                         w.pasta = pasta;
                         pasta_since = Instant::now();
@@ -561,6 +697,26 @@ fn watch(mut w: Watched, stop: &(Mutex<bool>, Condvar)) {
     let _ = w.pasta.wait();
     let _ = w.holder.kill();
     let _ = w.holder.wait();
+}
+
+/// pasta again in the mode `sealed`: the one there ended, a new one
+/// started and waited for until it has set the network up. Why not, when
+/// it couldn't be.
+fn switch_pasta(w: &mut Watched, sealed: bool) -> Result<(), String> {
+    let _ = w.pasta.kill();
+    let _ = w.pasta.wait();
+    w.sealed = sealed;
+    let holder = w.pid.load(Ordering::Relaxed);
+    w.pasta = spawn_pasta(&w.program, holder, &w.ports, &w.dir, sealed)
+        .map_err(|e| format!("couldn't start {}: {e}", w.program.display()))?;
+    let ready = wait_configured(&mut w.pasta, holder, &w.ports, &w.dir, sealed);
+    // One that didn't set the network up in time is ended, for the watcher
+    // to start again.
+    if ready.is_err() {
+        let _ = w.pasta.kill();
+        let _ = w.pasta.wait();
+    }
+    ready
 }
 
 /// What `start` made so far, undone unless kept: the holder and the folder.
@@ -665,22 +821,30 @@ fn enter(user: RawFd, net: RawFd, resolv: Option<&(CString, CString)>) -> io::Re
     Ok(())
 }
 
-/// pasta attached to the holder `holder`: the host's addresses and routes
-/// in the namespace, nothing forwarded in, the server's loopback `ports`
-/// reached from the namespace's, DNS queries to [`DNS_FORWARDER`] answered
-/// by the host's resolver; what it says in its log.
-fn spawn_pasta(program: &Path, holder: u32, ports: &[u16], dir: &Path) -> io::Result<Child> {
+/// pasta attached to the holder `holder` ([`pasta_args`]); what it says in
+/// its log.
+fn spawn_pasta(
+    program: &Path,
+    holder: u32,
+    ports: &[u16],
+    dir: &Path,
+    sealed: bool,
+) -> io::Result<Child> {
     let log = std::fs::File::create(dir.join("pasta.log"))?;
     let mut cmd = crate::process::command(program);
-    cmd.args(pasta_args(holder, ports))
+    cmd.args(pasta_args(holder, ports, sealed))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
     cmd.spawn()
 }
 
-/// pasta's arguments (`spawn_pasta`): in the foreground, the daemon's child.
-fn pasta_args(holder: u32, ports: &[u16]) -> Vec<String> {
+/// pasta's arguments (`spawn_pasta`): in the foreground, the daemon's
+/// child. Open: the host's addresses and routes in the namespace, nothing
+/// forwarded in, the server's loopback `ports` reached from the
+/// namespace's, DNS queries to [`DNS_FORWARDER`] answered by the host's
+/// resolver. Sealed: the loopback up, and nothing else.
+fn pasta_args(holder: u32, ports: &[u16], sealed: bool) -> Vec<String> {
     let reached = match ports {
         [] => "none".to_string(),
         ports => ports
@@ -689,24 +853,43 @@ fn pasta_args(holder: u32, ports: &[u16]) -> Vec<String> {
             .collect::<Vec<_>>()
             .join(","),
     };
-    let mut args = [
-        "--foreground",
-        "--quiet",
-        "--config-net",
-        "--tcp-ports",
-        "none",
-        "--udp-ports",
-        "none",
-        "--tcp-ns",
-        &reached,
-        "--udp-ns",
-        "none",
-        "--dns-forward",
-        DNS_FORWARDER,
-        &holder.to_string(),
-    ]
-    .map(String::from)
-    .to_vec();
+    let holder = holder.to_string();
+    let mut args: Vec<String> = if sealed {
+        [
+            "--foreground",
+            "--quiet",
+            "--tcp-ports",
+            "none",
+            "--udp-ports",
+            "none",
+            "--tcp-ns",
+            "none",
+            "--udp-ns",
+            "none",
+            &holder,
+        ]
+        .map(String::from)
+        .to_vec()
+    } else {
+        [
+            "--foreground",
+            "--quiet",
+            "--config-net",
+            "--tcp-ports",
+            "none",
+            "--udp-ports",
+            "none",
+            "--tcp-ns",
+            &reached,
+            "--udp-ns",
+            "none",
+            "--dns-forward",
+            DNS_FORWARDER,
+            &holder,
+        ]
+        .map(String::from)
+        .to_vec()
+    };
     // Started by root (a test; the daemon never runs as root), pasta would
     // become nobody, who can't open root's namespaces.
     // SAFETY: geteuid can't fail.
@@ -716,15 +899,17 @@ fn pasta_args(holder: u32, ports: &[u16]) -> Vec<String> {
     args
 }
 
-/// Waits until pasta has set the namespace of holder `holder` up: it has a
-/// default route, which pasta adds once the addresses are in place, and
-/// pasta listens on each of the server's loopback `ports` it reaches, which
-/// comes a little after. Why not, when pasta ends first or takes too long.
+/// Waits until pasta has set the namespace of holder `holder` up. Open: it
+/// has a default route, which pasta adds once the addresses are in place,
+/// and pasta listens on each of the server's loopback `ports` it reaches,
+/// which comes a little after. Sealed: its loopback is up. Why not, when
+/// pasta ends first or takes too long.
 fn wait_configured(
     pasta: &mut Child,
     holder: u32,
     ports: &[u16],
     dir: &Path,
+    sealed: bool,
 ) -> Result<(), String> {
     let deadline = Instant::now() + READY_WITHIN;
     loop {
@@ -734,7 +919,11 @@ fn wait_configured(
                 log_tail(dir)
             ));
         }
-        if has_default_route(holder) && listens_on(holder, ports) {
+        let ready = match sealed {
+            true => loopback_up(holder),
+            false => has_default_route(holder) && listens_on(holder, ports),
+        };
+        if ready {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -768,6 +957,14 @@ fn has_default_route(pid: u32) -> bool {
             && columns.last() != Some(&"lo")
     });
     ipv4 || ipv6
+}
+
+/// Whether the network namespace of process `pid` has its loopback up: its
+/// address is in the namespace's routing table, as /proc shows it from
+/// outside (it's empty while the loopback is down).
+fn loopback_up(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/net/fib_trie"))
+        .is_ok_and(|trie| trie.contains("127.0.0.1"))
 }
 
 /// Whether something listens on each of `ports` in the network namespace
@@ -843,45 +1040,6 @@ fn through_forwarder(text: &str) -> Option<String> {
         out.push('\n');
     }
     replaced.then_some(out)
-}
-
-/// The ports of the proxies `vars` (an environment) name on this machine's
-/// loopback (`HTTPS_PROXY=http://127.0.0.1:3128`): the network reaches
-/// them at the same address, so a command's installs go through them.
-fn loopback_proxy_ports(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<u16> {
-    const PROXIES: &[&str] = &["http_proxy", "https_proxy", "all_proxy", "ftp_proxy"];
-    let mut ports: Vec<u16> = vars
-        .into_iter()
-        .filter_map(|(name, value)| {
-            let name = name.to_str()?.to_ascii_lowercase();
-            PROXIES
-                .contains(&name.as_str())
-                .then(|| loopback_port(value.to_str()?))?
-        })
-        .collect();
-    ports.sort_unstable();
-    ports.dedup();
-    ports
-}
-
-/// The port of the proxy at `address` (`http://127.0.0.1:3128`,
-/// `localhost:8080`, `socks5h://[::1]:1080`) when it's on the loopback.
-fn loopback_port(address: &str) -> Option<u16> {
-    let address = address.trim();
-    let url = match address.contains("://") {
-        true => reqwest::Url::parse(address),
-        false => reqwest::Url::parse(&format!("http://{address}")),
-    }
-    .ok()?;
-    let host = url.host_str()?;
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    let local = host.eq_ignore_ascii_case("localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
-    if !local {
-        return None;
-    }
-    url.port_or_known_default()
-        .or_else(|| url.scheme().starts_with("socks").then_some(1080))
 }
 
 /// Writes the pages' shims in `dir`/bin: each program a command opens a
@@ -1124,10 +1282,25 @@ pub(crate) fn for_test(
     }
     let dir = crate::testing::temp_dir();
     let resolv = resolv.unwrap_or(Path::new(HOST_RESOLV));
-    let network = Network::start_with(&dir.0.join("net"), opener, resolv, ports)
+    let network = Network::start_with(&dir.0.join("net"), Some(opener), Some(resolv), ports, false)
         .expect("pasta is installed, so a private network is made");
     Some((dir, network))
 }
 
+/// A sealed network for a test, made as a desktop's is ([`seal_agents`]):
+/// None where pasta isn't installed, and the test is then skipped.
+#[cfg(test)]
+pub(crate) fn sealed_for_test() -> Option<(crate::testing::TempDir, Network)> {
+    if crate::distro::which(PASTA).is_none() {
+        eprintln!("pasta isn't installed: skipped");
+        return None;
+    }
+    let dir = crate::testing::temp_dir();
+    let network = Network::start_with(&dir.0.join("net"), None, None, &[], true)
+        .expect("pasta is installed, so a sealed network is made");
+    Some((dir, network))
+}
+
+mod bridge;
 #[cfg(test)]
 mod tests;

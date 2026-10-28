@@ -280,6 +280,24 @@ fn a_configuration_carries_how_the_host_connects() {
     assert_eq!(unset, HostNetwork::default());
 }
 
+/// The allowed hosts go with the permissions by the frontend's names, and
+/// permissions saved before them read as any host, as the agent worked.
+#[test]
+fn permissions_from_before_the_allowed_hosts_reach_any_host() {
+    let before: Permissions = serde_json::from_str(r#"{"allowAnyCommand": true}"#).unwrap();
+    assert!(before.allow_any_host);
+    assert!(before.allowed_hosts.is_empty());
+    let listed = Permissions {
+        allow_any_host: false,
+        allowed_hosts: vec!["docs.rs".into(), "*.github.com".into()],
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&listed).unwrap();
+    assert_eq!(json["allowAnyHost"], false);
+    assert_eq!(json["allowedHosts"], json!(["docs.rs", "*.github.com"]));
+    assert_eq!(serde_json::from_value::<Permissions>(json).unwrap(), listed);
+}
+
 /// A message as a steer sends it: the text with its editor context, an
 /// image.
 fn steer_message() -> UserMessage {

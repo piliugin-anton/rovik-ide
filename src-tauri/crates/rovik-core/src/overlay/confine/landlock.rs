@@ -479,6 +479,7 @@ mod tests {
             sockets: Vec::new(),
             read_only: Vec::new(),
             network: None,
+            loopback_only: None,
         };
         let rules = grants(&c);
         let has = |p: &Path, g: Grant| rules.iter().any(|(q, h)| q == p && *h == g);
@@ -601,6 +602,7 @@ mod tests {
             sockets: Vec::new(),
             read_only: Vec::new(),
             network: None,
+            loopback_only: None,
         }
     }
 
@@ -725,6 +727,7 @@ mod tests {
             sockets: Vec::new(),
             read_only: Vec::new(),
             network: None,
+            loopback_only: None,
         };
         let rules = grants(&c);
         assert_eq!(rules[0], (PathBuf::from("/"), Grant::Read));

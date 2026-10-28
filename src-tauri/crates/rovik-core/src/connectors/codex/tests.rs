@@ -31,6 +31,7 @@ fn turn(prompt: &str) -> Turn {
         asks: None,
         commands: None,
         denied: Default::default(),
+        allowed_hosts_on: false,
     }
 }
 
@@ -210,6 +211,29 @@ fn with_rovik_s_tools_codex_s_own_are_off_and_rovik_s_are_functions_of_their_own
     let args = args_for(&settings(json!({})), &one_off, &[], &[], "");
     assert_eq!(setting(&args, "features.shell_tool"), Some("false"));
     assert_eq!(setting(&args, "features.code_mode"), None);
+}
+
+/// Its web search runs on OpenAI's servers, where the user's allowed hosts
+/// can't reach: off while they're on, its other tools as they were.
+#[test]
+fn its_web_search_is_off_while_the_allowed_hosts_are_on() {
+    let own = args_for(&settings(json!({})), &turn("go"), &[], &[], "");
+    assert_eq!(setting(&own, "web_search"), None);
+    let held = Turn {
+        allowed_hosts_on: true,
+        ..turn("go")
+    };
+    let args = args_for(&settings(json!({})), &held, &[], &[], "");
+    assert_eq!(setting(&args, "web_search"), Some("\"disabled\""));
+    assert_eq!(setting(&args, "features.shell_tool"), None);
+    // With its own tools off, once.
+    let rovik = Turn {
+        rovik_tools: true,
+        ..held
+    };
+    let args = args_for(&settings(json!({})), &rovik, &[], &[], "");
+    let searches = args.iter().filter(|a| a.starts_with("web_search=")).count();
+    assert_eq!(searches, 1, "{args:?}");
 }
 
 #[test]

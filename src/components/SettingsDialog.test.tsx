@@ -181,7 +181,8 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
     },
     {
       label: 'Permissions & approval',
-      state: 'Commands: 20 listed, no approval · Edits: no approval · Other tools: no approval',
+      state:
+        'Commands: 20 listed, no approval · Hosts: any · Edits: no approval · Other tools: no approval',
       warning: false,
     },
     {

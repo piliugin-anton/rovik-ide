@@ -1297,9 +1297,11 @@ impl AgentState {
 /// Images and PDFs one message can carry at most.
 const MAX_MESSAGE_ATTACHMENTS: usize = 20;
 
-/// The settings runs follow, as the frontend sent them.
+/// The settings runs follow, as the frontend sent them, the hosts the
+/// agent's work reaches with them (allowed_hosts.rs).
 pub fn agent_configure(core: &Core, config: AgentConfig) {
     crate::overlay::chats::set_chat_resolves(config.permissions.chat_resolves_conflicts);
+    crate::allowed_hosts::configure(&config.permissions);
     core.agents.set_config(config);
 }
 
