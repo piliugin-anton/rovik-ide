@@ -29,6 +29,7 @@ import {
   Switch,
 } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
+import { SecretsUnlock } from './SettingsControls';
 import HostAutonomy from './HostAutonomy';
 import HostTasks from './HostTasks';
 import { onCloudEvent, refreshHosts } from '../lib/cloud';
@@ -65,7 +66,6 @@ import {
   testVerdict,
   trustBuild,
   trustKey,
-  unlockSecrets,
   upgradeHost,
   type ApprovalPolicy,
   type AuthKind,
@@ -208,19 +208,6 @@ function HostList(props: {
     const s = store();
     return s?.kind === 'file' && !s.unlocked;
   };
-  const [passphrase, setPassphrase] = createSignal('');
-  const [unlockError, setUnlockError] = createSignal<string | null>(null);
-
-  async function unlock() {
-    setUnlockError(null);
-    try {
-      await unlockSecrets(passphrase());
-      setPassphrase('');
-      await props.onUnlocked();
-    } catch (err) {
-      setUnlockError(String(err));
-    }
-  }
 
   return (
     <>
@@ -245,28 +232,7 @@ function HostList(props: {
             first time, the passphrase you choose here makes the file. Unlock it here again each
             time Rovik starts.
           </p>
-          <div class="host-unlock">
-            <input
-              type="password"
-              value={passphrase()}
-              onInput={(e) => setPassphrase(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && passphrase()) void unlock();
-              }}
-              placeholder="Passphrase"
-              aria-label="passphrase of the secrets file"
-            />
-            <button
-              class="chat-action-button primary"
-              disabled={!passphrase()}
-              onClick={() => void unlock()}
-            >
-              Unlock
-            </button>
-          </div>
-          <Show when={unlockError()}>
-            <p class="settings-hint setting-explain warning">{unlockError()}</p>
-          </Show>
+          <SecretsUnlock onUnlocked={props.onUnlocked} />
         </Show>
       </section>
       <Show when={props.list} fallback={<p class="settings-hint">Loading…</p>}>

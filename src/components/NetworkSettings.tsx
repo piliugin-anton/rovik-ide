@@ -33,8 +33,7 @@ import {
   type RouteRow,
   type SavedProxy,
 } from '../lib/network';
-import { unlockSecrets } from '../lib/hosts';
-import { NumberField, Segmented, SettingStatus } from './SettingsControls';
+import { NumberField, SecretsUnlock, Segmented, SettingStatus } from './SettingsControls';
 
 /** The proxy editor's fields as typed. */
 interface Draft {
@@ -104,8 +103,6 @@ export default function NetworkSettings() {
   const [draft, setDraft] = createSignal<Draft | null>(null);
   const [draftError, setDraftError] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
-  const [passphrase, setPassphrase] = createSignal('');
-  const [unlockError, setUnlockError] = createSignal<string | null>(null);
 
   const settings = () => view()!.settings;
 
@@ -136,7 +133,6 @@ export default function NetworkSettings() {
   function cancel() {
     setDraft(null);
     setDraftError(null);
-    setUnlockError(null);
   }
 
   /** Saves the proxy the editor has, with the password typed. */
@@ -176,16 +172,9 @@ export default function NetworkSettings() {
 
   /** The encrypted file in the keychain's place: unlocked, the proxy is saved again. */
   const locked = (v: NetworkView) => v.store?.kind === 'file' && !v.store.unlocked;
-  async function unlock() {
-    setUnlockError(null);
-    try {
-      await unlockSecrets(passphrase());
-      setPassphrase('');
-      mutate(await networkSettings());
-      await saveDraft();
-    } catch (e) {
-      setUnlockError(String(e));
-    }
+  async function unlocked() {
+    mutate(await networkSettings());
+    await saveDraft();
   }
 
   // What the notes are about.
@@ -329,28 +318,7 @@ export default function NetworkSettings() {
             passphrase, with the API keys. It’s locked: enter its passphrase to save the password.
             The first time, the passphrase you choose here makes the file.
           </p>
-          <div class="host-unlock">
-            <input
-              type="password"
-              value={passphrase()}
-              onInput={(e) => setPassphrase(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && passphrase()) void unlock();
-              }}
-              placeholder="Passphrase"
-              aria-label="passphrase of the secrets file"
-            />
-            <button
-              class="chat-action-button primary"
-              disabled={!passphrase()}
-              onClick={() => void unlock()}
-            >
-              Unlock
-            </button>
-          </div>
-          <Show when={unlockError()}>
-            <SettingStatus warning>{unlockError()}</SettingStatus>
-          </Show>
+          <SecretsUnlock onUnlocked={unlocked} />
         </Show>
         <Show when={draftError()}>
           <SettingStatus warning>{draftError()}</SettingStatus>

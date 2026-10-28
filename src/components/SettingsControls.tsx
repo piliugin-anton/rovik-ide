@@ -1,10 +1,12 @@
 // SettingsControls.tsx
 //
 // The small controls the Settings pages share: a "Label  [control]" line,
-// a segmented choice, a number field that saves what it shows, and a
-// status line that says whether a setting has an effect right now.
-import { For, type JSX } from 'solid-js';
+// a segmented choice, a number field that saves what it shows, a status
+// line that says whether a setting has an effect right now, and the
+// passphrase field of the file that keeps secrets where there's no keychain.
+import { createSignal, For, Show, type JSX } from 'solid-js';
 import { numberFieldValue } from '../lib/subagentSettings';
+import { unlockSecrets } from '../lib/hosts';
 
 /** One "Label  [control]" line. */
 export function SettingRow(props: { label: string; children: JSX.Element }) {
@@ -102,5 +104,55 @@ export function SettingStatus(props: { warning?: boolean; children: JSX.Element 
     <p class="settings-status" classList={{ warning: props.warning }} role="status">
       {props.children}
     </p>
+  );
+}
+
+/**
+ * The passphrase of the file that keeps secrets where there's no keychain,
+ * locked until it's given (Cloud hosts' `hosts_unlock`): Unlock opens it
+ * for this session, then `onUnlocked` runs (what was waiting for it, saved
+ * now). The passphrase isn't kept; what failed, the unlock or what ran
+ * after it, is said under the field.
+ */
+export function SecretsUnlock(props: { onUnlocked: () => Promise<void> | void }) {
+  const [passphrase, setPassphrase] = createSignal('');
+  const [error, setError] = createSignal<string | null>(null);
+
+  async function unlock() {
+    setError(null);
+    try {
+      await unlockSecrets(passphrase());
+      setPassphrase('');
+      await props.onUnlocked();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  return (
+    <>
+      <div class="host-unlock">
+        <input
+          type="password"
+          value={passphrase()}
+          onInput={(e) => setPassphrase(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && passphrase()) void unlock();
+          }}
+          placeholder="Passphrase"
+          aria-label="passphrase of the secrets file"
+        />
+        <button
+          class="chat-action-button primary"
+          disabled={!passphrase()}
+          onClick={() => void unlock()}
+        >
+          Unlock
+        </button>
+      </div>
+      <Show when={error()}>
+        <SettingStatus warning>{error()}</SettingStatus>
+      </Show>
+    </>
   );
 }
