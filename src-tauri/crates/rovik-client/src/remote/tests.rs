@@ -1526,7 +1526,10 @@ fn a_hosts_plan_fix_changes_only_the_fields_it_sets() {
     );
     let mut waiting = config.clone();
     ApprovalPolicy::WaitForMe.apply(&autonomy, &mut waiting);
-    assert_eq!(waiting.autopilot.plan_fix.max_rounds, 10, "only a host that works on its own");
+    assert_eq!(
+        waiting.autopilot.plan_fix.max_rounds, 10,
+        "only a host that works on its own"
+    );
     ApprovalPolicy::Autonomous.apply(&autonomy, &mut config);
     assert_eq!(
         config.autopilot.plan_fix,
@@ -1538,4 +1541,134 @@ fn a_hosts_plan_fix_changes_only_the_fields_it_sets() {
             max_retries: 1,
         }
     );
+}
+
+/// An MCP server over HTTP with one secret header, `s1`'s `Authorization`.
+fn mcp_server() -> rovik_protocol::mcp::McpServer {
+    use rovik_protocol::mcp::{McpServer, McpTransport, McpValue};
+    McpServer {
+        id: "s1".into(),
+        name: "github".into(),
+        enabled: true,
+        transport: McpTransport::Url {
+            url: "http://127.0.0.1:1/mcp".into(),
+            headers: vec![McpValue {
+                name: "Authorization".into(),
+                value: String::new(),
+                secret: true,
+            }],
+        },
+        disabled_tools: Vec::new(),
+    }
+}
+
+/// The app with `s1`'s `Authorization` saved as `saved` (an error when
+/// `Err`), and a connected fake host that announces `served`.
+async fn mcp_host(
+    saved: Result<&'static str, &'static str>,
+    served: &[&str],
+) -> (App, Arc<Remote>, Fake) {
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    app.core.mcp.set_secrets(Arc::new(move |id, key| {
+        assert_eq!((id, key), ("s1", "header/Authorization"));
+        saved.map(|v| Some(v.to_string())).map_err(str::to_string)
+    }));
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = served.iter().map(|f| f.to_string()).collect();
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    (app, remote, fake)
+}
+
+/// Q11 (mcp-plan-2.md): a host gets the MCP servers in its configuration
+/// and its starts, and a start carries their saved secrets.
+#[tokio::test]
+async fn a_host_is_sent_the_mcp_servers_and_a_start_their_secrets() {
+    let (_app, remote, fake) = mcp_host(Ok("Bearer x"), &[features::MCP]).await;
+    let config = AgentConfig {
+        mcp_servers: vec![mcp_server()],
+        ..AgentConfig::default()
+    };
+    remote
+        .everywhere(Request::AgentConfigure(Box::new(config.clone())))
+        .await
+        .unwrap();
+    let configured = fake.requests.lock().unwrap().clone();
+    let [Request::AgentConfigure(sent)] = &configured[..] else {
+        panic!("{configured:?}");
+    };
+    assert_eq!(sent.mcp_servers, config.mcp_servers);
+
+    let mut request = start("chat", StartKind::Retry, None);
+    request.config = Some(config.clone());
+    remote.start(request).await.unwrap();
+    let started = starts(&fake).remove(0);
+    assert_eq!(started.config.unwrap().mcp_servers, config.mcp_servers);
+    assert_eq!(
+        started.mcp_secrets["s1"]["header/Authorization"].0,
+        "Bearer x"
+    );
+}
+
+#[tokio::test]
+async fn an_older_host_is_sent_no_mcp_secrets() {
+    let (_app, remote, fake) = mcp_host(Ok("Bearer x"), &[]).await;
+    let mut request = start("chat", StartKind::Retry, None);
+    request.config = Some(AgentConfig {
+        mcp_servers: vec![mcp_server()],
+        ..AgentConfig::default()
+    });
+    remote.start(request).await.unwrap();
+    assert!(starts(&fake)[0].mcp_secrets.is_empty());
+}
+
+#[tokio::test]
+async fn a_start_goes_when_a_secret_can_t_be_read() {
+    let (_app, remote, fake) = mcp_host(Err("locked"), &[features::MCP]).await;
+    let mut request = start("chat", StartKind::Retry, None);
+    request.config = Some(AgentConfig {
+        mcp_servers: vec![mcp_server()],
+        ..AgentConfig::default()
+    });
+    remote.start(request).await.unwrap();
+    assert!(!starts(&fake)[0].mcp_secrets.contains_key("s1"));
+}
+
+#[tokio::test]
+async fn mcp_test_on_a_host_sends_typed_values_over_saved_ones() {
+    let (_app, remote, fake) = mcp_host(Ok("old"), &[features::MCP]).await;
+    let given = BTreeMap::from([("header/Authorization".to_string(), Secret("new".into()))]);
+    remote.mcp_test(HOST, mcp_server(), given).await.unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let [Request::McpTest { values, .. }] = &requests[..] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(values["header/Authorization"].0, "new");
+
+    // With nothing typed, the saved value goes.
+    fake.requests.lock().unwrap().clear();
+    remote
+        .mcp_test(HOST, mcp_server(), BTreeMap::new())
+        .await
+        .unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let [Request::McpTest { values, .. }] = &requests[..] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(values["header/Authorization"].0, "old");
+}
+
+#[tokio::test]
+async fn mcp_test_on_an_older_host_says_to_update_it() {
+    let (_app, remote, fake) = mcp_host(Ok("old"), &[]).await;
+    let fail = remote
+        .mcp_test(HOST, mcp_server(), BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        fail.message,
+        "test-server runs an older Rovik: update it to test MCP servers there."
+    );
+    assert!(fake.requests.lock().unwrap().is_empty());
 }

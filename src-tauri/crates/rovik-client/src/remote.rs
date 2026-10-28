@@ -19,13 +19,14 @@ use rovik_core::chat_db::store::{self, NewChildDialog, NewMessage};
 use rovik_core::chat_db::{api, attachments, moves};
 use rovik_core::{project_profile, Core};
 use rovik_protocol::autopilot::{AutonomyConfig, AutonomySettings, DeliveryTest};
+use rovik_protocol::mcp::{McpServer, Tested};
 use rovik_protocol::network::HostNetwork;
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::work::{ChatResult, ChatSync};
-use rovik_protocol::{features, Access, Event, Fail, FailCode, Request, Response};
+use rovik_protocol::{features, Access, Event, Fail, FailCode, Request, Response, Secret};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -789,6 +790,15 @@ impl Remote {
         if self.policy(&host) == ApprovalPolicy::Autonomous && request.mode.is_none() {
             request.mode = Some(agent_run::autopilot::MODE.into());
         }
+        // A host has no keychain: its servers' saved secrets go with the
+        // start (Q11), unless its daemon is too old to take them.
+        if self.serves(&host, features::MCP) {
+            let config = request
+                .config
+                .clone()
+                .unwrap_or_else(|| self.core.agents.config());
+            request.mcp_secrets = self.core.mcp.saved_secrets(&config.mcp_servers).await;
+        }
         self.leave_out_known_text(&mut request).await;
         if let StartKind::Send { message } = &mut request.start {
             if !message.attachments.is_empty() {
@@ -797,6 +807,38 @@ impl Remote {
             }
         }
         client.call(Request::AgentStart(Box::new(request))).await
+    }
+
+    /// Tests `server` on `host`, from there (Q11): its saved secrets, the
+    /// values the user typed over them.
+    pub async fn mcp_test(
+        &self,
+        host: &str,
+        server: McpServer,
+        given: BTreeMap<String, Secret>,
+    ) -> Result<Tested, Fail> {
+        if !self.serves(host, features::MCP) {
+            let name = self.host_name(host);
+            let text = format!("{name} runs an older Rovik: update it to test MCP servers there.");
+            return Err(Fail::new(FailCode::BadRequest, text));
+        }
+        let mut values = self
+            .core
+            .mcp
+            .saved_secrets(std::slice::from_ref(&server))
+            .await
+            .remove(&server.id)
+            .unwrap_or_default();
+        values.extend(given);
+        match self
+            .host_call(host, Request::McpTest { server, values })
+            .await?
+        {
+            Response::McpTested(tested) => Ok(tested),
+            other => Err(internal(format!(
+                "{host} answered an MCP test with {other:?}"
+            ))),
+        }
     }
 
     /// A message for the chat's run while it works (steering-plan.md, 3.8).
