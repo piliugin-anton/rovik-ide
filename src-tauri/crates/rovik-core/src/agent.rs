@@ -905,6 +905,11 @@ pub struct ChatParams {
     // while it works (`Connector::reads_messages`): where the run hands them
     // over as they come (`agent_run` `model_turn`).
     pub steering: Option<crate::connectors::SteerMessages>,
+    // A connector's model whose harness runs its own tools, while the
+    // user's MCP servers have tools for it: Rovik's `mcp` tool served to it,
+    // its calls answered by the run (`agent_run` `answer_mcp_call`,
+    // mcp-plan.md Q09).
+    pub mcp: Option<crate::connectors::McpOffer>,
 }
 
 /// A request the frontend makes itself, outside any run (a chat's title):
@@ -979,6 +984,7 @@ pub async fn run_chat(
         command_checks: _,
         restricted: _,
         steering: _,
+        mcp: _,
     } = params;
     let chat_id = chat_id.or_else(|| dialog_id.clone());
 

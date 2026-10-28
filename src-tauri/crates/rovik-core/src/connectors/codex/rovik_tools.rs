@@ -17,7 +17,8 @@ use super::events::Parser;
 use super::hooks::{self, Event, Hooks};
 use super::{
     args_for, conclude, cwd_of, env_for, hook_tool, open, policy, request_for, resolve_program,
-    session_of, thread_of, Halt, Served, Settings, HOOKS_INSTRUCTIONS, HOOKS_TOKEN, TOOLS_TOKEN,
+    session_of, thread_of, Halt, Served, Settings, HIDDEN, HOOKS_INSTRUCTIONS, HOOKS_TOKEN,
+    TOOLS_TOKEN,
 };
 use crate::agent::ChatStreamEvent;
 use crate::connectors::harness::{pump, Process, Stop, MIN_FIRST_LINE};
@@ -104,13 +105,13 @@ async fn start(
             name: SERVER_NAME,
             server: &tools,
             token_var: TOOLS_TOKEN,
-            hidden: false,
+            omit: &[],
         },
         Served {
             name: hooks::SERVER,
             server: &hooks_server,
             token_var: HOOKS_TOKEN,
-            hidden: true,
+            omit: HIDDEN,
         },
     ];
     let args = args_for(settings, turn, &served, &events, &turn.api_key);

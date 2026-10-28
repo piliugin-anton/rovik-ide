@@ -185,6 +185,47 @@ pub struct Turn {
     /// reads them mid-turn ([`Connector::reads_messages`]) in a run that
     /// takes them: none otherwise.
     pub steering: Option<SteerMessages>,
+    /// Rovik's `mcp` tool, for a harness that runs its own tools (Agent
+    /// mode) while the user's MCP servers have tools for it: served beside
+    /// them, its list in the harness's prompt (mcp-plan.md, Q09). None
+    /// otherwise: with Rovik's tools, `mcp` is one of `tools`.
+    pub mcp: Option<McpOffer>,
+}
+
+/// Rovik's `mcp` tool, served to a harness that runs its own tools (Agent
+/// mode, mcp-plan.md Q09): the tool, the list of the user's MCP servers'
+/// tools for the harness's prompt, and where its calls go. The run answers
+/// each as it would its own `mcp` call: a description at once, a call under
+/// the MCP approval rule, then run.
+#[derive(Debug, Clone)]
+pub struct McpOffer {
+    /// The tool, as the run's own requests have it (an OpenAI function
+    /// schema): served as `mcp__rovik__mcp`.
+    pub tool: Value,
+    /// The prompt's section that lists the tools, naming the tool as the
+    /// harness calls it.
+    pub section: String,
+    /// Where a call goes: the run answers it on its `reply`.
+    pub calls: mpsc::UnboundedSender<mcp::McpCall>,
+}
+
+impl McpOffer {
+    /// The tool's name on Rovik's server, without the prefix.
+    pub fn name(&self) -> &str {
+        self.tool
+            .pointer("/function/name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    }
+
+    /// Hands the harness's call of the tool to the run, which answers it;
+    /// once the run has ended, it's answered here.
+    pub fn forward(&self, call: mcp::McpCall) {
+        if let Err(unsent) = self.calls.send(call) {
+            let reply = mcp::McpReply::error("Rovik couldn't run this call: its run has ended.");
+            let _ = unsent.0.reply.send(reply);
+        }
+    }
 }
 
 /// A message the user sent while the run works (agent_run/steer.rs), handed
@@ -617,6 +658,9 @@ pub async fn run_chat(
         denied,
         allowed_hosts_on: crate::allowed_hosts::current().is_some(),
         steering: params.steering,
+        // A chat's turn with the harness's own tools: with Rovik's, `mcp`
+        // is one of the run's tools.
+        mcp: params.mcp.filter(|_| has_history && !rovik_tools),
     };
     // The session the harness opens or continues is kept for the chat's
     // next turn, as the events say it.
@@ -1156,7 +1200,11 @@ pub(crate) fn fake_claude(dir: &std::path::Path, script: &str) -> String {
 /// (tests): for each of `asks` (Claude Code's tool name and input, and the
 /// tool use's id) it shows the tool use, asks Rovik's `approve` tool over
 /// MCP as Claude Code does, and keeps the answer in `decisions.json`; its
-/// reply lists the answers. None without python3.
+/// reply lists the answers. A tool of Rovik's server (`mcp__rovik__mcp`)
+/// it calls there instead, as Claude Code calls an MCP tool, its result
+/// kept as the answer (`called`). The tools the server lists go in
+/// `tools.json`, and what follows its prompt (`--append-system-prompt-file`)
+/// in `appended.txt`. None without python3.
 #[cfg(all(test, unix))]
 pub(crate) fn fake_claude_asking(dir: &std::path::Path, asks: &Value) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
@@ -1187,6 +1235,11 @@ def out(value):
 def event(e):
     out({'type': 'stream_event', 'event': e, 'parent_tool_use_id': None})
 post({'jsonrpc': '2.0', 'id': 0, 'method': 'initialize', 'params': {'protocolVersion': '2025-11-25'}})
+listed = post({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})['result']['tools']
+json.dump([t['name'] for t in listed], open(os.path.join(here, 'tools.json'), 'w'))
+if '--append-system-prompt-file' in args:
+    appended = open(args[args.index('--append-system-prompt-file') + 1]).read()
+    open(os.path.join(here, 'appended.txt'), 'w').write(appended)
 out({'type': 'system', 'subtype': 'init', 'session_id': 's-7', 'model': 'claude-sonnet-5', 'tools': ['Bash', 'Edit']})
 decisions = []
 for n, (tool, given, use) in enumerate(ASKS):
@@ -1199,9 +1252,14 @@ for n, (tool, given, use) in enumerate(ASKS):
     event({'type': 'content_block_stop', 'index': 0})
     event({'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}, 'usage': {'output_tokens': 3}})
     event({'type': 'message_stop'})
-    asked = {'tool_name': tool, 'input': given, 'tool_use_id': use}
-    result = post({'jsonrpc': '2.0', 'id': 10 + n, 'method': 'tools/call', 'params': {'name': 'approve', 'arguments': asked, '_meta': {'claudecode/toolUseId': use}}})
-    decision = json.loads(result['result']['content'][0]['text'])
+    if tool.startswith('mcp__rovik__'):
+        params = {'name': tool[len('mcp__rovik__'):], 'arguments': given, '_meta': {'claudecode/toolUseId': use}}
+        result = post({'jsonrpc': '2.0', 'id': 10 + n, 'method': 'tools/call', 'params': params})['result']
+        decision = {'behavior': 'called', 'text': result['content'][0]['text'], 'isError': result.get('isError', False)}
+    else:
+        asked = {'tool_name': tool, 'input': given, 'tool_use_id': use}
+        result = post({'jsonrpc': '2.0', 'id': 10 + n, 'method': 'tools/call', 'params': {'name': 'approve', 'arguments': asked, '_meta': {'claudecode/toolUseId': use}}})
+        decision = json.loads(result['result']['content'][0]['text'])
     decisions.append(decision)
     out({'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': use, 'content': decision['behavior']}]}})
 json.dump(decisions, open(os.path.join(here, 'decisions.json'), 'w'))

@@ -280,13 +280,18 @@ asks. Settings → Permissions & approval shows it as **MCP tool calls**.
   too, and the harness is given the list:
   - Claude Code: `--mcp-config` names the server (no `--strict-mcp-config`:
     the user's own servers stay), `--allowedTools mcp__rovik__mcp` (Rovik
-    approves inside the call), and the list in `--append-system-prompt-file`
-    after Claude Code's own prompt.
+    approves inside the call), whatever its permission mode, and the list in
+    `--append-system-prompt-file` after Claude Code's own prompt. A call may
+    wait a day for its approval, in the foreground (`MCP_TOOL_TIMEOUT`,
+    `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0`), as Rovik's tools' calls do.
   - Codex: a `rovik` server beside `rovik_hooks`, its tool called directly
     (`omit_tools_from = ["code_mode", "deferred"]`), and the list in
     `developerInstructions`.
+  - The list names the tool as the harness calls it, `mcp__rovik__mcp`.
   - The call goes to the run, which approves it (Q07) and runs it as its own
     `mcp` call, then answers the harness; the chat shows it as that call.
+    A result is cut as Rovik's are, but not saved: the harness can't read
+    Rovik's copy.
 
 ## Q10. Not in this plan
 

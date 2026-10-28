@@ -1535,6 +1535,49 @@ impl Run {
         let _ = ask.reply.send(answer);
     }
 
+    /// A connector's harness that runs its own tools calls the `mcp` tool
+    /// Rovik serves it (Agent mode, mcp-plan.md Q09): answered as the run's
+    /// own `mcp` call is. A description, or a call that can't be made, at
+    /// once; a call under the MCP rule (`authorize`: refused, run, or put to
+    /// the user or the AI reviewer), then run, its result the harness's.
+    pub(super) async fn answer_mcp_call(&self, call: crate::connectors::mcp::McpCall) {
+        use crate::connectors::mcp::McpReply;
+        let args = call.arguments.as_object().cloned().unwrap_or_default();
+        let read_only = self.mcp_read_only();
+        let reply = match super::mcp_tool::prepare(self.mcp.as_deref(), &args, read_only) {
+            super::mcp_tool::Prepared::Answer { content, error } => McpReply {
+                text: content,
+                is_error: error,
+            },
+            super::mcp_tool::Prepared::Call => {
+                let tc = ToolCall {
+                    id: call.tool_use_id.clone().unwrap_or_default(),
+                    name: super::mcp_tool::NAME.into(),
+                    arguments: Value::Object(args.clone()).to_string(),
+                    extra_content: None,
+                };
+                match (self.authorize(&tc, None).await.refusal, self.mcp.clone()) {
+                    (Some(reason), _) => McpReply::error(reason),
+                    (None, None) => {
+                        McpReply::error("Error: no MCP server is set up for this chat.")
+                    }
+                    (None, Some(catalog)) => {
+                        // Text alone: the harness's model gets no attachments.
+                        let result = super::mcp_tool::call(
+                            &self.core, &catalog, &args, read_only, &self.stop, false,
+                        )
+                        .await;
+                        McpReply {
+                            is_error: result.content.starts_with("Error"),
+                            text: result.content,
+                        }
+                    }
+                }
+            }
+        };
+        let _ = call.reply.send(reply);
+    }
+
     /// A connector's harness reports a command its own shell runs, before
     /// it runs (nothing is installed then in Plan mode) and after it
     /// failed: what it needs is made ready as for Rovik's own commands

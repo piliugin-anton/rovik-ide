@@ -379,7 +379,9 @@ fn git_deny_rules() -> Vec<String> {
 /// rather than the command line, which a long prompt would overflow on
 /// Windows; `mcp_config` is Rovik's tools' server, in that mode;
 /// `hooks_file` is the settings with Rovik's hooks around its own shell's
-/// commands (`hook_settings`), when the run makes them ready.
+/// commands (`hook_settings`), when the run makes them ready;
+/// `appended_file` is what follows Claude Code's own prompt: the list of the
+/// user's MCP servers' tools, with Rovik's `mcp` tool (`Turn::mcp`).
 pub fn args_for(
     settings: &Settings,
     turn: &Turn,
@@ -387,6 +389,7 @@ pub fn args_for(
     prompt_file: Option<&Path>,
     mcp_config: Option<&Path>,
     hooks_file: Option<&Path>,
+    appended_file: Option<&Path>,
 ) -> Vec<String> {
     // Rovik answers what would ask, through its server; otherwise nobody
     // is there to, and it's denied.
@@ -427,6 +430,10 @@ pub fn args_for(
         args.push("--system-prompt-file".into());
         args.push(file.to_string_lossy().into_owned());
     }
+    if let Some(file) = appended_file {
+        args.push("--append-system-prompt-file".into());
+        args.push(file.to_string_lossy().into_owned());
+    }
     // A resumed session takes the prompt as it is now, not as it was at
     // the session's first request: the project's section changes, and so
     // may whose prompt it is (the run's mode's).
@@ -450,9 +457,15 @@ pub fn args_for(
             args.push(config.to_string_lossy().into_owned());
             args.push("--permission-prompt-tool".into());
             args.push(format!("{TOOL_PREFIX}{APPROVE_TOOL}"));
+            // Rovik's `mcp` calls aren't asked about: Rovik approves each
+            // inside the call, under its MCP rule.
+            if let Some(rule) = mcp_tool_rule(turn) {
+                args.push("--allowedTools".into());
+                args.push(rule);
+            }
         }
         push_disallowed(&mut args, settings, turn);
-    } else if let Some(config) = mcp_config {
+    } else if let Some(config) = mcp_config.filter(|_| turn.rovik_tools) {
         // Rovik's tools alone: none of Claude Code's own, Rovik's server
         // alone, and its tools allowed, since Rovik decides on each call.
         args.push("--tools".into());
@@ -470,7 +483,14 @@ pub fn args_for(
             args.push("--permission-mode".into());
             args.push(mode.into());
         }
-        let allowed = rules(&settings.allowed_tools);
+        let mut allowed = rules(&settings.allowed_tools);
+        // Rovik's `mcp` tool beside the user's own servers, and allowed:
+        // Rovik approves each call inside it, under its MCP rule.
+        if let (Some(config), Some(rule)) = (mcp_config, mcp_tool_rule(turn)) {
+            args.push("--mcp-config".into());
+            args.push(config.to_string_lossy().into_owned());
+            allowed.push(rule);
+        }
         if !allowed.is_empty() {
             args.push("--allowedTools".into());
             args.extend(allowed);
@@ -506,6 +526,13 @@ pub fn args_for(
     args
 }
 
+/// The `--allowedTools` rule for Rovik's `mcp` tool, when the turn has it.
+fn mcp_tool_rule(turn: &Turn) -> Option<String> {
+    turn.mcp
+        .as_ref()
+        .map(|offer| format!("{TOOL_PREFIX}{}", offer.name()))
+}
+
 /// The environment a run gets besides the IDE's: how it signs in, and
 /// where its settings are.
 pub fn env_for(settings: &Settings, api_key: &str) -> Vec<(String, String)> {
@@ -530,16 +557,30 @@ pub fn env_for(settings: &Settings, api_key: &str) -> Vec<(String, String)> {
 }
 
 /// What Rovik's tools mode adds to a run's environment: its tools loaded
-/// up front (no tool search), a call never moved to the background while
-/// Rovik waits for an approval, a day for it, their full descriptions,
-/// and the loopback server reached directly, never through a proxy.
+/// up front (no tool search), its own commands never moved to the
+/// background, their full descriptions, and what any call of Rovik's
+/// server needs (`served_calls_env`).
 pub fn rovik_tools_env() -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = [
         ("ENABLE_TOOL_SEARCH", "false"),
-        ("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS", "0"),
         ("CLAUDE_AUTO_BACKGROUND_TASKS", "0"),
-        ("MCP_TOOL_TIMEOUT", MCP_TOOL_TIMEOUT_MS),
         ("CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH", "16384"),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    env.extend(served_calls_env());
+    env
+}
+
+/// What a run that calls Rovik's tools needs, Rovik's own or its `mcp`
+/// (Agent mode): a call never moved to the background while Rovik waits
+/// for an approval, a day for it, and the loopback server reached
+/// directly, never through a proxy.
+fn served_calls_env() -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = [
+        ("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS", "0"),
+        ("MCP_TOOL_TIMEOUT", MCP_TOOL_TIMEOUT_MS),
     ]
     .iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -1818,6 +1859,12 @@ async fn run_turn(
     let prompt = prompt_file(turn)?;
     let asks = asks_of(&settings, turn);
     let checks = checks_of(turn);
+    // Rovik's `mcp` tool, beside its own (mcp-plan.md, Q09), its list after
+    // its prompt.
+    let offer = turn.mcp.as_ref();
+    let appended = offer
+        .map(|offer| TempFile::write("mcp-tools", "md", &offer.section))
+        .transpose()?;
     // In the agent's network (on a team server the user's private one,
     // where the servers it starts take their ports), held to the user's
     // allowed hosts while they're on (allowed_hosts.rs).
@@ -1825,12 +1872,21 @@ async fn run_turn(
     let held = crate::allowed_hosts::hold_program(chat)?;
     let network = held.network.clone();
     let mut served = None;
-    if asks.is_some() || checks.is_some() {
-        let tools = match asks {
-            Some(_) => vec![approve_tool()],
-            None => Vec::new(),
+    if asks.is_some() || checks.is_some() || offer.is_some() {
+        let mut tools = Vec::new();
+        if asks.is_some() {
+            tools.push(approve_tool());
+        }
+        if let Some(offer) = offer {
+            tools.push(offer.tool.clone());
+        }
+        let instructions = match offer {
+            Some(_) => {
+                "Rovik IDE decides whether Claude Code's tool calls may run. Its `mcp` tool \
+                 calls the tools of the user's MCP servers, which the system prompt lists."
+            }
+            None => "Rovik IDE decides whether Claude Code's tool calls may run.",
         };
-        let instructions = "Rovik IDE decides whether Claude Code's tool calls may run.";
         let started = McpServer::start(&tools, instructions, network.as_ref())
             .await
             .map_err(|e| format!("Couldn't start Rovik's server for Claude Code: {e}"))?;
@@ -1839,8 +1895,8 @@ async fn run_turn(
     let cwd = cwd_of(turn);
     let (mcp_config, hooks, env_file) = match &served {
         Some((server, _)) => (
-            asks.as_ref()
-                .map(|_| TempFile::write("mcp", "json", &server.config_json()))
+            (asks.is_some() || offer.is_some())
+                .then(|| TempFile::write("mcp", "json", &server.config_json()))
                 .transpose()?,
             checks
                 .as_ref()
@@ -1864,8 +1920,12 @@ async fn run_turn(
         prompt.as_ref().map(TempFile::path),
         mcp_config.as_ref().map(TempFile::path),
         hooks.as_ref().map(TempFile::path),
+        appended.as_ref().map(TempFile::path),
     );
     let mut env = env_for(&settings, &turn.api_key);
+    if offer.is_some() {
+        env.extend(served_calls_env());
+    }
     let env_path = env_file.as_ref().map(|file| file.path().to_path_buf());
     if let Some(path) = &env_path {
         env.push((
@@ -1878,6 +1938,7 @@ async fn run_turn(
         .chain(mcp_config)
         .chain(hooks)
         .chain(env_file)
+        .chain(appended)
         .collect();
     let first_line_within = turn.first_byte_timeout.max(MIN_FIRST_LINE);
     // One that takes the user's messages as it works keeps its input open
@@ -1965,9 +2026,11 @@ async fn read_own(
     let settings = Settings::from_value(&turn.settings);
     let (asks, checks) = (asks_of(&settings, turn), checks_of(turn));
     let (cwd, root, env_path) = (cwd_of(turn), turn.cwd.clone(), run.env_path.clone());
-    let mut on_call = |call: McpCall| match (call.name == HOOK, &checks, &asks) {
-        (true, Some(checks), _) => answer_hook(call, checks, env_path.clone(), cwd.clone()),
-        (false, _, Some(asks)) => ask_rovik(call, asks, root.clone()),
+    let offer = turn.mcp.clone();
+    let mut on_call = |call: McpCall| match (call.name.as_str(), &checks, &asks, &offer) {
+        (HOOK, Some(checks), _, _) => answer_hook(call, checks, env_path.clone(), cwd.clone()),
+        (APPROVE_TOOL, _, Some(asks), _) => ask_rovik(call, asks, root.clone()),
+        (name, _, _, Some(offer)) if name == offer.name() => offer.forward(call),
         _ => drop(call),
     };
     if let Some(line) = run.parser.held.take() {
@@ -2236,6 +2299,7 @@ async fn start_live(
         session,
         system.as_ref().map(TempFile::path),
         Some(config.path()),
+        None,
         None,
     );
     let mut env = env_for(settings, &turn.api_key);
@@ -2757,6 +2821,7 @@ mod tests {
             denied: Default::default(),
             allowed_hosts_on: false,
             steering: None,
+            mcp: None,
         }
     }
 
@@ -2823,6 +2888,7 @@ mod tests {
             Some(file),
             None,
             None,
+            None,
         );
         let joined = args.join(" ");
         assert!(joined.starts_with("-p --output-format stream-json --verbose --include-partial-messages --permission-prompts none"), "{joined}");
@@ -2842,6 +2908,7 @@ mod tests {
             &t,
             &Session::New("s-1".into()),
             Some(file),
+            None,
             None,
             None,
         )
@@ -2869,6 +2936,7 @@ mod tests {
             Some(file),
             None,
             None,
+            None,
         )
         .join(" ");
         assert!(!joined.contains("--model"), "{joined}");
@@ -2881,6 +2949,7 @@ mod tests {
             &settings,
             &t,
             &Session::Resume("s-0".into()),
+            None,
             None,
             None,
             None,
@@ -2916,7 +2985,7 @@ mod tests {
             }));
             // Rovik's approvals server is there only when Rovik decides.
             let config = (mode == "rovik").then(|| Path::new("/tmp/mcp.json"));
-            let args = args_for(&settings, &t, &session, None, config, None);
+            let args = args_for(&settings, &t, &session, None, config, None, None);
             let rules = disallowed(&args);
             assert_eq!(rules[0], "WebFetch", "{mode}");
             for rule in [
@@ -2935,7 +3004,7 @@ mod tests {
         // In the project itself, only the settings' rules.
         t.isolated = false;
         let settings = Settings::from_value(&json!({ "permissionMode": "bypassPermissions" }));
-        let args = args_for(&settings, &t, &session, None, None, None);
+        let args = args_for(&settings, &t, &session, None, None, None, None);
         assert!(disallowed(&args).is_empty(), "{args:?}");
     }
 
@@ -2950,7 +3019,7 @@ mod tests {
         for mode in ["bypassPermissions", "rovik"] {
             let settings = Settings::from_value(&json!({ "permissionMode": mode }));
             let config = (mode == "rovik").then(|| Path::new("/tmp/mcp.json"));
-            let args = args_for(&settings, &t, &session, None, config, None);
+            let args = args_for(&settings, &t, &session, None, config, None, None);
             let at = args.iter().position(|a| a == "--disallowedTools").unwrap();
             assert_eq!(
                 args[at + 1..at + 5],
@@ -2973,6 +3042,7 @@ mod tests {
             None,
             Some(Path::new("/tmp/mcp.json")),
             None,
+            None,
         );
         assert!(!args.iter().any(|a| a == "--disallowedTools"), "{args:?}");
     }
@@ -2989,7 +3059,7 @@ mod tests {
                 "disallowedTools": "WebFetch",
             }));
             let config = (mode == "rovik").then(|| Path::new("/tmp/mcp.json"));
-            let args = args_for(&settings, t, &session, None, config, None);
+            let args = args_for(&settings, t, &session, None, config, None, None);
             assert!(args.iter().filter(|a| *a == "--disallowedTools").count() <= 1);
             let at = args.iter().position(|a| a == "--disallowedTools");
             at.map(|i| {
@@ -3058,6 +3128,7 @@ mod tests {
             &t,
             &Session::New("s".into()),
             Some(file),
+            None,
             None,
             None,
         );
@@ -3136,6 +3207,7 @@ mod tests {
             None,
             Some(config),
             None,
+            None,
         );
         let joined = args.join(" ");
         assert!(joined.contains("--permission-prompts host"), "{joined}");
@@ -3155,7 +3227,15 @@ mod tests {
         );
 
         // Nobody to ask (a request outside a run): what would ask is denied.
-        let args = args_for(&settings, &t, &Session::New("s".into()), None, None, None);
+        let args = args_for(
+            &settings,
+            &t,
+            &Session::New("s".into()),
+            None,
+            None,
+            None,
+            None,
+        );
         let joined = args.join(" ");
         assert!(joined.contains("--permission-prompts none"), "{joined}");
         assert!(joined.contains("--permission-mode default"), "{joined}");
@@ -3163,9 +3243,68 @@ mod tests {
 
         // Claude Code's own modes are as before.
         let own = Settings::from_value(&json!({ "permissionMode": "acceptEdits" }));
-        let joined = args_for(&own, &t, &Session::New("s".into()), None, None, None).join(" ");
+        let joined =
+            args_for(&own, &t, &Session::New("s".into()), None, None, None, None).join(" ");
         assert!(joined.contains("--permission-mode acceptEdits"), "{joined}");
         assert!(joined.contains("--permission-prompts none"), "{joined}");
+    }
+
+    /// mcp-plan.md, Q09: with its own tools, Claude Code is served Rovik's
+    /// `mcp` tool beside the user's own servers, allowed, since Rovik
+    /// approves inside each call, its list after Claude Code's own prompt,
+    /// whatever the permission mode.
+    #[test]
+    fn with_its_own_tools_claude_code_is_served_rovik_s_mcp_tool() {
+        let (calls, _) = mpsc::unbounded_channel();
+        let mut t = turn("Fix it");
+        t.mcp = Some(crate::connectors::McpOffer {
+            tool: json!({ "type": "function", "function": { "name": "mcp" } }),
+            section: "## MCP tools".into(),
+            calls,
+        });
+        let (config, appended) = (Path::new("/tmp/mcp.json"), Path::new("/tmp/mcp-tools.md"));
+        let args_of = |settings: Value| {
+            let settings = Settings::from_value(&settings);
+            let session = Session::New("s".into());
+            args_for(
+                &settings,
+                &t,
+                &session,
+                None,
+                Some(config),
+                None,
+                Some(appended),
+            )
+            .join(" ")
+        };
+        let rovik = args_of(json!({}));
+        assert!(
+            rovik.contains(
+                "--permission-mode default --mcp-config /tmp/mcp.json \
+                 --permission-prompt-tool mcp__rovik__approve --allowedTools mcp__rovik__mcp"
+            ),
+            "{rovik}"
+        );
+        let own = args_of(json!({ "permissionMode": "acceptEdits", "allowedTools": "Read" }));
+        assert!(
+            own.contains(
+                "--permission-mode acceptEdits --mcp-config /tmp/mcp.json \
+                 --allowedTools Read mcp__rovik__mcp"
+            ),
+            "{own}"
+        );
+        for joined in [rovik, own] {
+            assert!(
+                joined.contains("--append-system-prompt-file /tmp/mcp-tools.md"),
+                "{joined}"
+            );
+            assert!(
+                !joined.contains("--strict-mcp-config")
+                    && !joined.contains("--tools ")
+                    && !joined.contains("--system-prompt-file"),
+                "its own tools and prompt, and the user's servers: {joined}"
+            );
+        }
     }
 
     #[test]
@@ -3393,6 +3532,7 @@ mod tests {
             Some(file),
             None,
             None,
+            None,
         )
         .join(" ");
         assert!(!joined.contains("system-prompt-file"), "{joined}");
@@ -3408,6 +3548,7 @@ mod tests {
             &rovik,
             &Session::New("s".into()),
             Some(file),
+            None,
             None,
             None,
         )
@@ -3427,6 +3568,7 @@ mod tests {
             &one,
             &Session::New("s".into()),
             Some(written.path()),
+            None,
             None,
             None,
         )
@@ -3847,7 +3989,7 @@ mod tests {
             let mut t = turn("Hi");
             t.rovik_tools = rovik_tools;
             t.one_shot = one_shot;
-            args_for(&Settings::default(), &t, &session, None, None, None)
+            args_for(&Settings::default(), &t, &session, None, None, None, None)
                 .join(" ")
                 .contains("--thinking-display summarized")
         };
@@ -3962,11 +4104,11 @@ mod tests {
     fn a_turn_that_takes_the_users_messages_reads_its_input_as_json_lines() {
         let session = Session::New("s".into());
         let mut t = turn("Fix it");
-        let plain = args_for(&Settings::default(), &t, &session, None, None, None).join(" ");
+        let plain = args_for(&Settings::default(), &t, &session, None, None, None, None).join(" ");
         assert!(!plain.contains("--input-format"), "{plain}");
         let (_messages, steering) = mpsc::unbounded_channel();
         t.steering = Some(steering);
-        let joined = args_for(&Settings::default(), &t, &session, None, None, None).join(" ");
+        let joined = args_for(&Settings::default(), &t, &session, None, None, None, None).join(" ");
         assert!(
             joined.contains("--input-format stream-json --replay-user-messages"),
             "{joined}"
@@ -4325,6 +4467,7 @@ fi
                 &Session::New("s".into()),
                 Some(Path::new("/tmp/p.md")),
                 Some(Path::new("/tmp/mcp.json")),
+                None,
                 None,
             );
             let joined = args.join(" ");
@@ -4775,6 +4918,7 @@ fi
             None,
             None,
             Some(Path::new("/tmp/hooks.json")),
+            None,
         )
         .join(" ");
         assert!(

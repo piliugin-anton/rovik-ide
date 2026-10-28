@@ -247,6 +247,25 @@ test('a reply’s steps show as Rovik’s work does: its thoughts apart, its cal
   assert.equal(calls[2].result, undefined, 'still running');
 });
 
+// docs/design/mcp-plan.md, Q09: Rovik serves its `mcp` tool to a harness
+// running its own tools, and the chat shows each call of it as Rovik's.
+test('a harness’s call of Rovik’s mcp tool shows as Rovik’s mcp call, whatever the kind', () => {
+  for (const kind of ['claude-code', 'codex']) {
+    const input = { tool: 'docs.read', arguments: { path: 'intro' } };
+    const meta: ConnectorMeta = {
+      kind,
+      steps: [{ id: 'c1', name: 'mcp__rovik__mcp', input, result: 'Intro.', ok: true }],
+    };
+    const [segment] = connectorSegments(meta);
+    const [step] = 'calls' in segment ? segment.calls : [];
+    assert.deepEqual(
+      [step.call.id, step.call.name, JSON.parse(step.call.arguments)],
+      ['c1', 'mcp', input]
+    );
+    assert.equal(step.result?.content, 'Intro.');
+  }
+});
+
 test('a reply’s text shows in its place among its steps, as it went', () => {
   // "Let’s read 📄 a.txt…", a read, "Now b.", a read, then its answer; each
   // step says where in the text it came (UTF-16 code units).

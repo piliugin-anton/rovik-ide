@@ -1458,6 +1458,21 @@ impl Run {
         self.plan_mode || self.sub().is_some()
     }
 
+    /// The list of the MCP servers' tools for a connector's harness that
+    /// runs its own tools (Agent mode, mcp-plan.md Q09), when they have any
+    /// for it: the `mcp` tool named as the harness calls it.
+    fn harness_mcp_section(&self) -> Option<String> {
+        let catalog = self.mcp.as_ref()?;
+        let own_tools = self.profile.connector.is_some() && self.profile.no_tools;
+        let read_only = self.mcp_read_only();
+        let called = format!(
+            "{}{}",
+            crate::connectors::mcp::TOOL_PREFIX,
+            super::mcp_tool::NAME
+        );
+        (own_tools && catalog.offers(read_only)).then(|| catalog.section(read_only, &called))
+    }
+
     /// The subagent's context, when this run is one.
     pub(super) fn sub(&self) -> Option<&SubCtx> {
         match &self.role {
@@ -2169,7 +2184,7 @@ impl Run {
                 let allowed = self
                     .sub()
                     .is_none_or(|sub| sub.allows(super::mcp_tool::NAME));
-                allowed.then(|| catalog.section(mcp_read_only))
+                allowed.then(|| catalog.section(mcp_read_only, super::mcp_tool::NAME))
             }
             _ => None,
         };
@@ -2294,6 +2309,9 @@ impl Run {
         let reads = self.steer.steerable()
             && crate::connectors::kind_of(&self.profile.base_url)
                 .is_some_and(|kind| crate::connectors::connector(kind).reads_messages());
+        // Q09 (mcp-plan.md): a connector's harness that runs its own tools
+        // is served the `mcp` tool too, with the list in its prompt.
+        let harness_mcp = self.harness_mcp_section();
         // Shown when the request starts (asking again with another effort).
         let mut opening_status: Option<Status> = None;
         // One-time context notes (CLM) an attempt at this turn went out with:
@@ -2319,6 +2337,16 @@ impl Run {
                 }
             }
             let (to_harness, steering) = (reads.then_some(to_harness), reads.then_some(steering));
+            // And calls the `mcp` tool it's served: answered here, as the
+            // run's own `mcp` calls are (`answer_mcp_call`).
+            let (mcp_calls, mut mcp_asks) = tokio::sync::mpsc::unbounded_channel();
+            let mcp = harness_mcp
+                .clone()
+                .map(|section| crate::connectors::McpOffer {
+                    tool: super::mcp_tool::schema(),
+                    section,
+                    calls: mcp_calls,
+                });
             let params = ChatParams {
                 base_url: self.profile.base_url.clone(),
                 api_key: self.profile.api_key.clone(),
@@ -2356,6 +2384,7 @@ impl Run {
                 command_checks,
                 restricted: Some(self.restricted.clone()),
                 steering,
+                mcp,
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -2403,6 +2432,7 @@ impl Run {
                 let mut effort_open = true;
                 let mut answering = futures_util::stream::FuturesUnordered::new();
                 let mut checking = futures_util::stream::FuturesUnordered::new();
+                let mut calling = futures_util::stream::FuturesUnordered::new();
                 loop {
                     tokio::select! {
                         r = &mut request => break Some(r),
@@ -2411,7 +2441,15 @@ impl Run {
                             answering.push(self.answer_tool_ask(ask));
                         }
                         Some(check) = checks.recv() => checking.push(self.answer_command_check(check)),
+                        Some(mut call) = mcp_asks.recv() => {
+                            let id = call
+                                .tool_use_id
+                                .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
+                            asked.push(id.clone());
+                            calling.push(self.answer_mcp_call(call));
+                        }
                         Some(()) = futures_util::StreamExt::next(&mut answering), if !answering.is_empty() => {}
+                        Some(()) = futures_util::StreamExt::next(&mut calling), if !calling.is_empty() => {}
                         Some(before) = futures_util::StreamExt::next(&mut checking), if !checking.is_empty() => {
                             if let Some(before) = before {
                                 befores.add(before);
