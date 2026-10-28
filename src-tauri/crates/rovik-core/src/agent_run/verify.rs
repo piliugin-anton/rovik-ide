@@ -479,13 +479,16 @@ fn describe_error_files(files: &ErrorFiles) -> Option<String> {
 
 /// The message the agent gets when checks fail (sent as a user-role message).
 /// `limit`: the rounds there are; None in Autopilot, whose rounds end after
-/// two without progress (V03).
+/// two without progress (V03). `own_tools`: the agent is a connector's
+/// harness with its own tools, which has no `read` of Rovik's for a check's
+/// saved output: it runs the check itself for the rest.
 pub fn failure_report(
     results: &[CheckResult],
     changed_files: &[String],
     round: u32,
     limit: Option<u32>,
     notes: &[String],
+    own_tools: bool,
 ) -> String {
     let failed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "failed").collect();
     let passed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "passed").collect();
@@ -564,9 +567,16 @@ pub fn failure_report(
         lines.push(r.output.clone().unwrap_or_default());
         if let Some(path) = &r.saved_output {
             lines.push(String::new());
-            lines.push(format!(
-                "That's the relevant part of the output. The whole of it is saved as `{path}`: read it with read and start_line/end_line if you need more."
-            ));
+            lines.push(if own_tools {
+                format!(
+                    "That's the relevant part of the output: run `{}` yourself if you need the rest.",
+                    r.command
+                )
+            } else {
+                format!(
+                    "That's the relevant part of the output. The whole of it is saved as `{path}`: read it with read and start_line/end_line if you need more."
+                )
+            });
         }
     }
     let skipped: Vec<String> = results
@@ -1135,6 +1145,7 @@ impl Run {
                     round,
                     self.round_limit(),
                     &[rollback_note(&rb)],
+                    self.profile.no_tools,
                 );
                 self.add_harness(report, "verification").await?;
                 // Not all of it went back: the code is new, check it again.
@@ -1352,7 +1363,14 @@ impl Run {
         if self.stopped() {
             return Ok("verify-stopped".into());
         }
-        let mut report = failure_report(&sent, &changed, round, self.round_limit(), &notes);
+        let mut report = failure_report(
+            &sent,
+            &changed,
+            round,
+            self.round_limit(),
+            &notes,
+            self.profile.no_tools,
+        );
         if let Some(files) = &self.merged_from_project {
             let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
             let root = self.root.clone().unwrap_or_default();
@@ -1992,6 +2010,7 @@ mod tests {
             1,
             Some(3),
             &["No progress: x".into()],
+            false,
         );
         assert!(text.contains("(attempt 1 of 3).\n\nNo progress: x\n\nFiles you changed"));
         assert!(text.contains("Your changes are not done yet: a check fails (attempt 1 of 3)."));
@@ -1999,7 +2018,7 @@ mod tests {
         assert!(text.contains("## Type check failed: `tsc` (exit code 2)\nErrors point at files you changed: src/a.ts."));
         assert!(text.contains("Not run: `npm test` (the type check failed)"));
         // V03: Autopilot's rounds have no count to tell.
-        let autopilot = failure_report(&results, &[], 2, None, &[]);
+        let autopilot = failure_report(&results, &[], 2, None, &[], false);
         assert!(autopilot.contains(
             "a check fails (attempt 2; the checks stop after 2 attempts in a row without progress)."
         ));
@@ -2010,6 +2029,39 @@ mod tests {
             json!({ "kind": "lint", "command": "eslint .", "status": "passed" })
         );
         assert_eq!(meta["verification"]["maxRounds"], 3);
+    }
+
+    /// A check's whole output is saved where Rovik's `read` finds it; a
+    /// connector's harness with its own tools has no such tool, and is told
+    /// to run the check itself for the rest.
+    #[test]
+    fn the_report_says_how_the_agent_gets_the_rest_of_a_checks_output() {
+        let mut failed = CheckResult {
+            status: "failed",
+            ..CheckResult::pending(&ProjectCheck {
+                kind: "test".into(),
+                command: "npm test".into(),
+                enabled: true,
+            })
+        };
+        failed.output = Some("FAIL a.test.js".into());
+        failed.saved_output = Some("@checks/round-1-test.log".into());
+        let results = [failed];
+        let rovik = failure_report(&results, &[], 1, Some(3), &[], false);
+        assert!(
+            rovik.contains(
+                "The whole of it is saved as `@checks/round-1-test.log`: read it with read"
+            ),
+            "{rovik}"
+        );
+        let harness = failure_report(&results, &[], 1, Some(3), &[], true);
+        assert!(
+            harness.contains(
+                "That's the relevant part of the output: run `npm test` yourself if you need the rest."
+            ),
+            "{harness}"
+        );
+        assert!(!harness.contains("@checks/"), "{harness}");
     }
 
     /// What fails on the code before the change too (before.rs) is told
@@ -2037,7 +2089,7 @@ mod tests {
             "typecheck|src/old.ts|TS2304|Cannot find name 'a'.".into()
         ]);
         let results = vec![tsc, lint];
-        let text = failure_report(&results, &["src/new.ts".into()], 1, Some(3), &[]);
+        let text = failure_report(&results, &["src/new.ts".into()], 1, Some(3), &[], false);
         assert!(text.contains("Your changes are not done yet: a check fails (attempt 1 of 3)."));
         assert!(
             text.contains("Failing only as on the code before your change, so not yours to fix: Lint (`yarn run lint`)"),

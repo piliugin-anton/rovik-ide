@@ -450,7 +450,14 @@ impl Run {
             return Ok("repaired".into());
         }
         let note = environment_note(&failure, &toolchains);
-        let report = verify::failure_report(results, changed, round, None, &[note]);
+        let report = verify::failure_report(
+            results,
+            changed,
+            round,
+            None,
+            &[note],
+            self.profile.no_tools,
+        );
         self.add_harness(report, "verification").await?;
         self.last_verify_failed = true;
         self.take_checkpoint();

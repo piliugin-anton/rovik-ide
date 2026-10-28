@@ -501,6 +501,14 @@ Rovik's agent too.
   Rovik's checks, checklist, Plan mode (Rovik's own, not Codex's),
   Autopilot and subagents work as with any model.
 
+In Agent mode, what Claude Code or Codex changes with its own tools is the
+chat's change as much as Rovik's agent's: when it finishes, the project's
+checks run on it (see [Project checks](#project-checks)), and what fails
+goes back to it, in the same session, as its next message; a fix of its
+that breaks a check that passed is rolled back. An edit that was refused
+or failed changed nothing, and doesn't count. Rovik's review of the change
+and its checklist are kept with Rovik's tools, so they don't apply there.
+
 Either way, its thinking shows: Rovik asks Claude Code for it
 (`--thinking-display summarized`) and Codex for its reasoning's summary,
 since current models send none unless asked. What comes is the API's
@@ -1153,6 +1161,13 @@ those that fail there too are set apart: a check that fails only as it did
 before is `preexisting` in its record and doesn't hold the change back.
 React Native apps, whose bundler never type-checks, often have such
 failures.
+
+A connector's harness in Agent mode changes files with its own tools
+(`connectors/mod.rs`). After each of its turns, its steps that succeeded
+count as the agent's own calls would (`agent_run/harness_changes.rs`),
+each connector saying what its steps did (`Connector::step_calls`); what a
+file was before is read as the run lets the harness's call change it, so a
+fix round that broke something can be rolled back.
 
 ### Restricted files
 

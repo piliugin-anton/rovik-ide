@@ -12,10 +12,12 @@
 //! Whose tools the harness works with is the run's mode's: a lead's run in
 //! Agent mode offers such a model no tools of the IDE's (agent_run marks
 //! its profile `no_tools`), and the harness runs its own, each shown as a
-//! step the IDE never ran (`ChatStreamEvent::HarnessStep`). Every other run
-//! (Plan mode, Autopilot's stages, a subagent) offers Rovik's: the harness
-//! is the model behind Rovik's agent, with Rovik's prompt, and its calls of
-//! Rovik's tools (over MCP, mcp.rs) are the reply's own (`Turn::rovik_tools`).
+//! step the IDE never ran (`ChatStreamEvent::HarnessStep`). What those
+//! steps change is the run's change all the same: its checks run on it
+//! ([`Connector::step_calls`]). Every other run (Plan mode, Autopilot's
+//! stages, a subagent) offers Rovik's: the harness is the model behind
+//! Rovik's agent, with Rovik's prompt, and its calls of Rovik's tools (over
+//! MCP, mcp.rs) are the reply's own (`Turn::rovik_tools`).
 //!
 //! A harness keeps its own conversation: the session it opens for a chat
 //! is remembered (sessions.rs), and later turns continue it, so it keeps
@@ -24,12 +26,13 @@
 //!
 //! Every connector implements [`Connector`]: a probe for "Test & refresh
 //! models", its sign-in check, whether its program is installed, a turn,
-//! and, where it has them, what its "Set up" steps run (setup.rs runs
-//! them, the same for every connector), its commands and its newest
-//! version. A new harness is one more module here implementing
-//! it (claude_code.rs, codex/), one more `ConnectorKind`, and its line in
-//! [`connector`]; nothing else here or in the run changes. The app's side
-//! is its `ConnectorSpec` and its `ConnectorFields` (src/lib/connectors.ts).
+//! what each of its own steps did, and, where it has them, what its "Set
+//! up" steps run (setup.rs runs them, the same for every connector), its
+//! commands and its newest version. A new harness is one more module here
+//! implementing it (claude_code.rs, codex/), one more `ConnectorKind`, and
+//! its line in [`connector`]; nothing else here or in the run changes. The
+//! app's side is its `ConnectorSpec` and its `ConnectorFields`
+//! (src/lib/connectors.ts).
 
 mod claude_code;
 mod codex;
@@ -217,14 +220,17 @@ pub struct CommandCheck {
     pub reply: oneshot::Sender<CommandAnswer>,
 }
 
-/// What a harness's own tool call does.
+/// What a harness's own tool call does: what the run checks before it runs
+/// (`CommandCheck`), and what it records of a step that ran
+/// ([`Connector::step_calls`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum HarnessCall {
     /// A command line, as its shell runs it.
     Command(String),
     /// A call of its own file tools, as the Rovik tool call that does the
     /// same (`read` for Claude Code's `Read`, a `bash` `rg` for its
-    /// `Grep`): only checked against the restricted files.
+    /// `Grep`): before it runs, only checked against the restricted files;
+    /// a `write` that ran is one of the run's changes.
     Tool {
         name: String,
         args: serde_json::Map<String, Value>,
@@ -328,6 +334,16 @@ pub trait Connector: Send + Sync {
         cancel: &'a mut watch::Receiver<bool>,
         on_event: &'a mut (dyn FnMut(ChatStreamEvent) + Send),
     ) -> BoxFuture<'a, Result<(), String>>;
+
+    /// What one of the harness's own steps did, as the Rovik calls that do
+    /// the same ([`HarnessCall`]): a command of its shell, a call of its
+    /// file tools (a change to a file is a `write` of it; a move, of both
+    /// its files). Empty for a step that ran none (a web search, a
+    /// thought). After each turn the run records what the steps that
+    /// succeeded changed, as it does for its own calls
+    /// (agent_run/harness_changes.rs): its checks then run on the
+    /// harness's changes as on its own.
+    fn step_calls(&self, step: &HarnessStep) -> Vec<HarnessCall>;
 
     /// What a "Set up" step runs for the connector `args` names: its
     /// installer, its sign-in. setup.rs runs it, shows its output, opens
@@ -1132,17 +1148,29 @@ out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': reply,
 }
 
 /// A stand-in for `claude` running its own tools under Rovik's hooks
-/// (tests): for each of `commands` (the command, the `error` Claude Code
-/// reports when it fails or null, the tool use's id, and the folder its
-/// shell is in, from the project's, if not that; or an object of a call
-/// of its other tools: `tool`, `input`, `use`) it shows the tool use,
-/// posts its `PreToolUse` event to the hooks its `--settings` name for that
-/// tool, and, for a command that fails, its `PostToolUseFailure` event, as
-/// Claude Code does. The answers, with each event's name and tool use (null
-/// for a tool no hook is for), go to `hooks.json`, and what its
-/// `CLAUDE_ENV_FILE` holds to `env.txt`. None without python3.
+/// (tests), one turn of [`fake_claude_turns`]: `commands`, its steps.
 #[cfg(all(test, unix))]
 pub(crate) fn fake_claude_with_hooks(dir: &std::path::Path, commands: &Value) -> Option<String> {
+    fake_claude_turns(dir, &json!([commands]))
+}
+
+/// A stand-in for `claude` running its own tools under Rovik's hooks, a
+/// turn a run (tests): its `n`th run plays `turns[n]` (the last one, past
+/// them), and keeps what it was asked in `prompt-<n>.txt`. A step is a
+/// command (the command, the `error` Claude Code reports when it fails or
+/// null, the tool use's id, and the folder its shell is in, from the
+/// project's, if not that), or an object of a call of its other tools:
+/// `tool`, `input`, `use`, its `error` if it fails, and the `files` it
+/// changes when it runs (each path's new text; null deletes it). Each step
+/// shows its tool use, and posts its `PreToolUse` event to the hooks its
+/// `--settings` name for that tool, as Claude Code does: one the hook
+/// refuses doesn't run, its result the refusal. For a command that fails,
+/// its `PostToolUseFailure` event is posted too. The answers, with each
+/// event's name and tool use (null for a tool no hook is for), go to
+/// `hooks.json`, and what its `CLAUDE_ENV_FILE` holds to `env.txt`: the
+/// last run's. None without python3.
+#[cfg(all(test, unix))]
+pub(crate) fn fake_claude_turns(dir: &std::path::Path, turns: &Value) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
     if !crate::process::on_path("python3") {
         return None;
@@ -1151,10 +1179,13 @@ pub(crate) fn fake_claude_with_hooks(dir: &std::path::Path, commands: &Value) ->
 import json, os, re, sys, urllib.request
 here = os.path.dirname(os.path.abspath(__file__))
 args = sys.argv[1:]
+runs = os.path.join(here, 'runs.txt')
+run = int(open(runs).read()) if os.path.exists(runs) else 0
+open(runs, 'w').write(str(run + 1))
 open(os.path.join(here, 'args.txt'), 'w').write(' '.join(args))
 env_file = os.environ.get('CLAUDE_ENV_FILE')
 open(os.path.join(here, 'env.txt'), 'w').write(open(env_file).read() if env_file else '')
-sys.stdin.read()
+open(os.path.join(here, 'prompt-%d.txt' % run), 'w').write(sys.stdin.read())
 settings = json.load(open(args[args.index('--settings') + 1]))
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def hook(event):
@@ -1173,10 +1204,12 @@ def event(e):
     out({'type': 'stream_event', 'event': e, 'parent_tool_use_id': None})
 out({'type': 'system', 'subtype': 'init', 'session_id': 's-8', 'model': 'claude-sonnet-5', 'tools': ['Bash']})
 answers = []
-commands = json.loads(r'''COMMANDS''')
-for n, step in enumerate(commands):
+turns = json.loads(r'''TURNS''')
+for n, step in enumerate(turns[min(run, len(turns) - 1)]):
+    files = {}
     if isinstance(step, dict):
-        tool, given, error, use, folder = step['tool'], step['input'], None, step['use'], None
+        tool, given, error, use, folder = step['tool'], step['input'], step.get('error'), step['use'], None
+        files = step.get('files', {})
     else:
         command, error, use = step[:3]
         folder = step[3] if len(step) > 3 else None
@@ -1187,12 +1220,25 @@ for n, step in enumerate(commands):
     event({'type': 'content_block_stop', 'index': 0})
     event({'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}, 'usage': {'output_tokens': 3}})
     event({'type': 'message_stop'})
+    out({'type': 'assistant', 'message': {'id': 'm%d' % n, 'content': [{'type': 'tool_use', 'id': use, 'name': tool, 'input': given}]}, 'parent_tool_use_id': None})
     cwd = os.path.join(os.getcwd(), folder) if folder else os.getcwd()
     common = {'session_id': 's-8', 'cwd': cwd, 'tool_name': tool, 'tool_input': given, 'tool_use_id': use}
-    answers.append({'event': 'PreToolUse', 'use': use, 'answer': hook(dict(common, hook_event_name='PreToolUse'))})
-    if error is not None:
-        failed = dict(common, hook_event_name='PostToolUseFailure', error=error, is_interrupt=False)
-        answers.append({'event': 'PostToolUseFailure', 'use': use, 'answer': hook(failed)})
+    answer = hook(dict(common, hook_event_name='PreToolUse'))
+    answers.append({'event': 'PreToolUse', 'use': use, 'answer': answer})
+    said = (answer or {}).get('hookSpecificOutput') or {}
+    if said.get('permissionDecision') == 'deny':
+        error = said.get('permissionDecisionReason') or 'denied'
+    else:
+        for path, text in files.items():
+            path = os.path.join(os.getcwd(), path)
+            if text is None:
+                os.remove(path)
+            else:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, 'w').write(text)
+        if error is not None:
+            failed = dict(common, hook_event_name='PostToolUseFailure', error=error, is_interrupt=False)
+            answers.append({'event': 'PostToolUseFailure', 'use': use, 'answer': hook(failed)})
     out({'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': use, 'content': error or 'ok', 'is_error': error is not None}]}})
 json.dump(answers, open(os.path.join(here, 'hooks.json'), 'w'))
 event({'type': 'message_start', 'message': {'id': 'last'}})
@@ -1202,7 +1248,7 @@ event({'type': 'message_stop'})
 out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Done.', 'usage': {}, 'total_cost_usd': 0.01, 'num_turns': 1})
 "#;
     let path = dir.join("claude");
-    std::fs::write(&path, script.replace("COMMANDS", &commands.to_string())).unwrap();
+    std::fs::write(&path, script.replace("TURNS", &turns.to_string())).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     Some(path.to_string_lossy().into_owned())
 }

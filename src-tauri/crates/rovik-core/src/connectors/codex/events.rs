@@ -16,7 +16,8 @@ use crate::connectors::harness::Lines;
 use crate::connectors::mcp::SERVER_NAME;
 use crate::connectors::steps::{relative_path, relative_paths, thought_id, thousands, Thought};
 use crate::connectors::{
-    harness_error, trimmed_text, trimmed_value, usage_value, ConnectorKind, HarnessStep,
+    harness_error, trimmed_text, trimmed_value, usage_value, ConnectorKind, HarnessCall,
+    HarnessStep,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -705,6 +706,31 @@ fn text_of<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+/// What a step of Codex's own did, as Rovik's calls
+/// (`Connector::step_calls`): its shell's command, and a patch's change to
+/// a file as a `write` of it (a move, of both its files). Its other tools'
+/// steps change nothing Rovik follows.
+pub(super) fn step_calls(step: &HarnessStep) -> Vec<HarnessCall> {
+    let field = |key: &str| {
+        step.input
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+    };
+    match step.name.as_str() {
+        "shell" => field("command")
+            .map(|command| HarnessCall::Command(command.to_string()))
+            .into_iter()
+            .collect(),
+        "edit" => [field("path"), field("movePath")]
+            .into_iter()
+            .flatten()
+            .map(|path| hooks::tool_call("write", json!({ "path": path })))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// A step of a call of Codex's own tools.
 fn step(id: &str, name: &str, input: Value) -> HarnessStep {
     HarnessStep {
@@ -1013,6 +1039,52 @@ mod tests {
         assert_eq!(steps["exec-3#1"].input["kind"], "add");
         assert_eq!(steps["exec-3#1"].result.as_deref(), Some("Declined."));
         assert_eq!(steps["exec-3#1"].ok, Some(false));
+    }
+
+    /// What a step of Codex's own did is the Rovik calls that do the same:
+    /// its shell's command, and a write of each file its patch changes (a
+    /// move, of both its files). The run records the changes of those that
+    /// succeeded as its own.
+    #[test]
+    fn codex_s_steps_are_the_rovik_calls_that_do_the_same() {
+        let (mut parser, _, _input) = parser();
+        parser.begin(1);
+        let events = feed(
+            &mut parser,
+            &[
+                note(
+                    "item/started",
+                    json!({ "item": { "type": "commandExecution", "id": "exec-1",
+                    "command": "/bin/bash -lc 'npm install'", "cwd": "/p", "source": "unifiedExecStartup" } }),
+                ),
+                note(
+                    "item/started",
+                    json!({ "item": { "type": "fileChange", "id": "exec-2", "status": "inProgress", "changes": [
+                    { "path": "/p/a.txt", "kind": { "type": "update", "move_path": "/p/b.txt" }, "diff": "" },
+                    { "path": "/p/new.txt", "kind": { "type": "add" }, "diff": "new\n" },
+                ] } }),
+                ),
+                note(
+                    "item/started",
+                    json!({ "item": { "type": "webSearch", "id": "ws-1", "query": "rust" } }),
+                ),
+            ],
+        );
+        let steps = last_steps(&events);
+        let write = |path: &str| HarnessCall::Tool {
+            name: "write".into(),
+            args: json!({ "path": path }).as_object().unwrap().clone(),
+        };
+        assert_eq!(
+            step_calls(&steps["exec-1"]),
+            [HarnessCall::Command("npm install".into())]
+        );
+        assert_eq!(
+            step_calls(&steps["exec-2"]),
+            [write("/p/a.txt"), write("/p/b.txt")]
+        );
+        assert_eq!(step_calls(&steps["exec-2#1"]), [write("/p/new.txt")]);
+        assert!(step_calls(&steps["ws-1"]).is_empty());
     }
 
     #[test]

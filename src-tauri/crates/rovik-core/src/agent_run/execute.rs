@@ -950,38 +950,16 @@ impl Run {
         }
         if writes && !tools::is_error(&result.content) {
             if let Some(path) = &write_path {
-                if !self.changed_files.contains(path) {
-                    self.changed_files.push(path.clone());
-                }
-                self.writes_since_verify = true;
-                self.writes_since_review = true;
-            }
-            // The parse caches key on mtime+size: a fast same-size rewrite
-            // could otherwise serve the old parse all run. Invalidate now,
-            // while the absolute path is at hand; failures never break the run.
-            if let (Some(root), Some(abs)) = (self.root.as_deref(), abs_write_path.as_deref()) {
-                let abs_path = std::path::Path::new(abs);
-                crate::outline::invalidate_path(abs_path);
-                crate::repo_map::invalidate_path(std::path::Path::new(root), abs_path);
+                self.note_write(path, abs_write_path.as_deref());
             }
         }
         // A shell command may have changed any files (git checkout, codegen,
         // formatters): mtime/size catches it on the map's next rebuild —
         // unlike the write tool, no same-tick cache race is possible across
         // processes.
-        // P3.5: outside an isolated chat, what a command changed can't be
-        // rolled back; the round's rollback says which ran.
         if tool_name == "bash" && auth.refusal.is_none() {
             let command = permissions::str_arg(&args_json, "command").unwrap_or_default();
-            if permissions::command_modifies_files(&command) {
-                // Round 2, P3.6: a fix made with a command (`sed -i`) is a
-                // change the checks run on again before "verified".
-                self.writes_since_verify = true;
-                if self.checkpoint.is_some() && !self.isolated() {
-                    self.round_commands
-                        .push(crate::chat_db::store::char_prefix(&command, 120).to_string());
-                }
-            }
+            self.note_command(&command);
         }
         if tool_name == "bash" && !failed {
             // A command on the context file's real path (sed, python3, …)
@@ -1035,6 +1013,40 @@ impl Run {
             result.attachments,
         )
         .await
+    }
+
+    /// A file the agent changed (`path` as its call named it; `abs_path`,
+    /// where it is): one of the run's changed files, which the review and
+    /// the checks run on next.
+    pub(super) fn note_write(&mut self, path: &str, abs_path: Option<&str>) {
+        if !self.changed_files.iter().any(|p| p == path) {
+            self.changed_files.push(path.to_string());
+        }
+        self.writes_since_verify = true;
+        self.writes_since_review = true;
+        // The parse caches key on mtime+size: a fast same-size rewrite
+        // could otherwise serve the old parse all run. Invalidate now,
+        // while the absolute path is at hand; failures never break the run.
+        if let (Some(root), Some(abs)) = (self.root.as_deref(), abs_path) {
+            let abs_path = std::path::Path::new(abs);
+            crate::outline::invalidate_path(abs_path);
+            crate::repo_map::invalidate_path(std::path::Path::new(root), abs_path);
+        }
+    }
+
+    /// A command the agent ran. One that may change files (`sed -i`) is a
+    /// change the checks run on again before "verified" (round 2, P3.6).
+    /// P3.5: outside an isolated chat, what it changed can't be rolled
+    /// back; the round's rollback says it ran.
+    pub(super) fn note_command(&mut self, command: &str) {
+        if !permissions::command_modifies_files(command) {
+            return;
+        }
+        self.writes_since_verify = true;
+        if self.checkpoint.is_some() && !self.isolated() {
+            self.round_commands
+                .push(crate::chat_db::store::char_prefix(command, 120).to_string());
+        }
     }
 
     async fn stopped_result(&self, tc: &ToolCall) -> Result<(), String> {
@@ -1480,23 +1492,39 @@ impl Run {
     /// refused that would read or change a restricted file, or that can't
     /// run where the chat works (git that changes the repository, in a
     /// chat's copy of the project).
-    pub(super) async fn answer_command_check(&self, check: crate::connectors::CommandCheck) {
+    ///
+    /// A call of its file tools that may change a file, and isn't refused,
+    /// gives back that file as it is before the call runs: what it was, for
+    /// the run's record of the harness's changes once its turn is over
+    /// (harness_changes.rs).
+    pub(super) async fn answer_command_check(
+        &self,
+        check: crate::connectors::CommandCheck,
+    ) -> Option<super::harness_changes::Before> {
         use crate::connectors::{CommandAnswer, HarnessCall};
         let Some(root) = self.root.clone() else {
             let _ = check.reply.send(CommandAnswer::Note(None));
-            return;
+            return None;
         };
         let command = match check.call {
             // Its own file tools: only what they may do with files.
             HarnessCall::Tool { name, args } => {
+                let path = permissions::modifies_files(&name)
+                    .then(|| permissions::trimmed_str(args.get("path")).map(str::to_string))
+                    .flatten();
                 let refused = self
                     .harness_restricted_problem(&name, args, check.cwd)
                     .await;
+                // Read before the answer lets the call run.
+                let before = match &refused {
+                    None => path.and_then(|path| self.before_harness_write(&path)),
+                    Some(_) => None,
+                };
                 let _ = check.reply.send(match refused {
                     Some(reason) => CommandAnswer::Deny(reason),
                     None => CommandAnswer::Note(None),
                 });
-                return;
+                return before;
             }
             HarnessCall::Command(command) => command,
         };
@@ -1508,14 +1536,14 @@ impl Run {
                 .await
             {
                 let _ = check.reply.send(CommandAnswer::Deny(reason));
-                return;
+                return None;
             }
             let owner = self.overlay_owner();
             if let Some(reason) =
                 tools::copy_command_problem(&owner, self.core.agents.on_server(), &command)
             {
                 let _ = check.reply.send(CommandAnswer::Deny(reason));
-                return;
+                return None;
             }
         }
         let (core, dialog_id, call) = (
@@ -1548,6 +1576,7 @@ impl Run {
                 .map(|note| format!("Rovik IDE: {note}")),
         };
         let _ = check.reply.send(CommandAnswer::Note(said));
+        None
     }
 
     /// An approved edit whose file changed while the approval waited (another
