@@ -277,6 +277,20 @@ waiting approval with the same `Deny` (`stop_in`).
 rejected calls are still remembered), and moves the next checkpoint to the
 current count plus the setting's interval. `Guard` keeps that interval for it.
 
+A connector's harness that runs its own tools makes a whole turn of one
+model request, so its next step is its own. One that reads messages
+mid-turn (`Connector::reads_messages`: Claude Code, on its input as JSON
+lines) is handed each as it comes (`SteerQueue::hand_over`, at the request's
+ticks), and reads it at its next step, once its running tools finish. It
+says the message back as it reads it (`ChatStreamEvent::HarnessRead`): the
+turn ends there, its reply so far stored, the message is stored after it
+(`at: "harness"`), and the run's next turn goes on with the same harness
+run (P1 doesn't read meanwhile: what waits is the harness's). A message
+handed over isn't the user's to take back, but stays in the queue's
+`handed` list until it's read, so `agent_status` lists it and `go`'s close
+hands it back. One the harness never read, its turn over first, waits
+again (`take_back`) and is read at the next point, as for any model.
+
 ### 3.4 Ends, and what's left
 
 `Run::go` closes the queue as soon as `drive` returns, whatever ended it
@@ -389,7 +403,8 @@ type (`src/types.ts`).
     when the checks finish"
   - otherwise: "Queued: the agent reads it at its next step".
 - ✕ calls `agent_unsteer`. True: the bubble goes and the text goes back into
-  the input. False: the message was read already.
+  the input. False: the agent has it already (it was read, or handed to a
+  connector's harness).
 - Read: `MessagesAdded` brings a row with the bubble's id. The bubble leaves
   `queued`, and the row shows where it was stored, as a plain user bubble.
 - `SteerReturned`: those bubbles go and their texts come back into the input

@@ -6,19 +6,6 @@
 use super::*;
 use rovik_protocol::agent::SteerReply;
 
-/// A message as the message box sends one to a run: what was typed, with
-/// the editor context the frontend puts before it.
-fn typed(text: &str) -> UserMessage {
-    UserMessage {
-        id: uuid::Uuid::new_v4().to_string(),
-        content: text.into(),
-        meta: Some(json!({
-            "sentContent": format!("[Active editor context — file src/lib.rs]\n\n{text}")
-        })),
-        attachments: Vec::new(),
-    }
-}
-
 const FRAME_START: &str = "[The user sent this message while you were working.";
 
 const DENIED_WITH_MESSAGE: &str = "Error: not run: the user denied an earlier call in this reply and sent a message. Read it first.";
@@ -89,17 +76,6 @@ fn first_user(request: &Value) -> Value {
 }
 
 impl Harness {
-    async fn steer(&self, text: &str) -> (String, SteerReply) {
-        let message = typed(text);
-        let id = message.id.clone();
-        let request = Request::AgentSteer {
-            dialog_id: self.dialog_id.clone(),
-            message,
-        };
-        let reply = through(&self.core, request).await.unwrap();
-        (id, reply)
-    }
-
     async fn unsteer(&self, message_id: &str) -> bool {
         let request = Request::AgentUnsteer {
             dialog_id: self.dialog_id.clone(),
@@ -118,18 +94,6 @@ impl Harness {
     async fn decide(&self, call: &str, decision: ApprovalDecision) {
         let core = self.core.clone();
         assert!(agent_resolve_approval(&core, self.dialog_id.clone(), call.into(), decision).await);
-    }
-
-    /// The agent log's `steer` lines of the chat (D18).
-    async fn steer_lines(&self) -> Vec<Value> {
-        log::flushed().await;
-        let path = self.core.paths.log_dir.join("agent-log.jsonl");
-        std::fs::read_to_string(&path)
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|l| l["event"] == "steer" && l["dialogId"] == self.dialog_id.as_str())
-            .collect()
     }
 
     /// Waits for the checks' record to say they're running.

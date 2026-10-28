@@ -891,7 +891,16 @@ async fn run_turn(
         false => drop(call),
     };
     let calls = server.as_ref().map(|_| &mut calls);
-    let stop = pump(&mut process, &mut parser, calls, &mut on_call, cancel, emit).await;
+    let stop = pump(
+        &mut process,
+        &mut parser,
+        calls,
+        None,
+        &mut on_call,
+        cancel,
+        emit,
+    )
+    .await;
     conclude(&mut process, &parser, stop, emit).await;
     drop(server);
     Ok(Outcome::Done)
@@ -1241,6 +1250,7 @@ async fn test_request(args: &ProbeRequestArgs) -> Result<ProbeRequest, String> {
         commands: None,
         denied: Default::default(),
         allowed_hosts_on: false,
+        steering: None,
     };
     let settings = Settings::from_value(&args.settings);
     let started = Instant::now();
