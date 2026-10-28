@@ -790,8 +790,15 @@ async fn a_server_with_an_unreadable_secret_is_left_out_not_an_error() {
 /// Whether the fake server of `log` has seen its input close.
 #[cfg(unix)]
 async fn exited(log: &Path) -> bool {
+    soon_logged(log, |m| m["bye"] == true).await
+}
+
+/// Whether the fake server of `log` logs a line that `check` picks within
+/// four seconds.
+#[cfg(unix)]
+async fn soon_logged(log: &Path, check: impl Fn(&Value) -> bool) -> bool {
     for _ in 0..200 {
-        if logged(log).iter().any(|m| m["bye"] == true) {
+        if logged(log).iter().any(&check) {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -830,9 +837,11 @@ async fn an_idle_server_is_stopped_and_one_in_use_is_not() {
                 .await
         })
     };
-    while !logged(&log).iter().any(|m| m["method"] == "tools/call") {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    assert!(
+        soon_logged(&log, |m| m["method"] == "tools/call").await,
+        "the call never reached the server: {:?}",
+        logged(&log)
+    );
     state.stop_idle(Duration::ZERO);
     std::fs::write(format!("{}.release", log.display()), "").unwrap();
     let result = calling.await.unwrap().unwrap();

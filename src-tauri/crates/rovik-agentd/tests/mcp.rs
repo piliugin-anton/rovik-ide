@@ -5,7 +5,7 @@
 mod common;
 
 use common::project::{ended, start, unattended, Setup, CHAT};
-use common::{start_request, until, Daemon};
+use common::{start_request, until, Daemon, Session};
 use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
 use rovik_core::agent_run::{StartKind, UserMessage};
 use rovik_core::connectors::mcp::{McpReply, McpServer as FakeServer};
@@ -15,6 +15,7 @@ use rovik_protocol::{Request, Response, Secret};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::net::UnixStream;
 
 /// A stdio server that logs where it started, and that its input closed.
 const SERVER: &str = r#"
@@ -188,16 +189,22 @@ async fn a_start_with_another_mcp_secret_restarts_the_running_server() {
             .call(Request::AgentStart(Box::new(request)))
             .await
             .unwrap();
-        for _ in 0..400 {
-            match session.call(Request::AgentStatus).await {
-                Ok(Response::AgentStatus(s)) if s.runs.is_empty() => break,
-                _ => tokio::time::sleep(Duration::from_millis(25)).await,
-            }
-        }
+        ended_in(&mut session).await;
     }
     assert_eq!(seen_calls.try_recv().as_deref(), Ok("read"));
     assert!(
         seen_calls.try_recv().is_err(),
         "the second run's call reached the server with the old secret"
     );
+}
+
+/// Waits for the session's daemon to have no run; fails after 30 seconds.
+async fn ended_in(session: &mut Session<UnixStream>) {
+    for _ in 0..1200 {
+        match session.call(Request::AgentStatus).await {
+            Ok(Response::AgentStatus(s)) if s.runs.is_empty() => return,
+            _ => tokio::time::sleep(Duration::from_millis(25)).await,
+        }
+    }
+    panic!("the run never ended");
 }
