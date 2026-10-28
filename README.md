@@ -1279,6 +1279,27 @@ starts again when the list is turned on or off, and the filter goes on
 the way Settings → Network says the agent's browser goes. A cloud host
 follows the list of the last of your computers to send it settings.
 
+The agent's commands go through the filter too, and have no way around
+it. On Linux, and so in WSL, where a Windows computer's commands run, they
+start in a network of their own while the list is on, sealed: its
+loopback is up and nothing else is reachable, so the filter, listening
+inside, is their only way out
+(`overlay/confine/network.rs`). Their proxy variables (`HTTPS_PROXY`,
+`HTTP_PROXY`, `ALL_PROXY`, and `NODE_USE_ENV_PROXY` for Node) name it, as
+curl, git, npm, pip, cargo and most tools follow; a program that ignores
+them reaches nothing, and no name is looked up. Rovik bridges that
+network's loopback with your computer's (`network/bridge.rs`): a dev
+server the agent starts is at `localhost` in your browser, and a database
+you run is at `localhost` for its tests, but never a proxy of yours or
+DNS. A command's result names the hosts that were kept out ("The user's
+allowed hosts kept these out: registry.npmjs.org"), and `bash`'s
+description names the list. Turning the list on or off stops what the
+agent left running in the background, which would keep the network it
+started in; a team server's private network is sealed in place, its
+servers kept. The sealed network needs pasta (the `passt` package): where
+it can't be made, the agent's commands are refused while the list is on,
+with why.
+
 ### Steering
 
 In Agent mode, Enter (or the Send arrow beside Stop) sends what's typed to

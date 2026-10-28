@@ -229,6 +229,14 @@ fn run_command_schema(permissions: &Permissions) -> Value {
             permissions.allowed_commands.join(", ")
         )
     };
+    let hosts = match AllowedHosts::of(permissions) {
+        Some(list) => format!(
+            " Its network reaches only the user's allowed hosts ({}) and this computer's own \
+             (localhost), through the proxy its variables name: others are refused.",
+            list.shown()
+        ),
+        None => String::new(),
+    };
     let os = std::env::consts::OS;
     let program = crate::command_tool::shell();
     let shell = std::path::Path::new(&program).file_name().map_or_else(
@@ -247,7 +255,7 @@ fn run_command_schema(permissions: &Permissions) -> Value {
                  so chain the steps that need it (`cd web && npm test`).{userland} Long output is shortened \
                  to its start and end; for a failing command, to its error lines and final summary. \
                  Non-interactive: no stdin, pagers disabled. Use it for tests, builds, type checks, linters and git inspection. \
-                 Prefer read/search_code/write for reading and editing files.{allowed}"
+                 Prefer read/search_code/write for reading and editing files.{allowed}{hosts}"
             ),
             "parameters": {
                 "type": "object",
@@ -1003,6 +1011,22 @@ fn kept_out(started: std::time::Instant) -> Option<String> {
     })
 }
 
+/// The hosts the allowed hosts' filter kept from the chat's commands since
+/// `started`, as a note for the model: their tools say only "403" or
+/// "Forbidden", which reads as the server's own answer
+/// (docs/design/allowed-hosts-plan.md, J03).
+fn commands_kept_out(started: std::time::Instant, chat: &str) -> Option<String> {
+    use crate::allowed_hosts::filter::Client;
+    let hosts = crate::allowed_hosts::refused_since(started, Client::Commands, Some(chat));
+    (!hosts.is_empty()).then(|| {
+        format!(
+            "The user's allowed hosts kept these out: {}. If the task needs one, ask the user to \
+             add it in Settings → Permissions & approval.",
+            hosts.join(", ")
+        )
+    })
+}
+
 /// A browser tool's result, with [`kept_out`]'s note after it.
 fn noting_kept_out(mut result: ToolResult, started: std::time::Instant) -> ToolResult {
     if let Some(note) = kept_out(started) {
@@ -1294,12 +1318,15 @@ async fn run(
             let mut whole_output = None;
             let (mut content, printed) = match background {
                 Some(chat) => {
+                    let started_at = std::time::Instant::now();
                     let started =
                         start_agent_command(core, &chat, &root_owned, command, &stop, ctx).await?;
+                    notes.extend(commands_kept_out(started_at, &chat));
                     let printed = started.output.clone();
                     (format_background(&started), printed)
                 }
                 None => {
+                    let started = std::time::Instant::now();
                     let mut out =
                         run_agent_command(&root_owned, command, timeout, &stop, ctx).await?;
                     if !out.stopped && !out.timed_out && out.exit_code != Some(0) {
@@ -1320,6 +1347,7 @@ async fn run(
                     }
                     let lead = ctx.background_chat.is_some();
                     notes.extend(ended_with_it(command, &out, lead));
+                    notes.extend(commands_kept_out(started, &ctx.owner));
                     let (shown, shortened) = format_command_output(command, &out);
                     if shortened {
                         whole_output = Some(whole_output_text(command, &out));
@@ -2367,6 +2395,20 @@ mod tests {
             "{held}"
         );
         assert!(!browse(&Permissions::default()).contains("allowed hosts"));
+        let bash = |p: &Permissions| {
+            run_command_schema(p)["function"]["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let held = bash(&listed);
+        assert!(
+            held.contains(
+                "reaches only the user's allowed hosts (docs.rs) and this computer's own"
+            ),
+            "{held}"
+        );
+        assert!(!bash(&Permissions::default()).contains("allowed hosts"));
     }
 
     #[test]

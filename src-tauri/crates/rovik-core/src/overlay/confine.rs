@@ -29,7 +29,10 @@
 //!   variable it reads ([`TOOL_HOMES`]), so it runs without the login.
 //! - **The network**: on a team server, the user's private network
 //!   ([`network`], Linux), which the command joins before its sandbox's own
-//!   steps: its servers' ports are this user's alone.
+//!   steps: its servers' ports are this user's alone. While the user's
+//!   allowed hosts are on, the agent's network is sealed but for their
+//!   filter, on a desktop too (allowed_hosts.rs,
+//!   docs/design/allowed-hosts-plan.md).
 //!
 //! The policy is the same on every operating system. A [`Mechanism`] is how
 //! one OS enforces it, and each OS module ([`linux`], [`macos`],
@@ -81,8 +84,9 @@ pub struct Confine {
     /// Folders and files inside writable ones that stay read-only: what
     /// runs outside the sandbox later ([`read_only_paths`]).
     pub read_only: Vec<PathBuf>,
-    /// The private network the command starts in: a team server's
-    /// ([`network::current`]); none on a desktop and in WSL.
+    /// The private network the command starts in: the agent's
+    /// ([`network::agents`]), a team server's, or on a desktop and in WSL
+    /// the sealed one made while the allowed hosts are on; none otherwise.
     pub network: Option<std::sync::Arc<network::Network>>,
 }
 
@@ -100,7 +104,7 @@ impl Confine {
             project,
             network: None,
         }
-        .in_users_network()
+        .in_agents_network()
     }
 
     /// A command that already runs in its own copy (a server worktree, or a
@@ -116,13 +120,13 @@ impl Confine {
             project: root,
             network: None,
         }
-        .in_users_network()
+        .in_agents_network()
     }
 
-    /// In the user's private network, where a team server's daemon made
-    /// one: the command joins it.
-    fn in_users_network(self) -> Confine {
-        match network::current() {
+    /// In the agent's network, where there's one ([`network::agents`]):
+    /// the command joins it.
+    fn in_agents_network(self) -> Confine {
+        match network::agents() {
             Some(network) => self.with_network(network),
             None => self,
         }
@@ -601,6 +605,17 @@ pub mod network {
     /// None: there's no private network here.
     pub fn current() -> Option<Arc<Network>> {
         None
+    }
+
+    /// None: the agent's processes start in the computer's network here.
+    pub fn agents() -> Option<Arc<Network>> {
+        None
+    }
+
+    /// Nothing to hold or let go here: the agent's network is sealed on
+    /// Linux alone.
+    pub fn seal_agents(_sealed: bool, _closed: Vec<u16>) -> Result<(), String> {
+        Ok(())
     }
 
     /// A container's namespaces: Linux's alone.

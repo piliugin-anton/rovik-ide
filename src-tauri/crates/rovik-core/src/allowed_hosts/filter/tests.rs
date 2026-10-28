@@ -390,3 +390,59 @@ async fn a_listed_name_leading_to_this_computer_is_refused() {
         assert!(reachable(ip.parse().unwrap()), "{ip}");
     }
 }
+
+/// In a sealed network the filter, listening inside, is a command's only
+/// way out (allowed-hosts-plan.md, J04): a listed host is reached through
+/// it, one off the list refused; an address isn't reached directly, and no
+/// name is looked up.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn in_a_sealed_network_the_filter_is_a_commands_only_way_out() {
+    let Some((_dir, network)) = crate::overlay::confine::network::sealed_for_test() else {
+        return;
+    };
+    if !crate::process::on_path("curl") {
+        eprintln!("curl isn't installed: skipped");
+        return;
+    }
+    let (origin, _) = origin("listed, through the filter").await;
+    let inside = network.listen().unwrap();
+    inside.set_nonblocking(true).unwrap();
+    let inside = TcpListener::from_std(inside).unwrap();
+    let port = inside.local_addr().unwrap().port();
+    let filter = Arc::new(Filter {
+        client: Client::Commands,
+        list: Arc::new(|| list(&["listed.test"])),
+        upstream: Arc::new(mapped(&[("listed.test", origin)])),
+        denials: Arc::new(Denials::default()),
+    });
+    tokio::spawn(filter.serve(inside));
+    let proxy = format!("http://127.0.0.1:{port}");
+    let script = "curl -sS --max-time 5 http://listed.test/; echo \" [$?]\"
+        curl -sS --max-time 5 -o /dev/null -w '%{http_code}' http://unlisted.test/; echo \" [$?]\"
+        curl -sS --max-time 5 --noproxy '*' http://192.0.2.1/; echo \"direct [$?]\"
+        getent hosts example.com; echo \"lookup [$?]\"";
+    let out = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", script])
+            .env("http_proxy", &proxy)
+            .env("HTTPS_PROXY", &proxy);
+        network.join(&mut cmd);
+        cmd.output().unwrap()
+    })
+    .await
+    .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "listed, through the filter [0]",
+            "403 [0]",
+            "direct [7]",
+            "lookup [2]"
+        ],
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

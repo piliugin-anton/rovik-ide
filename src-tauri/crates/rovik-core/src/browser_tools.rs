@@ -82,6 +82,8 @@ struct Live {
     page: Page,
     /// The proxy it was started with (Settings → Network).
     proxy: Option<crate::net::BrowserProxy>,
+    /// The agent's network it was started in, if any.
+    network: Option<Arc<Network>>,
 }
 
 #[derive(Default)]
@@ -122,16 +124,18 @@ impl BrowserState {
             let mut inner = self.0.lock().await;
 
             // Through the allowed hosts' filter while the list is on (J09),
-            // else the way Settings → Network says; started again on a
-            // proxy set since.
-            let network = crate::overlay::confine::network::current();
+            // else the way Settings → Network says, in the agent's network;
+            // started again on a proxy or a network set since.
+            let network = crate::overlay::confine::network::agents();
             let filter = crate::allowed_hosts::browser_proxy(network.as_ref())?;
             let filtered = filter.is_some();
             let proxy = match filter {
                 Some(filter) => Some(filter),
                 None => crate::net::browser_proxy().await,
             };
-            if inner.live.as_ref().is_some_and(|live| live.proxy != proxy) {
+            let stale =
+                |live: &Live| live.proxy != proxy || !same(live.network.as_ref(), network.as_ref());
+            if inner.live.as_ref().is_some_and(stale) {
                 if let Some(old) = inner.live.take() {
                     let _ = old.browser.close().await;
                 }
@@ -372,7 +376,16 @@ async fn launch(
         browser,
         page,
         proxy,
+        network,
     })
+}
+
+/// Whether `a` and `b` are the same one, or both none.
+fn same<T>(a: Option<&Arc<T>>, b: Option<&Arc<T>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (a, b) => a.is_none() && b.is_none(),
+    }
 }
 
 /// The TCP ports process `pid` and those descended from it listen on, from
@@ -1086,6 +1099,18 @@ mod tests {
         );
     }
 
+    /// The browser starts again once the agent's network is another: made
+    /// or dropped as the user's allowed hosts were turned on or off.
+    #[test]
+    fn the_browser_starts_again_in_another_network() {
+        let (a, b) = (Arc::new(1), Arc::new(1));
+        assert!(same::<i32>(None, None));
+        assert!(same(Some(&a), Some(&a.clone())));
+        assert!(!same(Some(&a), Some(&b)));
+        assert!(!same(Some(&a), None));
+        assert!(!same(None, Some(&b)));
+    }
+
     /// Behind the allowed hosts' filter, WebRTC's UDP doesn't go around the
     /// proxy (allowed-hosts-plan.md, J09); behind another proxy it's as it
     /// was.
@@ -1307,7 +1332,14 @@ mod tests {
             });
             let test = crate::testing::TestCore::new();
             crate::rt::block_on(async {
-                let url = serve(
+                // Where the agent's browser reaches it: in the agent's
+                // network where the list made one (Linux), else here.
+                let listener = match crate::overlay::confine::network::agents() {
+                    Some(network) => network.listen().unwrap(),
+                    None => std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+                };
+                let url = serve_on(
+                    listener,
                     "<!doctype html><title>Kept out</title><p>A page.</p>\
                      <img src=\"http://unlisted.example/pixel.png\">",
                 )

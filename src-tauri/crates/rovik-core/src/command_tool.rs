@@ -456,12 +456,14 @@ fn policy(root: &Path, queued: Option<&Queued>) -> Option<crate::overlay::confin
 /// `confine`, with no stdin and what every command's environment has (no
 /// pagers or prompts, no colors, its share of the CPU when `job` runs
 /// beside others, `queued`'s variables, the host's toolchains, the private
-/// network's browser), at the head of a process group of its own. Where
-/// its output goes is the caller's to say.
+/// network's browser, and `held`: the allowed hosts' filter as its proxy
+/// while they're on), at the head of a process group of its own. Where its
+/// output goes is the caller's to say.
 fn prepared(
     root: &Path,
     command: &str,
     confine: Option<&crate::overlay::confine::Confine>,
+    held: &[(String, String)],
     job: Option<&crate::workload::queue::Job>,
     queued: Option<&Queued>,
 ) -> Command {
@@ -499,6 +501,11 @@ fn prepared(
         let chat = queued.and_then(|q| q.kind.owner()).unwrap_or_default();
         network.give_browser(&mut cmd, chat);
     }
+    // Last, over any proxy of its own: the allowed hosts' filter, the only
+    // way out of its sandbox while they're on.
+    for (key, value) in held {
+        cmd.env(key, value);
+    }
     // Its own process group, so a timeout or a stop can take down
     // everything the shell started (a `node server.js`), not just the
     // shell.
@@ -534,10 +541,13 @@ fn run_blocking(
     };
 
     let started = Instant::now();
-    let confine = policy(root, queued);
+    // While the user's allowed hosts are on, held to them, or not run
+    // (allowed_hosts.rs).
+    let chat = queued.and_then(|q| q.kind.owner()).unwrap_or_default();
+    let (confine, held) = crate::allowed_hosts::hold(policy(root, queued), chat)?;
     // One run of the command, from its start to its end.
     let attempt = || -> Result<CommandOutput, String> {
-        let mut cmd = prepared(root, command, confine.as_ref(), job.as_ref(), queued);
+        let mut cmd = prepared(root, command, confine.as_ref(), &held, job.as_ref(), queued);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd
             .spawn()

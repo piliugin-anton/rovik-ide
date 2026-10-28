@@ -17,10 +17,13 @@
 //! app's settings, or on a cloud host the last computer's to configure it
 //! (J12). While it's on, the agent's browser and commands reach the network
 //! through the filter ([`filter`], J03), one listening for each client where
-//! that client reaches it ([`filter_port`]).
+//! that client reaches it ([`filter_port`]). A command's sandbox leaves it
+//! no other way out ([`hold`]): on Linux the agent's network is sealed but
+//! for the filter (J04-J06).
 
 use crate::net::BrowserProxy;
-use crate::overlay::confine::network::Network;
+use crate::overlay::confine::network::{self, Network};
+use crate::overlay::confine::Confine;
 use filter::{Client, Denials, Filter, Routes};
 use rovik_protocol::permissions::Permissions;
 use std::net::{IpAddr, Ipv4Addr};
@@ -42,6 +45,16 @@ static DENIALS: LazyLock<Arc<Denials>> = LazyLock::new(Default::default);
 /// The filters listening now.
 static LISTENING: Mutex<Vec<Listening>> = Mutex::new(Vec::new());
 
+/// Taken while the agent's network follows the list ([`follow`]).
+static FOLLOWING: Mutex<()> = Mutex::new(());
+
+/// What a held command's `NO_PROXY` holds: this computer's own services,
+/// which it reaches directly.
+const NO_PROXY: &str = "localhost,127.0.0.1,::1";
+
+/// Variables for a program's environment, as name and value.
+pub type Env = Vec<(String, String)>;
+
 /// A filter listening for a client.
 struct Listening {
     client: Client,
@@ -53,10 +66,34 @@ struct Listening {
 }
 
 /// The settings the agent's work follows from now on: the app's, or on a
-/// cloud host the last computer's to configure it (J12).
+/// cloud host the last computer's to configure it (J12). The agent's
+/// network follows the list as it's turned on or off ([`follow`]).
 pub fn configure(permissions: &Permissions) {
     let list = AllowedHosts::of(permissions).map(Arc::new);
-    *LIST.write().unwrap_or_else(|e| e.into_inner()) = list;
+    let on = list.is_some();
+    let was_on =
+        std::mem::replace(&mut *LIST.write().unwrap_or_else(|e| e.into_inner()), list).is_some();
+    if on != was_on {
+        if let Err(why) = follow(true) {
+            log::error!("the agent's network couldn't follow the allowed hosts: {why}");
+        }
+    }
+}
+
+/// The agent's network held to the filter while the list is on, let go
+/// while it's off (J05): a team server's changes its mode, a desktop's is
+/// made or dropped. The list is read as it is now, one change at a time, so
+/// the last to run leaves the network as the list is. Where it was turned
+/// on or off (`changed`) the agent's background commands stop, but on a
+/// team server, whose network stays the same: they'd keep the network they
+/// started in. Why the network can't follow, when it can't.
+fn follow(changed: bool) -> Result<(), String> {
+    let _turn = FOLLOWING.lock().unwrap_or_else(|e| e.into_inner());
+    let followed = network::seal_agents(current().is_some(), crate::net::proxies_here());
+    if changed && network::current().is_none() {
+        crate::command_tool::background::stop_running();
+    }
+    followed
 }
 
 /// The list the agent's work follows now: None while any host may be
@@ -120,6 +157,85 @@ pub fn filter_port(client: Client, network: Option<&Arc<Network>>) -> Result<u16
         serving,
     });
     Ok(port)
+}
+
+/// A confined command's sandbox and environment (`confine`, for `chat`):
+/// while the list is on, held to it, the filter its proxy (J03) and its
+/// sandbox leaving it no other way out (J04); as they are while any host
+/// may be reached. Why not, when the list is on but the command can't be
+/// held to it here.
+pub fn hold(confine: Option<Confine>, chat: &str) -> Result<(Option<Confine>, Env), String> {
+    let Some(list) = current() else {
+        return Ok((confine, Vec::new()));
+    };
+    let Some(confine) = confine else {
+        return Err(format!(
+            "The user's allowed hosts are on ({}), and the agent's commands reach the network only \
+             through them, from the sandbox that holds them to the list, which doesn't run here: \
+             no command can run.",
+            list.shown()
+        ));
+    };
+    let (confine, network) = held(confine)?;
+    let port = filter_port(Client::Commands, network.as_ref())?;
+    Ok((Some(confine), proxy_env(chat, port)))
+}
+
+/// `confine` in the agent's sealed network (J04), made again if it
+/// couldn't be as the list was turned on, and that network.
+#[cfg(target_os = "linux")]
+fn held(confine: Confine) -> Result<(Confine, Option<Arc<Network>>), String> {
+    follow(false).map_err(|why| {
+        format!(
+            "The user's allowed hosts are on, and the agent's commands reach the network only \
+             through them, from a network of their own, which couldn't be made here: {why}. Ask \
+             the user to fix that, or to let the agent reach any host in Settings → Permissions \
+             & approval."
+        )
+    })?;
+    let network = network::agents().ok_or_else(|| {
+        "The user's allowed hosts were turned off as the command started: run it again.".to_string()
+    })?;
+    Ok((confine.with_network(network.clone()), Some(network)))
+}
+
+/// Nowhere else is a command held to the list yet.
+#[cfg(not(target_os = "linux"))]
+fn held(_confine: Confine) -> Result<(Confine, Option<Arc<Network>>), String> {
+    Err(
+        "The user's allowed hosts are on, and the agent's commands can't be held to them on this \
+         system."
+            .into(),
+    )
+}
+
+/// The variables that send a command's connections through the filter at
+/// `port` of its loopback, as `chat`'s (J03): the chat goes as the proxy's
+/// user name, which most tools send.
+fn proxy_env(chat: &str, port: u16) -> Env {
+    let user: String = chat
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect();
+    let proxy = match user.is_empty() {
+        true => format!("http://127.0.0.1:{port}"),
+        false => format!("http://{user}@127.0.0.1:{port}"),
+    };
+    let mut env = Vec::new();
+    for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+        env.push((name.to_string(), proxy.clone()));
+        env.push((name.to_ascii_lowercase(), proxy.clone()));
+    }
+    env.push(("NO_PROXY".into(), NO_PROXY.into()));
+    env.push(("no_proxy".into(), NO_PROXY.into()));
+    // Node's own fetch and http follow the variables only when asked.
+    env.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
+    env
 }
 
 /// The proxy the agent's browser starts with while the list is on: its
@@ -425,6 +541,124 @@ mod tests {
         agent_configure(&test.core, AgentConfig::default());
         assert_eq!(current(), None);
         assert_eq!(browser_proxy(None), Ok(None));
+    }
+
+    #[test]
+    fn a_held_commands_proxy_names_its_chat() {
+        let env = proxy_env("chat 7/é", 4242);
+        let get = |name: &str| {
+            env.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+        };
+        for name in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            assert_eq!(
+                get(name),
+                Some("http://chat%207%2F%C3%A9@127.0.0.1:4242"),
+                "{name}"
+            );
+        }
+        for name in ["NO_PROXY", "no_proxy"] {
+            assert_eq!(get(name), Some("localhost,127.0.0.1,::1"), "{name}");
+        }
+        assert_eq!(get("NODE_USE_ENV_PROXY"), Some("1"));
+        assert_eq!(proxy_env("", 4242)[0].1, "http://127.0.0.1:4242");
+    }
+
+    #[test]
+    fn while_any_host_may_be_reached_a_command_is_as_it_was() {
+        assert_eq!(current(), None);
+        let root = crate::testing::temp_dir();
+        let confine = crate::overlay::confine::hiding_if_available(&root.0);
+        let had = confine.as_ref().map(|c| c.network.is_some());
+        let (confine, env) = hold(confine, "chat").unwrap();
+        assert_eq!(confine.map(|c| c.network.is_some()), had);
+        assert!(env.is_empty(), "{env:?}");
+    }
+
+    /// While the list is on, a command's only way out is the filter: a host
+    /// off the list is refused and named for the model, an address isn't
+    /// reached directly, and a server left running from before is stopped
+    /// (J03-J05). In a process of its own, as the list is the process's.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_command_reaches_the_network_only_through_the_filter() {
+        crate::testing::in_a_process_of_its_own(
+            "allowed_hosts::tests::a_held_command_in_a_process_of_its_own",
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "run in a process of its own by a_command_reaches_the_network_only_through_the_filter"]
+    fn a_held_command_in_a_process_of_its_own() {
+        use crate::agent_run::tools::{execute, CallContext};
+        use crate::agent_run::StopSignal;
+        let dir = crate::testing::temp_dir();
+        let sandboxed = crate::overlay::confine::hiding_if_available(&dir.0).is_some();
+        if crate::distro::which("pasta").is_none() || !crate::process::on_path("curl") || !sandboxed
+        {
+            eprintln!("pasta, curl or the sandbox is missing here: skipped");
+            return;
+        }
+        let root = dir.0.to_string_lossy().into_owned();
+        let test = crate::testing::TestCore::new();
+        let ctx = CallContext {
+            seen: crate::file_guard::Seen::new("held"),
+            restricted: Arc::default(),
+            owner: "held".into(),
+            checks_owner: "held".into(),
+            hidden: Vec::new(),
+            note: Arc::new(|_| {}),
+            background_chat: Some("held".into()),
+            reply_cut_off: false,
+        };
+        let stop = Arc::new(StopSignal::new());
+        let bash = |args: serde_json::Value| {
+            let args = args.to_string();
+            crate::rt::block_on(execute(&test.core, Some(&root), "bash", &args, &stop, &ctx))
+                .content
+        };
+        // A server left running from before the list.
+        let started = bash(serde_json::json!({
+            "command": crate::testing::beating("up"),
+            "background": true,
+        }));
+        assert!(crate::testing::beats(&dir.0), "{started}");
+
+        configure(&Permissions {
+            allow_any_host: false,
+            allowed_hosts: vec!["docs.rs".into()],
+            ..Permissions::default()
+        });
+        assert!(
+            !crate::testing::beats(&dir.0),
+            "stopped as the list was turned on"
+        );
+        let result = bash(serde_json::json!({
+            "command": "curl -sS -o /dev/null -w '%{http_code}' http://unlisted.example/; \
+                        echo \" [$?]\"; \
+                        curl -sS --noproxy '*' --max-time 5 http://192.0.2.1/; \
+                        echo \"direct [$?]\"",
+        }));
+        assert!(result.contains("403 [0]"), "{result}");
+        // 7: it couldn't connect.
+        assert!(result.contains("direct [7]"), "{result}");
+        assert!(
+            result.contains("(The user's allowed hosts kept these out: unlisted.example."),
+            "{result}"
+        );
+
+        // Any host again: the network is let go.
+        configure(&Permissions::default());
+        assert!(crate::overlay::confine::network::agents().is_none());
     }
 
     #[test]

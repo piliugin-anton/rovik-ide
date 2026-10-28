@@ -108,9 +108,9 @@ holds.
 
 ## J03. The filter
 
-A small HTTP proxy in the core (`egress/`), started when the list is
-turned on, in the process that runs the agent's work (the app, a cloud
-host's daemon, the WSL daemon).
+A small HTTP proxy in the core (`allowed_hosts/filter.rs`), started when
+the list is turned on, in the process that runs the agent's work (the app,
+a cloud host's daemon, the WSL daemon).
 
 - **What it speaks**: `CONNECT host:port` (HTTPS, and any TCP a client
   tunnels), and plain HTTP in absolute form (`GET http://host/path`). That's
@@ -182,7 +182,7 @@ the filter's variables (J03) and `NO_PROXY=localhost,127.0.0.1,::1`.
 - **A desktop, and WSL**, keep the host's network today (D20). The list
   turns on: a sealed network is made (the same `Network`, without the
   pages' shims, which need a daemon) and becomes the agent's network
-  (`network::current`): commands, the browser and the connectors start in
+  (`network::agents`): commands, the browser and the connectors start in
   it from then on. The list turns off: it's dropped, and they start in the
   host's network again. Either change stops the agent's background
   commands (a dev server it left running): they'd keep the network they

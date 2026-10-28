@@ -1367,3 +1367,58 @@ async fn a_proxy_that_never_answers_runs_out_the_timeout() {
     );
     assert!(started.elapsed() < Duration::from_secs(5));
 }
+
+#[test]
+fn only_proxies_on_the_loopback_have_their_ports_reached() {
+    let vars = |pairs: &[(&str, &str)]| -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        pairs.iter().map(|(k, v)| (k.into(), v.into())).collect()
+    };
+    assert_eq!(
+        loopback_proxy_ports(vars(&[
+            ("HTTPS_PROXY", "http://127.0.0.1:3128"),
+            ("http_proxy", "localhost:8080"),
+            ("ALL_PROXY", "socks5h://[::1]:1080"),
+            ("all_proxy", "socks5://localhost"),
+            ("https_proxy", "http://user:secret@127.0.0.1:3128/"),
+            ("NO_PROXY", "127.0.0.1:9999"),
+            ("HTTPS_PROXY", "http://proxy.corp:3128"),
+            ("PATH", "/usr/bin"),
+        ])),
+        vec![1080, 3128, 8080]
+    );
+    assert_eq!(loopback_port("http://10.1.2.3:3128"), None);
+    assert_eq!(loopback_port("http://localhost"), Some(80));
+}
+
+/// Settings → Network's proxies on this computer, and on a cloud host the
+/// ones the app sent, are among the proxies here the agent's held commands
+/// are kept from.
+#[test]
+fn the_saved_and_sent_proxies_on_the_loopback_are_this_computers() {
+    let net = Net::default();
+    let settings = NetworkSettings {
+        proxies: vec![
+            proxy("local", ProxyKind::Http, "127.0.0.1", 3128, None),
+            proxy("corp", ProxyKind::Http, "proxy.corp", 8080, None),
+            proxy("socks", ProxyKind::Socks5, "localhost", 1080, None),
+        ],
+        ..NetworkSettings::default()
+    };
+    net.save(settings, &none()).unwrap();
+    assert_eq!(saved_here(&net.lock()), vec![3128, 1080]);
+    let endpoint = |host: &str, port: u16| {
+        Some(ProxyRoute::Proxy(ProxyEndpoint {
+            kind: ProxyKind::Http,
+            host: host.into(),
+            port,
+            username: None,
+            password: None,
+        }))
+    };
+    net.set_host_network(Some(HostNetwork {
+        models: endpoint("[::1]", 8888),
+        browser: endpoint("proxy.corp", 3129),
+        ..HostNetwork::default()
+    }));
+    assert_eq!(saved_here(&net.lock()), vec![3128, 1080, 8888]);
+}

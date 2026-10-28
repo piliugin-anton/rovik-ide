@@ -352,6 +352,92 @@ pub fn set_host_network(network: Option<HostNetwork>) {
     NET.set_host_network(network);
 }
 
+/// The ports of the proxies on this computer's loopback that its
+/// connections may go through: those the environment's variables and the
+/// system's settings name, and Settings → Network's (on a cloud host, those
+/// the app sent). While the user's allowed hosts are on, the agent's
+/// commands are kept from them: each would be a way around the list
+/// (docs/design/allowed-hosts-plan.md, J06, J07).
+pub fn proxies_here() -> Vec<u16> {
+    let mut ports = loopback_proxy_ports(std::env::vars_os());
+    let system = system_proxy();
+    ports.extend(
+        [system.https, system.http]
+            .iter()
+            .flatten()
+            .filter_map(|proxy| loopback_port(proxy)),
+    );
+    ports.extend(saved_here(&NET.lock()));
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+/// The ports of the proxies `vars` (an environment) name on this
+/// computer's loopback (`HTTPS_PROXY=http://127.0.0.1:3128`), each once.
+pub(crate) fn loopback_proxy_ports(
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<u16> {
+    const PROXIES: &[&str] = &["http_proxy", "https_proxy", "all_proxy", "ftp_proxy"];
+    let mut ports: Vec<u16> = vars
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let name = name.to_str()?.to_ascii_lowercase();
+            PROXIES
+                .contains(&name.as_str())
+                .then(|| loopback_port(value.to_str()?))?
+        })
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+/// The port of the proxy at `address` (`http://127.0.0.1:3128`,
+/// `localhost:8080`, `socks5h://[::1]:1080`) when it's on the loopback.
+fn loopback_port(address: &str) -> Option<u16> {
+    let address = address.trim();
+    let url = match address.contains("://") {
+        true => reqwest::Url::parse(address),
+        false => reqwest::Url::parse(&format!("http://{address}")),
+    }
+    .ok()?;
+    let host = url.host_str()?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let local = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if !local {
+        return None;
+    }
+    url.port_or_known_default()
+        .or_else(|| url.scheme().starts_with("socks").then_some(1080))
+}
+
+/// The ports of the proxies `state`'s settings save on this computer's
+/// loopback, and on a cloud host those the app sent.
+fn saved_here(state: &State) -> Vec<u16> {
+    let saved = state
+        .settings
+        .proxies
+        .iter()
+        .map(|p| (p.host.as_str(), p.port));
+    let sent = state
+        .hosted
+        .iter()
+        .flat_map(|hosted| [&hosted.models, &hosted.browser])
+        .filter_map(|route| match route {
+            Some(ProxyRoute::Proxy(proxy)) => Some((proxy.host.as_str(), proxy.port)),
+            _ => None,
+        });
+    saved
+        .chain(sent)
+        .filter(|(host, _)| on_this_computer(host))
+        .map(|(_, port)| port)
+        .collect()
+}
+
 /// The proxy a request to `url` goes through, as a message says it ("the
 /// HTTP proxy at proxy.example.com:3128"); none when it goes directly or
 /// through the system's.
