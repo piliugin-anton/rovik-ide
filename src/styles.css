@@ -10127,7 +10127,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .host-form textarea,
-.connector-form .settings-textarea {
+.connector-form .settings-textarea,
+.mcp-form .settings-textarea,
+.mcp-import .settings-textarea {
   background: var(--bg-editor);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -10483,7 +10485,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 /* As tall as the rows' selects. */
 .connector-form .setting-row-control > input,
-.connector-form .settings-textarea {
+.connector-form .settings-textarea,
+.mcp-form .setting-row-control > input,
+.mcp-form .settings-textarea,
+.mcp-import .settings-textarea {
   display: block;
   width: 100%;
   box-sizing: border-box;
@@ -10612,4 +10617,86 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .connector-auth.warning {
   color: var(--warning, var(--error));
+}
+
+/* Settings → MCP servers (McpServersSettings.tsx) */
+.mcp-add {
+  display: flex;
+  gap: 8px;
+}
+
+.mcp-server-row .warning {
+  color: var(--warning, var(--error));
+}
+
+.mcp-server-row .checkbox-row,
+.mcp-value-row .checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.mcp-import,
+.mcp-test,
+.mcp-values {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mcp-test {
+  margin: 10px 0 0 92px;
+}
+
+.mcp-value-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mcp-value-row > input {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 6px;
+  font-size: 12px;
+}
+
+.mcp-add-value {
+  align-self: flex-start;
+  font-size: 12px;
+}
+
+/* A test's failure keeps its lines: the server's own last words are in them. */
+.mcp-test-error {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.profile-form label.mcp-tool {
+  min-width: 0;
+  font-size: 12px;
+}
+
+.mcp-tool-name {
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.mcp-tool-mark {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+
+.mcp-tool-about {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
 }

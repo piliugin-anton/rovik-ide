@@ -192,6 +192,7 @@ import {
   resolveSubagentConfig,
   type SubagentSettings,
 } from '../lib/subagentSettings';
+import type { McpServer } from '../lib/mcpServers';
 import { parseComposerImage, type ComposerImage } from '../lib/composerImages';
 import {
   ATTACH_ACCEPT,
@@ -279,11 +280,15 @@ export default function ChatPanel(props: ChatProps) {
   const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
   const [subagentSettings, setSubagentSettings] =
     createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
+  // The Settings dialog edits them; kept here for the runs, and saved as
+  // loaded with the panel's own changes.
+  const [mcpServers, setMcpServers] = createSignal<McpServer[]>([]);
   // P5.7: after a failed load, `subagentSettings` are defaults, not what's saved.
   const aiSettings = createAiSettingsHolder({
     setProviders,
     setPermissions,
     setSubagents: setSubagentSettings,
+    setMcpServers,
   });
 
   // Chat list page + open chats (the app's, kept while the panel is away);
@@ -2908,6 +2913,7 @@ export default function ChatPanel(props: ChatProps) {
         active: nextSelection,
         permissions: nextPermissions,
         subagents: subagentSettings(),
+        mcpServers: mcpServers(),
       })
       .catch((err) => console.error('Failed to save AI settings:', err));
   }
@@ -3011,6 +3017,7 @@ export default function ChatPanel(props: ChatProps) {
     approvalProfiles: approvalProfiles(permissions()),
     subagents: resolveSubagentConfig(subagentSettings(), providers(), resolveProfile),
     autopilot: autopilotConfig(subagentSettings().autopilot),
+    mcpServers: mcpServers(),
   });
   createEffect(() => configureAgent(agentConfig()));
 

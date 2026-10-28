@@ -67,12 +67,15 @@ A server:
 
 The page, **Settings → MCP servers** in the AI chats group, adds a server
 with a form or from JSON pasted from another client's setup instructions:
-an `mcpServers` object (Claude Code, Claude Desktop, Cursor), one server's
-entry, or a list of them, reading `command`/`args`/`env` and
-`url`/`headers` (`type` is ignored: `stdio`, `http`; `sse` is refused with
-the bridge's name). Values that look like secrets (an env var or header
-whose name says key, token, secret, password or authorization) are marked
-secret on import; the user can change that before saving.
+an `mcpServers` object (Claude Code, Claude Desktop, Cursor), VS Code's
+`servers`, or one server's entry, reading `command`/`args`/`env`,
+`url`/`headers` and `disabled` (`type` is ignored: `stdio`, `http`; `sse`
+is refused with the bridge's name). Values that look like secrets (an env
+var or header whose name says key, token, secret, password or
+authorization) are marked secret on import, a placeholder such as
+`<YOUR_TOKEN>` left for the user to enter; one server pasted opens in its
+form, to finish and test. In the form, a new value is a secret until the
+user says it isn't.
 
 **This computer only.** MCP servers run where the app runs. A chat on a
 cloud host or in WSL runs on a daemon, which doesn't get the servers
@@ -86,16 +89,19 @@ A value marked secret is saved in the keychain (or the encrypted file in its
 place, H06), never in `ai-settings.json`, `AgentConfig`, a log or a command
 line, as the proxies' passwords are (commands/network.rs):
 
-- `mcp_save_secrets(server, values)` takes the values typed, by
-  `env:NAME` or `header:Name`: one given is saved
+- `mcp_save_secrets(server, values)` takes the values typed, by key,
+  `env/NAME` or `header/Name` (any other is refused): one given is saved
   (`SecretName::McpValue`, account `mcp/<id>/env/NAME`), an empty one is
-  forgotten, one not given stays. The page only learns which are saved.
+  forgotten, one not given stays. The page only learns which are saved: it
+  marks a secret `saved` once its value is, as Network's page does the
+  proxies' passwords. Where there's no keychain, the page unlocks the
+  encrypted file (`mcp_store` says whether it's locked).
 - The settings keep a secret's name and `secret: true`, its value empty.
 - Removing a server forgets its secrets; so does saving it without one it
   had.
-- The core reads them when it starts a server, through the source the app
-  gives it (`McpState::set_secrets`), as `net::init` reads the proxies'
-  passwords. An env var's value goes in the server's environment, a header's
+- The core reads them when it starts a server, on a blocking thread,
+  through the source the app gives it (`McpState::set_secrets`), as
+  `net::init` reads the proxies' passwords. An env var's value goes in the server's environment, a header's
   on its requests; neither is ever an argument.
 
 A secret that can't be read (a locked keychain) stops that server from

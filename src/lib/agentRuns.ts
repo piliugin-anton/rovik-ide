@@ -25,6 +25,7 @@ import { listen } from '@tauri-apps/api/event';
 import { createStore, produce } from 'solid-js/store';
 import type { ApiRoute, ChatMessage, ModelProfile, OpenAIChatOptions } from '../types';
 import type { AgentPermissions } from './permissions';
+import type { McpServer } from './mcpServers';
 import { chatStore, type MessagePatch, type MessageRow, type QueuedSteer } from './chatStore';
 import { noteChecklist, clearLiveChecklist, refreshChecklist } from './checklist';
 import { noteBackgroundTasks, type BackgroundTask } from './backgroundTasks';
@@ -90,6 +91,8 @@ export interface AgentConfig {
   subagents: SubagentConfig;
   /** How chats in Autopilot run their tasks (lib/autopilotSettings.ts). */
   autopilot: AutopilotConfig;
+  /** The user's MCP servers (lib/mcpServers.ts): this computer's runs use them. */
+  mcpServers: McpServer[];
 }
 
 /** A message the user sends: a run's request, or one sent to a run while it works. */

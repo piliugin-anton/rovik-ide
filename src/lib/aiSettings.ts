@@ -9,6 +9,7 @@ import {
   normalizeSubagentSettings,
   type SubagentSettings,
 } from './subagentSettings';
+import { normalizeMcpServers, type McpServer } from './mcpServers';
 
 export interface PersistedAiSettings {
   version: 2;
@@ -18,6 +19,8 @@ export interface PersistedAiSettings {
   permissions: AgentPermissions;
   /** Missing in files written before subagents existed: all off. */
   subagents: SubagentSettings;
+  /** The user's MCP servers (lib/mcpServers.ts); missing before them: none. */
+  mcpServers: McpServer[];
   /**
    * P5.7: the file couldn't be read: these are defaults, not what's saved,
    * so they mustn't be written over it. Never saved.
@@ -31,6 +34,7 @@ const EMPTY: PersistedAiSettings = {
   active: null,
   permissions: DEFAULT_PERMISSIONS,
   subagents: DEFAULT_SUBAGENT_SETTINGS,
+  mcpServers: [],
 };
 
 export async function loadAiSettings(): Promise<PersistedAiSettings> {
@@ -45,6 +49,7 @@ export async function loadAiSettings(): Promise<PersistedAiSettings> {
         active: parsed.active ?? null,
         permissions: normalizePermissions(parsed.permissions),
         subagents: normalizeSubagentSettings(parsed.subagents),
+        mcpServers: normalizeMcpServers(parsed.mcpServers),
       };
     }
 
@@ -72,11 +77,15 @@ export async function saveAiSettings(
   });
 }
 
+/** What a failed load can't know, and a save keeps as saved (P5.7). */
+export type KeptSettings = Pick<PersistedAiSettings, 'subagents' | 'mcpServers'>;
+
 /**
  * P5.7: saves the AI settings, but never the defaults a failed load left in
- * place of the subagent settings: when `subagentsUnknown`, the saved ones
- * are read again and kept, and nothing is saved if they still can't be read.
- * Resolves with the subagent settings saved, or null when nothing was.
+ * place of the subagent settings and the MCP servers: when
+ * `subagentsUnknown`, the saved ones are read again and kept, and nothing
+ * is saved if they still can't be read. Resolves with what was saved of
+ * them, or null when nothing was.
  */
 export async function saveKeepingSubagents(
   settings: Omit<PersistedAiSettings, 'version' | 'loadFailed'>,
@@ -86,15 +95,15 @@ export async function saveKeepingSubagents(
     save: (settings: PersistedAiSettings, base?: PersistedAiSettings) => Promise<void>;
   } = { load: loadAiSettings, save: saveAiSettings },
   base?: PersistedAiSettings
-): Promise<SubagentSettings | null> {
-  let subagents = settings.subagents;
+): Promise<KeptSettings | null> {
+  let kept: KeptSettings = { subagents: settings.subagents, mcpServers: settings.mcpServers };
   if (subagentsUnknown) {
     const saved = await io.load();
     if (saved.loadFailed) return null;
-    subagents = saved.subagents;
+    kept = { subagents: saved.subagents, mcpServers: saved.mcpServers };
   }
-  await io.save({ ...settings, version: 2, subagents }, base);
-  return subagents;
+  await io.save({ ...settings, version: 2, ...kept }, base);
+  return kept;
 }
 
 /** Where a component keeps its copy of the AI settings (its signals). */
@@ -102,6 +111,7 @@ export interface AiSettingsTargets {
   setProviders: (providers: Provider[]) => void;
   setPermissions: (permissions: AgentPermissions) => void;
   setSubagents: (subagents: SubagentSettings) => void;
+  setMcpServers: (servers: McpServer[]) => void;
 }
 
 /**
@@ -125,6 +135,7 @@ export function createAiSettingsHolder(
       targets.setProviders(settings.providers);
       targets.setPermissions(settings.permissions);
       targets.setSubagents(settings.subagents);
+      targets.setMcpServers(settings.mcpServers);
       unknown = !!settings.loadFailed;
       base = settings.loadFailed ? undefined : settings;
     },
@@ -137,10 +148,11 @@ export function createAiSettingsHolder(
         console.error('AI settings not saved: the saved ones couldn’t be read.');
         return false;
       }
-      base = { ...settings, version: 2, subagents: saved };
+      base = { ...settings, version: 2, ...saved };
       if (wasUnknown) {
         unknown = false;
-        targets.setSubagents(saved);
+        targets.setSubagents(saved.subagents);
+        targets.setMcpServers(saved.mcpServers);
       }
       return true;
     },

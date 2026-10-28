@@ -175,6 +175,7 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
       state: 'None yet: connect Claude Code or Codex to use one in place of a model',
       warning: false,
     },
+    { label: 'MCP servers', state: 'None yet: add one for its tools', warning: false },
     {
       label: 'Permissions & approval',
       state:
@@ -252,6 +253,21 @@ test('settings dialog: a page opens with a Back bar; Back and Escape return to t
   assert.equal(title(root), 'Settings');
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
   assert.equal(closed(), 1);
+});
+
+test('settings dialog: an MCP server’s form has its name as the title, and Back returns to the list', async () => {
+  const { root } = await dialog();
+  item(root, 'MCP servers').click();
+  await flush();
+  assert.equal(title(root), 'MCP servers');
+  [...root.querySelectorAll('button')].find((b) => b.textContent === '+ Add a server')!.click();
+  await flush();
+  assert.equal(title(root), 'New MCP server');
+  assert.match(root.querySelector('.modal-back-button')!.textContent!, /MCP servers/);
+  (root.querySelector('.modal-back-button') as HTMLButtonElement).click();
+  await flush();
+  assert.equal(title(root), 'MCP servers');
+  assert.match(root.querySelector('.modal-back-button')!.textContent!, /Settings/);
 });
 
 test('settings dialog: a change on a page is saved at once, and the menu shows it', async () => {
