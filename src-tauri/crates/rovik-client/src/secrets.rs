@@ -42,6 +42,10 @@ pub enum SecretName {
     ApiKey { provider: String },
     /// The password of a proxy saved in Settings → Network, by its id.
     ProxyPassword { proxy: String },
+    /// A secret env var or header of an MCP server in Settings → MCP
+    /// servers: the server by its id, the value by its key (`env/NAME`,
+    /// `header/Name`: rovik_protocol::mcp).
+    McpValue { server: String, key: String },
 }
 
 impl SecretName {
@@ -53,6 +57,7 @@ impl SecretName {
             SecretName::Token { host } => format!("host/{host}/token"),
             SecretName::ApiKey { provider } => format!("provider/{provider}/api-key"),
             SecretName::ProxyPassword { proxy } => format!("network/proxy/{proxy}/password"),
+            SecretName::McpValue { server, key } => format!("mcp/{server}/{key}"),
         }
     }
 }
@@ -87,6 +92,9 @@ impl fmt::Display for SecretError {
             ),
             SecretError::Missing(SecretName::ProxyPassword { .. }) => f.write_str(
                 "No password is saved for the proxy: enter it again in Settings → Network.",
+            ),
+            SecretError::Missing(SecretName::McpValue { .. }) => f.write_str(
+                "This MCP server's value isn't saved: enter it again in Settings → MCP servers.",
             ),
             SecretError::Locked => f.write_str(
                 "The saved passwords and keys are locked: enter their passphrase first.",
@@ -572,6 +580,41 @@ mod tests {
             from_keychain.to_string(),
             "No SSH password is saved for this host: enter it again."
         );
+    }
+
+    /// Settings → MCP servers: each server's values are kept apart, by the
+    /// server and the value's key (mcp-plan.md, Q02).
+    #[test]
+    fn mcp_values_are_kept_by_server_and_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::file(dir.path().join("secrets.json"), QUICK);
+        store.unlock(&secret("pass")).unwrap();
+        let value = |server: &str, key: &str| SecretName::McpValue {
+            server: server.into(),
+            key: key.into(),
+        };
+        store
+            .set(&value("a", "env/TOKEN"), &secret("a-env"))
+            .unwrap();
+        store
+            .set(&value("b", "env/TOKEN"), &secret("b-env"))
+            .unwrap();
+        store
+            .set(&value("a", "header/TOKEN"), &secret("a-header"))
+            .unwrap();
+        assert_eq!(store.get(&value("a", "env/TOKEN")), Ok(secret("a-env")));
+        assert_eq!(store.get(&value("b", "env/TOKEN")), Ok(secret("b-env")));
+        assert_eq!(
+            store.get(&value("a", "header/TOKEN")),
+            Ok(secret("a-header"))
+        );
+        store.delete(&value("a", "env/TOKEN")).unwrap();
+        let missing = store.get(&value("a", "env/TOKEN")).unwrap_err();
+        assert_eq!(
+            missing.to_string(),
+            "This MCP server's value isn't saved: enter it again in Settings → MCP servers."
+        );
+        assert_eq!(store.get(&value("b", "env/TOKEN")), Ok(secret("b-env")));
     }
 
     /// A file whose key settings ask for more than any Rovik writes is

@@ -9,7 +9,7 @@ use crate::clm::{ClmStatus, RevisionRow};
 use crate::diff::Hunk;
 use crate::events::*;
 use crate::host::{HostInfo, Install, KeyInfo, Storage};
-use crate::mcp::{is_valid_name, McpServer, McpTransport, McpValue};
+use crate::mcp::{is_secret_key, is_valid_name, McpServer, McpTransport, McpValue};
 use crate::network::{HostNetwork, ProxyEndpoint, ProxyKind, ProxyRoute};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
@@ -395,6 +395,38 @@ fn a_server_name_is_short_lower_case_and_has_no_dot() {
         long.as_str(),
     ] {
         assert!(!is_valid_name(bad), "{bad}");
+    }
+}
+
+/// Q02: a secret is saved under a key its transport makes, and no other
+/// key reaches the keychain.
+#[test]
+fn a_secret_key_names_an_env_var_or_a_header() {
+    let command = McpTransport::Command {
+        command: "npx".into(),
+        args: Vec::new(),
+        env: Vec::new(),
+    };
+    let url = McpTransport::Url {
+        url: "https://mcp.example.com".into(),
+        headers: Vec::new(),
+    };
+    for key in [
+        command.secret_key("GITHUB_TOKEN"),
+        url.secret_key("Authorization"),
+    ] {
+        assert!(is_secret_key(&key), "{key}");
+    }
+    for bad in [
+        "",
+        "env/",
+        "header/",
+        "GITHUB_TOKEN",
+        "env/A/B",
+        "other/A",
+        "../env/A",
+    ] {
+        assert!(!is_secret_key(bad), "{bad}");
     }
 }
 

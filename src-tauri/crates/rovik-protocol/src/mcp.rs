@@ -93,6 +93,16 @@ impl McpTransport {
     }
 }
 
+/// Whether `key` is one [`McpTransport::secret_key`] makes: `env/NAME` or
+/// `header/Name`, the name neither empty nor with a `/`. Kept under the
+/// server's id, such a key never reaches another server's or another
+/// value's place in the keychain.
+pub fn is_secret_key(key: &str) -> bool {
+    key.strip_prefix("env/")
+        .or_else(|| key.strip_prefix("header/"))
+        .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+}
+
 /// Whether `name` can name a server: lower-case letters, digits, `-` and
 /// `_`, starting with a letter, at most [`MAX_NAME`] characters. It never
 /// has the dot that parts it from a tool's name in `github.create_issue`.

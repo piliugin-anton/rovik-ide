@@ -106,6 +106,21 @@ pub fn run() {
             app.manage(Arc::new(keys));
             let paths = Paths::new(data.clone(), config.clone());
             let core = Core::new(paths, Arc::new(WindowEvents(app.handle().clone())))?;
+            // Settings → MCP servers: a server's secret values, in the
+            // keychain, read as it starts (docs/design/mcp-plan.md, Q02).
+            let store = secrets.clone();
+            core.mcp
+                .set_secrets(Arc::new(move |server: &str, key: &str| {
+                    let name = SecretName::McpValue {
+                        server: server.to_string(),
+                        key: key.to_string(),
+                    };
+                    match store.get(&name) {
+                        Ok(value) => Ok(Some(value.0.clone())),
+                        Err(SecretError::Missing(_)) => Ok(None),
+                        Err(e) => Err(e.to_string()),
+                    }
+                }));
             // Chats on hosts (6.1): their requests go to the host, and its
             // events come back through the core's sink.
             let remote = Remote::new(core.clone());
@@ -423,6 +438,9 @@ pub fn run() {
             commands::workload::workload_status,
             commands::network::network_settings,
             commands::network::network_save,
+            commands::mcp::mcp_store,
+            commands::mcp::mcp_save_secrets,
+            commands::mcp::mcp_test,
             commands::tools::outline_symbols,
             commands::vfs::vfs_status,
             commands::vfs::vfs_install_driver,
