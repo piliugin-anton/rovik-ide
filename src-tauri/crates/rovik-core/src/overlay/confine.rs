@@ -1827,9 +1827,10 @@ mod macos_tests {
             network: None,
             loopback_only: Some(vec![proxy_port]),
         };
-        // What nc says of a connection to `host:port`, made held.
+        // What nc says of a connection to `host:port`, made held: why one
+        // failed only with -v.
         let reach = |host: &str, port: u16| {
-            let script = format!("nc -z -G 2 {host} {port} 2>&1; echo \"[$?]\"");
+            let script = format!("nc -v -z -G 2 {host} {port} 2>&1; echo \"[$?]\"");
             stdout(&run(&held, &root, &script))
         };
         let reached = reach("127.0.0.1", port);
@@ -1856,10 +1857,15 @@ mod macos_tests {
             ("192.0.2.1".to_string(), 80),
         ];
         refused.extend(neighbour.map(|host| (host, 80)));
+        // Refused by Seatbelt itself: not refused by a server, unreachable or
+        // timed out.
+        let by_seatbelt = |said: &str| {
+            said.contains("Operation not permitted") || said.contains("Permission denied")
+        };
         for (host, port) in refused {
             let said = reach(&host, port);
             assert!(
-                said.contains("Operation not permitted") && said.ends_with("[1]\n"),
+                by_seatbelt(&said) && said.ends_with("[1]\n"),
                 "{host}:{port}: {said}"
             );
         }
