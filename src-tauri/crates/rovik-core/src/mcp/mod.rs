@@ -529,26 +529,14 @@ impl McpState {
                 .iter()
                 .any(|s| s.id == id && s.enabled && s.transport == *transport)
         };
-        let gone: Vec<Arc<Instance>> = {
-            let mut running = lock(&self.0.servers);
-            let ids: Vec<Key> = running
-                .iter()
-                .filter(|((id, _), instance)| !kept(id, &instance.transport))
-                .map(|(key, _)| key.clone())
-                .collect();
-            ids.iter().filter_map(|key| running.remove(key)).collect()
-        };
+        let gone = self.take(|(id, _), instance| !kept(id, &instance.transport));
         stop_all(gone);
     }
 
     /// The server's secrets changed: it starts again, with them, at its
     /// next use.
     pub fn forget(&self, id: &str) {
-        let gone: Vec<Arc<Instance>> = {
-            let mut running = lock(&self.0.servers);
-            let keys: Vec<Key> = running.keys().filter(|(i, _)| i == id).cloned().collect();
-            keys.iter().filter_map(|key| running.remove(key)).collect()
-        };
+        let gone = self.take(|(i, _), _| i == id);
         stop_all(gone);
     }
 
@@ -614,7 +602,7 @@ impl McpState {
     /// daemon's sweep, since nothing else ends its servers (Q11). The next
     /// use starts one again.
     pub fn stop_idle(&self, unused_for: Duration) {
-        let gone = self.take(|instance| {
+        let gone = self.take(|_, instance| {
             instance.in_use.load(Ordering::SeqCst) == 0
                 && lock(&instance.last_used).elapsed() >= unused_for
         });
@@ -624,24 +612,17 @@ impl McpState {
     /// Stops the command servers started in `folder`: a chat's worktree
     /// that went (Q11).
     pub fn stop_in(&self, folder: &Path) {
-        let gone: Vec<Arc<Instance>> = {
-            let mut running = lock(&self.0.servers);
-            let keys: Vec<Key> = running
-                .keys()
-                .filter(|(_, at)| at.as_deref() == Some(folder))
-                .cloned()
-                .collect();
-            keys.iter().filter_map(|key| running.remove(key)).collect()
-        };
+        let gone = self.take(|(_, at), _| at.as_deref() == Some(folder));
         stop_all(gone);
     }
 
-    /// Removes the instances `which` picks, from the running ones.
-    fn take(&self, which: impl Fn(&Instance) -> bool) -> Vec<Arc<Instance>> {
+    /// Removes the instances `which` picks, by key and instance, from the
+    /// running ones.
+    fn take(&self, which: impl Fn(&Key, &Instance) -> bool) -> Vec<Arc<Instance>> {
         let mut running = lock(&self.0.servers);
         let keys: Vec<Key> = running
             .iter()
-            .filter(|(_, instance)| which(instance))
+            .filter(|(key, instance)| which(key, instance))
             .map(|(key, _)| key.clone())
             .collect();
         keys.iter().filter_map(|key| running.remove(key)).collect()
