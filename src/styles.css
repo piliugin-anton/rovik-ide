@@ -8605,6 +8605,70 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   background: var(--bg-control-hover);
 }
 
+/* New workspace dialog (components/NewWorkspaceDialog.tsx): New project's
+   labels, inputs and notes, and the list of its folders, each with why it
+   can't join when it can't */
+
+.modal.confirm-dialog.new-workspace-dialog {
+  width: 520px;
+}
+
+.new-workspace-folders {
+  max-height: 220px;
+  margin: 0 0 6px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.new-workspace-folder,
+.new-workspace-empty {
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.new-workspace-folder + .new-workspace-folder {
+  border-top: 1px solid var(--border);
+}
+
+.new-workspace-empty {
+  color: var(--fg-dim);
+}
+
+.new-workspace-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.new-workspace-folder-name {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.new-workspace-folder.refused .new-workspace-folder-name {
+  color: var(--error);
+}
+
+.new-workspace-folder-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-workspace-folder-remove {
+  flex-shrink: 0;
+}
+
+.new-workspace-folder .new-project-note {
+  margin-top: 2px;
+}
+
 .modal .confirm-dialog-actions button:disabled {
   opacity: 0.5;
   cursor: default;

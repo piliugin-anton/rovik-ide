@@ -14,6 +14,7 @@ import {
   type WindowTarget,
 } from './openFolders';
 import type { Workspace } from './chatApi';
+import { samePath } from './fileTools';
 import type { ClaimTarget } from './instances';
 
 /** What a switch needs of the window. */
@@ -120,6 +121,98 @@ export async function switchTarget(
   // **Try again**.
   await calls.resolve(await presentFolders(target, calls.exists));
   return true;
+}
+
+/** What opening a target that holds every folder the window shows needs of the window. */
+export interface GrowCalls {
+  /** Whether the target may open here: another window with one of its folders comes to the front. */
+  check: (target: WindowTarget) => Promise<boolean>;
+  /** The tabs shown now, kept for the target they're of. */
+  keepTabs: () => void | Promise<void>;
+  /** Claims the target for this window; false when another window took a folder of it meanwhile. */
+  claim: (target: WindowTarget) => Promise<boolean>;
+  /**
+   * Shows it in place: the folders shown already stay as they are, with
+   * their tabs, and what's kept by the window's session goes on under the
+   * target's (`carrySession`).
+   */
+  show: (target: WindowTarget) => void | Promise<void>;
+  /** The folders new to the window, each marked when it isn't there, resolved. */
+  resolve: (added: OpenFolder[]) => void | Promise<void>;
+  exists: (path: string) => Promise<boolean>;
+}
+
+/**
+ * Whether the window grows into `next` rather than switching to it: `next`
+ * is a workspace made from the folder it has open (D4). Its tabs stay, and
+ * its terminals and commit message come along.
+ */
+export function growsInto(current: WindowTarget | null, next: WindowTarget): boolean {
+  if (current?.kind !== 'folder' || next.kind !== 'workspace') return false;
+  return next.folders.some((folder) => samePath(folder.path, current.path));
+}
+
+/**
+ * Opens `next`, which holds every folder the window shows (`current`): a
+ * workspace made from the open folder, or the open workspace with folders
+ * added (3.3, D4). Nothing closes: there are no tabs to settle, and the
+ * folders' keys are `next`'s too, so they're never let go. Only the folders
+ * new to the window are resolved. False when it didn't open here: another
+ * window has a folder of it, which comes to the front; nothing here changed.
+ */
+export async function growTarget(
+  current: WindowTarget | null,
+  next: WindowTarget,
+  calls: GrowCalls
+): Promise<boolean> {
+  if (!(await calls.check(next))) return false;
+  await calls.keepTabs();
+  if (!(await calls.claim(next))) return false;
+  await calls.show(next);
+  const shown = openFolders(current).map((folder) => folder.path);
+  const present = await presentFolders(next, calls.exists);
+  await calls.resolve(present.filter((folder) => !shown.includes(folder.path)));
+  return true;
+}
+
+/** What adding folders to the open workspace needs of the window. */
+export interface AddFolderCalls extends GrowCalls {
+  /** Why the folder can't join the workspace beside `others`, those joining with it (D5); null when it can. */
+  problem: (workspaceId: string, path: string, others: string[]) => Promise<string | null>;
+  /** Whether the folder may open here: another window with it comes to the front, and false. */
+  free: (path: string) => Promise<boolean>;
+  /** A folder that can't join, and why: the user is told. */
+  refused: (path: string, why: string) => void;
+  /** Adds the folders to the workspace, which comes back as the backend keeps it then. */
+  add: (workspaceId: string, paths: string[]) => Promise<Workspace>;
+}
+
+/**
+ * Add folder to workspace…: each folder picked is checked, against the
+ * workspace and those picked before it (D5), and against the other windows
+ * (D7). One that can't join is told why; one another window has brings that
+ * window to the front. The others join the workspace (each named, D8), and
+ * the window grows into it (`growTarget`). Whether any joined.
+ */
+export async function addFolders(
+  target: WindowTarget,
+  picked: readonly string[],
+  calls: AddFolderCalls
+): Promise<boolean> {
+  // A project has no folder rows: folders are added to a workspace.
+  if (target.kind !== 'workspace') return false;
+  const joining: string[] = [];
+  for (const path of picked) {
+    const why = await calls.problem(target.id, path, joining);
+    if (why) {
+      calls.refused(path, why);
+      continue;
+    }
+    if (await calls.free(path)) joining.push(path);
+  }
+  if (joining.length === 0) return false;
+  const next = workspaceAsTarget(await calls.add(target.id, joining));
+  return growTarget(target, next, calls);
 }
 
 /** What removing a folder, or locating it at a new place, needs of the window. */

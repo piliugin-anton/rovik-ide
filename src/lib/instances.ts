@@ -88,6 +88,25 @@ async function ask(
   return false;
 }
 
+/**
+ * Why the folder at `path` can't join this window: another window has it,
+ * or a copy sharing its chats, said as the notice would say it; null when it
+ * can. That window isn't brought to the front, and nothing is said: a
+ * dialog shows the reason on the folder's row (docs/design/workspaces-plan.md,
+ * 3.4).
+ */
+export async function openElsewhereReason(path: string): Promise<string | null> {
+  const target: ClaimTarget = { kind: 'folder', path };
+  try {
+    const claim = await invoke<ProjectClaim>('project_check', { target, focusOther: false });
+    return claim.openElsewhere ? openElsewhereNotice(target, claim).title : null;
+  } catch (err) {
+    // As claiming does: better a folder in two windows than one that can't join.
+    console.error('Checking the folder failed:', err);
+    return null;
+  }
+}
+
 /** What to tell the user about a project open in another window. */
 export function openElsewhereNotice(
   target: ClaimTarget | null,

@@ -21,6 +21,13 @@ export async function pickProjectFolder(): Promise<string | null> {
   return result ?? null;
 }
 
+/** Opens the native "select folders" dialog, several at once. Empty if the user cancels. */
+export async function pickFolders(title: string): Promise<string[]> {
+  const result = await open({ directory: true, multiple: true, title });
+  if (result === null) return [];
+  return Array.isArray(result) ? result : [result];
+}
+
 /** Lists the immediate children of a directory (non-recursive — call again per expand). */
 export async function readDirEntries(rootPath: string, path: string): Promise<DirEntryInfo[]> {
   return invoke<DirEntryInfo[]>('read_dir_entries', { rootPath, path });

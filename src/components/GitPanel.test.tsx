@@ -13,6 +13,7 @@ import { GitPanel } from './GitPanel';
 import { ConfirmDialogHost } from './ConfirmDialog';
 import type { GitOperation, GitRepos, GitStatus } from '../types';
 import { oneRepository } from '../test/gitRepos';
+import { carrySession } from '../lib/openFolders';
 
 /** How the app answers each command in the test running now. */
 let backend: Record<string, (args: any) => unknown> = {};
@@ -727,5 +728,24 @@ test('git panel: a push that fails keeps its repository waiting for the rest of 
     [['/w/api', '/w/web'], ['/w/web']]
   );
   assert.deepEqual(pushed(), ['/w/api', '/w/api', '/w/web']);
+  dispose();
+});
+
+test('git panel: a workspace made from the open folder takes its commit message along', async () => {
+  // D4: the message written in api's window goes on in the workspace made
+  // from it; api opened alone again has none left.
+  statuses = { '/w/api': changedIn('/w/api'), '/w/web': changedIn('/w/web') };
+  workspaceApp([]);
+  backend.git_repos = (args) => reposOf(args.folders.map((f: { path: string }) => f.path));
+  const { el, dispose, show } = mountSwitchable({ folders: ['/w/api'], session: '/w/api' });
+  await flush();
+  await typeMessage(el, 'feat: both sides');
+
+  carrySession('/w/api', 'workspace:made');
+  await show({ folders: ['/w/api', '/w/web'], session: 'workspace:made' });
+  assert.equal(message(el), 'feat: both sides');
+
+  await show({ folders: ['/w/api'], session: '/w/api' });
+  assert.equal(message(el), '');
   dispose();
 });

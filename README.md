@@ -359,7 +359,11 @@ is brought to the app's version by itself.
 
 ## Getting started
 
-1. **Open a project:** choose a folder. It appears in the file tree.
+1. **Open a project:** choose a folder. It appears in the file tree. To
+   work in several folders in one window, an API and its client say,
+   choose **Create a workspace…** in the project menu, above the file tree:
+   the folder open now is listed, add the others, and each stays a project
+   of its own. **Add folder to workspace…** adds more later.
 2. **Add a model:** open **Settings → Model providers**, paste the
    provider's base URL and your API key, and choose the models you want.
 3. **Review permissions:** in **Settings → Permissions & approval**, choose

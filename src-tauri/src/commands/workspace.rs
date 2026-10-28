@@ -71,14 +71,16 @@ pub async fn workspace_relocate_folder(
     api::workspace_relocate_folder(&core.db, workspace_id, name, to).await
 }
 
-/// Whether a folder can join the workspace, and why not when it can't.
+/// Whether a folder can join the workspace beside `others`, the folders
+/// joining with it, and why not when it can't.
 #[tauri::command]
 pub async fn workspace_check_folder(
     core: State<'_, Core>,
     workspace_id: Option<String>,
     folder: String,
+    others: Vec<String>,
 ) -> Result<Option<workspaces::FolderProblem>, String> {
-    api::workspace_check_folder(&core.db, workspace_id, folder).await
+    api::workspace_check_folder(&core.db, workspace_id, folder, others).await
 }
 
 /// Apply (D32): a workspace chat works in `folders` from now on (`"all"`, or

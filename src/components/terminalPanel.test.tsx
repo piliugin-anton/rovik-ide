@@ -13,7 +13,7 @@ import { batch, createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import TerminalPanel from './TerminalPanel';
 import { initCloud, refreshHosts, type HostSummary } from '../lib/cloud';
-import type { OpenFolder } from '../lib/openFolders';
+import { carrySession, type OpenFolder } from '../lib/openFolders';
 import type { TerminalEvent } from '../lib/terminal';
 
 /** How the app answers each command in the test running now. */
@@ -621,4 +621,55 @@ test("a removed folder's terminal keeps running", async () => {
   assert.deepEqual(sent('close_terminal'), []);
   assert.deepEqual(labels(root), ['bash'], 'still shown and running');
   assert.equal(root.querySelectorAll('.terminal-instance').length, 1);
+});
+
+test('a workspace made from the open folder takes its terminals along, still running', async () => {
+  await app([]);
+  const root = container();
+  const [collapsed, setCollapsed] = createSignal(false);
+  const [session, setSession] = createSignal<string | null>('/work/api');
+  const [folders, setFolders] = createSignal<OpenFolder[]>([API]);
+  disposeLast = render(
+    () => (
+      <TerminalPanel
+        collapsed={collapsed}
+        onCollapsedChange={setCollapsed}
+        session={session}
+        folders={folders}
+        activeFolder={() => folders()[0]}
+      />
+    ),
+    root
+  );
+  await flush();
+  plus(root).click();
+  await flush();
+  [...root.querySelectorAll<HTMLElement>('.terminal-tab')][0].click();
+  await flush();
+  assert.deepEqual(labels(root), ['bash 1', 'bash 2']);
+
+  // Create: the window's session goes on as the workspace's, as App carries it (D4).
+  batch(() => {
+    carrySession('/work/api', 'workspace:w1');
+    setSession('workspace:w1');
+    setFolders([API, WEB]);
+  });
+  await flush();
+  assert.deepEqual(labels(root), ['bash 1', 'bash 2'], 'the same terminals');
+  assert.equal(
+    root.querySelector('.terminal-tab.active .terminal-tab-name')?.textContent,
+    'bash 1',
+    'the one shown stays shown'
+  );
+  assert.equal(sent('spawn_terminal').length, 2, 'none started for the workspace');
+  assert.deepEqual(sent('close_terminal'), []);
+
+  // api opened alone again has none of its own left: they went with the workspace.
+  batch(() => {
+    setSession('/work/api');
+    setFolders([API]);
+  });
+  await flush();
+  assert.deepEqual(labels(root), ['bash']);
+  assert.equal(sent('spawn_terminal').length, 3);
 });

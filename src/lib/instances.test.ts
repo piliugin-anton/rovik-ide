@@ -29,8 +29,14 @@ let calls: { cmd: string; args: any }[] = [];
   },
 };
 
-const { chatsAtWorkElsewhere, checkProject, claimNoProject, claimProject, openElsewhereNotice } =
-  await import('./instances');
+const {
+  chatsAtWorkElsewhere,
+  checkProject,
+  claimNoProject,
+  claimProject,
+  openElsewhereNotice,
+  openElsewhereReason,
+} = await import('./instances');
 const { notifications, dismiss } = await import('./notifications');
 const { chatsBlocked, currentProject, resolveProject } = await import('./projects');
 
@@ -56,7 +62,7 @@ const theirs = (over: Record<string, unknown> = {}) => ({
 
 function app(answers: Record<string, (args: any) => unknown>) {
   calls = [];
-  backend = answers;
+  backend = { workspace_list: () => [], ...answers };
   dismiss('open-elsewhere');
 }
 
@@ -204,4 +210,17 @@ test('the chats another window is at work on are asked about, only when there ar
   calls = [];
   assert.equal((await chatsAtWorkElsewhere([])).size, 0);
   assert.deepEqual(calls, []);
+});
+
+test('a folder another window has is told on its row: that window stays where it is, and nothing is said', async () => {
+  app({ project_check: () => theirs({ workspace: 'Shop', focused: false }) });
+  assert.equal(await openElsewhereReason('/work/api'), 'api is open in another window, in Shop');
+  assert.deepEqual(calls[0], {
+    cmd: 'project_check',
+    args: { target: folder('/work/api'), focusOther: false },
+  });
+  assert.deepEqual(shown(), [], 'no notice');
+
+  app({ project_check: () => free });
+  assert.equal(await openElsewhereReason('/work/web'), null);
 });

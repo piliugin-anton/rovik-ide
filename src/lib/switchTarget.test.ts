@@ -9,7 +9,10 @@ import type { OpenFolder } from './openFolders';
 import type { WindowTarget } from './openFolders';
 
 const {
+  addFolders,
   claimTargetOf,
+  growsInto,
+  growTarget,
   locateFolder,
   openAtStart,
   presentFolders,
@@ -293,4 +296,106 @@ test('a claim refused after Locate… still shows the folder at its new place', 
     'show:/work/api,/mnt/web',
     'resolve:/mnt/web',
   ]);
+});
+
+/** The calls growing into a target, or adding folders, make, each recorded. */
+function grows(over: Record<string, unknown> = {}) {
+  const order: string[] = [];
+  const made = {
+    check: async (target: WindowTarget) => (order.push(`check:${pathsOf(target)}`), true),
+    keepTabs: () => void order.push('keepTabs'),
+    claim: async (target: WindowTarget) => (order.push(`claim:${pathsOf(target)}`), true),
+    show: async (target: WindowTarget) => void order.push(`show:${pathsOf(target)}`),
+    resolve: (added: OpenFolder[]) =>
+      void order.push(
+        `resolve:${added.map((f) => `${f.path}${f.missing ? ' (missing)' : ''}`).join(',')}`
+      ),
+    exists: async (path: string) => path !== '/mnt/gone',
+    problem: async (_id: string, path: string, others: string[]) => {
+      order.push(`problem:${path}:${others.join(',')}`);
+      return path === '/work/api/src' ? 'It is inside api.' : null;
+    },
+    free: async (path: string) => (order.push(`free:${path}`), path !== '/work/blog'),
+    refused: (path: string, why: string) => void order.push(`refused:${path}:${why}`),
+    add: async (id: string, paths: string[]) => {
+      order.push(`add:${id}:${paths.join(',')}`);
+      return {
+        id,
+        name: 'Shop',
+        folders: ['/work/api', ...paths].map((path) => ({
+          name: path.split('/').pop()!,
+          path,
+          missing: false,
+        })),
+      };
+    },
+    ...over,
+  };
+  return { order, made };
+}
+
+test('a workspace made from the open folder grows the window: nothing settles, and only its new folders resolve', async () => {
+  const { order, made } = grows();
+  const next = workspace('w1', ['/work/api', '/work/web', '/mnt/gone']);
+  assert.equal(await growTarget(folder('/work/api'), next, made), true);
+  assert.deepEqual(order, [
+    'check:/work/api,/work/web,/mnt/gone',
+    'keepTabs',
+    'claim:/work/api,/work/web,/mnt/gone',
+    'show:/work/api,/work/web,/mnt/gone',
+    'resolve:/work/web,/mnt/gone (missing)',
+  ]);
+});
+
+test('growing into a target another window has a folder of changes nothing here', async () => {
+  const { order, made } = grows({
+    check: async (target: WindowTarget) => (order.push(`check:${pathsOf(target)}`), false),
+  });
+  const next = workspace('w1', ['/work/api', '/work/web']);
+  assert.equal(await growTarget(folder('/work/api'), next, made), false);
+  assert.deepEqual(order, ['check:/work/api,/work/web']);
+});
+
+test('the window grows into a workspace made from the folder it has open, and switches to any other', () => {
+  const shop = workspace('w1', ['/work/api', '/work/web']);
+  assert.equal(growsInto(folder('/work/api'), shop), true);
+  assert.equal(growsInto(folder('/work/blog'), shop), false, 'made from other folders');
+  assert.equal(growsInto(null, shop), false, 'nothing open');
+  assert.equal(growsInto(workspace('w0', ['/work/api']), shop), false, 'from a workspace');
+  assert.equal(growsInto(folder('/work/api'), folder('/work/api')), false);
+});
+
+test('folders added are checked against the workspace and those picked before them; those that can join join', async () => {
+  const { order, made } = grows();
+  const shop = workspace('w1', ['/work/api']);
+  const picked = ['/work/web', '/work/api/src', '/work/blog', '/work/docs'];
+  assert.equal(await addFolders(shop, picked, made), true);
+  assert.deepEqual(order, [
+    'problem:/work/web:',
+    'free:/work/web',
+    'problem:/work/api/src:/work/web',
+    'refused:/work/api/src:It is inside api.',
+    'problem:/work/blog:/work/web',
+    'free:/work/blog',
+    'problem:/work/docs:/work/web',
+    'free:/work/docs',
+    'add:w1:/work/web,/work/docs',
+    'check:/work/api,/work/web,/work/docs',
+    'keepTabs',
+    'claim:/work/api,/work/web,/work/docs',
+    'show:/work/api,/work/web,/work/docs',
+    'resolve:/work/web,/work/docs',
+  ]);
+});
+
+test('no folder that can join: nothing is added, claimed or shown', async () => {
+  const { order, made } = grows();
+  assert.equal(await addFolders(workspace('w1', ['/work/api']), ['/work/blog'], made), false);
+  assert.deepEqual(order, ['problem:/work/blog:', 'free:/work/blog']);
+});
+
+test('a project has no folders added to it', async () => {
+  const { order, made } = grows();
+  assert.equal(await addFolders(folder('/work/api'), ['/work/web'], made), false);
+  assert.deepEqual(order, []);
 });

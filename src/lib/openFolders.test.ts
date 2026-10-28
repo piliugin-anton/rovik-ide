@@ -17,6 +17,7 @@ import {
   openFolders,
   pathsByFolder,
   sameOwners,
+  sameTarget,
   runPlace,
   sessionKey,
   withoutFolder,
@@ -120,6 +121,28 @@ test("a session's open tree folders are registered on the folder each is in", ()
     { folder: '/work/packages/web', paths: ['/work/packages/web/src'] },
   ]);
   assert.deepEqual(pathsByFolder([], []), []);
+});
+
+test('a folder of the workspace open is another target, which opens alone', () => {
+  const shop: WindowTarget = {
+    kind: 'workspace',
+    id: 'w1',
+    name: 'Shop',
+    folders: [{ name: 'api', path: '/work/api' }],
+  };
+  const renamed: WindowTarget = { ...shop, name: 'Store', folders: [] };
+  assert.equal(sameTarget(shop, renamed), true, 'a workspace is its ID');
+  assert.equal(sameTarget(shop, { kind: 'folder', path: '/work/api' }), false);
+  assert.equal(
+    sameTarget({ kind: 'folder', path: '/work/api' }, { kind: 'folder', path: '/work/api' }),
+    true
+  );
+  assert.equal(
+    sameTarget({ kind: 'folder', path: '/work/api' }, { kind: 'folder', path: '/work/web' }),
+    false
+  );
+  assert.equal(sameTarget(null, null), true);
+  assert.equal(sameTarget(null, shop), false);
 });
 
 test('withoutFolder leaves the other folders in their order', () => {

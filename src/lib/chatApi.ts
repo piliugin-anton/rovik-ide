@@ -119,9 +119,12 @@ export const chatApi = {
   /** Locate…: the folder named `name` is at `to` from now on, by its name. */
   relocateWorkspaceFolder: (workspaceId: string, name: string, to: string) =>
     invoke<Workspace>('workspace_relocate_folder', { workspaceId, name, to }),
-  /** Why `folder` can't join the workspace; null when it can. */
-  checkWorkspaceFolder: (workspaceId: string | null, folder: string) =>
-    invoke<FolderProblem | null>('workspace_check_folder', { workspaceId, folder }),
+  /**
+   * Why `folder` can't join the workspace beside `others`, the folders joining
+   * with it (a new workspace's, or those picked with it); null when it can.
+   */
+  checkWorkspaceFolder: (workspaceId: string | null, folder: string, others: string[] = []) =>
+    invoke<FolderProblem | null>('workspace_check_folder', { workspaceId, folder, others }),
 
   getMessages: (dialogId: string, beforeSeq?: number, limit = 50): Promise<MessagePage> =>
     page(invoke('chat_get_messages', { dialogId, beforeSeq, limit })),

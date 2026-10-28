@@ -21,6 +21,7 @@ import ChatPanel from './components/ChatPanel';
 import { actionableRows, createFileTreeController, withoutFolderRows } from './lib/fileTree';
 import { languageForFile, isLikelyBinary } from './lib/language';
 import {
+  pickFolders,
   pickProjectFolder,
   readFileContent,
   writeFileContent,
@@ -41,13 +42,17 @@ import {
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
 import { checkProject, claimProject, openNewWindow, showNoProjectWindow } from './lib/instances';
 import {
+  addFolders,
   claimTargetOf,
+  growsInto,
+  growTarget,
   locateFolder,
   openAtStart,
   removeFolder,
   resolvable,
   switchTarget,
   type FolderChangeCalls,
+  type GrowCalls,
 } from './lib/switchTarget';
 import type { FileWatchPayload, GitStashFilePreview, OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
@@ -76,7 +81,13 @@ import {
 import NotificationHost from './components/NotificationHost';
 import ProjectSwitcher from './components/ProjectSwitcher';
 import NewProjectDialog from './components/NewProjectDialog';
-import ProjectList from './components/ProjectList';
+import NewWorkspaceDialog from './components/NewWorkspaceDialog';
+import ProjectList, {
+  deleteQuestion,
+  listed,
+  listedId,
+  type Listed,
+} from './components/ProjectList';
 import {
   chatsBlocked,
   currentProject,
@@ -85,9 +96,10 @@ import {
   projectList,
   refreshProjects,
   resolveProject,
+  workspaceList,
   workspaceTarget,
 } from './lib/projects';
-import { chatApi, type ProjectSummary } from './lib/chatApi';
+import { chatApi, folderProblemMessage, type ProjectSummary, type Workspace } from './lib/chatApi';
 import { rustFileSaved, stopRustSupport, workspaceFoldersChanged } from './lib/lsp/rustAnalyzer';
 import SearchPanel from './components/SearchPanel';
 import { notifyFileWritten, onFileDeleted, onFileWritten } from './lib/approvals';
@@ -137,6 +149,7 @@ import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChan
 import { movedPath, isAtOrUnder, parentOf } from './lib/fileTools';
 import {
   activeFolder,
+  carrySession,
   chatFolderFor,
   chatOwners,
   chatPathOf,
@@ -145,7 +158,9 @@ import {
   openFolders,
   pathsByFolder,
   sameOwners,
+  sameTarget,
   sessionKey,
+  workspaceAsTarget,
   type ChatRoot,
   type OpenFolder,
   type WindowTarget,
@@ -155,6 +170,7 @@ import { isLiveContextPath } from './lib/contextDoc';
 import { chatStore } from './lib/chatStore';
 import { overlayFile } from './lib/overlay';
 import { notify } from './lib/notifications';
+import { fileName } from './lib/toolGroups';
 import {
   startVirtualFiles,
   vfsSettingsRequested,
@@ -583,7 +599,7 @@ export default function App() {
         : null;
     // The last project is the one asked for (its tabs come back from
     // last-project.json), or the one opened with none asked for at all.
-    const isLast = lastTarget !== null && (!asked || sameWindowTarget(asked, lastTarget));
+    const isLast = lastTarget !== null && (!asked || sameTarget(asked, lastTarget));
     const target = asked ?? lastTarget;
     if (!target) return null;
     // Open in another window: this one starts without a project.
@@ -613,13 +629,6 @@ export default function App() {
       expanded: kept?.expanded ?? [],
       terminalOpen: kept?.terminalOpen ?? false,
     };
-  }
-
-  /** Whether `a` is the target `b` is: the same workspace, or the same folder. */
-  function sameWindowTarget(a: WindowTarget, b: WindowTarget): boolean {
-    if (a.kind === 'workspace' && b.kind === 'workspace') return a.id === b.id;
-    if (a.kind === 'folder' && b.kind === 'folder') return a.path === b.path;
-    return false;
   }
 
   /** Tabs saved for later, read again from disk. */
@@ -718,6 +727,7 @@ export default function App() {
   });
 
   const [newProjectOpen, setNewProjectOpen] = createSignal(false);
+  const [newWorkspaceOpen, setNewWorkspaceOpen] = createSignal(false);
 
   async function handlePickFolder() {
     const folder = await pickProjectFolder();
@@ -726,8 +736,10 @@ export default function App() {
 
   /** Opens a project folder: Files, Chat and Git switch to it. */
   async function openProjectAt(folder: string) {
-    if (folder === rootPath()) return;
-    await switchTo({ kind: 'folder', path: folder });
+    const next: WindowTarget = { kind: 'folder', path: folder };
+    // A folder of the workspace open opens alone; the folder open already, not again.
+    if (sameTarget(target(), next)) return;
+    await switchTo(next);
   }
 
   /**
@@ -993,20 +1005,108 @@ export default function App() {
     }
   }
 
-  async function deleteProject(p: ProjectSummary) {
-    const ok = await confirmDialog({
-      title: `Delete ${p.name}'s chat history?`,
-      message: `Its ${p.chatCount} chat${p.chatCount === 1 ? '' : 's'} are deleted for good. The project folder itself isn't touched.`,
-      confirmLabel: 'Delete chats',
-      danger: true,
-    });
+  /** Delete: a project's chats, or a workspace with its own chats (3.4). */
+  async function deleteListed(entry: Listed) {
+    const ok = await confirmDialog({ ...deleteQuestion(entry), danger: true });
     if (!ok) return;
     try {
-      await chatApi.deleteProject(p.id);
+      await chatApi.deleteProject(listedId(entry));
       await refreshProjects();
     } catch (err) {
       window.alert(`Deleting failed: ${String(err)}`);
     }
+  }
+
+  /** A row of the project list: its folder opens, or the workspace, as the database keeps it now. */
+  async function openListed(entry: Listed) {
+    if (entry.kind === 'project') return openProjectAt(entry.project.path);
+    if (sameTarget(target(), workspaceAsTarget(entry.workspace))) return;
+    const next = await workspaceTarget(entry.workspace.id);
+    if (next) await switchTo(next);
+    else void refreshProjects();
+  }
+
+  /**
+   * Create: the workspace made in the dialog opens here (D4). Made from the
+   * folder the window has open, the window grows into it, keeping that
+   * folder's tabs, and its terminals and commit message come along; else it
+   * switches to it as to any other.
+   */
+  async function openCreated(workspace: Workspace) {
+    setNewWorkspaceOpen(false);
+    void refreshProjects();
+    const next = workspaceAsTarget(workspace);
+    const at = target();
+    if (growsInto(at, next)) await growTarget(at, next, growCalls());
+    else await switchTo(next);
+  }
+
+  /** What growing in place needs of the window (lib/switchTarget.ts). */
+  function growCalls(): GrowCalls {
+    return {
+      check: (next) => checkProject(claimTargetOf(next)),
+      keepTabs: () => void keepTabsNow(),
+      claim: (next) => claimProject(claimTargetOf(next)),
+      show: (next) => showGrown(next),
+      resolve: (added) => resolveAdded(added),
+      exists: (path) => pathExists(path),
+    };
+  }
+
+  /**
+   * The window shows `next`, which holds every folder it shows, in place:
+   * what's open in them stays open, tabs and all, and what the session kept
+   * — its terminals, its commit message — goes on under `next`'s.
+   */
+  function showGrown(next: WindowTarget) {
+    const from = sessionKey(target());
+    const to = sessionKey(next);
+    presetTreeExpansion(next, [...tree.expanded()]);
+    batch(() => {
+      if (from && to) carrySession(from, to);
+      setTarget(next);
+    });
+  }
+
+  /** Folders new to the window: each that's there resolved, a missing one shown missing (D20). */
+  function resolveAdded(added: readonly OpenFolder[]) {
+    const missing = added.filter((folder) => folder.missing).map((folder) => folder.path);
+    if (missing.length > 0) setMissingFolders((was) => new Set([...was, ...missing]));
+    for (const folder of resolvable(added)) void resolveProject(folder.path, resolvedFolders());
+  }
+
+  /** Add folder to workspace…: the folders picked join the open workspace (3.3). */
+  async function handleAddFolders() {
+    const at = target();
+    if (at?.kind !== 'workspace') return;
+    const picked = await pickFolders(`Add folders to ${at.name}`);
+    if (picked.length === 0) return;
+    try {
+      await addFolders(at, picked, {
+        ...growCalls(),
+        problem: async (id, path, others) => {
+          const problem = await chatApi.checkWorkspaceFolder(id, path, others);
+          return problem ? folderProblemMessage(problem) : null;
+        },
+        free: (path) => checkProject({ kind: 'folder', path }),
+        refused: (path, why) =>
+          notify({
+            id: `folder-refused:${path}`,
+            kind: 'error',
+            title: `${fileName(path)} can’t join ${at.name}`,
+            message: why,
+          }),
+        add: (id, folders) => chatApi.addWorkspaceFolders(id, folders),
+      });
+    } catch (err) {
+      notify({
+        id: 'folder-add',
+        kind: 'error',
+        title: `Couldn’t add folders to ${at.name}`,
+        message: String(err),
+      });
+    }
+    void refreshProjects();
   }
 
   // Ctrl/Cmd+O: open a project, also while typing (nothing else uses it).
@@ -2539,12 +2639,16 @@ export default function App() {
       >
         <div class="sidebar-topbar">
           <ProjectSwitcher
+            target={target()}
+            openIds={openProjectIds()}
             onOpenFolder={() => void handlePickFolder()}
             onNewProject={() => setNewProjectOpen(true)}
+            onNewWorkspace={() => setNewWorkspaceOpen(true)}
+            onAddFolder={() => void handleAddFolders()}
             onNewWindow={() => void openNewWindow()}
-            onOpen={(p) => openProjectAt(p.path)}
+            onOpen={(entry) => void openListed(entry)}
             onRelink={(p) => void relinkProject(p)}
-            onDelete={(p) => void deleteProject(p)}
+            onDelete={(entry) => void deleteListed(entry)}
           />
           <button
             class="icon-button sidebar-settings-button"
@@ -2617,14 +2721,14 @@ export default function App() {
                   >
                     New project…
                   </button>
-                  <Show when={projectList().length > 0}>
+                  <Show when={projectList().length + workspaceList().length > 0}>
                     <div class="files-empty-heading">Recent projects</div>
                     <ProjectList
-                      projects={projectList()}
+                      entries={listed(projectList(), workspaceList())}
                       openIds={openProjectIds()}
-                      onOpen={(p) => openProjectAt(p.path)}
+                      onOpen={(entry) => void openListed(entry)}
                       onRelink={(p) => void relinkProject(p)}
-                      onDelete={(p) => void deleteProject(p)}
+                      onDelete={(entry) => void deleteListed(entry)}
                     />
                   </Show>
                 </div>
@@ -2837,6 +2941,16 @@ export default function App() {
       </Show>
       <ConfirmDialogHost />
       <NewBranchDialogHost />
+      <Show when={newWorkspaceOpen()}>
+        <NewWorkspaceDialog
+          openFolder={(() => {
+            const at = target();
+            return at?.kind === 'folder' ? at.path : null;
+          })()}
+          onCreated={(workspace) => void openCreated(workspace)}
+          onCancel={() => setNewWorkspaceOpen(false)}
+        />
+      </Show>
       <Show when={newProjectOpen()}>
         <NewProjectDialog
           currentPath={rootPath()}

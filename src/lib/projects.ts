@@ -7,7 +7,7 @@
 // of a project, or like a moved project that lost its ID file, the user is
 // asked once, in a notification; the answer is remembered there.
 import { createSignal } from 'solid-js';
-import { chatApi, type ProjectInfo, type ProjectSummary } from './chatApi';
+import { chatApi, type ProjectInfo, type ProjectSummary, type WorkspaceSummary } from './chatApi';
 import { claimNoProject } from './instances';
 import type { OpenFolder, WindowTarget } from './openFolders';
 import { workspaceAsTarget } from './openFolders';
@@ -16,6 +16,7 @@ import { notify } from './notifications';
 /** undefined: not resolved yet; null: no folder open. */
 const [current, setCurrent] = createSignal<ProjectInfo | null | undefined>(undefined);
 const [all, setAll] = createSignal<ProjectSummary[]>([]);
+const [workspaces, setWorkspaces] = createSignal<WorkspaceSummary[]>([]);
 /**
  * Why the chat panel shows no chats here, if it doesn't: the chats without
  * a project are another window's (lib/instances.ts), or the folder's
@@ -26,6 +27,8 @@ const [blocked, setBlocked] = createSignal<ChatsBlocked | null>(null);
 
 export const currentProject = current;
 export const projectList = all;
+/** The workspaces, most recently opened first: listed among the projects (3.4). */
+export const workspaceList = workspaces;
 export const chatsBlocked = blocked;
 
 /**
@@ -48,22 +51,34 @@ function setFolderProject(root: string, project: ProjectInfo | null) {
   });
 }
 
+/** The projects and the workspaces, read again: one that can't be read leaves the other listed. */
 export async function refreshProjects() {
-  try {
-    const list = await chatApi.listProjects();
-    // A project that didn't change keeps its object, and its row in the
-    // switcher: the list is read again each time the menu opens, and new
-    // rows under a click on one (open, Relink…) lost it.
-    setAll((old) => {
-      const known = new Map(old.map((p) => [p.id, p]));
-      return list.map((p) => {
-        const was = known.get(p.id);
-        return was && sameProject(was, p) ? was : p;
-      });
-    });
-  } catch (err) {
-    console.error('Listing projects failed:', err);
-  }
+  const [projects, spaces] = await Promise.allSettled([
+    chatApi.listProjects(),
+    chatApi.listWorkspaces(),
+  ]);
+  // A project or workspace that didn't change keeps its object, and its row
+  // in the switcher: the list is read again each time the menu opens, and
+  // new rows under a click on one (open, Relink…) lost it.
+  if (projects.status === 'fulfilled')
+    setAll((old) => keepUnchanged(old, projects.value, sameProject));
+  else console.error('Listing projects failed:', projects.reason);
+  if (spaces.status === 'fulfilled') {
+    setWorkspaces((old) => keepUnchanged(old, spaces.value, sameWorkspace));
+  } else console.error('Listing workspaces failed:', spaces.reason);
+}
+
+/** `next`, each one that's `same` as the one of its ID in `old` being that one. */
+function keepUnchanged<T extends { id: string }>(
+  old: readonly T[],
+  next: T[],
+  same: (a: T, b: T) => boolean
+): T[] {
+  const known = new Map(old.map((item) => [item.id, item]));
+  return next.map((item) => {
+    const was = known.get(item.id);
+    return was && same(was, item) ? was : item;
+  });
 }
 
 /**
@@ -78,6 +93,21 @@ export async function workspaceTarget(id: string): Promise<WindowTarget | null> 
     console.error('Reading the workspace failed:', err);
     return null;
   }
+}
+
+function sameWorkspace(a: WorkspaceSummary, b: WorkspaceSummary) {
+  return (
+    a.name === b.name &&
+    a.chatCount === b.chatCount &&
+    a.lastOpenedAt === b.lastOpenedAt &&
+    a.folders.length === b.folders.length &&
+    a.folders.every(
+      (f, i) =>
+        f.name === b.folders[i].name &&
+        f.path === b.folders[i].path &&
+        f.missing === b.folders[i].missing
+    )
+  );
 }
 
 function sameProject(a: ProjectSummary, b: ProjectSummary) {

@@ -27,7 +27,14 @@ let calls: { cmd: string; args: any }[] = [];
   },
 };
 
-const { currentProject, newFoldersGeneration, resolveProject } = await import('./projects');
+const {
+  currentProject,
+  newFoldersGeneration,
+  projectList,
+  refreshProjects,
+  resolveProject,
+  workspaceList,
+} = await import('./projects');
 const { notifications, dismiss } = await import('./notifications');
 
 const project = (root: string) => ({ id: `project-${root}`, name: root, path: root, idFile: true });
@@ -42,7 +49,7 @@ const summary = (id: string, name: string) => ({
 
 function app(answers: Record<string, (args: any) => unknown>) {
   calls = [];
-  backend = answers;
+  backend = { workspace_list: () => [], ...answers };
   for (const n of notifications()) dismiss(n.id);
 }
 
@@ -156,4 +163,42 @@ test('an answer for a folder resolved again since is dropped', async () => {
   answering[1]?.({ project: project('/work/api'), suggestion: null });
   await second;
   assert.deepEqual(shown(), [], 'the first answer, for the folder it left, asks nothing');
+});
+
+test('the workspaces are listed beside the projects, each keeping its row while it is unchanged', async () => {
+  const shop = (missing: boolean) => ({
+    id: 'w-shop',
+    name: 'Shop',
+    folders: [
+      { name: 'api', path: '/work/api', missing: false },
+      { name: 'web', path: '/work/web', missing },
+    ],
+    chatCount: 3,
+    lastOpenedAt: 5,
+  });
+  const blog = { id: 'w-blog', name: 'Blog', folders: [], chatCount: 0, lastOpenedAt: 1 };
+  let listed = [shop(false), blog];
+  app({ chat_list_projects: () => [summary('p-1', 'app')], workspace_list: () => listed });
+  await refreshProjects();
+  const first = workspaceList();
+  assert.deepEqual(
+    first.map((w) => w.id),
+    ['w-shop', 'w-blog']
+  );
+  assert.equal(projectList().length, 1);
+
+  // Read again: an unchanged workspace is the same row; one whose folder went missing is new.
+  listed = [shop(true), { ...blog }];
+  await refreshProjects();
+  assert.notEqual(workspaceList()[0], first[0], 'web went missing: its row changes');
+  assert.equal(workspaceList()[1], first[1], 'Blog is as it was: the same row');
+});
+
+test("the projects are listed when the workspaces can't be read", async () => {
+  app({
+    chat_list_projects: () => [summary('p-1', 'app'), summary('p-2', 'web')],
+    workspace_list: () => Promise.reject('database is locked'),
+  });
+  await refreshProjects();
+  assert.equal(projectList().length, 2);
 });

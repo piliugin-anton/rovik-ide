@@ -47,10 +47,20 @@ import {
   type SkipOffer,
 } from './GitRepoSection';
 import { IconAlert, IconArrowUp, IconCheck, IconRefresh, IconSpinner } from './GitIcons';
+import { onSessionCarried } from '../lib/openFolders';
 
 /** Commit messages being written, by the window's session (`sessionKey`):
  *  the panel goes while another sidebar tab is shown. */
 const commitDrafts = new Map<string, string>();
+
+// A workspace made from the open folder takes the folder's commit message
+// with it (D4).
+onSessionCarried((from, to) => {
+  const draft = commitDrafts.get(from);
+  if (draft === undefined) return;
+  commitDrafts.set(to, draft);
+  commitDrafts.delete(from);
+});
 
 /** The branches whose publishing the user put off after a commit ("Not now"),
  *  by repository and branch: not asked about again while the app runs.

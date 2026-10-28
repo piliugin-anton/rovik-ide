@@ -45,6 +45,17 @@ export function workspaceAsTarget(workspace: Workspace): WindowTarget {
 }
 
 /**
+ * Whether `a` and `b` are the same target: the same workspace, or the same
+ * folder opened alone. A folder of the workspace open is another target: it
+ * opens alone.
+ */
+export function sameTarget(a: WindowTarget | null, b: WindowTarget | null): boolean {
+  if (a?.kind === 'workspace' && b?.kind === 'workspace') return a.id === b.id;
+  if (a?.kind === 'folder' && b?.kind === 'folder') return a.path === b.path;
+  return a === null && b === null;
+}
+
+/**
  * `target` without the folder named `name`: what a workspace is claimed as
  * once that folder has left it. A project is the list of one and has no
  * folder row to remove, so it's returned as it is.
@@ -135,6 +146,25 @@ export function activeFolder(
 export function sessionKey(target: WindowTarget | null): string | null {
   if (!target) return null;
   return target.kind === 'folder' ? target.path : `workspace:${target.id}`;
+}
+
+/** What hears that a session goes on under another key (`carrySession`). */
+const carriedListeners = new Set<(from: string, to: string) => void>();
+
+/**
+ * The session kept under `from` goes on under `to`: a workspace made from the
+ * open folder takes that folder's terminals and commit message with it (D4).
+ * Call it before the window shows `to`, so nothing starts afresh there.
+ */
+export function carrySession(from: string, to: string): void {
+  if (from === to) return;
+  for (const listener of [...carriedListeners]) listener(from, to);
+}
+
+/** `listener` hears each session that goes on under another key; the call stops it. */
+export function onSessionCarried(listener: (from: string, to: string) => void): () => void {
+  carriedListeners.add(listener);
+  return () => carriedListeners.delete(listener);
 }
 
 /** The workspace a window's `sessionKey` names; null for a folder's (an absolute path) or none. */

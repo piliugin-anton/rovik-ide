@@ -3270,3 +3270,60 @@ each one is, the project checks page says "Packages (N)", and a chat names the
 editor's file by its path in the project (an isolated chat's tools refuse a full
 path, section 12): a file from outside the project isn't named to the chat, and
 the message box says why.
+
+**H01 — the menu.** The project switcher's menu has **Create a workspace…**, and
+**Add folder to workspace…** while a workspace is open, between **New project…** and
+**New window**; in a workspace its trigger shows the workspace's name with stacked
+folders, and its tooltip lists the folders. `ProjectList` takes rows of both kinds
+(`Listed`, from `listed(projects, workspaces)`, most recently opened first): a workspace's
+shows its name, its folders' names, "Workspace · 3 folders" and "1 folder missing", and
+opens with a click though a folder is missing (D20); Delete asks `deleteQuestion`'s "Delete
+the workspace Shop? Its 4 workspace chats are deleted for good. Its folders, and their own
+chats, aren't touched." The filter (`listedMatches`) finds a workspace by its name or a
+folder's path. `projects.ts` keeps `workspaceList` beside `projectList`, read together,
+each unchanged summary keeping its object, and its row too (`listed` keeps one row object
+per summary), so a click isn't lost to the list read again under it; a list that can't be
+read leaves the other. Opening a workspace from the list reads it again
+(`workspaceTarget`), as the start does. `NewWorkspaceDialog.tsx`: the name follows the
+folders ("api + web", cut at 80 characters) until one is typed; the folders, the open one
+first, each with ✕; **Add folder…** picks several at once (`commands.ts`'s `pickFolders`),
+and the field beside it adds a path typed or pasted (out of the quotes a copied path comes
+in). Each folder is checked against those listed before it — `workspace_check_folder`
+takes `others`, the folders joining with it — and quietly against the other windows
+(`instances.ts`'s `openElsewhereReason`: `project_check` without bringing that window to
+the front): the reason shows on its row, and Create stays off while one has one. Create
+makes the workspace, and the window opens it: made from the folder the window has open
+(`growsInto`), it grows into it (`switchTarget.ts`'s `growTarget`: check, keep the tabs,
+claim, show in place, resolve only the new folders), and otherwise switches to it. Shown
+in place (`showGrown`), the tree keeps what was open, the tabs stay, and
+`openFolders.ts`'s `carrySession(from, to)` hands the folder's session to the
+workspace's in the same batch as the target changes: `TerminalPanel` moves its terminals
+(the same tabs, their shells running, so a tab's `session` is no longer read-only) and
+`GitPanel` its commit message. **Add folder to workspace…** (`addFolders`) checks each
+folder picked against the workspace and those picked before it (D5), told in a
+notification when it can't join; one another window has brings that window to the front;
+the others are added (`workspace_add_folders`), and the window grows into the workspace.
+Tests: `ProjectSwitcher.test.tsx` (new: the items' order, Add folder only in a workspace,
+the trigger, workspaces found by a folder's path and opened with Enter, no Delete on what
+the window has open), `NewWorkspaceDialog.test.tsx` (new: the open folder first and the
+name following the folders, a typed and a pasted path, each refusal on its row with Create
+off, a folder listed twice, the picker's several folders, Create, a refused create, the
+name cut), `ProjectList.test.tsx` (a workspace's row with its missing count, no Delete on
+the open one, the order, the rows kept, its delete question, the filter),
+`switchTarget.test.ts` (growing in place, refused, when the window grows; folders added
+checked in order, none joining, a project), `projects.test.ts` (the workspaces listed,
+rows kept, the projects listed without them), `instances.test.ts` (the quiet reason),
+`terminalPanel.test.tsx` and `GitPanel.test.tsx` (Create brings the folder's terminals and
+commit message along, and the folder alone again has none), and `chat_db/api.rs`'s
+`a_folder_is_checked_against_the_folders_listed_with_it`.
+Fixes: the switcher's list now hides Delete on what the window has open; since B06 it was
+given only the project shown, so its Delete showed on it (the backend refused it). And a
+folder opened from the list or with Ctrl+O was compared with the window's first folder, so
+in a workspace that folder couldn't be opened alone: `openFolders.ts`'s `sameTarget` (App's
+`sameWindowTarget`, moved) compares targets (`openFolders.test.ts`).
+Departures: in a workspace, the dialog lists no folder to begin with (D4 speaks of a
+project's open folder) and Create switches to the new workspace; and as the backend claims
+a workspace's folders as the database has them (B03), folders are added before they're
+claimed, so one another window takes between the check and the claim stays in the
+workspace while this window goes on without it, as the claim's notice says, until the
+workspace is opened again.

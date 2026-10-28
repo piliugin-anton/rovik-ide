@@ -12,7 +12,7 @@ import Terminal from './Terminal';
 import TerminalNewMenu, { TerminalHostItems } from './TerminalNewMenu';
 import FolderMenu from './FolderMenu';
 import { cloud } from '../lib/cloud';
-import { type OpenFolder } from '../lib/openFolders';
+import { onSessionCarried, type OpenFolder } from '../lib/openFolders';
 import {
   remoteLabel,
   terminalHosts,
@@ -45,9 +45,11 @@ interface TerminalTab {
   readonly key: number;
   /**
    * The window's session it was opened in, whose terminals it's among: shown
-   * while that session is, kept running while another is.
+   * while that session is, kept running while another is. It changes only
+   * when that session goes on under another key (`carrySession`), on the same
+   * object, so its shell keeps running.
    */
-  readonly session: string | null;
+  session: string | null;
   /** Folder it was opened in: that folder's, here; none on a host. */
   readonly cwd: string | null;
   /** That folder's name, as the tab's tooltip says it (C04). */
@@ -115,6 +117,20 @@ export default function TerminalPanel(props: TerminalPanelProps) {
       key === null ? rest : { ...rest, [session ?? '']: key }
     );
   }
+  // A workspace made from the open folder takes the folder's terminals (D4):
+  // the same tabs, their shells running, the workspace's from now on.
+  onCleanup(
+    onSessionCarried((from, to) => {
+      if (!tabs().some((t) => t.session === from)) return;
+      batch(() => {
+        for (const tab of tabs()) if (tab.session === from) tab.session = to;
+        setTabs((all) => [...all]);
+        setActiveKeys(({ [from]: chosen, ...rest }) =>
+          chosen === undefined ? rest : { ...rest, [to]: chosen }
+        );
+      });
+    })
+  );
   /** Where "+"'s menu is open, if it is. */
   const [menu, setMenu] = createSignal<{ x: number; y: number } | null>(null);
   let nextKey = 1;

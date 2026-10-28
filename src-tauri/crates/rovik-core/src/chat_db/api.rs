@@ -362,17 +362,21 @@ async fn prepared_members(db: &DbState, id: &str) -> Result<Vec<workspaces::Prep
 }
 
 /// Whether `folder` can join the workspace (`workspace_id`: its folders are
-/// the ones it can't double, hold or be held by); None when it can.
+/// the ones it can't double, hold or be held by) beside `others`, the folders
+/// joining with it: a new workspace's listed before it in the dialog, or
+/// those picked with it (3.4). None when it can.
 pub async fn workspace_check_folder(
     db: &DbState,
     workspace_id: Option<String>,
     folder: String,
+    others: Vec<String>,
 ) -> Result<Option<workspaces::FolderProblem>, String> {
-    let members = match workspace_id {
+    let mut members = match workspace_id {
         Some(id) => prepared_members(db, &id).await?,
         None => Vec::new(),
     };
     crate::rt::spawn_blocking(move || {
+        members.extend(others.iter().map(|other| workspaces::prepare(other)));
         workspaces::check_folder(&members, &workspaces::prepare(&folder))
     })
     .await
@@ -736,7 +740,7 @@ mod tests {
         assert_eq!(added.folders.len(), 2);
 
         // A folder of the workspace can't join it again.
-        let problem = workspace_check_folder(&db, Some(made.id.clone()), api.clone())
+        let problem = workspace_check_folder(&db, Some(made.id.clone()), api.clone(), Vec::new())
             .await
             .unwrap();
         assert!(matches!(
@@ -816,7 +820,7 @@ mod tests {
         let (db, dir) = db("check");
         let api = folder(&dir, "api");
         assert_eq!(
-            workspace_check_folder(&db, None, api.clone())
+            workspace_check_folder(&db, None, api.clone(), Vec::new())
                 .await
                 .unwrap(),
             None
@@ -826,11 +830,51 @@ mod tests {
             .unwrap();
         let web = folder(&dir, "web");
         assert_eq!(
-            workspace_check_folder(&db, Some(made.id), web)
+            workspace_check_folder(&db, Some(made.id), web, Vec::new())
                 .await
                 .unwrap(),
             None
         );
+    }
+
+    /// Before a workspace is made, a folder is checked against the folders
+    /// listed with it, and after, against its folders and those: the same
+    /// folder twice, and one inside another, are refused, naming the other
+    /// (D5, 3.4).
+    #[tokio::test]
+    async fn a_folder_is_checked_against_the_folders_listed_with_it() {
+        let (db, dir) = db("others");
+        let (api, web) = (folder(&dir, "api"), folder(&dir, "web"));
+        let inner = folder(&dir, "api/src");
+        let check = |workspace: Option<String>, folder: &str, others: &[&String]| {
+            let others = others.iter().map(|other| other.to_string()).collect();
+            workspace_check_folder(&db, workspace, folder.to_string(), others)
+        };
+
+        assert_eq!(check(None, &web, &[&api]).await.unwrap(), None);
+        assert_eq!(
+            check(None, &inner, &[&web, &api]).await.unwrap(),
+            Some(workspaces::FolderProblem::Inside { other: api.clone() })
+        );
+        assert_eq!(
+            check(None, &api, &[&api]).await.unwrap(),
+            Some(workspaces::FolderProblem::Duplicate { other: api.clone() })
+        );
+
+        let made = workspace_create(&db, "Shop".into(), vec![api.clone()])
+            .await
+            .unwrap();
+        let docs = folder(&dir, "docs");
+        assert_eq!(
+            check(Some(made.id.clone()), &docs, &[&web]).await.unwrap(),
+            None
+        );
+        assert_eq!(
+            check(Some(made.id), &web, &[&web]).await.unwrap(),
+            Some(workspaces::FolderProblem::Duplicate { other: web.clone() }),
+            "a folder picked twice"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// D19's guard: a workspace `Shop` of `api` and `web` (each with
