@@ -23,6 +23,7 @@ pub use rovik_protocol::mcp::{is_valid_name, McpServer, McpTransport, McpValue};
 pub use tool::Tool;
 
 use crate::agent_run::StopSignal;
+use futures_util::future::BoxFuture;
 use rpc::{Era, Failure};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -159,24 +160,42 @@ fn headers_for(
 }
 
 impl Link {
-    async fn request(
-        &self,
-        method: &str,
+    /// A request to the server. Boxed, as `notify` and `stop` are: the
+    /// transports' futures hold reqwest's types and a child process's, so
+    /// deep that a run's future holding them couldn't be proven `Send`
+    /// (rustc's E0275, building rovik-agentd).
+    fn request<'a>(
+        &'a self,
+        method: &'a str,
         params: Value,
-        headers: &[(String, String)],
+        headers: &'a [(String, String)],
         within: Duration,
-        stop: Option<&StopSignal>,
-    ) -> Result<Value, Failure> {
+        stop: Option<&'a StopSignal>,
+    ) -> BoxFuture<'a, Result<Value, Failure>> {
         match self {
-            Link::Stdio(stdio) => stdio.request(method, params, within, stop).await,
-            Link::Http(http) => http.request(method, params, headers, within, stop).await,
+            Link::Stdio(stdio) => Box::pin(stdio.request(method, params, within, stop)),
+            Link::Http(http) => Box::pin(http.request(method, params, headers, within, stop)),
         }
     }
 
-    async fn notify(&self, method: &str, params: Value, headers: &[(String, String)]) {
+    fn notify<'a>(
+        &'a self,
+        method: &'a str,
+        params: Value,
+        headers: &'a [(String, String)],
+    ) -> BoxFuture<'a, ()> {
         match self {
-            Link::Stdio(stdio) => stdio.notify(method, params),
-            Link::Http(http) => http.notify(method, params, headers).await,
+            Link::Stdio(stdio) => Box::pin(async move { stdio.notify(method, params) }),
+            Link::Http(http) => Box::pin(http.notify(method, params, headers)),
+        }
+    }
+
+    /// Ends a command's server, and what it started; a URL's has nothing
+    /// of Rovik's to end.
+    fn stop(&self) -> BoxFuture<'_, ()> {
+        match self {
+            Link::Stdio(stdio) => Box::pin(stdio.stop()),
+            Link::Http(_) => Box::pin(async {}),
         }
     }
 
@@ -389,9 +408,7 @@ impl Session {
     }
 
     async fn stop(&self) {
-        if let Link::Stdio(stdio) = &self.link {
-            stdio.stop().await;
-        }
+        self.link.stop().await;
     }
 }
 
