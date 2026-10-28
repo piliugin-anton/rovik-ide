@@ -553,11 +553,11 @@ impl McpState {
     }
 
     /// The saved secret values of the enabled `servers` that have a secret
-    /// field, by server id and key (`env/NAME`), for a daemon that has no
-    /// keychain (Q11). A server with none saved has an empty map, so a
-    /// secret cleared here clears on the host too. A server with a value
-    /// that can't be read is left out: the host keeps what it had. Read on
-    /// a blocking thread.
+    /// field, by server id and key (`env/NAME` or `header/Name`), for a
+    /// daemon that has no keychain (Q11). A server with none saved has an
+    /// empty map, so a secret cleared here clears on the host too. A server
+    /// with a value that can't be read is left out: the host keeps what it
+    /// had. Read on a blocking thread.
     pub async fn saved_secrets(
         &self,
         servers: &[McpServer],

@@ -576,8 +576,6 @@ impl Remote {
         self.lock().policies.get(host).copied().unwrap_or_default()
     }
 
-    /// `config` under the host's policy, and its block when it works on its
-    /// own (`ApprovalPolicy::apply`).
     /// `config`, as `host` takes it: without this computer's keys, which
     /// the host has from the starts (D11), under the host's policy, and
     /// with how its daemon connects (`network`).
