@@ -181,6 +181,14 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   checks and delivers, and writes down what it couldn't decide. How
   thorough it is, when a task stops, and the commands it may never run are
   set in Settings → Autopilot.
+- **MCP servers.** The agent calls the tools of the MCP servers you add in
+  **Settings → MCP servers**: a command Rovik starts on this computer
+  (`npx -y @modelcontextprotocol/server-github`) or a server's URL, their
+  tokens kept in your system's keychain. However many tools they have, the
+  agent gets one tool, `mcp`, and their list in its prompt, so its
+  requests stay small and cached. Each call waits for your approval unless
+  Settings → Permissions & approval says otherwise. See
+  [MCP servers](#mcp-servers).
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.
 - The agent can search the web and read pages, in a headless Chrome for
@@ -1325,6 +1333,60 @@ could carry data out; on macOS a command can still look names up; and a
 listed host is reached in full, every port and path of it. A program that
 ignores the proxy variables doesn't get around the list: it reaches
 nothing.
+
+### MCP servers
+
+**Settings → MCP servers** lists the MCP servers whose tools the agent can
+call (`src-tauri/crates/rovik-core/src/mcp/`; design:
+[`docs/design/mcp-plan.md`](docs/design/mcp-plan.md)). A server is a
+command Rovik starts, with its arguments (one per line) and environment
+variables, or the URL of a server that speaks Streamable HTTP, with its
+headers (`Authorization`). **Add from JSON** takes a server's setup as its
+instructions give it for Claude Desktop, Claude Code, Cursor or VS Code: an
+`mcpServers` object, or one server's entry. A server that has only the old
+SSE transport, or that signs in with OAuth, is added as a bridge command
+such as `npx mcp-remote <url>`, which signs in itself.
+
+A value marked **Secret** (a new one is, until you untick it) is kept in
+your system's keychain, or where there's none in the encrypted file the API
+keys use, never in the settings file: the page only shows whether it's
+saved. **Test** starts the server as the form has it, in the open project's
+folder for a command, lists its tools, and stops it; a tool unticked there
+is left out of the agent's list.
+
+The agent gets one tool, `mcp`, however many servers and tools there are,
+and its system prompt lists each tool on a line: its name
+(`github.create_issue`), its arguments and what it does. It asks for a
+tool's full schema (`describe`) when the line isn't enough. The tools sent
+with each request stay the same, so prompt caching holds, and a server
+with many tools costs a few thousand tokens of prompt, not their schemas.
+The list is made as a run starts. A server starts when a run first needs it
+and keeps running while Rovik is open, a command's once per project folder;
+one that fails is tried again a minute later, and meanwhile the agent's
+list says why it's unavailable.
+
+- Each call goes by **MCP tool calls** in Settings → Permissions &
+  approval, which asks you by default; the approval names the server's tool
+  and its arguments.
+- Plan mode and scouts list and call only the tools a server marks
+  read-only (`readOnlyHint`); other subagents get no `mcp`.
+- A result longer than 20,000 characters is cut; Rovik's agent can read
+  the whole of it, saved, by line range.
+- Claude Code and Codex with their own tools (Agent mode) are served the
+  same tool by Rovik, as `mcp__rovik__mcp`, with the list after their own
+  prompt, and Rovik approves and runs each call. In Plan mode and
+  Autopilot `mcp` is one of Rovik's tools they call.
+
+What to keep in mind:
+
+- A server works outside Rovik's protections: a filesystem or git server
+  changes the project itself, not an isolated chat's copy, and the
+  restricted files and the allowed hosts don't hold it.
+- What a server's tools say, their descriptions and results, reaches the
+  model: add a server only as far as you trust its author.
+- Servers run on this computer: chats on a cloud host or in WSL don't use
+  them.
+- Values are used as written: `${VAR}` isn't read from the environment.
 
 ### Steering
 
