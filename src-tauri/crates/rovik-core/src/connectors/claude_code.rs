@@ -291,12 +291,17 @@ pub fn system_text(turn: &Turn, rovik_tools: bool) -> String {
 /// project as edits, or reach the remote. Claude Code matches each part of
 /// a compound command; other spellings (`git -C . checkout`) it doesn't,
 /// and Rovik refuses those when it's asked (agent_run `answer_tool_ask`).
+/// While the user's allowed hosts are on, its web search too: Anthropic's
+/// servers run it, where the list can't reach (allowed-hosts-plan.md, J10).
 fn push_disallowed(args: &mut Vec<String>, settings: &Settings, turn: &Turn) {
     let mut disallowed = rules(&settings.disallowed_tools);
     if turn.isolated {
         disallowed.extend(git_deny_rules());
     }
     disallowed.extend(restricted_rules(&turn.denied));
+    if turn.allowed_hosts_on {
+        disallowed.push("WebSearch".into());
+    }
     if !disallowed.is_empty() {
         args.push("--disallowedTools".into());
         args.extend(disallowed);
@@ -1735,9 +1740,12 @@ async fn run_turn(
     // The commands its own shell runs, made ready around each by the run,
     // whatever its permission mode: Rovik's hooks.
     let checks = turn.commands.clone().filter(|_| !turn.one_shot);
-    // On a team server, the user's private network: Claude Code runs in
-    // it, and the servers it starts take their ports there.
-    let network = crate::overlay::confine::network::current();
+    // In the agent's network (on a team server the user's private one,
+    // where the servers it starts take their ports), held to the user's
+    // allowed hosts while they're on (allowed_hosts.rs).
+    let chat = turn.dialog_id.as_deref().unwrap_or_default();
+    let held = crate::allowed_hosts::hold_program(chat)?;
+    let network = held.network.clone();
     let mut served = None;
     if asks.is_some() || checks.is_some() {
         let tools = match asks {
@@ -1787,7 +1795,6 @@ async fn run_turn(
             path.to_string_lossy().into_owned(),
         ));
     }
-    let chat = turn.dialog_id.as_deref().unwrap_or_default();
     let files: Vec<TempFile> = prompt
         .into_iter()
         .chain(mcp_config)
@@ -1799,7 +1806,7 @@ async fn run_turn(
         &args,
         &env,
         Some(&cwd),
-        network.as_deref().map(|network| (network, chat)),
+        Some((&held, chat)),
         turn.prompt.clone(),
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
         files,
@@ -2043,8 +2050,10 @@ async fn start_live(
     prompt: String,
 ) -> Result<Live, String> {
     let program = resolve_program(&settings.program)?;
-    // As in `run_turn`: the user's private network on a team server.
-    let network = crate::overlay::confine::network::current();
+    // As in `run_turn`: the agent's network, held to the allowed hosts.
+    let chat = turn.dialog_id.as_deref().unwrap_or_default();
+    let held = crate::allowed_hosts::hold_program(chat)?;
+    let network = held.network.clone();
     let (server, calls) = McpServer::start(&turn.tools, MCP_INSTRUCTIONS, network.as_ref())
         .await
         .map_err(|e| format!("Rovik's tools couldn't be served to Claude Code: {e}"))?;
@@ -2062,13 +2071,12 @@ async fn start_live(
     env.extend(rovik_tools_env());
     let mut files = vec![config];
     files.extend(system);
-    let chat = turn.dialog_id.as_deref().unwrap_or_default();
     let process = Process::spawn(
         &program,
         &args,
         &env,
         Some(&cwd_of(turn)),
-        network.as_deref().map(|network| (network, chat)),
+        Some((&held, chat)),
         prompt,
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
         files,
@@ -2562,6 +2570,7 @@ mod tests {
             asks: None,
             commands: None,
             denied: Default::default(),
+            allowed_hosts_on: false,
         }
     }
 
@@ -2779,6 +2788,39 @@ mod tests {
             None,
         );
         assert!(!args.iter().any(|a| a == "--disallowedTools"), "{args:?}");
+    }
+
+    /// Its web search runs on Anthropic's servers, where the user's allowed
+    /// hosts can't reach: off while they're on, in one flag with the rest.
+    #[test]
+    fn its_web_search_is_off_while_the_allowed_hosts_are_on() {
+        let session = Session::New("s-1".into());
+        let mut t = turn("Look it up");
+        let disallowed = |t: &Turn, mode: &str| -> Vec<String> {
+            let settings = Settings::from_value(&json!({
+                "permissionMode": mode,
+                "disallowedTools": "WebFetch",
+            }));
+            let config = (mode == "rovik").then(|| Path::new("/tmp/mcp.json"));
+            let args = args_for(&settings, t, &session, None, config, None);
+            assert!(args.iter().filter(|a| *a == "--disallowedTools").count() <= 1);
+            let at = args.iter().position(|a| a == "--disallowedTools");
+            at.map(|i| {
+                args[i + 1..]
+                    .iter()
+                    .take_while(|a| !a.starts_with("--"))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+        };
+        for mode in ["bypassPermissions", "rovik"] {
+            assert_eq!(disallowed(&t, mode), ["WebFetch"], "{mode}");
+        }
+        t.allowed_hosts_on = true;
+        for mode in ["bypassPermissions", "rovik"] {
+            assert_eq!(disallowed(&t, mode), ["WebFetch", "WebSearch"], "{mode}");
+        }
     }
 
     #[test]

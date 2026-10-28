@@ -10,8 +10,8 @@ use super::harness_error;
 use super::mcp::McpCall;
 use super::ConnectorKind;
 use crate::agent::ChatStreamEvent;
+use crate::allowed_hosts::Held;
 use crate::chat_request::{ChatError, ErrorKind};
-use crate::overlay::confine::network::Network;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -183,6 +183,37 @@ pub(super) fn command(
     cmd
 }
 
+/// `program`'s command ([`command`]) where `held` says for a chat: under
+/// its Seatbelt profile (`sandbox-exec`, which runs the program), in its
+/// network, with that network's browser for the chat, and its variables
+/// last, over the connector's own.
+fn held_command(
+    program: &str,
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+    held: Option<(&Held, &str)>,
+) -> std::process::Command {
+    let seatbelt = held.and_then(|(held, _)| held.seatbelt.as_deref());
+    let mut cmd = match seatbelt {
+        Some(profile) => {
+            let mut cmd = command(crate::overlay::confine::SANDBOX_EXEC, cwd, env);
+            cmd.args(["-p", profile, program]);
+            cmd
+        }
+        None => command(program, cwd, env),
+    };
+    if let Some((held, chat)) = held {
+        if let Some(network) = &held.network {
+            network.join(&mut cmd);
+            network.give_browser(&mut cmd, chat);
+        }
+        for (key, value) in &held.env {
+            cmd.env(key, value);
+        }
+    }
+    cmd
+}
+
 /// The tail of stderr, for an error's details.
 async fn read_stderr(stderr: Option<tokio::process::ChildStderr>) -> String {
     let Some(mut stderr) = stderr else {
@@ -245,21 +276,22 @@ pub(super) struct Process {
 
 impl Process {
     /// Starts `program`, the turn's message on its stdin, which closes once
-    /// written: in `network` for a chat when given (a team server's private
-    /// network, with its browser for that chat: overlay/confine/network.rs).
+    /// written: where `held` says for a chat when given (the agent's
+    /// network, with its browser for that chat: overlay/confine/network.rs;
+    /// held to the user's allowed hosts while they're on: allowed_hosts.rs).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn(
         program: &str,
         args: &[String],
         env: &[(String, String)],
         cwd: Option<&Path>,
-        network: Option<(&Network, &str)>,
+        held: Option<(&Held, &str)>,
         prompt: String,
         first_line_within: Duration,
         files: Vec<TempFile>,
     ) -> Result<Process, String> {
         let mut process =
-            Self::spawn_with_input(program, args, env, cwd, network, first_line_within, files)?;
+            Self::spawn_with_input(program, args, env, cwd, held, first_line_within, files)?;
         if let Some(input) = process.input.take() {
             let _ = input.send(prompt);
         }
@@ -274,15 +306,11 @@ impl Process {
         args: &[String],
         env: &[(String, String)],
         cwd: Option<&Path>,
-        network: Option<(&Network, &str)>,
+        held: Option<(&Held, &str)>,
         first_line_within: Duration,
         files: Vec<TempFile>,
     ) -> Result<Process, String> {
-        let mut program_cmd = command(program, cwd, env);
-        if let Some((network, chat)) = network {
-            network.join(&mut program_cmd);
-            network.give_browser(&mut program_cmd, chat);
-        }
+        let program_cmd = held_command(program, cwd, env, held);
         let mut cmd = tokio::process::Command::from(program_cmd);
         cmd.args(args).kill_on_drop(true);
         let mut child = cmd
@@ -638,7 +666,8 @@ mod tests {
     }
 
     /// On a team server a connector's program runs in the user's private
-    /// network, with its browser for the chat.
+    /// network, with its browser for the chat, and while the allowed hosts
+    /// are on, the filter as its proxy.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_harness_runs_in_the_network_it_is_given_with_the_chats_browser() {
@@ -647,15 +676,22 @@ mod tests {
         else {
             return;
         };
+        let held = Held {
+            network: Some(std::sync::Arc::new(network)),
+            env: vec![("HTTPS_PROXY".into(), "http://chat-9@127.0.0.1:9".into())],
+            seatbelt: None,
+        };
         crate::rt::block_on(async {
-            let script = "readlink /proc/self/ns/net; echo \"chat=$ROVIK_CHAT\"; xdg-open http://localhost:9/";
+            let script = "readlink /proc/self/ns/net; echo \"chat=$ROVIK_CHAT\"; \
+                          xdg-open http://localhost:9/; echo \"proxy=$HTTPS_PROXY\"";
             let args = ["-c".to_string(), script.to_string()];
+            let env = [("HTTPS_PROXY".to_string(), "http://its-own:3128".to_string())];
             let mut process = Process::spawn(
                 "sh",
                 &args,
-                &[],
+                &env,
                 None,
-                Some((&network, "chat-9")),
+                Some((&held, "chat-9")),
                 String::new(),
                 Duration::from_secs(30),
                 Vec::new(),
@@ -669,9 +705,51 @@ mod tests {
             assert_ne!(lines[0], ours.to_string_lossy(), "{lines:?}");
             assert_eq!(lines[1], "chat=chat-9");
             assert_eq!(lines[2], "open http://localhost:9/");
+            // The filter, over the connector's own proxy.
+            assert_eq!(lines[3], "proxy=http://chat-9@127.0.0.1:9");
             let (code, _) = process.finish().await;
             assert_eq!(code, Some(0));
         });
+    }
+
+    /// Held by Seatbelt (macOS, the allowed hosts on), a harness's program
+    /// is run by `sandbox-exec` under its profile; not held, it runs itself.
+    #[test]
+    fn a_harness_held_by_seatbelt_runs_under_sandbox_exec_with_its_profile() {
+        let held = Held {
+            network: None,
+            env: vec![("HTTPS_PROXY".into(), "http://chat@127.0.0.1:9".into())],
+            seatbelt: Some("(version 1)\n(allow default)\n".into()),
+        };
+        let env = [("CLAUDE_CODE_ENTRYPOINT".to_string(), "rovik".to_string())];
+        let cmd = held_command("/opt/claude/bin/claude", None, &env, Some((&held, "chat")));
+        assert_eq!(cmd.get_program(), crate::overlay::confine::SANDBOX_EXEC);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-p",
+                "(version 1)\n(allow default)\n",
+                "/opt/claude/bin/claude"
+            ]
+        );
+        let set = |key: &str| {
+            cmd.get_envs()
+                .find(|(name, _)| *name == key)
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned())
+        };
+        assert_eq!(
+            set("HTTPS_PROXY").as_deref(),
+            Some("http://chat@127.0.0.1:9")
+        );
+        assert_eq!(set("CLAUDE_CODE_ENTRYPOINT").as_deref(), Some("rovik"));
+        let free = held_command("/opt/claude/bin/claude", None, &env, None);
+        assert_eq!(free.get_program(), "/opt/claude/bin/claude");
+        assert_eq!(free.get_args().count(), 0);
     }
 
     /// A run that speaks a protocol: what it's sent reaches it as it runs,

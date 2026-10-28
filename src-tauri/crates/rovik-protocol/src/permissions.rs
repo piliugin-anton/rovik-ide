@@ -40,6 +40,14 @@ pub struct Permissions {
     /// into the next ("curl | sh"). For unattended runs (the headless
     /// runner's policy, Autopilot's denylist).
     pub denied_commands: Vec<String>,
+    /// Every host may be reached over the network; the list below is
+    /// ignored (docs/design/allowed-hosts-plan.md, J01).
+    pub allow_any_host: bool,
+    /// The hosts the agent's work may reach when `allow_any_host` is off: a
+    /// name ("docs.rs"), its subdomains ("*.github.com") or an address
+    /// ("10.0.0.5"). This computer's own services (localhost) are always
+    /// reachable.
+    pub allowed_hosts: Vec<String>,
     /// bash.
     pub command_approval: ApprovalRule,
     /// write and edit.
@@ -106,6 +114,8 @@ impl Default for Permissions {
                 .map(|s| s.to_string())
                 .collect(),
             denied_commands: Vec::new(),
+            allow_any_host: true,
+            allowed_hosts: Vec::new(),
             command_approval: NO_APPROVAL,
             edit_approval: NO_APPROVAL,
             tool_approval: NO_APPROVAL,

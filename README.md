@@ -338,7 +338,7 @@ computer right now. The pages:
 | Editor                 | How code looks and is formatted in the editor: theme, font, indentation, wrapping, formatters                               |
 | Model providers        | The models chats can use, with your API keys; the AI reviewer and the subagents pick theirs here too                        |
 | Connectors             | Coding harnesses (Claude Code, Codex) installed where a chat runs, used in place of a model (see [Connectors](#connectors)) |
-| Permissions & approval | What the agent may run and change in every chat, and what waits for your approval, or an AI reviewer's, first               |
+| Permissions & approval | What the agent may run, change and reach in every chat, and what waits for your approval, or an AI reviewer's, first        |
 | Agent runs             | While the agent works and when it finishes: pauses, its checklist, the checks on its changes, conflicts between chats       |
 | Subagents              | The helpers the agent can send, their models and limits                                                                     |
 | Autopilot              | Chats that carry out a whole task without asking: effort, budget, the commands they never run                               |
@@ -1245,6 +1245,86 @@ the same: its shell's commands, from the project's folder (Codex doesn't
 tell its hooks the folder its shell is in), each file a patch adds,
 changes or deletes, and the images it views. To teach it another name, add
 it to `SECRET_NAMES` or its kin in `restricted_files.rs`.
+
+### Allowed hosts
+
+**Settings → Permissions & approval → Network** limits the hosts the
+agent reaches: **Any host** (the default) or **Listed only**, with the
+list below it (`src-tauri/crates/rovik-core/src/allowed_hosts.rs`;
+design: [`docs/design/allowed-hosts-plan.md`](docs/design/allowed-hosts-plan.md)).
+An entry is a host's name, which matches that host alone (`docs.rs`
+doesn't match `www.docs.rs`), a name's subdomains (`*.github.com` matches
+`api.github.com`, not `github.com`: list both for both), or an address
+(`10.0.0.5`, `[fd00::1]`). What's typed is kept as a URL's host is:
+`https://Docs.RS/tokio` is `docs.rs`. A listed host is reached on any port
+and path. This computer's own services (`localhost`, `127.0.0.1`, `::1`)
+are always reachable.
+
+With the list on, the agent's web tools are checked before they run:
+`browse_url`, `browser_screenshot` with a page to open, and Claude Code's
+`WebFetch` under Rovik's permissions are refused for a host that isn't
+listed, with the list and the setting named so the agent can ask you;
+`web_search`, which goes to `html.duckduckgo.com`, is offered only when
+that host is listed. `browse_url`'s description names the listed hosts,
+as `bash`'s names the allowed commands.
+
+What holds is Rovik's filter (`allowed_hosts/filter.rs`): a proxy of
+Rovik's own that passes a connection to a listed host on and refuses any
+other. The agent's browser goes through it while the list is on, so every
+request Chrome makes is checked: a page's scripts, images and frames, and
+a redirect to another host, while this computer's own pages load
+directly. A tool's result names the hosts a page was kept from ("Not
+loaded (not in the user's allowed hosts): fonts.googleapis.com"). Chrome
+starts again when the list is turned on or off, and the filter goes on
+the way Settings → Network says the agent's browser goes. A cloud host
+follows the list of the last of your computers to send it settings.
+
+The agent's commands go through the filter too, and have no way around
+it. On Linux, and so in WSL, where a Windows computer's commands run, they
+start in a network of their own while the list is on, sealed: its
+loopback is up and nothing else is reachable, so the filter, listening
+inside, is their only way out
+(`overlay/confine/network.rs`). Their proxy variables (`HTTPS_PROXY`,
+`HTTP_PROXY`, `ALL_PROXY`, and `NODE_USE_ENV_PROXY` for Node) name it, as
+curl, git, npm, pip, cargo and most tools follow; a program that ignores
+them reaches nothing, and no name is looked up. Rovik bridges that
+network's loopback with your computer's (`network/bridge.rs`): a dev
+server the agent starts is at `localhost` in your browser, and a database
+you run is at `localhost` for its tests, but never a proxy of yours or
+DNS. A command's result names the hosts that were kept out ("The user's
+allowed hosts kept these out: registry.npmjs.org"), and `bash`'s
+description names the list. Turning the list on or off stops what the
+agent left running in the background, which would keep the network it
+started in; a team server's private network is sealed in place, its
+servers kept. The sealed network needs pasta (the `passt` package): where
+it can't be made, the agent's commands are refused while the list is on,
+with why.
+
+On macOS, Seatbelt holds the agent's commands to this computer's own
+services (`localhost`), where the filter listens, and a proxy of yours
+there is closed to them. Names can still be looked up there, as macOS
+answers them through a service of its own, so a command could carry a
+little data out in a name it looks up.
+
+Claude Code and Codex start the same way while the list is on: in the
+agent's network on Linux, under the same Seatbelt rules on macOS, with the
+filter as their proxy (`allowed_hosts.rs` `hold_program`). Their own
+service's hosts must be listed for their runs to work (`api.anthropic.com`
+for Claude Code; `api.openai.com` or `chatgpt.com` for Codex): a run that
+fails names the hosts the list kept out. Their web search, which their
+providers run on their own servers, out of the list's reach, is off. On
+Windows itself nothing holds their programs, so their runs there are
+refused while the list is on; a project in WSL runs them there, held. On a
+cloud host, a project's services start on internal networks of their own
+while the list is on: they reach each other, and nothing outside.
+
+What the list can't promise: this computer's own services stay
+reachable, so one of yours that fetches pages for whoever asks (a proxy
+that neither the environment, the system nor Settings → Network names)
+could carry data out; on macOS a command can still look names up; and a
+listed host is reached in full, every port and path of it. A program that
+ignores the proxy variables doesn't get around the list: it reaches
+nothing.
 
 ### Steering
 

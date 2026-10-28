@@ -407,6 +407,25 @@ pub fn temp_dir() -> TempDir {
 }
 
 /*
+ * A test in a process of its own
+ */
+
+/// Runs `test` (its full name), an ignored test of this test binary, in a
+/// process of its own, and checks it passed: for a test that changes what
+/// the process keeps (the allowed hosts' list), which the tests running
+/// beside it in this process mustn't see.
+pub fn in_a_process_of_its_own(test: &str) {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--ignored", "--test-threads=1"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("1 passed"), "{stdout}{stderr}");
+}
+
+/*
  * A command that runs until it's stopped
  */
 

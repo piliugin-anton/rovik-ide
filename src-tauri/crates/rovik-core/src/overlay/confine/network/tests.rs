@@ -31,33 +31,8 @@ fn a_resolver_on_the_loopback_is_replaced_by_the_forwarder_and_the_rest_kept() {
 }
 
 #[test]
-fn only_proxies_on_the_loopback_have_their_ports_reached() {
-    let vars = |pairs: &[(&str, &str)]| -> Vec<(OsString, OsString)> {
-        pairs
-            .iter()
-            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
-            .collect()
-    };
-    assert_eq!(
-        loopback_proxy_ports(vars(&[
-            ("HTTPS_PROXY", "http://127.0.0.1:3128"),
-            ("http_proxy", "localhost:8080"),
-            ("ALL_PROXY", "socks5h://[::1]:1080"),
-            ("all_proxy", "socks5://localhost"),
-            ("https_proxy", "http://user:secret@127.0.0.1:3128/"),
-            ("NO_PROXY", "127.0.0.1:9999"),
-            ("HTTPS_PROXY", "http://proxy.corp:3128"),
-            ("PATH", "/usr/bin"),
-        ])),
-        vec![1080, 3128, 8080]
-    );
-    assert_eq!(loopback_port("http://10.1.2.3:3128"), None);
-    assert_eq!(loopback_port("http://localhost"), Some(80));
-}
-
-#[test]
 fn pasta_forwards_nothing_in_and_reaches_only_the_proxies_ports() {
-    let args = pasta_args(4242, &[3128, 8080]);
+    let args = pasta_args(4242, &[3128, 8080], false);
     let pair = |flag: &str| {
         let at = args.iter().position(|a| a == flag).unwrap();
         args[at + 1].clone()
@@ -69,7 +44,20 @@ fn pasta_forwards_nothing_in_and_reaches_only_the_proxies_ports() {
     assert_eq!(pair("--dns-forward"), DNS_FORWARDER);
     assert!(args.contains(&"--foreground".to_string()));
     assert_eq!(args.last().map(String::as_str), Some("4242"));
-    assert_eq!(pair_of(&pasta_args(1, &[]), "--tcp-ns"), "none");
+    assert_eq!(pair_of(&pasta_args(1, &[], false), "--tcp-ns"), "none");
+}
+
+#[test]
+fn a_sealed_pasta_sets_up_the_loopback_alone() {
+    let args = pasta_args(4242, &[3128], true);
+    for flag in ["--tcp-ports", "--udp-ports", "--tcp-ns", "--udp-ns"] {
+        assert_eq!(pair_of(&args, flag), "none", "{flag}");
+    }
+    for flag in ["--config-net", "--dns-forward"] {
+        assert!(!args.iter().any(|a| a == flag), "{flag}: {args:?}");
+    }
+    assert!(args.contains(&"--foreground".to_string()));
+    assert_eq!(args.last().map(String::as_str), Some("4242"));
 }
 
 fn pair_of(args: &[String], flag: &str) -> String {
@@ -169,6 +157,11 @@ fn a_port_in_another_processs_network_is_reached_in_its_namespaces() {
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         stream.write_all(b"inside the container").unwrap();
+        // Stopped, not only dropped: a child another test forks meanwhile
+        // holds a copy of the descriptor until it execs, and the port would
+        // still listen until then.
+        // SAFETY: shutdown on a socket this thread owns.
+        unsafe { libc::shutdown(listener.as_raw_fd(), libc::SHUT_RDWR) };
     });
     let holder = network.holder.load(Ordering::Relaxed);
     let container = Namespaces::of(holder).expect("the holder's namespaces");
@@ -465,4 +458,263 @@ fn a_server_on_every_address_is_still_reached_only_from_inside() {
         );
     }
     assert!(network.connect(port).is_ok(), "inside, it answers");
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Sealed: while the user's allowed hosts are on (allowed-hosts-plan.md)
+ * ---------------------------------------------------------------------------
+ */
+
+/// A connection to `address` made in `network`: why it failed.
+fn unreached(network: &Network, address: IpAddr) -> io::Error {
+    let to = SocketAddr::new(address, 80);
+    match network.socket_inside(Inside::Connect([to, to].map(raw_address))) {
+        Ok(_) => panic!("{to} was reached"),
+        Err(error) => error,
+    }
+}
+
+#[test]
+fn a_sealed_network_reaches_its_loopback_and_no_other_address() {
+    let Some((_dir, network)) = sealed_for_test() else {
+        return;
+    };
+    let listener = network.listen().unwrap();
+    let port = listener.local_addr().unwrap().port();
+    assert!(network.connect(port).is_ok(), "its loopback is up");
+    assert!(!has_default_route(network.holder.load(Ordering::Relaxed)));
+    // The computer's own addresses, and any outside: unreachable at once.
+    let mut elsewhere: Vec<IpAddr> = host_ipv4_addresses()
+        .into_iter()
+        .filter(|address| !address.is_loopback())
+        .map(IpAddr::V4)
+        .collect();
+    elsewhere.push(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+    elsewhere.push("2001:db8::1".parse().unwrap());
+    for address in elsewhere {
+        let started = Instant::now();
+        let error = unreached(&network, address);
+        // A system without IPv6 has no IPv6 socket to try with.
+        let failed = [libc::ENETUNREACH, libc::EAFNOSUPPORT];
+        assert!(
+            error
+                .raw_os_error()
+                .is_some_and(|code| failed.contains(&code)),
+            "{address}: {error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(2), "{address}");
+    }
+}
+
+#[test]
+fn an_open_network_is_sealed_and_opened_again_its_servers_kept() {
+    let Some((_dir, network)) = network(&[], None) else {
+        return;
+    };
+    let holder = network.holder.load(Ordering::Relaxed);
+    assert!(has_default_route(holder));
+    let listener = network.listen().unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    network.seal(true).unwrap();
+    assert!(!has_default_route(holder));
+    let outside = unreached(&network, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+    assert_eq!(outside.raw_os_error(), Some(libc::ENETUNREACH), "{outside}");
+    assert!(network.connect(port).is_ok(), "its server stays");
+    // Asked again, nothing changes.
+    let (_, pasta) = kept_going(&network);
+    network.seal(true).unwrap();
+    assert_eq!(kept_going(&network).1, pasta);
+
+    network.seal(false).unwrap();
+    assert!(has_default_route(holder));
+    assert!(network.connect(port).is_ok(), "its server stays");
+}
+
+#[test]
+fn a_sealed_networks_pasta_is_started_again_sealed() {
+    let Some((_dir, network)) = sealed_for_test() else {
+        return;
+    };
+    let (holder, pasta) = kept_going(&network);
+    let pasta = pasta.expect("pasta runs for the network");
+    // SAFETY: a signal to a child of this process's network.
+    unsafe { libc::kill(pasta as i32, libc::SIGKILL) };
+    let again = eventually(|| kept_going(&network).1.filter(|again| *again != pasta))
+        .expect("pasta was started again");
+    let line = crate::listening::command_line(again).unwrap_or_default();
+    assert!(line.ends_with(&format!(" {holder}")), "{line}");
+    assert!(!line.contains("--config-net"), "{line}");
+    assert!(!has_default_route(holder));
+}
+
+/// What `found` gives within ten seconds, looking every tenth of one.
+fn eventually<T>(mut found: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(found) = found() {
+            return Some(found);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A python3 server on 127.0.0.1, at a port of the system's choosing, that
+/// says what it's given to each connection and closes it.
+const SERVER: &str = "import socket, sys
+s = socket.socket()
+s.bind(('127.0.0.1', 0))
+s.listen()
+print(s.getsockname()[1], flush=True)
+while True:
+    c, _ = s.accept()
+    c.sendall(sys.argv[1].encode())
+    c.close()
+";
+
+/// [`SERVER`] running, in a network or on this computer: ended when it's
+/// dropped.
+struct Server {
+    child: Child,
+    port: u16,
+}
+
+impl Server {
+    /// One saying `said`, in `network` (None: on this computer). None
+    /// where python3 isn't installed, and the test is then skipped.
+    fn start(network: Option<&Network>, said: &str) -> Option<Server> {
+        if !crate::process::on_path("python3") {
+            eprintln!("python3 isn't installed: skipped");
+            return None;
+        }
+        let mut cmd = Command::new("python3");
+        cmd.args(["-c", SERVER, said])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped());
+        if let Some(network) = network {
+            network.join(&mut cmd);
+        }
+        let mut child = cmd.spawn().unwrap();
+        let mut line = String::new();
+        io::BufRead::read_line(
+            &mut io::BufReader::new(child.stdout.as_mut().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        let port = line.trim().parse().expect("the server's port");
+        Some(Server { child, port })
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// What a connection said before it closed; None when there was none.
+fn said(stream: io::Result<std::net::TcpStream>) -> Option<String> {
+    let mut said = String::new();
+    stream.ok()?.read_to_string(&mut said).ok()?;
+    (!said.is_empty()).then_some(said)
+}
+
+/// The ports something on this computer listens on now.
+fn listened_here() -> Vec<u16> {
+    crate::listening::sockets(Path::new("/proc/self/net"))
+        .unwrap()
+        .into_values()
+        .collect()
+}
+
+#[test]
+fn a_bridge_carries_each_loopbacks_servers_to_the_other_while_they_listen() {
+    let Some((_dir, network)) = sealed_for_test() else {
+        return;
+    };
+    let network = Arc::new(network);
+    let (Some(inside), Some(here)) = (
+        Server::start(Some(&network), "inside"),
+        Server::start(None, "here"),
+    ) else {
+        return;
+    };
+    if listened_here().contains(&inside.port) || network.listening_ports().contains(&here.port) {
+        eprintln!("a port is busy on both sides: skipped");
+        return;
+    }
+    let _bridge = Bridge::start(Arc::downgrade(&network), Vec::new());
+    let reached_here = || said(std::net::TcpStream::connect(("127.0.0.1", inside.port)));
+    assert_eq!(eventually(reached_here).as_deref(), Some("inside"));
+    let reached_inside = || said(network.connect(here.port));
+    assert_eq!(eventually(reached_inside).as_deref(), Some("here"));
+
+    // Gone on one side, gone on the other.
+    let (inside_port, here_port) = (inside.port, here.port);
+    drop((inside, here));
+    let refused =
+        |error: io::Error| (error.kind() == io::ErrorKind::ConnectionRefused).then_some(());
+    let closed_here = || {
+        std::net::TcpStream::connect(("127.0.0.1", inside_port))
+            .err()
+            .and_then(refused)
+    };
+    assert!(
+        eventually(closed_here).is_some(),
+        "{inside_port} still listens here"
+    );
+    let closed_inside = || network.connect(here_port).err().and_then(refused);
+    assert!(
+        eventually(closed_inside).is_some(),
+        "{here_port} still listens inside"
+    );
+}
+
+#[test]
+fn a_bridge_never_opens_a_proxys_port_or_this_processs_own() {
+    let Some((_dir, network)) = sealed_for_test() else {
+        return;
+    };
+    let network = Arc::new(network);
+    let (Some(proxy), Some(here)) = (Server::start(None, "proxy"), Server::start(None, "here"))
+    else {
+        return;
+    };
+    // This process's own: the filter's inside, an MCP server's here.
+    let filter = network.listen().unwrap();
+    let filter = filter.local_addr().unwrap().port();
+    let mcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mcp = mcp.local_addr().unwrap().port();
+    if listened_here().contains(&filter)
+        || network
+            .listening_ports()
+            .iter()
+            .any(|port| [proxy.port, here.port, mcp].contains(port))
+    {
+        eprintln!("a port is busy on both sides: skipped");
+        return;
+    }
+    let _bridge = Bridge::start(Arc::downgrade(&network), vec![proxy.port]);
+    // Once a look has opened what it opens.
+    let reached_inside = || said(network.connect(here.port));
+    assert_eq!(eventually(reached_inside).as_deref(), Some("here"));
+    for port in [proxy.port, mcp] {
+        let refused = network.connect(port).unwrap_err();
+        assert_eq!(
+            refused.raw_os_error(),
+            Some(libc::ECONNREFUSED),
+            "{port}: {refused}"
+        );
+    }
+    let refused = std::net::TcpStream::connect(("127.0.0.1", filter)).unwrap_err();
+    assert_eq!(
+        refused.kind(),
+        io::ErrorKind::ConnectionRefused,
+        "{refused}"
+    );
 }

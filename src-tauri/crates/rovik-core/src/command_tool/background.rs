@@ -215,6 +215,15 @@ pub fn stop_all() {
     stop_together(&every);
 }
 
+/// Stops every chat's running background commands, each kept for its
+/// agent to hear it was stopped: the network the agent's commands start in
+/// changed as the user's allowed hosts were turned on or off
+/// (allowed_hosts.rs), and these would keep the one they started in.
+pub fn stop_running() {
+    let every = all().clone();
+    stop_together(&every);
+}
+
 /// Kills them all, then waits for each to be gone.
 fn stop_together(commands: &[Arc<Background>]) {
     for background in commands {
@@ -278,7 +287,15 @@ fn run(
     told: Told,
     answer: mpsc::Sender<Result<Report, String>>,
 ) {
-    let confine = policy(&root, Some(&queued));
+    // While the user's allowed hosts are on, held to them, or not run
+    // (allowed_hosts.rs).
+    let (confine, held) = match crate::allowed_hosts::hold(policy(&root, Some(&queued)), &chat) {
+        Ok(held) => held,
+        Err(why) => {
+            let _ = answer.send(Err(why));
+            return;
+        }
+    };
     // Listed from the start, so that an exit meanwhile stops it too.
     let attempt = || -> Result<Arc<Background>, String> {
         let background = launch(
@@ -287,6 +304,7 @@ fn run(
             &root,
             &command,
             confine.as_ref(),
+            &held,
             job.as_ref(),
             &queued,
         )?;
@@ -337,12 +355,14 @@ fn tell(told: &Told) {
 
 /// Starts `command` once, as `chat`'s background command `id`: its stdout
 /// and stderr into one pipe, read on a thread of its own.
+#[allow(clippy::too_many_arguments)]
 fn launch(
     id: &str,
     chat: &str,
     root: &Path,
     command: &str,
     confine: Option<&Confine>,
+    held: &[(String, String)],
     job: Option<&Job>,
     queued: &Queued,
 ) -> Result<Arc<Background>, String> {
@@ -351,7 +371,7 @@ fn launch(
     let spawned = {
         // Gone once it has started, with this end of the pipe: the
         // command's are the only ones left, and its output ends with them.
-        let mut cmd = prepared(root, command, confine, job, Some(queued));
+        let mut cmd = prepared(root, command, confine, held, job, Some(queued));
         cmd.stdout(writer.try_clone().map_err(piped)?)
             .stderr(writer);
         cmd.spawn()
