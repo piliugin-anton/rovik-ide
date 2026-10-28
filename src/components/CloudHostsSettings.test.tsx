@@ -62,6 +62,7 @@ const HOST: HostRow = {
   chats: 0,
   passwordSaved: false,
   passphraseSaved: false,
+  serves: [],
 };
 
 const DEPLOYED: Partial<HostRow> = {
@@ -341,6 +342,10 @@ test('deployed: its version, what it stores, and the providers whose keys it kee
     /OpenAI https:\/\/api\.openai\.com\/v1/
   );
   assert.ok(button(root, 'Remove keys from this server'));
+  assert.match(
+    root.querySelector('.host-keys .settings-hint')!.textContent!.replace(/\s+/g, ' '),
+    /^Your API keys and MCP servers’ secrets are stored in your account on this server, so chats there run while this computer is away\. The agent’s commands there and anyone with root on it can read them\.$/
+  );
   assert.equal(button(root, 'Upgrade for everyone'), undefined);
   assert.equal(root.querySelector('.host-limits'), null, 'limits are for administrators');
 });

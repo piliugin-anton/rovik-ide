@@ -5,6 +5,7 @@
 //! file, and the page only learns where they go.
 
 use rovik_client::secrets::{SecretName, SecretStore, StoreKind};
+use rovik_client::Remote;
 use rovik_core::mcp::{McpServer, Tested};
 use rovik_core::Core;
 use rovik_protocol::mcp::is_secret_key;
@@ -64,14 +65,25 @@ pub async fn mcp_save_secrets(
 
 /// Starts `server` as the page has it, with the secret values typed there
 /// (by key) over the saved ones, lists its tools and stops it: a command
-/// in `root`, the open project's folder (the home folder without one).
+/// in `root`, the open project's folder (the home folder without one). With
+/// a `host`, its daemon starts the server instead, with this computer's saved
+/// secrets under the typed ones.
 #[tauri::command]
 pub async fn mcp_test(
     core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     server: McpServer,
     values: HashMap<String, Secret>,
     root: Option<String>,
+    host: Option<String>,
 ) -> Result<Tested, String> {
+    if let Some(host) = host {
+        let given = values.into_iter().collect();
+        return remote
+            .mcp_test(&host, server, given)
+            .await
+            .map_err(|e| e.message);
+    }
     let given: HashMap<String, String> = values
         .iter()
         .filter(|(_, value)| !value.0.is_empty())

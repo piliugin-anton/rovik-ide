@@ -90,6 +90,8 @@ export interface HostRow extends Host {
   /** Whether a password or a key passphrase is saved: never the secret. */
   passwordSaved: boolean;
   passphraseSaved: boolean;
+  /** What its daemon serves besides the basics (`mcp`): empty until it has said. */
+  serves: string[];
 }
 
 /** Where secrets are kept (design §6). */
@@ -347,7 +349,7 @@ export function emptyHost(): Host {
 
 /** The host of a row, without what the list adds to it. */
 export function hostOf(row: HostRow): Host {
-  const { state, problem, chats, passwordSaved, passphraseSaved, ...host } = row;
+  const { state, problem, chats, passwordSaved, passphraseSaved, serves, ...host } = row;
   return host;
 }
 

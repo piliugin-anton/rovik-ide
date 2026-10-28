@@ -564,6 +564,13 @@ impl Remote {
         daemon.is_some_and(|d| d.serves(feature))
     }
 
+    /// The features the host's daemon listed in its `Welcome`; none until
+    /// it has said.
+    pub fn features(&self, host: &str) -> Vec<String> {
+        let daemon = self.hosts.client(host).and_then(|c| c.daemon());
+        daemon.map(|d| d.features).unwrap_or_default()
+    }
+
     pub(crate) fn policy(&self, host: &str) -> ApprovalPolicy {
         self.lock().policies.get(host).copied().unwrap_or_default()
     }

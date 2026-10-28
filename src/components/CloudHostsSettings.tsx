@@ -978,9 +978,9 @@ function HostPage(props: {
               <section class="settings-section host-keys">
                 <div class="settings-section-title">API keys on this server</div>
                 <p class="settings-hint">
-                  Your API keys are stored in your account on this server, so chats there run while
-                  this computer is away. The agent’s commands there and anyone with root on it can
-                  read them.
+                  Your API keys and MCP servers’ secrets are stored in your account on this server,
+                  so chats there run while this computer is away. The agent’s commands there and
+                  anyone with root on it can read them.
                 </p>
                 <Show
                   when={d().keys}

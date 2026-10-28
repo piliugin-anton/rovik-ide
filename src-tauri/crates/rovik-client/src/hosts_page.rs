@@ -94,6 +94,9 @@ pub struct HostRow {
     /// Whether a password and a key passphrase are saved: never the secrets.
     pub password_saved: bool,
     pub passphrase_saved: bool,
+    /// The additive requests its daemon serves, once it has said (4.5): the
+    /// MCP servers page offers a host that serves `mcp`.
+    pub serves: Vec<String>,
 }
 
 /// What the page's form changes of a host's secrets: none leaves one as
@@ -714,8 +717,9 @@ impl HostsPage {
                     .secret(SecretName::Password { host: id.clone() })
                     .is_some(),
                 passphrase_saved: self
-                    .secret(SecretName::KeyPassphrase { host: id })
+                    .secret(SecretName::KeyPassphrase { host: id.clone() })
                     .is_some(),
+                serves: self.remote.features(&id),
                 host,
             });
         }
@@ -1685,6 +1689,10 @@ mod tests {
         assert!(list.hosts[0].password_saved);
         assert!(!list.hosts[0].passphrase_saved);
         assert_eq!(list.hosts[0].state, None, "not deployed, not connected");
+        assert!(
+            list.hosts[0].serves.is_empty(),
+            "a daemon that hasn't spoken serves nothing"
+        );
         let file = std::fs::read_to_string(setup.app.dir.0.join("config/cloud-hosts.json"));
         assert!(!file.unwrap().contains("hunter2"));
         let json = serde_json::to_string(&list).unwrap();

@@ -14,7 +14,7 @@ import { render } from 'solid-js/web';
 import McpServersSettings, { type McpServersSettingsController } from './McpServersSettings';
 import { ConfirmDialogHost } from './ConfirmDialog';
 import type { McpServer, McpTested } from '../lib/mcpServers';
-import type { StoreKind } from '../lib/hosts';
+import { emptyHost, type HostRow, type StoreKind } from '../lib/hosts';
 import type { SettingsPage } from '../lib/appSettings';
 
 /** How the app answers each command in the test running now. */
@@ -78,10 +78,15 @@ const TESTED: McpTested = {
 };
 
 /** The page with these servers, its secrets where `store` says, and the confirm dialogs. */
-async function page(servers: McpServer[] = [], store: StoreKind = { kind: 'keychain' }) {
+async function page(
+  servers: McpServer[] = [],
+  store: StoreKind = { kind: 'keychain' },
+  hosts: HostRow[] = []
+) {
   calls = [];
   backend = {
     mcp_store: () => store,
+    hosts_list: () => ({ hosts, store, build: undefined }),
     mcp_save_secrets: () => null,
   };
   const [current, setCurrent] = createSignal(servers);
@@ -105,6 +110,19 @@ async function page(servers: McpServer[] = [], store: StoreKind = { kind: 'keych
   await flush();
   return { current, opened, api: () => api! };
 }
+
+/** A deployed host, in this state, whose daemon serves these. */
+const hostRow = (id: string, state: HostRow['state'], serves: string[]): HostRow => ({
+  ...emptyHost(),
+  id,
+  name: id,
+  deploy: { state: 'deployed', version: '0.2.0' },
+  state,
+  chats: 0,
+  passwordSaved: false,
+  passphraseSaved: false,
+  serves,
+});
 
 const text = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
 const button = (label: string, within: ParentNode = document) =>
@@ -201,7 +219,9 @@ test('a URL server is tested with what’s typed, its tools picked, and its save
   await click(button('Edit'));
   assert.equal(row(0).value.placeholder, 'Saved: leave empty to keep it');
   await click(button('Test'));
-  assert.deepEqual(sent('mcp_test'), [{ server: docs, values: {}, root: '/home/me/project' }]);
+  assert.deepEqual(sent('mcp_test'), [
+    { server: docs, values: {}, root: '/home/me/project', host: null },
+  ]);
   assert.match(
     text(document.querySelector('.provider-test-status.ok')),
     /Connected to docs 1\.0: 2 tools, MCP 2025-11-25/
@@ -404,4 +424,46 @@ test('the form switches between a command and a URL, keeping what was typed for 
   await click(button('URL'));
   assert.equal(field('URL').value, 'https://mcp.example.com/mcp');
   assert.equal(valueRows().length, 1);
+});
+
+const testOn = () => document.querySelector<HTMLSelectElement>('select[aria-label="Test on"]');
+
+test('a server is tested on the host chosen in Test on, and choosing clears the last result', async () => {
+  const hosts = [
+    hostRow('build', 'ready', ['mcp']),
+    hostRow('old', 'ready', []),
+    hostRow('away', 'offline', ['mcp']),
+  ];
+  const {} = await page([docs], { kind: 'keychain' }, hosts);
+  backend.mcp_test = () => TESTED;
+  await click(button('Edit'));
+  assert.deepEqual(
+    [...testOn()!.options].map((o) => [o.value, text(o)]),
+    [
+      ['', 'This computer'],
+      ['build', 'build'],
+    ]
+  );
+  await click(button('Test'));
+  assert.equal(sent('mcp_test')[0].host, null, 'here until another place is chosen');
+  assert.ok(document.querySelector('.provider-test-status.ok'));
+  testOn()!.value = 'build';
+  testOn()!.dispatchEvent(new Event('change', { bubbles: true }));
+  await flush();
+  assert.equal(
+    document.querySelector('.provider-test-status'),
+    null,
+    'the result was of another place'
+  );
+  await click(button('Test'));
+  assert.equal(sent('mcp_test')[1].host, 'build');
+});
+
+test('there is no Test on choice without a host that runs MCP servers', async () => {
+  await page([docs], { kind: 'keychain' }, [
+    hostRow('old', 'ready', []),
+    hostRow('away', 'offline', ['mcp']),
+  ]);
+  await click(button('Edit'));
+  assert.equal(testOn(), null);
 });

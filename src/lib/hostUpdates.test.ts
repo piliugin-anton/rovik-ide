@@ -37,6 +37,7 @@ function row(id: string, version: string | null, state?: HostRow['state']): Host
     chats: 0,
     passwordSaved: false,
     passphraseSaved: false,
+    serves: [],
   };
 }
 

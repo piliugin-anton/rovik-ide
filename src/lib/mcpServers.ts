@@ -390,12 +390,14 @@ export function saveMcpSecrets(server: string, values: Record<string, string>): 
 /**
  * Starts `server` as it's set up on the page, with the secret values typed
  * there (by key) over the saved ones, lists its tools, and stops it; in
- * `root`'s folder for a command.
+ * `root`'s folder for a command. With a `host` (its id), that host's
+ * daemon does it there, with this computer's saved secrets.
  */
 export function testMcpServer(
   server: McpServer,
   values: Record<string, string>,
-  root: string | null
+  root: string | null,
+  host: string | null = null
 ): Promise<McpTested> {
-  return invoke<McpTested>('mcp_test', { server, values, root });
+  return invoke<McpTested>('mcp_test', { server, values, root, host });
 }

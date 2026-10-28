@@ -32,6 +32,7 @@ import {
   type McpTransport,
   type McpValue,
 } from '../lib/mcpServers';
+import { listHosts } from '../lib/hosts';
 import { confirmDialog } from './ConfirmDialog';
 import { SecretsUnlock, Segmented, SettingRow, SettingStatus } from './SettingsControls';
 
@@ -84,6 +85,12 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
   // Where secret values go: a locked file is unlocked here before they're
   // saved, or read as a server starts.
   const [store, { refetch: refetchStore }] = createResource(() => mcpStore().catch(() => null));
+  // The hosts whose daemon runs MCP servers: places to Test on. A host list
+  // that won't load leaves only this computer.
+  const [hosts] = createResource(() => listHosts().catch(() => null));
+  const testHosts = () =>
+    (hosts()?.hosts ?? []).filter((h) => h.state === 'ready' && h.serves.includes('mcp'));
+  const [testHost, setTestHost] = createSignal('');
   const locked = () => {
     const s = store();
     return s?.kind === 'file' && !s.unlocked;
@@ -189,7 +196,7 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
     // The values typed: an empty one is a forget, not a value.
     const typed = Object.fromEntries(Object.entries(secrets).filter(([, value]) => value));
     try {
-      const result = await testMcpServer(server, typed, props.rootPath);
+      const result = await testMcpServer(server, typed, props.rootPath, testHost() || null);
       if (run === testRun) setTest({ kind: 'ok', tested: result });
     } catch (e) {
       if (run === testRun) setTest({ kind: 'error', message: String(e) });
@@ -609,6 +616,19 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
                   <button onClick={() => void runTest()} disabled={test().kind === 'testing'}>
                     {test().kind === 'testing' ? 'Testing…' : 'Test'}
                   </button>
+                  <Show when={testHosts().length > 0}>
+                    <select
+                      aria-label="Test on"
+                      value={testHost()}
+                      onChange={(e) => {
+                        setTestHost(e.currentTarget.value);
+                        forgetTest();
+                      }}
+                    >
+                      <option value="">This computer</option>
+                      <For each={testHosts()}>{(h) => <option value={h.id}>{h.name}</option>}</For>
+                    </select>
+                  </Show>
                 </div>
                 <Show when={tested()}>
                   {(t) => (

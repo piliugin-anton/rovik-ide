@@ -86,6 +86,7 @@ const COMPUTER: typeof backend = {
         chats: 2,
         passwordSaved: false,
         passphraseSaved: false,
+        serves: [],
       },
       {
         id: 'h2',
@@ -99,6 +100,7 @@ const COMPUTER: typeof backend = {
         chats: 0,
         passwordSaved: false,
         passphraseSaved: false,
+        serves: [],
       },
     ],
     store: { kind: 'keychain' },
