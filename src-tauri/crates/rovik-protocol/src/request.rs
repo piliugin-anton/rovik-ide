@@ -14,12 +14,14 @@ use crate::connectors::{
 };
 use crate::events::BackgroundTask;
 use crate::host::{HostInfo, KeyInfo, Storage};
+use crate::mcp::{McpServer, Tested};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
 use crate::work::{ChatResult, Handed, Project, Synced, UndoneMerge, WorkChange, WorkFile};
-use crate::{Fail, FailCode};
+use crate::{Fail, FailCode, Secret};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -318,6 +320,13 @@ pub enum Request {
     KeysRemove {
         provider: Option<String>,
     },
+    /// Starts `server` on the host with `values` for its secrets (by key,
+    /// as `StartRequest::mcp_secrets`) and lists its tools, as Test on the
+    /// settings page does here. Served with `features::MCP`. → `McpTested`.
+    McpTest {
+        server: McpServer,
+        values: BTreeMap<String, Secret>,
+    },
     /// What Rovik's folders take on the host. → `Storage`.
     Storage,
     /// Collects now what Rovik's folders no longer need, as each day does
@@ -423,6 +432,7 @@ impl Request {
             | Request::HostInfo
             | Request::KeysList
             | Request::KeysRemove { .. }
+            | Request::McpTest { .. }
             | Request::Storage
             | Request::CleanUp
             | Request::PageOpened { .. } => None,
@@ -474,6 +484,8 @@ pub enum Response {
     /// `KeysList`.
     Keys(Vec<KeyInfo>),
     Storage(Storage),
+    /// `McpTest`.
+    McpTested(Tested),
     /// `DeliveryTest`.
     DeliveryTested(DeliveryTest),
     /// `TaskStatus`.
@@ -543,6 +555,7 @@ replies! {
     Ownership => Option<Ownership>,
     Keys => Vec<KeyInfo>,
     Storage => Storage,
+    McpTested => Tested,
     DeliveryTested => DeliveryTest,
     Tasks => Vec<ChatTask>,
     ConnectorProbe => ConnectorProbe,

@@ -296,6 +296,7 @@ impl Harness {
             }),
             isolate: Some(false),
             project_settings: None,
+            mcp_secrets: Default::default(),
         }
     }
 

@@ -25,7 +25,6 @@ pub use tool::Tool;
 use crate::agent_run::StopSignal;
 use futures_util::future::BoxFuture;
 use rpc::{Era, Failure};
-use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -71,24 +70,7 @@ pub struct Listed {
     pub tools: Result<Vec<Tool>, String>,
 }
 
-/// What Test on the settings page shows of a server (Q04).
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Tested {
-    /// Its name and version, as it gives them.
-    pub server: String,
-    /// The protocol version Rovik speaks with it.
-    pub protocol: String,
-    pub tools: Vec<TestedTool>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TestedTool {
-    pub name: String,
-    pub description: String,
-    pub read_only: bool,
-}
+pub use rovik_protocol::mcp::{Tested, TestedTool};
 
 /// A call that didn't come back with a result.
 #[derive(Clone, Debug, PartialEq)]

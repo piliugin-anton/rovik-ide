@@ -370,10 +370,6 @@ fn an_mcp_server_reads_as_the_frontend_keeps_it() {
         .unwrap()
         .get("mcpServers")
         .is_none());
-    let mut config = config();
-    assert!(!config.mcp_servers.is_empty());
-    config = config.for_host();
-    assert!(config.mcp_servers.is_empty());
 }
 
 /// Q01: a server's name is what the agent writes before the dot in
@@ -464,6 +460,7 @@ fn start() -> StartRequest {
         config: Some(config()),
         isolate: Some(false),
         project_settings: Some(json!({ "checks": [{ "kind": "test", "command": "npm test" }] })),
+        mcp_secrets: Default::default(),
     }
 }
 
@@ -871,6 +868,19 @@ fn every_request_round_trips() {
             },
             Request::HostInfo,
             Request::KeysList,
+            Request::McpTest {
+                server: crate::mcp::McpServer {
+                    id: "s1".into(),
+                    name: "docs".into(),
+                    enabled: true,
+                    transport: McpTransport::Url {
+                        url: "https://example.com/mcp".into(),
+                        headers: Vec::new(),
+                    },
+                    disabled_tools: Vec::new(),
+                },
+                values: [("header/Authorization".into(), crate::Secret("t".into()))].into(),
+            },
             Request::KeysRemove { provider: None },
             Request::KeysRemove {
                 provider: Some("openai".into()),
@@ -1092,6 +1102,15 @@ fn every_response_round_trips() {
                 aliases: Vec::new(),
                 builtin: false,
             }]),
+            Response::McpTested(crate::mcp::Tested {
+                server: "docs 1.0".into(),
+                protocol: "2025-06-18".into(),
+                tools: vec![crate::mcp::TestedTool {
+                    name: "search".into(),
+                    description: "Searches".into(),
+                    read_only: true,
+                }],
+            }),
             Response::ConnectorSetup(crate::connectors::SetupJob {
                 id: "j".into(),
                 action: crate::connectors::SetupAction::Login,
@@ -1767,4 +1786,63 @@ fn host_info_tells_no_connectors_from_a_daemon_that_cant_say() {
     json["connectors"] = json!([]);
     let none: HostInfo = serde_json::from_value(json).unwrap();
     assert_eq!(none.connectors, Some(Vec::new()));
+}
+
+#[test]
+fn a_start_from_an_older_app_has_no_mcp_secrets() {
+    let json = serde_json::to_value(start()).unwrap();
+    assert!(json.get("mcpSecrets").is_none(), "empty: left out");
+    let back: StartRequest = serde_json::from_value(json).unwrap();
+    assert!(back.mcp_secrets.is_empty());
+}
+
+#[test]
+fn a_starts_mcp_secrets_go_and_come_back_but_never_show_in_debug() {
+    let mut start = start();
+    start.mcp_secrets.insert(
+        "s1".into(),
+        [("env/TOKEN".into(), crate::Secret("t0p".into()))].into(),
+    );
+    let back: StartRequest = serde_json::from_str(&serde_json::to_string(&start).unwrap()).unwrap();
+    assert_eq!(back.mcp_secrets["s1"]["env/TOKEN"].0, "t0p");
+    assert!(!format!("{start:?}").contains("t0p"));
+}
+
+#[test]
+fn mcp_test_and_its_answer_round_trip() {
+    let server = McpServer {
+        id: "s1".into(),
+        name: "docs".into(),
+        enabled: true,
+        transport: McpTransport::Command {
+            command: "npx".into(),
+            args: vec!["docs-mcp".into()],
+            env: Vec::new(),
+        },
+        disabled_tools: Vec::new(),
+    };
+    let request = Request::McpTest {
+        server,
+        values: [("env/TOKEN".into(), crate::Secret("t0p".into()))].into(),
+    };
+    let back: Request = serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+    assert_eq!(back, request);
+    assert!(!format!("{request:?}").contains("t0p"));
+    assert_eq!(back.target(), None);
+
+    let tested = crate::mcp::Tested {
+        server: "docs 1.0".into(),
+        protocol: "2025-06-18".into(),
+        tools: vec![crate::mcp::TestedTool {
+            name: "search".into(),
+            description: "Searches".into(),
+            read_only: true,
+        }],
+    };
+    let response = Response::McpTested(tested.clone());
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["v"]["tools"][0]["readOnly"], true);
+    let back: Response = serde_json::from_value(json).unwrap();
+    assert_eq!(back, response);
+    assert_eq!(crate::mcp::Tested::try_from(back).unwrap(), tested);
 }

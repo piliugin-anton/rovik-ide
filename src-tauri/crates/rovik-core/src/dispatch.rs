@@ -180,6 +180,7 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::HostInfo
         | Request::KeysList
         | Request::KeysRemove { .. }
+        | Request::McpTest { .. }
         | Request::Storage
         | Request::CleanUp
         | Request::PageOpened { .. }
@@ -310,6 +311,7 @@ mod tests {
             config: None,
             isolate: Some(false),
             project_settings: None,
+            mcp_secrets: Default::default(),
         }
     }
 

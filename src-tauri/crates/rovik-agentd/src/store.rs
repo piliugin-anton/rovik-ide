@@ -833,6 +833,7 @@ impl Store {
             isolate: None,
             // Kept here since the start that brought them.
             project_settings: None,
+            mcp_secrets: Default::default(),
         })
     }
 

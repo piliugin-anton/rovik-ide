@@ -570,16 +570,15 @@ impl Remote {
     /// `config` under the host's policy, and its block when it works on its
     /// own (`ApprovalPolicy::apply`).
     /// `config`, as `host` takes it: without this computer's keys, which
-    /// the host has from the starts (D11), and its MCP servers, which run
-    /// here only (mcp-plan.md, Q01), under the host's policy, and with how
-    /// its daemon connects (`network`).
+    /// the host has from the starts (D11), under the host's policy, and
+    /// with how its daemon connects (`network`).
     fn config_for(
         &self,
         host: &str,
         config: &AgentConfig,
         network: &Option<HostNetwork>,
     ) -> AgentConfig {
-        let mut config = config.without_keys().for_host();
+        let mut config = config.without_keys();
         self.apply_policy(host, &mut config);
         config.network = network.clone();
         config
@@ -783,7 +782,6 @@ impl Remote {
             request.root = None;
         }
         if let Some(config) = &mut request.config {
-            *config = std::mem::take(config).for_host();
             self.apply_policy(&host, config);
         }
         // A chat on a host that works on its own runs in Autopilot unless

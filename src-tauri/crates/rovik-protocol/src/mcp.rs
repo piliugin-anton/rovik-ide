@@ -11,6 +11,26 @@ use serde::{Deserialize, Serialize};
 /// The most characters a server's name has.
 pub const MAX_NAME: usize = 32;
 
+/// What Test on the settings page shows of a server (Q04).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Tested {
+    /// Its name and version, as it gives them.
+    pub server: String,
+    /// The protocol version Rovik speaks with it.
+    pub protocol: String,
+    pub tools: Vec<TestedTool>,
+}
+
+/// One tool in a `Tested`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TestedTool {
+    pub name: String,
+    pub description: String,
+    pub read_only: bool,
+}
+
 /// One MCP server.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]

@@ -78,6 +78,9 @@ pub mod features {
     /// A server that works on its own (autopilot-plan H02):
     /// `AutonomyConfigure`.
     pub const AUTONOMY: &str = "autonomy";
+    /// MCP servers run on the daemon (mcp-plan-2.md, Q11): `McpTest`, and
+    /// starts' `mcp_secrets`.
+    pub const MCP: &str = "mcp";
 }
 
 #[cfg(test)]

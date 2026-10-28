@@ -9,7 +9,9 @@ use crate::mcp::McpServer;
 use crate::network::HostNetwork;
 use crate::permissions::Permissions;
 use crate::subagents::{ModelChoice, SubagentConfig};
+use crate::Secret;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// A model, resolved by the frontend from the providers in its settings.
 /// Its `Debug` leaves the key out, so a request that gets logged can't
@@ -121,8 +123,8 @@ pub struct AgentConfig {
     /// How Autopilot's tasks run: read only by chats in Autopilot.
     pub autopilot: AutopilotConfig,
     /// The user's MCP servers, whose tools the agent calls with `mcp`
-    /// (docs/design/mcp-plan.md, Q01). They run on this computer: a host is
-    /// sent none (`for_host`).
+    /// (docs/design/mcp-plan.md, Q01). A host runs them too, with the
+    /// secrets a start brings (`StartRequest::mcp_secrets`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<McpServer>,
     /// How a host connects for this computer's chats (Settings → Network,
@@ -167,13 +169,6 @@ impl AgentConfig {
             model.api_key.clear();
         }
         config
-    }
-
-    /// The configuration as a host's runs take it: without the MCP
-    /// servers, which run on this computer only (mcp-plan.md, Q01).
-    pub fn for_host(mut self) -> AgentConfig {
-        self.mcp_servers.clear();
-        self
     }
 }
 
@@ -268,6 +263,12 @@ pub struct StartRequest {
     /// them for the folder the run works in, as the app does for its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_settings: Option<serde_json::Value>,
+    /// The values of the MCP servers' secrets (a token in an env var or a
+    /// header) that a host's run needs, by server id and then by key
+    /// (`env/NAME`, `header/Name`). The host keeps none: they live in this
+    /// run's memory only (mcp-plan-2.md, Q11).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp_secrets: BTreeMap<String, BTreeMap<String, Secret>>,
 }
 
 /// A running subagent as its block shows it.

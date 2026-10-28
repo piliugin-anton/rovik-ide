@@ -556,6 +556,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         }),
         isolate: Some(false),
         project_settings: None,
+        mcp_secrets: Default::default(),
     };
     #[cfg(test)]
     {
