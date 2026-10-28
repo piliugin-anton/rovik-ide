@@ -2,7 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checkCommand, DEFAULT_PERMISSIONS, describeToolCall, parseCommand } from './permissions';
+import {
+  checkCommand,
+  DEFAULT_PERMISSIONS,
+  describeToolCall,
+  normalizeHostEntry,
+  normalizePermissions,
+  parseCommand,
+} from './permissions';
 
 /*
  * The cases are shared with the backend's tests (agent_run/permissions.rs):
@@ -69,4 +76,32 @@ test('a command left running, and the tool that reads and stops it, are describe
     describeToolCall('background', JSON.stringify({ action: 'list' })),
     'List the commands running in the background'
   );
+});
+
+/*
+ * The allowed hosts' entries, as rovik-core's allowed_hosts.rs reads them:
+ * both check every case in the shared file.
+ */
+test('allowed-host entries are kept as the backend reads them', () => {
+  const hosts = JSON.parse(
+    readFileSync(join(process.cwd(), 'test-fixtures/allowed-hosts.json'), 'utf8')
+  ) as { normalize: [string, string | null][] };
+  for (const [raw, want] of hosts.normalize) {
+    assert.equal(normalizeHostEntry(raw), want, JSON.stringify(raw));
+  }
+});
+
+test('permissions saved before the allowed hosts reach any host', () => {
+  const before = normalizePermissions({ allowAnyCommand: true });
+  assert.equal(before.allowAnyHost, true);
+  assert.deepEqual(before.allowedHosts, []);
+});
+
+test('saved allowed hosts are read again as entries, each once', () => {
+  const saved = normalizePermissions({
+    allowAnyHost: false,
+    allowedHosts: ['Docs.RS', 'https://docs.rs/tokio', '*.github.com', 'exa mple.com', 7, ''],
+  });
+  assert.equal(saved.allowAnyHost, false);
+  assert.deepEqual(saved.allowedHosts, ['docs.rs', '*.github.com']);
 });

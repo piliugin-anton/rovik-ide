@@ -338,7 +338,7 @@ computer right now. The pages:
 | Editor                 | How code looks and is formatted in the editor: theme, font, indentation, wrapping, formatters                               |
 | Model providers        | The models chats can use, with your API keys; the AI reviewer and the subagents pick theirs here too                        |
 | Connectors             | Coding harnesses (Claude Code, Codex) installed where a chat runs, used in place of a model (see [Connectors](#connectors)) |
-| Permissions & approval | What the agent may run and change in every chat, and what waits for your approval, or an AI reviewer's, first               |
+| Permissions & approval | What the agent may run, change and reach in every chat, and what waits for your approval, or an AI reviewer's, first        |
 | Agent runs             | While the agent works and when it finishes: pauses, its checklist, the checks on its changes, conflicts between chats       |
 | Subagents              | The helpers the agent can send, their models and limits                                                                     |
 | Autopilot              | Chats that carry out a whole task without asking: effort, budget, the commands they never run                               |
@@ -1245,6 +1245,28 @@ the same: its shell's commands, from the project's folder (Codex doesn't
 tell its hooks the folder its shell is in), each file a patch adds,
 changes or deletes, and the images it views. To teach it another name, add
 it to `SECRET_NAMES` or its kin in `restricted_files.rs`.
+
+### Allowed hosts
+
+**Settings → Permissions & approval → Network** limits the hosts the
+agent reaches: **Any host** (the default) or **Listed only**, with the
+list below it (`src-tauri/crates/rovik-core/src/allowed_hosts.rs`;
+design: [`docs/design/allowed-hosts-plan.md`](docs/design/allowed-hosts-plan.md)).
+An entry is a host's name, which matches that host alone (`docs.rs`
+doesn't match `www.docs.rs`), a name's subdomains (`*.github.com` matches
+`api.github.com`, not `github.com`: list both for both), or an address
+(`10.0.0.5`, `[fd00::1]`). What's typed is kept as a URL's host is:
+`https://Docs.RS/tokio` is `docs.rs`. A listed host is reached on any port
+and path. This computer's own services (`localhost`, `127.0.0.1`, `::1`)
+are always reachable.
+
+With the list on, the agent's web tools are checked before they run:
+`browse_url`, `browser_screenshot` with a page to open, and Claude Code's
+`WebFetch` under Rovik's permissions are refused for a host that isn't
+listed, with the list and the setting named so the agent can ask you;
+`web_search`, which goes to `html.duckduckgo.com`, is offered only when
+that host is listed. `browse_url`'s description names the listed hosts,
+as `bash`'s names the allowed commands.
 
 ### Steering
 

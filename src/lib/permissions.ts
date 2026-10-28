@@ -2,9 +2,9 @@
 //
 // What the agent may do, and what needs approval first. Two layers:
 //
-//   1. Permission: may this run at all? Only `bash` is restricted,
-//      by the allowed-commands list (or "any command"). A refused call
-//      never reaches approval.
+//   1. Permission: may this run at all? `bash` is restricted by the
+//      allowed-commands list (or "any command"), the web tools by the
+//      allowed hosts (or "any host"). A refused call never reaches approval.
 //   2. Approval: commands, file edits and the other tool calls each have
 //      their own rule: whether approval is required, and who gives it (the
 //      user, or the AI reviewer model).
@@ -34,6 +34,15 @@ export interface AgentPermissions {
   allowAnyCommand: boolean;
   /** Command prefixes, e.g. "git status" permits "git status -s". */
   allowedCommands: string[];
+  /** Every host may be reached over the network; the list below is ignored. */
+  allowAnyHost: boolean;
+  /**
+   * The hosts the agent's work may reach otherwise, as `normalizeHostEntry`
+   * keeps them: `docs.rs`, `*.github.com`, `10.0.0.5`. This computer's own
+   * services (localhost) are always reachable
+   * (docs/design/allowed-hosts-plan.md).
+   */
+  allowedHosts: string[];
   /** bash. */
   commandApproval: ApprovalRule;
   /** write. */
@@ -103,6 +112,8 @@ export const DEFAULT_ALLOWED_COMMANDS = [
 export const DEFAULT_PERMISSIONS: AgentPermissions = {
   allowAnyCommand: false,
   allowedCommands: DEFAULT_ALLOWED_COMMANDS,
+  allowAnyHost: true,
+  allowedHosts: [],
   // The allowed-commands list is the safeguard by default; approval is
   // opt-in, so the agent works as before until the user turns it on.
   commandApproval: { required: false, by: 'user' },
@@ -168,6 +179,12 @@ export function normalizePermissions(raw: unknown): AgentPermissions {
   const allowed = Array.isArray(r.allowedCommands)
     ? r.allowedCommands.filter((c): c is string => typeof c === 'string' && !!c.trim())
     : DEFAULT_PERMISSIONS.allowedCommands;
+  const hosts = Array.isArray(r.allowedHosts)
+    ? r.allowedHosts.flatMap((h) => {
+        const entry = typeof h === 'string' ? normalizeHostEntry(h) : null;
+        return entry ? [entry] : [];
+      })
+    : DEFAULT_PERMISSIONS.allowedHosts;
 
   return {
     allowAnyCommand:
@@ -175,6 +192,8 @@ export function normalizePermissions(raw: unknown): AgentPermissions {
         ? r.allowAnyCommand
         : DEFAULT_PERMISSIONS.allowAnyCommand,
     allowedCommands: allowed,
+    allowAnyHost: r.allowAnyHost !== false,
+    allowedHosts: [...new Set(hosts)],
     commandApproval:
       normalizeRule(r.commandApproval) ?? legacy ?? DEFAULT_PERMISSIONS.commandApproval,
     toolApproval: normalizeRule(r.toolApproval) ?? legacy ?? DEFAULT_PERMISSIONS.toolApproval,
@@ -202,6 +221,61 @@ export function normalizePermissions(raw: unknown): AgentPermissions {
         : DEFAULT_PERMISSIONS.checklist,
     chatResolvesConflicts: r.chatResolvesConflicts !== false,
   };
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Allowed hosts
+ * ---------------------------------------------------------------------------
+ *
+ * A copy of the backend's reading of an entry (rovik-core's
+ * allowed_hosts.rs), which matches hosts against the list: the cases in
+ * test-fixtures/allowed-hosts.json hold both to the same answers.
+ */
+
+/**
+ * An allowed-host entry as typed, as the settings keep it, or null when it
+ * can't be one: a name (`docs.rs`), its subdomains (`*.github.com`) or an
+ * address (`10.0.0.5`, `[fd00::1]`), read as a URL's host is (lower case,
+ * punycode). A URL's scheme, sign-in, port and path are dropped.
+ */
+export function normalizeHostEntry(raw: string): string | null {
+  let text = raw.trim();
+  const scheme = text.indexOf('://');
+  if (scheme >= 0) text = text.slice(scheme + 3);
+  text = text.split(/[/?#]/)[0];
+  text = text.slice(text.lastIndexOf('@') + 1);
+  const subdomains = text.startsWith('*.');
+  if (subdomains) text = text.slice(2);
+  const host = urlHost(withoutPort(text));
+  if (host === null || !subdomains) return host;
+  // `*.10.0.0.5` names nothing.
+  return host.startsWith('[') || /^\d+\.\d+\.\d+\.\d+$/.test(host) ? null : `*.${host}`;
+}
+
+/** `text` without a port after it; a bare IPv6 address keeps its colons. */
+function withoutPort(text: string): string {
+  if (text.startsWith('[')) {
+    const end = text.indexOf(']');
+    return end >= 0 ? text.slice(0, end + 1) : text;
+  }
+  const colon = text.indexOf(':');
+  return colon >= 0 && !text.slice(colon + 1).includes(':') ? text.slice(0, colon) : text;
+}
+
+/** `text`, a host, as a URL has it, without a trailing dot; null when it isn't one. */
+function urlHost(text: string): string | null {
+  const trimmed = text.trim();
+  const bracketed = trimmed.includes(':') && !trimmed.startsWith('[') ? `[${trimmed}]` : trimmed;
+  let host: string;
+  try {
+    host = new URL(`http://${bracketed}/`).hostname.replace(/\.+$/, '');
+  } catch {
+    return null;
+  }
+  if (host.startsWith('[')) return host;
+  const named = host.length <= 253 && host.split('.').every((label) => /^[a-z0-9_-]+$/.test(label));
+  return named ? host : null;
 }
 
 /*
@@ -704,7 +778,8 @@ export function describeRule(rule: ApprovalRule): string {
 /** The Permissions & approval page in one line. */
 export function permissionsSummary(p: AgentPermissions): string {
   const commands = p.allowAnyCommand ? 'any' : `${p.allowedCommands.length} listed`;
-  return `Commands: ${commands}, ${describeRule(p.commandApproval)} · Edits: ${describeRule(
+  const hosts = p.allowAnyHost ? 'any' : `${p.allowedHosts.length} listed`;
+  return `Commands: ${commands}, ${describeRule(p.commandApproval)} · Hosts: ${hosts} · Edits: ${describeRule(
     p.editApproval
   )} · Other tools: ${describeRule(p.toolApproval)}`;
 }

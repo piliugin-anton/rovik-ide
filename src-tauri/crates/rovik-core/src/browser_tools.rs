@@ -48,6 +48,10 @@ const MAX_LINKS: usize = 40;
 
 const SEARCH_URL: &str = "https://html.duckduckgo.com/html/";
 
+/// The host `web_search` asks ([`SEARCH_URL`]'s): the user's allowed hosts
+/// must list it for the tool to run (docs/design/allowed-hosts-plan.md, J02).
+pub(crate) const SEARCH_HOST: &str = "html.duckduckgo.com";
+
 /// Reported when the user pressed Stop while a browser tool was running.
 const STOPPED: &str = "Stopped by the user.";
 
@@ -411,7 +415,9 @@ fn is_snap_chromium(chrome: &Path) -> bool {
  * ---------------------------------------------------------------------------
  */
 
-fn validate_url(raw: &str) -> Result<String, String> {
+/// `raw` as the tools open it: an http(s) URL, `https://` added when it
+/// has no scheme.
+pub(crate) fn validate_url(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     // Let the model write "example.com/docs" without a scheme.
     let candidate = if trimmed.contains("://") {
@@ -995,6 +1001,13 @@ mod tests {
             let url = validate_url(allowed).unwrap();
             assert_eq!(check_destination(&url).await, Ok(()), "{allowed}");
         }
+    }
+
+    /// The allowed hosts are checked for the host web search really asks.
+    #[test]
+    fn web_search_asks_the_host_the_allowed_hosts_must_list() {
+        let url = reqwest::Url::parse(SEARCH_URL).unwrap();
+        assert_eq!(url.host_str(), Some(SEARCH_HOST));
     }
 
     /// Stop before a browser call starts: it ends at once without launching
