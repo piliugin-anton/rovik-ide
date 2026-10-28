@@ -827,19 +827,20 @@ async fn an_idle_server_is_stopped_and_one_in_use_is_not() {
     std::fs::write(format!("{}.release", log.display()), "").unwrap();
     let result = calling.await.unwrap().unwrap();
     assert_eq!(result["content"][0]["text"], "echo: hi");
-    assert!(
-        !logged(&log).iter().any(|m| m["bye"] == true),
-        "the server in use kept running"
-    );
+    let starts = || {
+        logged(&log)
+            .iter()
+            .filter(|m| m.get("cwd").is_some())
+            .count()
+    };
+    // The sweep left the instance in the map: listing it starts nothing.
+    state.list(std::slice::from_ref(&fake_server), None).await;
+    assert_eq!(starts(), 1, "the server in use was not stopped");
 
     state.stop_idle(Duration::ZERO);
     assert!(exited(&log).await, "{:?}", logged(&log));
     state.list(std::slice::from_ref(&fake_server), None).await;
-    let starts = logged(&log)
-        .iter()
-        .filter(|m| m.get("cwd").is_some())
-        .count();
-    assert_eq!(starts, 2, "started again by the next list");
+    assert_eq!(starts(), 2, "started again by the next list");
     state.shutdown().await;
 }
 
