@@ -2302,6 +2302,9 @@ impl Run {
             let mut ask_again = false;
             let vfs = &self.core.vfs;
             let mut asked: Vec<String> = Vec::new();
+            // The files the harness's own calls were let change, as they
+            // were before (`answer_command_check`).
+            let mut befores = super::harness_changes::Befores::default();
             let result = {
                 // ROVIK_API_LOG writes who each request is for (S09).
                 let request = crate::api_log::TAGS.scope(
@@ -2333,7 +2336,11 @@ impl Run {
                         }
                         Some(check) = checks.recv() => checking.push(self.answer_command_check(check)),
                         Some(()) = futures_util::StreamExt::next(&mut answering), if !answering.is_empty() => {}
-                        Some(()) = futures_util::StreamExt::next(&mut checking), if !checking.is_empty() => {}
+                        Some(before) = futures_util::StreamExt::next(&mut checking), if !checking.is_empty() => {
+                            if let Some(before) = before {
+                                befores.add(before);
+                            }
+                        }
                         _ = ticker.tick() => {
                             lock(&stream).tick(started, stop_deadline.is_some());
                             if wants_again && !ask_again && stop_deadline.is_none() && lock(&stream).may_ask_again() {
@@ -2388,6 +2395,9 @@ impl Run {
                 );
             }
             let mut s = lock(&stream);
+            // What the harness's own tools changed (a connector in Agent
+            // mode) is the run's change, whether or not this reply stands.
+            self.note_harness_steps(&s.harness_steps, befores);
             let failure = match result {
                 None => Some(ChatError::stopped()),
                 // Only problems before the request (e.g. building the history) land here.
@@ -2635,9 +2645,11 @@ impl Run {
     /// on the task (changed files): a quick unrelated question after an
     /// unfinished run is answered, not pushed back into the old work. The
     /// carry note already told the model about it, and the idle panel
-    /// still offers Continue.
+    /// still offers Continue. A model without Rovik's tools has no `todo`
+    /// to keep the checklist with (a connector's harness in Agent mode
+    /// keeps its own): it isn't held to it.
     async fn check_checklist(&mut self) -> Result<bool, String> {
-        if self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
+        if self.profile.no_tools || self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
             return Ok(false);
         }
         let recent = self.recent().await?;

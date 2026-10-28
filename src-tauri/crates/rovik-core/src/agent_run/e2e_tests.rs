@@ -206,6 +206,19 @@ impl Harness {
         crate::overlay::chats::init(&self._dir.0.join("data"));
     }
 
+    /// The project's checks: `checks`, as Settings → Project checks saves
+    /// them (`[{ kind, command, enabled }]`).
+    #[cfg(unix)]
+    fn set_checks(&self, checks: Value) {
+        std::fs::create_dir_all(&self.core.paths.config_dir).unwrap();
+        crate::project_profile::save_project_settings(
+            &self.core.paths.config_dir,
+            self.project.to_string_lossy().into_owned(),
+            json!({ "checks": checks }),
+        )
+        .unwrap();
+    }
+
     /// The project's checks as detection leaves them, the user having
     /// turned none on: its saved settings, the harness's, are removed.
     fn checks_as_detected(&self) {

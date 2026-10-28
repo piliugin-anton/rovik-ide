@@ -564,6 +564,239 @@ async fn a_harness_s_own_git_that_changes_a_chats_copy_is_refused_before_it_runs
     assert_eq!(answers[1]["answer"], json!({}));
 }
 
+/// A send on Claude Code in Agent mode, as `claude_code_send`'s, with the
+/// project's checks on.
+#[cfg(unix)]
+fn claude_code_checked(h: &Harness, program: &str, text: &str) -> StartRequest {
+    let mut request = claude_code_send(h, program, "agent", text);
+    let permissions = &mut request.config.as_mut().unwrap().permissions;
+    permissions.verify_changes = true;
+    permissions.checklist = ChecklistMode::Off;
+    request
+}
+
+/// A step of `fake_claude_turns`: Claude Code's `Write` (`use_id`) of
+/// `text` to `path` in `h`'s project (or outside it, `path` absolute),
+/// which it makes when it runs.
+#[cfg(unix)]
+fn claude_writes(h: &Harness, use_id: &str, path: &str, text: &str) -> Value {
+    let mut files = serde_json::Map::new();
+    files.insert(path.to_string(), json!(text));
+    json!({
+        "tool": "Write",
+        "input": { "file_path": h.project.join(path), "content": text },
+        "use": use_id,
+        "files": files,
+    })
+}
+
+/// What the stand-in for Claude Code kept in `name` beside it.
+#[cfg(unix)]
+fn kept(h: &Harness, name: &str) -> String {
+    std::fs::read_to_string(h._dir.0.join(name)).unwrap()
+}
+
+/// In Agent mode, what Claude Code changes with its own tools is the run's
+/// change: the project's checks run on it when Claude Code finishes, what
+/// fails goes back to its session as its next message, and its fix is
+/// checked again.
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_code_s_own_changes_are_checked_and_a_failure_goes_back_to_it() {
+    let h = harness(&[("src/a.txt", "bad\n")]).await;
+    h.set_checks(json!([{ "kind": "test", "command": "grep -q good src/a.txt", "enabled": true }]));
+    let turns = json!([
+        [claude_writes(&h, "toolu_1", "src/a.txt", "still bad\n")],
+        [claude_writes(&h, "toolu_2", "src/a.txt", "good\n")],
+    ]);
+    let Some(program) = crate::connectors::fake_claude_turns(&h._dir.0, &turns) else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    h.start(claude_code_checked(&h, &program, "Make it good"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
+
+    let records = super::repair_tests::records(&h.messages().await);
+    let statuses: Vec<&Value> = records.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses,
+        [&json!("failed"), &json!("passed")],
+        "{records:#?}"
+    );
+    assert_eq!(records[0]["changedFiles"], json!(["src/a.txt"]));
+    // The failure went back to the same session.
+    let report = kept(&h, "prompt-1.txt");
+    assert!(
+        report.contains("[Automatic check by the IDE, not written by the user]")
+            && report.contains("Files you changed in this task: src/a.txt")
+            && report.contains("## Tests failed: `grep -q good src/a.txt` (exit code 1)"),
+        "{report}"
+    );
+    assert!(kept(&h, "args.txt").contains("--resume s-8"));
+    assert_eq!(h.file("src/a.txt").as_deref(), Some("good\n"));
+}
+
+/// A turn of Claude Code's that changes none of the project's files runs
+/// no checks: it read a file, ran a command that changes nothing, its edit
+/// that failed changed nothing, Rovik refused its edit of a restricted
+/// file, and it wrote a scratch file outside the project.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_claude_code_turn_that_changes_no_project_file_runs_no_checks() {
+    let env = "API_KEY=sk-live-1\n";
+    let h = harness(&[("src/a.txt", "one\n"), (".env", env)]).await;
+    h.set_checks(json!([{ "kind": "test", "command": "grep -q one src/a.txt", "enabled": true }]));
+    let at = |path: &str| h.project.join(path);
+    let scratch = h._dir.0.join("scratch.txt");
+    let outside = claude_writes(&h, "toolu_5", &scratch.to_string_lossy(), "notes\n");
+    let turns = json!([[
+        { "tool": "Read", "input": { "file_path": at("src/a.txt") }, "use": "toolu_1" },
+        ["ls src", null, "toolu_2"],
+        {
+            "tool": "Edit",
+            "input": { "file_path": at("src/a.txt"), "old_string": "gone", "new_string": "x" },
+            "use": "toolu_3",
+            "error": "String to replace not found in file.",
+        },
+        {
+            "tool": "Edit",
+            "input": { "file_path": at(".env"), "old_string": "sk", "new_string": "pk" },
+            "use": "toolu_4",
+            "files": { ".env": "API_KEY=pk-live-1\n" },
+        },
+        outside,
+    ]]);
+    let Some(program) = crate::connectors::fake_claude_turns(&h._dir.0, &turns) else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    h.start(claude_code_checked(&h, &program, "Look around"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end().await, "done");
+    let records = super::repair_tests::records(&h.messages().await);
+    assert!(records.is_empty(), "{records:#?}");
+    assert_eq!(h.file(".env").as_deref(), Some(env), "refused");
+    assert_eq!(h.file("src/a.txt").as_deref(), Some("one\n"));
+    assert_eq!(std::fs::read_to_string(scratch).unwrap(), "notes\n");
+}
+
+/// A checklist an earlier run left unfinished is kept with Rovik's `todo`,
+/// which Claude Code with its own tools hasn't: its run that goes on with
+/// the task, changing a file, isn't held to that checklist, and its change
+/// is checked.
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_code_with_its_own_tools_is_not_held_to_rovik_s_checklist() {
+    let h = harness(&[("src/a.txt", "bad\n")]).await;
+    h.set_checks(json!([{ "kind": "test", "command": "grep -q good src/a.txt", "enabled": true }]));
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Read it", "status": "done" }, { "title": "Fix it", "status": "pending" }] }),
+        },
+        Reply::Text("Done."),
+        Reply::Text("Really done."),
+        Reply::Text("Truly done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix src/a.txt"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "unfinished-checklist");
+
+    h.events.lock().unwrap().clear();
+    let turns = json!([[claude_writes(&h, "toolu_1", "src/a.txt", "good\n")]]);
+    let Some(program) = crate::connectors::fake_claude_turns(&h._dir.0, &turns) else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    h.start(claude_code_checked(&h, &program, "continue"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
+    assert_eq!(
+        kept(&h, "runs.txt"),
+        "1",
+        "one turn: no reminder of the checklist"
+    );
+}
+
+/// Working in the project itself, a fix of Claude Code's that breaks a
+/// check that passed is rolled back as one of Rovik's own would be: each
+/// file it changed has its text from before the fix again, and the file it
+/// created goes. Claude Code hears what was undone, and its next fix is
+/// checked.
+#[cfg(unix)]
+#[tokio::test]
+// Its checks run npm: the lock keeps out other tests' cloud hosts, whose
+// Node would come first on their PATH (`toolchains::env_for`). This test's
+// one thread holds it across its awaits.
+#[allow(clippy::await_holding_lock)]
+async fn a_claude_code_fix_that_breaks_a_passing_check_is_rolled_back() {
+    use super::repair_tests::{has_node, records, PACKAGE, RUNNER, TESTS};
+    let _no_host = crate::toolchains::test_lock();
+    if !has_node() {
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/a.test.js", TESTS),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+    ])
+    .await;
+    let turns = json!([
+        // `one` still fails.
+        [claude_writes(&h, "toolu_1", "notes.txt", "first try\n")],
+        // The fix breaks `two`, and creates a file.
+        [
+            claude_writes(&h, "toolu_2", "b.txt", "broken\n"),
+            claude_writes(&h, "toolu_3", "c.txt", "new file\n"),
+            claude_writes(&h, "toolu_4", "notes.txt", "second try\n"),
+        ],
+        // Rolled back, it fixes `one`.
+        [claude_writes(&h, "toolu_5", "a.txt", "good\n")],
+    ]);
+    let Some(program) = crate::connectors::fake_claude_turns(&h._dir.0, &turns) else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    h.start(claude_code_checked(&h, &program, "Fix the tests"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
+
+    let rounds = records(&h.messages().await);
+    let statuses: Vec<&Value> = rounds.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses,
+        [&json!("failed"), &json!("rolled-back"), &json!("passed")],
+        "{rounds:#?}"
+    );
+    let rb = &rounds[1]["rolledBack"];
+    assert_eq!(
+        rb["restored"],
+        json!(["b.txt", "c.txt", "notes.txt"]),
+        "{rb}"
+    );
+    assert_eq!(rb["skipped"], json!([]), "{rb}");
+    assert_eq!(h.file("b.txt").as_deref(), Some("fine\n"));
+    assert_eq!(h.file("c.txt"), None);
+    assert_eq!(h.file("notes.txt").as_deref(), Some("first try\n"));
+    assert_eq!(h.file("a.txt").as_deref(), Some("good\n"));
+    let told = kept(&h, "prompt-2.txt");
+    assert!(
+        told.contains("Your last fix broke something that didn't fail before")
+            && told
+                .contains("So it was rolled back: b.txt, c.txt, notes.txt are as before that fix."),
+        "{told}"
+    );
+}
+
 /// A send in `mode` on Claude Code's model, as the app sends it: whose
 /// tools it runs is the run's to decide, by the mode (`run::lead_profile`).
 #[cfg(unix)]
