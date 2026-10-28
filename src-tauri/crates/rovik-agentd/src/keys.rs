@@ -5,6 +5,7 @@
 //! a model pointed at another server never gets this one's key.
 
 use rovik_protocol::agent::ModelProfile;
+use rovik_protocol::Secret;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -14,6 +15,10 @@ pub struct Keys {
     /// By provider: the part of a model's id before `::`.
     #[serde(default)]
     providers: BTreeMap<String, Key>,
+    /// The MCP servers' saved secrets: by server id, then by key
+    /// (`env/NAME`, `header/Name`). Brought by a start, like the keys.
+    #[serde(default)]
+    mcp: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -66,11 +71,37 @@ impl Keys {
             .collect()
     }
 
-    /// Forgets `provider`'s key, or every key. How many went.
+    /// Keeps the MCP secrets a start brought, each server's replacing all
+    /// its older ones. The ids of the servers whose secrets changed.
+    pub fn take_mcp(
+        &mut self,
+        secrets: &BTreeMap<String, BTreeMap<String, Secret>>,
+    ) -> Vec<String> {
+        let mut changed = Vec::new();
+        for (id, values) in secrets {
+            let values: BTreeMap<String, String> = values
+                .iter()
+                .map(|(key, value)| (key.clone(), value.0.clone()))
+                .collect();
+            if self.mcp.get(id) != Some(&values) {
+                self.mcp.insert(id.clone(), values);
+                changed.push(id.clone());
+            }
+        }
+        changed
+    }
+
+    /// The saved secret `key` of MCP server `server`.
+    pub fn mcp_value(&self, server: &str, key: &str) -> Option<String> {
+        self.mcp.get(server)?.get(key).cloned()
+    }
+
+    /// Forgets `provider`'s key, or every key and every MCP secret. How
+    /// many went: each MCP server counts as one.
     pub fn remove(&mut self, provider: Option<&str>) -> usize {
         match provider {
             Some(provider) => usize::from(self.providers.remove(provider).is_some()),
-            None => std::mem::take(&mut self.providers).len(),
+            None => std::mem::take(&mut self.providers).len() + std::mem::take(&mut self.mcp).len(),
         }
     }
 

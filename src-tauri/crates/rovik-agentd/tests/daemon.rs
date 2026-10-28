@@ -506,3 +506,48 @@ fn install_claude(home: &std::path::Path) {
     std::fs::write(&claude, "#!/bin/sh\n").unwrap();
     std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
+
+/// Q11: a daemon starts the MCP server a test names, with the secrets given,
+/// and answers with what it lists.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_test_on_the_daemon_lists_the_server_s_tools() {
+    use rovik_core::connectors::mcp::McpServer as FakeServer;
+    use rovik_protocol::mcp::{McpServer, McpTransport};
+    let tools = [
+        json!({ "type": "function", "function": { "name": "read", "description": "Read a file." } }),
+    ];
+    let (fake, _calls) = FakeServer::start(&tools, "Fake tools.", None)
+        .await
+        .unwrap();
+    let server = McpServer {
+        id: "s1".into(),
+        name: "fake".into(),
+        enabled: true,
+        transport: McpTransport::Url {
+            url: fake.url(),
+            headers: vec![rovik_protocol::mcp::McpValue {
+                name: "Authorization".into(),
+                value: String::new(),
+                secret: true,
+            }],
+        },
+        disabled_tools: Vec::new(),
+    };
+    let values = [(
+        "header/Authorization".to_string(),
+        Secret(fake.authorization()),
+    )];
+    let daemon = Daemon::start(&[]).await;
+    let mut session = daemon.session().await;
+    let reply = session
+        .call(Request::McpTest {
+            server,
+            values: values.into_iter().collect(),
+        })
+        .await;
+    let Ok(Response::McpTested(tested)) = reply else {
+        panic!("not tested: {reply:?}");
+    };
+    let names: Vec<_> = tested.tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["read"]);
+}

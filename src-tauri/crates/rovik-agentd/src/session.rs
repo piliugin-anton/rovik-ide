@@ -34,6 +34,7 @@ const FEATURES: &[&str] = &[
     features::HOST,
     features::CLEAN_UP,
     features::AUTONOMY,
+    features::MCP,
 ];
 /// Frames waiting for the writer. A connection whose events back up past
 /// this falls behind the live ones and is dropped.

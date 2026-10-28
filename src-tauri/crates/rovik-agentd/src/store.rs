@@ -270,8 +270,9 @@ impl Store {
 
     /// A start from `computer` (6.2): its keys go to keys.json, and its
     /// settings and configuration, without them, to state.json. Another
-    /// computer's chat is refused.
-    pub fn started(&self, computer: &str, start: &StartRequest) -> Result<(), Fail> {
+    /// computer's chat is refused. The ids of the MCP servers whose secrets
+    /// the start changed.
+    pub fn started(&self, computer: &str, start: &StartRequest) -> Result<Vec<String>, Fail> {
         let _writing = self.writing();
         let mut inner = self.lock();
         let earlier = inner.state.chats.get(&start.dialog_id).cloned();
@@ -287,10 +288,18 @@ impl Store {
         });
         chat.start = Some(StartSettings::of(start));
         inner.state.chats.insert(start.dialog_id.clone(), chat);
-        if keys_changed {
+        let mcp_changed = inner.keys.take_mcp(&start.mcp_secrets);
+        if keys_changed || !mcp_changed.is_empty() {
             inner.keys.write(&self.keys_file).map_err(internal)?;
         }
-        self.save(inner).map_err(internal)
+        self.save(inner).map_err(internal)?;
+        Ok(mcp_changed)
+    }
+
+    /// The saved secret `key` of MCP server `server`, for the servers the
+    /// runs start.
+    pub fn mcp_value(&self, server: &str, key: &str) -> Option<String> {
+        self.lock().keys.mcp_value(server, key)
     }
 
     /// `computer`'s configuration from now on, and only its: the app sends

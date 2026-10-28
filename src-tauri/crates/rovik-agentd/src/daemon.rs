@@ -113,6 +113,15 @@ impl Daemon {
                 .remove_keys(provider.as_deref())
                 .map(Response::Count)
                 .map_err(|e| Fail::new(FailCode::Internal, e)),
+            Request::McpTest { server, values } => {
+                let given = values.into_iter().map(|(k, v)| (k, v.0.clone())).collect();
+                self.core
+                    .mcp
+                    .test(&server, &given, None)
+                    .await
+                    .map(Response::McpTested)
+                    .map_err(|e| Fail::new(FailCode::Internal, e))
+            }
             Request::Storage => Ok(Response::Storage(host::storage(self).await)),
             Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),
             Request::PageOpened {
@@ -332,7 +341,11 @@ impl Daemon {
     /// the chat becomes the computer's.
     async fn start(&self, computer: &str, mut start: StartRequest) -> Result<Response, Fail> {
         self.can_run(&start.dialog_id)?;
-        self.store.started(computer, &start)?;
+        // A running server keeps the secrets it started with: one whose
+        // secrets changed starts again with the new ones.
+        for id in self.store.started(computer, &start)? {
+            self.core.mcp.forget(&id);
+        }
         self.tell_marked(&mut start);
         self.run(start).await
     }

@@ -30,6 +30,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// How long an MCP server may go unused before the sweep stops it.
+const IDLE_AFTER: Duration = Duration::from_secs(30 * 60);
+/// How often the sweep looks for idle MCP servers.
+const SWEEP_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How long a stopping daemon waits for its runs to pause (R02): a
 /// command at its default limit (2 minutes) may still be cut. systemd
 /// gives the unit 90 s (`TimeoutStopSec`), then kills what's left.
@@ -131,6 +135,19 @@ async fn run(
         notifier: crate::notify::Notifier::new(store.clone()),
     };
     let core = Core::new(paths, Arc::new(sink))?;
+    // The MCP servers' saved secrets are keys.json's (Q11); nothing else
+    // ends a daemon's servers, so a sweep stops the idle ones.
+    let secrets = store.clone();
+    core.mcp.set_secrets(Arc::new(move |server, key| {
+        Ok(secrets.mcp_value(server, key))
+    }));
+    let mcp = core.mcp.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(SWEEP_EVERY).await;
+            mcp.stop_idle(IDLE_AFTER);
+        }
+    });
     // `ChatChanged` names the database's clock (6.3).
     events.set_db(core.db.clone());
     // A run follows its chat's computer's configuration (D16).
@@ -324,10 +341,9 @@ fn shared_toolchains(
         && writable(&caches.join("npm"))
         && writable(&caches.join("crates")))
     .then(|| caches.to_path_buf());
-    let installer = admin
-        .toolchains
-        .user_install
-        .then(|| Arc::new(root_installer(installer::INSTALLED)) as Arc<rovik_core::toolchains::Installer>);
+    let installer = admin.toolchains.user_install.then(|| {
+        Arc::new(root_installer(installer::INSTALLED)) as Arc<rovik_core::toolchains::Installer>
+    });
     Some(rovik_core::toolchains::Shared {
         root: root.to_path_buf(),
         caches,
@@ -357,7 +373,9 @@ fn can_write(dir: &Path) -> bool {
 /// user has: `rovik-agentd user toolchain …`, given the words the
 /// toolchain's kind, version, components and targets make, and nothing a
 /// chat wrote.
-fn root_installer(binary: &'static str) -> impl Fn(rovik_core::toolchains::Want) -> Result<(), String> + Send + Sync {
+fn root_installer(
+    binary: &'static str,
+) -> impl Fn(rovik_core::toolchains::Want) -> Result<(), String> + Send + Sync {
     move |want| {
         let mut command = rovik_core::process::command("sudo");
         command

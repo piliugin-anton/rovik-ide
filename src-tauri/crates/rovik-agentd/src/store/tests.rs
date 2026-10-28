@@ -470,3 +470,67 @@ fn a_project_is_its_computers_alone() {
     store.ensure_project(&old, "c2", None, None).unwrap();
     assert!(store.check_project_owner("c1", "p3").is_err());
 }
+
+fn mcp_start(dialog: &str, value: &str) -> StartRequest {
+    let mut started = start(dialog, "", None);
+    let secrets = [(
+        "env/TOKEN".to_string(),
+        rovik_protocol::Secret(value.into()),
+    )];
+    started.mcp_secrets = [("s1".to_string(), secrets.into_iter().collect())].into();
+    started
+}
+
+#[test]
+fn a_start_s_mcp_secrets_go_to_keys_json_alone() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &mcp_start("chat", "t0p")).unwrap();
+    let keys = fs::read_to_string(dir.0.join("keys.json")).unwrap();
+    assert!(keys.contains("t0p"), "{keys}");
+    for (path, text) in others(&dir.0) {
+        assert!(!text.contains("t0p"), "in {path:?}");
+    }
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("t0p".into()));
+    assert_eq!(store.mcp_value("s1", "env/OTHER"), None);
+    assert_eq!(store.mcp_value("s2", "env/TOKEN"), None);
+}
+
+#[test]
+fn a_changed_mcp_secret_is_reported_and_an_unchanged_one_is_not() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let started = |value| store.started("laptop", &mcp_start("chat", value)).unwrap();
+    assert_eq!(started("a"), ["s1"]);
+    assert!(started("a").is_empty());
+    assert_eq!(started("b"), ["s1"]);
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("b".into()));
+}
+
+#[test]
+fn removing_every_key_removes_mcp_secrets_and_removing_a_provider_s_does_not() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let mut started = mcp_start("chat", "t0p");
+    started.profile = model("openai::gpt", OPENAI, "sk-1");
+    store.started("laptop", &started).unwrap();
+    assert_eq!(store.remove_keys(Some("openai")).unwrap(), 1);
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("t0p".into()));
+    store.started("laptop", &started).unwrap();
+    // The provider's key and the one server count one each.
+    assert_eq!(store.remove_keys(None).unwrap(), 2);
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), None);
+    let keys = fs::read_to_string(dir.0.join("keys.json")).unwrap();
+    assert!(!keys.contains("t0p"), "{keys}");
+}
+
+#[test]
+fn a_store_from_before_mcp_reads_with_no_mcp_secrets() {
+    let dir = temp_dir();
+    let old =
+        r#"{"providers":{"openai":{"baseUrl":"https://api.openai.example/v1","apiKey":"sk-1"}}}"#;
+    fs::write(dir.0.join("keys.json"), old).unwrap();
+    let store = Store::open(&dir.0).unwrap();
+    assert_eq!(store.keys().len(), 1);
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), None);
+}
