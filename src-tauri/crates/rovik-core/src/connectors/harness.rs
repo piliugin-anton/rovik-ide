@@ -8,7 +8,7 @@
 
 use super::harness_error;
 use super::mcp::McpCall;
-use super::ConnectorKind;
+use super::{ConnectorKind, SteerMessage, SteerMessages};
 use crate::agent::ChatStreamEvent;
 use crate::allowed_hosts::Held;
 use crate::chat_request::{ChatError, ErrorKind};
@@ -51,6 +51,14 @@ pub(super) trait Lines {
     /// not stalled.
     fn waiting(&self) -> bool {
         false
+    }
+
+    /// A message the user sent while the turn works, as the program's input
+    /// takes it, to read at its next step. None: it takes none as it works,
+    /// and the message stays the run's.
+    fn message(&mut self, message: &SteerMessage) -> Option<String> {
+        let _ = message;
+        None
     }
 }
 
@@ -433,11 +441,13 @@ pub(super) enum Stop {
 
 /// Reads the run's lines into events until it ends (or its parser says the
 /// turn is over), makes Rovik's tool calls, is stopped or stalls; the MCP
-/// calls that come meanwhile go to `on_call`.
+/// calls that come meanwhile go to `on_call`, and the messages the user
+/// sends (`messages`) to its input, as its parser words them.
 pub(super) async fn pump(
     process: &mut Process,
     parser: &mut (impl Lines + ?Sized),
     mut calls: Option<&mut mpsc::UnboundedReceiver<McpCall>>,
+    mut messages: Option<&mut SteerMessages>,
     on_call: &mut (dyn FnMut(McpCall) + Send),
     cancel: &mut watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
@@ -459,6 +469,12 @@ pub(super) async fn pump(
                 None => std::future::pending().await,
             }
         };
+        let message = async {
+            match messages.as_deref_mut() {
+                Some(messages) => messages.recv().await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             line = process.lines.recv() => match line {
                 Some(line) => {
@@ -477,6 +493,13 @@ pub(super) async fn pump(
             Some(call) = call => {
                 waiting = true;
                 on_call(call);
+            }
+            Some(message) = message, if !stopping => {
+                if let Some(input) = process.input() {
+                    if let Some(line) = parser.message(&message) {
+                        let _ = input.send(line);
+                    }
+                }
             }
             _ = crate::chat_request::cancelled(cancel), if !stopping => {
                 stopping = true;
@@ -822,6 +845,7 @@ mod tests {
         pump(
             &mut process,
             parser,
+            None,
             None,
             &mut |_| {},
             &mut cancel,

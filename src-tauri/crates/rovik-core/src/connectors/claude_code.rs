@@ -41,7 +41,7 @@ use super::{
     harness_error, hook_answer, trimmed_text, trimmed_value, usage_value, CommandAnswer,
     CommandCheck, CommandChecks, Connector, ConnectorAuth, ConnectorCommand, ConnectorKind,
     ConnectorModel, ConnectorProbe, HarnessCall, HarnessStep, ProbeRequest, ProbeRequestArgs,
-    SetupAction, SetupCommand, ToolAnswer, ToolAsk, ToolAsks, Turn, UNCHECKED,
+    SetupAction, SetupCommand, SteerMessage, ToolAnswer, ToolAsk, ToolAsks, Turn, UNCHECKED,
 };
 use crate::agent::{ChatStreamEvent, ReasoningEffort};
 use crate::chat_request::{ChatError, ErrorKind};
@@ -401,6 +401,12 @@ pub fn args_for(
         "--permission-prompts".into(),
         if rovik_decides { "host" } else { "none" }.into(),
     ];
+    // A turn that takes the messages the user sends as it works reads its
+    // input as JSON lines, its message first, and says each it read
+    // (`Parser::replayed`).
+    if turn.steering.is_some() {
+        args.extend(["--input-format", "stream-json", "--replay-user-messages"].map(String::from));
+    }
     if settings.bare {
         args.push("--bare".into());
     }
@@ -608,6 +614,23 @@ pub struct Parser {
     /// The folder the run works in: the paths its steps name are shown
     /// relative to it (`relative_paths`).
     root: Option<PathBuf>,
+    /// The turn takes the messages the user sends as it works, on its input
+    /// (`Lines::message`).
+    takes_messages: bool,
+    /// Those written to its input, by id, that it hasn't read yet.
+    unread: HashSet<String>,
+    /// It just read some of them: its next line is its next step's, before
+    /// which Rovik's turn ends (`held`).
+    read_some: bool,
+    /// The line Rovik's turn ended before, where it read the user's
+    /// messages: the first of the turn that goes on with it.
+    held: Option<String>,
+    /// Rovik's turn ended where it read the user's messages: the run stores
+    /// them there, and its next turn goes on with this run.
+    waits: bool,
+    /// What its earlier `result`s in this run cost: each says the run's
+    /// total so far.
+    cost_so_far: f64,
 }
 
 /// A message's token counts as the stream gives them.
@@ -630,13 +653,14 @@ impl Parser {
         }
     }
 
-    /// A Rovik turn begins on the same run (its results were given): a
-    /// new reply, its own usage.
+    /// A Rovik turn begins on the same run (its results were given, or the
+    /// user's messages it read are stored): a new reply, its own usage.
     pub fn begin_turn(&mut self) {
         self.text_shown = false;
         self.needs_break = false;
         self.turn_usage = [0; 4];
         self.yielded = None;
+        self.waits = false;
     }
 
     /// Says the session again, for a Rovik turn that goes on with it.
@@ -672,6 +696,16 @@ impl Parser {
             return;
         };
         let kind = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let replay = kind == "user" && value.get("isReplay").and_then(Value::as_bool) == Some(true);
+        // It read the user's messages: what comes next is its next step's,
+        // which the turn that goes on with it shows (`held`). Several read
+        // at once come one after the other, and end Rovik's turn once.
+        if self.read_some && !replay {
+            self.read_some = false;
+            self.held = Some(line.to_string());
+            self.waits = true;
+            return;
+        }
         let parent = value
             .get("parent_tool_use_id")
             .and_then(|p| p.as_str())
@@ -680,6 +714,7 @@ impl Parser {
             "system" => self.system(&value, emit),
             "stream_event" => self.stream_event(&value, parent.as_deref(), emit),
             "assistant" => self.assistant(&value, parent, emit),
+            "user" if replay => self.replayed(&value, emit),
             "user" => self.tool_results(&value, emit),
             "result" => self.result(&value, emit),
             "autocompact_state" => {
@@ -1144,6 +1179,22 @@ impl Parser {
         }
     }
 
+    /// A message of its input, said back as it reads it
+    /// (`--replay-user-messages`): one the user sent as it worked is read
+    /// now, at its next step. Its first message, the turn's, is said back
+    /// too, and isn't one of them.
+    fn replayed(&mut self, value: &Value, emit: &mut dyn FnMut(ChatStreamEvent)) {
+        let Some(id) = value.get("uuid").and_then(Value::as_str) else {
+            return;
+        };
+        if self.unread.remove(id) {
+            // A turn goes on with it, though one ended before it came.
+            self.finished = false;
+            self.read_some = true;
+            emit(ChatStreamEvent::HarnessRead { id: id.to_string() });
+        }
+    }
+
     fn tool_results(&mut self, value: &Value, emit: &mut dyn FnMut(ChatStreamEvent)) {
         let Some(blocks) = value.pointer("/message/content").and_then(|c| c.as_array()) else {
             return;
@@ -1224,7 +1275,11 @@ impl Parser {
         if let Some(context) = self.context_of(value) {
             extra["context"] = context;
         }
-        let cost = value.get("total_cost_usd").and_then(|c| c.as_f64());
+        // Each `result` says what the run cost so far: this turn's is what
+        // it adds (a run that read the user's messages after one goes on).
+        let total = value.get("total_cost_usd").and_then(|c| c.as_f64());
+        let cost = total.map(|total| (total - self.cost_so_far).max(0.0));
+        self.cost_so_far = total.unwrap_or(self.cost_so_far);
         let usage_out = if self.rovik_tools {
             // This Rovik turn's tokens; the cost is the whole run's, which
             // only the end says: its earlier replies were told none.
@@ -1330,8 +1385,32 @@ impl Lines for Parser {
     }
 
     fn yielded(&self) -> bool {
-        self.yielded.is_some()
+        self.yielded.is_some() || self.waits
     }
+
+    /// A turn that takes the user's messages keeps its input open, and is
+    /// over with its `result` once it read every one written to it: one it
+    /// hasn't read yet starts its next turn.
+    fn finished(&self) -> bool {
+        self.takes_messages && self.finished && self.unread.is_empty()
+    }
+
+    fn message(&mut self, message: &SteerMessage) -> Option<String> {
+        // Written once: a turn that goes on with the run is handed again
+        // what it hasn't read.
+        (self.takes_messages && self.unread.insert(message.id.clone()))
+            .then(|| user_line(&message.text, Some(&message.id)))
+    }
+}
+
+/// A message for its input as stream-json takes it: with the id it's said
+/// back by as it's read (`Parser::replayed`), when it has one.
+fn user_line(text: &str, id: Option<&str>) -> String {
+    let mut line = json!({ "type": "user", "message": { "role": "user", "content": text } });
+    if let Some(id) = id {
+        line["uuid"] = json!(id);
+    }
+    format!("{line}\n")
 }
 
 /// How a run ended.
@@ -1736,9 +1815,11 @@ fn ask_rovik(call: McpCall, asks: &ToolAsks, root: Option<PathBuf>) {
     });
 }
 
-/// Runs one `claude` turn with its own tools, reporting it through `emit`.
+/// Runs one `claude` turn with its own tools, reporting it through `emit`:
+/// to its end, or to where it read the messages the user sent as it worked
+/// (`read_own`).
 async fn run_turn(
-    turn: &Turn,
+    turn: &mut Turn,
     session: Session,
     cancel: &mut watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
@@ -1746,11 +1827,8 @@ async fn run_turn(
     let settings = Settings::from_value(&turn.settings);
     let program = resolve_program(&settings.program)?;
     let prompt = prompt_file(turn)?;
-    // Rovik's permissions: the server Claude Code asks before a call.
-    let asks = turn.asks.clone().filter(|_| rovik_answers(&settings, turn));
-    // The commands its own shell runs, made ready around each by the run,
-    // whatever its permission mode: Rovik's hooks.
-    let checks = turn.commands.clone().filter(|_| !turn.one_shot);
+    let asks = asks_of(&settings, turn);
+    let checks = checks_of(turn);
     // In the agent's network (on a team server the user's private one,
     // where the servers it starts take their ports), held to the user's
     // allowed hosts while they're on (allowed_hosts.rs).
@@ -1812,30 +1890,123 @@ async fn run_turn(
         .chain(hooks)
         .chain(env_file)
         .collect();
-    let mut process = Process::spawn(
-        &program,
-        &args,
-        &env,
-        Some(&cwd),
-        Some((&held, chat)),
-        turn.prompt.clone(),
-        turn.first_byte_timeout.max(MIN_FIRST_LINE),
-        files,
-    )?;
-    let mut parser = Parser {
+    let first_line_within = turn.first_byte_timeout.max(MIN_FIRST_LINE);
+    // One that takes the user's messages as it works keeps its input open
+    // for them, its message the first line.
+    let takes_messages = turn.steering.is_some();
+    let process = if takes_messages {
+        let process = Process::spawn_with_input(
+            &program,
+            &args,
+            &env,
+            Some(&cwd),
+            Some((&held, chat)),
+            first_line_within,
+            files,
+        )?;
+        if let Some(input) = process.input() {
+            let _ = input.send(user_line(&turn.prompt, None));
+        }
+        process
+    } else {
+        Process::spawn(
+            &program,
+            &args,
+            &env,
+            Some(&cwd),
+            Some((&held, chat)),
+            turn.prompt.clone(),
+            first_line_within,
+            files,
+        )?
+    };
+    let parser = Parser {
         root: Some(cwd.clone()),
+        takes_messages,
         ..Parser::default()
     };
-    let root = turn.cwd.clone();
+    let run = Own {
+        process,
+        parser,
+        served,
+        env_path,
+        resumed: matches!(session, Session::Resume(_)),
+    };
+    read_own(run, turn, cancel, emit).await
+}
+
+/// Where Claude Code's asks before its own tools go: the run, when Rovik's
+/// permissions decide (`rovik_answers`); it asks the server Rovik starts.
+fn asks_of(settings: &Settings, turn: &Turn) -> Option<ToolAsks> {
+    turn.asks.clone().filter(|_| rovik_answers(settings, turn))
+}
+
+/// Where the commands its own shell runs go, made ready around each by the
+/// run, whatever its permission mode (Rovik's hooks): a chat's turn's.
+fn checks_of(turn: &Turn) -> Option<CommandChecks> {
+    turn.commands.clone().filter(|_| !turn.one_shot)
+}
+
+/// A run of Claude Code with its own tools, as Rovik reads it.
+struct Own {
+    process: Process,
+    parser: Parser,
+    /// Rovik's server for it, which it asks before its tools and posts its
+    /// hooks to, and the calls that come there.
+    served: Option<(McpServer, mpsc::UnboundedReceiver<McpCall>)>,
+    /// The file its shell runs before each command, written again then.
+    env_path: Option<PathBuf>,
+    resumed: bool,
+}
+
+/// The runs that read the user's messages, each waiting for its chat's
+/// next turn, which goes on with it where it read them.
+static STEERED: LiveRuns<Own> = LiveRuns::new();
+
+/// Reads `run` for one of Rovik's turns: to its end, or to where it read
+/// the messages the user sent as it worked (`Turn::steering`). Rovik's
+/// turn ends there, while it waits for the chat's next turn (`STEERED`),
+/// which shows what it does next, starting with the line it ended before.
+async fn read_own(
+    mut run: Own,
+    turn: &mut Turn,
+    cancel: &mut watch::Receiver<bool>,
+    emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+) -> Result<Outcome, String> {
+    let settings = Settings::from_value(&turn.settings);
+    let (asks, checks) = (asks_of(&settings, turn), checks_of(turn));
+    let (cwd, root, env_path) = (cwd_of(turn), turn.cwd.clone(), run.env_path.clone());
     let mut on_call = |call: McpCall| match (call.name == HOOK, &checks, &asks) {
         (true, Some(checks), _) => answer_hook(call, checks, env_path.clone(), cwd.clone()),
         (false, _, Some(asks)) => ask_rovik(call, asks, root.clone()),
         _ => drop(call),
     };
-    let calls = served.as_mut().map(|(_, calls)| calls);
-    let stop = pump(&mut process, &mut parser, calls, &mut on_call, cancel, emit).await;
-    let resumed = matches!(session, Session::Resume(_));
-    Ok(conclude(&mut process, &parser, stop, resumed, emit).await)
+    if let Some(line) = run.parser.held.take() {
+        run.parser.line(&line, emit);
+    }
+    let stop = if run.parser.finished() {
+        Stop::Ended
+    } else {
+        let calls = run.served.as_mut().map(|(_, calls)| calls);
+        let messages = turn.steering.as_mut();
+        pump(
+            &mut run.process,
+            &mut run.parser,
+            calls,
+            messages,
+            &mut on_call,
+            cancel,
+            emit,
+        )
+        .await
+    };
+    if stop == Stop::Yielded {
+        if let Some(dialog) = turn.dialog_id.clone() {
+            STEERED.keep(dialog, run);
+            return Ok(Outcome::Done);
+        }
+    }
+    Ok(conclude(&mut run.process, &run.parser, stop, run.resumed, emit).await)
 }
 
 /// How long Claude Code waits on one of Rovik's hooks: an hour, for a Rust
@@ -2144,6 +2315,7 @@ async fn run_with_rovik_tools(
             process,
             parser,
             Some(calls),
+            None,
             &mut |call| matcher.take(call),
             cancel,
             emit,
@@ -2424,12 +2596,18 @@ impl Connector for ClaudeCode {
         })
     }
 
+    fn reads_messages(&self) -> bool {
+        true
+    }
+
     fn end_live(&self, dialog_id: &str) {
         LIVE.end(dialog_id);
+        STEERED.end(dialog_id);
     }
 
     fn end_all(&self) {
         LIVE.end_all();
+        STEERED.end_all();
     }
 
     fn run<'a>(
@@ -2439,20 +2617,27 @@ impl Connector for ClaudeCode {
         on_event: &'a mut (dyn FnMut(ChatStreamEvent) + Send),
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
+            let mut turn = turn;
             let settings = Settings::from_value(&turn.settings);
             if turn.rovik_tools {
                 return run_with_rovik_tools(turn, settings, cancel, on_event).await;
+            }
+            // The chat's run that read the user's messages goes on.
+            if let Some(mut run) = turn.dialog_id.as_deref().and_then(|d| STEERED.take(d)) {
+                run.parser.begin_turn();
+                run.parser.announce(on_event);
+                return read_own(run, &mut turn, cancel, on_event).await.map(|_| ());
             }
             let session = match &turn.session {
                 Some(id) => Session::Resume(id.clone()),
                 None => Session::New(uuid::Uuid::new_v4().to_string()),
             };
-            match run_turn(&turn, session, cancel, on_event).await? {
+            match run_turn(&mut turn, session, cancel, on_event).await? {
                 Outcome::Done => Ok(()),
                 Outcome::SessionGone => {
                     // The program lost the conversation: a new one, told
                     // what the chat was about (connectors/mod.rs recap).
-                    let fresh = Turn {
+                    let mut fresh = Turn {
                         session: None,
                         prompt: match &turn.recap {
                             Some(recap) => recap.clone(),
@@ -2461,7 +2646,7 @@ impl Connector for ClaudeCode {
                         ..turn
                     };
                     let session = Session::New(uuid::Uuid::new_v4().to_string());
-                    run_turn(&fresh, session, cancel, on_event)
+                    run_turn(&mut fresh, session, cancel, on_event)
                         .await
                         .map(|_| ())
                 }
@@ -2583,6 +2768,7 @@ mod tests {
             commands: None,
             denied: Default::default(),
             allowed_hosts_on: false,
+            steering: None,
         }
     }
 
@@ -2624,6 +2810,7 @@ mod tests {
                 ChatStreamEvent::Error { error } => {
                     format!("error:{:?}:{}", error.kind, error.message)
                 }
+                ChatStreamEvent::HarnessRead { id } => format!("read:{id}"),
                 other => format!("{other:?}"),
             })
             .collect()
@@ -3811,6 +3998,153 @@ mod tests {
             step.input,
             json!({ "skill": "review-pr", "args": "123 --fast" })
         );
+    }
+
+    /// A chat's turn that takes the messages the user sends as it works
+    /// reads its input as JSON lines, and says each one back as it reads
+    /// it; any other turn reads its message whole.
+    #[test]
+    fn a_turn_that_takes_the_users_messages_reads_its_input_as_json_lines() {
+        let session = Session::New("s".into());
+        let mut t = turn("Fix it");
+        let plain = args_for(&Settings::default(), &t, &session, None, None, None).join(" ");
+        assert!(!plain.contains("--input-format"), "{plain}");
+        let (_messages, steering) = mpsc::unbounded_channel();
+        t.steering = Some(steering);
+        let joined = args_for(&Settings::default(), &t, &session, None, None, None).join(" ");
+        assert!(
+            joined.contains("--input-format stream-json --replay-user-messages"),
+            "{joined}"
+        );
+    }
+
+    /// A message the user sends goes to its input as a JSON line, once,
+    /// with its id. It says the message back as it reads it, at its next
+    /// step, after its command's result: Rovik's turn ends there, once for
+    /// several read together, before the line after them, which the turn
+    /// that goes on shows first. Its own message is said back too, and is
+    /// none of them.
+    #[test]
+    fn a_message_the_user_sent_is_read_at_its_next_step_and_ends_rovik_s_turn_there() {
+        let mut p = Parser {
+            takes_messages: true,
+            ..Parser::default()
+        };
+        let message = |id: &str| SteerMessage {
+            id: id.into(),
+            text: format!("[Framed]\n\nmessage {id}"),
+        };
+        let line = p.message(&message("m1")).unwrap();
+        assert!(line.ends_with('\n'), "{line:?}");
+        let sent: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(
+            sent,
+            json!({"type":"user","uuid":"m1","message":{"role":"user","content":"[Framed]\n\nmessage m1"}})
+        );
+        assert_eq!(p.message(&message("m1")), None, "written once");
+        assert!(p.message(&message("m2")).is_some());
+
+        let said_back = |id: &str| {
+            json!({"type":"user","message":{"role":"user","content":"…"},"uuid":id,"isReplay":true})
+                .to_string()
+        };
+        let lines = [
+            json!({"type":"system","subtype":"init","session_id":"s-1","model":"claude-sonnet-5"})
+                .to_string(),
+            said_back("its-own"),
+            json!({"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"sleep 4"}}]},"parent_tool_use_id":null}).to_string(),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"done"}]},"parent_tool_use_id":null}).to_string(),
+            said_back("m1"),
+            said_back("m2"),
+        ];
+        let mut events = Vec::new();
+        for line in &lines {
+            p.on_line(line, &mut |e| events.push(e));
+            assert!(!p.yielded(), "{line}");
+        }
+        let next = json!({"type":"system","subtype":"status","status":"requesting"}).to_string();
+        p.on_line(&next, &mut |e| events.push(e));
+        assert!(p.yielded(), "Rovik's turn ends before its next step");
+        assert_eq!(
+            names(&events),
+            [
+                "session:s-1:claude-sonnet-5",
+                "step:Bash::",
+                "step:Bash:done:true",
+                "read:m1",
+                "read:m2",
+            ]
+        );
+        assert_eq!(p.held.as_deref(), Some(next.as_str()));
+        // The turn that goes on with it.
+        p.begin_turn();
+        assert!(!p.yielded() && !p.finished());
+    }
+
+    /// A turn that takes the user's messages is over with its `result` once
+    /// it read every one written to it: one it hasn't read yet starts its
+    /// next turn, in the same run, and ends Rovik's turn as it's read. Each
+    /// `result` says the run's cost so far: a turn's is what it adds.
+    #[test]
+    fn a_message_not_read_by_its_result_starts_its_next_turn_in_the_same_run() {
+        let mut p = Parser {
+            takes_messages: true,
+            ..Parser::default()
+        };
+        let result = |total: f64| {
+            json!({"type":"result","subtype":"success","is_error":false,"result":"Done.","usage":{"input_tokens":3,"output_tokens":2},"total_cost_usd":total})
+                .to_string()
+        };
+        let mut events = Vec::new();
+        let mut emit = |e| events.push(e);
+        p.message(&SteerMessage {
+            id: "m1".into(),
+            text: "And b.txt".into(),
+        })
+        .unwrap();
+        p.on_line(&result(0.05), &mut emit);
+        assert!(!p.finished(), "m1 is still to read");
+        p.on_line(
+            &json!({"type":"user","message":{"role":"user","content":"And b.txt"},"uuid":"m1","isReplay":true}).to_string(),
+            &mut emit,
+        );
+        let next = json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"m2"}},"parent_tool_use_id":null}).to_string();
+        p.on_line(&next, &mut emit);
+        assert!(p.yielded());
+        p.begin_turn();
+        let held = p.held.take().unwrap();
+        p.on_line(&held, &mut emit);
+        p.on_line(&result(0.08), &mut emit);
+        assert!(p.finished(), "every message read");
+        let costs: Vec<f64> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatStreamEvent::Finished { usage: Some(u), .. } => u["cost"].as_f64(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(costs.len(), 2, "{events:?}");
+        assert!(
+            (costs[0] - 0.05).abs() < 1e-9 && (costs[1] - 0.03).abs() < 1e-9,
+            "{costs:?}"
+        );
+    }
+
+    /// A turn that reads its message whole takes none of the user's as it
+    /// works: they wait for its end, which is its program's.
+    #[test]
+    fn a_turn_that_reads_its_message_whole_takes_none_of_the_users() {
+        let mut p = Parser::default();
+        let message = SteerMessage {
+            id: "m1".into(),
+            text: "And b.txt".into(),
+        };
+        assert_eq!(p.message(&message), None);
+        p.on_line(
+            &json!({"type":"result","subtype":"success","is_error":false,"result":"Done.","usage":{}}).to_string(),
+            &mut |_| {},
+        );
+        assert!(p.finished && !p.finished(), "it runs to its end");
     }
 
     #[test]

@@ -159,7 +159,7 @@ async fn claude_code_is_told_when_the_chat_s_mode_changes_its_tools() {
         &h._dir.0,
         r#"here=$(dirname "$0")
 echo "$@" > "$here/args.txt"
-cat > "$here/prompt.txt"
+head -n 1 > "$here/prompt.txt"
 echo '{"type":"system","subtype":"init","session_id":"s-9","model":"claude-sonnet-5","tools":["Read"]}'
 echo '{"type":"result","subtype":"success","is_error":false,"result":"Made it 43.","usage":{},"num_turns":1}'
 "#,
@@ -171,7 +171,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Made it 43
         "{}",
         file("args.txt")
     );
-    let prompt = file("prompt.txt");
+    let prompt = message_of(&file("prompt.txt"));
     assert!(
         prompt.starts_with("Rovik IDE: you work with your own tools from this message on.")
             && prompt.ends_with("\n\nMake it 43"),
@@ -180,7 +180,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Made it 43
     // A second message with its own tools: nothing changed.
     send("agent", "And document it").await.unwrap();
     assert_eq!(h.run_end().await, "done");
-    assert_eq!(file("prompt.txt"), "And document it");
+    assert_eq!(message_of(&file("prompt.txt")), "And document it");
 
     // Plan mode again: Rovik's tools.
     rovik_tools().unwrap();
@@ -208,7 +208,7 @@ async fn implementing_a_plan_on_claude_code_asks_for_its_own_checklist() {
     .await;
     let program = crate::connectors::fake_claude(
         &h._dir.0,
-        r#"cat > "$(dirname "$0")/prompt.txt"
+        r#"head -n 1 > "$(dirname "$0")/prompt.txt"
 echo '{"type":"system","subtype":"init","session_id":"s-1","model":"claude-sonnet-5","tools":["Read"]}'
 echo '{"type":"result","subtype":"success","is_error":false,"result":"Done.","usage":{},"num_turns":1}'
 "#,
@@ -227,7 +227,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Done.","us
     }
     h.start(request).await.unwrap();
     assert_eq!(h.run_end().await, "done");
-    let prompt = std::fs::read_to_string(h._dir.0.join("prompt.txt")).unwrap();
+    let prompt = message_of(&std::fs::read_to_string(h._dir.0.join("prompt.txt")).unwrap());
     assert!(prompt.contains("<plan>\n# Alpha"), "{prompt}");
     assert!(
         prompt.contains("with your own checklist tool, if you have one"),
@@ -823,6 +823,16 @@ fn claude_code_send(h: &Harness, program: &str, mode: &str, text: &str) -> Start
     request
 }
 
+/// The message a stand-in for `claude` running its own tools was sent, from
+/// the first line of its input it kept: a chat's turn reads its input as
+/// JSON lines, to take the messages the user sends as it works.
+#[cfg(unix)]
+fn message_of(line: &str) -> String {
+    let line: Value = serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("{e}: {line}"));
+    assert_eq!(line["type"], "user", "{line}");
+    line["message"]["content"].as_str().unwrap().to_string()
+}
+
 /// The kinds of a reply's steps, in order: each thought's text, each
 /// tool's name.
 fn step_kinds(steps: &[Value]) -> Vec<String> {
@@ -872,7 +882,7 @@ async fn claude_code_s_thinking_shows_in_its_place_among_its_steps() {
         json!({"type":"result","subtype":"success","is_error":false,"result":"It says one.","usage":{},"num_turns":2}).to_string(),
     ]);
     let script = format!(
-        "echo \"$@\" > \"$(dirname \"$0\")/args.txt\"\ncat > /dev/null\ncat <<'EOF'\n{}\nEOF\n",
+        "echo \"$@\" > \"$(dirname \"$0\")/args.txt\"\nhead -n 1 > /dev/null\ncat <<'EOF'\n{}\nEOF\n",
         lines.join("\n")
     );
     let program = crate::connectors::fake_claude(&h._dir.0, &script);
@@ -941,7 +951,7 @@ fn claude_in_parts(h: &Harness, parts: &[&[Value]]) -> String {
             format!("cat <<'EOF'\n{}\nEOF\n", lines.join("\n"))
         })
         .collect();
-    let script = format!("cat > /dev/null\n{}", printed.join("sleep 1\n"));
+    let script = format!("head -n 1 > /dev/null\n{}", printed.join("sleep 1\n"));
     crate::connectors::fake_claude(&h._dir.0, &script)
 }
 
@@ -1108,6 +1118,207 @@ async fn while_claude_code_runs_a_tool_its_reply_is_not_said_to_be_generating() 
     }
     assert!(generating_after_it, "{:#?}", reply_patches(&h));
     assert_eq!(h.messages().await.last().unwrap().content, "Slept.");
+}
+
+/// What a stand-in for `claude` kept of its `run`th run's input.
+#[cfg(unix)]
+fn kept_input(h: &Harness, run: usize) -> Vec<Value> {
+    std::fs::read_to_string(h._dir.0.join(format!("input-{run}.jsonl")))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// Waits for Claude Code's first step: its command at work.
+#[cfg(unix)]
+async fn first_step(h: &Harness) {
+    h.wait_for("its first step", |e| {
+        e["type"] == "messagePatched"
+            && e["patch"]["meta"]["connector"]["steps"][0]["name"] == "Bash"
+    })
+    .await;
+}
+
+/// The kinds of a stored reply's steps (`step_kinds`).
+#[cfg(unix)]
+fn steps_of(reply: &MessageRow) -> Vec<String> {
+    let meta = reply.meta.clone().unwrap_or_default();
+    step_kinds(meta["connector"]["steps"].as_array().unwrap_or(&Vec::new()))
+}
+
+/// A message the user sends while Claude Code works goes to it at once,
+/// and it reads it at its next step, in the same turn, as Rovik's agent
+/// does: the chat stores it there, between what Claude Code did before and
+/// what it does next, and it's never sent again.
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_code_reads_a_message_sent_while_it_works_at_its_next_step() {
+    let h = harness(&[("a.txt", "alpha\n"), ("b.txt", "beta\n")]).await;
+    let Some(program) = crate::connectors::fake_claude_steered(&h._dir.0, "read") else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    h.start(claude_code_send(&h, &program, "agent", "Read a.txt"))
+        .await
+        .unwrap();
+    first_step(&h).await;
+    let (id, reply) = h.steer("Read b.txt too").await;
+    assert_eq!(reply, rovik_protocol::agent::SteerReply::Queued);
+    assert_eq!(h.run_end().await, "done");
+
+    let messages = h.messages().await;
+    assert_eq!(
+        roles(&messages),
+        ["user", "assistant", "user", "assistant"],
+        "{messages:#?}"
+    );
+    assert_eq!(steps_of(&messages[1]), ["step:Bash"], "before it read it");
+    let read = &messages[2];
+    assert_eq!(read.id, id);
+    assert_eq!(read.content, "Read b.txt too");
+    assert!(read.meta.as_ref().unwrap().get("steer").is_some());
+    assert_eq!(steps_of(&messages[3]), ["step:Read"], "after");
+    assert_eq!(messages[3].content, "Read both, as you asked.");
+    let usage = &messages[3].meta.as_ref().unwrap()["connector"]["usage"];
+    assert_eq!(usage["cost"], 0.02, "{usage}");
+
+    // One run of Claude Code: the message went to its input as JSON, with
+    // its id, framed as the agent reads one.
+    let input = kept_input(&h, 0);
+    assert_eq!(input.len(), 2, "{input:#?}");
+    assert_eq!(input[0]["message"]["content"], "Read a.txt");
+    assert_eq!(input[1]["uuid"], id.as_str());
+    let text = input[1]["message"]["content"].as_str().unwrap();
+    assert!(
+        text.starts_with("[The user sent this message while you were working.")
+            && text.ends_with("\n\nRead b.txt too"),
+        "{text}"
+    );
+    assert!(!h._dir.0.join("input-1.jsonl").exists(), "one run");
+    let lines = h.steer_lines().await;
+    let phases: Vec<&str> = lines.iter().filter_map(|l| l["phase"].as_str()).collect();
+    assert_eq!(phases, ["queued", "delivered"], "{lines:#?}");
+    assert_eq!(lines[1]["at"], "harness");
+}
+
+/// A message Claude Code never read, its turn over first, waits for the
+/// run's next step as with any model: it's read after its reply, and is
+/// the message of its next turn.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_message_claude_code_never_read_is_its_next_turn_s() {
+    let h = harness(&[("a.txt", "alpha\n")]).await;
+    let Some(program) = crate::connectors::fake_claude_steered(&h._dir.0, "end") else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    h.start(claude_code_send(&h, &program, "agent", "Read a.txt"))
+        .await
+        .unwrap();
+    first_step(&h).await;
+    let (id, _) = h.steer("Read b.txt too").await;
+    assert_eq!(h.run_end().await, "done");
+
+    let messages = h.messages().await;
+    assert_eq!(
+        roles(&messages),
+        ["user", "assistant", "user", "assistant"],
+        "{messages:#?}"
+    );
+    assert_eq!(messages[1].content, "Read a.txt.");
+    assert_eq!(messages[2].id, id);
+    assert_eq!(messages[3].content, "Got it.");
+    let input = kept_input(&h, 1);
+    let text = input[0]["message"]["content"].as_str().unwrap();
+    assert!(
+        text.starts_with("[The user sent this message while you were working.")
+            && text.ends_with("\n\nRead b.txt too"),
+        "{text}"
+    );
+    let lines = h.steer_lines().await;
+    let phases: Vec<&str> = lines.iter().filter_map(|l| l["phase"].as_str()).collect();
+    assert_eq!(phases, ["queued", "delivered"], "{lines:#?}");
+    assert_eq!(lines[1]["at"], "done");
+}
+
+/// A move that pauses the run while Claude Code waits to go on with a
+/// message it read stores the one it had but hadn't read yet before the
+/// pause, as any message waiting (P6): the chat takes it where it goes.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_move_stores_a_message_claude_code_had_not_read_yet() {
+    let h = harness(&[("a.txt", "alpha\n")]).await;
+    let Some(program) = crate::connectors::fake_claude_steered(&h._dir.0, "read-first") else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    h.start(claude_code_send(&h, &program, "agent", "Read a.txt"))
+        .await
+        .unwrap();
+    first_step(&h).await;
+    let (first, _) = h.steer("Read b.txt too").await;
+    let (second, _) = h.steer("And c.txt").await;
+    for _ in 0..400 {
+        if kept_input(&h, 0).len() == 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(kept_input(&h, 0).len(), 3, "it has both");
+    let pausing = h.pause_for_move("server").await;
+    std::fs::write(h._dir.0.join("go.txt"), "").unwrap();
+    assert!(within("the pause", pausing).await.unwrap());
+
+    let messages = h.messages().await;
+    assert_eq!(
+        roles(&messages),
+        ["user", "assistant", "user", "user", "assistant"],
+        "{messages:#?}"
+    );
+    assert_eq!([&messages[2].id, &messages[3].id], [&first, &second]);
+    assert_eq!(messages[4].meta.as_ref().unwrap()["paused"]["kind"], "move");
+    let lines = h.steer_lines().await;
+    let delivered: Vec<(&str, &str)> = lines
+        .iter()
+        .filter(|l| l["phase"] == "delivered")
+        .map(|l| (l["messageId"].as_str().unwrap(), l["at"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        delivered,
+        [(first.as_str(), "harness"), (second.as_str(), "move")],
+        "{lines:#?}"
+    );
+}
+
+/// Stop hands back a message Claude Code had on its input but hadn't read
+/// yet, as any the run didn't read.
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_hands_back_a_message_claude_code_had_not_read() {
+    let h = harness(&[("a.txt", "alpha\n")]).await;
+    let Some(program) = crate::connectors::fake_claude_steered(&h._dir.0, "work") else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    h.start(claude_code_send(&h, &program, "agent", "Read a.txt"))
+        .await
+        .unwrap();
+    first_step(&h).await;
+    let (id, _) = h.steer("Read b.txt too").await;
+    for _ in 0..400 {
+        if kept_input(&h, 0).len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(kept_input(&h, 0).len(), 2, "it has the message");
+    assert!(agent_stop(&h.core, h.dialog_id.clone()).await);
+    assert_eq!(h.run_end().await, "stopped");
+    let returned = h.events_of("steerReturned");
+    assert_eq!(returned.len(), 1, "{returned:#?}");
+    assert_eq!(returned[0]["messageIds"], json!([id]));
+    assert!(!h.messages().await.iter().any(|m| m.id == id));
 }
 
 /// The real Claude Code with its own tools: its thinking comes back, as a

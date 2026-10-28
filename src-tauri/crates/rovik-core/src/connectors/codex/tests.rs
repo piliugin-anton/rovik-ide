@@ -32,6 +32,7 @@ fn turn(prompt: &str) -> Turn {
         commands: None,
         denied: Default::default(),
         allowed_hosts_on: false,
+        steering: None,
     }
 }
 

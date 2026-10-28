@@ -391,6 +391,44 @@ impl Harness {
         }
         panic!("the run wasn't asked to pause");
     }
+
+    /// Sends the chat's run a message while it works (steering-plan.md), as
+    /// the message box does: its id and what became of it.
+    async fn steer(&self, text: &str) -> (String, rovik_protocol::agent::SteerReply) {
+        let message = typed(text);
+        let id = message.id.clone();
+        let request = Request::AgentSteer {
+            dialog_id: self.dialog_id.clone(),
+            message,
+        };
+        let reply = through(&self.core, request).await.unwrap();
+        (id, reply)
+    }
+
+    /// The agent log's `steer` lines of the chat (D18).
+    async fn steer_lines(&self) -> Vec<Value> {
+        log::flushed().await;
+        let path = self.core.paths.log_dir.join("agent-log.jsonl");
+        std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|l| l["event"] == "steer" && l["dialogId"] == self.dialog_id.as_str())
+            .collect()
+    }
+}
+
+/// A message as the message box sends one to a run: what was typed, with
+/// the editor context the frontend puts before it.
+fn typed(text: &str) -> UserMessage {
+    UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: text.into(),
+        meta: Some(json!({
+            "sentContent": format!("[Active editor context — file src/lib.rs]\n\n{text}")
+        })),
+        attachments: Vec::new(),
+    }
 }
 
 /// What `future` gives, within 30 s: a run that doesn't pause goes on, and

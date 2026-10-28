@@ -24,6 +24,13 @@
 //! what it read and did. Where the session is gone (another computer, a
 //! cleared folder), the turn starts a new one with a recap of the chat.
 //!
+//! A harness that reads the messages the user sends while it works
+//! ([`Connector::reads_messages`]) is handed each as it comes
+//! (`Turn::steering`), and reads it at its next step, as Rovik's agent
+//! does. The turn ends where it read one (`ChatStreamEvent::HarnessRead`):
+//! the run stores the message there, and its next turn goes on with the
+//! harness where it was.
+//!
 //! Every connector implements [`Connector`]: a probe for "Test & refresh
 //! models", its sign-in check, whether its program is installed, a turn,
 //! what each of its own steps did, and, where it has them, what its "Set
@@ -179,7 +186,25 @@ pub struct Turn {
     /// held to them, and its hosted web search, which its provider runs
     /// where the list can't reach, is off.
     pub allowed_hosts_on: bool,
+    /// The messages the user sends while the turn works, for a harness that
+    /// reads them mid-turn ([`Connector::reads_messages`]) in a run that
+    /// takes them: none otherwise.
+    pub steering: Option<SteerMessages>,
 }
+
+/// A message the user sent while the run works (agent_run/steer.rs), handed
+/// to a harness that reads them mid-turn: its id, which the harness reports
+/// once it read it (`ChatStreamEvent::HarnessRead`), and its text as the
+/// model reads it (the frame, then what a send would have sent).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SteerMessage {
+    pub id: String,
+    pub text: String,
+}
+
+/// Where the run hands a harness the user's messages as they come. Those it
+/// hasn't read when its turn ends are the run's again.
+pub type SteerMessages = mpsc::UnboundedReceiver<SteerMessage>;
 
 /// A harness's request to run one of its own tools, put to the run's
 /// permissions and approvals as a call of Rovik's tool of the same kind
@@ -368,8 +393,20 @@ pub trait Connector: Send + Sync {
         Ok(None)
     }
 
+    /// Whether its harness reads the messages the user sends while a turn
+    /// works, at its next step (steering-plan.md, D2): the run hands each to
+    /// the turn as it comes (`Turn::steering`). Its turn reports each one
+    /// it read (`ChatStreamEvent::HarnessRead`) and, unless it fails, ends
+    /// there, its harness waiting for the chat's next turn, which goes on
+    /// with it. The default: no, and they wait for the turn's end, as they
+    /// wait for a model's next request.
+    fn reads_messages(&self) -> bool {
+        false
+    }
+
     /// Ends the chat's run left waiting between Rovik's turns (Rovik's
-    /// tools mode), if it keeps one.
+    /// tools mode, or a turn that read the user's messages), if it keeps
+    /// one.
     fn end_live(&self, dialog_id: &str) {
         let _ = dialog_id;
     }
@@ -591,6 +628,7 @@ pub async fn run_chat(
         commands: params.command_checks.clone(),
         denied,
         allowed_hosts_on: crate::allowed_hosts::current().is_some(),
+        steering: params.steering,
     };
     // The session the harness opens or continues is kept for the chat's
     // next turn, as the events say it.
@@ -1142,7 +1180,7 @@ import json, os, sys, urllib.request
 here = os.path.dirname(os.path.abspath(__file__))
 args = sys.argv[1:]
 open(os.path.join(here, 'args.txt'), 'w').write(' '.join(args))
-sys.stdin.read()
+sys.stdin.readline()
 server = json.load(open(args[args.index('--mcp-config') + 1]))['mcpServers']['rovik']
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def post(body):
@@ -1192,6 +1230,93 @@ out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': reply,
     Some(path.to_string_lossy().into_owned())
 }
 
+/// A stand-in for `claude` running its own tools that reads the messages
+/// the user sends as it works (tests): its input a JSON line at a time, as
+/// it comes, each kept in `input-<n>.jsonl` (its `n`th run). Its first run
+/// reads `a.txt` with a command that runs until a message comes, then,
+/// `after` it:
+/// - `read`: reads it at its next step, says it back, and goes on to read
+///   `b.txt`;
+/// - `end`: ends its turn and its run without reading it;
+/// - `work`: works on without reading it, until it's stopped;
+/// - `read-first`: waits for a second message and for `go.txt` to exist,
+///   then reads only the first at its next step, and works on.
+///
+/// A later run answers its message. Each that goes to its end ends once
+/// its input closes. None without python3.
+#[cfg(all(test, unix))]
+pub(crate) fn fake_claude_steered(dir: &std::path::Path, after: &str) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    if !crate::process::on_path("python3") {
+        return None;
+    }
+    let script = r#"#!/usr/bin/env python3
+import json, os, queue, sys, threading, time
+here = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+runs = os.path.join(here, 'runs.txt')
+run = int(open(runs).read()) if os.path.exists(runs) else 0
+open(runs, 'w').write(str(run + 1))
+lines = queue.Queue()
+def read():
+    with open(os.path.join(here, 'input-%d.jsonl' % run), 'w') as kept:
+        for line in sys.stdin:
+            kept.write(line)
+            kept.flush()
+            lines.put(json.loads(line))
+    lines.put(None)
+threading.Thread(target=read, daemon=True).start()
+def next_line():
+    try:
+        return lines.get(timeout=10)
+    except queue.Empty:
+        return None
+def out(value):
+    print(json.dumps(value), flush=True)
+def said_back(message):
+    out({'type': 'user', 'message': message['message'], 'uuid': message.get('uuid', 'its-own'), 'isReplay': True})
+def step(use, tool, given):
+    out({'type': 'assistant', 'message': {'id': 'm-' + use, 'content': [{'type': 'tool_use', 'id': use, 'name': tool, 'input': given}]}, 'parent_tool_use_id': None})
+def stepped(use, result):
+    out({'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': use, 'content': result}]}, 'parent_tool_use_id': None})
+def reply(text, cost):
+    out({'type': 'assistant', 'message': {'id': 'm-text', 'content': [{'type': 'text', 'text': text}]}, 'parent_tool_use_id': None})
+    out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': text, 'usage': {}, 'total_cost_usd': cost, 'num_turns': 1})
+first = next_line()
+out({'type': 'system', 'subtype': 'init', 'session_id': 's-4', 'model': 'claude-sonnet-5'})
+said_back(first)
+if run == 0:
+    step('t1', 'Bash', {'command': 'cat a.txt'})
+    message = next_line()
+    if AFTER == 'work':
+        time.sleep(30)
+    if AFTER == 'read-first':
+        next_line()
+        while not os.path.exists(os.path.join(here, 'go.txt')):
+            time.sleep(0.02)
+    stepped('t1', 'alpha')
+    if AFTER in ('read', 'read-first') and message:
+        said_back(message)
+        out({'type': 'system', 'subtype': 'status', 'status': 'requesting'})
+        if AFTER == 'read-first':
+            time.sleep(30)
+        step('t2', 'Read', {'file_path': 'b.txt'})
+        stepped('t2', 'beta')
+        reply('Read both, as you asked.', 0.02)
+    else:
+        reply('Read a.txt.', 0.01)
+        sys.exit(0)
+else:
+    reply('Got it.', 0.01)
+while next_line() is not None:
+    pass
+"#;
+    let path = dir.join("claude");
+    std::fs::write(&path, script.replace("AFTER", &format!("{after:?}"))).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    Some(path.to_string_lossy().into_owned())
+}
+
 /// A stand-in for `claude` running its own tools under Rovik's hooks
 /// (tests), one turn of [`fake_claude_turns`]: `commands`, its steps.
 #[cfg(all(test, unix))]
@@ -1230,7 +1355,10 @@ open(runs, 'w').write(str(run + 1))
 open(os.path.join(here, 'args.txt'), 'w').write(' '.join(args))
 env_file = os.environ.get('CLAUDE_ENV_FILE')
 open(os.path.join(here, 'env.txt'), 'w').write(open(env_file).read() if env_file else '')
-open(os.path.join(here, 'prompt-%d.txt' % run), 'w').write(sys.stdin.read())
+# Its message: its input whole, or its first line's as JSON lines take it.
+line = sys.stdin.readline()
+prompt = json.loads(line)['message']['content'] if '--input-format' in args else line + sys.stdin.read()
+open(os.path.join(here, 'prompt-%d.txt' % run), 'w').write(prompt)
 settings = json.load(open(args[args.index('--settings') + 1]))
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def hook(event):

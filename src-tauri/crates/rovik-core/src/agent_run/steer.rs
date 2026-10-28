@@ -1,8 +1,11 @@
 //! Messages the user sends a run while it works (steering-plan.md). Each
 //! waits in the run's queue until the run's next step reads it, as part of
 //! the request it works on: stored then, at the end of the chat, as a user
-//! row marked `meta.steer`. A run that ends without reading what waits
-//! hands it back to the input (`SteerReturned`).
+//! row marked `meta.steer`. A connector's harness that reads them mid-turn
+//! is handed each as it comes, and the run stores it where the harness read
+//! it, or takes it back if its turn ends first (run.rs, `model_turn`). A
+//! run that ends without reading what waits hands it back to the input
+//! (`SteerReturned`).
 //!
 //! The queue is closed, under its lock, where the run decides to end, and
 //! whatever ends it: a message pushed after that is answered `Ended`, for
@@ -87,6 +90,9 @@ struct State {
     /// The run's tool calls so far.
     calls: u32,
     queued: Vec<Queued>,
+    /// Handed to the run's connector's harness, which reads them mid-turn:
+    /// no longer the user's to take back, and not read yet.
+    handed: Vec<Queued>,
 }
 
 /// One run's messages (`RunControl::steer`, the run's `Run::steer`).
@@ -161,8 +167,8 @@ impl SteerQueue {
         SteerReply::Queued
     }
 
-    /// Takes a waiting message back out: None when it was read already, or
-    /// never waited here.
+    /// Takes a waiting message back out: None when it was read already, was
+    /// handed to the run's harness, or never waited here.
     pub fn withdraw(&self, message_id: &str) -> Option<Queued> {
         let mut state = self.lock();
         let at = state
@@ -190,23 +196,62 @@ impl SteerQueue {
         std::mem::take(&mut state.queued)
     }
 
-    /// Closes the queue and returns what's left in it.
+    /// What's waiting, handed to the run's connector's harness, which reads
+    /// them mid-turn: they stay here until it reads them
+    /// (`read_by_harness`), or its turn ends first (`take_back`).
+    pub fn hand_over(&self) -> Vec<Queued> {
+        let mut state = self.lock();
+        let waiting = std::mem::take(&mut state.queued);
+        state.handed.extend(waiting.iter().cloned());
+        waiting
+    }
+
+    /// Copies of those handed to the harness that it hasn't read yet: its
+    /// turn that goes on is given them again.
+    pub fn handed(&self) -> Vec<Queued> {
+        self.lock().handed.clone()
+    }
+
+    /// Takes out those handed that the harness read (`ids`), in order.
+    pub fn read_by_harness(&self, ids: &[String]) -> Vec<Queued> {
+        let mut state = self.lock();
+        let (read, unread) = std::mem::take(&mut state.handed)
+            .into_iter()
+            .partition(|q| ids.contains(&q.message.id));
+        state.handed = unread;
+        read
+    }
+
+    /// The harness's turn is over, and it never reads the rest of what it
+    /// was handed: those wait again, before the others.
+    pub fn take_back(&self) {
+        let mut state = self.lock();
+        let handed = std::mem::take(&mut state.handed);
+        state.queued.splice(0..0, handed);
+    }
+
+    /// Closes the queue and returns what's left in it, handed or waiting.
     pub fn close_and_take(&self) -> Vec<Queued> {
         let mut state = self.lock();
         state.closed = true;
-        std::mem::take(&mut state.queued)
+        let mut left = std::mem::take(&mut state.handed);
+        left.append(&mut state.queued);
+        left
     }
 
-    /// Copies of what's waiting, oldest first.
+    /// Copies of what hasn't been read, handed or waiting, oldest first.
     pub fn waiting(&self) -> Vec<Queued> {
-        self.lock().queued.clone()
+        let state = self.lock();
+        state.handed.iter().chain(&state.queued).cloned().collect()
     }
 
-    /// The waiting messages as `agent_status` lists them.
+    /// The messages not read yet as `agent_status` lists them.
     pub fn status(&self, dialog_id: &str) -> Vec<QueuedSteer> {
-        self.lock()
-            .queued
+        let state = self.lock();
+        state
+            .handed
             .iter()
+            .chain(&state.queued)
             .map(|q| QueuedSteer {
                 dialog_id: dialog_id.to_string(),
                 message: q.message.clone(),
@@ -275,16 +320,27 @@ pub fn stored_row(queued: &Queued, clm: bool) -> NewMessage {
         _ => serde_json::Map::new(),
     };
     meta.remove("mode");
-    let wire = super::wire_content(&queued.message);
-    let clm = if clm { CLM_FRAME } else { "" };
-    meta.insert(
-        "sentContent".into(),
-        json!(format!("[{FRAME}{clm}]\n\n{wire}")),
-    );
+    meta.insert("sentContent".into(), json!(read_text(queued, clm)));
     meta.insert("steer".into(), json!({ "queuedAt": queued.queued_at }));
     row.meta = Some(serde_json::Value::Object(meta));
     row.created_at = store::now_ms();
     row
+}
+
+/// What the agent reads of a message (3.5, D10): the frame, then what a
+/// send would have sent.
+pub fn read_text(queued: &Queued, clm: bool) -> String {
+    let wire = super::wire_content(&queued.message);
+    let clm = if clm { CLM_FRAME } else { "" };
+    format!("[{FRAME}{clm}]\n\n{wire}")
+}
+
+/// A message as a connector's harness that reads them mid-turn is handed it.
+pub fn for_harness(queued: &Queued, clm: bool) -> crate::connectors::SteerMessage {
+    crate::connectors::SteerMessage {
+        id: queued.message.id.clone(),
+        text: read_text(queued, clm),
+    }
 }
 
 /// A message's line in the agent log (D18).
@@ -393,6 +449,45 @@ mod tests {
         assert_eq!(ids(&queue.close_and_take()), ["a", "b"]);
         assert_eq!(queue.push(message("c")), SteerReply::Ended);
         assert!(queue.close_and_take().is_empty());
+    }
+
+    #[test]
+    fn messages_handed_to_the_harness_are_the_runs_until_it_reads_them() {
+        let queue = SteerQueue::default();
+        queue.open();
+        queue.push(message("a"));
+        queue.push(message("b"));
+        assert_eq!(ids(&queue.hand_over()), ["a", "b"]);
+        queue.push(message("c"));
+        // Not the user's to take back now, but still not read.
+        assert!(queue.withdraw("a").is_none());
+        assert_eq!(ids(&queue.waiting()), ["a", "b", "c"]);
+        assert_eq!(queue.status("d").len(), 3);
+        assert_eq!(
+            ids(&queue.take()),
+            ["c"],
+            "the next step reads only what waits"
+        );
+        assert_eq!(ids(&queue.handed()), ["a", "b"]);
+        assert_eq!(ids(&queue.read_by_harness(&["a".into()])), ["a"]);
+        assert_eq!(ids(&queue.handed()), ["b"]);
+        // The run ends: what the harness had goes back with the rest.
+        queue.push(message("d"));
+        assert_eq!(ids(&queue.close_and_take()), ["b", "d"]);
+    }
+
+    #[test]
+    fn what_the_harness_never_read_waits_again_before_the_others() {
+        let queue = SteerQueue::default();
+        queue.open();
+        queue.push(message("a"));
+        queue.push(message("b"));
+        queue.hand_over();
+        queue.push(message("c"));
+        queue.take_back();
+        assert!(queue.handed().is_empty());
+        assert_eq!(queue.withdraw("a").map(|q| q.message.id), Some("a".into()));
+        assert_eq!(ids(&queue.take()), ["b", "c"]);
     }
 
     #[test]

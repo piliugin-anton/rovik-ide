@@ -427,7 +427,7 @@ async fn run_probe(shell: &dyn HostShell) -> Result<Probe, Step> {
 
 /// What the server offers, as the probe says (H04, and the deploy).
 pub(crate) async fn probe_server(shell: &dyn HostShell) -> Result<Probe, String> {
-    // Chrome may take 30 s to start.
+    // Chrome may take 30 s to start, and 5 more to be stopped.
     let wait = Duration::from_secs(60);
     let run = shell.exec_with_input(probe::COMMAND, PROBE.as_bytes());
     let output = match tokio::time::timeout(wait, run).await {

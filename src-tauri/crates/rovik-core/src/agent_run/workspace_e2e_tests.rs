@@ -1702,7 +1702,7 @@ async fn claude_code_works_in_the_view_keeps_its_session_and_is_told_the_folders
 here="$(dirname "$0")"
 echo "$@" >> "$here/args.txt"
 pwd >> "$here/cwd.txt"
-cat > /dev/null
+head -n 1 > /dev/null
 prev=""
 for arg in "$@"; do
   if [ "$prev" = "--append-system-prompt-file" ]; then cat "$arg" > "$here/appended.txt"; fi

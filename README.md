@@ -1442,6 +1442,12 @@ in the input.
 - A message waits in the run's queue (up to 10 at once) and is read once
   every call of the agent's current reply has its result, before its next
   request to the model. No reply or command is cut short.
+- On Claude Code, which runs its own tools in Agent mode, a message goes to
+  Claude Code as soon as it's sent, and Claude Code reads it at its own
+  next step, once its running tools finish, as in its terminal. The chat
+  shows it there, between what Claude Code did before and what it does
+  next, all in the same turn. Once Claude Code has it, ✕ can't take it
+  back. Codex reads a message once its turn has ended.
 - It's read as the user's words, after a short note telling the agent it
   belongs to the same request, and stored where it was read, marked
   `meta.steer`. It doesn't start a new request: the focus note, the

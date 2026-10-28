@@ -88,6 +88,11 @@ pub enum ChatStreamEvent {
     HarnessStep {
         step: crate::connectors::HarnessStep,
     },
+    /// The harness read a message the user sent while it worked
+    /// (`ChatParams::steering`), at its next step: the run stores it there.
+    HarnessRead {
+        id: String,
+    },
     /// The harness's conversation for this chat (`session`, which its next
     /// turn continues), the model it runs and its version, as it starts.
     HarnessSession {
@@ -900,6 +905,10 @@ pub struct ChatParams {
     // files they may not read or change (restricted_files.rs), which it's
     // told as rules of its own.
     pub restricted: Option<std::sync::Arc<crate::restricted_files::RestrictedFiles>>,
+    // A connector's model whose harness reads the messages the user sends
+    // while it works (`Connector::reads_messages`): where the run hands them
+    // over as they come (`agent_run` `model_turn`).
+    pub steering: Option<crate::connectors::SteerMessages>,
 }
 
 /// A request the frontend makes itself, outside any run (a chat's title):
@@ -974,6 +983,7 @@ pub async fn run_chat(
         tool_asks: _,
         command_checks: _,
         restricted: _,
+        steering: _,
     } = params;
     let chat_id = chat_id.or_else(|| dialog_id.clone());
 
