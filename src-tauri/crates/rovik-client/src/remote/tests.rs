@@ -1691,6 +1691,54 @@ async fn mcp_test_on_a_host_sends_typed_values_over_saved_ones() {
     assert_eq!(values["header/Authorization"].0, "old");
 }
 
+/// A start carries no secrets of a server that's off: the host gets the
+/// servers that are on (Q11).
+#[tokio::test]
+async fn a_start_carries_no_secrets_of_a_server_that_is_off() {
+    let (_app, remote, fake) = mcp_host(Ok("Bearer x"), &[features::MCP]).await;
+    let mut server = mcp_server();
+    server.enabled = false;
+    let mut request = start("chat", StartKind::Retry, None);
+    request.config = Some(AgentConfig {
+        mcp_servers: vec![server],
+        ..AgentConfig::default()
+    });
+    remote.start(request).await.unwrap();
+    assert!(starts(&fake)[0].mcp_secrets.is_empty());
+}
+
+/// Test on a host of a server that's off, or not yet on, takes its saved
+/// secrets, as Test on this computer does.
+#[tokio::test]
+async fn mcp_test_on_a_host_takes_the_saved_secrets_of_a_server_that_is_off() {
+    let (_app, remote, fake) = mcp_host(Ok("saved"), &[features::MCP]).await;
+    let mut server = mcp_server();
+    server.enabled = false;
+    remote
+        .mcp_test(HOST, server, BTreeMap::new())
+        .await
+        .unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let [Request::McpTest { values, .. }] = &requests[..] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(values["header/Authorization"].0, "saved");
+}
+
+/// A value left empty on the page is no value typed: the saved one goes,
+/// as Test on this computer has it, never an empty header.
+#[tokio::test]
+async fn mcp_test_on_a_host_keeps_the_saved_value_where_none_is_typed() {
+    let (_app, remote, fake) = mcp_host(Ok("saved"), &[features::MCP]).await;
+    let given = BTreeMap::from([("header/Authorization".to_string(), Secret(String::new()))]);
+    remote.mcp_test(HOST, mcp_server(), given).await.unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let [Request::McpTest { values, .. }] = &requests[..] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(values["header/Authorization"].0, "saved");
+}
+
 #[tokio::test]
 async fn mcp_test_on_an_older_host_says_to_update_it() {
     let (_app, remote, fake) = mcp_host(Ok("old"), &[]).await;

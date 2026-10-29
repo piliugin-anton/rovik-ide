@@ -796,14 +796,18 @@ impl Remote {
         if self.policy(&host) == ApprovalPolicy::Autonomous && request.mode.is_none() {
             request.mode = Some(agent_run::autopilot::MODE.into());
         }
-        // A host has no keychain: its servers' saved secrets go with the
-        // start (Q11), unless its daemon is too old to take them.
+        // A host has no keychain: the saved secrets of the servers that are
+        // on go with the start (Q11), unless its daemon is too old to take
+        // them.
         if self.serves(&host, features::MCP) {
             let config = request
                 .config
                 .clone()
                 .unwrap_or_else(|| self.core.agents.config());
-            request.mcp_secrets = self.core.mcp.saved_secrets(&config.mcp_servers).await;
+            let on: Vec<McpServer> = (config.mcp_servers.into_iter())
+                .filter(|s| s.enabled)
+                .collect();
+            request.mcp_secrets = self.core.mcp.saved_secrets(&on).await;
         }
         self.leave_out_known_text(&mut request).await;
         if let StartKind::Send { message } = &mut request.start {
@@ -815,8 +819,9 @@ impl Remote {
         client.call(Request::AgentStart(Box::new(request))).await
     }
 
-    /// Tests `server` on `host`, from there (Q11): its saved secrets, the
-    /// values the user typed over them.
+    /// Tests `server` on `host`, from there (Q11): its saved secrets, on or
+    /// off, the values the user typed over them; one left empty is none
+    /// typed, as Test on this computer has it.
     pub async fn mcp_test(
         &self,
         host: &str,
@@ -835,7 +840,7 @@ impl Remote {
             .await
             .remove(&server.id)
             .unwrap_or_default();
-        values.extend(given);
+        values.extend(given.into_iter().filter(|(_, value)| !value.0.is_empty()));
         match self
             .host_call(host, Request::McpTest { server, values })
             .await?

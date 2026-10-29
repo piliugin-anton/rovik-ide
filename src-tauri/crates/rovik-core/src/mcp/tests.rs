@@ -721,11 +721,12 @@ async fn a_missing_command_says_so_and_servers_turned_off_are_left_out() {
     assert!(error.contains("isn't installed"), "{error}");
 }
 
-/// Only an enabled server's saved secrets come out, by id and key; a server
+/// The servers' saved secrets come out, by id and key, whether a server is
+/// on or off (a start passes those on, Test the one it tries); a server
 /// with a secret field and none saved has an empty entry, so a secret
 /// cleared here clears on the host.
 #[tokio::test]
-async fn saved_secrets_are_the_enabled_servers_values_the_keychain_has() {
+async fn saved_secrets_are_the_servers_values_the_keychain_has_on_or_off() {
     let state = McpState::default();
     state.set_secrets(Arc::new(|id, key| match (id, key) {
         ("id-s1", "header/Authorization") => Ok(Some("Bearer x".into())),
@@ -747,9 +748,10 @@ async fn saved_secrets_are_the_enabled_servers_values_the_keychain_has() {
     let mut s2 = server("s2", url(vec![header("Authorization", "", true)]));
     s2.enabled = false;
     let secrets = state.saved_secrets(&[s1, s2]).await;
-    assert_eq!(secrets.len(), 1);
+    assert_eq!(secrets.len(), 2);
     assert_eq!(secrets["id-s1"]["header/Authorization"].0, "Bearer x");
     assert_eq!(secrets["id-s1"].len(), 1, "{secrets:?}");
+    assert_eq!(secrets["id-s2"]["header/Authorization"].0, "other", "off");
 
     let s3 = server("s3", url(vec![header("Authorization", "", true)]));
     let plain = server("s4", url(vec![header("X-Plain", "plain", false)]));

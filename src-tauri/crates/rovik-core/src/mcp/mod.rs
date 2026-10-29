@@ -540,18 +540,19 @@ impl McpState {
         stop_all(gone);
     }
 
-    /// The saved secret values of the enabled `servers` that have a secret
-    /// field, by server id and key (`env/NAME` or `header/Name`), for a
-    /// daemon that has no keychain (Q11). A server with none saved has an
-    /// empty map, so a secret cleared here clears on the host too. A server
-    /// with a value that can't be read is left out: the host keeps what it
-    /// had. Read on a blocking thread.
+    /// The saved secret values of the `servers` that have a secret field,
+    /// on or off, by server id and key (`env/NAME` or `header/Name`), for a
+    /// daemon that has no keychain (Q11): a start's servers, which are on,
+    /// or the one Test tries. A server with none saved has an empty map, so
+    /// a secret cleared here clears on the host too. A server with a value
+    /// that can't be read is left out: the host keeps what it had. Read on
+    /// a blocking thread.
     pub async fn saved_secrets(
         &self,
         servers: &[McpServer],
     ) -> BTreeMap<String, BTreeMap<String, Secret>> {
         let source = lock(&self.0.secrets).clone();
-        let servers: Vec<McpServer> = servers.iter().filter(|s| s.enabled).cloned().collect();
+        let servers = servers.to_vec();
         let Some(source) = source else {
             return BTreeMap::new();
         };
