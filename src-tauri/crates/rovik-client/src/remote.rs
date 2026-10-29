@@ -38,6 +38,7 @@ const HOSTS_WAIT: Duration = Duration::from_secs(15);
 
 mod back;
 mod bar;
+mod mcp_relay;
 mod mirror;
 mod moving;
 mod pages;
@@ -233,6 +234,9 @@ struct State {
     /// The messages sent to a run whose files are going up (steering), by
     /// message id, with their chat: Stop cancels them, and stops the run.
     steer_uploads: HashMap<String, (String, oneshot::Sender<()>)>,
+    /// The URLs of the MCP servers under Test on a host now, whose POSTs
+    /// this computer makes for it saved or not (remote/mcp_relay.rs).
+    mcp_testing: Vec<String>,
     /// The host this computer's chats run on when they don't run here:
     /// its Linux side (the WSL distribution, on Windows), where their
     /// commands are sandboxed. A chat of a project moves there before its
@@ -842,6 +846,8 @@ impl Remote {
             .remove(&server.id)
             .unwrap_or_default();
         values.extend(given.into_iter().filter(|(_, value)| !value.0.is_empty()));
+        // A server on this computer's loopback is posted to from here.
+        let _testing = self.testing(&server.transport);
         match self
             .host_call(host, Request::McpTest { server, values })
             .await?
@@ -1354,6 +1360,7 @@ impl Remote {
                     port,
                 } => self.page_wanted(host, dialog_id, id, url, port),
                 Event::PageClosed { dialog_id, port } => self.page_closed(host, &dialog_id, port),
+                Event::McpRelayWanted { id } => self.mcp_relay_wanted(host, id),
             },
         }
     }

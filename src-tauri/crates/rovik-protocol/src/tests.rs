@@ -9,7 +9,9 @@ use crate::clm::{ClmStatus, RevisionRow};
 use crate::diff::Hunk;
 use crate::events::*;
 use crate::host::{HostInfo, Install, KeyInfo, Storage};
-use crate::mcp::{is_secret_key, is_valid_name, McpServer, McpTransport, McpValue};
+use crate::mcp::{
+    is_secret_key, is_valid_name, McpServer, McpTransport, McpValue, RelayPart, RelayedPost,
+};
 use crate::network::{HostNetwork, ProxyEndpoint, ProxyKind, ProxyRoute};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
@@ -908,6 +910,13 @@ fn every_request_round_trips() {
                 },
                 values: [("header/Authorization".into(), crate::Secret("t".into()))].into(),
             },
+            Request::McpRelayTake { id: "r1".into() },
+            Request::McpRelayPart {
+                id: "r1".into(),
+                part: RelayPart::Body {
+                    text: "data: {}\n\n".into(),
+                },
+            },
             Request::KeysRemove { provider: None },
             Request::KeysRemove {
                 provider: Some("openai".into()),
@@ -1138,6 +1147,7 @@ fn every_response_round_trips() {
                     read_only: true,
                 }],
             }),
+            Response::McpRelayed(relayed_post()),
             Response::ConnectorSetup(crate::connectors::SetupJob {
                 id: "j".into(),
                 action: crate::connectors::SetupAction::Login,
@@ -1282,6 +1292,7 @@ fn every_event_round_trips() {
                 dialog_id: "d".into(),
                 port: 5173,
             },
+            Event::McpRelayWanted { id: "r1".into() },
         ],
     );
 }
@@ -1872,4 +1883,43 @@ fn mcp_test_and_its_answer_round_trip() {
     let back: Response = serde_json::from_value(json).unwrap();
     assert_eq!(back, response);
     assert_eq!(crate::mcp::Tested::try_from(back).unwrap(), tested);
+}
+
+/// A POST to relay (Q11): its secret header's value goes, never in Debug.
+fn relayed_post() -> RelayedPost {
+    RelayedPost {
+        url: "http://127.0.0.1:3000/mcp".into(),
+        headers: vec![("Authorization".into(), crate::Secret("Bearer t0p".into()))],
+        body: r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.into(),
+    }
+}
+
+/// Q11: a relayed POST and every part of its answer go and come back as
+/// they were, and the POST's header values never show in Debug.
+#[test]
+fn a_relayed_post_and_its_answer_round_trip_its_secrets_hidden() {
+    let post = relayed_post();
+    let back: RelayedPost = serde_json::from_str(&serde_json::to_string(&post).unwrap()).unwrap();
+    assert_eq!(back, post);
+    assert_eq!(back.headers[0].1 .0, "Bearer t0p");
+    assert!(!format!("{post:?}").contains("t0p"));
+    let parts = [
+        RelayPart::Head {
+            status: 200,
+            headers: vec![("content-type".into(), "text/event-stream".into())],
+        },
+        RelayPart::Body {
+            text: "data: {}\n\n".into(),
+        },
+        RelayPart::End,
+        RelayPart::Failed {
+            error: "Connection refused".into(),
+        },
+    ];
+    for part in parts {
+        let back: RelayPart = serde_json::from_str(&serde_json::to_string(&part).unwrap()).unwrap();
+        assert_eq!(back, part);
+    }
+    let take = Request::McpRelayTake { id: "r1".into() };
+    assert_eq!(take.target(), None, "the host's, not a chat's");
 }

@@ -11,6 +11,10 @@
 //! [`McpState`], one of the core's parts, starts each server when a run
 //! first needs it and keeps it running while the app is open (Q04). Only
 //! tools: no resources, prompts, sampling, roots or elicitation (Q03).
+//!
+//! On a daemon, a URL server on the loopback is on the user's computer,
+//! which the host can't reach: its POSTs go through the app there, a
+//! [`Relay`] (mcp-plan-2.md, Q11).
 
 mod http;
 mod rpc;
@@ -24,6 +28,7 @@ pub use tool::Tool;
 
 use crate::agent_run::StopSignal;
 use futures_util::future::BoxFuture;
+use rovik_protocol::mcp::RelayedPost;
 use rovik_protocol::Secret;
 use rpc::{Era, Failure};
 use serde_json::{json, Value};
@@ -59,6 +64,52 @@ const MAX_PAGES: usize = 50;
 /// Given the server's id and the value's key (`env/NAME`, `header/Name`),
 /// its value, or none when it isn't saved. Called on a blocking thread.
 pub type SecretSource = Arc<dyn Fn(&str, &str) -> Result<Option<String>, String> + Send + Sync>;
+
+/// How a daemon reaches the URL servers on the loopback of its user's
+/// computers, which it can't reach itself: through the app on each
+/// (mcp-plan-2.md, Q11).
+pub trait Relay: Send + Sync {
+    /// The computer whose loopback `chat`'s URL servers mean: the one the
+    /// chat belongs to; none for a chat of no computer.
+    fn computer_of(&self, chat: &str) -> Option<String>;
+    /// Has the app on `computer` make `post`: its answer as it comes, or
+    /// why it couldn't (the computer is away, or its app refused).
+    fn post(
+        &self,
+        computer: &str,
+        post: RelayedPost,
+    ) -> BoxFuture<'static, Result<reqwest::Response, String>>;
+}
+
+/// A relay, and the computer it posts on.
+type Relayed = (Arc<dyn Relay>, String);
+
+/// A relayed POST's answer as the transport reads it (Q11): `status` and
+/// `headers` as the computer got them (one HTTP can't carry is left out),
+/// and its body as `body` brings it, text by text; an error there ends it,
+/// as a broken connection would.
+pub fn relayed_response(
+    status: u16,
+    headers: &[(String, String)],
+    body: impl futures_util::Stream<Item = Result<String, String>> + Send + 'static,
+) -> Result<reqwest::Response, String> {
+    use futures_util::StreamExt;
+    use reqwest::header::{HeaderName, HeaderValue};
+    let mut built = ::http::Response::builder().status(status);
+    for (name, value) in headers {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            built = built.header(name, value);
+        }
+    }
+    let body = body.map(|part| part.map(bytes::Bytes::from).map_err(std::io::Error::other));
+    let response = built
+        .body(reqwest::Body::wrap_stream(body))
+        .map_err(|e| format!("The answer from the user's computer can't be read: {e}"))?;
+    Ok(reqwest::Response::from(response))
+}
 
 /// What a server offers a run (Q06).
 #[derive(Clone, Debug, PartialEq)]
@@ -484,8 +535,9 @@ enum State {
     },
 }
 
-/// A server where it runs: its id, and a command's folder.
-type Key = (String, Option<PathBuf>);
+/// A server where it runs: its id, a command's folder, and the computer a
+/// relayed URL server is on (Q11).
+type Key = (String, Option<PathBuf>, Option<String>);
 
 /// The servers of this process (Q04).
 #[derive(Clone, Default)]
@@ -494,11 +546,28 @@ pub struct McpState(Arc<Shared>);
 #[derive(Default)]
 struct Shared {
     secrets: Mutex<Option<SecretSource>>,
+    /// A daemon's way to the servers on its user's computers' loopback.
+    relay: Mutex<Option<Arc<dyn Relay>>>,
     servers: Mutex<HashMap<Key, Arc<Instance>>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether `url` is on the loopback: `localhost`, 127.0.0.0/8 or `[::1]`.
+pub fn on_loopback(url: &str) -> bool {
+    let Some(host) = reqwest::Url::parse(url.trim())
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+    else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// The folder a command's server starts in: the project's, or the user's
@@ -520,6 +589,48 @@ impl McpState {
         *lock(&self.0.secrets) = Some(source);
     }
 
+    /// How a daemon reaches the URL servers on its user's computers'
+    /// loopback (Q11). The app has none: its loopback is the user's.
+    pub fn set_relay(&self, relay: Arc<dyn Relay>) {
+        *lock(&self.0.relay) = Some(relay);
+    }
+
+    /// The computer whose loopback `chat`'s URL servers mean, on a daemon
+    /// that relays; none in the app.
+    pub fn via(&self, chat: &str) -> Option<String> {
+        let relay = lock(&self.0.relay).clone();
+        relay?.computer_of(chat)
+    }
+
+    /// How a URL server at `url` is reached for a run or Test `via` a
+    /// computer: through the relay, when this daemon has one and the URL is
+    /// on the loopback; else straight. A loopback URL with no computer to
+    /// go through can't be reached.
+    fn relayed(&self, url: &str, via: Option<&str>) -> Result<Option<Relayed>, String> {
+        let Some(relay) = lock(&self.0.relay).clone().filter(|_| on_loopback(url)) else {
+            return Ok(None);
+        };
+        match via {
+            Some(computer) => Ok(Some((relay, computer.to_string()))),
+            None => Err(
+                "The server is on the loopback of a user's computer, and this chat belongs to \
+                 none: it can't be reached from here."
+                    .into(),
+            ),
+        }
+    }
+
+    /// Where `server` runs for a run or Test in `project`, `via` a
+    /// computer: a command's folder, a relayed URL's computer.
+    fn key(&self, server: &McpServer, project: Option<&Path>, via: Option<&str>) -> Key {
+        let computer = match &server.transport {
+            McpTransport::Url { url, .. } => self.relayed(url, via).ok().flatten().map(|(_, c)| c),
+            McpTransport::Command { .. } => None,
+        };
+        let folder = folder_for(&server.transport, project);
+        (server.id.clone(), folder, computer)
+    }
+
     /// The settings as they are now: a server removed, turned off, or whose
     /// transport changed, is stopped; the next run that needs it starts it
     /// again (Q04).
@@ -529,14 +640,14 @@ impl McpState {
                 .iter()
                 .any(|s| s.id == id && s.enabled && s.transport == *transport)
         };
-        let gone = self.take(|(id, _), instance| !kept(id, &instance.transport));
+        let gone = self.take(|(id, _, _), instance| !kept(id, &instance.transport));
         stop_all(gone);
     }
 
     /// The server's secrets changed: it starts again, with them, at its
     /// next use.
     pub fn forget(&self, id: &str) {
-        let gone = self.take(|(i, _), _| i == id);
+        let gone = self.take(|(i, _, _), _| i == id);
         stop_all(gone);
     }
 
@@ -607,7 +718,7 @@ impl McpState {
     /// Stops the command servers started in `folder`: a chat's worktree
     /// that went (Q11).
     pub fn stop_in(&self, folder: &Path) {
-        let gone = self.take(|(_, at), _| at.as_deref() == Some(folder));
+        let gone = self.take(|(_, at, _), _| at.as_deref() == Some(folder));
         stop_all(gone);
     }
 
@@ -624,24 +735,34 @@ impl McpState {
     }
 
     /// The tools of the enabled `servers`, for a run whose project is
-    /// `project` (Q04, Q06): each server started if it isn't, side by side.
-    /// Servers in name order, each one's tools too.
-    pub async fn list(&self, servers: &[McpServer], project: Option<&Path>) -> Vec<Listed> {
+    /// `project`, its loopback URLs `via` that computer on a daemon (Q04,
+    /// Q06, Q11): each server started if it isn't, side by side. Servers in
+    /// name order, each one's tools too.
+    pub async fn list(
+        &self,
+        servers: &[McpServer],
+        project: Option<&Path>,
+        via: Option<&str>,
+    ) -> Vec<Listed> {
         let enabled = servers
             .iter()
             .filter(|s| s.enabled && is_valid_name(&s.name));
-        let mut listed =
-            futures_util::future::join_all(enabled.map(|server| self.list_one(server, project)))
-                .await;
+        let listed = enabled.map(|server| self.list_one(server, project, via));
+        let mut listed = futures_util::future::join_all(listed).await;
         listed.sort_by(|a, b| a.name.cmp(&b.name));
         listed.dedup_by(|a, b| a.name == b.name);
         listed
     }
 
-    async fn list_one(&self, server: &McpServer, project: Option<&Path>) -> Listed {
-        let instance = self.instance(server, project);
+    async fn list_one(
+        &self,
+        server: &McpServer,
+        project: Option<&Path>,
+        via: Option<&str>,
+    ) -> Listed {
+        let instance = self.instance(server, project, via);
         let mut instructions = String::new();
-        let tools = match self.session(&instance, server, project, None).await {
+        let tools = match self.session(&instance, server, project, via, None).await {
             Err(error) => Err(error),
             Ok(session) => {
                 instructions = session.instructions.clone();
@@ -674,6 +795,7 @@ impl McpState {
         &self,
         server: &McpServer,
         project: Option<&Path>,
+        via: Option<&str>,
         tool: &Tool,
         arguments: Value,
         stop: &StopSignal,
@@ -682,9 +804,9 @@ impl McpState {
             text,
             bad_arguments: false,
         };
-        let instance = self.instance(server, project);
+        let instance = self.instance(server, project, via);
         let session = self
-            .session(&instance, server, project, None)
+            .session(&instance, server, project, via, None)
             .await
             .map_err(unavailable)?;
         match session.call(tool, arguments, CALL_WITHIN, Some(stop)).await {
@@ -709,15 +831,18 @@ impl McpState {
 
     /// Starts `server` as the page has it, with the secrets `given` (by
     /// key, `env/NAME`) over the saved ones, lists its tools, and stops it
-    /// (Q04).
+    /// (Q04); on a daemon, a loopback URL's `via` the computer that asked.
     pub async fn test(
         &self,
         server: &McpServer,
         given: &HashMap<String, String>,
         project: Option<&Path>,
+        via: Option<&str>,
     ) -> Result<Tested, String> {
         let folder = folder_for(&server.transport, project);
-        let session = self.open(server, folder.as_deref(), Some(given)).await?;
+        let session = self
+            .open(server, folder.as_deref(), via, Some(given))
+            .await?;
         let listed = session.list_tools().await;
         let tested = match listed {
             Ok(mut tools) => {
@@ -756,10 +881,11 @@ impl McpState {
         futures_util::future::join_all(stops).await;
     }
 
-    /// The server where it runs for `project`: a running one with the same
-    /// settings, else a new one, which replaces one with other settings.
-    fn instance(&self, server: &McpServer, project: Option<&Path>) -> Busy {
-        let key = (server.id.clone(), folder_for(&server.transport, project));
+    /// The server where it runs for `project`, `via` a computer: a running
+    /// one with the same settings, else a new one, which replaces one with
+    /// other settings.
+    fn instance(&self, server: &McpServer, project: Option<&Path>, via: Option<&str>) -> Busy {
+        let key = self.key(server, project, via);
         let mut running = lock(&self.0.servers);
         if let Some(instance) = running.get(&key) {
             if instance.transport == server.transport {
@@ -785,6 +911,7 @@ impl McpState {
         instance: &Instance,
         server: &McpServer,
         project: Option<&Path>,
+        via: Option<&str>,
         given: Option<&HashMap<String, String>>,
     ) -> Result<Arc<Session>, String> {
         let mut state = instance.state.lock().await;
@@ -794,7 +921,7 @@ impl McpState {
             _ => {}
         }
         let folder = folder_for(&server.transport, project);
-        match self.open(server, folder.as_deref(), given).await {
+        match self.open(server, folder.as_deref(), via, given).await {
             Ok(session) => {
                 let session = Arc::new(session);
                 *state = State::Up(session.clone());
@@ -810,12 +937,14 @@ impl McpState {
         }
     }
 
-    /// Starts `server` in `folder` and speaks to it: its env vars or
-    /// headers with their secrets, `given` ones first.
+    /// Starts `server` in `folder` and speaks to it, a loopback URL's
+    /// `via` that computer on a daemon: its env vars or headers with their
+    /// secrets, `given` ones first.
     async fn open(
         &self,
         server: &McpServer,
         folder: Option<&Path>,
+        via: Option<&str>,
         given: Option<&HashMap<String, String>>,
     ) -> Result<Session, String> {
         let values = self.values(server, given).await?;
@@ -823,7 +952,10 @@ impl McpState {
             McpTransport::Command { command, args, .. } => {
                 Link::Stdio(stdio::Stdio::start(command, args, &values, folder)?)
             }
-            McpTransport::Url { url, .. } => Link::Http(http::Http::new(url, &values)?),
+            McpTransport::Url { url, .. } => {
+                let relayed = self.relayed(url, via)?;
+                Link::Http(http::Http::new(url, &values, relayed)?)
+            }
         };
         Session::open(link).await
     }

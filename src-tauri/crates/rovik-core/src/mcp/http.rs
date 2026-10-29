@@ -1,12 +1,17 @@
 //! A URL's server (Streamable HTTP): each message Rovik sends is a POST,
 //! answered with JSON or an event stream that ends with the answer
 //! (docs/design/mcp-plan.md, Q03). It goes through the app's HTTP client,
-//! so Settings → Network's proxies apply.
+//! so Settings → Network's proxies apply; on a daemon, a server on the
+//! loopback of the user's computer is posted to through the app there
+//! (mcp-plan-2.md, Q11).
 
 use super::rpc::{self, Failure, Incoming};
+use super::Relayed;
 use crate::agent_run::StopSignal;
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
+use rovik_protocol::mcp::RelayedPost;
+use rovik_protocol::Secret;
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -18,6 +23,9 @@ const MAX_BODY: usize = 64 << 20;
 const ERROR_BODY_SHOWN: usize = 300;
 /// The header of a legacy server's session.
 const SESSION: &str = "mcp-session-id";
+/// What a POST takes and what it accepts back.
+const JSON: &str = "application/json";
+const ACCEPTED: &str = "application/json, text/event-stream";
 /// How long a notification's POST may take.
 const NOTIFY_WITHIN: Duration = Duration::from_secs(10);
 
@@ -29,13 +37,21 @@ pub(super) struct Http {
     /// The session a legacy server gave (`Mcp-Session-Id`), once it did.
     session: Mutex<Option<String>>,
     next: AtomicU64,
+    /// On a daemon, the relay its POSTs go through, to the computer whose
+    /// loopback the URL is on.
+    relayed: Option<Relayed>,
 }
 
 impl Http {
-    /// The server at `url`, with these headers on each request. A URL that
-    /// isn't http(s), or a header HTTP can't carry, is refused, naming the
-    /// header but never its value.
-    pub(super) fn new(url: &str, headers: &[(String, String)]) -> Result<Http, String> {
+    /// The server at `url`, with these headers on each request, posted to
+    /// through `relayed` when it's given. A URL that isn't http(s), or a
+    /// header HTTP can't carry, is refused, naming the header but never its
+    /// value.
+    pub(super) fn new(
+        url: &str,
+        headers: &[(String, String)],
+        relayed: Option<Relayed>,
+    ) -> Result<Http, String> {
         let parsed =
             reqwest::Url::parse(url.trim()).map_err(|e| format!("The URL can't be used: {e}."))?;
         if !matches!(parsed.scheme(), "http" | "https") {
@@ -55,6 +71,7 @@ impl Http {
             headers: map,
             session: Mutex::new(None),
             next: AtomicU64::new(1),
+            relayed,
         })
     }
 
@@ -81,12 +98,16 @@ impl Http {
         message: &Value,
         headers: &[(String, String)],
     ) -> Result<reqwest::Response, Failure> {
+        if let Some((relay, computer)) = &self.relayed {
+            let post = self.relayed_post(message, headers);
+            return relay.post(computer, post).await.map_err(Failure::Gone);
+        }
         let client = crate::net::client().await;
         let mut request = client
             .post(&self.url)
             .headers(self.headers.clone())
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "application/json, text/event-stream");
+            .header(CONTENT_TYPE, JSON)
+            .header(ACCEPT, ACCEPTED);
         for (name, value) in headers {
             request = request.header(name.as_str(), value.as_str());
         }
@@ -98,6 +119,25 @@ impl Http {
             .send()
             .await
             .map_err(|e| Failure::Gone(crate::net::error_text(&e.without_url())))
+    }
+
+    /// `message` as the relay takes it: with the headers `post` sends.
+    fn relayed_post(&self, message: &Value, headers: &[(String, String)]) -> RelayedPost {
+        let value = |v: &HeaderValue| Secret(String::from_utf8_lossy(v.as_bytes()).into_owned());
+        let mut all: Vec<(String, Secret)> = (self.headers.iter())
+            .map(|(name, v)| (name.as_str().to_string(), value(v)))
+            .collect();
+        all.push((CONTENT_TYPE.as_str().into(), Secret(JSON.into())));
+        all.push((ACCEPT.as_str().into(), Secret(ACCEPTED.into())));
+        all.extend(headers.iter().map(|(n, v)| (n.clone(), Secret(v.clone()))));
+        if let Some(session) = self.session() {
+            all.push((SESSION.into(), Secret(session)));
+        }
+        RelayedPost {
+            url: self.url.clone(),
+            headers: all,
+            body: message.to_string(),
+        }
     }
 
     /// Sends the request with `headers` (the era's: its version, a modern
@@ -333,12 +373,13 @@ mod tests {
 
     #[test]
     fn a_url_must_be_http_and_headers_must_be_sendable() {
-        assert!(Http::new("https://example.com/mcp", &[]).is_ok());
-        assert!(Http::new("ftp://example.com/mcp", &[]).is_err());
-        assert!(Http::new("not a url", &[]).is_err());
+        assert!(Http::new("https://example.com/mcp", &[], None).is_ok());
+        assert!(Http::new("ftp://example.com/mcp", &[], None).is_err());
+        assert!(Http::new("not a url", &[], None).is_err());
         let bad = Http::new(
             "https://example.com/mcp",
             &[("Authorization".into(), "Bearer a\nb".into())],
+            None,
         )
         .err()
         .unwrap();

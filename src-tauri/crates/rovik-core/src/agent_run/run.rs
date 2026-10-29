@@ -1142,8 +1142,8 @@ impl Run {
         let mcp = match request.profile.no_tools {
             true => None,
             false => {
-                super::mcp_tool::Catalog::list(core, &config.mcp_servers, project_root.as_deref())
-                    .await
+                let (servers, chat) = (&config.mcp_servers, &request.dialog_id);
+                super::mcp_tool::Catalog::list(core, servers, project_root.as_deref(), chat).await
             }
         };
 

@@ -56,15 +56,19 @@ pub struct Catalog {
     listed: Vec<Listed>,
     /// Where a command's server runs: the project's folder (Q03).
     project: Option<PathBuf>,
+    /// On a daemon, the computer whose loopback the URL servers there
+    /// mean: the chat's (mcp-plan-2.md, Q11).
+    via: Option<String>,
 }
 
 impl Catalog {
-    /// The tools of the user's enabled `servers`, for a run whose project
-    /// is `project`: none without servers.
+    /// The tools of the user's enabled `servers`, for a run of `chat` whose
+    /// project is `project`: none without servers.
     pub async fn list(
         core: &Core,
         servers: &[McpServer],
         project: Option<&str>,
+        chat: &str,
     ) -> Option<Arc<Catalog>> {
         let servers: Vec<McpServer> = servers
             .iter()
@@ -75,11 +79,15 @@ impl Catalog {
             return None;
         }
         let project = project.map(PathBuf::from);
-        let listed = core.mcp.list(&servers, project.as_deref()).await;
+        let via = core.mcp.via(chat);
+        let listed = (core.mcp)
+            .list(&servers, project.as_deref(), via.as_deref())
+            .await;
         Some(Arc::new(Catalog {
             servers,
             listed,
             project,
+            via,
         }))
     }
 
@@ -90,6 +98,7 @@ impl Catalog {
             servers,
             listed,
             project: None,
+            via: None,
         }
     }
 
@@ -324,9 +333,10 @@ pub async fn call(
         Ok(arguments) => arguments,
         Err(e) => return error(e),
     };
+    let (project, via) = (catalog.project.as_deref(), catalog.via.as_deref());
     match core
         .mcp
-        .call(server, catalog.project.as_deref(), tool, arguments, stop)
+        .call(server, project, via, tool, arguments, stop)
         .await
     {
         Ok(result) => result_of(core, &result, vision).await,

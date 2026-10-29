@@ -14,7 +14,7 @@ use crate::connectors::{
 };
 use crate::events::BackgroundTask;
 use crate::host::{HostInfo, KeyInfo, Storage};
-use crate::mcp::{McpServer, Tested};
+use crate::mcp::{McpServer, RelayPart, RelayedPost, Tested};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
 use crate::work::{ChatResult, Handed, Project, Synced, UndoneMerge, WorkChange, WorkFile};
@@ -331,6 +331,18 @@ pub enum Request {
         server: McpServer,
         values: BTreeMap<String, Secret>,
     },
+    /// The POST a `McpRelayWanted` event asked this computer to make, once
+    /// (Q11): another computer's, or one taken already, is refused. Sent
+    /// by a daemon that serves `features::MCP`. → `McpRelayed`.
+    McpRelayTake {
+        id: String,
+    },
+    /// A part of the answer to relay `id`'s POST, in order. → `Bool`,
+    /// whether it's still wanted: the app stops when it isn't.
+    McpRelayPart {
+        id: String,
+        part: RelayPart,
+    },
     /// What Rovik's folders take on the host. → `Storage`.
     Storage,
     /// Collects now what Rovik's folders no longer need, as each day does
@@ -438,6 +450,8 @@ impl Request {
             | Request::KeysRemove { .. }
             | Request::McpSecretsKept
             | Request::McpTest { .. }
+            | Request::McpRelayTake { .. }
+            | Request::McpRelayPart { .. }
             | Request::Storage
             | Request::CleanUp
             | Request::PageOpened { .. } => None,
@@ -491,6 +505,8 @@ pub enum Response {
     Storage(Storage),
     /// `McpTest`.
     McpTested(Tested),
+    /// `McpRelayTake`.
+    McpRelayed(RelayedPost),
     /// `DeliveryTest`.
     DeliveryTested(DeliveryTest),
     /// `TaskStatus`.
@@ -561,6 +577,7 @@ replies! {
     Keys => Vec<KeyInfo>,
     Storage => Storage,
     McpTested => Tested,
+    McpRelayed => RelayedPost,
     DeliveryTested => DeliveryTest,
     Tasks => Vec<ChatTask>,
     ConnectorProbe => ConnectorProbe,

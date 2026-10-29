@@ -229,6 +229,13 @@ async fn run(
     // A stop that gets as far as the end of its drain is a clean one (5.4).
     let stops = store.clone();
     let opener = pages::Opener::new(events.clone());
+    // MCP servers on the loopback of the user's computers are reached
+    // through the app on each (Q11), but where the loopback is shared: on
+    // the same machine, or in WSL with mirrored networking.
+    let relays = crate::relay::Relays::new(events.clone());
+    if !same_machine && !crate::relay::loopback_shared() {
+        core.mcp.set_relay(Arc::new(relays.clone()));
+    }
     let daemon = Arc::new(Daemon {
         core: core.clone(),
         tokens,
@@ -244,6 +251,7 @@ async fn run(
         caps: limits.caps,
         making: tokio::sync::Mutex::new(()),
         pages: opener,
+        relays,
     });
     // The pages this user's commands open, in their network's browser: on
     // the computer each one's chat belongs to (D20).
@@ -593,10 +601,10 @@ mod tests {
             disabled_tools: Vec::new(),
         };
         let servers = std::slice::from_ref(&server);
-        assert!(state.list(servers, None).await[0].tools.is_ok());
+        assert!(state.list(servers, None, None).await[0].tools.is_ok());
         *token.lock().unwrap() = "Bearer wrong".into();
         assert!(
-            state.list(servers, None).await[0].tools.is_ok(),
+            state.list(servers, None, None).await[0].tools.is_ok(),
             "still running with the secret it started with"
         );
 
@@ -607,7 +615,7 @@ mod tests {
         ));
         let mut stopped = false;
         for _ in 0..200 {
-            if state.list(servers, None).await[0].tools.is_err() {
+            if state.list(servers, None, None).await[0].tools.is_err() {
                 stopped = true;
                 break;
             }

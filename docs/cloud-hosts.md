@@ -393,6 +393,15 @@ freed.
   Docker...) must be installed on the server: Rovik installs and
   translates nothing, and a server that can't start is listed unavailable
   with why. A host on an older Rovik gets no MCP secrets.
+- A URL server on the loopback (`localhost`, 127.0.0.0/8, `[::1]`) is on
+  the user's computer, which a server can't reach: the daemon has the app
+  there make each POST (`McpRelayWanted`, then `McpRelayTake` and
+  `McpRelayPart`), one server instance per computer. The app posts only to
+  its own servers on its loopback, on in its settings or under Test, so a
+  daemon can't reach anything else on the computer through it. While the
+  computer isn't connected, its loopback servers are unavailable there,
+  saying it's away. In WSL with mirrored networking, and with
+  `--same-machine`, the daemon posts to the loopback itself.
 - Administrators can read the same things as before they became
   administrators, and nothing more, as long as `agentd.toml` says
   `allow_unsigned = false`, as it does unless someone changes it. With

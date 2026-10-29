@@ -56,7 +56,9 @@ async fn a_legacy_http_server_is_listed_and_called_with_its_token_from_the_keych
             headers: vec![header("Authorization", "", true)],
         },
     );
-    let listed = state.list(std::slice::from_ref(&rovik_server), None).await;
+    let listed = state
+        .list(std::slice::from_ref(&rovik_server), None, None)
+        .await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].instructions, "Rovik's tools.");
     let tools = listed[0].tools.clone().unwrap();
@@ -75,6 +77,7 @@ async fn a_legacy_http_server_is_listed_and_called_with_its_token_from_the_keych
         .call(
             &rovik_server,
             None,
+            None,
             &tools[1],
             json!({ "path": "a.rs" }),
             &stop,
@@ -90,6 +93,7 @@ async fn a_legacy_http_server_is_listed_and_called_with_its_token_from_the_keych
         .test(
             &rovik_server,
             &HashMap::from([("header/Authorization".to_string(), rovik.authorization())]),
+            None,
             None,
         )
         .await
@@ -111,7 +115,7 @@ async fn a_refused_or_missing_secret_says_what_to_fix() {
             headers: vec![header("Authorization", "Bearer wrong", false)],
         },
     );
-    let listed = McpState::default().list(&[wrong], None).await;
+    let listed = McpState::default().list(&[wrong], None, None).await;
     let error = listed[0].tools.clone().unwrap_err();
     assert!(error.contains("refused Rovik's credentials"), "{error}");
     assert!(error.contains("401"), "{error}");
@@ -125,7 +129,7 @@ async fn a_refused_or_missing_secret_says_what_to_fix() {
     );
     let state = McpState::default();
     state.set_secrets(Arc::new(|_, _| Ok(None)));
-    let error = state.list(&[unsaved], None).await[0]
+    let error = state.list(&[unsaved], None, None).await[0]
         .tools
         .clone()
         .unwrap_err();
@@ -154,14 +158,14 @@ async fn a_server_starts_again_with_its_new_secrets_once_forgotten() {
         },
     );
     let servers = std::slice::from_ref(&rovik_server);
-    assert!(state.list(servers, None).await[0].tools.is_ok());
+    assert!(state.list(servers, None, None).await[0].tools.is_ok());
     *token.lock().unwrap() = "Bearer wrong".into();
     assert!(
-        state.list(servers, None).await[0].tools.is_ok(),
+        state.list(servers, None, None).await[0].tools.is_ok(),
         "the running server keeps its token"
     );
     state.forget(&rovik_server.id);
-    let error = state.list(servers, None).await[0]
+    let error = state.list(servers, None, None).await[0]
         .tools
         .clone()
         .unwrap_err();
@@ -198,7 +202,7 @@ async fn the_keychain_is_read_off_the_async_threads() {
             counted.fetch_add(1, Ordering::SeqCst);
         }
     });
-    let listed = state.list(&[slow], None).await;
+    let listed = state.list(&[slow], None, None).await;
     ticker.abort();
     assert!(listed[0].tools.is_err(), "nothing answers there");
     let ticks = ticks.load(Ordering::SeqCst);
@@ -324,7 +328,7 @@ async fn a_modern_http_server_is_spoken_to_statelessly() {
         },
     );
     let state = McpState::default();
-    let listed = state.list(std::slice::from_ref(&modern), None).await;
+    let listed = state.list(std::slice::from_ref(&modern), None, None).await;
     assert_eq!(listed[0].instructions, "SQL on Spanner.");
     let tools = listed[0].tools.clone().unwrap();
     assert_eq!(tools[0].name, "execute_sql");
@@ -332,6 +336,7 @@ async fn a_modern_http_server_is_spoken_to_statelessly() {
     let result = state
         .call(
             &modern,
+            None,
             None,
             &tools[0],
             json!({ "region": "us-west1", "query": "SELECT 1" }),
@@ -359,7 +364,10 @@ async fn a_modern_http_server_is_spoken_to_statelessly() {
         call.pointer("/params/_meta/io.modelcontextprotocol~1clientInfo/name"),
         Some(&json!("rovik"))
     );
-    let tested = state.test(&modern, &HashMap::new(), None).await.unwrap();
+    let tested = state
+        .test(&modern, &HashMap::new(), None, None)
+        .await
+        .unwrap();
     assert_eq!(
         (tested.server.as_str(), tested.protocol.as_str()),
         ("spanner 2.0", "2026-07-28")
@@ -381,12 +389,12 @@ async fn a_server_that_cant_be_reached_waits_before_it_is_tried_again() {
         },
     );
     let state = McpState::default();
-    let first = state.list(std::slice::from_ref(&gone), None).await[0]
+    let first = state.list(std::slice::from_ref(&gone), None, None).await[0]
         .tools
         .clone();
     assert!(first.is_err());
     let started = Instant::now();
-    let again = state.list(std::slice::from_ref(&gone), None).await[0]
+    let again = state.list(std::slice::from_ref(&gone), None, None).await[0]
         .tools
         .clone();
     assert_eq!(again, first, "the same failure, not tried again");
@@ -533,7 +541,7 @@ async fn a_legacy_command_server_starts_in_the_project_and_ends_with_its_setting
     with_token(&state);
     let fake_server = server("fake", transport);
     let listed = state
-        .list(std::slice::from_ref(&fake_server), Some(&project))
+        .list(std::slice::from_ref(&fake_server), Some(&project), None)
         .await;
     assert_eq!(listed[0].instructions, "Fake tools.");
     let tools = listed[0].tools.clone().unwrap();
@@ -554,6 +562,7 @@ async fn a_legacy_command_server_starts_in_the_project_and_ends_with_its_setting
         .call(
             &fake_server,
             Some(&project),
+            None,
             &tools[0],
             json!({ "text": "hi" }),
             &stop,
@@ -568,7 +577,14 @@ async fn a_legacy_command_server_starts_in_the_project_and_ends_with_its_setting
         "its ping answered"
     );
     let refused = state
-        .call(&fake_server, Some(&project), &tools[1], json!({}), &stop)
+        .call(
+            &fake_server,
+            Some(&project),
+            None,
+            &tools[1],
+            json!({}),
+            &stop,
+        )
         .await
         .unwrap_err();
     assert!(refused.bad_arguments);
@@ -580,7 +596,7 @@ async fn a_legacy_command_server_starts_in_the_project_and_ends_with_its_setting
 
     // Another run lists it again: the same process.
     state
-        .list(std::slice::from_ref(&fake_server), Some(&project))
+        .list(std::slice::from_ref(&fake_server), Some(&project), None)
         .await;
     let starts = logged(&log)
         .iter()
@@ -608,7 +624,9 @@ async fn a_stopped_call_is_cancelled_at_the_server() {
     let state = McpState::default();
     with_token(&state);
     let fake_server = server("fake", transport);
-    let tools = state.list(std::slice::from_ref(&fake_server), None).await[0]
+    let tools = state
+        .list(std::slice::from_ref(&fake_server), None, None)
+        .await[0]
         .tools
         .clone()
         .unwrap();
@@ -620,7 +638,7 @@ async fn a_stopped_call_is_cancelled_at_the_server() {
         pressing.set();
     });
     let error = state
-        .call(&fake_server, None, slow, json!({}), &stop)
+        .call(&fake_server, None, None, slow, json!({}), &stop)
         .await
         .unwrap_err();
     assert_eq!(error.text, "stopped");
@@ -647,7 +665,9 @@ async fn a_modern_command_server_gets_its_version_on_every_request() {
     let state = McpState::default();
     with_token(&state);
     let fake_server = server("fake", transport);
-    let tools = state.list(std::slice::from_ref(&fake_server), None).await[0]
+    let tools = state
+        .list(std::slice::from_ref(&fake_server), None, None)
+        .await[0]
         .tools
         .clone()
         .unwrap();
@@ -656,6 +676,7 @@ async fn a_modern_command_server_gets_its_version_on_every_request() {
     let echoed = state
         .call(
             &fake_server,
+            None,
             None,
             &tools[0],
             json!({ "text": "hi" }),
@@ -690,7 +711,7 @@ async fn a_server_that_exits_says_why() {
     let (transport, _log) = fake(&dir.0, "crash");
     let state = McpState::default();
     with_token(&state);
-    let error = state.list(&[server("fake", transport)], None).await[0]
+    let error = state.list(&[server("fake", transport)], None, None).await[0]
         .tools
         .clone()
         .unwrap_err();
@@ -715,7 +736,9 @@ async fn a_missing_command_says_so_and_servers_turned_off_are_left_out() {
     off.enabled = false;
     let mut bad = missing.clone();
     bad.name = "Bad.Name".into();
-    let listed = McpState::default().list(&[missing, off, bad], None).await;
+    let listed = McpState::default()
+        .list(&[missing, off, bad], None, None)
+        .await;
     assert_eq!(listed.len(), 1);
     let error = listed[0].tools.clone().unwrap_err();
     assert!(error.contains("isn't installed"), "{error}");
@@ -812,7 +835,9 @@ async fn an_idle_server_is_stopped_and_one_in_use_is_not() {
     let state = McpState::default();
     with_token(&state);
     let fake_server = server("fake", transport);
-    let tools = state.list(std::slice::from_ref(&fake_server), None).await[0]
+    let tools = state
+        .list(std::slice::from_ref(&fake_server), None, None)
+        .await[0]
         .tools
         .clone()
         .unwrap();
@@ -823,6 +848,7 @@ async fn an_idle_server_is_stopped_and_one_in_use_is_not() {
             state
                 .call(
                     &fake_server,
+                    None,
                     None,
                     &echo,
                     json!({ "text": "hi" }),
@@ -847,12 +873,16 @@ async fn an_idle_server_is_stopped_and_one_in_use_is_not() {
             .count()
     };
     // The sweep left the instance in the map: listing it starts nothing.
-    state.list(std::slice::from_ref(&fake_server), None).await;
+    state
+        .list(std::slice::from_ref(&fake_server), None, None)
+        .await;
     assert_eq!(starts(), 1, "the server in use was not stopped");
 
     state.stop_idle(Duration::ZERO);
     assert!(exited(&log).await, "{:?}", logged(&log));
-    state.list(std::slice::from_ref(&fake_server), None).await;
+    state
+        .list(std::slice::from_ref(&fake_server), None, None)
+        .await;
     assert_eq!(starts(), 2, "started again by the next list");
     state.shutdown().await;
 }
@@ -866,9 +896,13 @@ async fn a_recently_used_server_is_not_stopped_as_idle() {
     let state = McpState::default();
     with_token(&state);
     let fake_server = server("fake", transport);
-    state.list(std::slice::from_ref(&fake_server), None).await;
+    state
+        .list(std::slice::from_ref(&fake_server), None, None)
+        .await;
     state.stop_idle(Duration::from_secs(3600));
-    state.list(std::slice::from_ref(&fake_server), None).await;
+    state
+        .list(std::slice::from_ref(&fake_server), None, None)
+        .await;
     let starts = logged(&log)
         .iter()
         .filter(|m| m.get("cwd").is_some())
@@ -891,21 +925,204 @@ async fn a_worktree_s_servers_stop_when_it_goes() {
     with_token(&state);
     let fake_server = server("fake", transport);
     state
-        .list(std::slice::from_ref(&fake_server), Some(&a))
+        .list(std::slice::from_ref(&fake_server), Some(&a), None)
         .await;
     state
-        .list(std::slice::from_ref(&fake_server), Some(&b))
+        .list(std::slice::from_ref(&fake_server), Some(&b), None)
         .await;
     state.stop_in(&a);
     assert!(exited(&log).await, "{:?}", logged(&log));
     let byes = || logged(&log).iter().filter(|m| m["bye"] == true).count();
     assert_eq!(byes(), 1, "only a's process exited");
     let tools = state
-        .list(std::slice::from_ref(&fake_server), Some(&b))
+        .list(std::slice::from_ref(&fake_server), Some(&b), None)
         .await[0]
         .tools
         .clone();
     assert!(tools.is_ok(), "b's still answers");
     assert_eq!(byes(), 1);
     state.shutdown().await;
+}
+
+/// A relay that posts as the app on the user's computer would, and keeps
+/// the computers it posted on; `away` refuses every post, as a relay to a
+/// computer that isn't connected does (Q11).
+#[derive(Default)]
+struct Posting {
+    computers: Mutex<Vec<String>>,
+    away: bool,
+}
+
+impl Relay for Posting {
+    fn computer_of(&self, chat: &str) -> Option<String> {
+        (chat == "chat").then(|| "laptop".into())
+    }
+
+    fn post(
+        &self,
+        computer: &str,
+        post: RelayedPost,
+    ) -> BoxFuture<'static, Result<reqwest::Response, String>> {
+        lock(&self.computers).push(computer.to_string());
+        let away = self.away;
+        Box::pin(async move {
+            if away {
+                return Err("It runs on the user's computer, which is away.".into());
+            }
+            let client = crate::net::client().await;
+            let mut request = client.post(&post.url).body(post.body);
+            for (name, value) in &post.headers {
+                request = request.header(name.as_str(), value.0.as_str());
+            }
+            request.send().await.map_err(|e| e.to_string())
+        })
+    }
+}
+
+/// Rovik's own server, on this machine's loopback, with its token saved.
+async fn loopback_server(state: &McpState) -> (RovikServer, McpServer) {
+    let (rovik, mut calls) = RovikServer::start(&rovik_tools(), "", None).await.unwrap();
+    tokio::spawn(async move {
+        while let Some(call) = calls.recv().await {
+            let _ = call.reply.send(McpReply::text("read it"));
+        }
+    });
+    let token = rovik.authorization();
+    state.set_secrets(Arc::new(move |_, _| Ok(Some(token.clone()))));
+    let server = server(
+        "rovik",
+        McpTransport::Url {
+            url: rovik.url(),
+            headers: vec![header("Authorization", "", true)],
+        },
+    );
+    (rovik, server)
+}
+
+/// Q11 (mcp-plan-2.md): on a daemon, a server on the loopback is on the
+/// user's computer: its every POST goes through the relay, on the computer
+/// the chat belongs to, with the server's secret header, and its tools are
+/// listed and called as any server's.
+#[tokio::test]
+async fn on_a_daemon_a_loopback_server_is_reached_through_the_chat_s_computer() {
+    let state = McpState::default();
+    let (_rovik, server) = loopback_server(&state).await;
+    let relay = Arc::new(Posting::default());
+    state.set_relay(relay.clone());
+    let via = state.via("chat");
+    assert_eq!(via.as_deref(), Some("laptop"));
+    let listed = state
+        .list(std::slice::from_ref(&server), None, via.as_deref())
+        .await;
+    let tools = listed[0].tools.clone().unwrap();
+    let read = tools.iter().find(|t| t.name == "read").unwrap();
+    let stop = StopSignal::new();
+    let result = state
+        .call(
+            &server,
+            None,
+            via.as_deref(),
+            read,
+            json!({ "path": "a" }),
+            &stop,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["content"][0]["text"], "read it");
+    let computers = lock(&relay.computers).clone();
+    assert!(computers.len() >= 3, "{computers:?}");
+    assert!(computers.iter().all(|c| c == "laptop"), "{computers:?}");
+}
+
+/// A computer that's away has its loopback servers unavailable, saying
+/// so; and with no computer to go through, a loopback server can't be
+/// reached from the daemon at all.
+#[tokio::test]
+async fn a_loopback_server_is_unavailable_while_its_computer_is_away() {
+    let state = McpState::default();
+    let (_rovik, server) = loopback_server(&state).await;
+    state.set_relay(Arc::new(Posting {
+        away: true,
+        ..Posting::default()
+    }));
+    let listed = state
+        .list(std::slice::from_ref(&server), None, Some("laptop"))
+        .await;
+    let error = listed[0].tools.clone().unwrap_err();
+    assert!(error.contains("which is away"), "{error}");
+    let listed = state.list(std::slice::from_ref(&server), None, None).await;
+    let error = listed[0].tools.clone().unwrap_err();
+    assert!(error.contains("this chat belongs to none"), "{error}");
+}
+
+/// Each computer's loopback is its own: a server listed for two computers'
+/// chats runs twice, once through each.
+#[tokio::test]
+async fn each_computer_s_loopback_server_is_an_instance_of_its_own() {
+    let state = McpState::default();
+    let (_rovik, server) = loopback_server(&state).await;
+    let relay = Arc::new(Posting::default());
+    state.set_relay(relay.clone());
+    for computer in ["laptop", "desk"] {
+        let listed = state
+            .list(std::slice::from_ref(&server), None, Some(computer))
+            .await;
+        assert!(listed[0].tools.is_ok(), "{computer}");
+    }
+    let computers = lock(&relay.computers).clone();
+    assert!(computers.contains(&"laptop".to_string()) && computers.contains(&"desk".to_string()));
+    assert_eq!(lock(&state.0.servers).len(), 2);
+}
+
+/// Without a relay, as in the app, a loopback server is posted to straight;
+/// and only localhost, 127.0.0.0/8 and [::1] are the loopback.
+#[tokio::test]
+async fn only_a_daemon_relays_and_only_the_loopback() {
+    let state = McpState::default();
+    let (_rovik, server) = loopback_server(&state).await;
+    assert_eq!(state.via("chat"), None);
+    let listed = state
+        .list(std::slice::from_ref(&server), None, Some("laptop"))
+        .await;
+    assert!(listed[0].tools.is_ok(), "straight, with no relay");
+    for url in [
+        "http://localhost:3000/mcp",
+        "http://LOCALHOST/mcp",
+        "http://127.0.0.1:8080/mcp",
+        "http://127.4.5.6/mcp",
+        "http://[::1]:3000/mcp",
+    ] {
+        assert!(on_loopback(url), "{url}");
+    }
+    for url in [
+        "https://mcp.example.com/mcp",
+        "http://10.0.0.5:3000/mcp",
+        "http://[::2]/mcp",
+        "http://localhost.example.com/mcp",
+        "not a url",
+    ] {
+        assert!(!on_loopback(url), "{url}");
+    }
+}
+
+/// A relayed answer reads as the server's: its status, its headers, its
+/// body's parts in order; an error among them ends it as a broken
+/// connection would.
+#[tokio::test]
+async fn a_relayed_answer_reads_as_the_server_s_own() {
+    let parts = vec![Ok("data: ".to_string()), Ok("{}\n\n".to_string())];
+    let headers = [
+        ("content-type".to_string(), "text/event-stream".to_string()),
+        ("bad header".to_string(), "x".to_string()),
+    ];
+    let response = relayed_response(200, &headers, futures_util::stream::iter(parts)).unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    assert_eq!(response.text().await.unwrap(), "data: {}\n\n");
+    let broken = vec![
+        Ok("half".to_string()),
+        Err("the computer went away".to_string()),
+    ];
+    let response = relayed_response(200, &[], futures_util::stream::iter(broken)).unwrap();
+    assert!(response.text().await.is_err());
 }

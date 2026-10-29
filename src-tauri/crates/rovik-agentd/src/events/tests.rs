@@ -367,3 +367,28 @@ fn a_runs_end_forgets_its_paces_and_its_subagents() {
     assert!(state.paces.is_empty(), "paces kept");
     assert!(state.leads.is_empty(), "leads kept");
 }
+
+/// Q11: a computer is connected while a subscription of its lives, its
+/// live events carried away from it as a session's writer does; its last
+/// one ending is heard. An event for it alone reaches it, not another.
+#[tokio::test]
+async fn a_computer_is_here_while_its_live_events_are_read() {
+    let events = events(Limits::default());
+    let mut leavings = events.leavings();
+    let first = events.subscribe("laptop", None).live;
+    let mut second = events.subscribe("laptop", None).live;
+    let mut desk = events.subscribe("desk", None).live;
+    assert!(events.here("laptop") && !events.here("phone"));
+    drop(first);
+    assert!(events.here("laptop"), "one still reads");
+    events.computer("laptop", Event::McpRelayWanted { id: "r1".into() });
+    let published = second.try_recv().unwrap();
+    assert!(published.reaches("laptop") && !published.reaches("desk"));
+    assert!(!desk.try_recv().unwrap().reaches("desk"));
+    drop(second);
+    assert!(!events.here("laptop"));
+    tokio::time::timeout(Duration::from_secs(1), leavings.changed())
+        .await
+        .expect("its leaving is heard")
+        .unwrap();
+}

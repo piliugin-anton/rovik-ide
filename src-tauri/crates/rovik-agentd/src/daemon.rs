@@ -45,7 +45,8 @@ pub struct Daemon {
     /// The chats' results (6.5).
     pub results: Arc<Results>,
     /// `--same-machine`: a chat without a worktree runs in the folder its
-    /// start names, for development.
+    /// start names, for development, and MCP servers on the loopback are
+    /// posted to from here (Q11).
     pub same_machine: bool,
     /// Why the virtual files aren't mounted, when they aren't.
     pub virtual_files_problem: Option<String>,
@@ -59,6 +60,9 @@ pub struct Daemon {
     /// The pages this user's commands asked to open, waiting for their
     /// computer's answer (D20).
     pub pages: crate::pages::Opener,
+    /// The POSTs to MCP servers on the computers' loopback, waiting for
+    /// their computer's answer (Q11).
+    pub relays: crate::relay::Relays,
 }
 
 impl Daemon {
@@ -121,14 +125,21 @@ impl Daemon {
                 }
                 Ok(Response::Count(removed))
             }
+            // A server on the loopback is the asking computer's (Q11).
             Request::McpTest { server, values } => {
                 let given = values.into_iter().map(|(k, v)| (k, v.0.clone())).collect();
                 self.core
                     .mcp
-                    .test(&server, &given, None)
+                    .test(&server, &given, None, Some(computer))
                     .await
                     .map(Response::McpTested)
                     .map_err(|e| Fail::new(FailCode::Internal, e))
+            }
+            Request::McpRelayTake { id } => {
+                (self.relays.take(computer, &id)).map(Response::McpRelayed)
+            }
+            Request::McpRelayPart { id, part } => {
+                Ok(Response::Bool(self.relays.part(computer, &id, part)))
             }
             Request::Storage => Ok(Response::Storage(host::storage(self).await)),
             Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),

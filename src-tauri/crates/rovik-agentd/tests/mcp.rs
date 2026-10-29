@@ -4,7 +4,8 @@
 
 mod common;
 
-use common::project::{ended, start, unattended, Setup, CHAT};
+use common::app::App;
+use common::project::{ended, ready_to_run, start, unattended, Setup, CHAT};
 use common::{start_request, until, Daemon, Session};
 use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
 use rovik_core::agent_run::{StartKind, UserMessage};
@@ -305,4 +306,78 @@ async fn a_server_turned_off_stops_on_the_host() {
         logged(&log).iter().any(|m| m["bye"] == true).then_some(())
     })
     .await;
+}
+
+/// Q11: a chat on the host calls an MCP server on the loopback of the
+/// user's computer, which a host can't reach, each POST made by the app
+/// there; one that isn't among the app's own servers isn't posted to.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_on_the_user_s_loopback_is_called_through_the_app() {
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    // On the user's computer: URL servers on its loopback, a token saved.
+    let read =
+        json!({ "type": "function", "function": { "name": "read", "description": "Read." } });
+    let loopback = |id: &str, name: &str, url: String| McpServer {
+        id: id.into(),
+        name: name.into(),
+        enabled: true,
+        transport: McpTransport::Url {
+            url,
+            headers: vec![McpValue {
+                name: "Authorization".into(),
+                value: String::new(),
+                secret: true,
+            }],
+        },
+        disabled_tools: Vec::new(),
+    };
+    let (docs, mut calls) = FakeServer::start(std::slice::from_ref(&read), "", None).await.unwrap();
+    tokio::spawn(async move {
+        while let Some(call) = calls.recv().await {
+            let _ = call.reply.send(McpReply::text("read it"));
+        }
+    });
+    let (other, _) = FakeServer::start(&[read], "", None).await.unwrap();
+    let token = docs.authorization();
+    app.test
+        .core
+        .mcp
+        .set_secrets(std::sync::Arc::new(move |_, _| Ok(Some(token.clone()))));
+    let docs = loopback("docs-id", "docs", docs.url());
+    let other = loopback("other-id", "other", other.url());
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "m1",
+            name: "mcp",
+            args: json!({ "tool": "docs.read", "arguments": {} }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = start(&setup, &url, unattended());
+    let config = request.config.as_mut().unwrap();
+    config.permissions.mcp_approval = ApprovalRule {
+        required: false,
+        by: Approver::User,
+    };
+    // The app's settings have docs; the chat's start has other too.
+    let mut mine = config.clone();
+    mine.mcp_servers = vec![docs.clone()];
+    config.mcp_servers = vec![docs, other];
+    rovik_core::dispatch(&app.test.core, Request::AgentConfigure(Box::new(mine)))
+        .await
+        .unwrap();
+    app.remote.start(request).await.unwrap();
+    ended(&setup.client).await;
+    let asked = seen.lock().unwrap().clone();
+    let listed = asked[0]["messages"].to_string();
+    assert!(
+        listed.contains("posts only to its own MCP servers"),
+        "{listed}"
+    );
+    let answered = asked[1]["messages"].to_string();
+    assert!(answered.contains("read it"), "{answered}");
 }

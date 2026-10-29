@@ -1392,10 +1392,12 @@ What to keep in mind:
   keys until you remove the keys (Settings → Cloud hosts lists them, by
   how many servers, and removing them stops the servers there). A command must be installed on the host
   (`npx`, `uvx`, Docker...): Rovik installs and translates nothing, and a
-  server that can't start is listed unavailable with why. A `localhost`
-  URL server can't be reached from a host yet. A host on an older Rovik
-  gets no secrets, and **Test on** in Settings → MCP servers doesn't offer
-  it.
+  server that can't start is listed unavailable with why. A URL server at
+  `localhost` (or `127.0.0.1`, `[::1]`) is one on your computer: a host's
+  chats reach it through Rovik there, so only while that computer is on and
+  Rovik runs, and only the servers your settings have (in WSL with mirrored
+  networking, the host reaches it itself). A host on an older Rovik gets no
+  secrets, and **Test on** in Settings → MCP servers doesn't offer it.
 - Values are used as written: `${VAR}` isn't read from the environment.
 
 ### Steering

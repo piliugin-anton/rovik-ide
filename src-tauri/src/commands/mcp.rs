@@ -90,6 +90,6 @@ pub async fn mcp_test(
         .map(|(key, value)| (key.clone(), value.0.clone()))
         .collect();
     core.mcp
-        .test(&server, &given, root.as_deref().map(Path::new))
+        .test(&server, &given, root.as_deref().map(Path::new), None)
         .await
 }

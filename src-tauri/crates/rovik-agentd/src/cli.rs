@@ -17,9 +17,10 @@ usage: rovik-agentd <command>
   serve [--socket PATH] [--data DIR] [--same-machine] [--no-virtual-files]
       Run the daemon. --data keeps its files, and the agent's work, in DIR
       instead of ~/.rovik and ~/.local/share/rovik. --same-machine runs a
-      chat in the folder its start names (development, until projects are
-      carried to the server). --no-virtual-files doesn't mount them, and
-      CLM chats fall back to trimming.
+      chat in the folder its start names, and posts to MCP servers on the
+      loopback itself, the app's machine being this one (development, until
+      projects are carried to the server). --no-virtual-files doesn't mount
+      them, and CLM chats fall back to trimming.
   attach --stdio [--socket PATH]
       Bridge stdin and stdout to the daemon's socket (an SSH exec channel).
   doctor [--socket PATH] [--data DIR] [--json]

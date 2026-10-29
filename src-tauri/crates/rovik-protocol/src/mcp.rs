@@ -6,6 +6,7 @@
 //! A secret's value (a token in an env var or a header) is never here: the
 //! keychain has it, and the core reads it when it starts the server (Q02).
 
+use crate::Secret;
 use serde::{Deserialize, Serialize};
 
 /// The most characters a server's name has.
@@ -142,4 +143,37 @@ pub fn is_valid_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// A POST a daemon has the user's computer make, to an MCP server on that
+/// computer's loopback, which a host can't reach (mcp-plan-2.md, Q11): the
+/// request whole, its headers' values kept out of `Debug`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayedPost {
+    /// The server's URL, as its settings have it.
+    pub url: String,
+    /// Each header with its value, the settings' secrets among them.
+    pub headers: Vec<(String, Secret)>,
+    /// The JSON-RPC message.
+    pub body: String,
+}
+
+/// A part of the answer to a [`RelayedPost`], as the computer gets it: its
+/// status and headers, then its body as it comes, then its end; or why the
+/// POST failed there.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum RelayPart {
+    Head {
+        status: u16,
+        headers: Vec<(String, String)>,
+    },
+    Body {
+        text: String,
+    },
+    End,
+    Failed {
+        error: String,
+    },
 }
