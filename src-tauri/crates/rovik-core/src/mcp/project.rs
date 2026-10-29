@@ -162,7 +162,7 @@ fn identity(transport: &McpTransport, values: bool) -> String {
         fields
     };
     let identity = match transport {
-        McpTransport::Url { url, headers } => {
+        McpTransport::Url { url, headers, .. } => {
             let url =
                 reqwest::Url::parse(url.trim()).map_or(url.trim().to_string(), |u| u.to_string());
             serde_json::json!(["url", url, fields(headers, false)])
@@ -206,12 +206,6 @@ pub fn read(root: &Path, user: &[McpServer]) -> Found {
                 secret: names_a_value(&text, bare),
                 value: text,
             });
-            if entry.get("type").and_then(Value::as_str) == Some("sse") {
-                found.left_out.push(format!(
-                    "{raw} ({file}) uses the old SSE transport, which Rovik doesn't speak."
-                ));
-                continue;
-            }
             if user_ids.contains(&identity(&transport, false))
                 || !seen.insert(identity(&transport, true))
             {
@@ -374,9 +368,10 @@ pub fn resolved(
             args: args.iter().map(|a| fill(a)).collect(),
             env: values(env, &server.transport, &mut fill),
         },
-        McpTransport::Url { url, headers } => McpTransport::Url {
+        McpTransport::Url { url, headers, sse } => McpTransport::Url {
             url: fill(url),
             headers: values(headers, &server.transport, &mut fill),
+            sse: *sse,
         },
     };
     if missing {

@@ -50,6 +50,12 @@ test('stored servers read back as saved, and a secret’s value never', () => {
       },
     },
     { id: 'docs', name: 'docs', enabled: false, transport: { kind: 'url', url: 'https://x' } },
+    {
+      id: 'old',
+      name: 'old',
+      transport: { kind: 'url', url: 'https://x/sse', sse: true },
+    },
+    { id: 'plain', name: 'plain', transport: { kind: 'url', url: 'https://y', sse: 'yes' } },
     { id: '', name: 'no-id', transport: { kind: 'url', url: 'https://x' } },
     { id: 'bad', name: 'bad', transport: { kind: 'ftp' } },
     'junk',
@@ -61,6 +67,20 @@ test('stored servers read back as saved, and a secret’s value never', () => {
       name: 'docs',
       enabled: false,
       transport: { kind: 'url', url: 'https://x', headers: [] },
+      disabledTools: [],
+    },
+    {
+      id: 'old',
+      name: 'old',
+      enabled: true,
+      transport: { kind: 'url', url: 'https://x/sse', headers: [], sse: true },
+      disabledTools: [],
+    },
+    {
+      id: 'plain',
+      name: 'plain',
+      enabled: true,
+      transport: { kind: 'url', url: 'https://y', headers: [] },
       disabledTools: [],
     },
   ]);
@@ -193,6 +213,10 @@ test('a server’s row shows its command line or its URL', () => {
   assert.equal(
     serverSummary({ ...github, transport: { kind: 'url', url: 'https://x/mcp', headers: [] } }),
     'https://x/mcp'
+  );
+  assert.equal(
+    serverSummary({ transport: { kind: 'url', url: 'https://x/sse', headers: [], sse: true } }),
+    'https://x/sse (HTTP+SSE)'
   );
 });
 

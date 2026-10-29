@@ -234,9 +234,10 @@ struct State {
     /// The messages sent to a run whose files are going up (steering), by
     /// message id, with their chat: Stop cancels them, and stops the run.
     steer_uploads: HashMap<String, (String, oneshot::Sender<()>)>,
-    /// The URLs of the MCP servers under Test on a host now, whose POSTs
-    /// this computer makes for it saved or not (remote/mcp_relay.rs).
-    mcp_testing: Vec<String>,
+    /// The URLs this computer makes a host's MCP requests to besides its
+    /// own servers': those under Test on a host now, saved or not, and the
+    /// endpoints the event streams it relays named (remote/mcp_relay.rs).
+    mcp_relayable: Vec<String>,
     /// The host this computer's chats run on when they don't run here:
     /// its Linux side (the WSL distribution, on Windows), where their
     /// commands are sandboxed. A chat of a project moves there before its

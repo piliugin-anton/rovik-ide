@@ -3,12 +3,14 @@
 //! POSTs to such a server come as `McpRelayWanted`: this computer takes
 //! the POST (`McpRelayTake`, which one window does when several are open),
 //! makes it when it's to one of its own MCP servers on the loopback, and
-//! sends the answer back as it comes (`McpRelayPart`). No other address
-//! here is the host's to reach.
+//! sends the answer back as it comes (`McpRelayPart`). A server on the old
+//! HTTP+SSE transport (Q13) has its event stream's GET relayed so, and its
+//! messages POSTed to the endpoint that stream named, while it lasts. No
+//! other address here is the host's to reach.
 
 use super::Remote;
 use futures_util::StreamExt;
-use rovik_core::mcp::{on_loopback, McpTransport};
+use rovik_core::mcp::{on_loopback, EndpointWatch, McpTransport};
 use rovik_protocol::mcp::{RelayPart, RelayedPost};
 use rovik_protocol::{Request, Response};
 
@@ -25,19 +27,20 @@ fn normal(url: &str) -> Option<String> {
     reqwest::Url::parse(url.trim()).ok().map(|u| u.to_string())
 }
 
-/// While it lives, `url` is under Test on a host: its POSTs are made, the
-/// server saved or not.
-pub(super) struct Testing<'a> {
+/// While it lives, `url` is posted to for a host, as its own servers are:
+/// one under Test on a host, saved or not, or the endpoint an event stream
+/// it relays named.
+pub(super) struct Relayable<'a> {
     remote: &'a Remote,
     url: Option<String>,
 }
 
-impl Drop for Testing<'_> {
+impl Drop for Relayable<'_> {
     fn drop(&mut self) {
         let Some(url) = &self.url else { return };
         let mut state = self.remote.lock();
-        if let Some(at) = state.mcp_testing.iter().position(|u| u == url) {
-            state.mcp_testing.swap_remove(at);
+        if let Some(at) = state.mcp_relayable.iter().position(|u| u == url) {
+            state.mcp_relayable.swap_remove(at);
         }
     }
 }
@@ -51,24 +54,33 @@ impl Remote {
     }
 
     /// `transport`'s URL is under Test on a host until the guard goes.
-    pub(super) fn testing(&self, transport: &McpTransport) -> Testing<'_> {
-        let url = match transport {
-            McpTransport::Url { url, .. } => normal(url),
-            McpTransport::Command { .. } => None,
-        };
-        if let Some(url) = &url {
-            self.lock().mcp_testing.push(url.clone());
+    pub(super) fn testing(&self, transport: &McpTransport) -> Relayable<'_> {
+        match transport {
+            McpTransport::Url { url, .. } => self.relayable(url),
+            McpTransport::Command { .. } => Relayable {
+                remote: self,
+                url: None,
+            },
         }
-        Testing { remote: self, url }
+    }
+
+    /// `url` is posted to for a host until the guard goes.
+    fn relayable(&self, url: &str) -> Relayable<'_> {
+        let url = normal(url);
+        if let Some(url) = &url {
+            self.lock().mcp_relayable.push(url.clone());
+        }
+        Relayable { remote: self, url }
     }
 
     /// Whether `url` is one of this computer's MCP servers on the loopback:
-    /// on in the settings, or under Test on a host now.
+    /// on in the settings, under Test on a host now, or the endpoint one's
+    /// relayed event stream named.
     fn relays_to(&self, url: &str) -> bool {
         let Some(url) = normal(url).filter(|u| on_loopback(u)) else {
             return false;
         };
-        if self.lock().mcp_testing.contains(&url) {
+        if self.lock().mcp_relayable.contains(&url) {
             return true;
         }
         let servers = self.core.agents.config().mcp_servers;
@@ -105,7 +117,7 @@ impl Remote {
             .await;
             return;
         }
-        let response = match posted(post).await {
+        let response = match posted(&post).await {
             Ok(response) => response,
             Err(error) => {
                 send(RelayPart::Failed { error }).await;
@@ -124,6 +136,10 @@ impl Remote {
         if !send(head).await {
             return;
         }
+        // An event stream's endpoint is posted to while the stream lasts,
+        // from before the host reads where it is.
+        let mut watch = post.stream.then(|| EndpointWatch::new(&post.url)).flatten();
+        let mut _endpoint = None;
         let mut body = response.bytes_stream();
         let mut pending: Vec<u8> = Vec::new();
         while let Some(chunk) = body.next().await {
@@ -135,6 +151,9 @@ impl Remote {
                     return;
                 }
             };
+            if let Some(endpoint) = watch.as_mut().and_then(|w| w.feed(&chunk)) {
+                _endpoint = Some(self.relayable(&endpoint));
+            }
             pending.extend_from_slice(&chunk);
             for text in texts(&mut pending, false) {
                 if !send(RelayPart::Body { text }).await {
@@ -151,10 +170,14 @@ impl Remote {
     }
 }
 
-/// Makes `post` here, as the host had it.
-async fn posted(post: RelayedPost) -> Result<reqwest::Response, String> {
+/// Makes `post` here, as the host had it: a POST, or the GET of an event
+/// stream.
+async fn posted(post: &RelayedPost) -> Result<reqwest::Response, String> {
     let client = rovik_core::net::client().await;
-    let mut request = client.post(&post.url).body(post.body.clone());
+    let mut request = match post.stream {
+        true => client.get(&post.url),
+        false => client.post(&post.url).body(post.body.clone()),
+    };
     for (name, value) in &post.headers {
         request = request.header(name.as_str(), value.0.as_str());
     }
@@ -227,6 +250,7 @@ mod tests {
             transport: McpTransport::Url {
                 url: url.into(),
                 headers: Vec::new(),
+                sse: false,
             },
             disabled_tools: Vec::new(),
         };
@@ -249,6 +273,52 @@ mod tests {
         assert!(remote.relays_to("http://127.0.0.1:4000/mcp"), "under Test");
         drop(testing);
         assert!(!remote.relays_to("http://127.0.0.1:4000/mcp"));
+        // Q13: where a relayed event stream said to post, while it lasts.
+        let endpoint = remote.relayable("http://localhost:3000/messages?sessionId=1");
+        assert!(remote.relays_to("http://localhost:3000/messages?sessionId=1"));
+        assert!(!remote.relays_to("http://localhost:3000/messages?sessionId=2"));
+        drop(endpoint);
+        assert!(!remote.relays_to("http://localhost:3000/messages?sessionId=1"));
+    }
+
+    /// Q13: a relayed event stream is a GET, with its headers and no body;
+    /// a message is a POST of its body.
+    #[tokio::test]
+    async fn an_event_stream_is_got_and_a_message_posted() {
+        use rovik_protocol::Secret;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let url = format!("http://{}/sse", listener.local_addr().unwrap());
+        let heard = tokio::spawn(async move {
+            let mut heard = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0; 8192];
+                let n = stream.read(&mut buf).await.unwrap();
+                heard.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+                let answer = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                stream.write_all(answer).await.unwrap();
+            }
+            heard
+        });
+        let request = |stream| RelayedPost {
+            url: url.clone(),
+            headers: vec![("Authorization".into(), Secret("Bearer t0p".into()))],
+            body: "{\"id\":1}".into(),
+            stream,
+        };
+        posted(&request(true)).await.unwrap();
+        posted(&request(false)).await.unwrap();
+        let heard = heard.await.unwrap();
+        assert!(heard[0].starts_with("GET /sse "), "{}", heard[0]);
+        assert!(heard[0]
+            .to_lowercase()
+            .contains("authorization: bearer t0p"));
+        assert!(!heard[0].contains("{\"id\":1}"), "no body");
+        assert!(heard[1].starts_with("POST /sse "), "{}", heard[1]);
+        assert!(heard[1].ends_with("{\"id\":1}"), "{}", heard[1]);
     }
 
     /// Two URLs compare as the MCP client writes them.

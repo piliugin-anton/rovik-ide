@@ -214,6 +214,7 @@ mod tests {
             url: "http://127.0.0.1:3000/mcp".into(),
             headers: vec![("Authorization".into(), Secret("Bearer t0p".into()))],
             body: "{}".into(),
+            stream: false,
         }
     }
 

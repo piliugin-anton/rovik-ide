@@ -1,6 +1,7 @@
 //! MCP servers on the real daemon (Q11): a command server stops with the
 //! chat's worktree, and a running server starts again when a start brings
-//! another secret for it.
+//! another secret for it; servers on the user's loopback, Streamable HTTP
+//! and HTTP+SSE (Q13), reached through the app.
 
 mod common;
 
@@ -141,6 +142,7 @@ async fn a_start_with_another_mcp_secret_restarts_the_running_server() {
                 value: String::new(),
                 secret: true,
             }],
+            sse: false,
         },
         disabled_tools: Vec::new(),
     };
@@ -331,10 +333,13 @@ async fn a_server_on_the_user_s_loopback_is_called_through_the_app() {
                 value: String::new(),
                 secret: true,
             }],
+            sse: false,
         },
         disabled_tools: Vec::new(),
     };
-    let (docs, mut calls) = FakeServer::start(std::slice::from_ref(&read), "", None).await.unwrap();
+    let (docs, mut calls) = FakeServer::start(std::slice::from_ref(&read), "", None)
+        .await
+        .unwrap();
     tokio::spawn(async move {
         while let Some(call) = calls.recv().await {
             let _ = call.reply.send(McpReply::text("read it"));
@@ -380,4 +385,83 @@ async fn a_server_on_the_user_s_loopback_is_called_through_the_app() {
     );
     let answered = asked[1]["messages"].to_string();
     assert!(answered.contains("read it"), "{answered}");
+}
+
+/// Q13: a chat on the host calls a server of the old HTTP+SSE transport on
+/// the loopback of the user's computer, set up as a plain URL: its POST
+/// refused there, its event stream's GET is made by the app, and its
+/// messages are posted by the app to the endpoint the stream named, the
+/// settings' token on each. One that isn't among the app's own servers
+/// gets no request at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_on_http_sse_on_the_user_s_loopback_is_called_through_the_app() {
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    let old = rovik_core::testing::SseServer::start(None).await;
+    let stranger = rovik_core::testing::SseServer::start(None).await;
+    app.test
+        .core
+        .mcp
+        .set_secrets(std::sync::Arc::new(|_, _| Ok(Some("Bearer t0p".into()))));
+    let sse_server = |id: &str, name: &str, url: &str| McpServer {
+        id: id.into(),
+        name: name.into(),
+        enabled: true,
+        transport: McpTransport::Url {
+            url: url.into(),
+            headers: vec![McpValue {
+                name: "Authorization".into(),
+                value: String::new(),
+                secret: true,
+            }],
+            sse: false,
+        },
+        disabled_tools: Vec::new(),
+    };
+    let server = sse_server("old-id", "old", &old.url);
+    let other = sse_server("stranger-id", "stranger", &stranger.url);
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "m1",
+            name: "mcp",
+            args: json!({ "tool": "old.echo", "arguments": { "text": "from the host" } }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = start(&setup, &url, unattended());
+    let config = request.config.as_mut().unwrap();
+    config.permissions.mcp_approval = ApprovalRule {
+        required: false,
+        by: Approver::User,
+    };
+    // The app's settings have old; the chat's start has stranger too.
+    let mut mine = config.clone();
+    mine.mcp_servers = vec![server.clone()];
+    config.mcp_servers = vec![server, other];
+    rovik_core::dispatch(&app.test.core, Request::AgentConfigure(Box::new(mine)))
+        .await
+        .unwrap();
+    app.remote.start(request).await.unwrap();
+    ended(&setup.client).await;
+    let asked = seen.lock().unwrap().clone();
+    let listed = asked[0]["messages"].to_string();
+    assert!(
+        listed.contains("posts only to its own MCP servers"),
+        "{listed}"
+    );
+    assert!(stranger.seen().is_empty(), "{:?}", stranger.seen());
+    let answered = asked[1]["messages"].to_string();
+    assert!(answered.contains("echo: from the host"), "{answered}");
+    let got = old.seen();
+    assert!(got.iter().any(|r| r.method == "GET"), "its stream");
+    assert!(
+        got.iter().any(|r| r.path.starts_with("/messages")),
+        "its endpoint"
+    );
+    assert!(got
+        .iter()
+        .all(|r| r.authorization.as_deref() == Some("Bearer t0p")));
 }

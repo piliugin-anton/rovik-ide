@@ -334,6 +334,13 @@ pub async fn system_one(noul: f64) -> (String, Arc<Mutex<Vec<Value>>>) {
 
 /// A request's path and JSON body.
 async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, Value) {
+    let (head, body) = read_raw(socket).await;
+    (path_of(&head), body)
+}
+
+/// A request's head (its first line and its headers) and JSON body (null
+/// without one).
+async fn read_raw(socket: &mut tokio::net::TcpStream) -> (String, Value) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 65536];
     // Where the body starts and how long it is, once the headers are in:
@@ -361,22 +368,19 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, Value) {
         }
         if let Some((start, length)) = body {
             if buf.len() >= start + length {
+                let head = String::from_utf8_lossy(&buf[..start]).into_owned();
                 let body = serde_json::from_slice(&buf[start..start + length]).unwrap_or_default();
-                return (path_of(&buf), body);
+                return (head, body);
             }
         }
     }
-    (path_of(&buf), Value::Null)
+    (String::from_utf8_lossy(&buf).into_owned(), Value::Null)
 }
 
 /// The path on a request's first line ("POST /v1/chat/completions HTTP/1.1").
-fn path_of(request: &[u8]) -> String {
-    let line = request.split(|b| *b == b'\n').next().unwrap_or_default();
-    String::from_utf8_lossy(line)
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("")
-        .to_string()
+fn path_of(head: &str) -> String {
+    let line = head.lines().next().unwrap_or_default();
+    line.split_whitespace().nth(1).unwrap_or("").to_string()
 }
 
 /*
@@ -491,4 +495,199 @@ pub fn effort(level: &str) -> Option<OpenAIChatOptions> {
         json!({ "reasoning_effort": level, "reasoning_formats": ["reasoning_effort"] }),
     )
     .unwrap()
+}
+
+/*
+ * An MCP server on the old HTTP+SSE transport
+ */
+
+/// A request the [`SseServer`] got: its method, path and `Authorization`
+/// header, and its JSON body (null for a GET).
+#[derive(Clone, Debug)]
+pub struct SseRequest {
+    pub method: String,
+    pub path: String,
+    pub authorization: Option<String>,
+    pub body: Value,
+}
+
+/// What an [`SseServer`]'s connections share.
+#[derive(Default)]
+struct SseShared {
+    seen: Mutex<Vec<SseRequest>>,
+    /// Each open stream's messages to write, by its session.
+    streams: Mutex<std::collections::HashMap<u64, tokio::sync::mpsc::UnboundedSender<String>>>,
+    next: std::sync::atomic::AtomicU64,
+    /// Its own requests waiting for the client's answers, by id.
+    asked: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// The endpoint its streams name, when not their own.
+    endpoint: Option<String>,
+}
+
+/// An MCP server on the old HTTP+SSE transport (2024-11-05), on 127.0.0.1
+/// (mcp-plan-2.md, Q13). A GET of `/sse` opens an event stream whose first
+/// event names `/messages?session=<n>` to post to, and what's posted there
+/// is answered on that stream: `initialize` with version 2024-11-05, then
+/// its tools. `echo` answers `echo: <text>` once the client has answered a
+/// `ping` of the server's own; `slow` never answers. A POST to `/sse`, as a
+/// Streamable HTTP client makes first, is refused 405.
+pub struct SseServer {
+    /// The stream's URL: `http://127.0.0.1:<port>/sse`.
+    pub url: String,
+    shared: Arc<SseShared>,
+}
+
+impl SseServer {
+    /// The server, its streams naming `endpoint` to post to when it's given
+    /// (another origin's), else their own.
+    pub async fn start(endpoint: Option<&str>) -> SseServer {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let url = format!("http://{}/sse", listener.local_addr().unwrap());
+        let shared = Arc::new(SseShared {
+            endpoint: endpoint.map(str::to_string),
+            ..SseShared::default()
+        });
+        let served = shared.clone();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(sse_connection(socket, served.clone()));
+            }
+        });
+        SseServer { url, shared }
+    }
+
+    /// The requests it got, in order.
+    pub fn seen(&self) -> Vec<SseRequest> {
+        self.shared.seen.lock().unwrap().clone()
+    }
+
+    /// Ends its open streams, as a server that went away.
+    pub fn end_streams(&self) {
+        self.shared.streams.lock().unwrap().clear();
+    }
+}
+
+/// One connection to the [`SseServer`]: a stream, a message or a refusal.
+async fn sse_connection(mut socket: tokio::net::TcpStream, shared: Arc<SseShared>) {
+    let (head, body) = read_raw(&mut socket).await;
+    let first = head.lines().next().unwrap_or_default().to_string();
+    let method = first.split_whitespace().next().unwrap_or("").to_string();
+    let path = path_of(&head);
+    let authorization = (head.lines())
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.trim().to_string());
+    shared.seen.lock().unwrap().push(SseRequest {
+        method: method.clone(),
+        path: path.clone(),
+        authorization,
+        body: body.clone(),
+    });
+    let reply = |status: &str| {
+        format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    };
+    let (route, query) = path.split_once('?').unwrap_or((path.as_str(), ""));
+    match (method.as_str(), route) {
+        ("GET", "/sse") => {
+            let n = shared
+                .next
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (to_stream, mut messages) = tokio::sync::mpsc::unbounded_channel();
+            shared.streams.lock().unwrap().insert(n, to_stream);
+            let endpoint = (shared.endpoint.clone()).unwrap_or(format!("/messages?session={n}"));
+            let opened = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\nevent: endpoint\ndata: {endpoint}\n\n"
+            );
+            if socket.write_all(opened.as_bytes()).await.is_err() {
+                return;
+            }
+            while let Some(message) = messages.recv().await {
+                let event = format!("event: message\ndata: {message}\n\n");
+                if socket.write_all(event.as_bytes()).await.is_err() {
+                    return;
+                }
+            }
+        }
+        ("POST", "/sse") => {
+            let _ = socket
+                .write_all(reply("405 Method Not Allowed").as_bytes())
+                .await;
+        }
+        ("POST", "/messages") => {
+            let session = query.strip_prefix("session=").and_then(|n| n.parse().ok());
+            let stream = session.and_then(|n| shared.streams.lock().unwrap().get(&n).cloned());
+            let Some(stream) = stream else {
+                let _ = socket.write_all(reply("404 Not Found").as_bytes()).await;
+                return;
+            };
+            let _ = socket.write_all(reply("202 Accepted").as_bytes()).await;
+            tokio::spawn(sse_answer(body, stream, shared));
+        }
+        _ => {
+            let _ = socket.write_all(reply("404 Not Found").as_bytes()).await;
+        }
+    }
+}
+
+/// The [`SseServer`]'s answer to `message`, on its session's stream.
+async fn sse_answer(
+    message: Value,
+    stream: tokio::sync::mpsc::UnboundedSender<String>,
+    shared: Arc<SseShared>,
+) {
+    let send = |message: Value| {
+        let _ = stream.send(message.to_string());
+    };
+    let Some(id) = message.get("id").filter(|id| !id.is_null()).cloned() else {
+        return;
+    };
+    let result = |result: Value| json!({ "jsonrpc": "2.0", "id": id, "result": result });
+    match message["method"].as_str() {
+        // The client's answer to the server's own request.
+        None => {
+            if let Some(answered) = shared.asked.lock().unwrap().remove(&id.to_string()) {
+                let _ = answered.send(());
+            }
+        }
+        Some("initialize") => send(result(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": { "tools": {} },
+            "serverInfo": { "name": "old-sse", "version": "0.9" },
+            "instructions": "Old tools.",
+        }))),
+        Some("tools/list") => send(result(json!({ "tools": [
+            { "name": "echo", "description": "Echo the text.", "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } } } },
+            { "name": "slow", "description": "Never answers.", "inputSchema": { "type": "object" } },
+        ] }))),
+        Some("tools/call") if message["params"]["name"] == "slow" => {}
+        Some("tools/call") => {
+            let ping = json!(format!("server-ping-{id}"));
+            let (answered, answer) = tokio::sync::oneshot::channel();
+            shared
+                .asked
+                .lock()
+                .unwrap()
+                .insert(ping.to_string(), answered);
+            send(json!({ "jsonrpc": "2.0", "id": ping, "method": "ping" }));
+            if tokio::time::timeout(Duration::from_secs(5), answer)
+                .await
+                .is_err()
+            {
+                return send(
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": "no answer to ping" } }),
+                );
+            }
+            let text = message["params"]["arguments"]["text"]
+                .as_str()
+                .unwrap_or("");
+            send(result(
+                json!({ "content": [{ "type": "text", "text": format!("echo: {text}") }] }),
+            ));
+        }
+        Some(other) => send(
+            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": format!("no {other}") } }),
+        ),
+    }
 }

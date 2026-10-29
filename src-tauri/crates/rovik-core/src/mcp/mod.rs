@@ -21,6 +21,7 @@ mod http;
 mod import;
 pub mod project;
 mod rpc;
+mod sse;
 mod stdio;
 #[cfg(test)]
 mod tests;
@@ -28,6 +29,7 @@ mod tool;
 
 pub use import::{import, looks_secret};
 pub use rovik_protocol::mcp::{is_valid_name, McpServer, McpTransport, McpValue};
+pub use sse::EndpointWatch;
 pub use tool::Tool;
 
 use crate::agent_run::StopSignal;
@@ -164,6 +166,8 @@ async fn wait_for<T>(
 enum Link {
     Stdio(stdio::Stdio),
     Http(http::Http),
+    /// The old HTTP+SSE transport (mcp-plan-2.md, Q13).
+    Sse(sse::Sse),
 }
 
 /// A server spoken to: its link, the era it speaks, and what it says of
@@ -214,6 +218,7 @@ impl Link {
         match self {
             Link::Stdio(stdio) => Box::pin(stdio.request(method, params, within, stop)),
             Link::Http(http) => Box::pin(http.request(method, params, headers, within, stop)),
+            Link::Sse(sse) => Box::pin(sse.request(method, params, within, stop)),
         }
     }
 
@@ -226,15 +231,20 @@ impl Link {
         match self {
             Link::Stdio(stdio) => Box::pin(async move { stdio.notify(method, params) }),
             Link::Http(http) => Box::pin(http.notify(method, params, headers)),
+            Link::Sse(sse) => Box::pin(sse.notify(method, params)),
         }
     }
 
     /// Ends a command's server, and what it started; a URL's has nothing
-    /// of Rovik's to end.
+    /// of Rovik's to end but an event stream, closed.
     fn stop(&self) -> BoxFuture<'_, ()> {
         match self {
             Link::Stdio(stdio) => Box::pin(stdio.stop()),
             Link::Http(_) => Box::pin(async {}),
+            Link::Sse(sse) => {
+                sse.stop();
+                Box::pin(async {})
+            }
         }
     }
 
@@ -260,6 +270,7 @@ impl Link {
         match self {
             Link::Stdio(stdio) => stdio.ended().is_none(),
             Link::Http(_) => true,
+            Link::Sse(sse) => sse.ended().is_none(),
         }
     }
 }
@@ -313,22 +324,58 @@ fn instructions_of(result: &Value) -> String {
 }
 
 impl Session {
+    /// A legacy session over `link`, its handshake done; or the link back
+    /// with the handshake's failure.
+    async fn legacy(link: Link) -> Result<Session, (Link, Failure)> {
+        match initialize(&link).await {
+            Ok((result, version)) => Ok(Session {
+                server: named(result.get("serverInfo")),
+                instructions: instructions_of(&result),
+                era: Era::Legacy(version),
+                link,
+            }),
+            Err(failure) => Err((link, failure)),
+        }
+    }
+
     /// Speaks to the server over `link` (Q03): the handshake first, the
-    /// stateless protocol when the server refuses it.
+    /// stateless protocol when the server refuses it. A URL whose POST is
+    /// refused as Streamable HTTP takes it (400, 404 or 405 without a
+    /// JSON-RPC error) is tried on the old HTTP+SSE transport, as that
+    /// spec's backwards compatibility has it, and spoken to so for the
+    /// session (mcp-plan-2.md, Q13).
     async fn open(link: Link) -> Result<Session, String> {
-        let refused = match initialize(&link).await {
-            Ok((result, version)) => {
-                return Ok(Session {
-                    server: named(result.get("serverInfo")),
-                    instructions: instructions_of(&result),
-                    era: Era::Legacy(version),
-                    link,
-                })
-            }
-            Err(failure) => failure,
+        let (link, refused) = match Session::legacy(link).await {
+            Ok(session) => return Ok(session),
+            Err(refused) => refused,
         };
+        if let (
+            Link::Http(http),
+            Failure::Http {
+                status: 400 | 404 | 405,
+                ..
+            },
+        ) = (&link, &refused)
+        {
+            let (url, wire) = http.parts();
+            match sse::Sse::open(url, wire.clone(), START_WITHIN).await {
+                Ok(sse) => {
+                    let session = Session::legacy(Link::Sse(sse)).await;
+                    return session
+                        .map_err(|(link, failure)| link.explained(handshake_text(&failure)));
+                }
+                // Not its URL: a token may be in it.
+                Err(failure) => {
+                    log::info!("an MCP server isn't on HTTP+SSE either: {}", failure.text())
+                }
+            }
+        }
         if let Some(why) = final_failure(&refused) {
             return Err(link.explained(why));
+        }
+        // The old transport has no stateless era to try.
+        if let Link::Sse(_) = link {
+            return Err(refused_text(&refused));
         }
         let params = rpc::params_for(&Era::Modern, json!({}));
         let headers = headers_for(&Era::Modern, "server/discover", None, Vec::new());
@@ -474,15 +521,22 @@ fn final_failure(failure: &Failure) -> Option<String> {
     }
 }
 
+/// What a handshake's failure says: what settles the matter, else the
+/// server's refusal.
+fn handshake_text(failure: &Failure) -> String {
+    final_failure(failure).unwrap_or_else(|| refused_text(failure))
+}
+
 /// What the handshake's refusal says, for a server that isn't a modern one
-/// either. A 404 or 405 may be the old SSE transport's server.
+/// either. A 404 or 405, to Streamable HTTP and to HTTP+SSE alike, may be
+/// a URL that's no MCP server's.
 fn refused_text(failure: &Failure) -> String {
     match failure {
         Failure::Http {
             status: 404 | 405, ..
         } => format!(
-            "The server refused Rovik's handshake ({}). If it only speaks the old SSE \
-             transport, start it through a bridge command: npx mcp-remote <url>.",
+            "The server refused Rovik's handshake ({}), on Streamable HTTP and on the old \
+             HTTP+SSE transport: check its URL.",
             failure.text()
         ),
         _ => format!("The server refused Rovik's handshake: {}", failure.text()),
@@ -999,9 +1053,23 @@ impl McpState {
             McpTransport::Command { command, args, .. } => {
                 Link::Stdio(stdio::Stdio::start(command, args, &values, folder)?)
             }
+            McpTransport::Url { url, sse: true, .. } => {
+                let url = http::checked_url(url)?.to_string();
+                let wire = http::Wire::new(&values, self.relayed(&url, via)?)?;
+                let opened = sse::Sse::open(&url, wire, START_WITHIN).await;
+                Link::Sse(opened.map_err(|failure| {
+                    let why = final_failure(&failure);
+                    why.unwrap_or_else(|| {
+                        format!(
+                            "The server's event stream can't be opened: {}",
+                            failure.text()
+                        )
+                    })
+                })?)
+            }
             McpTransport::Url { url, .. } => {
-                let relayed = self.relayed(url, via)?;
-                Link::Http(http::Http::new(url, &values, relayed)?)
+                let wire = http::Wire::new(&values, self.relayed(url, via)?)?;
+                Link::Http(http::Http::new(url, wire)?)
             }
         };
         Session::open(link).await

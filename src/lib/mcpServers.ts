@@ -20,10 +20,15 @@ export interface McpValue {
   saved?: boolean;
 }
 
-/** How Rovik reaches a server: a command it starts, or a URL. */
+/**
+ * How Rovik reaches a server: a command it starts, or a URL. A URL's `sse`
+ * is the old HTTP+SSE transport (2024-11-05), as its setup's entry says
+ * (`"type": "sse"`); one without it that turns out to speak only that is
+ * found to (mcp-plan-2.md, Q13).
+ */
 export type McpTransport =
   | { kind: 'command'; command: string; args: string[]; env: McpValue[] }
-  | { kind: 'url'; url: string; headers: McpValue[] };
+  | { kind: 'url'; url: string; headers: McpValue[]; sse?: boolean };
 
 export interface McpServer {
   /** Made when it's added, never shown: its secrets are kept by it. */
@@ -126,7 +131,12 @@ function normalizeTransport(raw: unknown): McpTransport | null {
     };
   }
   if (r.kind === 'url' && isString(r.url)) {
-    return { kind: 'url', url: r.url, headers: values(r.headers) };
+    return {
+      kind: 'url',
+      url: r.url,
+      headers: values(r.headers),
+      ...(r.sse === true ? { sse: true } : {}),
+    };
   }
   return null;
 }
@@ -250,10 +260,10 @@ export function unsavedSecrets(server: McpServer): string[] {
     .map((v) => v.name);
 }
 
-/** How it's reached, in one line: its command line, or its URL. */
+/** How it's reached, in one line: its command line, or its URL (and its old transport). */
 export function serverSummary(server: Pick<McpServer, 'transport'>): string {
   const t = server.transport;
-  if (t.kind === 'url') return t.url;
+  if (t.kind === 'url') return t.sse ? `${t.url} (HTTP+SSE)` : t.url;
   const shown = t.args.map((a) => (!a || /\s|"/.test(a) ? JSON.stringify(a) : a));
   return [t.command, ...shown].join(' ');
 }

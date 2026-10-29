@@ -54,6 +54,7 @@ async fn a_legacy_http_server_is_listed_and_called_with_its_token_from_the_keych
         McpTransport::Url {
             url: rovik.url(),
             headers: vec![header("Authorization", "", true)],
+            sse: false,
         },
     );
     let listed = state
@@ -103,6 +104,162 @@ async fn a_legacy_http_server_is_listed_and_called_with_its_token_from_the_keych
     assert_eq!(tested.tools.len(), 2);
 }
 
+/// A server on the old HTTP+SSE transport at `url`, its token from the
+/// keychain; on it from the start when `sse`.
+fn old_server(url: &str, sse: bool) -> McpServer {
+    server(
+        "old",
+        McpTransport::Url {
+            url: url.into(),
+            headers: vec![header("Authorization", "", true)],
+            sse,
+        },
+    )
+}
+
+/// Q13 (mcp-plan-2.md): a server on the old HTTP+SSE transport, as its
+/// entry says: its stream's GET and each message carry the settings'
+/// headers, it speaks the version it answered, its tools are listed, and a
+/// call is answered on its stream once Rovik has answered the server's
+/// own `ping` there.
+#[tokio::test]
+async fn an_sse_server_is_spoken_to_on_its_event_stream() {
+    let old = crate::testing::SseServer::start(None).await;
+    let state = McpState::default();
+    state.set_secrets(Arc::new(|_, _| Ok(Some("Bearer t0p".into()))));
+    let sse = old_server(&old.url, true);
+    let listed = state.list(std::slice::from_ref(&sse), None, None).await;
+    assert_eq!(listed[0].instructions, "Old tools.");
+    let tools = listed[0].tools.clone().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["echo", "slow"]);
+    let stop = StopSignal::new();
+    let echo = &tools[0];
+    let result = state.call(&sse, None, None, echo, json!({ "text": "hi" }), &stop);
+    assert_eq!(result.await.unwrap()["content"][0]["text"], "echo: hi");
+
+    let seen = old.seen();
+    assert_eq!(
+        (seen[0].method.as_str(), seen[0].path.as_str()),
+        ("GET", "/sse")
+    );
+    assert!(seen
+        .iter()
+        .all(|r| r.authorization.as_deref() == Some("Bearer t0p")));
+    assert!(
+        !seen.iter().any(|r| r.method == "POST" && r.path == "/sse"),
+        "no Streamable HTTP tried first"
+    );
+    let ping = seen.iter().find(|r| {
+        r.body["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("server-ping"))
+    });
+    assert_eq!(
+        ping.map(|r| r.body["result"].clone()),
+        Some(json!({})),
+        "its ping answered"
+    );
+    let tested = state.test(&sse, &HashMap::new(), None, None).await.unwrap();
+    assert_eq!(tested.protocol, "2024-11-05");
+    assert_eq!(tested.server, "old-sse 0.9");
+}
+
+/// Q13: a URL set up as Streamable HTTP whose POST is refused 405 is tried
+/// as HTTP+SSE, and spoken to so for the session: its URL isn't posted to
+/// again.
+#[tokio::test]
+async fn a_url_that_refuses_streamable_http_is_spoken_to_on_http_sse() {
+    let old = crate::testing::SseServer::start(None).await;
+    let state = McpState::default();
+    state.set_secrets(Arc::new(|_, _| Ok(Some("Bearer t0p".into()))));
+    let plain = old_server(&old.url, false);
+    let listed = state.list(std::slice::from_ref(&plain), None, None).await;
+    let tools = listed[0].tools.clone().unwrap();
+    let stop = StopSignal::new();
+    let result = state.call(
+        &plain,
+        None,
+        None,
+        &tools[0],
+        json!({ "text": "again" }),
+        &stop,
+    );
+    assert_eq!(result.await.unwrap()["content"][0]["text"], "echo: again");
+    let seen = old.seen();
+    let posts_to_url = seen
+        .iter()
+        .filter(|r| r.method == "POST" && r.path == "/sse");
+    assert_eq!(posts_to_url.count(), 1, "the first try alone");
+    assert_eq!(
+        seen.iter().filter(|r| r.method == "GET").count(),
+        1,
+        "one stream"
+    );
+}
+
+/// Q13: a stream that names another origin to post to isn't posted to,
+/// and its server is unavailable, saying so.
+#[tokio::test]
+async fn an_sse_server_naming_another_origin_isn_t_posted_to() {
+    let old = crate::testing::SseServer::start(Some("http://evil.example/messages")).await;
+    let state = McpState::default();
+    state.set_secrets(Arc::new(|_, _| Ok(Some("Bearer t0p".into()))));
+    let listed = state
+        .list(
+            std::slice::from_ref(&old_server(&old.url, true)),
+            None,
+            None,
+        )
+        .await;
+    let error = listed[0].tools.clone().unwrap_err();
+    assert!(error.contains("Rovik doesn't post there"), "{error}");
+    assert!(
+        old.seen().iter().all(|r| r.method == "GET"),
+        "nothing posted"
+    );
+}
+
+/// Q13: a stream that ends fails the call waiting on it at once, saying
+/// so, and the next use opens a stream again.
+#[tokio::test]
+async fn an_sse_stream_that_ends_fails_its_call_and_opens_again() {
+    let old = crate::testing::SseServer::start(None).await;
+    let state = McpState::default();
+    state.set_secrets(Arc::new(|_, _| Ok(Some("Bearer t0p".into()))));
+    let sse = old_server(&old.url, true);
+    let listed = state.list(std::slice::from_ref(&sse), None, None).await;
+    let tools = listed[0].tools.clone().unwrap();
+    let slow = tools.iter().find(|t| t.name == "slow").unwrap().clone();
+    let stop = StopSignal::new();
+    let state_ = state.clone();
+    let sse_ = sse.clone();
+    let waiting = tokio::spawn(async move {
+        state_
+            .call(&sse_, None, None, &slow, json!({}), &stop)
+            .await
+    });
+    // The call is waiting on the stream; then the server goes away.
+    for _ in 0..200 {
+        if old
+            .seen()
+            .iter()
+            .any(|r| r.body["params"]["name"] == "slow")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let started = std::time::Instant::now();
+    old.end_streams();
+    let error = waiting.await.unwrap().unwrap_err();
+    assert!(error.text.contains("event stream ended"), "{}", error.text);
+    assert!(started.elapsed() < Duration::from_secs(5), "at once");
+    let again = state.list(std::slice::from_ref(&sse), None, None).await;
+    assert!(again[0].tools.is_ok(), "{:?}", again[0].tools);
+    assert_eq!(old.seen().iter().filter(|r| r.method == "GET").count(), 2);
+}
+
 /// A wrong token is the server's refusal, said as such; a secret that
 /// isn't saved names the value to enter, never a secret's value.
 #[tokio::test]
@@ -113,6 +270,7 @@ async fn a_refused_or_missing_secret_says_what_to_fix() {
         McpTransport::Url {
             url: rovik.url(),
             headers: vec![header("Authorization", "Bearer wrong", false)],
+            sse: false,
         },
     );
     let listed = McpState::default().list(&[wrong], None, None).await;
@@ -125,6 +283,7 @@ async fn a_refused_or_missing_secret_says_what_to_fix() {
         McpTransport::Url {
             url: rovik.url(),
             headers: vec![header("Authorization", "", true)],
+            sse: false,
         },
     );
     let state = McpState::default();
@@ -155,6 +314,7 @@ async fn a_server_starts_again_with_its_new_secrets_once_forgotten() {
         McpTransport::Url {
             url: rovik.url(),
             headers: vec![header("Authorization", "", true)],
+            sse: false,
         },
     );
     let servers = std::slice::from_ref(&rovik_server);
@@ -185,6 +345,7 @@ async fn the_keychain_is_read_off_the_async_threads() {
         McpTransport::Url {
             url,
             headers: vec![header("Authorization", "", true)],
+            sse: false,
         },
     );
     let state = McpState::default();
@@ -325,6 +486,7 @@ async fn a_modern_http_server_is_spoken_to_statelessly() {
         McpTransport::Url {
             url,
             headers: Vec::new(),
+            sse: false,
         },
     );
     let state = McpState::default();
@@ -386,6 +548,7 @@ async fn a_server_that_cant_be_reached_waits_before_it_is_tried_again() {
         McpTransport::Url {
             url,
             headers: Vec::new(),
+            sse: false,
         },
     );
     let state = McpState::default();
@@ -759,6 +922,7 @@ async fn saved_secrets_are_the_servers_values_the_keychain_has_on_or_off() {
     let url = |headers| McpTransport::Url {
         url: "http://127.0.0.1:1/mcp".into(),
         headers,
+        sse: false,
     };
     let s1 = server(
         "s1",
@@ -795,6 +959,7 @@ async fn a_server_with_an_unreadable_secret_is_left_out_not_an_error() {
     let url = |headers| McpTransport::Url {
         url: "http://127.0.0.1:1/mcp".into(),
         headers,
+        sse: false,
     };
     let s1 = server(
         "s1",
@@ -1024,6 +1189,7 @@ async fn loopback_server(state: &McpState) -> (RovikServer, McpServer) {
         McpTransport::Url {
             url: rovik.url(),
             headers: vec![header("Authorization", "", true)],
+            sse: false,
         },
     );
     (rovik, server)

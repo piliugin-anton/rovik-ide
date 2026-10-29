@@ -396,9 +396,12 @@ freed.
 - A URL server on the loopback (`localhost`, 127.0.0.0/8, `[::1]`) is on
   the user's computer, which a server can't reach: the daemon has the app
   there make each POST (`McpRelayWanted`, then `McpRelayTake` and
-  `McpRelayPart`), one server instance per computer. The app posts only to
-  its own servers on its loopback, on in its settings or under Test, so a
-  daemon can't reach anything else on the computer through it. While the
+  `McpRelayPart`), one server instance per computer. A server on the old
+  HTTP+SSE transport has its event stream's GET relayed the same way, for
+  as long as the stream lasts. The app posts only to its own servers on
+  its loopback, on in its settings or under Test, and to the endpoint
+  their relayed stream named while it lasts, so a daemon can't reach
+  anything else on the computer through it. While the
   computer isn't connected, its loopback servers are unavailable there,
   saying it's away. In WSL with mirrored networking, and with
   `--same-machine`, the daemon posts to the loopback itself.

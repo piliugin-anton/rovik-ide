@@ -84,7 +84,7 @@ test('allowing in one chat stops every chat of the project asking for those serv
 
 test('“Not now” puts the servers off, and a note of what isn’t used is seen once', () => {
   const docs = server('docs', 'h-docs');
-  const note = 'old (.mcp.json) uses the old SSE transport, which Rovik doesn’t speak.';
+  const note = 'time (.mcp.json) isn’t used: one of the user’s MCP servers has its name.';
   noteMcpServersAwaiting('chat-d', { projectId: 'p3', servers: [docs], leftOut: [note] });
   settleAwaitingServers('chat-d', true);
   assert.equal(awaitingServersIn('chat-d'), undefined);

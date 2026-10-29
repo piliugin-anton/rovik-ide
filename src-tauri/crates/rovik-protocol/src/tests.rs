@@ -235,6 +235,7 @@ fn config() -> AgentConfig {
                     value: String::new(),
                     secret: true,
                 }],
+                sse: false,
             },
             disabled_tools: vec!["delete_repository".into()],
         }],
@@ -360,12 +361,19 @@ fn an_mcp_server_reads_as_the_frontend_keeps_it() {
     let url = McpTransport::Url {
         url: "https://example.com/mcp".into(),
         headers: Vec::new(),
+        sse: false,
     };
     assert_eq!(url.secret_key("Authorization"), "header/Authorization");
     assert_eq!(
         serde_json::to_value(&url).unwrap(),
         json!({ "kind": "url", "url": "https://example.com/mcp", "headers": [] })
     );
+    // Q13 (mcp-plan-2.md): the old HTTP+SSE transport, as the page keeps it.
+    let sse =
+        json!({ "kind": "url", "url": "https://example.com/sse", "headers": [], "sse": true });
+    let read: McpTransport = serde_json::from_value(sse.clone()).unwrap();
+    assert!(matches!(read, McpTransport::Url { sse: true, .. }));
+    assert_eq!(serde_json::to_value(&read).unwrap(), sse);
     let before: AgentConfig = serde_json::from_str("{}").unwrap();
     assert!(before.mcp_servers.is_empty());
     assert!(serde_json::to_value(AgentConfig::default())
@@ -408,6 +416,7 @@ fn a_secret_key_names_an_env_var_or_a_header() {
     let url = McpTransport::Url {
         url: "https://mcp.example.com".into(),
         headers: Vec::new(),
+        sse: false,
     };
     for key in [
         command.secret_key("GITHUB_TOKEN"),
@@ -450,6 +459,7 @@ fn a_transports_secret_keys_are_its_named_secret_values() {
     let url = McpTransport::Url {
         url: "https://mcp.example.com".into(),
         headers: vec![value("Authorization", true)],
+        sse: false,
     };
     assert_eq!(url.secret_keys(), ["header/Authorization"]);
 }
@@ -905,6 +915,7 @@ fn every_request_round_trips() {
                     transport: McpTransport::Url {
                         url: "https://example.com/mcp".into(),
                         headers: Vec::new(),
+                        sse: false,
                     },
                     disabled_tools: Vec::new(),
                 },
@@ -1891,6 +1902,7 @@ fn relayed_post() -> RelayedPost {
         url: "http://127.0.0.1:3000/mcp".into(),
         headers: vec![("Authorization".into(), crate::Secret("Bearer t0p".into()))],
         body: r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.into(),
+        stream: false,
     }
 }
 
@@ -1922,4 +1934,21 @@ fn a_relayed_post_and_its_answer_round_trip_its_secrets_hidden() {
     }
     let take = Request::McpRelayTake { id: "r1".into() };
     assert_eq!(take.target(), None, "the host's, not a chat's");
+}
+
+/// Q13: an event stream's GET goes as such, and a POST from a daemon that
+/// knows of no GET reads as one.
+#[test]
+fn a_relayed_get_of_an_event_stream_says_so_and_a_post_needs_not() {
+    let get = RelayedPost {
+        stream: true,
+        body: String::new(),
+        ..relayed_post()
+    };
+    let json = serde_json::to_value(&get).unwrap();
+    assert_eq!(json["stream"], true);
+    assert_eq!(serde_json::from_value::<RelayedPost>(json).unwrap(), get);
+    let post = serde_json::to_value(relayed_post()).unwrap();
+    assert!(post.get("stream").is_none(), "{post}");
+    assert!(!serde_json::from_value::<RelayedPost>(post).unwrap().stream);
 }

@@ -3,7 +3,8 @@
 //! servers a project's own files set up (mcp-plan-2.md, Q12). An
 //! `mcpServers` object (Claude Code, Claude Desktop, Cursor), VS Code's
 //! `servers`, one server's entry by its name, or the entry alone: a command
-//! (`command`, `args`, `env`) or a URL (`url`, `headers`).
+//! (`command`, `args`, `env`) or a URL (`url`, `headers`; `"type": "sse"`
+//! for the old HTTP+SSE transport, Q13).
 
 use super::{McpServer, McpTransport, McpValue};
 use rovik_protocol::mcp::MAX_NAME;
@@ -102,8 +103,9 @@ fn text_of(value: &Value) -> String {
     }
 }
 
-/// An entry's command or URL, its env vars or headers made by `value`
-/// (from a value's name and its text).
+/// An entry's command or URL (the old HTTP+SSE transport's when its type
+/// says `sse`), its env vars or headers made by `value` (from a value's
+/// name and its text).
 pub(crate) fn transport_of(
     entry: &Map<String, Value>,
     value: impl Fn(&str, String) -> McpValue,
@@ -129,6 +131,7 @@ pub(crate) fn transport_of(
         None => McpTransport::Url {
             url: entry.get("url").map(text_of).unwrap_or_default(),
             headers: values("headers"),
+            sse: entry.get("type").and_then(Value::as_str) == Some("sse"),
         },
     }
 }
@@ -136,8 +139,7 @@ pub(crate) fn transport_of(
 /// The servers in `text`, JSON pasted on the settings page, named apart
 /// from the `taken` names. A value whose name looks like a secret's is a
 /// secret, its value typed (as a form has it), but for a placeholder
-/// (`<YOUR_TOKEN>`), which is left for the user to enter. An entry of the
-/// old SSE transport is refused: it goes through a bridge command.
+/// (`<YOUR_TOKEN>`), which is left for the user to enter.
 pub fn import(text: &str, taken: &[String]) -> Result<Vec<McpServer>, String> {
     let parsed: Value = serde_json::from_str(text).map_err(|_| {
         "That isn’t JSON. Paste the server’s settings as its instructions give them.".to_string()
@@ -152,14 +154,6 @@ pub fn import(text: &str, taken: &[String]) -> Result<Vec<McpServer>, String> {
     let mut taken: BTreeSet<String> = taken.iter().cloned().collect();
     let mut servers = Vec::new();
     for (name, entry) in found {
-        if entry.get("type").and_then(Value::as_str) == Some("sse") {
-            let url = entry.get("url").map(text_of);
-            return Err(format!(
-                "{name} uses the old SSE transport: add it as a command, through a bridge: npx \
-                 mcp-remote {}",
-                url.as_deref().unwrap_or("<url>")
-            ));
-        }
         let transport = transport_of(entry, |key, text| {
             let secret = looks_secret(key);
             McpValue {
@@ -237,6 +231,7 @@ mod tests {
             McpTransport::Url {
                 url: "https://docs.example.com/mcp".into(),
                 headers: vec![value("Authorization", "", true)],
+                sse: false,
             },
             "the placeholder left for the user to enter"
         );
@@ -255,18 +250,29 @@ mod tests {
         assert_eq!(names(json!({ "time": { "command": "uvx" } })), ["time"]);
     }
 
-    /// JSON with no server, or an SSE one, says what to do instead.
+    /// JSON with no server says what to do instead.
     #[test]
-    fn json_without_a_server_or_with_an_sse_one_says_what_to_do() {
+    fn json_without_a_server_says_what_to_do() {
         let error = |text: &str| import(text, &[]).unwrap_err();
         assert!(error("{").starts_with("That isn’t JSON"));
         assert!(error("[]").starts_with("Paste an object"));
         assert!(error(r#"{"mcpServers": {"x": {"args": []}}}"#).starts_with("No server found"));
-        let sse = json!({ "mcpServers": { "old": { "type": "sse", "url": "https://old.example.com/sse" } } });
-        assert_eq!(
-            error(&sse.to_string()),
-            "old uses the old SSE transport: add it as a command, through a bridge: npx mcp-remote https://old.example.com/sse"
-        );
+    }
+
+    /// Q13 (mcp-plan-2.md): an entry of the old HTTP+SSE transport is a URL
+    /// server on it; one of Streamable HTTP isn't.
+    #[test]
+    fn an_sse_entry_is_a_url_server_on_the_old_transport() {
+        let pasted = json!({ "mcpServers": {
+            "old": { "type": "sse", "url": "https://old.example.com/sse" },
+            "new": { "type": "http", "url": "https://new.example.com/mcp" },
+        } });
+        let servers = import(&pasted.to_string(), &[]).unwrap();
+        let sse = |s: &McpServer| matches!(s.transport, McpTransport::Url { sse: true, .. });
+        let mut found: Vec<(&str, bool)> =
+            servers.iter().map(|s| (s.name.as_str(), sse(s))).collect();
+        found.sort();
+        assert_eq!(found, [("new", false), ("old", true)]);
     }
 
     /// A name keeps letters, digits, - and _, starts with a letter, fits,

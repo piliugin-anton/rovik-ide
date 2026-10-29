@@ -243,6 +243,25 @@ fn a_project_server_runs_with_its_variables_filled_its_secrets_apart() {
     assert_eq!(resolved(&found.servers[1], "p1", folder, |_| None), None);
 }
 
+/// Q13: an entry of the old HTTP+SSE transport is a server on it, filled
+/// in as any other.
+#[test]
+fn an_sse_entry_is_a_server_on_the_old_transport() {
+    let dir = temp_dir();
+    let old = json!({ "type": "sse", "url": "http://localhost:8931/sse", "headers": { "Authorization": "Bearer ${TOKEN}" } });
+    write(&dir.0, ".mcp.json", json!({ "mcpServers": { "old": old } }));
+    let found = read(&dir.0, &[]);
+    assert!(found.left_out.is_empty(), "{:?}", found.left_out);
+    let token = |_: &str| Some("t0p".to_string());
+    let (server, secrets) = resolved(&found.servers[0], "p1", &dir.0, token).unwrap();
+    assert!(
+        matches!(server.transport, McpTransport::Url { sse: true, .. }),
+        "{:?}",
+        server.transport
+    );
+    assert_eq!(secrets["header/Authorization"], "Bearer t0p");
+}
+
 /// The project's settings keep the approved servers' hashes, and the
 /// variables they take, which a start brings the values of to a host.
 #[test]

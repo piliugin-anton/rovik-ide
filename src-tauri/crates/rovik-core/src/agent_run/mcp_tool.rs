@@ -627,6 +627,7 @@ mod tests {
             transport: McpTransport::Url {
                 url: "https://example.com/mcp".into(),
                 headers: Vec::new(),
+                sse: false,
             },
             disabled_tools: Vec::new(),
         }

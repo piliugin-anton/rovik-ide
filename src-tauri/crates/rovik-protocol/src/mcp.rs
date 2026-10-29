@@ -79,6 +79,12 @@ pub enum McpTransport {
         /// Sent with each request.
         #[serde(default)]
         headers: Vec<McpValue>,
+        /// The old HTTP+SSE transport (2024-11-05), as the server's setup
+        /// said (`"type": "sse"`): a GET of `url` opens its event stream
+        /// (mcp-plan-2.md, Q13). One without it that turns out to speak
+        /// only that is spoken to so all the same.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sse: bool,
     },
 }
 
@@ -196,12 +202,17 @@ pub struct ProjectVariable {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayedPost {
-    /// The server's URL, as its settings have it.
+    /// The server's URL, as its settings have it; or, on the HTTP+SSE
+    /// transport, the endpoint its event stream named (Q13).
     pub url: String,
     /// Each header with its value, the settings' secrets among them.
     pub headers: Vec<(String, Secret)>,
     /// The JSON-RPC message.
     pub body: String,
+    /// A GET of the server's event stream instead (HTTP+SSE, Q13), with
+    /// no body: its answer goes on for as long as the stream does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stream: bool,
 }
 
 /// A part of the answer to a [`RelayedPost`], as the computer gets it: its

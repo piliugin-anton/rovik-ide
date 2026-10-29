@@ -1341,12 +1341,17 @@ nothing.
 call (`src-tauri/crates/rovik-core/src/mcp/`; design:
 [`docs/design/mcp-plan.md`](docs/design/mcp-plan.md)). A server is a
 command Rovik starts, with its arguments (one per line) and environment
-variables, or the URL of a server that speaks Streamable HTTP, with its
-headers (`Authorization`). **Add from JSON** takes a server's setup as its
-instructions give it for Claude Desktop, Claude Code, Cursor or VS Code: an
-`mcpServers` object, or one server's entry. A server that has only the old
-SSE transport, or that signs in with OAuth, is added as a bridge command
-such as `npx mcp-remote <url>`, which signs in itself.
+variables, or the URL of a server, with its headers (`Authorization`). A
+URL is spoken to on Streamable HTTP, or on the old HTTP+SSE transport
+(2024-11-05): when its entry says so (`"type": "sse"`), or when its server
+refuses Streamable HTTP's first POST (400, 404 or 405 without a JSON-RPC
+error), as that transport's backwards compatibility has it (design:
+[`docs/design/mcp-plan-2.md`](docs/design/mcp-plan-2.md), Q13). Rovik
+posts its messages only to an endpoint on the stream's own origin.
+**Add from JSON** takes a server's setup as its instructions give it for
+Claude Desktop, Claude Code, Cursor or VS Code: an `mcpServers` object, or
+one server's entry. A server that signs in with OAuth is added as a bridge
+command such as `npx mcp-remote <url>`, which signs in itself.
 
 A value marked **Secret** (a new one is, until you untick it) is kept in
 your system's keychain, or where there's none in the encrypted file the API
@@ -1435,8 +1440,9 @@ What to keep in mind:
   server that can't start is listed unavailable with why. A URL server at
   `localhost` (or `127.0.0.1`, `[::1]`) is one on your computer: a host's
   chats reach it through Rovik there, so only while that computer is on and
-  Rovik runs, and only the servers your settings have (in WSL with mirrored
-  networking, the host reaches it itself). A host on an older Rovik gets no
+  Rovik runs, and only the servers your settings have, and on HTTP+SSE the
+  endpoint their stream names (in WSL with mirrored networking, the host
+  reaches it itself). A host on an older Rovik gets no
   secrets, and **Test on** in Settings → MCP servers doesn't offer it.
 - Your own servers' values are used as written: `${VAR}` isn't read from
   the environment.

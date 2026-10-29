@@ -597,6 +597,7 @@ mod tests {
                     value: String::new(),
                     secret: true,
                 }],
+                sse: false,
             },
             disabled_tools: Vec::new(),
         };
