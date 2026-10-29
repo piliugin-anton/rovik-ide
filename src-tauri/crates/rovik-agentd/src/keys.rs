@@ -82,6 +82,20 @@ impl Keys {
         }
     }
 
+    /// Forgets the MCP secrets `wanted` doesn't name, which has the secret
+    /// keys of each server some computer has on (Q11): a server removed or
+    /// turned off loses all its secrets, and one without a secret field
+    /// any more loses that field's value.
+    pub fn keep_mcp(&mut self, wanted: &BTreeMap<String, BTreeSet<String>>) {
+        self.mcp.retain(|id, values| {
+            let Some(keys) = wanted.get(id) else {
+                return false;
+            };
+            values.retain(|key, _| keys.contains(key));
+            !values.is_empty()
+        });
+    }
+
     /// The ids of the MCP servers whose saved secrets `other` has otherwise.
     pub fn mcp_changes(&self, other: &Keys) -> Vec<String> {
         let ids: BTreeSet<&String> = self.mcp.keys().chain(other.mcp.keys()).collect();

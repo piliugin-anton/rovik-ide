@@ -172,14 +172,12 @@ impl Daemon {
             Request::AgentConfigure(config) => {
                 let network = config.network.clone();
                 let permissions = config.permissions.clone();
-                self.store
-                    .configure(computer, *config)
-                    .map(|()| {
-                        rovik_core::net::set_host_network(network);
-                        rovik_core::allowed_hosts::configure(&permissions);
-                        Response::Done
-                    })
-                    .map_err(|e| Fail::new(FailCode::Internal, e))
+                let mcp_changed = (self.store.configure(computer, *config))
+                    .map_err(|e| Fail::new(FailCode::Internal, e))?;
+                rovik_core::net::set_host_network(network);
+                rovik_core::allowed_hosts::configure(&permissions);
+                self.mcp_changed(&mcp_changed);
+                Ok(Response::Done)
             }
             Request::AutonomyConfigure(config) => self
                 .store
@@ -349,13 +347,22 @@ impl Daemon {
     /// the chat becomes the computer's.
     async fn start(&self, computer: &str, mut start: StartRequest) -> Result<Response, Fail> {
         self.can_run(&start.dialog_id)?;
-        // A running server keeps the secrets it started with: one whose
-        // secrets changed starts again with the new ones.
-        for id in self.store.started(computer, &start)? {
-            self.core.mcp.forget(&id);
-        }
+        let mcp_changed = self.store.started(computer, &start)?;
+        self.mcp_changed(&mcp_changed);
         self.tell_marked(&mut start);
         self.run(start).await
+    }
+
+    /// The computers' MCP servers, or their secrets, changed (Q11). A
+    /// running server keeps the secrets it started with: one whose secrets
+    /// changed starts again with the new ones at its next use, and one no
+    /// computer has on any more stops, so none goes on with what the user
+    /// took back.
+    fn mcp_changed(&self, secrets_changed: &[String]) {
+        for id in secrets_changed {
+            self.core.mcp.forget(id);
+        }
+        self.core.mcp.configure(&self.store.mcp_servers());
     }
 
     /// The first message after a sync put conflict markers in the chat's

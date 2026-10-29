@@ -426,6 +426,32 @@ fn a_secret_key_names_an_env_var_or_a_header() {
     }
 }
 
+/// A transport's secret keys are its named values marked secret, and only
+/// those.
+#[test]
+fn a_transports_secret_keys_are_its_named_secret_values() {
+    let value = |name: &str, secret| McpValue {
+        name: name.into(),
+        value: String::new(),
+        secret,
+    };
+    let command = McpTransport::Command {
+        command: "npx".into(),
+        args: Vec::new(),
+        env: vec![
+            value("TOKEN", true),
+            value("PLAIN", false),
+            value(" ", true),
+        ],
+    };
+    assert_eq!(command.secret_keys(), ["env/TOKEN"]);
+    let url = McpTransport::Url {
+        url: "https://mcp.example.com".into(),
+        headers: vec![value("Authorization", true)],
+    };
+    assert_eq!(url.secret_keys(), ["header/Authorization"]);
+}
+
 /// A message as a steer sends it: the text with its editor context, an
 /// image.
 fn steer_message() -> UserMessage {

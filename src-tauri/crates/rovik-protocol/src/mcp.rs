@@ -111,6 +111,16 @@ impl McpTransport {
             McpTransport::Url { .. } => format!("header/{name}"),
         }
     }
+
+    /// The keys its secret values are kept under: one for each named value
+    /// marked secret.
+    pub fn secret_keys(&self) -> Vec<String> {
+        self.values()
+            .iter()
+            .filter(|v| v.secret && !v.name.trim().is_empty())
+            .map(|v| self.secret_key(&v.name))
+            .collect()
+    }
 }
 
 /// Whether `key` is one [`McpTransport::secret_key`] makes: `env/NAME` or

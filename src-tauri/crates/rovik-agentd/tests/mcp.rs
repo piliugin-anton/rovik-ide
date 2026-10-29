@@ -58,30 +58,12 @@ fn logged(log: &Path) -> Vec<Value> {
 /// worktree. Deleting the chat stops it.
 #[tokio::test]
 async fn deleting_a_chat_stops_the_mcp_servers_started_in_its_root() {
-    needs_python3();
     let setup = Setup::new().await;
     let snapshot = setup.pushed(CHAT).await;
     setup.ensure_in("src").await;
     let root = PathBuf::from(setup.sync(CHAT, &snapshot).await.unwrap().root);
     assert!(root.ends_with("src"), "{root:?}");
-    let dir = &setup.daemon.dir.0;
-    let script = dir.join("fake_mcp.py");
-    std::fs::write(&script, SERVER).unwrap();
-    let log = dir.join("fake.log");
-    let server = McpServer {
-        id: "cmd-id".into(),
-        name: "cmd".into(),
-        enabled: true,
-        transport: McpTransport::Command {
-            command: "python3".into(),
-            args: vec![
-                script.to_string_lossy().into_owned(),
-                log.to_string_lossy().into_owned(),
-            ],
-            env: Vec::new(),
-        },
-        disabled_tools: Vec::new(),
-    };
+    let (server, log) = command_server(&setup.daemon.dir.0, Vec::new());
     let (url, _) = model(vec![Reply::Text("Done.")]).await;
     let mut request = start(&setup, &url, unattended());
     request.config.as_mut().unwrap().mcp_servers = vec![server];
@@ -221,13 +203,35 @@ async fn ended_in(session: &mut Session<UnixStream>) {
 /// so none keeps a removed secret in its environment.
 #[tokio::test(flavor = "multi_thread")]
 async fn removing_every_key_forgets_the_mcp_secrets_and_stops_the_servers() {
-    needs_python3();
     let daemon = Daemon::start(&["--same-machine"]).await;
-    let project = daemon.dir.0.join("project");
-    std::fs::create_dir_all(&project).unwrap();
-    let script = daemon.dir.0.join("fake_mcp.py");
+    let (server, log) = command_server(&daemon.dir.0, token());
+    let mut session = daemon.session().await;
+    let kept = session.call(Request::McpSecretsKept).await;
+    assert_eq!(kept, Ok(Response::Count(0)));
+
+    run_with(&mut session, &daemon.dir.0, &server).await;
+    until("the server's start", || logged(&log).first().cloned()).await;
+    let kept = session.call(Request::McpSecretsKept).await;
+    assert_eq!(kept, Ok(Response::Count(1)));
+    assert!(!format!("{kept:?}").contains("t0p"));
+
+    let removed = session.call(Request::KeysRemove { provider: None }).await;
+    assert_eq!(removed, Ok(Response::Count(1)), "the one server's secrets");
+    let kept = session.call(Request::McpSecretsKept).await;
+    assert_eq!(kept, Ok(Response::Count(0)));
+    until("the server's end", || {
+        logged(&log).iter().any(|m| m["bye"] == true).then_some(())
+    })
+    .await;
+}
+
+/// The command server in `dir`, with these env vars, and its log. It runs
+/// on python3, which the test then needs.
+fn command_server(dir: &Path, env: Vec<McpValue>) -> (McpServer, PathBuf) {
+    needs_python3();
+    let script = dir.join("fake_mcp.py");
     std::fs::write(&script, SERVER).unwrap();
-    let log = daemon.dir.0.join("fake.log");
+    let log = dir.join("fake.log");
     let server = McpServer {
         id: "cmd-id".into(),
         name: "cmd".into(),
@@ -238,37 +242,65 @@ async fn removing_every_key_forgets_the_mcp_secrets_and_stops_the_servers() {
                 script.to_string_lossy().into_owned(),
                 log.to_string_lossy().into_owned(),
             ],
-            env: vec![McpValue {
-                name: "TOKEN".into(),
-                value: String::new(),
-                secret: true,
-            }],
+            env,
         },
         disabled_tools: Vec::new(),
     };
-    let mut session = daemon.session().await;
-    let kept = session.call(Request::McpSecretsKept).await;
-    assert_eq!(kept, Ok(Response::Count(0)));
+    (server, log)
+}
 
+/// The env var TOKEN, a secret.
+fn token() -> Vec<McpValue> {
+    vec![McpValue {
+        name: "TOKEN".into(),
+        value: String::new(),
+        secret: true,
+    }]
+}
+
+/// A run in `dir`'s project with `server` on, its start bringing "t0p" for
+/// each of its secrets, until it ends; its start lists the server's tools,
+/// which starts the server. The configuration it ran with.
+async fn run_with(
+    session: &mut Session<UnixStream>,
+    dir: &Path,
+    server: &McpServer,
+) -> rovik_protocol::agent::AgentConfig {
+    let project = dir.join("project");
+    std::fs::create_dir_all(&project).unwrap();
     let (url, _) = model(vec![Reply::Text("Done.")]).await;
     let mut request = start_request(&url, &project, "Hi".into());
-    request.config.as_mut().unwrap().mcp_servers = vec![server];
-    let secrets = [("env/TOKEN".to_string(), Secret("t0p".into()))];
-    request.mcp_secrets = [("cmd-id".to_string(), secrets.into_iter().collect())].into();
+    let config = request.config.as_mut().unwrap();
+    config.mcp_servers = vec![server.clone()];
+    let config = config.clone();
+    let secrets = (server.transport.secret_keys().into_iter())
+        .map(|key| (key, Secret("t0p".into())))
+        .collect();
+    request.mcp_secrets = [(server.id.clone(), secrets)].into();
     session
         .call(Request::AgentStart(Box::new(request)))
         .await
         .unwrap();
-    ended_in(&mut session).await;
-    until("the server's start", || logged(&log).first().cloned()).await;
-    let kept = session.call(Request::McpSecretsKept).await;
-    assert_eq!(kept, Ok(Response::Count(1)));
-    assert!(!format!("{kept:?}").contains("t0p"));
+    ended_in(session).await;
+    config
+}
 
-    let removed = session.call(Request::KeysRemove { provider: None }).await;
-    assert_eq!(removed, Ok(Response::Count(1)), "the one server's secrets");
-    let kept = session.call(Request::McpSecretsKept).await;
-    assert_eq!(kept, Ok(Response::Count(0)));
+/// Q11: a server the user turns off on their computer stops on the host:
+/// no process there goes on with what the user took back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_turned_off_stops_on_the_host() {
+    let daemon = Daemon::start(&["--same-machine"]).await;
+    let (mut server, log) = command_server(&daemon.dir.0, Vec::new());
+    let mut session = daemon.session().await;
+    let mut config = run_with(&mut session, &daemon.dir.0, &server).await;
+    until("the server's start", || logged(&log).first().cloned()).await;
+
+    server.enabled = false;
+    config.mcp_servers = vec![server];
+    session
+        .call(Request::AgentConfigure(Box::new(config)))
+        .await
+        .unwrap();
     until("the server's end", || {
         logged(&log).iter().any(|m| m["bye"] == true).then_some(())
     })

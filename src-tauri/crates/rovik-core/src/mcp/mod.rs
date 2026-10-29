@@ -558,19 +558,13 @@ impl McpState {
         let read = crate::rt::spawn_blocking(move || {
             let mut all = BTreeMap::new();
             for server in &servers {
-                let fields: Vec<_> = server
-                    .transport
-                    .values()
-                    .iter()
-                    .filter(|v| v.secret && !v.name.trim().is_empty())
-                    .collect();
-                if fields.is_empty() {
+                let keys = server.transport.secret_keys();
+                if keys.is_empty() {
                     continue;
                 }
                 let mut found = BTreeMap::new();
                 let mut readable = true;
-                for value in fields {
-                    let key = server.transport.secret_key(&value.name);
+                for key in keys {
                     match source(&server.id, &key) {
                         Ok(Some(secret)) => {
                             found.insert(key, Secret(secret));

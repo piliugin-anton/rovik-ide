@@ -471,8 +471,33 @@ fn a_project_is_its_computers_alone() {
     assert!(store.check_project_owner("c1", "p3").is_err());
 }
 
+/// A configuration with MCP server s1, a command with the secret env var
+/// TOKEN, on or off.
+fn with_mcp(enabled: bool) -> AgentConfig {
+    use rovik_protocol::mcp::{McpServer, McpTransport, McpValue};
+    AgentConfig {
+        mcp_servers: vec![McpServer {
+            id: "s1".into(),
+            name: "s1".into(),
+            enabled,
+            transport: McpTransport::Command {
+                command: "srv".into(),
+                args: Vec::new(),
+                env: vec![McpValue {
+                    name: "TOKEN".into(),
+                    value: String::new(),
+                    secret: true,
+                }],
+            },
+            disabled_tools: Vec::new(),
+        }],
+        ..AgentConfig::default()
+    }
+}
+
+/// A start whose configuration has s1 on, bringing its TOKEN.
 fn mcp_start(dialog: &str, value: &str) -> StartRequest {
-    let mut started = start(dialog, "", None);
+    let mut started = start(dialog, "", Some(with_mcp(true)));
     let secrets = [(
         "env/TOKEN".to_string(),
         rovik_protocol::Secret(value.into()),
@@ -550,6 +575,51 @@ fn an_empty_mcp_secret_map_clears_the_server_s_and_is_reported_changed() {
     assert!(!keys.contains("t0p"), "{keys}");
     // Cleared already: nothing changes.
     assert!(store.started("laptop", &cleared).unwrap().is_empty());
+}
+
+/// Q11: what the user takes back on this computer goes from the server
+/// too. A server the configuration no longer has, or has off, loses its
+/// secrets, and so does a secret field the server no longer has.
+#[test]
+fn a_server_removed_turned_off_or_without_the_field_loses_its_secrets() {
+    let without_field = {
+        let mut config = with_mcp(true);
+        let rovik_protocol::mcp::McpTransport::Command { env, .. } =
+            &mut config.mcp_servers[0].transport
+        else {
+            unreachable!()
+        };
+        env[0].secret = false;
+        config
+    };
+    for (taken_back, how) in [
+        (AgentConfig::default(), "removed"),
+        (with_mcp(false), "turned off"),
+        (without_field, "no longer secret"),
+    ] {
+        let dir = temp_dir();
+        let store = Store::open(&dir.0).unwrap();
+        store.started("laptop", &mcp_start("chat", "t0p")).unwrap();
+        assert_eq!(store.mcp_secrets_kept(), 1, "{how}");
+        store.configure("laptop", taken_back).unwrap();
+        assert_eq!(store.mcp_value("s1", "env/TOKEN"), None, "{how}");
+        assert_eq!(store.mcp_secrets_kept(), 0, "{how}");
+        let keys = fs::read_to_string(dir.0.join("keys.json")).unwrap();
+        assert!(!keys.contains("t0p"), "{how}: {keys}");
+    }
+}
+
+/// Q11: a server another computer still has keeps its secrets when one
+/// computer's configuration drops it.
+#[test]
+fn a_server_another_computer_has_keeps_its_secrets() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &mcp_start("chat", "t0p")).unwrap();
+    store.configure("desk", AgentConfig::default()).unwrap();
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("t0p".into()));
+    store.configure("laptop", AgentConfig::default()).unwrap();
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), None);
 }
 
 /// A start whose keys.json can't be written changes no key, here or in
