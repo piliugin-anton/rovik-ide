@@ -121,6 +121,9 @@ pub fn run() {
                         Err(e) => Err(e.to_string()),
                     }
                 }));
+            // Their sign-ins made here, refreshed here (mcp-plan-2.md, Q14).
+            let grants = rovik_client::mcp_sign_in::KeychainGrants(secrets.clone());
+            core.mcp.set_grants(Arc::new(grants));
             // Chats on hosts (6.1): their requests go to the host, and its
             // events come back through the core's sink.
             let remote = Remote::new(core.clone());
@@ -444,6 +447,10 @@ pub fn run() {
             commands::mcp::mcp_import,
             commands::mcp::mcp_save_project_values,
             commands::mcp::mcp_project_prefill,
+            commands::mcp::mcp_sign_in,
+            commands::mcp::mcp_project_sign_in,
+            commands::mcp::mcp_sign_out,
+            commands::mcp::mcp_signed_in,
             commands::tools::outline_symbols,
             commands::vfs::vfs_status,
             commands::vfs::vfs_install_driver,

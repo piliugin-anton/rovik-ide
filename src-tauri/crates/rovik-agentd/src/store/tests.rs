@@ -682,3 +682,46 @@ fn a_project_s_variables_stay_until_a_start_clears_them() {
     store.started("laptop", &started).unwrap();
     assert_eq!(store.mcp_value("project/p1", "GITHUB_TOKEN"), None);
 }
+
+/// Q14: a sign-in made for this server is kept in keys.json, by its
+/// server, until it's signed out or the keys are removed; a configuration
+/// without the server keeps it, unlike its secrets.
+#[test]
+fn a_sign_in_is_kept_until_signed_out_or_the_keys_go() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let grant = rovik_protocol::mcp::McpGrant {
+        issuer: "https://auth.example.com".into(),
+        token_endpoint: "https://auth.example.com/token".into(),
+        client_id: "c1".into(),
+        client_secret: None,
+        auth_method: "none".into(),
+        resource: "https://mcp.example.com/mcp".into(),
+        scope: String::new(),
+        access_token: rovik_protocol::Secret("at-1".into()),
+        refresh_token: Some(rovik_protocol::Secret("rt-1".into())),
+        expires_at: None,
+    };
+    store.set_mcp_grant("s1", Some(grant.clone())).unwrap();
+    store.configure("laptop", AgentConfig::default()).unwrap();
+    assert_eq!(store.mcp_grant("s1"), Some(grant.clone()));
+    assert_eq!(store.mcp_signed_in(), ["s1"]);
+    let again = Store::open(&dir.0).unwrap();
+    assert_eq!(again.mcp_grant("s1"), Some(grant.clone()), "in keys.json");
+    again.set_mcp_grant("s1", None).unwrap();
+    assert!(again.mcp_signed_in().is_empty());
+    again.set_mcp_grant("s1", Some(grant.clone())).unwrap();
+    again.set_mcp_grant("s2", Some(grant)).unwrap();
+    assert_eq!(
+        again.mcp_secrets_kept(),
+        2,
+        "a sign-in is a server's secret kept"
+    );
+    assert_eq!(
+        again.remove_keys(None).unwrap(),
+        2,
+        "each server counts once"
+    );
+    assert!(again.mcp_signed_in().is_empty());
+    assert_eq!(again.mcp_secrets_kept(), 0);
+}

@@ -6,7 +6,7 @@
 mod common;
 
 use common::app::App;
-use common::project::{ended, ready_to_run, start, unattended, Setup, CHAT};
+use common::project::{ended, message, ready_to_run, start, unattended, Setup, CHAT};
 use common::{start_request, until, Daemon, Session};
 use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
 use rovik_core::agent_run::{StartKind, UserMessage};
@@ -143,6 +143,7 @@ async fn a_start_with_another_mcp_secret_restarts_the_running_server() {
                 secret: true,
             }],
             sse: false,
+            oauth: None,
         },
         disabled_tools: Vec::new(),
     };
@@ -334,6 +335,7 @@ async fn a_server_on_the_user_s_loopback_is_called_through_the_app() {
                 secret: true,
             }],
             sse: false,
+            oauth: None,
         },
         disabled_tools: Vec::new(),
     };
@@ -417,6 +419,7 @@ async fn a_server_on_http_sse_on_the_user_s_loopback_is_called_through_the_app()
                 secret: true,
             }],
             sse: false,
+            oauth: None,
         },
         disabled_tools: Vec::new(),
     };
@@ -464,4 +467,130 @@ async fn a_server_on_http_sse_on_the_user_s_loopback_is_called_through_the_app()
     assert!(got
         .iter()
         .all(|r| r.authorization.as_deref() == Some("Bearer t0p")));
+}
+
+/// Q14: a sign-in made on the user's computer for the host goes to its
+/// daemon, which keeps it and uses it for the host's runs, refreshing it
+/// there when the server refuses its token; once signed out there, the
+/// server says to sign in.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_for_the_host_is_used_and_refreshed_there_until_signed_out() {
+    use common::app::HOST;
+    use rovik_core::mcp::oauth;
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    let auth = rovik_core::testing::OAuthServer::start(Default::default()).await;
+    #[derive(Default)]
+    struct Kept(std::sync::Mutex<Option<oauth::Client>>);
+    impl oauth::Registrations for Kept {
+        fn get(&self, _: &str) -> Option<oauth::Client> {
+            self.0.lock().unwrap().clone()
+        }
+        fn put(&self, _: &str, client: &oauth::Client) -> Result<(), String> {
+            *self.0.lock().unwrap() = Some(client.clone());
+            Ok(())
+        }
+    }
+    let browser = |url: &str| auth.browse(url).map(drop);
+    let kept: std::sync::Arc<dyn oauth::Registrations> = std::sync::Arc::new(Kept::default());
+    let grant = oauth::sign_in_to(&auth.mcp_url, false, &[], None, kept, &browser)
+        .await
+        .unwrap();
+    let first = grant.access_token.clone();
+    app.remote
+        .mcp_sign_in(HOST, "signed-id", Some(grant))
+        .await
+        .unwrap();
+    assert_eq!(app.remote.mcp_signed_in(HOST).await.unwrap(), ["signed-id"]);
+
+    let server = McpServer {
+        id: "signed-id".into(),
+        name: "signed".into(),
+        enabled: true,
+        transport: McpTransport::Url {
+            url: auth.mcp_url.clone(),
+            headers: Vec::new(),
+            sse: false,
+            oauth: None,
+        },
+        disabled_tools: Vec::new(),
+    };
+    let call = Reply::Call {
+        id: "m1",
+        name: "mcp",
+        args: json!({ "tool": "signed.whoami", "arguments": {} }),
+    };
+    let (url, seen) = model(vec![call, Reply::Text("Done.")]).await;
+    let run = |url: &str, id: &str| {
+        let mut request = message(&setup, url, id);
+        let config = request.config.as_mut().unwrap();
+        config.permissions.mcp_approval = ApprovalRule {
+            required: false,
+            by: Approver::User,
+        };
+        config.mcp_servers = vec![server.clone()];
+        request
+    };
+    // The app has the server too: on its loopback, it's posted to there.
+    let mine = run(&url, "u0").config.unwrap();
+    rovik_core::dispatch(&app.test.core, Request::AgentConfigure(Box::new(mine)))
+        .await
+        .unwrap();
+    app.remote.start(run(&url, "u1")).await.unwrap();
+    ended(&setup.client).await;
+    let answered = seen.lock().unwrap()[1]["messages"].to_string();
+    assert!(
+        answered.contains(&format!("token {}", first.0)),
+        "{answered}"
+    );
+
+    // The server stops taking that token: the host refreshes its own.
+    auth.refuse_access();
+    let call = Reply::Call {
+        id: "m2",
+        name: "mcp",
+        args: json!({ "tool": "signed.whoami", "arguments": {} }),
+    };
+    let (url, seen) = model(vec![call, Reply::Text("Done.")]).await;
+    app.remote.start(run(&url, "u2")).await.unwrap();
+    ended(&setup.client).await;
+    // Its result, the last the model was given: the history has the first.
+    let messages = seen.lock().unwrap()[1]["messages"].clone();
+    let results: Vec<&str> = (messages.as_array().unwrap().iter())
+        .filter(|m| m["role"] == "tool")
+        .filter_map(|m| m["content"].as_str())
+        .collect();
+    let refreshed_token = results.last().copied().unwrap_or_default();
+    assert!(refreshed_token.starts_with("token at-"), "{results:?}");
+    assert_ne!(refreshed_token, format!("token {}", first.0), "a new one");
+    let refreshed = auth
+        .seen()
+        .into_iter()
+        .filter(|r| r.path == "/auth/token")
+        .count();
+    assert_eq!(refreshed, 2, "the code's, then the host's refresh");
+
+    // Signed out there: the server says to sign in.
+    app.remote
+        .mcp_sign_in(HOST, "signed-id", None)
+        .await
+        .unwrap();
+    assert!(app.remote.mcp_signed_in(HOST).await.unwrap().is_empty());
+    let call = Reply::Call {
+        id: "m3",
+        name: "mcp",
+        args: json!({ "tool": "signed.whoami", "arguments": {} }),
+    };
+    let (url, seen) = model(vec![call, Reply::Text("Done.")]).await;
+    app.remote.start(run(&url, "u3")).await.unwrap();
+    ended(&setup.client).await;
+    let messages = seen.lock().unwrap()[1]["messages"].clone();
+    let answered = (messages.as_array().unwrap().iter())
+        .rfind(|m| m["role"] == "tool")
+        .and_then(|m| m["content"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(answered.contains("needs you to sign in"), "{answered}");
 }

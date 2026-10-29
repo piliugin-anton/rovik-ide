@@ -7,17 +7,19 @@
 //! requests the same way ([`Wire`]) and reads its stream's events alike
 //! ([`Events`]).
 
+use super::oauth::{self, Bearer};
 use super::rpc::{self, Failure, Incoming};
 use super::Relayed;
 use crate::agent_run::StopSignal;
 use futures_util::stream::BoxStream;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use rovik_protocol::mcp::RelayedPost;
 use rovik_protocol::Secret;
 use serde_json::Value;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The most an answer, or one event of a stream, may be: a big tool
@@ -46,6 +48,19 @@ pub(super) fn checked_url(url: &str) -> Result<reqwest::Url, String> {
     Ok(parsed)
 }
 
+/// `extra` with the sign-in's token as `Authorization: Bearer`, when
+/// there's one.
+fn with_token(extra: &[(String, String)], token: Option<String>) -> Vec<(String, String)> {
+    let mut all = extra.to_vec();
+    if let Some(token) = token {
+        all.push((
+            AUTHORIZATION.as_str().to_string(),
+            format!("Bearer {token}"),
+        ));
+    }
+    all
+}
+
 /// What a request's failure to be made says: the connection's error, its
 /// URL left out.
 fn unsent(e: reqwest::Error) -> Failure {
@@ -53,13 +68,15 @@ fn unsent(e: reqwest::Error) -> Failure {
 }
 
 /// How a URL server's requests go out: with the settings' headers, their
-/// secrets filled in, through the app's HTTP client; or, on a daemon,
-/// through the relay to the computer whose loopback the URL is on (Q11).
+/// secrets filled in, and a sign-in's token (Q14), through the app's HTTP
+/// client; or, on a daemon, through the relay to the computer whose
+/// loopback the URL is on (Q11).
 #[derive(Clone)]
 pub(super) struct Wire {
     /// Never shown.
     headers: HeaderMap,
     relayed: Option<Relayed>,
+    bearer: Option<Arc<Bearer>>,
 }
 
 impl Wire {
@@ -81,7 +98,14 @@ impl Wire {
         Ok(Wire {
             headers: map,
             relayed,
+            bearer: None,
         })
+    }
+
+    /// With `bearer`'s token on each request, when the server has a sign-in.
+    pub(super) fn signed_in(mut self, bearer: Option<Arc<Bearer>>) -> Wire {
+        self.bearer = bearer;
+        self
     }
 
     /// POSTs `body` to `url`, with `extra` headers after the settings'.
@@ -91,13 +115,25 @@ impl Wire {
         body: String,
         extra: &[(String, String)],
     ) -> Result<reqwest::Response, Failure> {
+        self.signed(|token| self.post_once(url, body.clone(), extra, token))
+            .await
+    }
+
+    async fn post_once(
+        &self,
+        url: &str,
+        body: String,
+        extra: &[(String, String)],
+        token: Option<String>,
+    ) -> Result<reqwest::Response, Failure> {
+        let extra = with_token(extra, token);
         if let Some((relay, computer)) = &self.relayed {
-            let post = self.relayed_request(url, extra, body, false);
+            let post = self.relayed_request(url, &extra, body, false);
             return relay.post(computer, post).await.map_err(Failure::Gone);
         }
         let client = crate::net::client().await;
         let mut request = client.post(url).headers(self.headers.clone());
-        for (name, value) in extra {
+        for (name, value) in &extra {
             request = request.header(name.as_str(), value.as_str());
         }
         request.body(body).send().await.map_err(unsent)
@@ -105,18 +141,66 @@ impl Wire {
 
     /// GETs the event stream at `url` (the HTTP+SSE transport, Q13).
     pub(super) async fn stream(&self, url: &str) -> Result<reqwest::Response, Failure> {
+        self.signed(|token| self.stream_once(url, token)).await
+    }
+
+    async fn stream_once(
+        &self,
+        url: &str,
+        token: Option<String>,
+    ) -> Result<reqwest::Response, Failure> {
         let accept = [(ACCEPT.as_str().to_string(), EVENT_STREAM.to_string())];
+        let extra = with_token(&accept, token);
         if let Some((relay, computer)) = &self.relayed {
-            let get = self.relayed_request(url, &accept, String::new(), true);
+            let get = self.relayed_request(url, &extra, String::new(), true);
             return relay.post(computer, get).await.map_err(Failure::Gone);
         }
         let client = crate::net::client().await;
-        let request = client.get(url).headers(self.headers.clone());
-        request
-            .header(ACCEPT, EVENT_STREAM)
-            .send()
-            .await
-            .map_err(unsent)
+        let mut request = client.get(url).headers(self.headers.clone());
+        for (name, value) in &extra {
+            request = request.header(name.as_str(), value.as_str());
+        }
+        request.send().await.map_err(unsent)
+    }
+
+    /// Sends with the sign-in's token, if the server has one, and once more
+    /// with a fresh one when the server refuses it (401). A refusal a
+    /// sign-in would settle says so, as what to do (Q14).
+    async fn signed<F, Sent>(&self, send: F) -> Result<reqwest::Response, Failure>
+    where
+        F: Fn(Option<String>) -> Sent,
+        Sent: Future<Output = Result<reqwest::Response, Failure>>,
+    {
+        let token = match &self.bearer {
+            Some(bearer) => Some(bearer.token().await?),
+            None => None,
+        };
+        let response = send(token.clone()).await?;
+        let response = match (&self.bearer, token) {
+            (Some(bearer), Some(sent)) if response.status().as_u16() == 401 => {
+                let fresh = bearer.refused(&sent).await?;
+                send(Some(fresh)).await?
+            }
+            _ => response,
+        };
+        let status = response.status().as_u16();
+        let challenge = oauth::challenge_of(response.headers());
+        let set_up = self.headers.contains_key(AUTHORIZATION);
+        match status {
+            401 if self.bearer.is_some() => Err(Failure::Gone(format!(
+                "The server refused its sign-in's token: {}.",
+                oauth::SIGN_IN_AGAIN
+            ))),
+            // A server that asks for a sign-in, not for the settings' own.
+            401 if !set_up && challenge.is_some() => {
+                Err(Failure::Gone(oauth::NEEDS_SIGN_IN.into()))
+            }
+            403 => match oauth::wider(challenge.as_ref()) {
+                Some(why) => Err(Failure::Gone(why)),
+                None => Ok(response),
+            },
+            _ => Ok(response),
+        }
     }
 
     /// A request as the relay takes it: the settings' headers, then

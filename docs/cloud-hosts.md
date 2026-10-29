@@ -393,6 +393,15 @@ freed.
   Docker...) must be installed on the server: Rovik installs and
   translates nothing, and a server that can't start is listed unavailable
   with why. A host on an older Rovik gets no MCP secrets.
+- A URL server's sign-in (mcp-plan-2.md, Q14) is the server's own: its
+  refresh tokens rotate, so the user's computer and each host have their
+  own. The app runs it in the user's browser, back to its loopback, and
+  sends the tokens to the daemon (`McpSignIn`), which keeps them in
+  `~/.rovik/keys.json`, by server, refreshes them there and puts them on
+  each request; `McpSignIn` without tokens signs the server out, and
+  `McpSignedIn` says which servers are signed in. Removing the keys
+  forgets them. A host on an older Rovik doesn't say it keeps sign-ins
+  (`mcp-sign-in`), and isn't offered one.
 - A URL server on the loopback (`localhost`, 127.0.0.0/8, `[::1]`) is on
   the user's computer, which a server can't reach: the daemon has the app
   there make each POST (`McpRelayWanted`, then `McpRelayTake` and

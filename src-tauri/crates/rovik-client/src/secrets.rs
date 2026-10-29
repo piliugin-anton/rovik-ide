@@ -46,6 +46,12 @@ pub enum SecretName {
     /// servers: the server by its id, the value by its key (`env/NAME`,
     /// `header/Name`: rovik_protocol::mcp).
     McpValue { server: String, key: String },
+    /// An MCP server's sign-in on this computer, by the server's id: its
+    /// grant, as JSON (mcp-plan-2.md, Q14).
+    McpGrant { server: String },
+    /// The OAuth client Rovik registered with an authorization server, by
+    /// its issuer (Q14).
+    McpClient { issuer: String },
 }
 
 impl SecretName {
@@ -58,6 +64,8 @@ impl SecretName {
             SecretName::ApiKey { provider } => format!("provider/{provider}/api-key"),
             SecretName::ProxyPassword { proxy } => format!("network/proxy/{proxy}/password"),
             SecretName::McpValue { server, key } => format!("mcp/{server}/{key}"),
+            SecretName::McpGrant { server } => format!("mcp/{server}/oauth/grant"),
+            SecretName::McpClient { issuer } => format!("mcp-oauth/{issuer}/client"),
         }
     }
 }
@@ -96,6 +104,12 @@ impl fmt::Display for SecretError {
             SecretError::Missing(SecretName::McpValue { .. }) => f.write_str(
                 "This MCP server's value isn't saved: enter it again in Settings → MCP servers.",
             ),
+            SecretError::Missing(SecretName::McpGrant { .. }) => f.write_str(
+                "This MCP server isn't signed in here: sign in from Settings → MCP servers.",
+            ),
+            SecretError::Missing(SecretName::McpClient { .. }) => {
+                f.write_str("Rovik isn't registered with this authorization server yet.")
+            }
             SecretError::Locked => f.write_str(
                 "The saved passwords and keys are locked: enter their passphrase first.",
             ),

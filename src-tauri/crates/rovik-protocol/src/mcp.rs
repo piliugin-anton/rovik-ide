@@ -85,7 +85,57 @@ pub enum McpTransport {
         /// only that is spoken to so all the same.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sse: bool,
+        /// The OAuth client its sign-in uses, when the user entered one
+        /// (Q14); else Rovik's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oauth: Option<McpOAuthClient>,
     },
+}
+
+/// An OAuth client a URL server's sign-in uses (mcp-plan-2.md, Q14): one
+/// the user registered with its authorization server and entered on the
+/// server's form.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOAuthClient {
+    pub client_id: String,
+    /// It has a secret, which the keychain keeps with the server's other
+    /// secrets, under [`CLIENT_SECRET_KEY`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
+}
+
+/// The key a server's OAuth client secret is kept under (Q14).
+pub const CLIENT_SECRET_KEY: &str = "oauth/client-secret";
+
+/// A sign-in to a URL server (mcp-plan-2.md, Q14): what its authorization
+/// server issued for one place (this computer, a host), and what refreshes
+/// it there. Its tokens and client secret never show in `Debug`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpGrant {
+    /// The authorization server that issued it.
+    pub issuer: String,
+    /// Where it's refreshed.
+    pub token_endpoint: String,
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<Secret>,
+    /// How the client proves itself at the token endpoint: `none`,
+    /// `client_secret_basic` or `client_secret_post`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub auth_method: String,
+    /// The server the tokens are for (RFC 8707's `resource`).
+    pub resource: String,
+    /// The scopes asked for, space-separated.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scope: String,
+    pub access_token: Secret,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<Secret>,
+    /// When the access token expires, in milliseconds since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
 }
 
 /// An environment variable of a command's server, or a header of a URL's.
@@ -131,13 +181,16 @@ impl McpTransport {
 }
 
 /// Whether `key` is one [`McpTransport::secret_key`] makes: `env/NAME` or
-/// `header/Name`, the name neither empty nor with a `/`. Kept under the
-/// server's id, such a key never reaches another server's or another
-/// value's place in the keychain.
+/// `header/Name`, the name neither empty nor with a `/`; or the OAuth
+/// client's secret ([`CLIENT_SECRET_KEY`]). Kept under the server's id,
+/// such a key never reaches another server's or another value's place in
+/// the keychain.
 pub fn is_secret_key(key: &str) -> bool {
-    key.strip_prefix("env/")
-        .or_else(|| key.strip_prefix("header/"))
-        .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+    key == CLIENT_SECRET_KEY
+        || key
+            .strip_prefix("env/")
+            .or_else(|| key.strip_prefix("header/"))
+            .is_some_and(|name| !name.is_empty() && !name.contains('/'))
 }
 
 /// Whether `name` can name a server: lower-case letters, digits, `-` and

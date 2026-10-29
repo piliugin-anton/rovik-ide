@@ -14,7 +14,7 @@ use crate::connectors::{
 };
 use crate::events::BackgroundTask;
 use crate::host::{HostInfo, KeyInfo, Storage};
-use crate::mcp::{McpServer, RelayPart, RelayedPost, Tested};
+use crate::mcp::{McpGrant, McpServer, RelayPart, RelayedPost, Tested};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
 use crate::work::{ChatResult, Handed, Project, Synced, UndoneMerge, WorkChange, WorkFile};
@@ -331,6 +331,18 @@ pub enum Request {
         server: McpServer,
         values: BTreeMap<String, Secret>,
     },
+    /// Keeps `grant`, this host's own sign-in to MCP server `server` (its
+    /// id), made on the user's computer and refreshed here from then on;
+    /// none signs it out here (mcp-plan-2.md, Q14). A server running here
+    /// starts again with it. Served with `features::MCP_SIGN_IN`. → `Bool`,
+    /// whether it was kept (or forgotten).
+    McpSignIn {
+        server: String,
+        grant: Option<McpGrant>,
+    },
+    /// The MCP servers signed in on this host, by id: never their tokens.
+    /// Served with `features::MCP_SIGN_IN`. → `Ids`.
+    McpSignedIn,
     /// The POST a `McpRelayWanted` event asked this computer to make, once
     /// (Q11): another computer's, or one taken already, is refused. Sent
     /// by a daemon that serves `features::MCP`. → `McpRelayed`.
@@ -450,6 +462,8 @@ impl Request {
             | Request::KeysRemove { .. }
             | Request::McpSecretsKept
             | Request::McpTest { .. }
+            | Request::McpSignIn { .. }
+            | Request::McpSignedIn
             | Request::McpRelayTake { .. }
             | Request::McpRelayPart { .. }
             | Request::Storage

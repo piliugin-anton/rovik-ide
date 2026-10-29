@@ -691,3 +691,388 @@ async fn sse_answer(
         ),
     }
 }
+
+/*
+ * An authorization server, and an MCP server that needs its sign-in
+ */
+
+/// How an [`OAuthServer`] behaves.
+#[derive(Clone, Debug)]
+pub struct OAuthOptions {
+    /// It takes Client ID Metadata Documents.
+    pub metadata_documents: bool,
+    /// It registers clients (Dynamic Client Registration).
+    pub registration: bool,
+    /// The client registered with it by hand, and its secret: a token
+    /// request must prove it (HTTP Basic).
+    pub client: Option<(String, String)>,
+    /// The `iss` its sign-in answers with: its own, unless this says another.
+    pub iss: Option<String>,
+    /// How long its access tokens last, in seconds.
+    pub expires_in: u64,
+    /// A scope a call needs beyond the sign-in's: a 403 says so.
+    pub call_needs: Option<String>,
+}
+
+impl Default for OAuthOptions {
+    fn default() -> Self {
+        OAuthOptions {
+            metadata_documents: false,
+            registration: true,
+            client: None,
+            iss: None,
+            expires_in: 3600,
+            call_needs: None,
+        }
+    }
+}
+
+/// A request the [`OAuthServer`] got: its method, path (with its query),
+/// `Authorization` header and body as text.
+#[derive(Clone, Debug)]
+pub struct OAuthRequest {
+    pub method: String,
+    pub path: String,
+    pub authorization: Option<String>,
+    pub body: String,
+}
+
+/// The sign-in an [`OAuthServer`] sent the browser on, which its code is
+/// exchanged against.
+struct OAuthAsked {
+    code: String,
+    /// The PKCE challenge.
+    challenge: String,
+    redirect: String,
+    client: String,
+    scope: String,
+}
+
+/// What an [`OAuthServer`]'s connections share.
+#[derive(Default)]
+struct OAuthShared {
+    options: OAuthOptions,
+    base: String,
+    seen: Mutex<Vec<OAuthRequest>>,
+    /// The sign-in the browser was sent on.
+    asked: Mutex<Option<OAuthAsked>>,
+    /// The access tokens it takes, with their scopes; the refresh tokens
+    /// it takes.
+    access: Mutex<std::collections::HashMap<String, String>>,
+    refresh: Mutex<std::collections::HashMap<String, String>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+/// An authorization server on 127.0.0.1 (tests, mcp-plan-2.md Q14), and on
+/// the same origin a legacy MCP server at `/mcp` that takes only its
+/// tokens: one without answers 401, naming its protected resource
+/// metadata and the scope `mcp:read`. It publishes RFC 9728's and RFC
+/// 8414's metadata, registers clients, plays the user's browser (`browse`:
+/// the sign-in is granted at once), and gives and refreshes tokens, PKCE
+/// (S256) checked and refresh tokens rotated. Its MCP tool `whoami` says
+/// which token it got.
+pub struct OAuthServer {
+    pub base: String,
+    /// The MCP server: `<base>/mcp`.
+    pub mcp_url: String,
+    /// The authorization server: `<base>/auth`.
+    pub issuer: String,
+    shared: Arc<OAuthShared>,
+}
+
+impl OAuthServer {
+    pub async fn start(options: OAuthOptions) -> OAuthServer {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let shared = Arc::new(OAuthShared {
+            options,
+            base: base.clone(),
+            ..OAuthShared::default()
+        });
+        let served = shared.clone();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(oauth_connection(socket, served.clone()));
+            }
+        });
+        OAuthServer {
+            mcp_url: format!("{base}/mcp"),
+            issuer: format!("{base}/auth"),
+            base,
+            shared,
+        }
+    }
+
+    /// The requests it got, in order.
+    pub fn seen(&self) -> Vec<OAuthRequest> {
+        self.shared.seen.lock().unwrap().clone()
+    }
+
+    /// The user's browser on the sign-in page `url`: the sign-in is
+    /// granted, and the browser sent back to its redirect with a code, its
+    /// state and the issuer. What the page was asked: its query.
+    pub fn browse(&self, url: &str) -> Result<Vec<(String, String)>, String> {
+        let page = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
+        let query: Vec<(String, String)> = page.query_pairs().into_owned().collect();
+        let get = |key: &str| {
+            (query.iter())
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        let n = self
+            .shared
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let code = format!("code-{n}");
+        *self.shared.asked.lock().unwrap() = Some(OAuthAsked {
+            code: code.clone(),
+            challenge: get("code_challenge"),
+            redirect: get("redirect_uri"),
+            client: get("client_id"),
+            scope: get("scope"),
+        });
+        let mut back = reqwest::Url::parse(&get("redirect_uri")).map_err(|e| e.to_string())?;
+        let iss = (self.shared.options.iss.clone()).unwrap_or(format!("{}/auth", self.shared.base));
+        back.query_pairs_mut()
+            .append_pair("code", &code)
+            .append_pair("state", &get("state"))
+            .append_pair("iss", &iss);
+        tokio::spawn(async move {
+            let _ = crate::net::client().await.get(back).send().await;
+        });
+        Ok(query)
+    }
+
+    /// Takes none of the access tokens it gave any more, as when they
+    /// expire early or are revoked; their refresh tokens still go.
+    pub fn refuse_access(&self) {
+        self.shared.access.lock().unwrap().clear();
+    }
+
+    /// Takes none of its refresh tokens any more: a sign-in revoked.
+    pub fn refuse_refresh(&self) {
+        self.shared.refresh.lock().unwrap().clear();
+    }
+}
+
+/// One connection to the [`OAuthServer`].
+async fn oauth_connection(mut socket: tokio::net::TcpStream, shared: Arc<OAuthShared>) {
+    let (head, body, raw) = read_text(&mut socket).await;
+    let first = head.lines().next().unwrap_or_default().to_string();
+    let method = first.split_whitespace().next().unwrap_or("").to_string();
+    let path = path_of(&head);
+    let authorization = (head.lines())
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.trim().to_string());
+    shared.seen.lock().unwrap().push(OAuthRequest {
+        method: method.clone(),
+        path: path.clone(),
+        authorization: authorization.clone(),
+        body: raw.clone(),
+    });
+    let base = shared.base.clone();
+    let json = |status: &str, value: Value, extra: &str| {
+        let body = value.to_string();
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    let route = path.split('?').next().unwrap_or("").to_string();
+    let answer = match (method.as_str(), route.as_str()) {
+        ("GET", "/.well-known/oauth-protected-resource/mcp") => json(
+            "200 OK",
+            json!({ "resource": format!("{base}/mcp"), "authorization_servers": [format!("{base}/auth")], "scopes_supported": ["mcp:read", "mcp:write"] }),
+            "",
+        ),
+        ("GET", "/.well-known/oauth-authorization-server/auth") => {
+            let mut metadata = json!({
+                "issuer": format!("{base}/auth"),
+                "authorization_endpoint": format!("{base}/auth/authorize"),
+                "token_endpoint": format!("{base}/auth/token"),
+                "code_challenge_methods_supported": ["S256"],
+                "token_endpoint_auth_methods_supported": ["none", "client_secret_basic"],
+                "client_id_metadata_document_supported": shared.options.metadata_documents,
+                "authorization_response_iss_parameter_supported": true,
+            });
+            if shared.options.registration {
+                metadata["registration_endpoint"] = json!(format!("{base}/auth/register"));
+            }
+            json("200 OK", metadata, "")
+        }
+        ("POST", "/auth/register") if shared.options.registration => {
+            let n = shared
+                .next
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let redirects = body["redirect_uris"].clone();
+            json(
+                "201 Created",
+                json!({ "client_id": format!("registered-{n}"), "redirect_uris": redirects, "token_endpoint_auth_method": "none" }),
+                "",
+            )
+        }
+        ("POST", "/auth/token") => oauth_token(&shared, &raw, authorization.as_deref()),
+        ("POST", "/mcp") => oauth_mcp(&shared, &body, authorization.as_deref()),
+        _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+    };
+    let _ = socket.write_all(answer.as_bytes()).await;
+}
+
+/// A request's head, its body as JSON (null if it isn't), and its body.
+async fn read_text(socket: &mut tokio::net::TcpStream) -> (String, Value, String) {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 65536];
+    loop {
+        let n = socket.read(&mut chunk).await.unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+            continue;
+        };
+        let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+        let length = (head.lines())
+            .find_map(|l| {
+                l.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|v| v.trim().to_string())
+            })
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        if buf.len() >= end + 4 + length {
+            let raw = String::from_utf8_lossy(&buf[end + 4..end + 4 + length]).into_owned();
+            let body = serde_json::from_str(&raw).unwrap_or(Value::Null);
+            return (head, body, raw);
+        }
+    }
+    (
+        String::from_utf8_lossy(&buf).into_owned(),
+        Value::Null,
+        String::new(),
+    )
+}
+
+/// The [`OAuthServer`]'s token endpoint: a code exchanged, PKCE checked,
+/// or a refresh token rotated.
+fn oauth_token(shared: &OAuthShared, raw: &str, authorization: Option<&str>) -> String {
+    use base64::Engine;
+    use sha2::Digest;
+    let form: Vec<(String, String)> = reqwest::Url::parse(&format!("http://x/?{raw}"))
+        .map(|u| u.query_pairs().into_owned().collect())
+        .unwrap_or_default();
+    let get = |key: &str| {
+        (form.iter())
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    let refused = |error: &str| {
+        let body = json!({ "error": error }).to_string();
+        format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    if let Some((id, secret)) = &shared.options.client {
+        let basic = base64::engine::general_purpose::STANDARD.encode(format!("{id}:{secret}"));
+        if authorization != Some(format!("Basic {basic}").as_str()) {
+            return refused("invalid_client");
+        }
+    }
+    if get("resource") != format!("{}/mcp", shared.base) {
+        return refused("invalid_target");
+    }
+    let scope = match get("grant_type").as_str() {
+        "authorization_code" => {
+            let asked = shared.asked.lock().unwrap().take();
+            let Some(asked) = asked else {
+                return refused("invalid_grant");
+            };
+            let verified = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(sha2::Sha256::digest(get("code_verifier").as_bytes()));
+            let ok = get("code") == asked.code
+                && verified == asked.challenge
+                && get("redirect_uri") == asked.redirect
+                && get("client_id") == asked.client;
+            if !ok {
+                return refused("invalid_grant");
+            }
+            asked.scope
+        }
+        "refresh_token" => match shared.refresh.lock().unwrap().remove(&get("refresh_token")) {
+            Some(scope) => scope,
+            None => return refused("invalid_grant"),
+        },
+        _ => return refused("unsupported_grant_type"),
+    };
+    let n = shared
+        .next
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (access, refresh) = (format!("at-{n}"), format!("rt-{n}"));
+    shared
+        .access
+        .lock()
+        .unwrap()
+        .insert(access.clone(), scope.clone());
+    shared
+        .refresh
+        .lock()
+        .unwrap()
+        .insert(refresh.clone(), scope.clone());
+    let body = json!({ "access_token": access, "token_type": "Bearer", "expires_in": shared.options.expires_in, "refresh_token": refresh, "scope": scope }).to_string();
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+/// The [`OAuthServer`]'s MCP server: only its tokens, its tool `whoami`
+/// saying which; a call needing a scope the token hasn't, refused 403.
+fn oauth_mcp(shared: &OAuthShared, body: &Value, authorization: Option<&str>) -> String {
+    let token = authorization
+        .and_then(|a| a.strip_prefix("Bearer "))
+        .unwrap_or("");
+    let scope = shared.access.lock().unwrap().get(token).cloned();
+    let Some(scope) = scope else {
+        let challenge = format!(
+            "WWW-Authenticate: Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource/mcp\", scope=\"mcp:read\"\r\n",
+            shared.base
+        );
+        return format!("HTTP/1.1 401 Unauthorized\r\n{challenge}Content-Length: 0\r\nConnection: close\r\n\r\n");
+    };
+    let id = body.get("id").cloned().unwrap_or(Value::Null);
+    let method = body["method"].as_str().unwrap_or("");
+    if method == "tools/call" {
+        if let Some(needed) = &shared.options.call_needs {
+            if !scope.split(' ').any(|s| s == needed) {
+                let challenge = format!("WWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"mcp:read {needed}\"\r\n");
+                return format!("HTTP/1.1 403 Forbidden\r\n{challenge}Content-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        }
+    }
+    let result = match method {
+        "initialize" => {
+            json!({ "protocolVersion": "2025-06-18", "capabilities": { "tools": {} }, "serverInfo": { "name": "signed", "version": "1" } })
+        }
+        "tools/list" => {
+            json!({ "tools": [{ "name": "whoami", "description": "Say who's calling.", "inputSchema": { "type": "object" } }] })
+        }
+        "tools/call" => {
+            json!({ "content": [{ "type": "text", "text": format!("token {token}") }] })
+        }
+        _ => json!({}),
+    };
+    if id.is_null() {
+        return "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into();
+    }
+    let answer = json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+        answer.len()
+    )
+}

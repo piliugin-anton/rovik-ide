@@ -81,6 +81,9 @@ pub mod features {
     /// MCP servers run on the daemon (mcp-plan-2.md, Q11): `McpTest`, and
     /// starts' `mcp_secrets`.
     pub const MCP: &str = "mcp";
+    /// Their sign-ins kept and refreshed there (Q14): `McpSignIn` and
+    /// `McpSignedIn`.
+    pub const MCP_SIGN_IN: &str = "mcp-sign-in";
 }
 
 #[cfg(test)]

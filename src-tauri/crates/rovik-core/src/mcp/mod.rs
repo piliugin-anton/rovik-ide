@@ -19,6 +19,7 @@
 
 mod http;
 mod import;
+pub mod oauth;
 pub mod project;
 mod rpc;
 mod sse;
@@ -610,6 +611,10 @@ struct Shared {
     /// The project servers' secret values, by server id then key, as their
     /// runs filled their variables (mcp-plan-2.md, Q12).
     project_values: Mutex<HashMap<String, BTreeMap<String, String>>>,
+    /// Where the servers' sign-ins are kept (Q14).
+    grants: Mutex<Option<Arc<dyn oauth::GrantStore>>>,
+    /// Each signed-in server's token, by its id, as its instances share it.
+    bearers: Mutex<HashMap<String, Arc<oauth::Bearer>>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -648,6 +653,38 @@ impl McpState {
     /// Where the servers' secrets come from: the app's keychain.
     pub fn set_secrets(&self, source: SecretSource) {
         *lock(&self.0.secrets) = Some(source);
+    }
+
+    /// Where the servers' sign-ins are kept, and refreshed ones go (Q14):
+    /// the app's keychain, a daemon's key store.
+    pub fn set_grants(&self, store: Arc<dyn oauth::GrantStore>) {
+        *lock(&self.0.grants) = Some(store);
+        lock(&self.0.bearers).clear();
+    }
+
+    /// The sign-in of server `id`, as its requests carry it: one for each
+    /// server, read from where they're kept the first time (Q14).
+    async fn bearer(&self, id: &str) -> Result<Option<Arc<oauth::Bearer>>, String> {
+        if let Some(bearer) = lock(&self.0.bearers).get(id).cloned() {
+            return Ok(Some(bearer));
+        }
+        let Some(store) = lock(&self.0.grants).clone() else {
+            return Ok(None);
+        };
+        let (from, key) = (store.clone(), id.to_string());
+        let read = crate::rt::spawn_blocking(move || from.get(&key)).await;
+        let grant = read
+            .map_err(|e| e.to_string())
+            .and_then(|read| read)
+            .map_err(|e| format!("The server's sign-in couldn't be read: {e}"))?;
+        let Some(grant) = grant else {
+            return Ok(None);
+        };
+        let bearer = Arc::new(oauth::Bearer::new(id, store, grant));
+        let mut bearers = lock(&self.0.bearers);
+        Ok(Some(
+            bearers.entry(id.to_string()).or_insert(bearer).clone(),
+        ))
     }
 
     /// How a daemon reaches the URL servers on its user's computers'
@@ -711,6 +748,7 @@ impl McpState {
     pub fn forget(&self, id: &str) {
         let under = format!("{id}/");
         let gone = self.take(|(i, _, _), _| i == id || i.starts_with(&under));
+        lock(&self.0.bearers).retain(|i, _| i != id && !i.starts_with(&under));
         stop_all(gone);
     }
 
@@ -967,6 +1005,61 @@ impl McpState {
         tested
     }
 
+    /// Signs in to URL server `server` for the place that keeps the grant
+    /// (Q14): its values as `test` has them (`given` over the saved ones),
+    /// as the client the user entered on its form with its secret, else as
+    /// Rovik's own (registered through `registrations`), the user sent to
+    /// sign in with `open` (the browser). The grant, for the caller to keep.
+    pub async fn sign_in(
+        &self,
+        server: &McpServer,
+        given: &HashMap<String, String>,
+        registrations: Arc<dyn oauth::Registrations>,
+        open: &(dyn Fn(&str) -> Result<(), String> + Send + Sync),
+    ) -> Result<oauth::McpGrant, String> {
+        let McpTransport::Url {
+            url, sse, oauth, ..
+        } = &server.transport
+        else {
+            return Err("Only a server reached at its URL signs in.".into());
+        };
+        let headers = self.values(server, Some(given)).await?;
+        let entered = match oauth {
+            None => None,
+            Some(client) if !client.secret => Some((client.client_id.clone(), None)),
+            Some(client) => {
+                let secret = self.client_secret(server, given).await?;
+                Some((client.client_id.clone(), Some(secret)))
+            }
+        };
+        oauth::sign_in_to(url, *sse, &headers, entered, registrations, open).await
+    }
+
+    /// The secret of the OAuth client the user entered on `server`'s form:
+    /// as typed, else as saved.
+    async fn client_secret(
+        &self,
+        server: &McpServer,
+        given: &HashMap<String, String>,
+    ) -> Result<String, String> {
+        let key = rovik_protocol::mcp::CLIENT_SECRET_KEY;
+        if let Some(typed) = given.get(key).filter(|v| !v.is_empty()) {
+            return Ok(typed.clone());
+        }
+        let (source, id) = (lock(&self.0.secrets).clone(), server.id.clone());
+        let read = crate::rt::spawn_blocking(move || match source {
+            Some(source) => source(&id, key),
+            None => Ok(None),
+        });
+        match read.await.map_err(|e| e.to_string())? {
+            Ok(Some(secret)) => Ok(secret),
+            Ok(None) => {
+                Err("The OAuth client's secret isn't saved: enter it on the server's form.".into())
+            }
+            Err(e) => Err(format!("The OAuth client's secret couldn't be read: {e}")),
+        }
+    }
+
     /// Stops every server: as the app exits, or as a daemon forgets the
     /// secrets they started with. A call going on one fails; the next use
     /// starts one again.
@@ -1056,6 +1149,7 @@ impl McpState {
             McpTransport::Url { url, sse: true, .. } => {
                 let url = http::checked_url(url)?.to_string();
                 let wire = http::Wire::new(&values, self.relayed(&url, via)?)?;
+                let wire = wire.signed_in(self.bearer(&server.id).await?);
                 let opened = sse::Sse::open(&url, wire, START_WITHIN).await;
                 Link::Sse(opened.map_err(|failure| {
                     let why = final_failure(&failure);
@@ -1069,6 +1163,7 @@ impl McpState {
             }
             McpTransport::Url { url, .. } => {
                 let wire = http::Wire::new(&values, self.relayed(url, via)?)?;
+                let wire = wire.signed_in(self.bearer(&server.id).await?);
                 Link::Http(http::Http::new(url, wire)?)
             }
         };

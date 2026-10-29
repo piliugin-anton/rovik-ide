@@ -135,6 +135,15 @@ impl Daemon {
                     .map(Response::McpTested)
                     .map_err(|e| Fail::new(FailCode::Internal, e))
             }
+            // A sign-in made for this server on the user's computer (Q14):
+            // its server starts again with it at its next use.
+            Request::McpSignIn { server, grant } => {
+                (self.store.set_mcp_grant(&server, grant))
+                    .map_err(|e| Fail::new(FailCode::Internal, e))?;
+                self.core.mcp.forget(&server);
+                Ok(Response::Bool(true))
+            }
+            Request::McpSignedIn => Ok(Response::Ids(self.store.mcp_signed_in())),
             Request::McpRelayTake { id } => {
                 (self.relays.take(computer, &id)).map(Response::McpRelayed)
             }

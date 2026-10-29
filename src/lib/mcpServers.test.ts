@@ -1,7 +1,8 @@
 // Unit tests: Settings → MCP servers' logic (lib/mcpServers.ts). Stored
 // servers read back as saved, never with a secret's value; a server checked
 // before it's saved; its secrets taken out to the keychain when it's saved,
-// and forgotten when it no longer has them. (The JSON of other clients'
+// and forgotten when it no longer has them, its OAuth client's too (Q14).
+// (The JSON of other clients'
 // setups is read by the app: mcp/import.rs has its tests.) Run with: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,10 +13,21 @@ import {
   savingServer,
   serverProblem,
   serverSummary,
+  signsIn,
   transportProblem,
   unsavedSecrets,
+  type McpOAuthClient,
   type McpServer,
 } from './mcpServers';
+
+/** A stored URL server named `name`, with `oauth` as the settings file has it. */
+const storedUrl = (name: string, oauth: unknown) => ({
+  id: name,
+  name,
+  enabled: true,
+  transport: { kind: 'url', url: `https://${name}.example.com/mcp`, headers: [], oauth },
+  disabledTools: [],
+});
 
 const github: McpServer = {
   id: 'gh',
@@ -194,6 +206,53 @@ test('removing a server forgets each of its secrets', () => {
     forgettingServer({ ...github, transport: { kind: 'url', url: 'https://x', headers: [] } }),
     {}
   );
+  const client = { clientId: 'acme', secret: true, saved: true };
+  assert.deepEqual(
+    forgettingServer({
+      ...github,
+      transport: { kind: 'url', url: 'https://x', headers: [], oauth: client },
+    }),
+    { 'oauth/client-secret': '' },
+    'its OAuth client’s too'
+  );
+});
+
+test('a URL server’s OAuth client reads back as saved: its ID, and whether its secret is', () => {
+  const read = normalizeMcpServers([
+    storedUrl('a', { clientId: ' acme ', secret: true, saved: true, value: 'leaked' }),
+    storedUrl('b', { clientId: 'public', saved: true }),
+    storedUrl('c', { clientId: '', secret: true }),
+    storedUrl('d', 'acme'),
+  ]);
+  assert.deepEqual(
+    read.map((s) => (s.transport.kind === 'url' ? s.transport.oauth : 'not a URL')),
+    [{ clientId: 'acme', secret: true, saved: true }, { clientId: 'public' }, undefined, undefined]
+  );
+});
+
+test('saving keeps an OAuth client’s secret as typed, keeps the one saved, and forgets it with the client', () => {
+  const at = (oauth?: McpOAuthClient): McpServer => ({
+    ...github,
+    transport: { kind: 'url', url: 'https://x/mcp', headers: [], ...(oauth && { oauth }) },
+  });
+  const typed = savingServer(at({ clientId: ' acme ', value: 's3cret' }), undefined);
+  assert.deepEqual(typed.secrets, { 'oauth/client-secret': 's3cret' });
+  assert.deepEqual(typed.server, at({ clientId: 'acme', secret: true, saved: true }));
+  const kept = savingServer(at({ clientId: 'acme', secret: true, saved: true }), typed.server);
+  assert.deepEqual(kept.secrets, {}, 'nothing typed: the saved one stays');
+  assert.deepEqual(kept.server, typed.server);
+  const gone = savingServer(at({ clientId: ' ', secret: true, saved: true }), typed.server);
+  assert.deepEqual(gone.secrets, { 'oauth/client-secret': '' });
+  assert.deepEqual(gone.server, at());
+  const none = savingServer(at({ clientId: 'public' }), undefined);
+  assert.deepEqual([none.secrets, none.server], [{}, at({ clientId: 'public' })]);
+});
+
+test('a URL server may ask for a sign-in unless its settings have an Authorization header', () => {
+  assert.equal(signsIn({ transport: { kind: 'url', url: 'https://x', headers: [] } }), true);
+  const keyed = [{ name: ' authorization ', value: '', secret: true, saved: true }];
+  assert.equal(signsIn({ transport: { kind: 'url', url: 'https://x', headers: keyed } }), false);
+  assert.equal(signsIn(github), false, 'a command signs in on its own, if at all');
 });
 
 test('a server’s row shows its command line or its URL', () => {

@@ -21,14 +21,32 @@ export interface McpValue {
 }
 
 /**
+ * An OAuth client the user registered with a server's sign-in, entered on
+ * its form (mcp-plan-2.md, Q14): without one, Rovik signs in as itself.
+ */
+export interface McpOAuthClient {
+  clientId: string;
+  /** It has a secret, kept in the keychain under `CLIENT_SECRET_KEY`. */
+  secret?: boolean;
+  /** Its secret's value is saved: what the app did. */
+  saved?: boolean;
+  /** Its secret as typed, while the form is open: never kept here. */
+  value?: string;
+}
+
+/** The key an OAuth client's secret is kept under (rovik-protocol's CLIENT_SECRET_KEY). */
+export const CLIENT_SECRET_KEY = 'oauth/client-secret';
+
+/**
  * How Rovik reaches a server: a command it starts, or a URL. A URL's `sse`
  * is the old HTTP+SSE transport (2024-11-05), as its setup's entry says
  * (`"type": "sse"`); one without it that turns out to speak only that is
- * found to (mcp-plan-2.md, Q13).
+ * found to (mcp-plan-2.md, Q13). Its `oauth` is the client its sign-in
+ * uses, when the user entered one (Q14).
  */
 export type McpTransport =
   | { kind: 'command'; command: string; args: string[]; env: McpValue[] }
-  | { kind: 'url'; url: string; headers: McpValue[]; sse?: boolean };
+  | { kind: 'url'; url: string; headers: McpValue[]; sse?: boolean; oauth?: McpOAuthClient };
 
 export interface McpServer {
   /** Made when it's added, never shown: its secrets are kept by it. */
@@ -131,11 +149,23 @@ function normalizeTransport(raw: unknown): McpTransport | null {
     };
   }
   if (r.kind === 'url' && isString(r.url)) {
+    const client = r.oauth as Record<string, unknown> | undefined;
+    const clientId = isString(client?.clientId) ? client.clientId.trim() : '';
+    const secret = client?.secret === true;
     return {
       kind: 'url',
       url: r.url,
       headers: values(r.headers),
       ...(r.sse === true ? { sse: true } : {}),
+      ...(clientId
+        ? {
+            oauth: {
+              clientId,
+              ...(secret ? { secret: true } : {}),
+              ...(secret && client?.saved === true ? { saved: true } : {}),
+            },
+          }
+        : {}),
     };
   }
   return null;
@@ -234,10 +264,25 @@ export function savingServer(draft: McpServer, saved: McpServer | undefined): Sa
       if (v.secret && !keys.has(key)) secrets[key] = '';
     }
   }
-  const trimmed: McpTransport =
-    t.kind === 'command'
-      ? { ...t, command: t.command.trim(), args: t.args.filter((a) => a !== '') }
-      : { ...t, url: t.url.trim() };
+  // The OAuth client: its secret as typed goes to the keychain, as one
+  // saved before stays; a client taken out forgets its secret (Q14).
+  const client = t.kind === 'url' ? t.oauth : undefined;
+  const clientId = client?.clientId.trim() ?? '';
+  const typedSecret = clientId ? (client?.value ?? '') : '';
+  const before = saved?.transport.kind === 'url' ? saved.transport.oauth : undefined;
+  const secretKept = !!typedSecret || (!!clientId && before?.saved === true);
+  if (typedSecret) secrets[CLIENT_SECRET_KEY] = typedSecret;
+  if (before?.saved && !secretKept) secrets[CLIENT_SECRET_KEY] = '';
+  const oauth: McpOAuthClient | undefined = clientId
+    ? { clientId, ...(secretKept ? { secret: true, saved: true } : {}) }
+    : undefined;
+  let trimmed: McpTransport;
+  if (t.kind === 'command') {
+    trimmed = { ...t, command: t.command.trim(), args: t.args.filter((a) => a !== '') };
+  } else {
+    const { oauth: _typed, ...rest } = t;
+    trimmed = { ...rest, url: t.url.trim(), ...(oauth ? { oauth } : {}) };
+  }
   return {
     server: { ...draft, name: draft.name.trim(), transport: withValues(trimmed, values) },
     secrets,
@@ -246,10 +291,23 @@ export function savingServer(draft: McpServer, saved: McpServer | undefined): Sa
 
 /** What removing `server` forgets in the keychain: each of its secrets, by key. */
 export function forgettingServer(server: McpServer): Record<string, string> {
-  return Object.fromEntries(
-    valuesOf(server.transport)
+  const t = server.transport;
+  return Object.fromEntries([
+    ...valuesOf(t)
       .filter((v) => v.secret)
-      .map((v) => [secretKey(server.transport, v.name), ''])
+      .map((v) => [secretKey(t, v.name), '']),
+    ...(t.kind === 'url' && t.oauth?.secret ? [[CLIENT_SECRET_KEY, '']] : []),
+  ]);
+}
+
+/**
+ * Whether `server` may want a sign-in (Q14): reached at a URL, with no
+ * `Authorization` header of its settings, which a key or token would be.
+ */
+export function signsIn(server: Pick<McpServer, 'transport'>): boolean {
+  const t = server.transport;
+  return (
+    t.kind === 'url' && !t.headers.some((h) => h.name.trim().toLowerCase() === 'authorization')
   );
 }
 

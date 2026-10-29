@@ -1350,8 +1350,7 @@ error), as that transport's backwards compatibility has it (design:
 posts its messages only to an endpoint on the stream's own origin.
 **Add from JSON** takes a server's setup as its instructions give it for
 Claude Desktop, Claude Code, Cursor or VS Code: an `mcpServers` object, or
-one server's entry. A server that signs in with OAuth is added as a bridge
-command such as `npx mcp-remote <url>`, which signs in itself.
+one server's entry.
 
 A value marked **Secret** (a new one is, until you untick it) is kept in
 your system's keychain, or where there's none in the encrypted file the API
@@ -1360,6 +1359,34 @@ saved. **Test** starts the server as the form has it, in the open project's
 folder for a command, lists its tools, and stops it (**Test on** picks this
 computer or a connected host); a tool unticked there
 is left out of the agent's list.
+
+**Signing in** (design:
+[`docs/design/mcp-plan-2.md`](docs/design/mcp-plan-2.md), Q14): a URL
+server that answers 401 needs a sign-in, and Rovik does it itself, as the
+MCP spec's authorization has it. **Sign in** on the server's row opens its
+sign-in page in your browser, which comes back to Rovik on this computer's
+loopback (`http://127.0.0.1:<port>/callback`). Rovik signs in as the OAuth
+client entered on the server's form (**OAuth client ID**, and its secret
+if it has one, kept in the keychain), else as itself: by its client ID,
+the document `https://rovik-ide.dev/oauth/client.json`, where the server
+takes those, else as a client it registers with the server's sign-in,
+kept for the next time. The sign-in uses PKCE and names the server it's
+for (`resource`); its tokens are kept in the keychain, never in a log or a
+command line, and refreshed before they expire and when the server
+refuses them.
+
+- Each place has its own sign-in, as refresh tokens change with each use:
+  **Sign in** signs in for this computer, then for each connected cloud
+  host and WSL, one browser tab after another; a host keeps its tokens
+  with its keys and refreshes them there. The row says where the server is
+  signed in ("Signed in: This computer, build-server"), and **Sign out**
+  forgets every place's sign-in, as removing the server does.
+- A server without a sign-in, or whose sign-in it refuses, is listed
+  unavailable to the agent, saying to sign in from Settings → MCP servers;
+  one that wants wider scopes (403 `insufficient_scope`) names them.
+- A server with an `Authorization` header of its own is never offered a
+  sign-in. A setup that signs in through a bridge command such as
+  `npx mcp-remote <url>` still works as it is.
 
 **A project's own servers** (design:
 [`docs/design/mcp-plan-2.md`](docs/design/mcp-plan-2.md), Q12): a run
@@ -1390,7 +1417,9 @@ there (`disabled`). Their values name variables rather than hold secrets:
   name of one of yours is left out, the card saying so: yours wins.
 - Settings → MCP servers lists every project's allowed servers, with
   **Revoke**, which also forgets the values of their variables that no
-  other allowed server of the project takes.
+  other allowed server of the project takes. One reached at a URL is
+  signed in to from there, as your own are; revoking it signs it out, and
+  one whose entry changes needs a sign-in of its own once allowed again.
 - A host's chats run the allowed servers with no one to ask: the
   approvals go with the project's settings, and the values with each
   start, as your servers' secrets do.
@@ -1435,7 +1464,8 @@ What to keep in mind:
   you and outside the commands' sandbox, and each start sends their secret
   values to the host, where they stay in `~/.rovik/keys.json` with the API
   keys until you remove the keys (Settings → Cloud hosts lists them, by
-  how many servers, and removing them stops the servers there). A command must be installed on the host
+  how many servers, and removing them stops the servers there), as do the
+  servers' sign-ins made for the host. A command must be installed on the host
   (`npx`, `uvx`, Docker...): Rovik installs and translates nothing, and a
   server that can't start is listed unavailable with why. A URL server at
   `localhost` (or `127.0.0.1`, `[::1]`) is one on your computer: a host's

@@ -23,6 +23,7 @@ import {
   secretKey,
   serverProblem,
   serverSummary,
+  signsIn,
   testMcpServer,
   transportProblem,
   unsavedSecrets,
@@ -35,6 +36,7 @@ import {
 } from '../lib/mcpServers';
 import { onCloudEvent } from '../lib/cloud';
 import { listHosts } from '../lib/hosts';
+import { createSignIns, signInServer } from '../lib/mcpSignIn';
 import { confirmDialog } from './ConfirmDialog';
 import ProjectMcpApprovals from './ProjectMcpApprovals';
 import { SecretsUnlock, Segmented, SettingRow, SettingStatus } from './SettingsControls';
@@ -102,6 +104,33 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
   const [chosenHost, setChosenHost] = createSignal('');
   // The place chosen, while it's still offered: otherwise this computer ('').
   const testHost = () => (testHosts().some((h) => h.id === chosenHost()) ? chosenHost() : '');
+  // Where the URL servers that may want a sign-in are signed in (Q14):
+  // this computer, and each host that keeps sign-ins, as the hosts were
+  // last read (none if they couldn't be), undefined only until then.
+  const signHosts = () => (hosts.latest === undefined ? undefined : (hosts.latest?.hosts ?? []));
+  const signIns = createSignIns(() => props.servers.filter(signsIn).map((s) => s.id), signHosts);
+
+  async function signInTo(server: McpServer) {
+    setListError(
+      await signIns.signIn(server.id, server.name, (place) => signInServer(server, place))
+    );
+  }
+
+  async function signOutOf(server: McpServer) {
+    const confirmed = await confirmDialog({
+      title: 'Sign out of this MCP server?',
+      message: (
+        <>
+          <strong>{server.name}</strong> is signed out everywhere it’s signed in:{' '}
+          {signIns.said(signIns.at(server.id))}. Chats can’t use it until you sign in again.
+        </>
+      ),
+      confirmLabel: 'Sign out',
+    });
+    if (!confirmed) return;
+    setListError(await signIns.signOut(server.id));
+  }
+
   const locked = () => {
     const s = store();
     return s?.kind === 'file' && !s.unlocked;
@@ -248,8 +277,9 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
       message: (
         <>
           <strong>{server.name}</strong> will be removed from Rovik
-          {hasSecrets(server) ? ', and the secret values saved for it forgotten' : ''}. A program it
-          runs stays installed.
+          {hasSecrets(server) ? ', and the secret values saved for it forgotten' : ''}
+          {signIns.at(server.id).length > 0 ? ', and signed out' : ''}. A program it runs stays
+          installed.
         </>
       ),
       confirmLabel: 'Remove',
@@ -257,6 +287,15 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
     });
     if (!confirmed) return;
     setListError(null);
+    // Its sign-ins go with it (Q14), first: one a host still keeps can be
+    // retried while the server is listed.
+    if (signIns.at(server.id).length > 0) {
+      const failed = await signIns.signOut(server.id);
+      if (failed) {
+        setListError(failed);
+        return;
+      }
+    }
     const forget = forgettingServer(server);
     try {
       if (Object.keys(forget).length > 0) await saveMcpSecrets(server.id, forget);
@@ -401,8 +440,27 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
                           : `${s.disabledTools.length} tools turned off`}
                       </span>
                     </Show>
+                    <Show when={signIns.at(s.id).length > 0}>
+                      <span class="profile-row-sub">
+                        Signed in: {signIns.said(signIns.at(s.id))}
+                      </span>
+                    </Show>
                   </div>
                   <div class="profile-row-actions">
+                    <Show when={signsIn(s) && signIns.missing(s.id).length > 0}>
+                      <button
+                        title={`Sign in for ${signIns.said(signIns.missing(s.id))}, if it asks you to`}
+                        disabled={!!signIns.progress()}
+                        onClick={() => void signInTo(s)}
+                      >
+                        Sign in
+                      </button>
+                    </Show>
+                    <Show when={signIns.at(s.id).length > 0}>
+                      <button disabled={!!signIns.progress()} onClick={() => void signOutOf(s)}>
+                        Sign out
+                      </button>
+                    </Show>
                     <label
                       class="checkbox-row"
                       title="Off: its settings stay, and chats don’t use it"
@@ -423,6 +481,9 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
                 </div>
               )}
             </For>
+            <Show when={signIns.progress()}>
+              {(text) => <SettingStatus>{text()}</SettingStatus>}
+            </Show>
             <Show when={listError()}>
               <SettingStatus warning>{listError()}</SettingStatus>
             </Show>
@@ -482,7 +543,7 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
                 </div>
               </div>
             </Show>
-            <ProjectMcpApprovals />
+            <ProjectMcpApprovals hosts={signHosts()} />
           </>
         }
       >
@@ -621,6 +682,57 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
                   </button>
                 </div>
               </SettingRow>
+
+              <Show when={urlOf(d())}>
+                {(t) => (
+                  <>
+                    <SettingRow label="OAuth client ID">
+                      <input
+                        aria-label="OAuth client ID"
+                        value={t().oauth?.clientId ?? ''}
+                        placeholder="Only if its sign-in needs one"
+                        spellcheck={false}
+                        autocomplete="off"
+                        onInput={(e) =>
+                          setTransport({
+                            ...t(),
+                            oauth: { ...t().oauth, clientId: e.currentTarget.value },
+                          })
+                        }
+                      />
+                    </SettingRow>
+                    <Show when={t().oauth?.clientId.trim()}>
+                      <SettingRow label="Client secret">
+                        <input
+                          type="password"
+                          aria-label="Client secret"
+                          value={t().oauth?.value ?? ''}
+                          placeholder={
+                            t().oauth?.saved ? 'Saved: type to replace' : 'If it has one'
+                          }
+                          spellcheck={false}
+                          autocomplete="off"
+                          onInput={(e) =>
+                            setTransport({
+                              ...t(),
+                              oauth: {
+                                clientId: t().oauth?.clientId ?? '',
+                                ...t().oauth,
+                                value: e.currentTarget.value,
+                              },
+                            })
+                          }
+                        />
+                      </SettingRow>
+                    </Show>
+                    <p class="settings-hint setting-explain">
+                      A server that asks you to sign in is signed in to from its row, once saved:
+                      Rovik signs in as itself, or as the client you registered with the server’s
+                      sign-in and entered here. Its secret goes in the keychain.
+                    </p>
+                  </>
+                )}
+              </Show>
 
               <div class="mcp-test">
                 <div class="provider-test-row">

@@ -150,6 +150,8 @@ async fn run(
     core.mcp.set_secrets(Arc::new(move |server, key| {
         Ok(secrets.mcp_value(server, key))
     }));
+    // So are their sign-ins for this server, refreshed here (Q14).
+    core.mcp.set_grants(Arc::new(KeptGrants(store.clone())));
     tokio::spawn(sweep(core.mcp.clone(), SWEEP_EVERY, IDLE_AFTER));
     // `ChatChanged` names the database's clock (6.3).
     events.set_db(core.db.clone());
@@ -564,6 +566,19 @@ fn drained(outcome: &str) -> bool {
     outcome.strip_prefix("paused-") == Some(recovery::DRAIN)
 }
 
+/// The MCP servers' sign-ins as keys.json keeps them (Q14).
+struct KeptGrants(Arc<Store>);
+
+impl rovik_core::mcp::oauth::GrantStore for KeptGrants {
+    fn get(&self, server: &str) -> Result<Option<rovik_protocol::mcp::McpGrant>, String> {
+        Ok(self.0.mcp_grant(server))
+    }
+
+    fn put(&self, server: &str, grant: &rovik_protocol::mcp::McpGrant) -> Result<(), String> {
+        self.0.set_mcp_grant(server, Some(grant.clone()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{makes_no_result, shared_toolchains, sweep};
@@ -598,6 +613,7 @@ mod tests {
                     secret: true,
                 }],
                 sse: false,
+                oauth: None,
             },
             disabled_tools: Vec::new(),
         };

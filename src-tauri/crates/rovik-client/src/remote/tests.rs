@@ -1590,6 +1590,7 @@ fn mcp_server() -> rovik_protocol::mcp::McpServer {
                 secret: true,
             }],
             sse: false,
+            oauth: None,
         },
         disabled_tools: Vec::new(),
     }

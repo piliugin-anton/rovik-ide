@@ -5,7 +5,9 @@
 // words; a name that can't be saved refused with why; servers pasted as
 // JSON; a server removed, its secrets forgotten; turned off from the list;
 // the secrets file unlocked here; the form's kind switched and back; the
-// servers projects' own files set up that the user allowed, revoked.
+// servers projects' own files set up that the user allowed, revoked; a
+// URL server's OAuth client, and its sign-ins here and on hosts, made and
+// forgotten from its row (Q14).
 // The app is answered here, command by command. Run with: npm test
 import { container } from '../test/dom';
 import { afterEach, test } from 'node:test';
@@ -82,6 +84,15 @@ const docs: McpServer = {
     url: 'https://docs.example.com/mcp',
     headers: [{ name: 'Authorization', value: '', secret: true, saved: true }],
   },
+  disabledTools: [],
+};
+
+/** A URL server with no token of its settings: one that may ask for a sign-in. */
+const linear: McpServer = {
+  id: 'linear-id',
+  name: 'linear',
+  enabled: true,
+  transport: { kind: 'url', url: 'https://mcp.linear.app/mcp', headers: [] },
   disabledTools: [],
 };
 
@@ -566,4 +577,215 @@ test('the servers projects’ own files set up are listed by project, and revoke
   assert.deepEqual((kept.get('/work/app') as any).mcpApprovals, [
     { hash: 'h-db', name: 'db', file: '.vscode/mcp.json' },
   ]);
+});
+
+/** Where the app says the servers are signed in, which its sign-ins and sign-outs change. */
+function signIns(here: string[] = [], hosts: Record<string, string[]> = {}) {
+  const kept = { here: [...here], hosts: structuredClone(hosts) };
+  return {
+    kept,
+    mcp_signed_in: () => structuredClone(kept),
+    mcp_sign_out: (args: any) => {
+      kept.here = kept.here.filter((id) => id !== args.server);
+      for (const host of args.hosts as string[])
+        kept.hosts[host] = (kept.hosts[host] ?? []).filter((id) => id !== args.server);
+      return null;
+    },
+  };
+}
+
+test('a URL server is signed in for this computer, then each host that keeps sign-ins, its row saying where', async () => {
+  const app = signIns([], { build: [] });
+  /** The sign-in under way, as the browser would finish it. */
+  let finish = () => {};
+  await page(
+    [linear, docs, github],
+    { kind: 'keychain' },
+    [hostRow('build', 'ready', ['mcp', 'mcp-sign-in']), hostRow('old', 'ready', ['mcp'])],
+    {
+      mcp_signed_in: app.mcp_signed_in,
+      mcp_sign_in: (args) =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            if (args.host === null) app.kept.here.push(args.server.id);
+            else app.kept.hosts[args.host].push(args.server.id);
+            resolve();
+          };
+        }),
+    }
+  );
+  assert.deepEqual(
+    sent('mcp_signed_in'),
+    [{ servers: ['linear-id'], hosts: ['build'] }],
+    'docs has its token, and github is a command; old keeps no sign-ins'
+  );
+  assert.equal(button('Sign in', serverRows()[1]), undefined);
+  assert.equal(button('Sign in', serverRows()[2]), undefined);
+  const signIn = () => button('Sign in', serverRows()[0])!;
+  assert.equal(signIn().title, 'Sign in for This computer, build, if it asks you to');
+
+  await click(signIn());
+  assert.deepEqual(statuses(), ['Signing in to linear for This computer: finish in your browser…']);
+  assert.ok(signIn().disabled, 'one sign-in at a time');
+  finish();
+  await flush();
+  assert.deepEqual(statuses(), ['Signing in to linear for build: finish in your browser…']);
+  finish();
+  await flush();
+  assert.deepEqual(sent('mcp_sign_in'), [
+    { server: linear, values: {}, host: null },
+    { server: linear, values: {}, host: 'build' },
+  ]);
+  assert.deepEqual(statuses(), []);
+  assert.deepEqual(said(serverRows()[0]), [
+    'linear',
+    'https://mcp.linear.app/mcp',
+    'Signed in: This computer, build',
+  ]);
+  assert.equal(button('Sign in', serverRows()[0]), undefined, 'signed in everywhere');
+  assert.ok(button('Sign out', serverRows()[0]));
+});
+
+test('a sign-in that fails says where and why, and the places after it wait', async () => {
+  const app = signIns([], { build: [] });
+  await page([linear], { kind: 'keychain' }, [hostRow('build', 'ready', ['mcp', 'mcp-sign-in'])], {
+    mcp_signed_in: app.mcp_signed_in,
+    mcp_sign_in: () => {
+      throw 'The sign-in wasn’t finished in the browser in time: sign in again.';
+    },
+  });
+  await click(button('Sign in'));
+  assert.deepEqual(statuses(), [
+    'linear wasn’t signed in for This computer: The sign-in wasn’t finished in the browser in time: sign in again.',
+  ]);
+  assert.equal(sent('mcp_sign_in').length, 1, 'build waits');
+  assert.ok(!button('Sign in')!.disabled, 'it can be tried again');
+});
+
+test('signing out forgets the sign-in of every place, once confirmed', async () => {
+  const app = signIns(['linear-id'], { build: ['linear-id'] });
+  await page([linear], { kind: 'keychain' }, [hostRow('build', 'ready', ['mcp', 'mcp-sign-in'])], {
+    mcp_signed_in: app.mcp_signed_in,
+    mcp_sign_out: app.mcp_sign_out,
+  });
+  assert.equal(button('Sign in'), undefined, 'signed in everywhere');
+  await click(button('Sign out'));
+  assert.match(
+    text(document.querySelector('.confirm-dialog')),
+    /linear is signed out everywhere it’s signed in: This computer, build\. Chats can’t use it until you sign in again\./
+  );
+  await click(button('Cancel', document.querySelector('.confirm-dialog')!));
+  assert.deepEqual(sent('mcp_sign_out'), []);
+  await click(button('Sign out'));
+  await click(button('Sign out', document.querySelector('.confirm-dialog')!));
+  assert.deepEqual(sent('mcp_sign_out'), [{ server: 'linear-id', hosts: ['build'] }]);
+  assert.deepEqual(said(serverRows()[0]), ['linear', 'https://mcp.linear.app/mcp']);
+  assert.ok(button('Sign in'), 'offered again');
+});
+
+test('removing a signed-in server signs it out first, and keeps it listed when that fails', async () => {
+  const app = signIns(['linear-id']);
+  let refuse = true;
+  const { current } = await page([linear], { kind: 'keychain' }, [], {
+    mcp_signed_in: app.mcp_signed_in,
+    mcp_sign_out: (args) => {
+      if (refuse) throw 'Not signed out everywhere: this computer: the keychain is locked';
+      return app.mcp_sign_out(args);
+    },
+  });
+  await click(button('Remove', serverRows()[0]));
+  assert.match(
+    text(document.querySelector('.confirm-dialog')),
+    /linear will be removed from Rovik, and signed out\. A program it runs stays installed\./
+  );
+  await click(button('Remove', document.querySelector('.confirm-dialog')!));
+  assert.deepEqual(current(), [linear], 'its sign-in is still kept');
+  assert.deepEqual(statuses(), [
+    'Not signed out everywhere: this computer: the keychain is locked',
+  ]);
+  refuse = false;
+  await click(button('Remove', serverRows()[0]));
+  await click(button('Remove', document.querySelector('.confirm-dialog')!));
+  assert.deepEqual(sent('mcp_sign_out'), [
+    { server: 'linear-id', hosts: [] },
+    { server: 'linear-id', hosts: [] },
+  ]);
+  assert.deepEqual(current(), []);
+});
+
+test('a URL server’s OAuth client is kept with it, its secret in the keychain, forgotten once taken out', async () => {
+  const { current } = await page([linear], { kind: 'keychain' }, [], {
+    mcp_signed_in: signIns().mcp_signed_in,
+  });
+  await click(button('Edit'));
+  assert.equal(document.querySelector('[aria-label="Client secret"]'), null, 'no client yet');
+  await type(field('OAuth client ID'), ' rovik-at-acme ');
+  assert.equal(field('Client secret').placeholder, 'If it has one');
+  await type(field('Client secret'), 's3cret');
+  await click(button('Save'));
+  assert.deepEqual(sent('mcp_save_secrets'), [
+    { server: 'linear-id', values: { 'oauth/client-secret': 's3cret' } },
+  ]);
+  assert.deepEqual(current()[0].transport, {
+    ...linear.transport,
+    oauth: { clientId: 'rovik-at-acme', secret: true, saved: true },
+  });
+  assert.doesNotMatch(JSON.stringify(current()), /s3cret/);
+
+  await click(button('Edit'));
+  assert.equal(field('Client secret').placeholder, 'Saved: type to replace');
+  await type(field('OAuth client ID'), '');
+  await click(button('Save'));
+  assert.deepEqual(sent('mcp_save_secrets')[1], {
+    server: 'linear-id',
+    values: { 'oauth/client-secret': '' },
+  });
+  assert.deepEqual(current()[0].transport, linear.transport);
+});
+
+test('a project’s own server that may ask for a sign-in is signed in from its row, and signed out as it’s revoked', async () => {
+  const kept = new Map<string, unknown>([
+    [
+      '/work/app',
+      {
+        mcpApprovals: [
+          { hash: 'h-l', name: 'linear', file: '.mcp.json', signsIn: true },
+          { hash: 'h-db', name: 'db', file: '.vscode/mcp.json' },
+        ],
+      },
+    ],
+  ]);
+  const projects = [
+    { id: 'p1', name: 'app', path: '/work/app', chatCount: 1, lastOpenedAt: 1, missing: false },
+  ];
+  const app = signIns();
+  await page([], { kind: 'keychain' }, [], {
+    chat_list_projects: () => projects,
+    load_project_settings: (args) => kept.get(args.root) ?? null,
+    save_project_settings: (args) => void kept.set(args.root, args.settings),
+    mcp_save_project_values: () => null,
+    mcp_signed_in: app.mcp_signed_in,
+    mcp_sign_out: app.mcp_sign_out,
+    mcp_project_sign_in: (args) => {
+      app.kept.here.push(`project/${args.project}/${args.hash}`);
+      return null;
+    },
+  });
+  const rows = () => [...document.querySelectorAll('.mcp-project-server-row')];
+  assert.deepEqual(sent('mcp_signed_in'), [{ servers: ['project/p1/h-l'], hosts: [] }]);
+  assert.equal(button('Sign in', rows()[1]), undefined, 'db has its token');
+  await click(button('Sign in', rows()[0]));
+  assert.deepEqual(sent('mcp_project_sign_in'), [
+    { root: '/work/app', project: 'p1', hash: 'h-l', host: null },
+  ]);
+  assert.deepEqual(said(rows()[0]), ['linear', 'app · .mcp.json', 'Signed in: This computer']);
+
+  await click(button('Revoke', rows()[0]));
+  assert.match(
+    text(document.querySelector('.confirm-dialog')),
+    /linear won’t run in the chats of app until you allow it again, and it’s signed out\./
+  );
+  await click(button('Revoke', document.querySelector('.confirm-dialog')!));
+  assert.deepEqual(sent('mcp_sign_out'), [{ server: 'project/p1/h-l', hosts: [] }]);
+  assert.deepEqual(rows().map(said), [['db', 'app · .vscode/mcp.json']]);
 });

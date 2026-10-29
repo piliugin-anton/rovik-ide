@@ -634,7 +634,7 @@ impl Remote {
 
     /// What the user calls `host`, for what they read: the name its
     /// settings give it, its id when it isn't set up.
-    fn host_name(&self, host: &str) -> String {
+    pub fn host_name(&self, host: &str) -> String {
         self.hosts
             .client(host)
             .map_or_else(|| host.to_string(), |client| client.name())
@@ -868,6 +868,46 @@ impl Remote {
             Response::McpTested(tested) => Ok(tested),
             other => Err(internal(format!(
                 "{host} answered an MCP test with {other:?}"
+            ))),
+        }
+    }
+
+    /// Keeps `grant` as MCP server `server`'s sign-in on `host`, made here
+    /// for it and refreshed there from now on; none signs it out there
+    /// (mcp-plan-2.md, Q14).
+    pub async fn mcp_sign_in(
+        &self,
+        host: &str,
+        server: &str,
+        grant: Option<rovik_protocol::mcp::McpGrant>,
+    ) -> Result<(), Fail> {
+        if !self.serves(host, features::MCP_SIGN_IN) {
+            let name = self.host_name(host);
+            let text = format!("{name} runs an older Rovik: update it to sign in there.");
+            return Err(Fail::new(FailCode::BadRequest, text));
+        }
+        let request = Request::McpSignIn {
+            server: server.to_string(),
+            grant,
+        };
+        match self.host_call(host, request).await? {
+            Response::Bool(_) => Ok(()),
+            other => Err(internal(format!(
+                "{host} answered a sign-in with {other:?}"
+            ))),
+        }
+    }
+
+    /// The MCP servers signed in on `host`, by id; none on a host that
+    /// can't keep sign-ins (Q14).
+    pub async fn mcp_signed_in(&self, host: &str) -> Result<Vec<String>, Fail> {
+        if !self.serves(host, features::MCP_SIGN_IN) {
+            return Ok(Vec::new());
+        }
+        match self.host_call(host, Request::McpSignedIn).await? {
+            Response::Ids(ids) => Ok(ids),
+            other => Err(internal(format!(
+                "{host} answered which servers are signed in with {other:?}"
             ))),
         }
     }

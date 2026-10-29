@@ -6,9 +6,10 @@
 // values name (filled from this computer's environment where it has one;
 // one whose value is saved isn't asked for again), and what the project's
 // files have that isn't used. Allow keeps the values and the servers for
-// the next run; Not now puts them off until Rovik is closed.
+// the next run; Not now puts them off until Rovik is closed. One that asks
+// for a sign-in is signed in to from the settings page once allowed (Q14).
 import { createSignal, For, onMount, Show } from 'solid-js';
-import { serverSummary } from '../lib/mcpServers';
+import { serverSummary, signsIn } from '../lib/mcpServers';
 import {
   allowServers,
   prefillValues,
@@ -82,6 +83,10 @@ export default function ProjectMcpCard(props: {
         <div class="mcp-awaiting-why">
           The agent can use their tools once you allow them. Allow only servers you trust: they run
           as you, outside Rovik's protections. A server whose file changes asks again.
+          <Show when={servers().some(signsIn)}>
+            {' '}
+            One that asks you to sign in is signed in to from Settings → MCP servers, once allowed.
+          </Show>
         </div>
         <div class="mcp-awaiting-servers">
           <For each={servers()}>

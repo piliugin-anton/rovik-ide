@@ -533,6 +533,7 @@ async fn mcp_test_on_the_daemon_lists_the_server_s_tools() {
                 secret: true,
             }],
             sse: false,
+            oauth: None,
         },
         disabled_tools: Vec::new(),
     };

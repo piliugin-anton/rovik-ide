@@ -1,6 +1,7 @@
 // projectMcpServers.ts tests (node:test): what the chats ask of a
 // project's own MCP servers and when they stop asking, and the approvals
-// and values allowing and revoking keep (mcp-plan-2.md, Q12). The backend
+// and values allowing and revoking keep (mcp-plan-2.md, Q12), an approval
+// saying whether its server may ask for a sign-in (Q14). The backend
 // is answered here, with the project settings it keeps by folder and the
 // values it keeps in the keychain. Run with: npm test
 import { test } from 'node:test';
@@ -120,6 +121,31 @@ test('an approval replaces the one of its file and name, and malformed ones are 
   assert.deepEqual(approvalsIn({ mcpApprovals: [...before, { hash: 1 }, null, 'x'] }), before);
   assert.deepEqual(approvalsIn(null), []);
   assert.deepEqual(approvalsIn({ mcpApprovals: 'all' }), []);
+});
+
+test('the approval of a server reached at its URL without a token says it may ask for a sign-in', () => {
+  const at = (name: string, headers: { name: string; value: string; secret: boolean }[]) => ({
+    name,
+    file: '.mcp.json',
+    hash: `h-${name}`,
+    transport: { kind: 'url' as const, url: `https://${name}.example.com/mcp`, headers },
+  });
+  const approved = withApproved(
+    [],
+    [
+      at('linear', []),
+      at('keyed', [{ name: 'Authorization', value: 'Bearer ${TOKEN}', secret: true }]),
+      server('local', 'h-local'),
+    ]
+  );
+  assert.deepEqual(
+    approved.map((a) => [a.name, a.signsIn]),
+    [
+      ['linear', true],
+      ['keyed', undefined],
+      ['local', undefined],
+    ]
+  );
 });
 
 test('allowing keeps the values given in the keychain and the servers in the project’s settings', async () => {

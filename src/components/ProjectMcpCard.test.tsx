@@ -3,7 +3,8 @@
 // computer's environment, and a value already saved isn't asked for again;
 // Allow waits for the values with no default, then keeps them in the
 // keychain and the servers in the project's settings; Not now puts them
-// off; a card of notes only is dismissed with OK; and a project not open
+// off; a server that may ask for a sign-in says where it's signed in to
+// (Q14); a card of notes only is dismissed with OK; and a project not open
 // here can't be allowed. The app is answered here. Run with: npm test
 import { container } from '../test/dom';
 import { afterEach, test } from 'node:test';
@@ -173,6 +174,29 @@ test('Not now puts the servers off: the chat no longer asks', async () => {
   assert.deepEqual(sent('save_project_settings'), [], 'nothing allowed');
   noteMcpServersAwaiting('card-4', { ...awaiting, projectId: 'p-off' });
   assert.equal(awaitingServersIn('card-4'), undefined, 'put off until Rovik is closed');
+});
+
+test('a server that may ask for a sign-in is said to be signed in to from the settings, once allowed', async () => {
+  const hint =
+    /One that asks you to sign in is signed in to from Settings → MCP servers, once allowed\./;
+  await card('card-7', awaiting, '/work/app');
+  assert.doesNotMatch(text(document.querySelector('.mcp-awaiting-why')), hint, 'db has its token');
+  dispose();
+  const linear: AwaitingServers['servers'][number] = {
+    name: 'linear',
+    file: '.mcp.json',
+    hash: 'h-linear',
+    transport: { kind: 'url', url: 'https://mcp.linear.app/mcp', headers: [] },
+  };
+  const saved = await card('card-8', { projectId: 'p-linear', servers: [linear] }, '/work/app');
+  assert.match(text(document.querySelector('.mcp-awaiting-why')), hint);
+  button('Allow')!.click();
+  await flush();
+  assert.deepEqual(saved.settings, {
+    mcpApprovals: [
+      { hash: 'h-linear', name: 'linear', file: '.mcp.json', variables: [], signsIn: true },
+    ],
+  });
 });
 
 test('a card of notes only is dismissed with OK', async () => {

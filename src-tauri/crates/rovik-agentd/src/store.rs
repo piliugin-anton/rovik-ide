@@ -14,7 +14,7 @@ use rovik_protocol::agent::{
 };
 use rovik_protocol::autopilot::AutonomyConfig;
 use rovik_protocol::host::KeyInfo;
-use rovik_protocol::mcp::McpServer;
+use rovik_protocol::mcp::{McpGrant, McpServer};
 use rovik_protocol::sync::Ownership;
 use rovik_protocol::work::{ChatResult, Project};
 use rovik_protocol::{Fail, FailCode};
@@ -403,10 +403,30 @@ impl Store {
             .collect()
     }
 
-    /// How many MCP servers keys.json keeps secrets for: never the secrets
-    /// (`McpSecretsKept`).
+    /// How many MCP servers keys.json keeps secrets or a sign-in for:
+    /// never the secrets (`McpSecretsKept`).
     pub fn mcp_secrets_kept(&self) -> usize {
         self.lock().keys.mcp_servers()
+    }
+
+    /// MCP server `server`'s sign-in here (mcp-plan-2.md, Q14).
+    pub fn mcp_grant(&self, server: &str) -> Option<McpGrant> {
+        self.lock().keys.grant(server)
+    }
+
+    /// Keeps `grant` as MCP server `server`'s sign-in here, or forgets it:
+    /// in memory once keys.json has it.
+    pub fn set_mcp_grant(&self, server: &str, grant: Option<McpGrant>) -> Result<(), String> {
+        let _writing = self.writing();
+        let mut inner = self.lock();
+        self.change_keys(&mut inner, |keys| keys.set_grant(server, grant))
+            .map(drop)
+    }
+
+    /// The MCP servers signed in here, by id: never their tokens
+    /// (`McpSignedIn`).
+    pub fn mcp_signed_in(&self) -> Vec<String> {
+        self.lock().keys.signed_in()
     }
 
     /// Forgets `provider`'s key, or every key and every MCP server's

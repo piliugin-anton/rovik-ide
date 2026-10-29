@@ -10,7 +10,8 @@ use crate::diff::Hunk;
 use crate::events::*;
 use crate::host::{HostInfo, Install, KeyInfo, Storage};
 use crate::mcp::{
-    is_secret_key, is_valid_name, McpServer, McpTransport, McpValue, RelayPart, RelayedPost,
+    is_secret_key, is_valid_name, McpGrant, McpOAuthClient, McpServer, McpTransport, McpValue,
+    RelayPart, RelayedPost, CLIENT_SECRET_KEY,
 };
 use crate::network::{HostNetwork, ProxyEndpoint, ProxyKind, ProxyRoute};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
@@ -95,6 +96,23 @@ fn changes_page() -> ChangesPage {
             key: "m".into(),
         }),
         rev: 57,
+    }
+}
+
+/// A sign-in to an MCP server (Q14), its tokens and client secret named
+/// as what they are.
+fn grant() -> McpGrant {
+    McpGrant {
+        issuer: "https://auth.example.com".into(),
+        token_endpoint: "https://auth.example.com/token".into(),
+        client_id: "acme".into(),
+        client_secret: Some(Secret("client-s3cret".into())),
+        auth_method: "client_secret_basic".into(),
+        resource: "https://mcp.example.com/mcp".into(),
+        scope: "read write".into(),
+        access_token: Secret("access-t0ken".into()),
+        refresh_token: Some(Secret("refresh-t0ken".into())),
+        expires_at: Some(1_700_000_000_000),
     }
 }
 
@@ -236,6 +254,7 @@ fn config() -> AgentConfig {
                     secret: true,
                 }],
                 sse: false,
+                oauth: None,
             },
             disabled_tools: vec!["delete_repository".into()],
         }],
@@ -362,6 +381,7 @@ fn an_mcp_server_reads_as_the_frontend_keeps_it() {
         url: "https://example.com/mcp".into(),
         headers: Vec::new(),
         sse: false,
+        oauth: None,
     };
     assert_eq!(url.secret_key("Authorization"), "header/Authorization");
     assert_eq!(
@@ -417,10 +437,12 @@ fn a_secret_key_names_an_env_var_or_a_header() {
         url: "https://mcp.example.com".into(),
         headers: Vec::new(),
         sse: false,
+        oauth: None,
     };
     for key in [
         command.secret_key("GITHUB_TOKEN"),
         url.secret_key("Authorization"),
+        CLIENT_SECRET_KEY.into(),
     ] {
         assert!(is_secret_key(&key), "{key}");
     }
@@ -432,6 +454,7 @@ fn a_secret_key_names_an_env_var_or_a_header() {
         "env/A/B",
         "other/A",
         "../env/A",
+        "oauth/other",
     ] {
         assert!(!is_secret_key(bad), "{bad}");
     }
@@ -460,6 +483,7 @@ fn a_transports_secret_keys_are_its_named_secret_values() {
         url: "https://mcp.example.com".into(),
         headers: vec![value("Authorization", true)],
         sse: false,
+        oauth: None,
     };
     assert_eq!(url.secret_keys(), ["header/Authorization"]);
 }
@@ -916,11 +940,21 @@ fn every_request_round_trips() {
                         url: "https://example.com/mcp".into(),
                         headers: Vec::new(),
                         sse: false,
+                        oauth: None,
                     },
                     disabled_tools: Vec::new(),
                 },
                 values: [("header/Authorization".into(), crate::Secret("t".into()))].into(),
             },
+            Request::McpSignIn {
+                server: "s1".into(),
+                grant: Some(grant()),
+            },
+            Request::McpSignIn {
+                server: "s1".into(),
+                grant: None,
+            },
+            Request::McpSignedIn,
             Request::McpRelayTake { id: "r1".into() },
             Request::McpRelayPart {
                 id: "r1".into(),
@@ -1855,6 +1889,59 @@ fn a_starts_mcp_secrets_go_and_come_back_but_never_show_in_debug() {
     let back: StartRequest = serde_json::from_str(&serde_json::to_string(&start).unwrap()).unwrap();
     assert_eq!(back.mcp_secrets["s1"]["env/TOKEN"].0, "t0p");
     assert!(!format!("{start:?}").contains("t0p"));
+}
+
+/// Q14: the OAuth client entered on a URL server's form is kept as the
+/// page keeps it, its secret only marked (the page's `saved` is its own);
+/// a server from before has none, and is written as it was.
+#[test]
+fn a_url_server_s_oauth_client_reads_as_the_page_keeps_it() {
+    let kept = json!({
+        "kind": "url", "url": "https://mcp.example.com/mcp", "headers": [],
+        "oauth": { "clientId": "acme", "secret": true, "saved": true },
+    });
+    let read: McpTransport = serde_json::from_value(kept).unwrap();
+    let McpTransport::Url { oauth, .. } = &read else {
+        panic!("{read:?}");
+    };
+    let client = McpOAuthClient {
+        client_id: "acme".into(),
+        secret: true,
+    };
+    assert_eq!(oauth.as_ref(), Some(&client));
+    assert_eq!(
+        serde_json::to_value(&read).unwrap()["oauth"],
+        json!({ "clientId": "acme", "secret": true })
+    );
+    let public = McpOAuthClient {
+        client_id: "acme".into(),
+        secret: false,
+    };
+    assert_eq!(
+        serde_json::to_value(&public).unwrap(),
+        json!({ "clientId": "acme" })
+    );
+    let before = json!({ "kind": "url", "url": "https://mcp.example.com/mcp", "headers": [] });
+    let read: McpTransport = serde_json::from_value(before.clone()).unwrap();
+    assert!(matches!(read, McpTransport::Url { oauth: None, .. }));
+    assert_eq!(serde_json::to_value(&read).unwrap(), before);
+}
+
+/// Q14: a sign-in sent to a host goes and comes back whole, but its tokens
+/// and client secret never show in `Debug`, as a log would print it.
+#[test]
+fn a_sign_in_goes_and_comes_back_but_its_tokens_never_show_in_debug() {
+    let request = Request::McpSignIn {
+        server: "s1".into(),
+        grant: Some(grant()),
+    };
+    let json = round_trip(&request);
+    assert_eq!(json["grant"]["accessToken"], "access-t0ken");
+    assert_eq!(json["grant"]["refreshToken"], "refresh-t0ken");
+    let shown = format!("{request:?}");
+    for secret in ["access-t0ken", "refresh-t0ken", "client-s3cret"] {
+        assert!(!shown.contains(secret), "{shown}");
+    }
 }
 
 #[test]

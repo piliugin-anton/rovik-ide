@@ -132,6 +132,7 @@ pub(crate) fn transport_of(
             url: entry.get("url").map(text_of).unwrap_or_default(),
             headers: values("headers"),
             sse: entry.get("type").and_then(Value::as_str) == Some("sse"),
+            oauth: None,
         },
     }
 }
@@ -232,6 +233,7 @@ mod tests {
                 url: "https://docs.example.com/mcp".into(),
                 headers: vec![value("Authorization", "", true)],
                 sse: false,
+                oauth: None,
             },
             "the placeholder left for the user to enter"
         );

@@ -368,10 +368,16 @@ pub fn resolved(
             args: args.iter().map(|a| fill(a)).collect(),
             env: values(env, &server.transport, &mut fill),
         },
-        McpTransport::Url { url, headers, sse } => McpTransport::Url {
+        McpTransport::Url {
+            url,
+            headers,
+            sse,
+            oauth,
+        } => McpTransport::Url {
             url: fill(url),
             headers: values(headers, &server.transport, &mut fill),
             sse: *sse,
+            oauth: oauth.clone(),
         },
     };
     if missing {

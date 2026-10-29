@@ -44,6 +44,7 @@ async fn docs_server() -> (RovikServer, McpServer, Arc<Mutex<Vec<String>>>) {
                 secret: false,
             }],
             sse: false,
+            oauth: None,
         },
         disabled_tools: Vec::new(),
     };

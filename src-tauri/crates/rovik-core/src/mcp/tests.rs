@@ -55,6 +55,7 @@ async fn a_legacy_http_server_is_listed_and_called_with_its_token_from_the_keych
             url: rovik.url(),
             headers: vec![header("Authorization", "", true)],
             sse: false,
+            oauth: None,
         },
     );
     let listed = state
@@ -113,6 +114,7 @@ fn old_server(url: &str, sse: bool) -> McpServer {
             url: url.into(),
             headers: vec![header("Authorization", "", true)],
             sse,
+            oauth: None,
         },
     )
 }
@@ -260,6 +262,146 @@ async fn an_sse_stream_that_ends_fails_its_call_and_opens_again() {
     assert_eq!(old.seen().iter().filter(|r| r.method == "GET").count(), 2);
 }
 
+/// Sign-ins kept in memory, as the keychain keeps them (Q14).
+#[derive(Default)]
+struct Grants(Mutex<HashMap<String, oauth::McpGrant>>);
+
+impl oauth::GrantStore for Grants {
+    fn get(&self, server: &str) -> Result<Option<oauth::McpGrant>, String> {
+        Ok(self.0.lock().unwrap().get(server).cloned())
+    }
+    fn put(&self, server: &str, grant: &oauth::McpGrant) -> Result<(), String> {
+        self.0.lock().unwrap().insert(server.into(), grant.clone());
+        Ok(())
+    }
+}
+
+/// `oauth`'s MCP server, signed in to (its grant kept for `id-signed`),
+/// and the state that keeps it.
+async fn signed_in(
+    options: crate::testing::OAuthOptions,
+) -> (
+    crate::testing::OAuthServer,
+    McpServer,
+    McpState,
+    Arc<Grants>,
+) {
+    let oauth = crate::testing::OAuthServer::start(options).await;
+    struct Kept(Mutex<HashMap<String, oauth::Client>>);
+    impl oauth::Registrations for Kept {
+        fn get(&self, issuer: &str) -> Option<oauth::Client> {
+            self.0.lock().unwrap().get(issuer).cloned()
+        }
+        fn put(&self, issuer: &str, client: &oauth::Client) -> Result<(), String> {
+            self.0.lock().unwrap().insert(issuer.into(), client.clone());
+            Ok(())
+        }
+    }
+    let kept: Arc<dyn oauth::Registrations> = Arc::new(Kept(Mutex::default()));
+    let browser = |url: &str| oauth.browse(url).map(drop);
+    let grant = oauth::sign_in_to(&oauth.mcp_url, false, &[], None, kept, &browser)
+        .await
+        .unwrap();
+    let grants = Arc::new(Grants::default());
+    grants.0.lock().unwrap().insert("id-signed".into(), grant);
+    let state = McpState::default();
+    state.set_grants(grants.clone());
+    let server = server(
+        "signed",
+        McpTransport::Url {
+            url: oauth.mcp_url.clone(),
+            headers: Vec::new(),
+            sse: false,
+            oauth: None,
+        },
+    );
+    (oauth, server, state, grants)
+}
+
+/// What the server's tool says of the token it got.
+async fn whoami(state: &McpState, server: &McpServer) -> Result<String, String> {
+    let listed = state.list(std::slice::from_ref(server), None, None).await;
+    let tools = listed[0].tools.clone()?;
+    let stop = StopSignal::new();
+    let result = state
+        .call(server, None, None, &tools[0], json!({}), &stop)
+        .await;
+    let result = result.map_err(|e| e.text)?;
+    Ok(result["content"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_string())
+}
+
+/// Q14: a sign-in's access token goes on each request; one about to
+/// expire is refreshed first, and the rotated grant kept.
+#[tokio::test]
+async fn a_sign_in_s_token_goes_on_each_request_refreshed_before_it_expires() {
+    let options = crate::testing::OAuthOptions {
+        expires_in: 30,
+        ..Default::default()
+    };
+    let (_oauth, signed, state, grants) = signed_in(options).await;
+    let first = grants.0.lock().unwrap()["id-signed"].clone();
+    let said = whoami(&state, &signed).await.unwrap();
+    let kept = grants.0.lock().unwrap()["id-signed"].clone();
+    assert_ne!(
+        kept.access_token, first.access_token,
+        "refreshed: it expired within a minute"
+    );
+    assert_ne!(kept.refresh_token, first.refresh_token, "rotated, and kept");
+    assert_eq!(said, format!("token {}", kept.access_token.0));
+}
+
+/// Q14: a token the server refuses (401) is refreshed, and the request
+/// sent again with the new one, the caller none the wiser.
+#[tokio::test]
+async fn a_refused_token_is_refreshed_and_the_request_sent_again() {
+    let (oauth, signed, state, grants) = signed_in(Default::default()).await;
+    assert!(whoami(&state, &signed).await.is_ok());
+    oauth.refuse_access();
+    let said = whoami(&state, &signed).await.unwrap();
+    let kept = grants.0.lock().unwrap()["id-signed"].clone();
+    assert_eq!(said, format!("token {}", kept.access_token.0));
+}
+
+/// Q14: a sign-in its server no longer refreshes leaves the server
+/// unavailable, saying to sign in again; one with none says to sign in.
+#[tokio::test]
+async fn a_refused_or_missing_sign_in_says_to_sign_in() {
+    let (oauth, signed, state, _grants) = signed_in(Default::default()).await;
+    oauth.refuse_access();
+    oauth.refuse_refresh();
+    let listed = state.list(std::slice::from_ref(&signed), None, None).await;
+    let refused = listed[0].tools.clone().unwrap_err();
+    assert!(
+        refused.contains("sign in again from Settings → MCP servers"),
+        "{refused}"
+    );
+
+    let never = McpState::default();
+    let listed = never.list(std::slice::from_ref(&signed), None, None).await;
+    let missing = listed[0].tools.clone().unwrap_err();
+    assert_eq!(missing, oauth::NEEDS_SIGN_IN);
+}
+
+/// Q14: a call that needs more than the sign-in gave (a 403
+/// `insufficient_scope`) says which scopes, and to sign in again.
+#[tokio::test]
+async fn a_call_needing_more_scopes_says_so() {
+    let options = crate::testing::OAuthOptions {
+        call_needs: Some("mcp:write".into()),
+        ..Default::default()
+    };
+    let (_oauth, signed, state, _grants) = signed_in(options).await;
+    let refused = whoami(&state, &signed).await.unwrap_err();
+    assert!(
+        refused.contains("more permissions (mcp:read mcp:write)"),
+        "{refused}"
+    );
+    assert!(refused.contains("sign in again"), "{refused}");
+}
+
 /// A wrong token is the server's refusal, said as such; a secret that
 /// isn't saved names the value to enter, never a secret's value.
 #[tokio::test]
@@ -271,6 +413,7 @@ async fn a_refused_or_missing_secret_says_what_to_fix() {
             url: rovik.url(),
             headers: vec![header("Authorization", "Bearer wrong", false)],
             sse: false,
+            oauth: None,
         },
     );
     let listed = McpState::default().list(&[wrong], None, None).await;
@@ -284,6 +427,7 @@ async fn a_refused_or_missing_secret_says_what_to_fix() {
             url: rovik.url(),
             headers: vec![header("Authorization", "", true)],
             sse: false,
+            oauth: None,
         },
     );
     let state = McpState::default();
@@ -315,6 +459,7 @@ async fn a_server_starts_again_with_its_new_secrets_once_forgotten() {
             url: rovik.url(),
             headers: vec![header("Authorization", "", true)],
             sse: false,
+            oauth: None,
         },
     );
     let servers = std::slice::from_ref(&rovik_server);
@@ -346,6 +491,7 @@ async fn the_keychain_is_read_off_the_async_threads() {
             url,
             headers: vec![header("Authorization", "", true)],
             sse: false,
+            oauth: None,
         },
     );
     let state = McpState::default();
@@ -487,6 +633,7 @@ async fn a_modern_http_server_is_spoken_to_statelessly() {
             url,
             headers: Vec::new(),
             sse: false,
+            oauth: None,
         },
     );
     let state = McpState::default();
@@ -549,6 +696,7 @@ async fn a_server_that_cant_be_reached_waits_before_it_is_tried_again() {
             url,
             headers: Vec::new(),
             sse: false,
+            oauth: None,
         },
     );
     let state = McpState::default();
@@ -923,6 +1071,7 @@ async fn saved_secrets_are_the_servers_values_the_keychain_has_on_or_off() {
         url: "http://127.0.0.1:1/mcp".into(),
         headers,
         sse: false,
+        oauth: None,
     };
     let s1 = server(
         "s1",
@@ -960,6 +1109,7 @@ async fn a_server_with_an_unreadable_secret_is_left_out_not_an_error() {
         url: "http://127.0.0.1:1/mcp".into(),
         headers,
         sse: false,
+        oauth: None,
     };
     let s1 = server(
         "s1",
@@ -1190,6 +1340,7 @@ async fn loopback_server(state: &McpState) -> (RovikServer, McpServer) {
             url: rovik.url(),
             headers: vec![header("Authorization", "", true)],
             sse: false,
+            oauth: None,
         },
     );
     (rovik, server)

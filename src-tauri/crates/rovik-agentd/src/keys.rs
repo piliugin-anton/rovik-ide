@@ -2,9 +2,12 @@
 //! in (D11, plan rule 9). Each start brings its keys and refreshes them, by
 //! provider; a configuration that comes without them, as the app sends it,
 //! gets them from here. A key goes only with the base URL it came with, so
-//! a model pointed at another server never gets this one's key.
+//! a model pointed at another server never gets this one's key. The MCP
+//! servers' secrets are kept here too, and their sign-ins made for this
+//! server (mcp-plan-2.md, Q11, Q14).
 
 use rovik_protocol::agent::ModelProfile;
+use rovik_protocol::mcp::McpGrant;
 use rovik_protocol::Secret;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +22,11 @@ pub struct Keys {
     /// (`env/NAME`, `header/Name`). Brought by a start, like the keys.
     #[serde(default)]
     mcp: BTreeMap<String, BTreeMap<String, String>>,
+    /// The MCP servers' sign-ins for this server, by server id (Q14): made
+    /// on the user's computer, refreshed here. Kept until the user signs
+    /// out, or removes the keys.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    grants: BTreeMap<String, McpGrant>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -115,18 +123,46 @@ impl Keys {
         self.mcp.get(server)?.get(key).cloned()
     }
 
-    /// How many MCP servers have saved secrets here.
+    /// How many MCP servers have saved secrets or a sign-in here.
     pub fn mcp_servers(&self) -> usize {
-        self.mcp.len()
+        self.mcp_kept().len()
     }
 
-    /// Forgets `provider`'s key, or every key and every MCP secret. How
-    /// many went: each MCP server counts as one.
+    /// The MCP servers that have saved secrets or a sign-in here, by id.
+    fn mcp_kept(&self) -> BTreeSet<&String> {
+        self.mcp.keys().chain(self.grants.keys()).collect()
+    }
+
+    /// Forgets `provider`'s key, or every key, every MCP secret and every
+    /// sign-in. How many went: each MCP server counts as one.
     pub fn remove(&mut self, provider: Option<&str>) -> usize {
         match provider {
             Some(provider) => usize::from(self.providers.remove(provider).is_some()),
-            None => std::mem::take(&mut self.providers).len() + std::mem::take(&mut self.mcp).len(),
+            None => {
+                let servers = self.mcp_servers();
+                self.mcp.clear();
+                self.grants.clear();
+                std::mem::take(&mut self.providers).len() + servers
+            }
         }
+    }
+
+    /// MCP server `server`'s sign-in here (Q14).
+    pub fn grant(&self, server: &str) -> Option<McpGrant> {
+        self.grants.get(server).cloned()
+    }
+
+    /// Keeps `grant` as MCP server `server`'s sign-in here; none forgets it.
+    pub fn set_grant(&mut self, server: &str, grant: Option<McpGrant>) {
+        match grant {
+            Some(grant) => self.grants.insert(server.to_string(), grant),
+            None => self.grants.remove(server),
+        };
+    }
+
+    /// The MCP servers signed in here, by id.
+    pub fn signed_in(&self) -> Vec<String> {
+        self.grants.keys().cloned().collect()
     }
 
     /// Gives each model without a key its provider's, when it came with

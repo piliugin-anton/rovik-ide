@@ -9,11 +9,12 @@
 // settings, which go with the project to its hosts, and the values the
 // user gives its variables in the keychain, by the project; a server
 // whose definition changes asks again. Settings → MCP servers lists each
-// project's allowed ones, with Revoke.
+// project's allowed ones, with Revoke, and Sign in for one that may ask
+// for it (Q14).
 import { invoke } from '@tauri-apps/api/core';
 import { createStore, produce } from 'solid-js/store';
 import { chatApi, type ProjectSummary } from './chatApi';
-import type { McpTransport } from './mcpServers';
+import { signsIn, type McpTransport } from './mcpServers';
 import { updateProjectSettings } from './projectProfile';
 
 /** A variable a project's server names: `${GITHUB_TOKEN}`, `${input:db}`. */
@@ -53,6 +54,8 @@ export interface McpApproval {
   file: string;
   /** The variables it takes, whose values a host's starts bring. */
   variables?: string[];
+  /** Whether it may ask the user to sign in (Q14): reached at a URL, with no Authorization header. */
+  signsIn?: boolean;
 }
 
 const [state, setState] = createStore<{ awaiting: Record<string, AwaitingServers> }>({
@@ -129,11 +132,12 @@ export function approvalsIn(settings: unknown): McpApproval[] {
 
 /** `approvals` with `servers` among them, each once by its file and name: a newer one replaces it. */
 export function withApproved(approvals: McpApproval[], servers: ProjectServer[]): McpApproval[] {
-  const now = servers.map((s) => ({
+  const now = servers.map((s): McpApproval => ({
     hash: s.hash,
     name: s.name,
     file: s.file,
     variables: (s.variables ?? []).map((v) => v.name),
+    ...(signsIn(s) && { signsIn: true }),
   }));
   const same = (a: McpApproval, b: McpApproval) => a.file === b.file && a.name === b.name;
   return [...approvals.filter((a) => !now.some((n) => same(a, n))), ...now];

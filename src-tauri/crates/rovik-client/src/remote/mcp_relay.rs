@@ -251,6 +251,7 @@ mod tests {
                 url: url.into(),
                 headers: Vec::new(),
                 sse: false,
+                oauth: None,
             },
             disabled_tools: Vec::new(),
         };

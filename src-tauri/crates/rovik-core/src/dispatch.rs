@@ -182,6 +182,8 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::KeysRemove { .. }
         | Request::McpSecretsKept
         | Request::McpTest { .. }
+        | Request::McpSignIn { .. }
+        | Request::McpSignedIn
         | Request::McpRelayTake { .. }
         | Request::McpRelayPart { .. }
         | Request::Storage
@@ -670,6 +672,7 @@ mod tests {
             Request::HostInfo,
             Request::KeysList,
             Request::McpSecretsKept,
+            Request::McpSignedIn,
             Request::McpRelayTake { id: "r1".into() },
             Request::Storage,
             Request::CleanUp,

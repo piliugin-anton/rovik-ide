@@ -5,10 +5,13 @@
 //! keychain (or the encrypted file in its place), never in a settings
 //! file, and the page only learns where they go. The values the user
 //! gives the variables of a project's own servers go there too
-//! (mcp-plan-2.md, Q12).
+//! (mcp-plan-2.md, Q12), and so do the servers' sign-ins made here (Q14):
+//! this computer's own, while a host's goes to its daemon.
 
+use rovik_client::mcp_sign_in::{KeychainGrants, KeychainRegistrations};
 use rovik_client::secrets::{SecretName, SecretStore, StoreKind};
 use rovik_client::Remote;
+use rovik_core::mcp::oauth::GrantStore;
 use rovik_core::mcp::{McpServer, Tested};
 use rovik_core::Core;
 use rovik_protocol::mcp::is_secret_key;
@@ -168,5 +171,158 @@ pub async fn mcp_project_prefill(
     Ok(ProjectPrefill {
         values: values.into_iter().map(|(k, v)| (k, Secret(v))).collect(),
         saved: saved.into_keys().collect(),
+    })
+}
+
+/// The values typed on the page that were given, by key.
+fn typed(values: HashMap<String, Secret>) -> HashMap<String, String> {
+    (values.into_iter())
+        .filter(|(_, value)| !value.0.is_empty())
+        .map(|(key, value)| (key, value.0.clone()))
+        .collect()
+}
+
+/// Signs in to URL server `server` in the browser (mcp-plan-2.md, Q14),
+/// its values as typed on the page over the saved ones: for this computer,
+/// or for `host`, whose daemon keeps the grant and refreshes it from then
+/// on. Each place has a sign-in of its own: refresh tokens rotate, and two
+/// places sharing one would sign each other out.
+#[tauri::command]
+pub async fn mcp_sign_in(
+    secrets: State<'_, Arc<SecretStore>>,
+    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
+    server: McpServer,
+    values: HashMap<String, Secret>,
+    host: Option<String>,
+) -> Result<(), String> {
+    let registrations = Arc::new(KeychainRegistrations(Arc::clone(&secrets)));
+    let grant = core
+        .mcp
+        .sign_in(
+            &server,
+            &typed(values),
+            registrations,
+            &crate::open_url::open,
+        )
+        .await?;
+    if let Some(host) = host {
+        return remote
+            .mcp_sign_in(&host, &server.id, Some(grant))
+            .await
+            .map_err(|e| e.message);
+    }
+    let (grants, id) = (KeychainGrants(Arc::clone(&secrets)), server.id.clone());
+    rovik_core::rt::spawn_blocking(move || grants.put(&id, &grant))
+        .await
+        .map_err(|e| e.to_string())??;
+    core.mcp.forget(&server.id);
+    Ok(())
+}
+
+/// Signs in to the project's own URL server `hash` (Q12, Q14), as the
+/// files at `root` set it up and the values saved for `project`'s
+/// variables fill it: for this computer, or for `host`, as `mcp_sign_in`
+/// does for the user's. Kept under the server's id there.
+#[tauri::command]
+pub async fn mcp_project_sign_in(
+    secrets: State<'_, Arc<SecretStore>>,
+    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
+    root: String,
+    project: String,
+    hash: String,
+    host: Option<String>,
+) -> Result<(), String> {
+    use rovik_core::mcp::project as files;
+    let folder = std::path::PathBuf::from(&root);
+    let read_from = folder.clone();
+    let found = rovik_core::rt::spawn_blocking(move || files::read(&read_from, &[]))
+        .await
+        .map_err(|e| e.to_string())?;
+    let server = (found.servers.into_iter())
+        .find(|s| s.hash == hash)
+        .ok_or("The project's files no longer set up this server as it was allowed.")?;
+    let names = server.variables.iter().map(|v| v.name.clone()).collect();
+    let values = core.mcp.project_values(&project, &names).await;
+    let (server, given) =
+        files::resolved(&server, &project, &folder, |name| values.get(name).cloned()).ok_or(
+            "A variable of the server has no value: allow it again from its chat, giving one.",
+        )?;
+    let given: HashMap<String, Secret> = given.into_iter().map(|(k, v)| (k, Secret(v))).collect();
+    mcp_sign_in(secrets, core, remote, server, given, host).await
+}
+
+/// Signs MCP server `server` (its id) out of every place (Q14): this
+/// computer, and each of `hosts`. A place that can't be reached says so,
+/// the others signed out all the same.
+#[tauri::command]
+pub async fn mcp_sign_out(
+    secrets: State<'_, Arc<SecretStore>>,
+    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
+    server: String,
+    hosts: Vec<String>,
+) -> Result<(), String> {
+    let (grants, id) = (KeychainGrants(Arc::clone(&secrets)), server.clone());
+    let here = rovik_core::rt::spawn_blocking(move || grants.forget(&id)).await;
+    core.mcp.forget(&server);
+    let mut failed = Vec::new();
+    if let Err(e) = here.map_err(|e| e.to_string()).and_then(|forgot| forgot) {
+        failed.push(format!("this computer: {e}"));
+    }
+    for host in hosts {
+        if let Err(e) = remote.mcp_sign_in(&host, &server, None).await {
+            failed.push(format!("{}: {}", remote.host_name(&host), e.message));
+        }
+    }
+    match failed.is_empty() {
+        true => Ok(()),
+        false => Err(format!("Not signed out everywhere: {}", failed.join("; "))),
+    }
+}
+
+/// Where the MCP servers are signed in (Q14): which of `servers` (their
+/// ids) here, and on each of `hosts` that can say.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedIn {
+    here: Vec<String>,
+    hosts: HashMap<String, Vec<String>>,
+}
+
+/// Which of `servers` are signed in here, and on each of `hosts`; a host
+/// that doesn't answer is left out, as not known.
+#[tauri::command]
+pub async fn mcp_signed_in(
+    secrets: State<'_, Arc<SecretStore>>,
+    remote: State<'_, Arc<Remote>>,
+    servers: Vec<String>,
+    hosts: Vec<String>,
+) -> Result<SignedIn, String> {
+    let (grants, ids) = (KeychainGrants(Arc::clone(&secrets)), servers.clone());
+    let here = rovik_core::rt::spawn_blocking(move || {
+        let signed = |id: &String| matches!(grants.get(id), Ok(Some(_)));
+        ids.into_iter().filter(signed).collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut on_hosts = HashMap::new();
+    for host in hosts {
+        match remote.mcp_signed_in(&host).await {
+            Ok(ids) => {
+                let ours = ids.into_iter().filter(|id| servers.contains(id)).collect();
+                on_hosts.insert(host, ours);
+            }
+            Err(e) => log::info!(
+                "{} didn't say which MCP servers are signed in: {}",
+                remote.host_name(&host),
+                e.message
+            ),
+        }
+    }
+    Ok(SignedIn {
+        here,
+        hosts: on_hosts,
     })
 }

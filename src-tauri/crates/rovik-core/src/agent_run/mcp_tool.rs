@@ -628,6 +628,7 @@ mod tests {
                 url: "https://example.com/mcp".into(),
                 headers: Vec::new(),
                 sse: false,
+                oauth: None,
             },
             disabled_tools: Vec::new(),
         }
