@@ -145,6 +145,51 @@ pub fn is_valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
+/// Where a project's servers' ids begin: `project/<project id>/<hash>`,
+/// their variables' values kept under `project/<project id>` (Q12).
+pub const PROJECT_SERVERS: &str = "project/";
+
+/// A server a project's own file sets up (mcp-plan-2.md, Q12), as found:
+/// its values as written, the variables they name not filled in.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectServer {
+    /// Its name, made valid and apart from the user's servers and the
+    /// project's others.
+    pub name: String,
+    /// The file it's in, from the project's root: `.mcp.json`,
+    /// `.cursor/mcp.json` or `.vscode/mcp.json`.
+    pub file: String,
+    /// Its definition's hash, before its variables are filled: what an
+    /// approval keeps, so a server changed is asked for again.
+    pub hash: String,
+    /// Its command or URL, the values as the file writes them.
+    pub transport: McpTransport,
+    /// What its values name that the user gives a value for, as they come.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<ProjectVariable>,
+}
+
+/// A variable a project's server names (`${GITHUB_TOKEN}`, VS Code's
+/// `${input:token}`), which the user gives a value for when they approve
+/// it: kept as a secret, by the project.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectVariable {
+    /// As the project's values name it: `GITHUB_TOKEN` for `${GITHUB_TOKEN}`
+    /// and `${env:GITHUB_TOKEN}`, `input:token` for `${input:token}`.
+    pub name: String,
+    /// What the file says of it: an input's description.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// What it is when given no value: `${VAR:-default}`'s, an input's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// An input marked as a password: its field hides what's typed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub password: bool,
+}
+
 /// A POST a daemon has the user's computer make, to an MCP server on that
 /// computer's loopback, which a host can't reach (mcp-plan-2.md, Q11): the
 /// request whole, its headers' values kept out of `Debug`.

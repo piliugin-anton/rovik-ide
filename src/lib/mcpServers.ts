@@ -251,7 +251,7 @@ export function unsavedSecrets(server: McpServer): string[] {
 }
 
 /** How it's reached, in one line: its command line, or its URL. */
-export function serverSummary(server: McpServer): string {
+export function serverSummary(server: Pick<McpServer, 'transport'>): string {
   const t = server.transport;
   if (t.kind === 'url') return t.url;
   const shown = t.args.map((a) => (!a || /\s|"/.test(a) ? JSON.stringify(a) : a));

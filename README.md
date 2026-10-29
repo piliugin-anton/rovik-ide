@@ -184,7 +184,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 - **MCP servers.** The agent calls the tools of the MCP servers you add in
   **Settings → MCP servers**: a command Rovik starts on this computer
   (`npx -y @modelcontextprotocol/server-github`) or a server's URL, their
-  tokens kept in your system's keychain. However many tools they have, the
+  tokens kept in your system's keychain; and of those a project's own
+  `.mcp.json` sets up, once you allow them. However many tools they have, the
   agent gets one tool, `mcp`, and their list in its prompt, so its
   requests stay small and cached. Each call waits for your approval unless
   Settings → Permissions & approval says otherwise. See
@@ -1355,6 +1356,40 @@ folder for a command, lists its tools, and stops it (**Test on** picks this
 computer or a connected host); a tool unticked there
 is left out of the agent's list.
 
+**A project's own servers** (design:
+[`docs/design/mcp-plan-2.md`](docs/design/mcp-plan-2.md), Q12): a run
+reads the project's `.mcp.json` (Claude Code), `.cursor/mcp.json` (Cursor)
+and `.vscode/mcp.json` (VS Code) as it starts, in the chat's view of the
+project (on a host, its worktree), and leaves out an entry turned off
+there (`disabled`). Their values name variables rather than hold secrets:
+`${VAR}` and `${VAR:-default}` (in `.mcp.json`), `${env:VAR}`, VS Code's
+`${input:id}`; `${workspaceFolder}` and `${userHome}` are filled in.
+
+- A server you haven't allowed, as its file has it now, doesn't run. The
+  chat shows a card with each one, what it runs or the URL it posts to,
+  its file, and a field for each variable: filled from this computer's
+  environment where it's set there, and not asked for again once its value
+  is saved. **Allow** keeps the values in the keychain, by project, and
+  the approval in the project's settings in Rovik (not in the
+  repository); **Not now** puts them off until Rovik is closed. The
+  agent's list says they wait, so it can tell you when the task needs one.
+- An approval is of the server's entry as it was, hashed: one whose entry
+  changes (an edit, a pull, the agent's) asks again, and so does one whose
+  value is gone from the keychain. Allowed servers join the next run's
+  list, marked as the project's, and so does each call's approval.
+- Duplicates are one: two URL servers with the same URL and the same
+  auth headers, or two commands with the same command, arguments and
+  environment. The first in the order above keeps its name. One that is
+  already one of your servers (its URL and the names of its auth headers,
+  or its command, arguments and env var names) is dropped; one with the
+  name of one of yours is left out, the card saying so: yours wins.
+- Settings → MCP servers lists every project's allowed servers, with
+  **Revoke**, which also forgets the values of their variables that no
+  other allowed server of the project takes.
+- A host's chats run the allowed servers with no one to ask: the
+  approvals go with the project's settings, and the values with each
+  start, as your servers' secrets do.
+
 The agent gets one tool, `mcp`, however many servers and tools there are,
 and its system prompt lists each tool on a line: its name
 (`github.create_issue`), its arguments and what it does. It asks for a
@@ -1385,7 +1420,9 @@ What to keep in mind:
   changes the project itself, not an isolated chat's copy, and the
   restricted files and the allowed hosts don't hold it.
 - What a server's tools say, their descriptions and results, reaches the
-  model: add a server only as far as you trust its author.
+  model: add a server only as far as you trust its author. A project's
+  file decides what its server runs: allow one only as you'd run it
+  yourself.
 - On a cloud host or in WSL, a chat runs your enabled servers there, as
   you and outside the commands' sandbox, and each start sends their secret
   values to the host, where they stay in `~/.rovik/keys.json` with the API
@@ -1398,7 +1435,8 @@ What to keep in mind:
   Rovik runs, and only the servers your settings have (in WSL with mirrored
   networking, the host reaches it itself). A host on an older Rovik gets no
   secrets, and **Test on** in Settings → MCP servers doesn't offer it.
-- Values are used as written: `${VAR}` isn't read from the environment.
+- Your own servers' values are used as written: `${VAR}` isn't read from
+  the environment.
 
 ### Steering
 

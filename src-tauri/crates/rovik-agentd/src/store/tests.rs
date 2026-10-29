@@ -659,3 +659,26 @@ fn removing_keys_that_cant_be_written_removes_none() {
     assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("t0p".into()));
     assert_eq!(store.keys().len(), 1, "the provider's key too");
 }
+
+/// Q12: a project's variables' values are no server's: a configuration
+/// without servers keeps them, and a start that brings none clears them.
+#[test]
+fn a_project_s_variables_stay_until_a_start_clears_them() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let mut started = start("chat", "", None);
+    let values = [(
+        "GITHUB_TOKEN".to_string(),
+        rovik_protocol::Secret("ghp_1".into()),
+    )];
+    started.mcp_secrets = [("project/p1".to_string(), values.into_iter().collect())].into();
+    assert_eq!(store.started("laptop", &started).unwrap(), ["project/p1"]);
+    store.configure("laptop", AgentConfig::default()).unwrap();
+    assert_eq!(
+        store.mcp_value("project/p1", "GITHUB_TOKEN"),
+        Some("ghp_1".into())
+    );
+    started.mcp_secrets = [("project/p1".to_string(), Default::default())].into();
+    store.started("laptop", &started).unwrap();
+    assert_eq!(store.mcp_value("project/p1", "GITHUB_TOKEN"), None);
+}

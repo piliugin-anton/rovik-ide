@@ -85,9 +85,14 @@ impl Keys {
     /// Forgets the MCP secrets `wanted` doesn't name, which has the secret
     /// keys of each server some computer has on (Q11): a server removed or
     /// turned off loses all its secrets, and one without a secret field
-    /// any more loses that field's value.
+    /// any more loses that field's value. A project's variables stay.
     pub fn keep_mcp(&mut self, wanted: &BTreeMap<String, BTreeSet<String>>) {
         self.mcp.retain(|id, values| {
+            // A project's variables are no server's: each start of its
+            // chats brings them all, or none to clear them (Q12).
+            if id.starts_with(rovik_protocol::mcp::PROJECT_SERVERS) {
+                return true;
+            }
             let Some(keys) = wanted.get(id) else {
                 return false;
             };

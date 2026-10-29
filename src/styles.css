@@ -7025,6 +7025,68 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   line-height: 1.4;
 }
 
+/* The project's own MCP servers waiting to be allowed (ProjectMcpCard.tsx),
+   drawn as the questions panel is. */
+
+.mcp-awaiting-why {
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+.mcp-awaiting-servers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mcp-awaiting-server {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--bg-control);
+  border-radius: 4px;
+  min-width: 0;
+}
+
+.mcp-awaiting-name {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.mcp-awaiting-what {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+}
+
+.mcp-awaiting-file {
+  color: var(--fg-dim);
+}
+
+.mcp-awaiting-variable {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--fg-muted);
+}
+
+.mcp-awaiting-left-out {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg-dim);
+  line-height: 1.4;
+}
+
+.mcp-awaiting-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* Git change marks in the editor (lib/gitMarks.ts, Editor.tsx): added
    lines tinted green, changed lines yellow (the warning color), each with
    a bar in the gutter; the lines git has that the file no longer does are

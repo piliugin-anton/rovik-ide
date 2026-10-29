@@ -1203,7 +1203,16 @@ impl Run {
             },
         };
 
-        let summary = permissions::describe_tool_call(&tc.name, &tc.arguments);
+        let mut summary = permissions::describe_tool_call(&tc.name, &tc.arguments);
+        // A call to a server of the project's own files says so (Q12,
+        // mcp-plan-2.md): its tools are the project's, not the user's.
+        if tc.name == super::mcp_tool::NAME {
+            let tool = permissions::str_arg(&tc.arguments, "tool");
+            let whose = (self.mcp.as_deref())
+                .zip(tool)
+                .and_then(|(c, t)| c.whose(&t));
+            summary.push_str(whose.as_deref().unwrap_or_default());
+        }
         let command = (tc.name == "bash")
             .then(|| permissions::str_arg(&tc.arguments, "command"))
             .flatten();

@@ -806,6 +806,36 @@ async fn a_server_with_an_unreadable_secret_is_left_out_not_an_error() {
     assert_eq!(secrets["id-s2"]["header/Open"].0, "v");
 }
 
+/// A project's values changed (allowed again, revoked, or a host's keys
+/// removed): each of its servers starts again at its next use, and no
+/// other project's (Q12, mcp-plan-2.md).
+#[cfg(unix)]
+#[tokio::test]
+async fn forgetting_a_project_s_values_starts_its_servers_again_only() {
+    let (one, other) = (temp_dir(), temp_dir());
+    let state = McpState::default();
+    let mut started = Vec::new();
+    for (dir, id) in [(&one, "project/p1/h1"), (&other, "project/p2/h1")] {
+        let (transport, log) = fake(&dir.0, "legacy");
+        let mut fake = server("fake", transport);
+        fake.id = id.into();
+        let token = BTreeMap::from([("env/FAKE_TOKEN".to_string(), "t0ken".to_string())]);
+        state.set_project_values(id, token);
+        started.push((fake, log));
+    }
+    let starts = |log: &Path| logged(log).iter().filter(|m| m["token"] == "t0ken").count();
+    for _ in 0..2 {
+        for (fake, _) in &started {
+            let listed = state.list(std::slice::from_ref(fake), None, None).await;
+            assert!(listed[0].tools.is_ok(), "{:?}", listed[0].tools);
+        }
+        state.forget("project/p1");
+    }
+    assert!(exited(&started[0].1).await, "p1's stopped");
+    assert_eq!(starts(&started[0].1), 2, "and started again");
+    assert_eq!(starts(&started[1].1), 1, "p2's ran on");
+}
+
 /// Whether the fake server of `log` has seen its input close.
 #[cfg(unix)]
 async fn exited(log: &Path) -> bool {

@@ -442,6 +442,8 @@ pub fn run() {
             commands::mcp::mcp_save_secrets,
             commands::mcp::mcp_test,
             commands::mcp::mcp_import,
+            commands::mcp::mcp_save_project_values,
+            commands::mcp::mcp_project_prefill,
             commands::tools::outline_symbols,
             commands::vfs::vfs_status,
             commands::vfs::vfs_install_driver,

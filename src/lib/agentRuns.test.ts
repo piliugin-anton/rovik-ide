@@ -23,6 +23,7 @@ import { liveChecklist } from './checklist';
 import { liveClmStatus } from './contextMode';
 import { notifications } from './notifications';
 import { pendingQuestions } from './questions';
+import { awaitingServersIn } from './projectMcpServers';
 import { childOf, isSubagentChat, liveSubagent, seedRunningSubagent } from './subagents';
 import { saveSteerDraft, steerDraft, takeReturnedSteerDrafts } from './steerDrafts';
 
@@ -297,6 +298,15 @@ test("the backend's events, as the shared fixtures have them, reach their stores
     notice: (e) =>
       assert.ok(notifications().some((n) => n.title === e.title && n.message === e.message)),
     userMessageSettled: (e) => assert.deepEqual(last(unanswered), [e.dialogId, e.messageId]),
+    mcpServersAwaiting: (e) => {
+      const awaiting = awaitingServersIn(e.dialogId);
+      assert.equal(awaiting?.projectId, e.projectId);
+      assert.deepEqual(
+        awaiting?.servers.map((s) => s.hash),
+        e.servers.map((s: { hash: string }) => s.hash)
+      );
+      assert.deepEqual(awaiting?.leftOut, e.leftOut);
+    },
   };
   try {
     for (const event of fixtures.events) {

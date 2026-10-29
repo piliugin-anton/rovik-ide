@@ -29,6 +29,7 @@ import type { McpServer } from './mcpServers';
 import { chatStore, type MessagePatch, type MessageRow, type QueuedSteer } from './chatStore';
 import { noteChecklist, clearLiveChecklist, refreshChecklist } from './checklist';
 import { noteBackgroundTasks, type BackgroundTask } from './backgroundTasks';
+import { noteMcpServersAwaiting, type ProjectServer } from './projectMcpServers';
 import {
   clearApproval,
   notifyFileDeleted,
@@ -165,6 +166,14 @@ type AgentEvent =
       outcome: string;
     }
   | { type: 'runEnded'; dialogId: string; runId: string; outcome: string }
+  | {
+      /** The project's own MCP servers wait for the user (projectMcpServers.ts). */
+      type: 'mcpServersAwaiting';
+      dialogId: string;
+      projectId: string;
+      servers: ProjectServer[];
+      leftOut?: string[];
+    }
   | { type: 'taskDriving'; dialogId: string; driving: boolean }
   | { type: 'messagesAdded'; dialogId: string; messages: (MessageRow & { pending?: boolean })[] }
   | { type: 'messagePatched'; dialogId: string; messageId: string; patch: MessagePatch }
@@ -618,6 +627,13 @@ function handle(event: AgentEvent) {
       break;
     case 'notice':
       notify({ kind: event.kind, title: event.title, message: event.message, timeout: 12_000 });
+      break;
+    case 'mcpServersAwaiting':
+      noteMcpServersAwaiting(event.dialogId, {
+        projectId: event.projectId,
+        servers: event.servers,
+        leftOut: event.leftOut,
+      });
       break;
   }
 }

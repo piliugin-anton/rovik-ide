@@ -521,3 +521,156 @@ async fn in_plan_mode_claude_code_calls_mcp_tools_as_rovik_s_agent() {
     let reply = h.messages().await.pop().unwrap();
     assert_eq!(reply.content, format!("Got: {}", read_of("intro")[0]));
 }
+
+/// The project's `.mcp.json` sets up Rovik's server as `docs`, its token
+/// the variable `DOCS_TOKEN`; the chat is in the project, `p1`. The
+/// keychain has the token once `token` holds it. Rovik's server, and the
+/// calls it got.
+async fn project_docs(
+    h: &Harness,
+    token: &Arc<Mutex<Option<String>>>,
+) -> (RovikServer, Arc<Mutex<Vec<String>>>) {
+    let (rovik, docs, got) = docs_server().await;
+    let McpTransport::Url { url: docs_url, .. } = &docs.transport else {
+        unreachable!()
+    };
+    let mcp_json = json!({ "mcpServers": { "docs": {
+        "type": "http",
+        "url": docs_url,
+        "headers": { "Authorization": "${DOCS_TOKEN}" },
+    } } });
+    std::fs::write(h.project.join(".mcp.json"), mcp_json.to_string()).unwrap();
+    let (project, chat) = (h.project.clone(), h.dialog_id.clone());
+    h.core
+        .db
+        .write(move |c| {
+            crate::chat_db::projects::ensure(c, "p1", "app", &project)?;
+            store::set_dialog_project(c, &chat, Some("p1"))
+        })
+        .await
+        .unwrap();
+    let saved = token.clone();
+    h.core.mcp.set_secrets(Arc::new(move |server, key| {
+        let ours = (server, key) == ("project/p1", "DOCS_TOKEN");
+        Ok(ours.then(|| saved.lock().unwrap().clone()).flatten())
+    }));
+    (rovik, got)
+}
+
+/// The user allows the project's server of this hash, as the chat's card
+/// keeps it in the project's settings.
+fn allow_docs(h: &Harness, hash: &str) {
+    let approvals = json!({ "mcpApprovals": [
+        { "hash": hash, "name": "docs", "file": ".mcp.json", "variables": ["DOCS_TOKEN"] },
+    ] });
+    let root = h.project.to_string_lossy().into_owned();
+    crate::project_profile::save_project_settings(&h.core.paths.config_dir, root, approvals)
+        .unwrap();
+}
+
+/// Q12 (mcp-plan-2.md): a server the project's own `.mcp.json` sets up
+/// waits for the user: the run goes without it, the chat told so, the
+/// agent too, with no tool to call. Once the user allows it, giving its
+/// variable a value, the next run lists it as the project's and calls it
+/// with that value, which the server's settings never hold, the call's
+/// approval saying whose it is.
+#[tokio::test]
+async fn a_project_s_own_server_waits_for_the_user_then_is_called_as_the_project_s() {
+    let h = harness(&[]).await;
+    let token: Arc<Mutex<Option<String>>> = Arc::default();
+    let (rovik, got) = project_docs(&h, &token).await;
+    let (url, seen) = model(vec![
+        Reply::Text("Not there yet."),
+        Reply::Call {
+            id: "m1",
+            name: "mcp",
+            args: json!({ "tool": "docs.read", "arguments": { "path": "intro" } }),
+        },
+        Reply::Text("Read."),
+    ])
+    .await;
+    let first = h.request(&url, Harness::send("Read the intro"), quiet_permissions());
+    let run = h.start(first).await.unwrap();
+    let awaiting = h
+        .wait_for("mcpServersAwaiting", |e| e["type"] == "mcpServersAwaiting")
+        .await;
+    assert_eq!(awaiting["projectId"], "p1");
+    assert_eq!(awaiting["servers"][0]["name"], "docs");
+    assert_eq!(awaiting["servers"][0]["variables"][0]["name"], "DOCS_TOKEN");
+    h.wait_for("the run's end", |e| {
+        e["type"] == "runEnded" && e["runId"] == run
+    })
+    .await;
+    let asked = seen.lock().unwrap()[0].clone();
+    assert!(
+        !tool_names(&asked).contains(&"mcp".to_string()),
+        "no tool to call"
+    );
+    assert!(
+        asked["messages"].to_string().contains("docs (.mcp.json)"),
+        "the agent hears of it"
+    );
+
+    // The user allows it, as the chat's card saves it, and gives its token.
+    allow_docs(&h, awaiting["servers"][0]["hash"].as_str().unwrap());
+    *token.lock().unwrap() = Some(rovik.authorization());
+    let next = h.request(&url, Harness::send("Read it now"), quiet_permissions());
+    let run = h.start(next).await.unwrap();
+    let approval = h
+        .wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    assert_eq!(
+        approval["request"]["summary"],
+        "Call docs.read with {\"path\":\"intro\"} (a server the project's .mcp.json sets up)"
+    );
+    let (chat, call) = (h.dialog_id.clone(), "m1".to_string());
+    assert!(agent_resolve_approval(&h.core, chat, call, ApprovalDecision::Allow).await);
+    h.wait_for("the next run's end", |e| {
+        e["type"] == "runEnded" && e["runId"] == run
+    })
+    .await;
+    assert_eq!(*got.lock().unwrap(), ["read: {\"path\":\"intro\"}"]);
+    let asked = seen.lock().unwrap()[1].clone();
+    assert!(tool_names(&asked).contains(&"mcp".to_string()));
+    let prompt = system_prompt(&asked);
+    assert!(
+        prompt.contains("### docs (the project's own, from its .mcp.json)\nThe project's docs."),
+        "{prompt}"
+    );
+    assert!(
+        !asked.to_string().contains(&rovik.authorization()),
+        "never in a request"
+    );
+    assert_eq!(
+        h.events_of("mcpServersAwaiting").len(),
+        1,
+        "nothing waits now"
+    );
+}
+
+/// Q12: a server the user allowed whose variable has no value saved (the
+/// keychain lost it) waits for the user again, rather than failing.
+#[tokio::test]
+async fn an_allowed_project_server_without_its_value_waits_again() {
+    let h = harness(&[]).await;
+    let (_rovik, _got) = project_docs(&h, &Arc::default()).await;
+    let found = crate::mcp::project::read(&h.project, &[]);
+    allow_docs(&h, &found.servers[0].hash);
+    let (url, seen) = model(vec![Reply::Text("No docs.")]).await;
+    let request = h.request(&url, Harness::send("Read the intro"), quiet_permissions());
+    let run = h.start(request).await.unwrap();
+    let awaiting = h
+        .wait_for("mcpServersAwaiting", |e| e["type"] == "mcpServersAwaiting")
+        .await;
+    assert_eq!(awaiting["servers"][0]["name"], "docs");
+    h.wait_for("the run's end", |e| {
+        e["type"] == "runEnded" && e["runId"] == run
+    })
+    .await;
+    let asked = seen.lock().unwrap()[0].clone();
+    assert!(
+        !tool_names(&asked).contains(&"mcp".to_string()),
+        "no tool to call"
+    );
+    assert!(asked["messages"].to_string().contains("docs (.mcp.json)"));
+}

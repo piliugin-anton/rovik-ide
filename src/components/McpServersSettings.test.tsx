@@ -4,7 +4,8 @@
 // typed and its tools picked; a failed test shown with the server's own
 // words; a name that can't be saved refused with why; servers pasted as
 // JSON; a server removed, its secrets forgotten; turned off from the list;
-// the secrets file unlocked here; the form's kind switched and back.
+// the secrets file unlocked here; the form's kind switched and back; the
+// servers projects' own files set up that the user allowed, revoked.
 // The app is answered here, command by command. Run with: npm test
 import { container } from '../test/dom';
 import { afterEach, test } from 'node:test';
@@ -93,17 +94,23 @@ const TESTED: McpTested = {
   ],
 };
 
-/** The page with these servers, its secrets where `store` says, and the confirm dialogs. */
+/**
+ * The page with these servers, its secrets where `store` says, and the
+ * confirm dialogs; the app answering as `answers` say too.
+ */
 async function page(
   servers: McpServer[] = [],
   store: StoreKind = { kind: 'keychain' },
-  hosts: HostRow[] = []
+  hosts: HostRow[] = [],
+  answers: Record<string, (args: any) => unknown> = {}
 ) {
   calls = [];
   backend = {
     mcp_store: () => store,
     hosts_list: () => ({ hosts, store, build: undefined }),
     mcp_save_secrets: () => null,
+    chat_list_projects: () => [],
+    ...answers,
   };
   const [current, setCurrent] = createSignal(servers);
   const opened: SettingsPage[] = [];
@@ -510,4 +517,53 @@ test('a host that drops out after it was chosen is no longer tested on', async (
   assert.equal(testOn(), null, 'nothing but this computer is left to choose');
   await click(button('Test'));
   assert.equal(sent('mcp_test')[0].host, null);
+});
+
+test('the servers projects’ own files set up are listed by project, and revoked once confirmed', async () => {
+  const kept = new Map<string, unknown>([
+    [
+      '/work/app',
+      {
+        checks: [],
+        mcpApprovals: [
+          { hash: 'h-gh', name: 'github', file: '.mcp.json', variables: ['GITHUB_TOKEN'] },
+          { hash: 'h-db', name: 'db', file: '.vscode/mcp.json' },
+        ],
+      },
+    ],
+    ['/work/site', { checks: [] }],
+  ]);
+  const projects = [
+    { id: 'p1', name: 'app', path: '/work/app', chatCount: 2, lastOpenedAt: 2, missing: false },
+    { id: 'p2', name: 'site', path: '/work/site', chatCount: 1, lastOpenedAt: 1, missing: false },
+  ];
+  await page([], { kind: 'keychain' }, [], {
+    chat_list_projects: () => projects,
+    load_project_settings: (args) => kept.get(args.root) ?? null,
+    save_project_settings: (args) => void kept.set(args.root, args.settings),
+    mcp_save_project_values: () => null,
+  });
+  const rows = () => [...document.querySelectorAll('.mcp-project-server-row')].map(said);
+  assert.deepEqual(rows(), [
+    ['github', 'app · .mcp.json'],
+    ['db', 'app · .vscode/mcp.json'],
+  ]);
+
+  const revoke = () => button('Revoke', document.querySelectorAll('.mcp-project-server-row')[0]);
+  await click(revoke());
+  assert.match(
+    text(document.querySelector('.confirm-dialog')),
+    /github won’t run in the chats of app until you allow it again, and the values of its variables are forgotten/
+  );
+  await click(button('Cancel', document.querySelector('.confirm-dialog')!));
+  assert.equal(rows().length, 2);
+  await click(revoke());
+  await click(button('Revoke', document.querySelector('.confirm-dialog')!));
+  assert.deepEqual(sent('mcp_save_project_values'), [
+    { project: 'p1', values: { GITHUB_TOKEN: '' } },
+  ]);
+  assert.deepEqual(rows(), [['db', 'app · .vscode/mcp.json']]);
+  assert.deepEqual((kept.get('/work/app') as any).mcpApprovals, [
+    { hash: 'h-db', name: 'db', file: '.vscode/mcp.json' },
+  ]);
 });

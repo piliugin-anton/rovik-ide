@@ -53,6 +53,8 @@ import {
   type ChatMode,
 } from '../lib/chatMode';
 import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
+import { awaitingServersIn } from '../lib/projectMcpServers';
+import ProjectMcpCard from './ProjectMcpCard';
 import { notify } from '../lib/notifications';
 import { formatBytes, plural } from '../lib/textUtils';
 import ModeSelector from './ModeSelector';
@@ -3360,6 +3362,12 @@ export default function ChatPanel(props: ChatProps) {
     return id ? pendingQuestionsIn(id) : undefined;
   };
 
+  /** The open chat's project servers that wait for the user (Q12). */
+  const awaitingMcp = () => {
+    const id = store.state.activeId;
+    return id ? awaitingServersIn(id) : undefined;
+  };
+
   /** The finished plan an "Implement this plan" button goes under, if any. */
   const planMessageId = createMemo(() => {
     const dialogId = store.state.activeId;
@@ -4621,6 +4629,16 @@ export default function ChatPanel(props: ChatProps) {
       {/* The agent's questions, one at a time, above the input. */}
       <Show when={waitingQuestion()} keyed>
         {(pending) => <QuestionPanel pending={pending} />}
+      </Show>
+      {/* The project's own MCP servers, waiting for the user to allow them. */}
+      <Show when={awaitingMcp()} keyed>
+        {(awaiting) => (
+          <ProjectMcpCard
+            dialogId={store.state.activeId!}
+            awaiting={awaiting}
+            root={props.projectId() === awaiting.projectId ? props.rootPath() : null}
+          />
+        )}
       </Show>
       {/* What this request's subagents and connectors used, as they reported it. */}
       <Show when={usageLabel(runUsage(messages()))}>

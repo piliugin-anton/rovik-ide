@@ -1777,3 +1777,46 @@ async fn mcp_test_on_an_older_host_says_to_update_it() {
     );
     assert!(fake.requests.lock().unwrap().is_empty());
 }
+
+/// Q12 (mcp-plan-2.md): a start of a project's chat brings the values of
+/// the variables its allowed project servers take, kept by the project;
+/// with none allowed, an empty set, which clears what the host kept.
+#[tokio::test]
+async fn a_start_brings_the_values_of_the_project_s_variables() {
+    let app = App::new();
+    let root = app.dir.0.join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let at = root.clone();
+    app.core
+        .db
+        .write(move |c| rovik_core::chat_db::projects::ensure(c, "p1", "project", &at))
+        .await
+        .unwrap();
+    app.chat("chat", Some("p1"), Vec::new()).await;
+    app.core.mcp.set_secrets(Arc::new(|server, key| {
+        Ok(((server, key) == ("project/p1", "DOCS_TOKEN")).then(|| "t0p".to_string()))
+    }));
+    let allowed = |variables: serde_json::Value| {
+        let approvals = serde_json::json!({ "mcpApprovals": [
+            { "hash": "h1", "name": "docs", "file": ".mcp.json", "variables": variables },
+        ] });
+        let at = root.to_string_lossy().into_owned();
+        project_profile::save_project_settings(&app.core.paths.config_dir, at, approvals).unwrap();
+    };
+    allowed(serde_json::json!(["DOCS_TOKEN"]));
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::MCP.into()];
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    let mut request = start("chat", StartKind::Retry, None);
+    request.root = Some(root.to_string_lossy().into_owned());
+    remote.start(request.clone()).await.unwrap();
+    let sent = starts(&fake).remove(0).mcp_secrets;
+    assert_eq!(sent["project/p1"]["DOCS_TOKEN"].0, "t0p");
+
+    allowed(serde_json::json!([]));
+    fake.requests.lock().unwrap().clear();
+    remote.start(request).await.unwrap();
+    let sent = starts(&fake).remove(0).mcp_secrets;
+    assert!(sent["project/p1"].is_empty(), "{sent:?}");
+}

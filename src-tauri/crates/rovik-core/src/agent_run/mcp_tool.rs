@@ -8,8 +8,10 @@
 use super::tools::ToolResult;
 use crate::agent_run::StopSignal;
 use crate::core::Core;
-use crate::mcp::{is_valid_name, Listed, McpServer, Tool};
+use crate::mcp::{is_valid_name, project, Listed, McpServer, Tool};
+use rovik_protocol::mcp::ProjectServer;
 use serde_json::{json, Map, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -59,26 +61,54 @@ pub struct Catalog {
     /// On a daemon, the computer whose loopback the URL servers there
     /// mean: the chat's (mcp-plan-2.md, Q11).
     via: Option<String>,
+    /// The project's own servers in the run, by name: the file of each
+    /// (mcp-plan-2.md, Q12).
+    project_files: BTreeMap<String, String>,
+    /// The project's own servers that wait for the user (Q12): not allowed
+    /// as they are now, or a variable of theirs without a value. The run
+    /// goes without them.
+    pub awaiting: Vec<ProjectServer>,
+    /// What the project's files have that isn't used, and why.
+    pub left_out: Vec<String>,
+}
+
+/// Where a run finds its project's own MCP servers (mcp-plan-2.md, Q12).
+pub struct ProjectFiles {
+    /// The project's id, which its variables' values are kept by.
+    pub project: String,
+    /// The folder its files are read in: the chat's view of the project.
+    pub root: PathBuf,
+    /// The project's settings, which keep the servers the user allowed.
+    pub settings: Value,
 }
 
 impl Catalog {
-    /// The tools of the user's enabled `servers`, for a run of `chat` whose
-    /// project is `project`: none without servers.
+    /// The tools of the user's enabled `servers`, and of the servers the
+    /// project's `files` set up that the user allowed, for a run of `chat`
+    /// whose project is `project`: none without either, or any of the
+    /// project's waiting or left out.
     pub async fn list(
         core: &Core,
         servers: &[McpServer],
         project: Option<&str>,
         chat: &str,
+        files: Option<ProjectFiles>,
     ) -> Option<Arc<Catalog>> {
-        let servers: Vec<McpServer> = servers
+        let mut servers: Vec<McpServer> = servers
             .iter()
             .filter(|s| s.enabled && is_valid_name(&s.name))
             .cloned()
             .collect();
-        if servers.is_empty() {
+        let project = project.map(PathBuf::from);
+        let mut ours = ProjectServers::default();
+        if let Some(files) = files {
+            let folder = project.clone().unwrap_or_else(|| files.root.clone());
+            ours = Self::project_servers(core, &servers, &folder, files).await;
+            servers.append(&mut ours.servers);
+        }
+        if servers.is_empty() && ours.awaiting.is_empty() && ours.left_out.is_empty() {
             return None;
         }
-        let project = project.map(PathBuf::from);
         let via = core.mcp.via(chat);
         let listed = (core.mcp)
             .list(&servers, project.as_deref(), via.as_deref())
@@ -88,7 +118,51 @@ impl Catalog {
             listed,
             project,
             via,
+            project_files: ours.files,
+            awaiting: ours.awaiting,
+            left_out: ours.left_out,
         }))
+    }
+
+    /// The servers the project's `files` set up, `user`'s own winning (Q12):
+    /// those the user allowed with their variables filled (their values set
+    /// on the core's MCP state, for `folder`), and those that wait for the
+    /// user: not allowed as they are now, or with a variable that has no
+    /// value saved.
+    async fn project_servers(
+        core: &Core,
+        user: &[McpServer],
+        folder: &std::path::Path,
+        files: ProjectFiles,
+    ) -> ProjectServers {
+        let (root, mine) = (files.root.clone(), user.to_vec());
+        let found = crate::rt::spawn_blocking(move || project::read(&root, &mine)).await;
+        let found = found.unwrap_or_default();
+        let approved = project::approved(&files.settings);
+        let names: BTreeSet<String> = (found.servers.iter())
+            .filter(|s| approved.contains(&s.hash))
+            .flat_map(|s| s.variables.iter().map(|v| v.name.clone()))
+            .collect();
+        let values = core.mcp.project_values(&files.project, &names).await;
+        let mut ours = ProjectServers {
+            left_out: found.left_out,
+            ..Default::default()
+        };
+        for server in found.servers {
+            let value_of = |name: &str| values.get(name).cloned();
+            let run = (approved.contains(&server.hash))
+                .then(|| project::resolved(&server, &files.project, folder, value_of))
+                .flatten();
+            match run {
+                Some((resolved, secrets)) => {
+                    core.mcp.set_project_values(&resolved.id, secrets);
+                    ours.files.insert(resolved.name.clone(), server.file);
+                    ours.servers.push(resolved);
+                }
+                None => ours.awaiting.push(server),
+            }
+        }
+        ours
     }
 
     /// A catalog of these tools (tests).
@@ -99,6 +173,9 @@ impl Catalog {
             listed,
             project: None,
             via: None,
+            project_files: BTreeMap::new(),
+            awaiting: Vec::new(),
+            left_out: Vec::new(),
         }
     }
 
@@ -133,6 +210,9 @@ impl Catalog {
         let mut room = LIST_CHARS;
         for listed in &self.listed {
             text.push_str(&format!("\n\n### {}", listed.name));
+            if let Some(file) = self.project_files.get(&listed.name) {
+                text.push_str(&format!(" (the project's own, from its {file})"));
+            }
             let instructions = cut(&listed.instructions, INSTRUCTIONS_CHARS);
             if !instructions.is_empty() {
                 text.push('\n');
@@ -177,7 +257,35 @@ impl Catalog {
                 ));
             }
         }
+        if let Some(note) = self.awaiting_note() {
+            text.push_str(&format!("\n\n{note}"));
+        }
         text
+    }
+
+    /// What the agent hears of the project's own servers waiting for the
+    /// user (Q12), so it can say so when the task needs one.
+    pub fn awaiting_note(&self) -> Option<String> {
+        if self.awaiting.is_empty() {
+            return None;
+        }
+        let named: Vec<String> = (self.awaiting.iter())
+            .map(|s| format!("{} ({})", s.name, s.file))
+            .collect();
+        Some(format!(
+            "The project's own files set up MCP servers that wait for the user to allow them as \
+             they are now, or to give their values: {}. They aren't in this run: the chat asks \
+             the user. If the task needs one, tell the user.",
+            named.join(", ")
+        ))
+    }
+
+    /// What an approval of a call to `tool` (`server.tool`) adds when its
+    /// server is the project's own (Q12): which file set it up.
+    pub fn whose(&self, tool: &str) -> Option<String> {
+        let server = tool.split_once('.').map_or(tool, |(server, _)| server);
+        let file = self.project_files.get(server.trim())?;
+        Some(format!(" (a server the project's {file} sets up)"))
     }
 
     /// The server and the tool `name` names (`server.tool`), as the mode
@@ -228,6 +336,17 @@ impl Catalog {
         }
         Ok((server, tool))
     }
+}
+
+/// The servers a project's files set up, for a run.
+#[derive(Default)]
+struct ProjectServers {
+    /// Allowed, their variables filled.
+    servers: Vec<McpServer>,
+    /// The file of each of `servers`, by its name.
+    files: BTreeMap<String, String>,
+    awaiting: Vec<ProjectServer>,
+    left_out: Vec<String>,
 }
 
 /// Whether a mode may call `tool`: any tool, or a read-only one.

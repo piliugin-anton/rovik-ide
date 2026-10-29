@@ -17,7 +17,7 @@ use rovik_core::agent_run::{self, AgentConfig, AgentStatus, StartKind, StartRequ
 use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::store::{self, NewChildDialog, NewMessage};
 use rovik_core::chat_db::{api, attachments, moves};
-use rovik_core::{project_profile, Core};
+use rovik_core::{mcp, project_profile, Core};
 use rovik_protocol::autopilot::{AutonomyConfig, AutonomySettings, DeliveryTest};
 use rovik_protocol::mcp::{McpServer, Tested};
 use rovik_protocol::network::HostNetwork;
@@ -792,7 +792,8 @@ impl Remote {
         // A daemon without projects runs in the folder the start names.
         let id = request.dialog_id.clone();
         let project = self.core.db.read(move |c| store::dialog_project(c, &id));
-        if project.await.map_err(internal)?.is_some() && takes_projects(&client) {
+        let project = project.await.map_err(internal)?;
+        if project.is_some() && takes_projects(&client) {
             request.root = None;
         }
         if let Some(config) = &mut request.config {
@@ -813,6 +814,17 @@ impl Remote {
             };
             let on: Vec<McpServer> = servers.into_iter().filter(|s| s.enabled).collect();
             request.mcp_secrets = self.core.mcp.saved_secrets(&on).await;
+            // And the values of the project's variables, for the project's
+            // own servers the user allowed (Q12): none clears them there.
+            if let Some(project) = &project {
+                let settings = request.project_settings.clone().unwrap_or_default();
+                let names = mcp::project::approved_variables(&settings);
+                let values = self.core.mcp.project_values(project, &names).await;
+                let values = values.into_iter().map(|(k, v)| (k, Secret(v))).collect();
+                request
+                    .mcp_secrets
+                    .insert(mcp::project::values_id(project), values);
+            }
         }
         self.leave_out_known_text(&mut request).await;
         if let StartKind::Send { message } = &mut request.start {

@@ -19,6 +19,7 @@
 
 mod http;
 mod import;
+pub mod project;
 mod rpc;
 mod stdio;
 #[cfg(test)]
@@ -35,7 +36,7 @@ use rovik_protocol::mcp::RelayedPost;
 use rovik_protocol::Secret;
 use rpc::{Era, Failure};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -552,6 +553,9 @@ struct Shared {
     /// A daemon's way to the servers on its user's computers' loopback.
     relay: Mutex<Option<Arc<dyn Relay>>>,
     servers: Mutex<HashMap<Key, Arc<Instance>>>,
+    /// The project servers' secret values, by server id then key, as their
+    /// runs filled their variables (mcp-plan-2.md, Q12).
+    project_values: Mutex<HashMap<String, BTreeMap<String, String>>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -638,20 +642,60 @@ impl McpState {
     /// transport changed, is stopped; the next run that needs it starts it
     /// again (Q04).
     pub fn configure(&self, servers: &[McpServer]) {
+        // A project's servers aren't the settings': their runs list them.
         let kept = |id: &str, transport: &McpTransport| {
-            servers
-                .iter()
-                .any(|s| s.id == id && s.enabled && s.transport == *transport)
+            id.starts_with(rovik_protocol::mcp::PROJECT_SERVERS)
+                || (servers.iter()).any(|s| s.id == id && s.enabled && s.transport == *transport)
         };
         let gone = self.take(|(id, _, _), instance| !kept(id, &instance.transport));
         stop_all(gone);
     }
 
     /// The server's secrets changed: it starts again, with them, at its
-    /// next use.
+    /// next use. Given where a project's values are kept (`project/<id>`,
+    /// mcp-plan-2.md Q12), each of that project's servers does.
     pub fn forget(&self, id: &str) {
-        let gone = self.take(|(i, _, _), _| i == id);
+        let under = format!("{id}/");
+        let gone = self.take(|(i, _, _), _| i == id || i.starts_with(&under));
         stop_all(gone);
+    }
+
+    /// Project server `id`'s secret values, by key, as its run filled its
+    /// variables (Q12): a running one whose values changed starts again
+    /// with them at its next use.
+    pub fn set_project_values(&self, id: &str, values: BTreeMap<String, String>) {
+        let changed = lock(&self.0.project_values).insert(id.to_string(), values.clone());
+        if changed.is_some_and(|old| old != values) {
+            self.forget(id);
+        }
+    }
+
+    /// The saved values of `project`'s variables `names` (Q12), as the
+    /// servers' secrets are kept: one not saved, or that can't be read, is
+    /// left out. Read on a blocking thread.
+    pub async fn project_values(
+        &self,
+        project: &str,
+        names: &BTreeSet<String>,
+    ) -> BTreeMap<String, String> {
+        let Some(source) = lock(&self.0.secrets).clone() else {
+            return BTreeMap::new();
+        };
+        let (id, names) = (project::values_id(project), names.clone());
+        let read = crate::rt::spawn_blocking(move || {
+            let mut values = BTreeMap::new();
+            for name in names {
+                match source(&id, &name) {
+                    Ok(Some(value)) => {
+                        values.insert(name, value);
+                    }
+                    Ok(None) => {}
+                    Err(e) => log::warn!("{id}: the value of {name} couldn't be read: {e}"),
+                }
+            }
+            values
+        });
+        read.await.unwrap_or_default()
     }
 
     /// The saved secret values of the `servers` that have a secret field,
@@ -974,7 +1018,13 @@ impl McpState {
     ) -> Result<Vec<(String, String)>, String> {
         let source = lock(&self.0.secrets).clone();
         let server = server.clone();
-        let given = given.cloned().unwrap_or_default();
+        // A project server's values are its run's; what Test was given
+        // goes over them.
+        let mut values: HashMap<String, String> = (lock(&self.0.project_values).get(&server.id))
+            .map(|v| v.clone().into_iter().collect())
+            .unwrap_or_default();
+        values.extend(given.cloned().unwrap_or_default());
+        let given = values;
         crate::rt::spawn_blocking(move || {
             server
                 .transport

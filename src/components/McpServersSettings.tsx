@@ -7,7 +7,8 @@
 // its env vars or headers (a secret's value goes in the keychain, never in
 // the settings: lib/mcpServers.ts's `savingServer`), tests it, and picks
 // which of its tools the agent gets. Servers can also be added from the
-// JSON another client's setup instructions give.
+// JSON another client's setup instructions give. Under them, the servers
+// projects' own files set up that the user allowed (ProjectMcpApprovals).
 import { createResource, createSignal, For, Index, onCleanup, Show } from 'solid-js';
 import type { SettingsPage } from '../lib/appSettings';
 import {
@@ -35,6 +36,7 @@ import {
 import { onCloudEvent } from '../lib/cloud';
 import { listHosts } from '../lib/hosts';
 import { confirmDialog } from './ConfirmDialog';
+import ProjectMcpApprovals from './ProjectMcpApprovals';
 import { SecretsUnlock, Segmented, SettingRow, SettingStatus } from './SettingsControls';
 
 /** Lets the settings modal show the open form's name and close it with Back. */
@@ -480,6 +482,7 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
                 </div>
               </div>
             </Show>
+            <ProjectMcpApprovals />
           </>
         }
       >

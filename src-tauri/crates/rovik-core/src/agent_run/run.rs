@@ -1036,15 +1036,15 @@ impl Run {
             }
         }
 
-        let (checks, project_context, restricted) = match &root {
-            Some(r) => {
-                // Settings are kept by the project's folder, not the view's;
-                // a candidate's, by its task chat's (T05).
-                let settings_root = core
-                    .agents
-                    .candidate_project(&dialog_id)
-                    .or_else(|| project_root.clone())
-                    .unwrap_or_else(|| r.clone());
+        // Settings are kept by the project's folder, not the view's; a
+        // candidate's, by its task chat's (T05).
+        let settings_root = root.as_ref().map(|r| {
+            (core.agents.candidate_project(&dialog_id))
+                .or_else(|| project_root.clone())
+                .unwrap_or_else(|| r.clone())
+        });
+        let (checks, project_context, restricted) = match (&root, settings_root.clone()) {
+            (Some(r), Some(settings_root)) => {
                 let config_dir = core.paths.config_dir.clone();
                 let (r, verify) = (r.clone(), config.permissions.verify_changes);
                 crate::rt::spawn_blocking(move || {
@@ -1058,7 +1058,7 @@ impl Run {
                 .await
                 .unwrap_or_default()
             }
-            None => Default::default(),
+            _ => Default::default(),
         };
         let restricted = Arc::new(restricted);
         // V02 (D7): an Autopilot implementation in a project with no checks
@@ -1142,8 +1142,29 @@ impl Run {
         let mcp = match request.profile.no_tools {
             true => None,
             false => {
+                let files = project_mcp_files(core, &dialog_id, &root, &settings_root).await;
+                let project_id = files.as_ref().map(|f| f.project.clone());
                 let (servers, chat) = (&config.mcp_servers, &request.dialog_id);
-                super::mcp_tool::Catalog::list(core, servers, project_root.as_deref(), chat).await
+                let catalog = super::mcp_tool::Catalog::list(
+                    core,
+                    servers,
+                    project_root.as_deref(),
+                    chat,
+                    files,
+                )
+                .await;
+                // Q12: the chat asks the user to allow the project's own.
+                if let (Some(catalog), Some(project_id)) = (&catalog, project_id) {
+                    if !catalog.awaiting.is_empty() || !catalog.left_out.is_empty() {
+                        core.emit(AgentEvent::McpServersAwaiting {
+                            dialog_id: dialog_id.clone(),
+                            project_id,
+                            servers: catalog.awaiting.clone(),
+                            left_out: catalog.left_out.clone(),
+                        });
+                    }
+                }
+                catalog
             }
         };
 
@@ -2186,6 +2207,10 @@ impl Run {
                     .is_none_or(|sub| sub.allows(super::mcp_tool::NAME));
                 allowed.then(|| catalog.section(mcp_read_only, super::mcp_tool::NAME))
             }
+            // No tool to call, but the project's own servers wait (Q12).
+            Some(catalog) if !context_only && self.sub().is_none() => catalog
+                .awaiting_note()
+                .map(|note| format!("## MCP tools\n\n{note}")),
             _ => None,
         };
         // S06: the answers to the change review's findings: always in
@@ -4618,4 +4643,39 @@ mod clm_pressure_tests {
         // Nothing waiting: never restricted, whatever the size.
         assert_eq!(restriction_reason(85, false, None, None, 100), None);
     }
+}
+
+/// Where a run of `chat` finds its project's own MCP servers (mcp-plan-2.md,
+/// Q12): the files in its view of the project, and the project's settings,
+/// which keep those the user allowed. None for a chat of no project.
+async fn project_mcp_files(
+    core: &Core,
+    chat: &str,
+    root: &Option<String>,
+    settings_root: &Option<String>,
+) -> Option<super::mcp_tool::ProjectFiles> {
+    let (root, settings_root) = (root.clone()?, settings_root.clone()?);
+    let id = chat.to_string();
+    let project = core
+        .db
+        .read(move |c| crate::chat_db::store::dialog_project(c, &id))
+        .await;
+    let project = match project {
+        Ok(project) => project?,
+        Err(e) => {
+            ::log::warn!("{chat}: its project wasn't read, so its own MCP servers aren't: {e}");
+            return None;
+        }
+    };
+    let config_dir = core.paths.config_dir.clone();
+    let settings = crate::rt::spawn_blocking(move || {
+        crate::project_profile::load_project_settings(&config_dir, &settings_root)
+    })
+    .await
+    .unwrap_or_default();
+    Some(super::mcp_tool::ProjectFiles {
+        project,
+        root: std::path::PathBuf::from(root),
+        settings,
+    })
 }
