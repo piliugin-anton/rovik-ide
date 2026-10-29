@@ -464,13 +464,15 @@ while True:
         send({'jsonrpc': '2.0', 'id': id, 'result': {'content': [{'type': 'text', 'text': 'echo: ' + str(arguments.get('text'))}], 'isError': False}})
 "#;
 
-/// The fake server's command in `dir`, in `mode`, and its log; none
-/// without python3.
+/// The fake server's command in `dir`, in `mode`, and its log. It runs on
+/// python3: without it the test fails, saying so, rather than passing
+/// with nothing tested.
 #[cfg(unix)]
-fn fake(dir: &Path, mode: &str) -> Option<(McpTransport, PathBuf)> {
-    if !crate::process::on_path("python3") {
-        return None;
-    }
+fn fake(dir: &Path, mode: &str) -> (McpTransport, PathBuf) {
+    assert!(
+        crate::process::on_path("python3"),
+        "The MCP tests need python3 on PATH for their fake servers: install it."
+    );
     let script = dir.join("fake_mcp.py");
     std::fs::write(&script, FAKE_SERVER).unwrap();
     let log = dir.join(format!("{mode}.log"));
@@ -494,7 +496,7 @@ fn fake(dir: &Path, mode: &str) -> Option<(McpTransport, PathBuf)> {
             },
         ],
     };
-    Some((transport, log))
+    (transport, log)
 }
 
 /// What the fake server's log has, line by line.
@@ -524,9 +526,7 @@ fn with_token(state: &McpState) {
 #[tokio::test]
 async fn a_legacy_command_server_starts_in_the_project_and_ends_with_its_settings() {
     let dir = temp_dir();
-    let Some((transport, log)) = fake(&dir.0, "legacy") else {
-        return;
-    };
+    let (transport, log) = fake(&dir.0, "legacy");
     let project = dir.0.join("project");
     std::fs::create_dir_all(&project).unwrap();
     let state = McpState::default();
@@ -604,9 +604,7 @@ async fn a_legacy_command_server_starts_in_the_project_and_ends_with_its_setting
 #[tokio::test]
 async fn a_stopped_call_is_cancelled_at_the_server() {
     let dir = temp_dir();
-    let Some((transport, log)) = fake(&dir.0, "legacy") else {
-        return;
-    };
+    let (transport, log) = fake(&dir.0, "legacy");
     let state = McpState::default();
     with_token(&state);
     let fake_server = server("fake", transport);
@@ -645,9 +643,7 @@ async fn a_stopped_call_is_cancelled_at_the_server() {
 #[tokio::test]
 async fn a_modern_command_server_gets_its_version_on_every_request() {
     let dir = temp_dir();
-    let Some((transport, log)) = fake(&dir.0, "modern") else {
-        return;
-    };
+    let (transport, log) = fake(&dir.0, "modern");
     let state = McpState::default();
     with_token(&state);
     let fake_server = server("fake", transport);
@@ -691,9 +687,7 @@ async fn a_modern_command_server_gets_its_version_on_every_request() {
 #[tokio::test]
 async fn a_server_that_exits_says_why() {
     let dir = temp_dir();
-    let Some((transport, _log)) = fake(&dir.0, "crash") else {
-        return;
-    };
+    let (transport, _log) = fake(&dir.0, "crash");
     let state = McpState::default();
     with_token(&state);
     let error = state.list(&[server("fake", transport)], None).await[0]
@@ -812,9 +806,7 @@ async fn soon_logged(log: &Path, check: impl Fn(&Value) -> bool) -> bool {
 #[tokio::test]
 async fn an_idle_server_is_stopped_and_one_in_use_is_not() {
     let dir = temp_dir();
-    let Some((transport, log)) = fake(&dir.0, "wait") else {
-        return;
-    };
+    let (transport, log) = fake(&dir.0, "wait");
     let state = McpState::default();
     with_token(&state);
     let fake_server = server("fake", transport);
@@ -868,9 +860,7 @@ async fn an_idle_server_is_stopped_and_one_in_use_is_not() {
 #[tokio::test]
 async fn a_recently_used_server_is_not_stopped_as_idle() {
     let dir = temp_dir();
-    let Some((transport, log)) = fake(&dir.0, "legacy") else {
-        return;
-    };
+    let (transport, log) = fake(&dir.0, "legacy");
     let state = McpState::default();
     with_token(&state);
     let fake_server = server("fake", transport);
@@ -891,9 +881,7 @@ async fn a_recently_used_server_is_not_stopped_as_idle() {
 #[tokio::test]
 async fn a_worktree_s_servers_stop_when_it_goes() {
     let dir = temp_dir();
-    let Some((transport, log)) = fake(&dir.0, "legacy") else {
-        return;
-    };
+    let (transport, log) = fake(&dir.0, "legacy");
     let (a, b) = (dir.0.join("a"), dir.0.join("b"));
     std::fs::create_dir_all(&a).unwrap();
     std::fs::create_dir_all(&b).unwrap();

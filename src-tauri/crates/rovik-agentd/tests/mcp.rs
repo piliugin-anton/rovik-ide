@@ -58,9 +58,7 @@ fn logged(log: &Path) -> Vec<Value> {
 /// worktree. Deleting the chat stops it.
 #[tokio::test]
 async fn deleting_a_chat_stops_the_mcp_servers_started_in_its_root() {
-    if which("python3").is_none() {
-        return;
-    }
+    needs_python3();
     let setup = Setup::new().await;
     let snapshot = setup.pushed(CHAT).await;
     setup.ensure_in("src").await;
@@ -109,6 +107,15 @@ async fn deleting_a_chat_stops_the_mcp_servers_started_in_its_root() {
         logged(&log).iter().any(|m| m["bye"] == true).then_some(())
     })
     .await;
+}
+
+/// The command server here runs on python3: without it a test fails,
+/// saying so, rather than passing with nothing tested.
+fn needs_python3() {
+    assert!(
+        which("python3").is_some(),
+        "The MCP tests need python3 on PATH for their fake server: install it."
+    );
 }
 
 fn which(program: &str) -> Option<PathBuf> {
@@ -214,9 +221,7 @@ async fn ended_in(session: &mut Session<UnixStream>) {
 /// so none keeps a removed secret in its environment.
 #[tokio::test(flavor = "multi_thread")]
 async fn removing_every_key_forgets_the_mcp_secrets_and_stops_the_servers() {
-    if which("python3").is_none() {
-        return;
-    }
+    needs_python3();
     let daemon = Daemon::start(&["--same-machine"]).await;
     let project = daemon.dir.0.join("project");
     std::fs::create_dir_all(&project).unwrap();
