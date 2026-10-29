@@ -1044,6 +1044,8 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
         panic!("{requests:?}");
     };
     assert_eq!(received.permissions.command_approval.by, Approver::Ai);
+    // The MCP rule asks the user unless set otherwise: it goes there too (Q11).
+    assert_eq!(received.permissions.mcp_approval.by, Approver::Ai);
     assert_eq!(received.autopilot.effort, Effort::Thorough);
     assert_eq!(
         received.autopilot.budget,
@@ -1056,6 +1058,7 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
     );
     let mut rest = received.as_ref().clone();
     rest.permissions.command_approval.by = Approver::User;
+    rest.permissions.mcp_approval.by = Approver::User;
     rest.autopilot = config.autopilot.clone();
     assert_eq!(rest, config.without_keys(), "the rest is the computer's");
     assert_eq!(requests[1], Request::AutonomyConfigure(block.config()));
