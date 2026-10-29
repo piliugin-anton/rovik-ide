@@ -374,10 +374,50 @@ freed.
   project's `Cargo.lock`. The toolchains themselves are root's, readable
   by all and writable by none but root.
 - Worktrees and API keys sit in the user's 0700 folders. Other users can't
-  read them, but root can. The app tells users: "Your API keys are stored in
-  your account on this server, so chats there run while this computer is
-  away. The agent's commands there and anyone with root on it can read
-  them." Each user can remove them there from Settings → Cloud hosts.
+  read them, but root can. The app tells users: "Your API keys and MCP
+  servers' secrets are stored in your account on this server, so chats
+  there run while this computer is away. The agent's commands there and
+  anyone with root on it can read them." Each user can remove them there
+  from Settings → Cloud hosts.
+- The user's MCP servers run on the server too, as the user and outside
+  the commands' sandbox, so they can read what the user can read there,
+  `~/.rovik` included, and nothing of other users'. A command's server
+  starts in the chat's own worktree, outside the user's private network
+  (the allowed hosts don't hold it); a URL server is posted to by the
+  daemon. The secrets of the servers are sent with each start and kept in
+  `~/.rovik/keys.json` with the API keys. Settings → Cloud hosts says how
+  many servers' secrets are kept there; removing the keys removes them
+  too and stops the servers running there. A value cleared on the user's
+  computer is cleared there at the next start. A server unused for 30 minutes is stopped, and a chat's
+  servers stop when its worktree is deleted. The command (`npx`, `uvx`,
+  Docker...) must be installed on the server: Rovik installs and
+  translates nothing, and a server that can't start is listed unavailable
+  with why. A host on an older Rovik gets no MCP secrets.
+- A URL server's sign-in (mcp-plan-2.md, Q14) is the server's own: its
+  refresh tokens rotate, so the user's computer and each host have their
+  own. The app runs it in the user's browser, back to its loopback, and
+  sends the tokens to the daemon (`McpSignIn`), which keeps them in
+  `~/.rovik/keys.json`, by server, refreshes them there and puts them on
+  each request; `McpSignIn` without tokens signs the server out, and
+  `McpSignedIn` says which servers are signed in, and the scopes each
+  asked for that its sign-in lacks (a 403 `insufficient_scope`), which the
+  next sign-in there asks for. A sign-in the server refuses is forgotten
+  there. Removing the keys forgets them. The user's computer signs a
+  server out on each host; one that's away is owed it (kept with the
+  host in `cloud-hosts.json`) and told as it next connects. A host on an older Rovik doesn't say it keeps sign-ins
+  (`mcp-sign-in`), and isn't offered one.
+- A URL server on the loopback (`localhost`, 127.0.0.0/8, `[::1]`) is on
+  the user's computer, which a server can't reach: the daemon has the app
+  there make each POST (`McpRelayWanted`, then `McpRelayTake` and
+  `McpRelayPart`), one server instance per computer. A server on the old
+  HTTP+SSE transport has its event stream's GET relayed the same way, for
+  as long as the stream lasts. The app posts only to its own servers on
+  its loopback, on in its settings or under Test, and to the endpoint
+  their relayed stream named while it lasts, so a daemon can't reach
+  anything else on the computer through it. While the
+  computer isn't connected, its loopback servers are unavailable there,
+  saying it's away. In WSL with mirrored networking, and with
+  `--same-machine`, the daemon posts to the loopback itself.
 - Administrators can read the same things as before they became
   administrators, and nothing more, as long as `agentd.toml` says
   `allow_unsigned = false`, as it does unless someone changes it. With

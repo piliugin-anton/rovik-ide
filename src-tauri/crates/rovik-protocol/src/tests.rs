@@ -9,6 +9,10 @@ use crate::clm::{ClmStatus, RevisionRow};
 use crate::diff::Hunk;
 use crate::events::*;
 use crate::host::{HostInfo, Install, KeyInfo, Storage};
+use crate::mcp::{
+    is_secret_key, is_valid_name, McpGrant, McpOAuthClient, McpServer, McpTransport, McpValue,
+    RelayPart, RelayedPost, SignedInServer, CLIENT_SECRET_KEY,
+};
 use crate::network::{HostNetwork, ProxyEndpoint, ProxyKind, ProxyRoute};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
@@ -92,6 +96,24 @@ fn changes_page() -> ChangesPage {
             key: "m".into(),
         }),
         rev: 57,
+    }
+}
+
+/// A sign-in to an MCP server (Q14), its tokens and client secret named
+/// as what they are.
+fn grant() -> McpGrant {
+    McpGrant {
+        issuer: "https://auth.example.com".into(),
+        token_endpoint: "https://auth.example.com/token".into(),
+        client_id: "acme".into(),
+        client_secret: Some(Secret("client-s3cret".into())),
+        auth_method: "client_secret_basic".into(),
+        resource: "https://mcp.example.com/mcp".into(),
+        scope: "read write".into(),
+        access_token: Secret("access-t0ken".into()),
+        refresh_token: Some(Secret("refresh-t0ken".into())),
+        expires_at: Some(1_700_000_000_000),
+        wants: Some("read write admin".into()),
     }
 }
 
@@ -221,6 +243,22 @@ fn config() -> AgentConfig {
             denied_commands: vec!["git push".into()],
             plan_fix: PlanFix::default(),
         },
+        mcp_servers: vec![McpServer {
+            id: "s1".into(),
+            name: "github".into(),
+            enabled: true,
+            transport: McpTransport::Url {
+                url: "https://api.githubcopilot.com/mcp/".into(),
+                headers: vec![McpValue {
+                    name: "Authorization".into(),
+                    value: String::new(),
+                    secret: true,
+                }],
+                sse: false,
+                oauth: None,
+            },
+            disabled_tools: vec!["delete_repository".into()],
+        }],
         network: None,
     }
 }
@@ -296,6 +334,161 @@ fn permissions_from_before_the_allowed_hosts_reach_any_host() {
     assert_eq!(serde_json::from_value::<Permissions>(json).unwrap(), listed);
 }
 
+/// Q07 (docs/design/mcp-plan.md): permissions saved before the MCP rule
+/// ask the user before each MCP call, whatever the other rules say.
+#[test]
+fn permissions_from_before_the_mcp_rule_ask_before_mcp_calls() {
+    let before: Permissions =
+        serde_json::from_str(r#"{"toolApproval": {"required": false, "by": "user"}}"#).unwrap();
+    assert_eq!(
+        before.mcp_approval,
+        ApprovalRule {
+            required: true,
+            by: Approver::User
+        }
+    );
+    assert!(!before.tool_approval.required);
+    let by_ai = Permissions {
+        mcp_approval: ApprovalRule {
+            required: true,
+            by: Approver::Ai,
+        },
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&by_ai).unwrap();
+    assert_eq!(json["mcpApproval"], json!({"required": true, "by": "ai"}));
+    assert_eq!(serde_json::from_value::<Permissions>(json).unwrap(), by_ai);
+}
+
+/// Q01: a server as the frontend keeps it, by its names; what it leaves out
+/// reads as on, nothing switched off and no env vars; a configuration from
+/// before the servers has none, and one without any doesn't name them.
+#[test]
+fn an_mcp_server_reads_as_the_frontend_keeps_it() {
+    let server: McpServer = serde_json::from_value(json!({
+        "id": "s2",
+        "name": "docs",
+        "transport": { "kind": "command", "command": "npx", "args": ["-y", "docs-mcp"] },
+    }))
+    .unwrap();
+    assert!(server.enabled);
+    assert!(server.disabled_tools.is_empty());
+    let McpTransport::Command { command, args, env } = &server.transport else {
+        panic!("{server:?}");
+    };
+    assert_eq!((command.as_str(), args.len(), env.len()), ("npx", 2, 0));
+    assert_eq!(server.transport.secret_key("TOKEN"), "env/TOKEN");
+    let url = McpTransport::Url {
+        url: "https://example.com/mcp".into(),
+        headers: Vec::new(),
+        sse: false,
+        oauth: None,
+    };
+    assert_eq!(url.secret_key("Authorization"), "header/Authorization");
+    assert_eq!(
+        serde_json::to_value(&url).unwrap(),
+        json!({ "kind": "url", "url": "https://example.com/mcp", "headers": [] })
+    );
+    // Q13 (mcp-plan-2.md): the old HTTP+SSE transport, as the page keeps it.
+    let sse =
+        json!({ "kind": "url", "url": "https://example.com/sse", "headers": [], "sse": true });
+    let read: McpTransport = serde_json::from_value(sse.clone()).unwrap();
+    assert!(matches!(read, McpTransport::Url { sse: true, .. }));
+    assert_eq!(serde_json::to_value(&read).unwrap(), sse);
+    let before: AgentConfig = serde_json::from_str("{}").unwrap();
+    assert!(before.mcp_servers.is_empty());
+    assert!(serde_json::to_value(AgentConfig::default())
+        .unwrap()
+        .get("mcpServers")
+        .is_none());
+}
+
+/// Q01: a server's name is what the agent writes before the dot in
+/// `github.create_issue`: short, lower case, never a dot.
+#[test]
+fn a_server_name_is_short_lower_case_and_has_no_dot() {
+    for good in ["github", "my-docs", "db_2", "a"] {
+        assert!(is_valid_name(good), "{good}");
+    }
+    let long = "a".repeat(33);
+    for bad in [
+        "",
+        "GitHub",
+        "git.hub",
+        "2fa",
+        "-x",
+        "my docs",
+        "ü",
+        long.as_str(),
+    ] {
+        assert!(!is_valid_name(bad), "{bad}");
+    }
+}
+
+/// Q02: a secret is saved under a key its transport makes, and no other
+/// key reaches the keychain.
+#[test]
+fn a_secret_key_names_an_env_var_or_a_header() {
+    let command = McpTransport::Command {
+        command: "npx".into(),
+        args: Vec::new(),
+        env: Vec::new(),
+    };
+    let url = McpTransport::Url {
+        url: "https://mcp.example.com".into(),
+        headers: Vec::new(),
+        sse: false,
+        oauth: None,
+    };
+    for key in [
+        command.secret_key("GITHUB_TOKEN"),
+        url.secret_key("Authorization"),
+        CLIENT_SECRET_KEY.into(),
+    ] {
+        assert!(is_secret_key(&key), "{key}");
+    }
+    for bad in [
+        "",
+        "env/",
+        "header/",
+        "GITHUB_TOKEN",
+        "env/A/B",
+        "other/A",
+        "../env/A",
+        "oauth/other",
+    ] {
+        assert!(!is_secret_key(bad), "{bad}");
+    }
+}
+
+/// A transport's secret keys are its named values marked secret, and only
+/// those.
+#[test]
+fn a_transports_secret_keys_are_its_named_secret_values() {
+    let value = |name: &str, secret| McpValue {
+        name: name.into(),
+        value: String::new(),
+        secret,
+    };
+    let command = McpTransport::Command {
+        command: "npx".into(),
+        args: Vec::new(),
+        env: vec![
+            value("TOKEN", true),
+            value("PLAIN", false),
+            value(" ", true),
+        ],
+    };
+    assert_eq!(command.secret_keys(), ["env/TOKEN"]);
+    let url = McpTransport::Url {
+        url: "https://mcp.example.com".into(),
+        headers: vec![value("Authorization", true)],
+        sse: false,
+        oauth: None,
+    };
+    assert_eq!(url.secret_keys(), ["header/Authorization"]);
+}
+
 /// A message as a steer sends it: the text with its editor context, an
 /// image.
 fn steer_message() -> UserMessage {
@@ -330,6 +523,7 @@ fn start() -> StartRequest {
         config: Some(config()),
         isolate: Some(false),
         project_settings: Some(json!({ "checks": [{ "kind": "test", "command": "npm test" }] })),
+        mcp_secrets: Default::default(),
     }
 }
 
@@ -737,6 +931,38 @@ fn every_request_round_trips() {
             },
             Request::HostInfo,
             Request::KeysList,
+            Request::McpSecretsKept,
+            Request::McpTest {
+                server: crate::mcp::McpServer {
+                    id: "s1".into(),
+                    name: "docs".into(),
+                    enabled: true,
+                    transport: McpTransport::Url {
+                        url: "https://example.com/mcp".into(),
+                        headers: Vec::new(),
+                        sse: false,
+                        oauth: None,
+                    },
+                    disabled_tools: Vec::new(),
+                },
+                values: [("header/Authorization".into(), crate::Secret("t".into()))].into(),
+            },
+            Request::McpSignIn {
+                server: "s1".into(),
+                grant: Some(grant()),
+            },
+            Request::McpSignIn {
+                server: "s1".into(),
+                grant: None,
+            },
+            Request::McpSignedIn,
+            Request::McpRelayTake { id: "r1".into() },
+            Request::McpRelayPart {
+                id: "r1".into(),
+                part: RelayPart::Body {
+                    text: "data: {}\n\n".into(),
+                },
+            },
             Request::KeysRemove { provider: None },
             Request::KeysRemove {
                 provider: Some("openai".into()),
@@ -958,6 +1184,26 @@ fn every_response_round_trips() {
                 aliases: Vec::new(),
                 builtin: false,
             }]),
+            Response::McpTested(crate::mcp::Tested {
+                server: "docs 1.0".into(),
+                protocol: "2025-06-18".into(),
+                tools: vec![crate::mcp::TestedTool {
+                    name: "search".into(),
+                    description: "Searches".into(),
+                    read_only: true,
+                }],
+            }),
+            Response::McpRelayed(relayed_post()),
+            Response::McpSignedIn(vec![
+                SignedInServer {
+                    server: "s1".into(),
+                    wants: None,
+                },
+                SignedInServer {
+                    server: "s2".into(),
+                    wants: Some("read admin".into()),
+                },
+            ]),
             Response::ConnectorSetup(crate::connectors::SetupJob {
                 id: "j".into(),
                 action: crate::connectors::SetupAction::Login,
@@ -1102,6 +1348,7 @@ fn every_event_round_trips() {
                 dialog_id: "d".into(),
                 port: 5173,
             },
+            Event::McpRelayWanted { id: "r1".into() },
         ],
     );
 }
@@ -1633,4 +1880,184 @@ fn host_info_tells_no_connectors_from_a_daemon_that_cant_say() {
     json["connectors"] = json!([]);
     let none: HostInfo = serde_json::from_value(json).unwrap();
     assert_eq!(none.connectors, Some(Vec::new()));
+}
+
+#[test]
+fn a_start_from_an_older_app_has_no_mcp_secrets() {
+    let json = serde_json::to_value(start()).unwrap();
+    assert!(json.get("mcpSecrets").is_none(), "empty: left out");
+    let back: StartRequest = serde_json::from_value(json).unwrap();
+    assert!(back.mcp_secrets.is_empty());
+}
+
+#[test]
+fn a_starts_mcp_secrets_go_and_come_back_but_never_show_in_debug() {
+    let mut start = start();
+    start.mcp_secrets.insert(
+        "s1".into(),
+        [("env/TOKEN".into(), crate::Secret("t0p".into()))].into(),
+    );
+    let back: StartRequest = serde_json::from_str(&serde_json::to_string(&start).unwrap()).unwrap();
+    assert_eq!(back.mcp_secrets["s1"]["env/TOKEN"].0, "t0p");
+    assert!(!format!("{start:?}").contains("t0p"));
+}
+
+/// Q14: the OAuth client entered on a URL server's form is kept as the
+/// page keeps it, its secret only marked (the page's `saved` is its own);
+/// a server from before has none, and is written as it was.
+#[test]
+fn a_url_server_s_oauth_client_reads_as_the_page_keeps_it() {
+    let kept = json!({
+        "kind": "url", "url": "https://mcp.example.com/mcp", "headers": [],
+        "oauth": { "clientId": "acme", "secret": true, "saved": true },
+    });
+    let read: McpTransport = serde_json::from_value(kept).unwrap();
+    let McpTransport::Url { oauth, .. } = &read else {
+        panic!("{read:?}");
+    };
+    let client = McpOAuthClient {
+        client_id: "acme".into(),
+        secret: true,
+    };
+    assert_eq!(oauth.as_ref(), Some(&client));
+    assert_eq!(
+        serde_json::to_value(&read).unwrap()["oauth"],
+        json!({ "clientId": "acme", "secret": true })
+    );
+    let public = McpOAuthClient {
+        client_id: "acme".into(),
+        secret: false,
+    };
+    assert_eq!(
+        serde_json::to_value(&public).unwrap(),
+        json!({ "clientId": "acme" })
+    );
+    let before = json!({ "kind": "url", "url": "https://mcp.example.com/mcp", "headers": [] });
+    let read: McpTransport = serde_json::from_value(before.clone()).unwrap();
+    assert!(matches!(read, McpTransport::Url { oauth: None, .. }));
+    assert_eq!(serde_json::to_value(&read).unwrap(), before);
+}
+
+/// Q14: a sign-in kept before it could want more scopes reads with none,
+/// and one that wants none is written as it was.
+#[test]
+fn a_sign_in_wants_no_more_scopes_unless_it_says_so() {
+    let mut kept = serde_json::to_value(grant()).unwrap();
+    kept.as_object_mut().unwrap().remove("wants");
+    let read: McpGrant = serde_json::from_value(kept.clone()).unwrap();
+    assert_eq!(read.wants, None);
+    assert_eq!(serde_json::to_value(&read).unwrap(), kept);
+}
+
+/// Q14: a sign-in sent to a host goes and comes back whole, but its tokens
+/// and client secret never show in `Debug`, as a log would print it.
+#[test]
+fn a_sign_in_goes_and_comes_back_but_its_tokens_never_show_in_debug() {
+    let request = Request::McpSignIn {
+        server: "s1".into(),
+        grant: Some(grant()),
+    };
+    let json = round_trip(&request);
+    assert_eq!(json["grant"]["accessToken"], "access-t0ken");
+    assert_eq!(json["grant"]["refreshToken"], "refresh-t0ken");
+    let shown = format!("{request:?}");
+    for secret in ["access-t0ken", "refresh-t0ken", "client-s3cret"] {
+        assert!(!shown.contains(secret), "{shown}");
+    }
+}
+
+#[test]
+fn mcp_test_and_its_answer_round_trip() {
+    let server = McpServer {
+        id: "s1".into(),
+        name: "docs".into(),
+        enabled: true,
+        transport: McpTransport::Command {
+            command: "npx".into(),
+            args: vec!["docs-mcp".into()],
+            env: Vec::new(),
+        },
+        disabled_tools: Vec::new(),
+    };
+    let request = Request::McpTest {
+        server,
+        values: [("env/TOKEN".into(), crate::Secret("t0p".into()))].into(),
+    };
+    let back: Request = serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+    assert_eq!(back, request);
+    assert!(!format!("{request:?}").contains("t0p"));
+    assert_eq!(back.target(), None);
+
+    let tested = crate::mcp::Tested {
+        server: "docs 1.0".into(),
+        protocol: "2025-06-18".into(),
+        tools: vec![crate::mcp::TestedTool {
+            name: "search".into(),
+            description: "Searches".into(),
+            read_only: true,
+        }],
+    };
+    let response = Response::McpTested(tested.clone());
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["v"]["tools"][0]["readOnly"], true);
+    let back: Response = serde_json::from_value(json).unwrap();
+    assert_eq!(back, response);
+    assert_eq!(crate::mcp::Tested::try_from(back).unwrap(), tested);
+}
+
+/// A POST to relay (Q11): its secret header's value goes, never in Debug.
+fn relayed_post() -> RelayedPost {
+    RelayedPost {
+        url: "http://127.0.0.1:3000/mcp".into(),
+        headers: vec![("Authorization".into(), crate::Secret("Bearer t0p".into()))],
+        body: r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.into(),
+        stream: false,
+    }
+}
+
+/// Q11: a relayed POST and every part of its answer go and come back as
+/// they were, and the POST's header values never show in Debug.
+#[test]
+fn a_relayed_post_and_its_answer_round_trip_its_secrets_hidden() {
+    let post = relayed_post();
+    let back: RelayedPost = serde_json::from_str(&serde_json::to_string(&post).unwrap()).unwrap();
+    assert_eq!(back, post);
+    assert_eq!(back.headers[0].1 .0, "Bearer t0p");
+    assert!(!format!("{post:?}").contains("t0p"));
+    let parts = [
+        RelayPart::Head {
+            status: 200,
+            headers: vec![("content-type".into(), "text/event-stream".into())],
+        },
+        RelayPart::Body {
+            text: "data: {}\n\n".into(),
+        },
+        RelayPart::End,
+        RelayPart::Failed {
+            error: "Connection refused".into(),
+        },
+    ];
+    for part in parts {
+        let back: RelayPart = serde_json::from_str(&serde_json::to_string(&part).unwrap()).unwrap();
+        assert_eq!(back, part);
+    }
+    let take = Request::McpRelayTake { id: "r1".into() };
+    assert_eq!(take.target(), None, "the host's, not a chat's");
+}
+
+/// Q13: an event stream's GET goes as such, and a POST from a daemon that
+/// knows of no GET reads as one.
+#[test]
+fn a_relayed_get_of_an_event_stream_says_so_and_a_post_needs_not() {
+    let get = RelayedPost {
+        stream: true,
+        body: String::new(),
+        ..relayed_post()
+    };
+    let json = serde_json::to_value(&get).unwrap();
+    assert_eq!(json["stream"], true);
+    assert_eq!(serde_json::from_value::<RelayedPost>(json).unwrap(), get);
+    let post = serde_json::to_value(relayed_post()).unwrap();
+    assert!(post.get("stream").is_none(), "{post}");
+    assert!(!serde_json::from_value::<RelayedPost>(post).unwrap().stream);
 }

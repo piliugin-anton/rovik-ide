@@ -195,6 +195,26 @@
       "messageIds": ["fx-steer"],
       "outcome": "stopped"
     },
+    {
+      "type": "mcpServersAwaiting",
+      "dialogId": "fx-chat",
+      "projectId": "fx-project",
+      "servers": [
+        {
+          "name": "github",
+          "file": ".mcp.json",
+          "hash": "fx-hash",
+          "transport": {
+            "kind": "command",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-github"],
+            "env": [{ "name": "GITHUB_TOKEN", "value": "${GITHUB_TOKEN}", "secret": true }]
+          },
+          "variables": [{ "name": "GITHUB_TOKEN" }]
+        }
+      ],
+      "leftOut": ["time (.vscode/mcp.json) isn't used: one of the user's MCP servers has its name"]
+    },
     { "type": "runEnded", "dialogId": "fx-chat", "runId": "fx-run", "outcome": "done" }
   ]
 }

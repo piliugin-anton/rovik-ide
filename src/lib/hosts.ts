@@ -90,6 +90,8 @@ export interface HostRow extends Host {
   /** Whether a password or a key passphrase is saved: never the secret. */
   passwordSaved: boolean;
   passphraseSaved: boolean;
+  /** What its daemon serves besides the basics (`mcp`): empty until it has said. */
+  serves: string[];
 }
 
 /** Where secrets are kept (design §6). */
@@ -182,6 +184,8 @@ export interface HostDetails {
   /** Absent from a daemon that can't say. */
   keys?: KeyInfo[];
   storage?: Storage;
+  /** How many MCP servers it keeps secrets for: absent from a daemon that runs none. */
+  mcpSecrets?: number;
   /** The user is one of Rovik's administrators there. */
   admin: boolean;
   /** The daemon is older than this app. */
@@ -347,7 +351,7 @@ export function emptyHost(): Host {
 
 /** The host of a row, without what the list adds to it. */
 export function hostOf(row: HostRow): Host {
-  const { state, problem, chats, passwordSaved, passphraseSaved, ...host } = row;
+  const { state, problem, chats, passwordSaved, passphraseSaved, serves, ...host } = row;
   return host;
 }
 

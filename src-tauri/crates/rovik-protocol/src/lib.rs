@@ -19,6 +19,7 @@ pub mod diff;
 pub mod events;
 mod frame;
 pub mod host;
+pub mod mcp;
 pub mod network;
 pub mod packs;
 pub mod permissions;
@@ -77,6 +78,12 @@ pub mod features {
     /// A server that works on its own (autopilot-plan H02):
     /// `AutonomyConfigure`.
     pub const AUTONOMY: &str = "autonomy";
+    /// MCP servers run on the daemon (mcp-plan-2.md, Q11): `McpTest`, and
+    /// starts' `mcp_secrets`.
+    pub const MCP: &str = "mcp";
+    /// Their sign-ins kept and refreshed there (Q14): `McpSignIn` and
+    /// `McpSignedIn`.
+    pub const MCP_SIGN_IN: &str = "mcp-sign-in";
 }
 
 #[cfg(test)]

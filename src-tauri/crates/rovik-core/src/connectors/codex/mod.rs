@@ -252,14 +252,22 @@ fn policy(settings: &Settings, turn: &Turn) -> Policy {
 }
 
 /// An MCP server of the run's, as Codex's settings name it: its name, its
-/// address, the variable its token is in, and whether the model sees its
-/// tools.
+/// address, the variable its token is in, and where its tools are left out
+/// of (`omit_tools_from`), if anywhere.
 struct Served<'a> {
     name: &'a str,
     server: &'a McpServer,
     token_var: &'a str,
-    hidden: bool,
+    omit: &'a [&'a str],
 }
+
+/// Where the tools of a server the model never sees are left out of: all
+/// of it (the hooks' server).
+const HIDDEN: &[&str] = &["code_mode", "deferred", "direct"];
+/// Where Rovik's `mcp` tool is left out of beside Codex's own tools (Agent
+/// mode): it's called as a function of its own, never from code nor found
+/// by a search first.
+const DIRECT_ONLY: &[&str] = &["code_mode", "deferred"];
 
 /// The arguments of the app server: Rovik's settings for the run, then the
 /// connector's own (`extra_args`), which win.
@@ -287,8 +295,8 @@ fn args_for(
             "default_tools_approval_mode": "approve",
             "required": true,
         });
-        if served.hidden {
-            server["omit_tools_from"] = json!(["code_mode", "deferred", "direct"]);
+        if !served.omit.is_empty() {
+            server["omit_tools_from"] = json!(served.omit);
         }
         set(&format!("mcp_servers.{}", served.name), server);
     }
@@ -760,28 +768,58 @@ async fn run_turn(
     let server = match events.is_empty() {
         true => None,
         false => Some(
-            McpServer::start_sending(&[hook_tool()], HOOKS_INSTRUCTIONS, network.as_ref(), sender)
-                .await
-                .map_err(|e| format!("Couldn't start Rovik's hooks for Codex: {e}"))?,
+            McpServer::start_sending(
+                &[hook_tool()],
+                HOOKS_INSTRUCTIONS,
+                network.as_ref(),
+                sender.clone(),
+            )
+            .await
+            .map_err(|e| format!("Couldn't start Rovik's hooks for Codex: {e}"))?,
+        ),
+    };
+    // Rovik's `mcp` tool, beside Codex's own (mcp-plan.md, Q09), its list in
+    // the thread's developer instructions.
+    let offer = turn.mcp.as_ref();
+    let tools_server = match offer {
+        None => None,
+        Some(offer) => Some(
+            McpServer::start_sending(
+                std::slice::from_ref(&offer.tool),
+                MCP_TOOL_INSTRUCTIONS,
+                network.as_ref(),
+                sender,
+            )
+            .await
+            .map_err(|e| format!("Rovik's `mcp` tool couldn't be served to Codex: {e}"))?,
         ),
     };
     let env_file = match server.is_some() {
         true => env_file(&cwd)?,
         false => None,
     };
-    let served: Vec<Served<'_>> = server
-        .iter()
-        .map(|server| Served {
-            name: hooks::SERVER,
-            server,
-            token_var: HOOKS_TOKEN,
-            hidden: true,
-        })
-        .collect();
+    let hooks_served = server.iter().map(|server| Served {
+        name: hooks::SERVER,
+        server,
+        token_var: HOOKS_TOKEN,
+        omit: HIDDEN,
+    });
+    let tools_served = tools_server.iter().map(|server| Served {
+        name: super::mcp::SERVER_NAME,
+        server,
+        token_var: TOOLS_TOKEN,
+        omit: DIRECT_ONLY,
+    });
+    let served: Vec<Served<'_>> = hooks_served.chain(tools_served).collect();
     let args = args_for(settings, turn, &served, &events, &turn.api_key);
     let mut env = env_for(settings, &turn.api_key);
     if let Some(server) = &server {
         env.push((HOOKS_TOKEN.into(), server.token().into()));
+    }
+    if let Some(server) = &tools_server {
+        env.push((TOOLS_TOKEN.into(), server.token().into()));
+    }
+    if !served.is_empty() {
         env.extend(super::mcp::loopback_env());
     }
     if let Some(file) = &env_file {
@@ -807,7 +845,7 @@ async fn run_turn(
             .one_shot
             .then(|| turn.system_prompt.trim().to_string())
             .filter(|p| !p.is_empty()),
-        developer: None,
+        developer: offer.map(|offer| offer.section.clone()),
         hooks: &events,
         ephemeral: turn.one_shot,
     };
@@ -886,11 +924,12 @@ async fn run_turn(
         env_file: env_path,
         ledger,
     });
-    let mut on_call = |call: McpCall| match call.name == HOOK {
-        true => hooks.answer(call),
-        false => drop(call),
+    let mut on_call = |call: McpCall| match offer {
+        _ if call.name == HOOK => hooks.answer(call),
+        Some(offer) if call.name == offer.name() => offer.forward(call),
+        _ => drop(call),
     };
-    let calls = server.as_ref().map(|_| &mut calls);
+    let calls = (server.is_some() || tools_server.is_some()).then_some(&mut calls);
     let stop = pump(
         &mut process,
         &mut parser,
@@ -902,7 +941,7 @@ async fn run_turn(
     )
     .await;
     conclude(&mut process, &parser, stop, emit).await;
-    drop(server);
+    drop((server, tools_server));
     Ok(Outcome::Done)
 }
 
@@ -925,6 +964,10 @@ async fn conclude(
 
 /// What the hooks server says of itself, for Codex.
 const HOOKS_INSTRUCTIONS: &str = "Rovik IDE's hooks around Codex's tool calls.";
+/// What the server of Rovik's `mcp` tool says of itself (Agent mode).
+const MCP_TOOL_INSTRUCTIONS: &str = "Rovik IDE's `mcp` tool: it calls the tools of the user's MCP \
+     servers, which the developer instructions list. Rovik runs each call under the user's \
+     approval rules.";
 
 /// The hooks server's one tool, which Codex's hooks call (its model never
 /// sees it).
@@ -1251,6 +1294,7 @@ async fn test_request(args: &ProbeRequestArgs) -> Result<ProbeRequest, String> {
         denied: Default::default(),
         allowed_hosts_on: false,
         steering: None,
+        mcp: None,
     };
     let settings = Settings::from_value(&args.settings);
     let started = Instant::now();

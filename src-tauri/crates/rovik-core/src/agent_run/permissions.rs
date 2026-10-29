@@ -1608,6 +1608,16 @@ pub fn count_arg(v: Option<&serde_json::Value>) -> Option<u32> {
         .map(|n| n.floor() as u32)
 }
 
+/// Whether `name` calls a tool of an MCP server, under the MCP rule
+/// (docs/design/mcp-plan.md, Q07): Rovik's `mcp`, or a connector's own
+/// call of one of its MCP servers' tools (`mcp__github__create_issue`),
+/// but for Rovik's tools served to it (`mcp__rovik__…`), each under its
+/// own rule.
+pub fn is_mcp_call(name: &str) -> bool {
+    name == super::mcp_tool::NAME
+        || name.starts_with("mcp__") && !name.starts_with(crate::connectors::mcp::TOOL_PREFIX)
+}
+
 /// Permission first, then who (if anyone) has to approve.
 pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -> ToolVerdict {
     if name == "bash" {
@@ -1628,6 +1638,8 @@ pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -
         permissions.command_approval
     } else if modifies_files(name) {
         permissions.edit_approval
+    } else if is_mcp_call(name) {
+        permissions.mcp_approval
     } else {
         permissions.tool_approval
     };
@@ -1687,6 +1699,18 @@ pub fn describe_tool_call(name: &str, args_json: &str) -> String {
     };
 
     match name {
+        // The server's tool and its arguments, not the call's JSON.
+        super::mcp_tool::NAME => {
+            let tool = s("tool").unwrap_or_else(|| "an MCP tool".into());
+            match args.get("arguments").filter(|a| !a.is_null()) {
+                Some(arguments) => {
+                    let text = arguments.to_string();
+                    let shown = crate::chat_db::store::char_prefix(&text, 200);
+                    format!("Call {tool} with {shown}")
+                }
+                None => format!("Call {tool}"),
+            }
+        }
         "bash" => {
             let background = args.get("background").and_then(|v| v.as_bool()) == Some(true);
             format!(
@@ -2388,6 +2412,45 @@ mod tests {
             check_tool_call("bash", r#"{"command":"rm x"}"#, &p),
             ToolVerdict::Refused(_)
         ));
+    }
+
+    /// Q07 (mcp-plan.md): `mcp`, and a connector's own call of one of its
+    /// MCP servers' tools, go by the MCP rule, which asks by default;
+    /// Rovik's tools served to a connector (`mcp__rovik__…`) don't.
+    #[test]
+    fn mcp_calls_go_by_the_mcp_rule() {
+        let p = Permissions::default();
+        let asked = ToolVerdict::Permitted {
+            approval: Some(Approver::User),
+        };
+        assert_eq!(check_tool_call("mcp", r#"{"tool":"docs.read"}"#, &p), asked);
+        assert_eq!(
+            check_tool_call("mcp__github__create_issue", "{}", &p),
+            asked
+        );
+        assert_eq!(
+            check_tool_call("mcp__rovik__read", "{}", &p),
+            ToolVerdict::Permitted { approval: None }
+        );
+        let free = Permissions {
+            mcp_approval: ApprovalRule {
+                required: false,
+                by: Approver::User,
+            },
+            ..Permissions::default()
+        };
+        assert_eq!(
+            check_tool_call("mcp", "{}", &free),
+            ToolVerdict::Permitted { approval: None }
+        );
+        assert_eq!(
+            describe_tool_call("mcp", r#"{"tool":"docs.read","arguments":{"path":"a"}}"#),
+            "Call docs.read with {\"path\":\"a\"}"
+        );
+        assert_eq!(
+            describe_tool_call("mcp", r#"{"tool":"docs.list"}"#),
+            "Call docs.list"
+        );
     }
 
     #[test]

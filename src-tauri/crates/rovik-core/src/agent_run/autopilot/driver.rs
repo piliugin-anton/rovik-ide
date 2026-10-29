@@ -72,6 +72,7 @@ impl Settings {
             config: None,
             isolate: self.isolate,
             project_settings: None,
+            mcp_secrets: Default::default(),
         }
     }
 }

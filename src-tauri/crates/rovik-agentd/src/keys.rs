@@ -2,11 +2,15 @@
 //! in (D11, plan rule 9). Each start brings its keys and refreshes them, by
 //! provider; a configuration that comes without them, as the app sends it,
 //! gets them from here. A key goes only with the base URL it came with, so
-//! a model pointed at another server never gets this one's key.
+//! a model pointed at another server never gets this one's key. The MCP
+//! servers' secrets are kept here too, and their sign-ins made for this
+//! server (mcp-plan-2.md, Q11, Q14).
 
 use rovik_protocol::agent::ModelProfile;
+use rovik_protocol::mcp::{McpGrant, SignedInServer};
+use rovik_protocol::Secret;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
@@ -14,6 +18,15 @@ pub struct Keys {
     /// By provider: the part of a model's id before `::`.
     #[serde(default)]
     providers: BTreeMap<String, Key>,
+    /// The MCP servers' saved secrets: by server id, then by key
+    /// (`env/NAME`, `header/Name`). Brought by a start, like the keys.
+    #[serde(default)]
+    mcp: BTreeMap<String, BTreeMap<String, String>>,
+    /// The MCP servers' sign-ins for this server, by server id (Q14): made
+    /// on the user's computer, refreshed here. Kept until the user signs
+    /// out, or removes the keys.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    grants: BTreeMap<String, McpGrant>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -43,20 +56,15 @@ impl Keys {
     }
 
     /// Keeps the keys these models carry, each replacing its provider's
-    /// older one. True when one was new or changed.
-    pub fn take<'a>(&mut self, models: impl IntoIterator<Item = &'a ModelProfile>) -> bool {
-        let mut changed = false;
+    /// older one.
+    pub fn take<'a>(&mut self, models: impl IntoIterator<Item = &'a ModelProfile>) {
         for model in models.into_iter().filter(|m| !m.api_key.is_empty()) {
             let key = Key {
                 base_url: model.base_url.clone(),
                 api_key: model.api_key.clone(),
             };
-            let old = self
-                .providers
-                .insert(provider(model).to_string(), key.clone());
-            changed |= old.as_ref() != Some(&key);
+            self.providers.insert(provider(model).to_string(), key);
         }
-        changed
     }
 
     /// The providers with a key, and the base URL each key goes with.
@@ -66,12 +74,101 @@ impl Keys {
             .collect()
     }
 
-    /// Forgets `provider`'s key, or every key. How many went.
+    /// Keeps the MCP secrets a start brought, each server's replacing all
+    /// its older ones; a server brought with none loses its.
+    pub fn take_mcp(&mut self, secrets: &BTreeMap<String, BTreeMap<String, Secret>>) {
+        for (id, values) in secrets {
+            let values: BTreeMap<String, String> = values
+                .iter()
+                .map(|(key, value)| (key.clone(), value.0.clone()))
+                .collect();
+            if values.is_empty() {
+                self.mcp.remove(id);
+            } else {
+                self.mcp.insert(id.clone(), values);
+            }
+        }
+    }
+
+    /// Forgets the MCP secrets `wanted` doesn't name, which has the secret
+    /// keys of each server some computer has on (Q11): a server removed or
+    /// turned off loses all its secrets, and one without a secret field
+    /// any more loses that field's value. A project's variables stay.
+    pub fn keep_mcp(&mut self, wanted: &BTreeMap<String, BTreeSet<String>>) {
+        self.mcp.retain(|id, values| {
+            // A project's variables are no server's: each start of its
+            // chats brings them all, or none to clear them (Q12).
+            if id.starts_with(rovik_protocol::mcp::PROJECT_SERVERS) {
+                return true;
+            }
+            let Some(keys) = wanted.get(id) else {
+                return false;
+            };
+            values.retain(|key, _| keys.contains(key));
+            !values.is_empty()
+        });
+    }
+
+    /// The ids of the MCP servers whose saved secrets `other` has otherwise.
+    pub fn mcp_changes(&self, other: &Keys) -> Vec<String> {
+        let ids: BTreeSet<&String> = self.mcp.keys().chain(other.mcp.keys()).collect();
+        ids.into_iter()
+            .filter(|id| self.mcp.get(*id) != other.mcp.get(*id))
+            .cloned()
+            .collect()
+    }
+
+    /// The saved secret `key` of MCP server `server`.
+    pub fn mcp_value(&self, server: &str, key: &str) -> Option<String> {
+        self.mcp.get(server)?.get(key).cloned()
+    }
+
+    /// How many MCP servers have saved secrets or a sign-in here.
+    pub fn mcp_servers(&self) -> usize {
+        self.mcp_kept().len()
+    }
+
+    /// The MCP servers that have saved secrets or a sign-in here, by id.
+    fn mcp_kept(&self) -> BTreeSet<&String> {
+        self.mcp.keys().chain(self.grants.keys()).collect()
+    }
+
+    /// Forgets `provider`'s key, or every key, every MCP secret and every
+    /// sign-in. How many went: each MCP server counts as one.
     pub fn remove(&mut self, provider: Option<&str>) -> usize {
         match provider {
             Some(provider) => usize::from(self.providers.remove(provider).is_some()),
-            None => std::mem::take(&mut self.providers).len(),
+            None => {
+                let servers = self.mcp_servers();
+                self.mcp.clear();
+                self.grants.clear();
+                std::mem::take(&mut self.providers).len() + servers
+            }
         }
+    }
+
+    /// MCP server `server`'s sign-in here (Q14).
+    pub fn grant(&self, server: &str) -> Option<McpGrant> {
+        self.grants.get(server).cloned()
+    }
+
+    /// Keeps `grant` as MCP server `server`'s sign-in here; none forgets it.
+    pub fn set_grant(&mut self, server: &str, grant: Option<McpGrant>) {
+        match grant {
+            Some(grant) => self.grants.insert(server.to_string(), grant),
+            None => self.grants.remove(server),
+        };
+    }
+
+    /// The MCP servers signed in here, each with the scopes it asked for
+    /// that its sign-in lacks.
+    pub fn signed_in(&self) -> Vec<SignedInServer> {
+        (self.grants.iter())
+            .map(|(server, grant)| SignedInServer {
+                server: server.clone(),
+                wants: grant.wants.clone(),
+            })
+            .collect()
     }
 
     /// Gives each model without a key its provider's, when it came with

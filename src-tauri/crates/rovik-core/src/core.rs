@@ -7,6 +7,7 @@ use crate::agent_run::events::AgentEvent;
 use crate::agent_run::AgentState;
 use crate::browser_tools::BrowserState;
 use crate::chat_db::DbState;
+use crate::mcp::McpState;
 use crate::vfs::VfsState;
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -48,6 +49,8 @@ pub struct Parts {
     pub agents: AgentState,
     pub vfs: VfsState,
     pub browser: BrowserState,
+    /// The user's MCP servers (crate::mcp).
+    pub mcp: McpState,
     pub events: Arc<dyn EventSink>,
 }
 
@@ -85,6 +88,7 @@ impl Core {
             agents: AgentState::default(),
             vfs: VfsState::default(),
             browser: BrowserState::default(),
+            mcp: McpState::default(),
             events,
         })))
     }
@@ -94,13 +98,14 @@ impl Core {
         self.events.agent(&event);
     }
 
-    /// As the process exits: no headless Chrome or command the agent left
-    /// running, no dead mount where the virtual files were, paused commands
-    /// resumed and the workload's history written, and the database marked
-    /// closed cleanly.
+    /// As the process exits: no headless Chrome, MCP server or command the
+    /// agent left running, no dead mount where the virtual files were,
+    /// paused commands resumed and the workload's history written, and the
+    /// database marked closed cleanly.
     pub async fn shutdown(&self) {
         crate::connectors::end_all();
         self.browser.shutdown().await;
+        self.mcp.shutdown().await;
         // Before the chats' views go: they may run in them.
         let _ = crate::rt::spawn_blocking(crate::command_tool::background::stop_all).await;
         let _ = self.vfs.unmount();

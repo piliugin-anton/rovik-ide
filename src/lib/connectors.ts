@@ -649,6 +649,13 @@ export function textAfterSteps(meta: ConnectorMeta, text: string): string {
   return text.slice(at);
 }
 
+/**
+ * Rovik's `mcp` tool as a harness running its own tools calls it, served by
+ * Rovik (docs/design/mcp-plan.md, Q09): every kind's step of it is Rovik's
+ * `mcp` call.
+ */
+const ROVIK_MCP_STEP = 'mcp__rovik__mcp';
+
 /** A tool step as Rovik's call, and its result once it has one ("Error: …" when it failed). */
 function chatStep(
   step: HarnessStep,
@@ -657,7 +664,10 @@ function chatStep(
 ): ChatStep {
   const input =
     step.input && typeof step.input === 'object' ? (step.input as Record<string, unknown>) : {};
-  const like = spec?.chatCall(step.name, input);
+  const like =
+    step.name === ROVIK_MCP_STEP
+      ? { name: 'mcp', arguments: input }
+      : spec?.chatCall(step.name, input);
   const name = like?.name ?? step.name;
   const args = JSON.stringify(like?.arguments ?? input);
   const key = `${name}\n${args}`;

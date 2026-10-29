@@ -106,6 +106,24 @@ pub fn run() {
             app.manage(Arc::new(keys));
             let paths = Paths::new(data.clone(), config.clone());
             let core = Core::new(paths, Arc::new(WindowEvents(app.handle().clone())))?;
+            // Settings → MCP servers: a server's secret values, in the
+            // keychain, read as it starts (docs/design/mcp-plan.md, Q02).
+            let store = secrets.clone();
+            core.mcp
+                .set_secrets(Arc::new(move |server: &str, key: &str| {
+                    let name = SecretName::McpValue {
+                        server: server.to_string(),
+                        key: key.to_string(),
+                    };
+                    match store.get(&name) {
+                        Ok(value) => Ok(Some(value.0.clone())),
+                        Err(SecretError::Missing(_)) => Ok(None),
+                        Err(e) => Err(e.to_string()),
+                    }
+                }));
+            // Their sign-ins made here, refreshed here (mcp-plan-2.md, Q14).
+            let grants = rovik_client::mcp_sign_in::KeychainGrants(secrets.clone());
+            core.mcp.set_grants(Arc::new(grants));
             // Chats on hosts (6.1): their requests go to the host, and its
             // events come back through the core's sink.
             let remote = Remote::new(core.clone());
@@ -161,6 +179,9 @@ pub fn run() {
                     hosts.follow_policies();
                 }
             }));
+            // The MCP sign-outs owed to hosts that were away are kept with
+            // their settings (mcp-plan-2.md, Q14).
+            remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
             // A project left for another while its chats were at work stays
             // this window's until they're done (instances.rs).
             let handle = app.handle().clone();
@@ -423,6 +444,16 @@ pub fn run() {
             commands::workload::workload_status,
             commands::network::network_settings,
             commands::network::network_save,
+            commands::mcp::mcp_store,
+            commands::mcp::mcp_save_secrets,
+            commands::mcp::mcp_test,
+            commands::mcp::mcp_import,
+            commands::mcp::mcp_save_project_values,
+            commands::mcp::mcp_project_prefill,
+            commands::mcp::mcp_sign_in,
+            commands::mcp::mcp_project_sign_in,
+            commands::mcp::mcp_sign_out,
+            commands::mcp::mcp_signed_in,
             commands::tools::outline_symbols,
             commands::vfs::vfs_status,
             commands::vfs::vfs_install_driver,

@@ -16,6 +16,7 @@ export type SettingsPage =
   | 'editor'
   | 'providers'
   | 'connectors'
+  | 'mcp'
   | 'permissions'
   | 'agent'
   | 'subagents'
@@ -34,6 +35,7 @@ export const PAGE_TITLE: Record<SettingsPage, string> = {
   editor: 'Editor',
   providers: 'Model providers',
   connectors: 'Connectors',
+  mcp: 'MCP servers',
   permissions: 'Permissions & approval',
   agent: 'Agent runs',
   subagents: 'Subagents',

@@ -181,6 +181,15 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   checks and delivers, and writes down what it couldn't decide. How
   thorough it is, when a task stops, and the commands it may never run are
   set in Settings → Autopilot.
+- **MCP servers.** The agent calls the tools of the MCP servers you add in
+  **Settings → MCP servers**: a command Rovik starts on this computer
+  (`npx -y @modelcontextprotocol/server-github`) or a server's URL, their
+  tokens kept in your system's keychain; and of those a project's own
+  `.mcp.json` sets up, once you allow them. However many tools they have, the
+  agent gets one tool, `mcp`, and their list in its prompt, so its
+  requests stay small and cached. Each call waits for your approval unless
+  Settings → Permissions & approval says otherwise. See
+  [MCP servers](#mcp-servers).
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.
 - The agent can search the web and read pages, in a headless Chrome for
@@ -1325,6 +1334,154 @@ could carry data out; on macOS a command can still look names up; and a
 listed host is reached in full, every port and path of it. A program that
 ignores the proxy variables doesn't get around the list: it reaches
 nothing.
+
+### MCP servers
+
+**Settings → MCP servers** lists the MCP servers whose tools the agent can
+call (`src-tauri/crates/rovik-core/src/mcp/`; design:
+[`docs/design/mcp-plan.md`](docs/design/mcp-plan.md)). A server is a
+command Rovik starts, with its arguments (one per line) and environment
+variables, or the URL of a server, with its headers (`Authorization`). A
+URL is spoken to on Streamable HTTP, or on the old HTTP+SSE transport
+(2024-11-05): when its entry says so (`"type": "sse"`), or when its server
+refuses Streamable HTTP's first POST (400, 404 or 405 without a JSON-RPC
+error), as that transport's backwards compatibility has it (design:
+[`docs/design/mcp-plan-2.md`](docs/design/mcp-plan-2.md), Q13). Rovik
+posts its messages only to an endpoint on the stream's own origin.
+**Add from JSON** takes a server's setup as its instructions give it for
+Claude Desktop, Claude Code, Cursor or VS Code: an `mcpServers` object, or
+one server's entry.
+
+A value marked **Secret** (a new one is, until you untick it) is kept in
+your system's keychain, or where there's none in the encrypted file the API
+keys use, never in the settings file: the page only shows whether it's
+saved. **Test** starts the server as the form has it, in the open project's
+folder for a command, lists its tools, and stops it (**Test on** picks this
+computer or a connected host); a tool unticked there
+is left out of the agent's list.
+
+**Signing in** (design:
+[`docs/design/mcp-plan-2.md`](docs/design/mcp-plan-2.md), Q14): a URL
+server that answers 401 needs a sign-in, and Rovik does it itself, as the
+MCP spec's authorization has it. **Sign in** on the server's row opens its
+sign-in page in your browser, which comes back to Rovik on this computer's
+loopback (`http://127.0.0.1:<port>/callback`). Rovik signs in as the OAuth
+client entered on the server's form (**OAuth client ID**, and its secret
+if it has one, kept in the keychain), else as itself: by its client ID,
+the document `https://rovik-ide.dev/oauth/client.json`, where the server
+takes those, else as a client it registers with the server's sign-in,
+kept for the next time. The sign-in uses PKCE and names the server it's
+for (`resource`); its tokens are kept in the keychain, never in a log or a
+command line, and refreshed before they expire and when the server
+refuses them.
+
+- Each place has its own sign-in, as refresh tokens change with each use:
+  **Sign in** signs in for this computer, then for each connected cloud
+  host and WSL, one browser tab after another; a host keeps its tokens
+  with its keys and refreshes them there. The row says where the server is
+  signed in ("Signed in: This computer, build-server"), and **Sign out**
+  forgets every place's sign-in, as removing the server does: a host
+  that's away is signed out as it next connects.
+- A server without a sign-in, or whose sign-in it refuses (its refresh,
+  or even a fresh token), is listed unavailable to the agent, saying to
+  sign in from Settings → MCP servers; a refused sign-in is forgotten
+  there, so the row offers **Sign in** for that place again. One that
+  wants wider scopes (a 403 `insufficient_scope`) names them, and its row
+  says where it needs more permissions: the next sign-in there asks for
+  them.
+- A server with an `Authorization` header of its own is never offered a
+  sign-in. A setup that signs in through a bridge command such as
+  `npx mcp-remote <url>` still works as it is.
+
+**A project's own servers** (design:
+[`docs/design/mcp-plan-2.md`](docs/design/mcp-plan-2.md), Q12): a run
+reads the project's `.mcp.json` (Claude Code), `.cursor/mcp.json` (Cursor)
+and `.vscode/mcp.json` (VS Code) as it starts, in the chat's view of the
+project (on a host, its worktree), and leaves out an entry turned off
+there (`disabled`). Their values name variables rather than hold secrets:
+`${VAR}` and `${VAR:-default}` (in `.mcp.json`), `${env:VAR}`, VS Code's
+`${input:id}`; `${workspaceFolder}` and `${userHome}` are filled in.
+
+- A server you haven't allowed, as its file has it now, doesn't run. The
+  chat shows a card with each one, what it runs or the URL it posts to,
+  its file, and a field for each variable: filled from this computer's
+  environment where it's set there, and not asked for again once its value
+  is saved. **Allow** keeps the values in the keychain, by project, and
+  the approval in the project's settings in Rovik (not in the
+  repository); **Not now** puts them off until Rovik is closed. The
+  agent's list says they wait, so it can tell you when the task needs one.
+- An approval is of the server's entry as it was, hashed: one whose entry
+  changes (an edit, a pull, the agent's) asks again, and so does one whose
+  value is gone from the keychain. Allowed servers join the next run's
+  list, marked as the project's, and so does each call's approval.
+- Duplicates are one: two URL servers with the same URL and the same
+  auth headers, or two commands with the same command, arguments and
+  environment. The first in the order above keeps its name. One that is
+  already one of your servers (its URL and the names of its auth headers,
+  or its command, arguments and env var names) is dropped; one with the
+  name of one of yours is left out, the card saying so: yours wins.
+- Settings → MCP servers lists every project's allowed servers, with
+  **Revoke**, which also forgets the values of their variables that no
+  other allowed server of the project takes. One reached at a URL is
+  signed in to from there, as your own are; revoking it signs it out, and
+  one whose entry changes needs a sign-in of its own once allowed again,
+  the old entry's forgotten.
+- A host's chats run the allowed servers with no one to ask: the
+  approvals go with the project's settings, and the values with each
+  start, as your servers' secrets do.
+
+The agent gets one tool, `mcp`, however many servers and tools there are,
+and its system prompt lists each tool on a line: its name
+(`github.create_issue`), its arguments and what it does. It asks for a
+tool's full schema (`describe`) when the line isn't enough. The tools sent
+with each request stay the same, so prompt caching holds, and a server
+with many tools costs a few thousand tokens of prompt, not their schemas.
+The list is made as a run starts. A server starts when a run first needs it
+and keeps running while Rovik is open, a command's once per project folder
+(on a host, once per chat, stopped after 30 minutes unused);
+one that fails is tried again a minute later, and meanwhile the agent's
+list says why it's unavailable.
+
+- Each call goes by **MCP tool calls** in Settings → Permissions &
+  approval, which asks you by default; the approval names the server's tool
+  and its arguments.
+- Plan mode and scouts list and call only the tools a server marks
+  read-only (`readOnlyHint`); other subagents get no `mcp`.
+- A result longer than 20,000 characters is cut; Rovik's agent can read
+  the whole of it, saved, by line range.
+- Claude Code and Codex with their own tools (Agent mode) are served the
+  same tool by Rovik, as `mcp__rovik__mcp`, with the list after their own
+  prompt, and Rovik approves and runs each call. In Plan mode and
+  Autopilot `mcp` is one of Rovik's tools they call. Claude Code doesn't
+  start the servers of the project's `.mcp.json` itself, as its headless
+  runs would without asking: Rovik turns them off there
+  (`disabledMcpjsonServers`) and serves those you allow, as above.
+
+What to keep in mind:
+
+- A server works outside Rovik's protections: a filesystem or git server
+  changes the project itself, not an isolated chat's copy, and the
+  restricted files and the allowed hosts don't hold it.
+- What a server's tools say, their descriptions and results, reaches the
+  model: add a server only as far as you trust its author. A project's
+  file decides what its server runs: allow one only as you'd run it
+  yourself.
+- On a cloud host or in WSL, a chat runs your enabled servers there, as
+  you and outside the commands' sandbox, and each start sends their secret
+  values to the host, where they stay in `~/.rovik/keys.json` with the API
+  keys until you remove the keys (Settings → Cloud hosts lists them, by
+  how many servers, and removing them stops the servers there), as do the
+  servers' sign-ins made for the host. A command must be installed on the host
+  (`npx`, `uvx`, Docker...): Rovik installs and translates nothing, and a
+  server that can't start is listed unavailable with why. A URL server at
+  `localhost` (or `127.0.0.1`, `[::1]`) is one on your computer: a host's
+  chats reach it through Rovik there, so only while that computer is on and
+  Rovik runs, and only the servers your settings have, and on HTTP+SSE the
+  endpoint their stream names (in WSL with mirrored networking, the host
+  reaches it itself). A host on an older Rovik gets no
+  secrets, and **Test on** in Settings → MCP servers doesn't offer it.
+- Your own servers' values are used as written: `${VAR}` isn't read from
+  the environment.
 
 ### Steering
 

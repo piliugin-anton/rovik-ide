@@ -23,7 +23,7 @@ use rovik_protocol::{Event, Frame, MAX_FRAME};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::time::Instant;
 
 /// How many events a connection may fall behind by before it's dropped
@@ -62,8 +62,40 @@ pub struct Subscription {
     pub replay: Vec<Arc<Published>>,
     /// The ring still had everything after `since`.
     pub complete: bool,
-    /// Every computer's events from now on: the reader takes its own.
-    pub live: broadcast::Receiver<Arc<Published>>,
+    /// Every computer's events from now on: the reader takes its own. Its
+    /// computer counts as connected while it lives.
+    pub live: Live,
+}
+
+/// A subscription's live events: every computer's, from when it began.
+pub struct Live {
+    receiver: broadcast::Receiver<Arc<Published>>,
+    _here: Here,
+}
+
+impl Live {
+    pub async fn recv(&mut self) -> Result<Arc<Published>, broadcast::error::RecvError> {
+        self.receiver.recv().await
+    }
+
+    #[cfg(test)]
+    pub fn try_recv(&mut self) -> Result<Arc<Published>, broadcast::error::TryRecvError> {
+        self.receiver.try_recv()
+    }
+}
+
+/// A computer's subscription, counted while it lives (`Events::here`).
+struct Here {
+    events: Weak<Events>,
+    computer: String,
+}
+
+impl Drop for Here {
+    fn drop(&mut self) {
+        if let Some(events) = self.events.upgrade() {
+            events.leave(&self.computer);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +127,9 @@ pub struct Events {
     /// The chats' database, whose clock `ChatChanged` names: set once the
     /// core is open.
     db: OnceLock<DbState>,
+    /// Counts each time a computer's last subscription ends: what waits on
+    /// a computer hears it leave.
+    left: watch::Sender<u64>,
 }
 
 #[derive(Default)]
@@ -107,6 +142,8 @@ struct State {
     paces: HashMap<String, Pace>,
     /// Each chat's `ChatChanged`, by its lead's id.
     changes: HashMap<String, Changed>,
+    /// How many subscriptions each connected computer has.
+    here: HashMap<String, usize>,
 }
 
 /// When a chat's last `ChatChanged` went, and whether one is coming.
@@ -154,6 +191,7 @@ impl Events {
             limits,
             state: Mutex::default(),
             db: OnceLock::new(),
+            left: watch::channel(0).0,
         })
     }
 
@@ -228,10 +266,18 @@ impl Events {
     }
 
     /// The events after `since` that the ring still has, and the live ones.
+    /// The computer counts as connected until the subscription is dropped.
     pub fn subscribe(&self, computer: &str, since: Option<(String, u64)>) -> Subscription {
         // Under the lock: nothing is published between the replay and `live`.
-        let state = self.lock();
-        let live = self.live.subscribe();
+        let mut state = self.lock();
+        *state.here.entry(computer.to_string()).or_default() += 1;
+        let live = Live {
+            receiver: self.live.subscribe(),
+            _here: Here {
+                events: self.me.clone(),
+                computer: computer.to_string(),
+            },
+        };
         match since {
             Some((boot, seq)) if boot == self.boot && state.ring.evicted <= seq => Subscription {
                 replay: state.ring.after(seq, computer),
@@ -244,6 +290,40 @@ impl Events {
                 live,
             },
         }
+    }
+
+    /// Whether `computer` is connected now: a connection of its subscribed
+    /// to its events, and gets what goes to it.
+    pub fn here(&self, computer: &str) -> bool {
+        self.lock().here.contains_key(computer)
+    }
+
+    /// Changes each time a computer leaves: its last subscription ended.
+    pub fn leavings(&self) -> watch::Receiver<u64> {
+        self.left.subscribe()
+    }
+
+    fn leave(&self, computer: &str) {
+        let mut state = self.lock();
+        let Some(count) = state.here.get_mut(computer) else {
+            return;
+        };
+        *count -= 1;
+        if *count == 0 {
+            state.here.remove(computer);
+            drop(state);
+            self.left.send_modify(|left| *left += 1);
+        }
+    }
+
+    /// An event about no chat, for `computer` alone (a relay's, Q11).
+    pub fn computer(&self, computer: &str, ev: Event) {
+        let mut state = self.lock();
+        let route = Route {
+            chat: None,
+            computer: Some(computer.to_string()),
+        };
+        self.publish(&mut state, ev, route, None);
     }
 
     /// Paces a message's patches: one goes now if its last went long

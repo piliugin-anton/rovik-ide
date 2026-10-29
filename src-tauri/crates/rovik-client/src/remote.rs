@@ -6,7 +6,7 @@
 //! so the next start of the app knows it (`load`); `dispatch` refuses such
 //! a chat, whose rows here only the mirror writes (K21).
 
-use crate::client::{Client, HostState, Identity, Incoming};
+use crate::client::{Client, DaemonInfo, HostState, Identity, Incoming};
 use crate::connector::Connector;
 use crate::hosts::Hosts;
 use git2::Oid;
@@ -17,15 +17,16 @@ use rovik_core::agent_run::{self, AgentConfig, AgentStatus, StartKind, StartRequ
 use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::store::{self, NewChildDialog, NewMessage};
 use rovik_core::chat_db::{api, attachments, moves};
-use rovik_core::{project_profile, Core};
+use rovik_core::{mcp, project_profile, Core};
 use rovik_protocol::autopilot::{AutonomyConfig, AutonomySettings, DeliveryTest};
+use rovik_protocol::mcp::{McpServer, Tested};
 use rovik_protocol::network::HostNetwork;
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::work::{ChatResult, ChatSync};
-use rovik_protocol::{features, Access, Event, Fail, FailCode, Request, Response};
+use rovik_protocol::{features, Access, Event, Fail, FailCode, Request, Response, Secret};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -37,6 +38,7 @@ const HOSTS_WAIT: Duration = Duration::from_secs(15);
 
 mod back;
 mod bar;
+mod mcp_relay;
 mod mirror;
 mod moving;
 mod pages;
@@ -168,6 +170,7 @@ impl ApprovalPolicy {
             &mut p.command_approval,
             &mut p.edit_approval,
             &mut p.tool_approval,
+            &mut p.mcp_approval,
         ] {
             if rule.required && rule.by == Approver::User {
                 rule.by = Approver::Ai;
@@ -190,6 +193,8 @@ pub struct Remote {
     /// What brings the hosts' policies up to date before they go to a
     /// host: another window may have changed them (HostsPage::follow).
     refresh: Mutex<Option<Refresh>>,
+    /// Where the MCP sign-outs owed to hosts that were away are kept.
+    sign_outs: Mutex<Option<Arc<dyn OwedSignOuts>>>,
     /// The ports forwarded for the chats' pages (remote/pages.rs).
     pages: pages::Pages,
 }
@@ -200,6 +205,16 @@ pub type OpenElsewhere = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Brings the hosts' policies up to date from their settings file.
 pub type Refresh = Arc<dyn Fn() + Send + Sync>;
+
+/// The MCP sign-outs owed to hosts that were away when the user signed
+/// out (mcp-plan-2.md, Q14), kept with the hosts' settings and sent to
+/// each when it next connects.
+pub trait OwedSignOuts: Send + Sync {
+    /// The servers (their ids) `host` is owed a sign-out of.
+    fn owed(&self, host: &str) -> Vec<String>;
+    /// `host` is owed a sign-out of `server`, or, `owed` false, no more.
+    fn set(&self, host: &str, server: &str, owed: bool);
+}
 
 #[derive(Default)]
 struct State {
@@ -231,6 +246,10 @@ struct State {
     /// The messages sent to a run whose files are going up (steering), by
     /// message id, with their chat: Stop cancels them, and stops the run.
     steer_uploads: HashMap<String, (String, oneshot::Sender<()>)>,
+    /// The URLs this computer makes a host's MCP requests to besides its
+    /// own servers': those under Test on a host now, saved or not, and the
+    /// endpoints the event streams it relays named (remote/mcp_relay.rs).
+    mcp_relayable: Vec<String>,
     /// The host this computer's chats run on when they don't run here:
     /// its Linux side (the WSL distribution, on Windows), where their
     /// commands are sandboxed. A chat of a project moves there before its
@@ -291,6 +310,7 @@ impl Remote {
             jobs,
             elsewhere: Mutex::new(None),
             refresh: Mutex::new(None),
+            sign_outs: Mutex::new(None),
             pages: pages::Pages::default(),
         });
         rovik_core::rt::spawn(results::work_through(Arc::downgrade(&remote), queue));
@@ -315,6 +335,18 @@ impl Remote {
     /// How to bring the hosts' policies up to date before one is sent.
     pub fn on_refresh(&self, refresh: Refresh) {
         *self.refresh.lock().unwrap_or_else(|e| e.into_inner()) = Some(refresh);
+    }
+
+    /// Where the MCP sign-outs owed to hosts that were away are kept.
+    pub fn on_sign_outs(&self, owed: Arc<dyn OwedSignOuts>) {
+        *self.sign_outs.lock().unwrap_or_else(|e| e.into_inner()) = Some(owed);
+    }
+
+    fn sign_outs(&self) -> Option<Arc<dyn OwedSignOuts>> {
+        self.sign_outs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn refresh_policies(&self) {
@@ -559,16 +591,24 @@ impl Remote {
     /// Whether the host's daemon serves `feature` (4.5): false until it
     /// has said, in its `Welcome`.
     pub fn serves(&self, host: &str, feature: &str) -> bool {
-        let daemon = self.hosts.client(host).and_then(|c| c.daemon());
-        daemon.is_some_and(|d| d.serves(feature))
+        self.daemon(host).is_some_and(|d| d.serves(feature))
+    }
+
+    /// The features the host's daemon listed in its `Welcome`; none until
+    /// it has said.
+    pub fn features(&self, host: &str) -> Vec<String> {
+        self.daemon(host).map(|d| d.features).unwrap_or_default()
+    }
+
+    /// The host's daemon, as its `Welcome` told of it: none until it has.
+    fn daemon(&self, host: &str) -> Option<DaemonInfo> {
+        self.hosts.client(host).and_then(|c| c.daemon())
     }
 
     pub(crate) fn policy(&self, host: &str) -> ApprovalPolicy {
         self.lock().policies.get(host).copied().unwrap_or_default()
     }
 
-    /// `config` under the host's policy, and its block when it works on its
-    /// own (`ApprovalPolicy::apply`).
     /// `config`, as `host` takes it: without this computer's keys, which
     /// the host has from the starts (D11), under the host's policy, and
     /// with how its daemon connects (`network`).
@@ -619,7 +659,7 @@ impl Remote {
 
     /// What the user calls `host`, for what they read: the name its
     /// settings give it, its id when it isn't set up.
-    fn host_name(&self, host: &str) -> String {
+    pub fn host_name(&self, host: &str) -> String {
         self.hosts
             .client(host)
             .map_or_else(|| host.to_string(), |client| client.name())
@@ -778,7 +818,8 @@ impl Remote {
         // A daemon without projects runs in the folder the start names.
         let id = request.dialog_id.clone();
         let project = self.core.db.read(move |c| store::dialog_project(c, &id));
-        if project.await.map_err(internal)?.is_some() && takes_projects(&client) {
+        let project = project.await.map_err(internal)?;
+        if project.is_some() && takes_projects(&client) {
             request.root = None;
         }
         if let Some(config) = &mut request.config {
@@ -789,6 +830,28 @@ impl Remote {
         if self.policy(&host) == ApprovalPolicy::Autonomous && request.mode.is_none() {
             request.mode = Some(agent_run::autopilot::MODE.into());
         }
+        // A host has no keychain: the saved secrets of the servers that are
+        // on go with the start (Q11), unless its daemon is too old to take
+        // them.
+        if self.serves(&host, features::MCP) {
+            let servers = match &request.config {
+                Some(config) => config.mcp_servers.clone(),
+                None => self.core.agents.config().mcp_servers,
+            };
+            let on: Vec<McpServer> = servers.into_iter().filter(|s| s.enabled).collect();
+            request.mcp_secrets = self.core.mcp.saved_secrets(&on).await;
+            // And the values of the project's variables, for the project's
+            // own servers the user allowed (Q12): none clears them there.
+            if let Some(project) = &project {
+                let settings = request.project_settings.clone().unwrap_or_default();
+                let names = mcp::project::approved_variables(&settings);
+                let values = self.core.mcp.project_values(project, &names).await;
+                let values = values.into_iter().map(|(k, v)| (k, Secret(v))).collect();
+                request
+                    .mcp_secrets
+                    .insert(mcp::project::values_id(project), values);
+            }
+        }
         self.leave_out_known_text(&mut request).await;
         if let StartKind::Send { message } = &mut request.start {
             if !message.attachments.is_empty() {
@@ -797,6 +860,129 @@ impl Remote {
             }
         }
         client.call(Request::AgentStart(Box::new(request))).await
+    }
+
+    /// Tests `server` on `host`, from there (Q11): its saved secrets, on or
+    /// off, the values the user typed over them; one left empty is none
+    /// typed, as Test on this computer has it.
+    pub async fn mcp_test(
+        &self,
+        host: &str,
+        server: McpServer,
+        given: BTreeMap<String, Secret>,
+    ) -> Result<Tested, Fail> {
+        if !self.serves(host, features::MCP) {
+            let name = self.host_name(host);
+            let text = format!("{name} runs an older Rovik: update it to test MCP servers there.");
+            return Err(Fail::new(FailCode::BadRequest, text));
+        }
+        let mut values = self
+            .core
+            .mcp
+            .saved_secrets(std::slice::from_ref(&server))
+            .await
+            .remove(&server.id)
+            .unwrap_or_default();
+        values.extend(given.into_iter().filter(|(_, value)| !value.0.is_empty()));
+        // A server on this computer's loopback is posted to from here.
+        let _testing = self.testing(&server.transport);
+        match self
+            .host_call(host, Request::McpTest { server, values })
+            .await?
+        {
+            Response::McpTested(tested) => Ok(tested),
+            other => Err(internal(format!(
+                "{host} answered an MCP test with {other:?}"
+            ))),
+        }
+    }
+
+    /// Keeps `grant` as MCP server `server`'s sign-in on `host`, made here
+    /// for it and refreshed there from now on; none signs it out there
+    /// (mcp-plan-2.md, Q14).
+    pub async fn mcp_sign_in(
+        &self,
+        host: &str,
+        server: &str,
+        grant: Option<rovik_protocol::mcp::McpGrant>,
+    ) -> Result<(), Fail> {
+        if !self.serves(host, features::MCP_SIGN_IN) {
+            let name = self.host_name(host);
+            let text = format!("{name} runs an older Rovik: update it to sign in there.");
+            return Err(Fail::new(FailCode::BadRequest, text));
+        }
+        let request = Request::McpSignIn {
+            server: server.to_string(),
+            grant,
+        };
+        match self.host_call(host, request).await? {
+            Response::Bool(_) => {
+                // A sign-out owed to it is done, or would undo this sign-in.
+                if let Some(owed) = self.sign_outs() {
+                    owed.set(host, server, false);
+                }
+                Ok(())
+            }
+            other => Err(internal(format!(
+                "{host} answered a sign-in with {other:?}"
+            ))),
+        }
+    }
+
+    /// Signs MCP server `server` (its id) out on every host (Q14): now on
+    /// each connected one that keeps sign-ins, else once it next connects,
+    /// the sign-out owed to it kept meanwhile (`on_sign_outs`).
+    pub async fn mcp_sign_out(&self, server: &str) {
+        for (host, state) in self.hosts.states() {
+            let ready = state == HostState::Ready;
+            if ready && !self.serves(&host, features::MCP_SIGN_IN) {
+                continue;
+            }
+            let failed = match ready {
+                true => (self.mcp_sign_in(&host, server, None).await.err()).map(|e| e.message),
+                false => Some("it's away".to_string()),
+            };
+            if let Some(why) = failed {
+                log::info!("{host} is signed out of {server} once it connects: {why}");
+                match self.sign_outs() {
+                    Some(owed) => owed.set(&host, server, true),
+                    None => log::warn!("{host}: the sign-out of {server} can't be kept"),
+                }
+            }
+        }
+    }
+
+    /// The sign-outs `host` is owed, sent now it's connected. One it can't
+    /// keep sign-ins for (an older Rovik) has none to forget.
+    async fn send_owed_sign_outs(&self, host: &str) {
+        let Some(owed) = self.sign_outs() else {
+            return;
+        };
+        for server in owed.owed(host) {
+            if !self.serves(host, features::MCP_SIGN_IN) {
+                owed.set(host, &server, false);
+            } else if let Err(e) = self.mcp_sign_in(host, &server, None).await {
+                log::info!("{host} wasn't signed out of {server} yet: {e}");
+            }
+        }
+    }
+
+    /// The MCP servers signed in on `host`, each with the scopes it asked
+    /// for that its sign-in there lacks; none on a host that can't keep
+    /// sign-ins (Q14).
+    pub async fn mcp_signed_in(
+        &self,
+        host: &str,
+    ) -> Result<Vec<rovik_protocol::mcp::SignedInServer>, Fail> {
+        if !self.serves(host, features::MCP_SIGN_IN) {
+            return Ok(Vec::new());
+        }
+        match self.host_call(host, Request::McpSignedIn).await? {
+            Response::McpSignedIn(signed) => Ok(signed),
+            other => Err(internal(format!(
+                "{host} answered which servers are signed in with {other:?}"
+            ))),
+        }
     }
 
     /// A message for the chat's run while it works (steering-plan.md, 3.8).
@@ -1266,6 +1452,7 @@ impl Remote {
             }
             Incoming::Subscribed { complete } => {
                 self.configure(host).await;
+                self.send_owed_sign_outs(host).await;
                 if !complete {
                     // A `PageClosed` may be among the events missed.
                     self.stop_forwarding(host);
@@ -1300,6 +1487,7 @@ impl Remote {
                     port,
                 } => self.page_wanted(host, dialog_id, id, url, port),
                 Event::PageClosed { dialog_id, port } => self.page_closed(host, &dialog_id, port),
+                Event::McpRelayWanted { id } => self.mcp_relay_wanted(host, id),
             },
         }
     }

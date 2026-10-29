@@ -343,6 +343,18 @@ export function describeGroup(
     }
     case 'restore_context':
       return label(verb('Restoring its context', 'Restored its context'), []);
+    // An MCP server's tools, by the name the agent called them
+    // (docs/design/mcp-plan.md, Q05).
+    case 'mcp': {
+      const described = argsList.length > 0 && argsList.every((a) => a.describe === true);
+      return label(
+        described ? verb('Reading about', 'Read about') : verb('Calling', 'Called'),
+        argsList.map((a) => {
+          const tool = str(a.tool)?.trim();
+          return tool ? { text: tool } : undefined;
+        })
+      );
+    }
     // A connector's (ConnectorSpec.chatCall).
     case 'skill':
       return label(

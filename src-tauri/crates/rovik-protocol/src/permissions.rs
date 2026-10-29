@@ -25,6 +25,12 @@ const NO_APPROVAL: ApprovalRule = ApprovalRule {
     by: Approver::User,
 };
 
+/// The user approves each call.
+const USER_APPROVES: ApprovalRule = ApprovalRule {
+    required: true,
+    by: Approver::User,
+};
+
 pub const DEFAULT_TOOL_CALL_CHECKPOINT: u32 = 50;
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -54,6 +60,10 @@ pub struct Permissions {
     pub edit_approval: ApprovalRule,
     /// Every other tool: reading and searching files, web access.
     pub tool_approval: ApprovalRule,
+    /// The tools of the user's MCP servers (`mcp`, and a connector's own
+    /// MCP calls): they change things outside the project, so they ask by
+    /// default (docs/design/mcp-plan.md, Q07).
+    pub mcp_approval: ApprovalRule,
     /// Send the review as JSON to a System One model (Jev) instead of a prompt.
     pub approval_typed_input: bool,
     /// Pause after every this many tool calls in a run; None never does.
@@ -119,6 +129,7 @@ impl Default for Permissions {
             command_approval: NO_APPROVAL,
             edit_approval: NO_APPROVAL,
             tool_approval: NO_APPROVAL,
+            mcp_approval: USER_APPROVES,
             approval_typed_input: false,
             tool_call_checkpoint: Some(DEFAULT_TOOL_CALL_CHECKPOINT),
             verify_changes: true,

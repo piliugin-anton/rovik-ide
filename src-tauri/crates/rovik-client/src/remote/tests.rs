@@ -215,6 +215,7 @@ fn start(dialog_id: &str, kind: StartKind, current: Option<&str>) -> StartReques
         config: None,
         isolate: None,
         project_settings: None,
+        mcp_secrets: Default::default(),
     }
 }
 
@@ -474,7 +475,7 @@ async fn a_host_that_pushes_is_told_the_projects_remote() {
     let root = app.dir.0.join("project");
     std::fs::create_dir_all(&root).unwrap();
     let repo = git2::Repository::init(&root).unwrap();
-    repo.remote("origin", "https://me:secret@github.com/acme/app.git")
+    repo.remote("origin", "https://me:pw-7f3k9q@github.com/acme/app.git")
         .unwrap();
     std::fs::write(root.join("a.txt"), "a\n").unwrap();
     let at = root.clone();
@@ -531,7 +532,8 @@ async fn a_host_that_pushes_is_told_the_projects_remote() {
         [Some("git@github.com:acme/app.git".to_string())]
     );
     let shown = format!("{:?}", fake.requests.lock().unwrap());
-    assert!(!shown.contains("secret"), "no credentials go: {shown}");
+    // The password alone, in any form: no field's name can hold it.
+    assert!(!shown.contains("pw-7f3k9q"), "no credentials go: {shown}");
 
     remote.set_policy(HOST, ApprovalPolicy::AiReviewerThenMe);
     std::fs::write(root.join("a.txt"), "b\n").unwrap();
@@ -958,6 +960,37 @@ fn a_hosts_policy_sends_what_waits_for_the_user_to_the_ai_reviewer() {
     );
 }
 
+/// Q11: a host's policy covers the MCP rule as it covers the others: what
+/// asks the user for an MCP tool goes to the AI reviewer where a command
+/// would, and waits for the user where a command would.
+#[test]
+fn a_hosts_policy_treats_the_mcp_rule_as_the_others() {
+    let asks_the_user = ApprovalRule {
+        required: true,
+        by: Approver::User,
+    };
+    let config = AgentConfig {
+        permissions: Permissions {
+            command_approval: asks_the_user,
+            mcp_approval: asks_the_user,
+            ..Permissions::default()
+        },
+        approval_profiles: vec![start("c", StartKind::Retry, None).profile],
+        ..AgentConfig::default()
+    };
+    for (policy, by) in [
+        (ApprovalPolicy::AiReviewerThenMe, Approver::Ai),
+        (ApprovalPolicy::Autonomous, Approver::Ai),
+        (ApprovalPolicy::WaitForMe, Approver::User),
+    ] {
+        let mut applied = config.clone();
+        policy.apply(&AutonomySettings::default(), &mut applied);
+        let p = &applied.permissions;
+        assert_eq!(p.command_approval.by, by, "{policy:?}");
+        assert_eq!(p.mcp_approval.by, by, "{policy:?}: as a command");
+    }
+}
+
 /// H02: the configuration a host that works on its own gets: what would
 /// wait for the user goes to the AI reviewer, and the block's effort and
 /// budget, each where it sets one, are over the computer's. A message that
@@ -1012,6 +1045,8 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
         panic!("{requests:?}");
     };
     assert_eq!(received.permissions.command_approval.by, Approver::Ai);
+    // The MCP rule asks the user unless set otherwise: it goes there too (Q11).
+    assert_eq!(received.permissions.mcp_approval.by, Approver::Ai);
     assert_eq!(received.autopilot.effort, Effort::Thorough);
     assert_eq!(
         received.autopilot.budget,
@@ -1024,6 +1059,7 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
     );
     let mut rest = received.as_ref().clone();
     rest.permissions.command_approval.by = Approver::User;
+    rest.permissions.mcp_approval.by = Approver::User;
     rest.autopilot = config.autopilot.clone();
     assert_eq!(rest, config.without_keys(), "the rest is the computer's");
     assert_eq!(requests[1], Request::AutonomyConfigure(block.config()));
@@ -1537,4 +1573,344 @@ fn a_hosts_plan_fix_changes_only_the_fields_it_sets() {
             max_retries: 1,
         }
     );
+}
+
+/// An MCP server over HTTP with one secret header, `s1`'s `Authorization`.
+fn mcp_server() -> rovik_protocol::mcp::McpServer {
+    use rovik_protocol::mcp::{McpServer, McpTransport, McpValue};
+    McpServer {
+        id: "s1".into(),
+        name: "github".into(),
+        enabled: true,
+        transport: McpTransport::Url {
+            url: "http://127.0.0.1:1/mcp".into(),
+            headers: vec![McpValue {
+                name: "Authorization".into(),
+                value: String::new(),
+                secret: true,
+            }],
+            sse: false,
+            oauth: None,
+        },
+        disabled_tools: Vec::new(),
+    }
+}
+
+/// The app with `s1`'s `Authorization` saved as `saved` (an error when
+/// `Err`), and a connected fake host that announces `served`.
+async fn mcp_host(
+    saved: Result<&'static str, &'static str>,
+    served: &[&str],
+) -> (App, Arc<Remote>, Fake) {
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    app.core.mcp.set_secrets(Arc::new(move |id, key| {
+        assert_eq!((id, key), ("s1", "header/Authorization"));
+        saved.map(|v| Some(v.to_string())).map_err(str::to_string)
+    }));
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = served.iter().map(|f| f.to_string()).collect();
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    (app, remote, fake)
+}
+
+/// Q11 (mcp-plan-2.md): a host gets the MCP servers in its configuration
+/// and its starts, and a start carries their saved secrets.
+#[tokio::test]
+async fn a_host_is_sent_the_mcp_servers_and_a_start_their_secrets() {
+    let (_app, remote, fake) = mcp_host(Ok("Bearer x"), &[features::MCP]).await;
+    let config = AgentConfig {
+        mcp_servers: vec![mcp_server()],
+        ..AgentConfig::default()
+    };
+    remote
+        .everywhere(Request::AgentConfigure(Box::new(config.clone())))
+        .await
+        .unwrap();
+    let configured = fake.requests.lock().unwrap().clone();
+    let [Request::AgentConfigure(sent)] = &configured[..] else {
+        panic!("{configured:?}");
+    };
+    assert_eq!(sent.mcp_servers, config.mcp_servers);
+
+    let mut request = start("chat", StartKind::Retry, None);
+    request.config = Some(config.clone());
+    remote.start(request).await.unwrap();
+    let started = starts(&fake).remove(0);
+    assert_eq!(started.config.unwrap().mcp_servers, config.mcp_servers);
+    assert_eq!(
+        started.mcp_secrets["s1"]["header/Authorization"].0,
+        "Bearer x"
+    );
+}
+
+#[tokio::test]
+async fn an_older_host_is_sent_no_mcp_secrets() {
+    let (_app, remote, fake) = mcp_host(Ok("Bearer x"), &[]).await;
+    let mut request = start("chat", StartKind::Retry, None);
+    request.config = Some(AgentConfig {
+        mcp_servers: vec![mcp_server()],
+        ..AgentConfig::default()
+    });
+    remote.start(request).await.unwrap();
+    assert!(starts(&fake)[0].mcp_secrets.is_empty());
+}
+
+#[tokio::test]
+async fn a_start_goes_when_a_secret_can_t_be_read() {
+    let (_app, remote, fake) = mcp_host(Err("locked"), &[features::MCP]).await;
+    let mut request = start("chat", StartKind::Retry, None);
+    request.config = Some(AgentConfig {
+        mcp_servers: vec![mcp_server()],
+        ..AgentConfig::default()
+    });
+    remote.start(request).await.unwrap();
+    assert!(!starts(&fake)[0].mcp_secrets.contains_key("s1"));
+}
+
+/// The sign-outs owed to hosts, kept in memory as the hosts' settings
+/// keep them (Q14).
+#[derive(Default)]
+struct Owed(Mutex<HashSet<(String, String)>>);
+
+impl OwedSignOuts for Owed {
+    fn owed(&self, host: &str) -> Vec<String> {
+        let kept = self.0.lock().unwrap();
+        let mut servers: Vec<String> = (kept.iter())
+            .filter(|(h, _)| h == host)
+            .map(|(_, server)| server.clone())
+            .collect();
+        servers.sort();
+        servers
+    }
+
+    fn set(&self, host: &str, server: &str, owed: bool) {
+        let key = (host.to_string(), server.to_string());
+        let mut kept = self.0.lock().unwrap();
+        match owed {
+            true => kept.insert(key),
+            false => kept.remove(&key),
+        };
+    }
+}
+
+/// The sign-ins and sign-outs `fake` was sent: each server, and whether
+/// with a sign-in.
+fn sign_ins(fake: &Fake) -> Vec<(String, bool)> {
+    let requests = fake.requests.lock().unwrap();
+    (requests.iter())
+        .filter_map(|r| match r {
+            Request::McpSignIn { server, grant } => Some((server.clone(), grant.is_some())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A fake host that keeps MCP sign-ins, or not.
+fn signing(keeps: bool) -> Fake {
+    let fake = Fake::default();
+    if keeps {
+        *fake.features.lock().unwrap() = vec![features::MCP_SIGN_IN.to_string()];
+    }
+    fake
+}
+
+/// Waits for `done`, a while at most.
+async fn until(done: impl Fn() -> bool) {
+    for _ in 0..400 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Q14 (mcp-plan-2.md): a sign-out goes at once to each connected host
+/// that keeps sign-ins, and is owed to one that's away, which is signed out
+/// as it next connects; one owed to a host that keeps none is dropped as
+/// it connects, and a sign-in or sign-out sent owes it no more.
+#[tokio::test]
+async fn a_sign_out_reaches_a_host_now_or_as_it_next_connects() {
+    let app = App::new();
+    let (remote, fake) = connected_to(&app, signing(true)).await;
+    let owed = Arc::new(Owed::default());
+    remote.on_sign_outs(owed.clone());
+    remote.connect("away", crate::testing::Nowhere, identity("away"));
+    remote.connect("older", crate::testing::Nowhere, identity("older"));
+    remote.mcp_sign_out("s1").await;
+    assert_eq!(sign_ins(&fake), [("s1".to_string(), false)]);
+    assert!(owed.owed(HOST).is_empty());
+    assert_eq!(owed.owed("away"), ["s1"]);
+    assert_eq!(owed.owed("older"), ["s1"]);
+
+    let back = signing(true);
+    remote.connect("away", back.clone(), identity("away"));
+    until(|| owed.owed("away").is_empty()).await;
+    assert_eq!(sign_ins(&back), [("s1".to_string(), false)]);
+    assert!(owed.owed("away").is_empty());
+
+    let older = signing(false);
+    remote.connect("older", older.clone(), identity("older"));
+    until(|| owed.owed("older").is_empty()).await;
+    assert!(owed.owed("older").is_empty());
+    assert!(sign_ins(&older).is_empty(), "it keeps no sign-ins");
+
+    owed.set(HOST, "s2", true);
+    remote.mcp_sign_in(HOST, "s2", None).await.unwrap();
+    assert!(owed.owed(HOST).is_empty());
+}
+
+#[tokio::test]
+async fn mcp_test_on_a_host_sends_typed_values_over_saved_ones() {
+    let (_app, remote, fake) = mcp_host(Ok("old"), &[features::MCP]).await;
+    let given = BTreeMap::from([("header/Authorization".to_string(), Secret("new".into()))]);
+    remote.mcp_test(HOST, mcp_server(), given).await.unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let [Request::McpTest { values, .. }] = &requests[..] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(values["header/Authorization"].0, "new");
+
+    // With nothing typed, the saved value goes.
+    fake.requests.lock().unwrap().clear();
+    remote
+        .mcp_test(HOST, mcp_server(), BTreeMap::new())
+        .await
+        .unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let [Request::McpTest { values, .. }] = &requests[..] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(values["header/Authorization"].0, "old");
+}
+
+/// A start without a configuration of its own runs under the app's: the
+/// saved secrets of the servers on there go with it.
+#[tokio::test]
+async fn a_start_without_its_own_configuration_brings_the_app_s_servers_secrets() {
+    let (_app, remote, fake) = mcp_host(Ok("Bearer x"), &[features::MCP]).await;
+    let config = AgentConfig {
+        mcp_servers: vec![mcp_server()],
+        ..AgentConfig::default()
+    };
+    remote
+        .everywhere(Request::AgentConfigure(Box::new(config)))
+        .await
+        .unwrap();
+    remote
+        .start(start("chat", StartKind::Retry, None))
+        .await
+        .unwrap();
+    let started = starts(&fake).remove(0);
+    assert!(started.config.is_none());
+    assert_eq!(
+        started.mcp_secrets["s1"]["header/Authorization"].0,
+        "Bearer x"
+    );
+}
+
+/// A start carries no secrets of a server that's off: the host gets the
+/// servers that are on (Q11).
+#[tokio::test]
+async fn a_start_carries_no_secrets_of_a_server_that_is_off() {
+    let (_app, remote, fake) = mcp_host(Ok("Bearer x"), &[features::MCP]).await;
+    let mut server = mcp_server();
+    server.enabled = false;
+    let mut request = start("chat", StartKind::Retry, None);
+    request.config = Some(AgentConfig {
+        mcp_servers: vec![server],
+        ..AgentConfig::default()
+    });
+    remote.start(request).await.unwrap();
+    assert!(starts(&fake)[0].mcp_secrets.is_empty());
+}
+
+/// Test on a host of a server that's off, or not yet on, takes its saved
+/// secrets, as Test on this computer does.
+#[tokio::test]
+async fn mcp_test_on_a_host_takes_the_saved_secrets_of_a_server_that_is_off() {
+    let (_app, remote, fake) = mcp_host(Ok("saved"), &[features::MCP]).await;
+    let mut server = mcp_server();
+    server.enabled = false;
+    remote
+        .mcp_test(HOST, server, BTreeMap::new())
+        .await
+        .unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let [Request::McpTest { values, .. }] = &requests[..] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(values["header/Authorization"].0, "saved");
+}
+
+/// A value left empty on the page is no value typed: the saved one goes,
+/// as Test on this computer has it, never an empty header.
+#[tokio::test]
+async fn mcp_test_on_a_host_keeps_the_saved_value_where_none_is_typed() {
+    let (_app, remote, fake) = mcp_host(Ok("saved"), &[features::MCP]).await;
+    let given = BTreeMap::from([("header/Authorization".to_string(), Secret(String::new()))]);
+    remote.mcp_test(HOST, mcp_server(), given).await.unwrap();
+    let requests = fake.requests.lock().unwrap().clone();
+    let [Request::McpTest { values, .. }] = &requests[..] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(values["header/Authorization"].0, "saved");
+}
+
+#[tokio::test]
+async fn mcp_test_on_an_older_host_says_to_update_it() {
+    let (_app, remote, fake) = mcp_host(Ok("old"), &[]).await;
+    let fail = remote
+        .mcp_test(HOST, mcp_server(), BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        fail.message,
+        "test-server runs an older Rovik: update it to test MCP servers there."
+    );
+    assert!(fake.requests.lock().unwrap().is_empty());
+}
+
+/// Q12 (mcp-plan-2.md): a start of a project's chat brings the values of
+/// the variables its allowed project servers take, kept by the project;
+/// with none allowed, an empty set, which clears what the host kept.
+#[tokio::test]
+async fn a_start_brings_the_values_of_the_project_s_variables() {
+    let app = App::new();
+    let root = app.dir.0.join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let at = root.clone();
+    app.core
+        .db
+        .write(move |c| rovik_core::chat_db::projects::ensure(c, "p1", "project", &at))
+        .await
+        .unwrap();
+    app.chat("chat", Some("p1"), Vec::new()).await;
+    app.core.mcp.set_secrets(Arc::new(|server, key| {
+        Ok(((server, key) == ("project/p1", "DOCS_TOKEN")).then(|| "t0p".to_string()))
+    }));
+    let allowed = |variables: serde_json::Value| {
+        let approvals = serde_json::json!({ "mcpApprovals": [
+            { "hash": "h1", "name": "docs", "file": ".mcp.json", "variables": variables },
+        ] });
+        let at = root.to_string_lossy().into_owned();
+        project_profile::save_project_settings(&app.core.paths.config_dir, at, approvals).unwrap();
+    };
+    allowed(serde_json::json!(["DOCS_TOKEN"]));
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::MCP.into()];
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    let mut request = start("chat", StartKind::Retry, None);
+    request.root = Some(root.to_string_lossy().into_owned());
+    remote.start(request.clone()).await.unwrap();
+    let sent = starts(&fake).remove(0).mcp_secrets;
+    assert_eq!(sent["project/p1"]["DOCS_TOKEN"].0, "t0p");
+
+    allowed(serde_json::json!([]));
+    fake.requests.lock().unwrap().clear();
+    remote.start(request).await.unwrap();
+    let sent = starts(&fake).remove(0).mcp_secrets;
+    assert!(sent["project/p1"].is_empty(), "{sent:?}");
 }

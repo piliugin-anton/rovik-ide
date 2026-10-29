@@ -180,6 +180,12 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::HostInfo
         | Request::KeysList
         | Request::KeysRemove { .. }
+        | Request::McpSecretsKept
+        | Request::McpTest { .. }
+        | Request::McpSignIn { .. }
+        | Request::McpSignedIn
+        | Request::McpRelayTake { .. }
+        | Request::McpRelayPart { .. }
         | Request::Storage
         | Request::CleanUp
         | Request::PageOpened { .. }
@@ -310,6 +316,7 @@ mod tests {
             config: None,
             isolate: Some(false),
             project_settings: None,
+            mcp_secrets: Default::default(),
         }
     }
 
@@ -664,6 +671,9 @@ mod tests {
         let host = [
             Request::HostInfo,
             Request::KeysList,
+            Request::McpSecretsKept,
+            Request::McpSignedIn,
+            Request::McpRelayTake { id: "r1".into() },
             Request::Storage,
             Request::CleanUp,
             Request::PageOpened {

@@ -25,15 +25,28 @@ use crate::work;
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::agent_run::{self, candidates, recovery};
 use rovik_core::chat_db::store::now_ms;
+use rovik_core::mcp::McpState;
 use rovik_core::{process, rt, workload, Core, EventSink, Paths};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// How long an MCP server may go unused before the sweep stops it.
+const IDLE_AFTER: Duration = Duration::from_secs(30 * 60);
+/// How often the sweep looks for idle MCP servers.
+const SWEEP_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How long a stopping daemon waits for its runs to pause (R02): a
 /// command at its default limit (2 minutes) may still be cut. systemd
 /// gives the unit 90 s (`TimeoutStopSec`), then kills what's left.
 pub const DRAIN_WAIT: Duration = Duration::from_secs(80);
+
+/// Every `every`, stops the MCP servers unused for `idle`, for good.
+async fn sweep(mcp: McpState, every: Duration, idle: Duration) {
+    loop {
+        tokio::time::sleep(every).await;
+        mcp.stop_idle(idle);
+    }
+}
 
 pub fn serve(options: Options) -> Result<(), String> {
     // 1. While the process is still single-threaded: it sets the
@@ -131,6 +144,15 @@ async fn run(
         notifier: crate::notify::Notifier::new(store.clone()),
     };
     let core = Core::new(paths, Arc::new(sink))?;
+    // The MCP servers' saved secrets are keys.json's (Q11); nothing else
+    // ends a daemon's servers, so a sweep stops the idle ones.
+    let secrets = store.clone();
+    core.mcp.set_secrets(Arc::new(move |server, key| {
+        Ok(secrets.mcp_value(server, key))
+    }));
+    // So are their sign-ins for this server, refreshed here (Q14).
+    core.mcp.set_grants(Arc::new(KeptGrants(store.clone())));
+    tokio::spawn(sweep(core.mcp.clone(), SWEEP_EVERY, IDLE_AFTER));
     // `ChatChanged` names the database's clock (6.3).
     events.set_db(core.db.clone());
     // A run follows its chat's computer's configuration (D16).
@@ -209,6 +231,13 @@ async fn run(
     // A stop that gets as far as the end of its drain is a clean one (5.4).
     let stops = store.clone();
     let opener = pages::Opener::new(events.clone());
+    // MCP servers on the loopback of the user's computers are reached
+    // through the app on each (Q11), but where the loopback is shared: on
+    // the same machine, or in WSL with mirrored networking.
+    let relays = crate::relay::Relays::new(events.clone());
+    if !same_machine && !crate::relay::loopback_shared() {
+        core.mcp.set_relay(Arc::new(relays.clone()));
+    }
     let daemon = Arc::new(Daemon {
         core: core.clone(),
         tokens,
@@ -224,6 +253,7 @@ async fn run(
         caps: limits.caps,
         making: tokio::sync::Mutex::new(()),
         pages: opener,
+        relays,
     });
     // The pages this user's commands open, in their network's browser: on
     // the computer each one's chat belongs to (D20).
@@ -536,10 +566,85 @@ fn drained(outcome: &str) -> bool {
     outcome.strip_prefix("paused-") == Some(recovery::DRAIN)
 }
 
+/// The MCP servers' sign-ins as keys.json keeps them (Q14).
+struct KeptGrants(Arc<Store>);
+
+impl rovik_core::mcp::oauth::GrantStore for KeptGrants {
+    fn get(&self, server: &str) -> Result<Option<rovik_protocol::mcp::McpGrant>, String> {
+        Ok(self.0.mcp_grant(server))
+    }
+
+    fn put(&self, server: &str, grant: &rovik_protocol::mcp::McpGrant) -> Result<(), String> {
+        self.0.set_mcp_grant(server, Some(grant.clone()))
+    }
+
+    fn forget(&self, server: &str) -> Result<(), String> {
+        self.0.set_mcp_grant(server, None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{makes_no_result, shared_toolchains};
+    use super::{makes_no_result, shared_toolchains, sweep};
     use crate::limits::AdminFile;
+    use rovik_core::connectors::mcp::McpServer as FakeServer;
+    use rovik_core::mcp::McpState;
+    use rovik_protocol::mcp::{McpServer, McpTransport, McpValue};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    /// Q11: the sweep stops a server nobody uses, so its next use starts it
+    /// again. A running server keeps the secret it started with, so one
+    /// that stops shows by failing with a secret that has changed since.
+    #[tokio::test]
+    async fn the_sweep_stops_an_idle_mcp_server() {
+        let (fake, _calls) = FakeServer::start(&[], "", None).await.unwrap();
+        let token = Arc::new(Mutex::new(fake.authorization()));
+        let state = McpState::default();
+        let saved = token.clone();
+        state.set_secrets(Arc::new(move |_, _| {
+            Ok(Some(saved.lock().unwrap().clone()))
+        }));
+        let server = McpServer {
+            id: "s1".into(),
+            name: "fake".into(),
+            enabled: true,
+            transport: McpTransport::Url {
+                url: fake.url(),
+                headers: vec![McpValue {
+                    name: "Authorization".into(),
+                    value: String::new(),
+                    secret: true,
+                }],
+                sse: false,
+                oauth: None,
+            },
+            disabled_tools: Vec::new(),
+        };
+        let servers = std::slice::from_ref(&server);
+        assert!(state.list(servers, None, None).await[0].tools.is_ok());
+        *token.lock().unwrap() = "Bearer wrong".into();
+        assert!(
+            state.list(servers, None, None).await[0].tools.is_ok(),
+            "still running with the secret it started with"
+        );
+
+        let sweeping = tokio::spawn(sweep(
+            state.clone(),
+            Duration::from_millis(10),
+            Duration::ZERO,
+        ));
+        let mut stopped = false;
+        for _ in 0..200 {
+            if state.list(servers, None, None).await[0].tools.is_err() {
+                stopped = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        sweeping.abort();
+        assert!(stopped, "the sweep never stopped the idle server");
+    }
 
     /// A daemon outside the `rovik` group, as on a host without systemd,
     /// can't write the shared caches: it shares the versions and the root

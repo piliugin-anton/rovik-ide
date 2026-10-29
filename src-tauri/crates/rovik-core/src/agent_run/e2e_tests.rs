@@ -44,6 +44,10 @@ mod codex_tests;
 #[path = "restricted_e2e_tests.rs"]
 mod restricted_tests;
 
+#[cfg(test)]
+#[path = "mcp_e2e_tests.rs"]
+mod mcp_tests;
+
 // Their server is a shell loop.
 #[cfg(all(test, unix))]
 #[path = "background_e2e_tests.rs"]
@@ -287,10 +291,12 @@ impl Harness {
                 approval_profiles: Vec::new(),
                 subagents: Default::default(),
                 autopilot: Default::default(),
+                mcp_servers: Vec::new(),
                 network: None,
             }),
             isolate: Some(false),
             project_settings: None,
+            mcp_secrets: Default::default(),
         }
     }
 

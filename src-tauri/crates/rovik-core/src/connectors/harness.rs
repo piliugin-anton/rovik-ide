@@ -166,8 +166,9 @@ pub fn split_args(text: &str) -> Vec<String> {
 
 /// A harness's program as Rovik runs it: in `cwd` with the toolchains a
 /// server shares there, `env` added, its outputs piped, no console window,
-/// and a process group of its own, so a Stop ends what it started too.
-pub(super) fn command(
+/// and a process group of its own, so a Stop ends what it started too. An
+/// MCP server's command starts the same way (crate::mcp).
+pub(crate) fn command(
     program: &str,
     cwd: Option<&Path>,
     env: &[(String, String)],

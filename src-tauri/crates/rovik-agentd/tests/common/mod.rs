@@ -609,6 +609,7 @@ pub fn start_request(url: &str, project: &std::path::Path, text: String) -> Star
         }),
         isolate: None,
         project_settings: None,
+        mcp_secrets: Default::default(),
     }
 }
 

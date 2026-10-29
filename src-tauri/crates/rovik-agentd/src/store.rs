@@ -14,12 +14,13 @@ use rovik_protocol::agent::{
 };
 use rovik_protocol::autopilot::AutonomyConfig;
 use rovik_protocol::host::KeyInfo;
+use rovik_protocol::mcp::{McpGrant, McpServer, SignedInServer};
 use rovik_protocol::sync::Ownership;
 use rovik_protocol::work::{ChatResult, Project};
 use rovik_protocol::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -270,15 +271,25 @@ impl Store {
 
     /// A start from `computer` (6.2): its keys go to keys.json, and its
     /// settings and configuration, without them, to state.json. Another
-    /// computer's chat is refused.
-    pub fn started(&self, computer: &str, start: &StartRequest) -> Result<(), Fail> {
+    /// computer's chat is refused. The ids of the MCP servers whose secrets
+    /// the start changed, or whose secrets went with its configuration.
+    pub fn started(&self, computer: &str, start: &StartRequest) -> Result<Vec<String>, Fail> {
         let _writing = self.writing();
         let mut inner = self.lock();
         let earlier = inner.state.chats.get(&start.dialog_id).cloned();
         inner.check_owner(computer, &start.dialog_id)?;
-        let mut keys_changed = inner.keys.take([&start.profile]);
+        let wanted = inner.wanted_mcp(computer, start.config.as_ref());
+        let mcp_changed = self
+            .change_keys(&mut inner, |keys| {
+                keys.take([&start.profile]);
+                if let Some(config) = &start.config {
+                    keys.take(config.models());
+                }
+                keys.take_mcp(&start.mcp_secrets);
+                keys.keep_mcp(&wanted);
+            })
+            .map_err(internal)?;
         if let Some(config) = &start.config {
-            keys_changed |= inner.keys.take(config.models());
             inner.set_config(computer, config.clone());
         }
         let mut chat = earlier.unwrap_or_else(|| ChatState {
@@ -287,22 +298,60 @@ impl Store {
         });
         chat.start = Some(StartSettings::of(start));
         inner.state.chats.insert(start.dialog_id.clone(), chat);
-        if keys_changed {
-            inner.keys.write(&self.keys_file).map_err(internal)?;
+        self.save(inner).map_err(internal)?;
+        Ok(mcp_changed)
+    }
+
+    /// Changes the keys as `change` does and writes keys.json when that
+    /// changed them, in memory only once the file has them: a write that
+    /// fails changes nothing, so the next start or configuration finds the
+    /// change again and no MCP server goes on with a secret it replaced.
+    /// The ids of the MCP servers whose secrets changed.
+    fn change_keys(
+        &self,
+        inner: &mut Inner,
+        change: impl FnOnce(&mut Keys),
+    ) -> Result<Vec<String>, String> {
+        let mut keys = inner.keys.clone();
+        change(&mut keys);
+        if keys == inner.keys {
+            return Ok(Vec::new());
         }
-        self.save(inner).map_err(internal)
+        keys.write(&self.keys_file)?;
+        let changed = inner.keys.mcp_changes(&keys);
+        inner.keys = keys;
+        Ok(changed)
+    }
+
+    /// Every computer's MCP servers, on or off: what the runs here may
+    /// start (Q11).
+    pub fn mcp_servers(&self) -> Vec<McpServer> {
+        let inner = self.lock();
+        let configs = inner.configs.values();
+        configs.flat_map(|c| c.mcp_servers.clone()).collect()
+    }
+
+    /// The saved secret `key` of MCP server `server`, for the servers the
+    /// runs start.
+    pub fn mcp_value(&self, server: &str, key: &str) -> Option<String> {
+        self.lock().keys.mcp_value(server, key)
     }
 
     /// `computer`'s configuration from now on, and only its: the app sends
-    /// it without keys, which come from keys.json.
-    pub fn configure(&self, computer: &str, config: AgentConfig) -> Result<(), String> {
+    /// it without keys, which come from keys.json. The MCP servers it no
+    /// longer has on lose their secrets there, unless another computer has
+    /// them on (Q11): the ids of those whose secrets went.
+    pub fn configure(&self, computer: &str, config: AgentConfig) -> Result<Vec<String>, String> {
         let _writing = self.writing();
         let mut inner = self.lock();
-        if inner.keys.take(config.models()) {
-            inner.keys.write(&self.keys_file)?;
-        }
+        let wanted = inner.wanted_mcp(computer, Some(&config));
+        let mcp_changed = self.change_keys(&mut inner, |keys| {
+            keys.take(config.models());
+            keys.keep_mcp(&wanted);
+        })?;
         inner.set_config(computer, config);
-        self.save(inner)
+        self.save(inner)?;
+        Ok(mcp_changed)
     }
 
     /// What `computer` has this server keep for its runs that go on
@@ -354,13 +403,42 @@ impl Store {
             .collect()
     }
 
-    /// Forgets `provider`'s key, or every key (`KeysRemove`): from
-    /// keys.json, and from each computer's configuration, so the runs that
-    /// start from now on go without it until a start brings it again.
-    /// Runs going now finish with theirs. How many keys went.
+    /// How many MCP servers keys.json keeps secrets or a sign-in for:
+    /// never the secrets (`McpSecretsKept`).
+    pub fn mcp_secrets_kept(&self) -> usize {
+        self.lock().keys.mcp_servers()
+    }
+
+    /// MCP server `server`'s sign-in here (mcp-plan-2.md, Q14).
+    pub fn mcp_grant(&self, server: &str) -> Option<McpGrant> {
+        self.lock().keys.grant(server)
+    }
+
+    /// Keeps `grant` as MCP server `server`'s sign-in here, or forgets it:
+    /// in memory once keys.json has it.
+    pub fn set_mcp_grant(&self, server: &str, grant: Option<McpGrant>) -> Result<(), String> {
+        let _writing = self.writing();
+        let mut inner = self.lock();
+        self.change_keys(&mut inner, |keys| keys.set_grant(server, grant))
+            .map(drop)
+    }
+
+    /// The MCP servers signed in here, and the scopes each asked for that
+    /// its sign-in lacks: never their tokens (`McpSignedIn`).
+    pub fn mcp_signed_in(&self) -> Vec<SignedInServer> {
+        self.lock().keys.signed_in()
+    }
+
+    /// Forgets `provider`'s key, or every key and every MCP server's
+    /// secrets (`KeysRemove`): from keys.json, and from each computer's
+    /// configuration, so the runs that start from now on go without it
+    /// until a start brings it again. Runs going now finish with theirs.
+    /// How many keys went, each MCP server counting one. When keys.json
+    /// can't be written, none goes.
     pub fn remove_keys(&self, provider: Option<&str>) -> Result<usize, String> {
         let mut inner = self.lock();
-        let removed = inner.keys.remove(provider);
+        let mut removed = 0;
+        self.change_keys(&mut inner, |keys| removed = keys.remove(provider))?;
         for config in inner.configs.values_mut() {
             for model in config.models_mut() {
                 if provider.is_none_or(|p| keys::provider(model) == p) {
@@ -368,7 +446,6 @@ impl Store {
                 }
             }
         }
-        inner.keys.write(&self.keys_file)?;
         Ok(removed)
     }
 
@@ -833,6 +910,7 @@ impl Store {
             isolate: None,
             // Kept here since the start that brought them.
             project_settings: None,
+            mcp_secrets: Default::default(),
         })
     }
 
@@ -893,6 +971,26 @@ impl Inner {
 
     /// The computer's configuration: with keys here, without in state.json,
     /// where the browser proxy's password never goes either.
+    /// The secret keys keys.json keeps, by MCP server: those of the servers
+    /// each computer's configuration has on, `computer`'s as `config` has
+    /// them when it brings one.
+    fn wanted_mcp(
+        &self,
+        computer: &str,
+        config: Option<&AgentConfig>,
+    ) -> BTreeMap<String, BTreeSet<String>> {
+        let others = (self.configs.iter())
+            .filter(|(c, _)| config.is_none() || c.as_str() != computer)
+            .map(|(_, c)| c);
+        let mut wanted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let servers = others.chain(config).flat_map(|c| &c.mcp_servers);
+        for server in servers.filter(|s| s.enabled) {
+            let keys = wanted.entry(server.id.clone()).or_default();
+            keys.extend(server.transport.secret_keys());
+        }
+        wanted
+    }
+
     fn set_config(&mut self, computer: &str, mut config: AgentConfig) {
         self.keys.give(config.models_mut());
         let mut kept = config.without_keys();

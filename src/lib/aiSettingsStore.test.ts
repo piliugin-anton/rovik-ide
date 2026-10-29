@@ -6,6 +6,7 @@ import { createRoot } from 'solid-js';
 import {
   aiAutopilot,
   aiChatModel,
+  aiMcpServers,
   aiPermissions,
   aiProviders,
   aiSettingsLoaded,
@@ -15,6 +16,7 @@ import {
   followAiSettingsRevision,
   reloadAiSettings,
   updateAutopilot,
+  updateMcpServers,
   updatePermissions,
   updateProviders,
   updateSubagents,
@@ -63,6 +65,15 @@ const saved: PersistedAiSettings = {
   active: { providerId: 'a', modelId: 'm2' },
   permissions: { ...DEFAULT_PERMISSIONS, allowAnyCommand: true },
   subagents: { ...DEFAULT_SUBAGENT_SETTINGS, enabled: true },
+  mcpServers: [
+    {
+      id: 's1',
+      name: 'docs',
+      enabled: true,
+      transport: { kind: 'url', url: 'https://docs.example/mcp', headers: [] },
+      disabledTools: [],
+    },
+  ],
 };
 
 /** Runs `body` with console.error silenced (a failed save logs). */
@@ -108,6 +119,13 @@ test('ai settings store: every change is saved with the latest state, and the ch
   assert.equal(f.saves[1].subagents.autopilot.effort, 'thorough');
   assert.equal(aiAutopilot().effort, 'thorough');
   assert.equal(aiSettingsRevision(), revision + 2);
+  assert.deepEqual(f.saves[1].mcpServers, saved.mcpServers, 'the MCP servers go with every save');
+
+  updateMcpServers([{ ...aiMcpServers()[0], enabled: false }]);
+  await aiSettingsSaved();
+  assert.equal(f.saves.length, 3);
+  assert.equal(f.saves[2].mcpServers[0].enabled, false);
+  assert.equal(aiSettingsRevision(), revision + 3);
 });
 
 test('ai settings store: a save keeps the chat’s model the chat panel chose meanwhile', async () => {

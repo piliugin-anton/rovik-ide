@@ -10,6 +10,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { plural } from './textUtils';
 import type { RestrictedFile } from './restrictedFiles';
+import type { McpApproval } from './projectMcpServers';
 
 export type CheckKind = 'typecheck' | 'lint' | 'test' | 'build';
 
@@ -58,11 +59,13 @@ export interface ProjectCheck {
 /**
  * Per-project settings. `checks` replaces the detected list once the user
  * edits it; `restrictedFiles` is Settings → Restricted files' list
- * (restrictedFiles.ts), which the backend reads.
+ * (restrictedFiles.ts), which the backend reads; `mcpApprovals`, the
+ * project's own MCP servers the user allowed (projectMcpServers.ts).
  */
 export interface ProjectSettings {
   checks?: ProjectCheck[];
   restrictedFiles?: RestrictedFile[];
+  mcpApprovals?: McpApproval[];
 }
 
 export function detectProject(root: string): Promise<ProjectProfile> {

@@ -11,6 +11,7 @@ import { createResource, Show, type JSX } from 'solid-js';
 import type { SettingsPage } from '../lib/appSettings';
 import {
   aiAutopilot,
+  aiMcpServers,
   aiPermissions,
   aiProviders,
   aiSettingsLoaded,
@@ -20,6 +21,7 @@ import { editorSettings, editorSummary } from '../lib/editorSettings';
 import { providersSummary } from '../lib/aiSettings';
 import { cantRun, connectorAuthState, connectorsSummary, splitSources } from '../lib/connectors';
 import { agentRunsSummary, permissionsSummary } from '../lib/permissions';
+import { mcpServersSummary, unsavedSecrets } from '../lib/mcpServers';
 import { subagentSummary } from '../lib/subagentSettings';
 import { autopilotSummary } from '../lib/autopilotSettings';
 import { workloadStatus, workloadSummary } from '../lib/workload';
@@ -133,6 +135,16 @@ export default function SettingsMenu(props: SettingsMenuProps) {
             splitSources(aiProviders()).connectors.some(
               (c) => !c.models.some((m) => m.enabled) || cantRun(connectorAuthState(c.id))
             )
+          }
+        />
+        <Item
+          page="mcp"
+          label="MCP servers"
+          about="Servers whose tools the agent can call, such as GitHub or a database: a command run on this computer, or a URL."
+          state={ai(() => mcpServersSummary(aiMcpServers()))}
+          warning={
+            aiSettingsLoaded() &&
+            aiMcpServers().some((s) => s.enabled && unsavedSecrets(s).length > 0)
           }
         />
         <Item

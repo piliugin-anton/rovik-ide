@@ -45,7 +45,8 @@ pub struct Daemon {
     /// The chats' results (6.5).
     pub results: Arc<Results>,
     /// `--same-machine`: a chat without a worktree runs in the folder its
-    /// start names, for development.
+    /// start names, for development, and MCP servers on the loopback are
+    /// posted to from here (Q11).
     pub same_machine: bool,
     /// Why the virtual files aren't mounted, when they aren't.
     pub virtual_files_problem: Option<String>,
@@ -59,6 +60,9 @@ pub struct Daemon {
     /// The pages this user's commands asked to open, waiting for their
     /// computer's answer (D20).
     pub pages: crate::pages::Opener,
+    /// The POSTs to MCP servers on the computers' loopback, waiting for
+    /// their computer's answer (Q11).
+    pub relays: crate::relay::Relays,
 }
 
 impl Daemon {
@@ -106,13 +110,46 @@ impl Daemon {
         match request {
             Request::HostInfo => Ok(Response::HostInfo(host::info(self).await)),
             Request::KeysList => Ok(Response::Keys(self.store.keys())),
+            Request::McpSecretsKept => Ok(Response::Count(self.store.mcp_secrets_kept())),
             // The server's keys, whichever of the user's computers brought
             // them: "Remove keys from this server" leaves none.
-            Request::KeysRemove { provider } => self
-                .store
-                .remove_keys(provider.as_deref())
-                .map(Response::Count)
-                .map_err(|e| Fail::new(FailCode::Internal, e)),
+            Request::KeysRemove { provider } => {
+                let removed = self
+                    .store
+                    .remove_keys(provider.as_deref())
+                    .map_err(|e| Fail::new(FailCode::Internal, e))?;
+                // A running MCP server keeps the secrets it started with:
+                // none survives in one. A call going on one fails.
+                if provider.is_none() {
+                    self.core.mcp.shutdown().await;
+                }
+                Ok(Response::Count(removed))
+            }
+            // A server on the loopback is the asking computer's (Q11).
+            Request::McpTest { server, values } => {
+                let given = values.into_iter().map(|(k, v)| (k, v.0.clone())).collect();
+                self.core
+                    .mcp
+                    .test(&server, &given, None, Some(computer))
+                    .await
+                    .map(Response::McpTested)
+                    .map_err(|e| Fail::new(FailCode::Internal, e))
+            }
+            // A sign-in made for this server on the user's computer (Q14):
+            // its server starts again with it at its next use.
+            Request::McpSignIn { server, grant } => {
+                (self.store.set_mcp_grant(&server, grant))
+                    .map_err(|e| Fail::new(FailCode::Internal, e))?;
+                self.core.mcp.forget(&server);
+                Ok(Response::Bool(true))
+            }
+            Request::McpSignedIn => Ok(Response::McpSignedIn(self.store.mcp_signed_in())),
+            Request::McpRelayTake { id } => {
+                (self.relays.take(computer, &id)).map(Response::McpRelayed)
+            }
+            Request::McpRelayPart { id, part } => {
+                Ok(Response::Bool(self.relays.part(computer, &id, part)))
+            }
             Request::Storage => Ok(Response::Storage(host::storage(self).await)),
             Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),
             Request::PageOpened {
@@ -155,14 +192,12 @@ impl Daemon {
             Request::AgentConfigure(config) => {
                 let network = config.network.clone();
                 let permissions = config.permissions.clone();
-                self.store
-                    .configure(computer, *config)
-                    .map(|()| {
-                        rovik_core::net::set_host_network(network);
-                        rovik_core::allowed_hosts::configure(&permissions);
-                        Response::Done
-                    })
-                    .map_err(|e| Fail::new(FailCode::Internal, e))
+                let mcp_changed = (self.store.configure(computer, *config))
+                    .map_err(|e| Fail::new(FailCode::Internal, e))?;
+                rovik_core::net::set_host_network(network);
+                rovik_core::allowed_hosts::configure(&permissions);
+                self.mcp_changed(&mcp_changed);
+                Ok(Response::Done)
             }
             Request::AutonomyConfigure(config) => self
                 .store
@@ -332,9 +367,22 @@ impl Daemon {
     /// the chat becomes the computer's.
     async fn start(&self, computer: &str, mut start: StartRequest) -> Result<Response, Fail> {
         self.can_run(&start.dialog_id)?;
-        self.store.started(computer, &start)?;
+        let mcp_changed = self.store.started(computer, &start)?;
+        self.mcp_changed(&mcp_changed);
         self.tell_marked(&mut start);
         self.run(start).await
+    }
+
+    /// The computers' MCP servers, or their secrets, changed (Q11). A
+    /// running server keeps the secrets it started with: one whose secrets
+    /// changed starts again with the new ones at its next use, and one no
+    /// computer has on any more stops, so none goes on with what the user
+    /// took back.
+    fn mcp_changed(&self, secrets_changed: &[String]) {
+        for id in secrets_changed {
+            self.core.mcp.forget(id);
+        }
+        self.core.mcp.configure(&self.store.mcp_servers());
     }
 
     /// The first message after a sync put conflict markers in the chat's

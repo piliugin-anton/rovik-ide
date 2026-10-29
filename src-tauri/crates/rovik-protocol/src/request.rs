@@ -14,12 +14,14 @@ use crate::connectors::{
 };
 use crate::events::BackgroundTask;
 use crate::host::{HostInfo, KeyInfo, Storage};
+use crate::mcp::{McpGrant, McpServer, RelayPart, RelayedPost, SignedInServer, Tested};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
 use crate::work::{ChatResult, Handed, Project, Synced, UndoneMerge, WorkChange, WorkFile};
-use crate::{Fail, FailCode};
+use crate::{Fail, FailCode, Secret};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -318,6 +320,42 @@ pub enum Request {
     KeysRemove {
         provider: Option<String>,
     },
+    /// How many MCP servers the host keeps saved secrets for, which
+    /// `KeysRemove` without a provider forgets: never the secrets. Served
+    /// with `features::MCP`. → `Count`.
+    McpSecretsKept,
+    /// Starts `server` on the host with `values` for its secrets (by key,
+    /// as `StartRequest::mcp_secrets`) and lists its tools, as Test on the
+    /// settings page does here. Served with `features::MCP`. → `McpTested`.
+    McpTest {
+        server: McpServer,
+        values: BTreeMap<String, Secret>,
+    },
+    /// Keeps `grant`, this host's own sign-in to MCP server `server` (its
+    /// id), made on the user's computer and refreshed here from then on;
+    /// none signs it out here (mcp-plan-2.md, Q14). A server running here
+    /// starts again with it. Served with `features::MCP_SIGN_IN`. → `Bool`,
+    /// whether it was kept (or forgotten).
+    McpSignIn {
+        server: String,
+        grant: Option<McpGrant>,
+    },
+    /// The MCP servers signed in on this host, and the scopes each asked
+    /// for that its sign-in lacks: never their tokens. Served with
+    /// `features::MCP_SIGN_IN`. → `McpSignedIn`.
+    McpSignedIn,
+    /// The POST a `McpRelayWanted` event asked this computer to make, once
+    /// (Q11): another computer's, or one taken already, is refused. Sent
+    /// by a daemon that serves `features::MCP`. → `McpRelayed`.
+    McpRelayTake {
+        id: String,
+    },
+    /// A part of the answer to relay `id`'s POST, in order. → `Bool`,
+    /// whether it's still wanted: the app stops when it isn't.
+    McpRelayPart {
+        id: String,
+        part: RelayPart,
+    },
     /// What Rovik's folders take on the host. → `Storage`.
     Storage,
     /// Collects now what Rovik's folders no longer need, as each day does
@@ -423,6 +461,12 @@ impl Request {
             | Request::HostInfo
             | Request::KeysList
             | Request::KeysRemove { .. }
+            | Request::McpSecretsKept
+            | Request::McpTest { .. }
+            | Request::McpSignIn { .. }
+            | Request::McpSignedIn
+            | Request::McpRelayTake { .. }
+            | Request::McpRelayPart { .. }
             | Request::Storage
             | Request::CleanUp
             | Request::PageOpened { .. } => None,
@@ -474,6 +518,12 @@ pub enum Response {
     /// `KeysList`.
     Keys(Vec<KeyInfo>),
     Storage(Storage),
+    /// `McpTest`.
+    McpTested(Tested),
+    /// `McpRelayTake`.
+    McpRelayed(RelayedPost),
+    /// `McpSignedIn`.
+    McpSignedIn(Vec<SignedInServer>),
     /// `DeliveryTest`.
     DeliveryTested(DeliveryTest),
     /// `TaskStatus`.
@@ -543,6 +593,9 @@ replies! {
     Ownership => Option<Ownership>,
     Keys => Vec<KeyInfo>,
     Storage => Storage,
+    McpTested => Tested,
+    McpRelayed => RelayedPost,
+    McpSignedIn => Vec<SignedInServer>,
     DeliveryTested => DeliveryTest,
     Tasks => Vec<ChatTask>,
     ConnectorProbe => ConnectorProbe,

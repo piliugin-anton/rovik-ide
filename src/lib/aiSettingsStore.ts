@@ -1,7 +1,8 @@
 // aiSettingsStore.ts
 //
 // The AI settings as the Settings dialog edits them: the model providers,
-// the agent's permissions, and the subagent settings (with Autopilot's).
+// the agent's permissions, the subagent settings (with Autopilot's), and
+// the MCP servers.
 // They are the app's actual, saved state, not a draft: the dialog reads
 // them again from the backend's file each time it opens, every change is
 // saved at once, and each save bumps `aiSettingsRevision` so the chat
@@ -23,6 +24,7 @@ import type { ModelSelection, Provider } from '../types';
 import { DEFAULT_PERMISSIONS, type AgentPermissions } from './permissions';
 import { DEFAULT_SUBAGENT_SETTINGS, type SubagentSettings } from './subagentSettings';
 import type { AutopilotSettings } from './autopilotSettings';
+import type { McpServer } from './mcpServers';
 import {
   createAiSettingsHolder,
   loadAiSettings,
@@ -34,6 +36,7 @@ import { aiSettingsRevision, notifyAiSettingsSaved } from './appSettings';
 const [providers, setProviders] = createSignal<Provider[]>([]);
 const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
 const [subagents, setSubagents] = createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
+const [mcpServers, setMcpServers] = createSignal<McpServer[]>([]);
 /** The chat's model, as saved: the Subagents page's "code also goes to…" warning uses it. */
 const [chatModel, setChatModel] = createSignal<ModelSelection | null>(null);
 /** False until the first load answered (the pages show nothing stale meanwhile). */
@@ -52,18 +55,25 @@ export interface AiSettingsIo {
 }
 
 let io: AiSettingsIo | undefined;
-let holder = createAiSettingsHolder({ setProviders, setPermissions, setSubagents }, io);
+let holder = createAiSettingsHolder(
+  { setProviders, setPermissions, setSubagents, setMcpServers },
+  io
+);
 
 /** Tests: where the store reads and writes, instead of the backend. */
 export function useAiSettingsIo(next: AiSettingsIo | undefined): void {
   io = next;
-  holder = createAiSettingsHolder({ setProviders, setPermissions, setSubagents }, io);
+  holder = createAiSettingsHolder(
+    { setProviders, setPermissions, setSubagents, setMcpServers },
+    io
+  );
 }
 
 export const aiProviders = providers;
 export const aiPermissions = permissions;
 export const aiSubagents = subagents;
 export const aiAutopilot = (): AutopilotSettings => subagents().autopilot;
+export const aiMcpServers = mcpServers;
 export const aiChatModel = chatModel;
 export const aiSettingsLoaded = loaded;
 export const aiSettingsLoadFailed = loadFailed;
@@ -101,6 +111,11 @@ export function updateAutopilot(next: AutopilotSettings): void {
   updateSubagents({ ...subagents(), autopilot: next });
 }
 
+export function updateMcpServers(next: McpServer[]): void {
+  setMcpServers(next);
+  scheduleSave();
+}
+
 let saving: Promise<void> = Promise.resolve();
 /** A save is queued and hasn't read the state yet: it will take this change too. */
 let queued = false;
@@ -127,6 +142,7 @@ function scheduleSave(): void {
         active,
         permissions: permissions(),
         subagents: subagents(),
+        mcpServers: mcpServers(),
       });
       if (saved) {
         // Before the bump: the effect following the revision runs with it.

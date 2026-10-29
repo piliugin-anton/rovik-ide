@@ -82,6 +82,8 @@ mod packs;
 #[cfg(unix)]
 mod pages;
 #[cfg(unix)]
+mod relay;
+#[cfg(unix)]
 mod restart;
 #[cfg(unix)]
 mod results;

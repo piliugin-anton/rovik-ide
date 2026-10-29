@@ -183,6 +183,10 @@ pub struct Run {
     pub(super) repo_map: Option<String>,
     /// Map budget in chars (about 2% of the context window), fixed at prepare.
     pub(super) repo_map_chars: usize,
+    /// The tools of the user's MCP servers, listed as the run started
+    /// (mcp-plan.md, Q04): the `mcp` tool and the prompt's list come from
+    /// it. A scout shares its lead's.
+    pub(super) mcp: Option<Arc<super::mcp_tool::Catalog>>,
     /// When the map was last (re)built: a mid-run rebuild waits until it's
     /// MAP_MAX_AGE old.
     pub(super) map_refreshed_at: Instant,
@@ -1032,15 +1036,15 @@ impl Run {
             }
         }
 
-        let (checks, project_context, restricted) = match &root {
-            Some(r) => {
-                // Settings are kept by the project's folder, not the view's;
-                // a candidate's, by its task chat's (T05).
-                let settings_root = core
-                    .agents
-                    .candidate_project(&dialog_id)
-                    .or_else(|| project_root.clone())
-                    .unwrap_or_else(|| r.clone());
+        // Settings are kept by the project's folder, not the view's; a
+        // candidate's, by its task chat's (T05).
+        let settings_root = root.as_ref().map(|r| {
+            (core.agents.candidate_project(&dialog_id))
+                .or_else(|| project_root.clone())
+                .unwrap_or_else(|| r.clone())
+        });
+        let (checks, project_context, restricted) = match (&root, settings_root.clone()) {
+            (Some(r), Some(settings_root)) => {
                 let config_dir = core.paths.config_dir.clone();
                 let (r, verify) = (r.clone(), config.permissions.verify_changes);
                 crate::rt::spawn_blocking(move || {
@@ -1054,7 +1058,7 @@ impl Run {
                 .await
                 .unwrap_or_default()
             }
-            None => Default::default(),
+            _ => Default::default(),
         };
         let restricted = Arc::new(restricted);
         // V02 (D7): an Autopilot implementation in a project with no checks
@@ -1132,6 +1136,38 @@ impl Run {
             None => None,
         };
 
+        // Q04, Q06 (mcp-plan.md): the tools of the user's MCP servers, as
+        // they are now, for the whole run; none for a model that takes no
+        // tools.
+        let mcp = match request.profile.no_tools {
+            true => None,
+            false => {
+                let files = project_mcp_files(core, &dialog_id, &root, &settings_root).await;
+                let project_id = files.as_ref().map(|f| f.project.clone());
+                let (servers, chat) = (&config.mcp_servers, &request.dialog_id);
+                let catalog = super::mcp_tool::Catalog::list(
+                    core,
+                    servers,
+                    project_root.as_deref(),
+                    chat,
+                    files,
+                )
+                .await;
+                // Q12: the chat asks the user to allow the project's own.
+                if let (Some(catalog), Some(project_id)) = (&catalog, project_id) {
+                    if !catalog.awaiting.is_empty() || !catalog.left_out.is_empty() {
+                        core.emit(AgentEvent::McpServersAwaiting {
+                            dialog_id: dialog_id.clone(),
+                            project_id,
+                            servers: catalog.awaiting.clone(),
+                            left_out: catalog.left_out.clone(),
+                        });
+                    }
+                }
+                catalog
+            }
+        };
+
         // Forcing `todo` on a plan implementation's first turn only makes
         // sense when no checklist exists yet (nothing to carry, nothing
         // made): otherwise the carry note / live list already governs.
@@ -1192,6 +1228,7 @@ impl Run {
             restricted,
             repo_map,
             repo_map_chars,
+            mcp,
             writes_since_verify: !changed_files.is_empty() || inherits_changes,
             writes_since_review: inherits_changes,
             changed_files,
@@ -1250,6 +1287,7 @@ impl Run {
             context_mode: crate::clm::MODE_TRIMMING.into(),
             root: None,
             project_root: None,
+            mcp: None,
             merged_from_project: None,
             marker_reminders: 0,
             landed: false,
@@ -1408,6 +1446,7 @@ impl Run {
             restricted: parent.restricted.clone(),
             repo_map: parent.repo_map.clone(),
             repo_map_chars: parent.repo_map_chars,
+            mcp: parent.mcp.clone(),
             ..Run::blank(
                 parent.core.clone(),
                 seen,
@@ -1431,6 +1470,28 @@ impl Run {
             }),
             None => json!({ "role": "lead", "dialogId": self.dialog_id }),
         }
+    }
+
+    /// Whether the run calls only the MCP tools a server marks read-only:
+    /// in Plan mode, and as a scout, the one subagent that takes `mcp`
+    /// (mcp-plan.md, Q08).
+    pub(super) fn mcp_read_only(&self) -> bool {
+        self.plan_mode || self.sub().is_some()
+    }
+
+    /// The list of the MCP servers' tools for a connector's harness that
+    /// runs its own tools (Agent mode, mcp-plan.md Q09), when they have any
+    /// for it: the `mcp` tool named as the harness calls it.
+    fn harness_mcp_section(&self) -> Option<String> {
+        let catalog = self.mcp.as_ref()?;
+        let own_tools = self.profile.connector.is_some() && self.profile.no_tools;
+        let read_only = self.mcp_read_only();
+        let called = format!(
+            "{}{}",
+            crate::connectors::mcp::TOOL_PREFIX,
+            super::mcp_tool::NAME
+        );
+        (own_tools && catalog.offers(read_only)).then(|| catalog.section(read_only, &called))
     }
 
     /// The subagent's context, when this run is one.
@@ -2132,6 +2193,26 @@ impl Run {
         if self.autopilot {
             super::autopilot::without_questions(&mut tools);
         }
+        // Q05, Q06, Q08 (mcp-plan.md): the `mcp` tool, and the prompt's list
+        // of the MCP servers' tools, when they have one for the run's mode;
+        // a subagent keeps it only if its kind takes it (below).
+        let mcp_read_only = self.mcp_read_only();
+        let mcp_section = match &self.mcp {
+            Some(catalog)
+                if !tools.is_empty() && !context_only && catalog.offers(mcp_read_only) =>
+            {
+                tools.push(super::mcp_tool::schema());
+                let allowed = self
+                    .sub()
+                    .is_none_or(|sub| sub.allows(super::mcp_tool::NAME));
+                allowed.then(|| catalog.section(mcp_read_only, super::mcp_tool::NAME))
+            }
+            // No tool to call, but the project's own servers wait (Q12).
+            Some(catalog) if !context_only && self.sub().is_none() => catalog
+                .awaiting_note()
+                .map(|note| format!("## MCP tools\n\n{note}")),
+            _ => None,
+        };
         // S06: the answers to the change review's findings: always in
         // Autopilot; in Agent mode while a review's findings wait for them.
         if (self.autopilot || !self.review_held.is_empty())
@@ -2159,11 +2240,11 @@ impl Run {
             if sub.scope.is_some() {
                 tools.push(super::worker::extend_scope_schema());
             }
-            system_prompt = Some(format!(
-                "{}\n\n{}",
-                spec.prompt(&sub.budget),
-                self.project_context
-            ));
+            let mut prompt = format!("{}\n\n{}", spec.prompt(&sub.budget), self.project_context);
+            if let Some(section) = &mcp_section {
+                prompt = format!("{prompt}\n\n{section}");
+            }
+            system_prompt = Some(prompt);
         } else {
             // The lead's commands may run on after its turn: a dev server.
             tools::offer_background(&mut tools);
@@ -2200,6 +2281,10 @@ impl Run {
         let project_context = match subagent_section {
             Some(section) => format!("{project_context}\n\n{section}"),
             None => project_context,
+        };
+        let project_context = match &mcp_section {
+            Some(section) if self.sub().is_none() => format!("{project_context}\n\n{section}"),
+            _ => project_context,
         };
         // D5: Autopilot's lead decides what it would otherwise ask.
         if self.autopilot && system_prompt.is_none() {
@@ -2249,6 +2334,9 @@ impl Run {
         let reads = self.steer.steerable()
             && crate::connectors::kind_of(&self.profile.base_url)
                 .is_some_and(|kind| crate::connectors::connector(kind).reads_messages());
+        // Q09 (mcp-plan.md): a connector's harness that runs its own tools
+        // is served the `mcp` tool too, with the list in its prompt.
+        let harness_mcp = self.harness_mcp_section();
         // Shown when the request starts (asking again with another effort).
         let mut opening_status: Option<Status> = None;
         // One-time context notes (CLM) an attempt at this turn went out with:
@@ -2274,6 +2362,16 @@ impl Run {
                 }
             }
             let (to_harness, steering) = (reads.then_some(to_harness), reads.then_some(steering));
+            // And calls the `mcp` tool it's served: answered here, as the
+            // run's own `mcp` calls are (`answer_mcp_call`).
+            let (mcp_calls, mut mcp_asks) = tokio::sync::mpsc::unbounded_channel();
+            let mcp = harness_mcp
+                .clone()
+                .map(|section| crate::connectors::McpOffer {
+                    tool: super::mcp_tool::schema(),
+                    section,
+                    calls: mcp_calls,
+                });
             let params = ChatParams {
                 base_url: self.profile.base_url.clone(),
                 api_key: self.profile.api_key.clone(),
@@ -2311,6 +2409,7 @@ impl Run {
                 command_checks,
                 restricted: Some(self.restricted.clone()),
                 steering,
+                mcp,
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -2358,6 +2457,7 @@ impl Run {
                 let mut effort_open = true;
                 let mut answering = futures_util::stream::FuturesUnordered::new();
                 let mut checking = futures_util::stream::FuturesUnordered::new();
+                let mut calling = futures_util::stream::FuturesUnordered::new();
                 loop {
                     tokio::select! {
                         r = &mut request => break Some(r),
@@ -2366,7 +2466,15 @@ impl Run {
                             answering.push(self.answer_tool_ask(ask));
                         }
                         Some(check) = checks.recv() => checking.push(self.answer_command_check(check)),
+                        Some(mut call) = mcp_asks.recv() => {
+                            let id = call
+                                .tool_use_id
+                                .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
+                            asked.push(id.clone());
+                            calling.push(self.answer_mcp_call(call));
+                        }
                         Some(()) = futures_util::StreamExt::next(&mut answering), if !answering.is_empty() => {}
+                        Some(()) = futures_util::StreamExt::next(&mut calling), if !calling.is_empty() => {}
                         Some(before) = futures_util::StreamExt::next(&mut checking), if !checking.is_empty() => {
                             if let Some(before) = before {
                                 befores.add(before);
@@ -4535,4 +4643,39 @@ mod clm_pressure_tests {
         // Nothing waiting: never restricted, whatever the size.
         assert_eq!(restriction_reason(85, false, None, None, 100), None);
     }
+}
+
+/// Where a run of `chat` finds its project's own MCP servers (mcp-plan-2.md,
+/// Q12): the files in its view of the project, and the project's settings,
+/// which keep those the user allowed. None for a chat of no project.
+async fn project_mcp_files(
+    core: &Core,
+    chat: &str,
+    root: &Option<String>,
+    settings_root: &Option<String>,
+) -> Option<super::mcp_tool::ProjectFiles> {
+    let (root, settings_root) = (root.clone()?, settings_root.clone()?);
+    let id = chat.to_string();
+    let project = core
+        .db
+        .read(move |c| crate::chat_db::store::dialog_project(c, &id))
+        .await;
+    let project = match project {
+        Ok(project) => project?,
+        Err(e) => {
+            ::log::warn!("{chat}: its project wasn't read, so its own MCP servers aren't: {e}");
+            return None;
+        }
+    };
+    let config_dir = core.paths.config_dir.clone();
+    let settings = crate::rt::spawn_blocking(move || {
+        crate::project_profile::load_project_settings(&config_dir, &settings_root)
+    })
+    .await
+    .unwrap_or_default();
+    Some(super::mcp_tool::ProjectFiles {
+        project,
+        root: std::path::PathBuf::from(root),
+        settings,
+    })
 }

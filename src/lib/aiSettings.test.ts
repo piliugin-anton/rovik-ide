@@ -11,6 +11,7 @@ import {
 } from './aiSettings';
 import { DEFAULT_PERMISSIONS } from './permissions';
 import { DEFAULT_SUBAGENT_SETTINGS, type SubagentSettings } from './subagentSettings';
+import type { McpServer } from './mcpServers';
 
 /* The backend's commands, answered here: none unless a test says so. */
 let backend: (cmd: string, args: any) => Promise<unknown> = async (cmd) => {
@@ -49,6 +50,7 @@ test('save_ai_settings_payload_never_contains_load_failed', async () => {
     active: null,
     permissions: DEFAULT_PERMISSIONS,
     subagents: DEFAULT_SUBAGENT_SETTINGS,
+    mcpServers: [],
     loadFailed: true,
   });
   assert.equal(sent.length, 1);
@@ -65,6 +67,14 @@ const edited = {
   permissions: DEFAULT_PERMISSIONS,
   // Defaults: what a failed load left in place of the saved ones.
   subagents: DEFAULT_SUBAGENT_SETTINGS,
+  mcpServers: [] as McpServer[],
+};
+const docs: McpServer = {
+  id: 's1',
+  name: 'docs',
+  enabled: true,
+  transport: { kind: 'command', command: 'npx', args: ['docs-mcp'], env: [] },
+  disabledTools: [],
 };
 
 test('save_keeping_subagents: unknown and the reload fails → nothing is saved (P5.7)', async () => {
@@ -77,15 +87,16 @@ test('save_keeping_subagents: unknown and the reload fails → nothing is saved 
   assert.equal(saves.length, 0, 'the saved subagent settings aren’t written over');
 });
 
-test('save_keeping_subagents: unknown and the reload works → saved with the reloaded subagents', async () => {
+test('save_keeping_subagents: unknown and the reload works → saved with the reloaded subagents and MCP servers', async () => {
   const saves: PersistedAiSettings[] = [];
   const result = await saveKeepingSubagents(edited, true, {
-    load: async () => ({ ...edited, version: 2, subagents: mine }),
+    load: async () => ({ ...edited, version: 2, subagents: mine, mcpServers: [docs] }),
     save: async (s) => void saves.push(s),
   });
-  assert.deepEqual(result, mine);
+  assert.deepEqual(result, { subagents: mine, mcpServers: [docs] });
   assert.equal(saves.length, 1);
   assert.deepEqual(saves[0].subagents, mine);
+  assert.deepEqual(saves[0].mcpServers, [docs], 'the saved servers aren’t written over with none');
   assert.equal(saves[0].version, 2);
 });
 
@@ -99,7 +110,7 @@ test('save_keeping_subagents: known settings are saved as they are, without a re
     },
     save: async (s) => void saves.push(s),
   });
-  assert.deepEqual(result, mine);
+  assert.deepEqual(result?.subagents, mine);
   assert.equal(loads, 0);
   assert.deepEqual(saves[0].subagents, mine);
 });
@@ -109,7 +120,12 @@ test('ai_settings_holder: a failed load is remembered until a save reads the sav
   const saves: PersistedAiSettings[] = [];
   let reload: PersistedAiSettings = { ...edited, version: 2, loadFailed: true };
   const holder = createAiSettingsHolder(
-    { setProviders() {}, setPermissions() {}, setSubagents: (s) => void taken.push(s) },
+    {
+      setProviders() {},
+      setPermissions() {},
+      setSubagents: (s) => void taken.push(s),
+      setMcpServers() {},
+    },
     { load: async () => reload, save: async (s) => void saves.push(s) }
   );
   // Loaded, but the file couldn't be read: defaults stand in.
@@ -144,7 +160,7 @@ test('save_keeping_subagents: the real load failing saves nothing', async () => 
 test('ai_settings_holder: each save goes with the copy it was made of, for the backend to save it onto the settings as they are now', async () => {
   const saves: { settings: PersistedAiSettings; base?: PersistedAiSettings }[] = [];
   const holder = createAiSettingsHolder(
-    { setProviders() {}, setPermissions() {}, setSubagents() {} },
+    { setProviders() {}, setPermissions() {}, setSubagents() {}, setMcpServers() {} },
     {
       load: async () => ({ ...edited, version: 2 }),
       save: async (settings, base) => void saves.push({ settings, base }),

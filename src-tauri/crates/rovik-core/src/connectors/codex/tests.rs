@@ -32,6 +32,7 @@ fn turn(prompt: &str) -> Turn {
         denied: Default::default(),
         allowed_hosts_on: false,
         steering: None,
+        mcp: None,
     }
 }
 
@@ -138,6 +139,35 @@ fn hooks_follow_the_run_codex_s_asks_only_under_rovik_s_permissions() {
     assert!(hook_events(&settings(json!({})), &turn("go")).is_empty());
 }
 
+/// mcp-plan.md, Q09: with its own tools, Codex is served Rovik's `mcp`
+/// tool on a server of its own, called directly (not from code, nor found by
+/// a search first), and never Codex's to ask about: Rovik approves inside
+/// the call.
+#[tokio::test]
+async fn with_its_own_tools_codex_is_served_rovik_s_mcp_tool_to_call_directly() {
+    let server = McpServer::start(&[], "", None).await.unwrap().0;
+    let served = [Served {
+        name: crate::connectors::mcp::SERVER_NAME,
+        server: &server,
+        token_var: TOOLS_TOKEN,
+        omit: DIRECT_ONLY,
+    }];
+    let args = args_for(&settings(json!({})), &turn("go"), &served, &[], "");
+    let rovik = setting(&args, "mcp_servers.rovik").unwrap();
+    assert!(
+        rovik.contains("omit_tools_from=[\"code_mode\",\"deferred\"]"),
+        "{rovik}"
+    );
+    assert!(
+        rovik.contains("default_tools_approval_mode=\"approve\""),
+        "{rovik}"
+    );
+    assert!(
+        rovik.contains("bearer_token_env_var=\"ROVIK_MCP_TOKEN\""),
+        "{rovik}"
+    );
+}
+
 #[tokio::test]
 async fn the_app_server_s_arguments_name_rovik_s_servers_and_the_settings_own_last() {
     let server = McpServer::start(&[], "", None).await.unwrap().0;
@@ -146,7 +176,7 @@ async fn the_app_server_s_arguments_name_rovik_s_servers_and_the_settings_own_la
         name: hooks::SERVER,
         server: &server,
         token_var: HOOKS_TOKEN,
-        hidden: true,
+        omit: HIDDEN,
     }];
     let args = args_for(&s, &turn("go"), &served, &[Event::PreToolUse], "");
     assert_eq!(args[0], "app-server");

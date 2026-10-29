@@ -89,6 +89,7 @@ test('a row’s host leaves out what the list adds', () => {
     chats: 2,
     passwordSaved: true,
     passphraseSaved: false,
+    serves: [],
   };
   assert.deepEqual(Object.keys(hostOf(row)).sort(), Object.keys(emptyHost()).sort());
   assert.equal(hostOf(row).id, 'h1');

@@ -606,6 +606,17 @@ impl Run {
                 .add_tool_result(&tc.id, content, None, Vec::new())
                 .await;
         }
+        // Q05 (mcp-plan.md): a tool's description, or a call that can't be
+        // made (a name that isn't listed, a tool the mode doesn't call), is
+        // answered at once: no approval is asked for it.
+        if tc.name == super::mcp_tool::NAME {
+            let read_only = self.mcp_read_only();
+            if let super::mcp_tool::Prepared::Answer { content, error } =
+                super::mcp_tool::prepare(self.mcp.as_deref(), &args, read_only)
+            {
+                return self.answer_unrun(tc, content, error, None).await;
+            }
+        }
         match tc.name.as_str() {
             // The plan (Plan mode): checked, then saved; problems go back to the model.
             "submit_plan" => {
@@ -803,6 +814,24 @@ impl Run {
                 content: refusal.clone(),
                 ..Default::default()
             },
+            None if tool_name == super::mcp_tool::NAME => match self.mcp.clone() {
+                Some(catalog) => {
+                    let args = permissions::parse_args(&args_json);
+                    super::mcp_tool::call(
+                        &self.core,
+                        &catalog,
+                        &args,
+                        self.mcp_read_only(),
+                        &self.stop,
+                        self.profile.vision,
+                    )
+                    .await
+                }
+                None => tools::ToolResult {
+                    content: "Error: no MCP server is set up for this chat.".into(),
+                    ..Default::default()
+                },
+            },
             None => {
                 let ctx = self.call_context(&tc.id);
                 tools::execute(
@@ -948,21 +977,26 @@ impl Run {
         if !matches!(verdict, GuardVerdict::Ok) {
             result.content.push_str(verdict.note().unwrap_or(""));
         }
-        // A command's result that shows only part of its output: the whole
-        // of it is saved for the agent to read, not run again, named after
-        // the call, so no name is ever reused for other output. Said after
-        // the guard saw the result, so a repeated command, whose saved copy
-        // has a new name, still reads as a repeat. In its own folder,
-        // earlier runs' output goes first (P4.7); a subagent's goes to its
-        // lead's, which the lead's run clears.
+        // A command's result that shows only part of its output, or an MCP
+        // tool's (mcp-plan.md, Q05): the whole of it is saved for the agent
+        // to read, not run again, named after the call, so no name is ever
+        // reused for other output. Said after the guard saw the result, so
+        // a repeated command, whose saved copy has a new name, still reads
+        // as a repeat. In its own folder, earlier runs' output goes first
+        // (P4.7); a subagent's goes to its lead's, which the lead's run
+        // clears.
         if let Some(whole) = result.whole_output.take() {
             let owner = self.checks_owner();
             if owner == self.dialog_id {
                 self.clean_earlier_output();
             }
-            match super::check_output::save(&owner, "bash", &tc.id, &whole) {
+            let (stem, again) = match tc.name.as_str() {
+                super::mcp_tool::NAME => ("mcp", "calling the tool again"),
+                _ => ("bash", "running the command again"),
+            };
+            match super::check_output::save(&owner, stem, &tc.id, &whole) {
                 Some(path) => result.content.push_str(&format!(
-                    "\n(All of its output is saved as `{path}`: read it there by line range instead of running the command again.)"
+                    "\n(All of its output is saved as `{path}`: read it there by line range instead of {again}.)"
                 )),
                 None => eprintln!("rovik: couldn't save a command's whole output for chat {owner}"),
             }
@@ -1169,7 +1203,16 @@ impl Run {
             },
         };
 
-        let summary = permissions::describe_tool_call(&tc.name, &tc.arguments);
+        let mut summary = permissions::describe_tool_call(&tc.name, &tc.arguments);
+        // A call to a server of the project's own files says so (Q12,
+        // mcp-plan-2.md): its tools are the project's, not the user's.
+        if tc.name == super::mcp_tool::NAME {
+            let tool = permissions::str_arg(&tc.arguments, "tool");
+            let whose = (self.mcp.as_deref())
+                .zip(tool)
+                .and_then(|(c, t)| c.whose(&t));
+            summary.push_str(whose.as_deref().unwrap_or_default());
+        }
         let command = (tc.name == "bash")
             .then(|| permissions::str_arg(&tc.arguments, "command"))
             .flatten();
@@ -1499,6 +1542,49 @@ impl Run {
             },
         };
         let _ = ask.reply.send(answer);
+    }
+
+    /// A connector's harness that runs its own tools calls the `mcp` tool
+    /// Rovik serves it (Agent mode, mcp-plan.md Q09): answered as the run's
+    /// own `mcp` call is. A description, or a call that can't be made, at
+    /// once; a call under the MCP rule (`authorize`: refused, run, or put to
+    /// the user or the AI reviewer), then run, its result the harness's.
+    pub(super) async fn answer_mcp_call(&self, call: crate::connectors::mcp::McpCall) {
+        use crate::connectors::mcp::McpReply;
+        let args = call.arguments.as_object().cloned().unwrap_or_default();
+        let read_only = self.mcp_read_only();
+        let reply = match super::mcp_tool::prepare(self.mcp.as_deref(), &args, read_only) {
+            super::mcp_tool::Prepared::Answer { content, error } => McpReply {
+                text: content,
+                is_error: error,
+            },
+            super::mcp_tool::Prepared::Call => {
+                let tc = ToolCall {
+                    id: call.tool_use_id.clone().unwrap_or_default(),
+                    name: super::mcp_tool::NAME.into(),
+                    arguments: Value::Object(args.clone()).to_string(),
+                    extra_content: None,
+                };
+                match (self.authorize(&tc, None).await.refusal, self.mcp.clone()) {
+                    (Some(reason), _) => McpReply::error(reason),
+                    (None, None) => {
+                        McpReply::error("Error: no MCP server is set up for this chat.")
+                    }
+                    (None, Some(catalog)) => {
+                        // Text alone: the harness's model gets no attachments.
+                        let result = super::mcp_tool::call(
+                            &self.core, &catalog, &args, read_only, &self.stop, false,
+                        )
+                        .await;
+                        McpReply {
+                            is_error: result.content.starts_with("Error"),
+                            text: result.content,
+                        }
+                    }
+                }
+            }
+        };
+        let _ = call.reply.send(reply);
     }
 
     /// A connector's harness reports a command its own shell runs, before

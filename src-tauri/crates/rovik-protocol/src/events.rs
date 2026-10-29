@@ -343,6 +343,18 @@ pub enum AgentEvent {
         child_dialog_id: String,
         status: String,
     },
+    /// The run's project sets up MCP servers in its own files that wait
+    /// for the user (mcp-plan-2.md, Q12): not allowed as they are now, or
+    /// a variable of theirs without a value. It ran without them, and the
+    /// chat asks the user. `left_out` says what the files have that isn't
+    /// used, and why.
+    McpServersAwaiting {
+        dialog_id: String,
+        project_id: String,
+        servers: Vec<crate::mcp::ProjectServer>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        left_out: Vec<String>,
+    },
 }
 
 impl AgentEvent {
@@ -371,7 +383,8 @@ impl AgentEvent {
             | AgentEvent::BackgroundTasks { dialog_id, .. }
             | AgentEvent::SubagentStarted { dialog_id, .. }
             | AgentEvent::SubagentProgress { dialog_id, .. }
-            | AgentEvent::SubagentEnded { dialog_id, .. } => Some(dialog_id),
+            | AgentEvent::SubagentEnded { dialog_id, .. }
+            | AgentEvent::McpServersAwaiting { dialog_id, .. } => Some(dialog_id),
         }
     }
 }

@@ -29,6 +29,7 @@ import {
   Switch,
 } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
+import { SecretsUnlock } from './SettingsControls';
 import HostAutonomy from './HostAutonomy';
 import HostTasks from './HostTasks';
 import { onCloudEvent, refreshHosts } from '../lib/cloud';
@@ -65,7 +66,6 @@ import {
   testVerdict,
   trustBuild,
   trustKey,
-  unlockSecrets,
   upgradeHost,
   type ApprovalPolicy,
   type AuthKind,
@@ -208,19 +208,6 @@ function HostList(props: {
     const s = store();
     return s?.kind === 'file' && !s.unlocked;
   };
-  const [passphrase, setPassphrase] = createSignal('');
-  const [unlockError, setUnlockError] = createSignal<string | null>(null);
-
-  async function unlock() {
-    setUnlockError(null);
-    try {
-      await unlockSecrets(passphrase());
-      setPassphrase('');
-      await props.onUnlocked();
-    } catch (err) {
-      setUnlockError(String(err));
-    }
-  }
 
   return (
     <>
@@ -245,28 +232,7 @@ function HostList(props: {
             first time, the passphrase you choose here makes the file. Unlock it here again each
             time Rovik starts.
           </p>
-          <div class="host-unlock">
-            <input
-              type="password"
-              value={passphrase()}
-              onInput={(e) => setPassphrase(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && passphrase()) void unlock();
-              }}
-              placeholder="Passphrase"
-              aria-label="passphrase of the secrets file"
-            />
-            <button
-              class="chat-action-button primary"
-              disabled={!passphrase()}
-              onClick={() => void unlock()}
-            >
-              Unlock
-            </button>
-          </div>
-          <Show when={unlockError()}>
-            <p class="settings-hint setting-explain warning">{unlockError()}</p>
-          </Show>
+          <SecretsUnlock onUnlocked={props.onUnlocked} />
         </Show>
       </section>
       <Show when={props.list} fallback={<p class="settings-hint">Loading…</p>}>
@@ -662,7 +628,7 @@ function HostPage(props: {
     const ok = await confirmDialog({
       title: 'Remove keys from this server?',
       message:
-        'The server forgets every API key it keeps. Runs going now finish with theirs, and the next chat you start there brings its key again.',
+        'The server forgets every API key and MCP server’s secret it keeps, and stops the MCP servers running there. Runs going now finish with their API keys, and the next chat you start there brings its keys and secrets again.',
       confirmLabel: 'Remove keys',
       danger: true,
     });
@@ -683,6 +649,9 @@ function HostPage(props: {
       setDetailsError(String(err));
     }
   }
+
+  /** How many MCP servers the server keeps secrets for: none from one that can't say. */
+  const mcpSecrets = () => details()?.mcpSecrets ?? 0;
 
   const verdict = () => testVerdict(steps(), testing());
   const admins = () => details()?.info.install?.admins ?? [];
@@ -1012,9 +981,9 @@ function HostPage(props: {
               <section class="settings-section host-keys">
                 <div class="settings-section-title">API keys on this server</div>
                 <p class="settings-hint">
-                  Your API keys are stored in your account on this server, so chats there run while
-                  this computer is away. The agent’s commands there and anyone with root on it can
-                  read them.
+                  Your API keys and MCP servers’ secrets are stored in your account on this server,
+                  so chats there run while this computer is away. The agent’s commands there and
+                  anyone with root on it can read them.
                 </p>
                 <Show
                   when={d().keys}
@@ -1025,10 +994,7 @@ function HostPage(props: {
                   {(keys) => (
                     <>
                       <ul class="host-keys-list">
-                        <For
-                          each={keys()}
-                          fallback={<li class="settings-hint">No keys are kept there.</li>}
-                        >
+                        <For each={keys()}>
                           {(key) => (
                             <li>
                               <span class="host-key-provider">{key.provider}</span>{' '}
@@ -1036,8 +1002,17 @@ function HostPage(props: {
                             </li>
                           )}
                         </For>
+                        <Show when={mcpSecrets() > 0}>
+                          <li>
+                            <span class="host-key-provider">MCP servers’ secrets</span>{' '}
+                            <span class="profile-row-sub">{plural(mcpSecrets(), 'server')}</span>
+                          </li>
+                        </Show>
+                        <Show when={keys().length === 0 && mcpSecrets() === 0}>
+                          <li class="settings-hint">No keys are kept there.</li>
+                        </Show>
                       </ul>
-                      <Show when={keys().length > 0}>
+                      <Show when={keys().length > 0 || mcpSecrets() > 0}>
                         <button class="danger" onClick={() => void forgetKeys()}>
                           Remove keys from this server
                         </button>

@@ -89,6 +89,11 @@ pub enum Event {
     /// which the app forwarded for a page of the chat's (`PageWanted`): it
     /// stops forwarding its own.
     PageClosed { dialog_id: String, port: u16 },
+    /// A run or Test on the host needs an MCP server on the loopback of
+    /// the user's computer, which the host can't reach (mcp-plan-2.md,
+    /// Q11): the app takes the POST (`McpRelayTake` with `id`), makes it,
+    /// and sends its answer back as it comes (`McpRelayPart`).
+    McpRelayWanted { id: String },
 }
 
 /// Why a request failed (4.1). The app turns it into the error text its

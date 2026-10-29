@@ -240,6 +240,11 @@ test('the dialog with “wait for me”: what waits, CLM becoming trimming, the 
   assert.match(text(), /“Redo sequentially” for its parallel group won’t be offered/);
   assert.match(text(), /assets\/big\.bin \(120 MB\) goes up with the project\./);
   assert.ok(text().includes(KEYS_NOTICE));
+  assert.ok(
+    text().includes(
+      'Your API keys and MCP servers’ secrets are stored in your account on this server, so chats there run while this computer is away. The agent’s commands there and anyone with root on it can read them.'
+    )
+  );
   assert.equal(button('Move')?.disabled, false);
 });
 

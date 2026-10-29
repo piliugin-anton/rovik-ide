@@ -1,6 +1,7 @@
 // Component tests: Settings → Permissions & approval, its Network section:
 // the hosts the agent may reach, listed only while the list is on, each
-// entry kept as the backend reads it, once. Run with: npm test
+// entry kept as the backend reads it, once; and the MCP tool calls' rule.
+// Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -89,4 +90,17 @@ test('what is not a host is refused with why, until the entry changes', () => {
   input.value = 'example.com';
   input.dispatchEvent(new Event('input', { bubbles: true }));
   assert.equal(root.querySelector('[role="alert"]'), null);
+});
+
+test('MCP tool calls have their own rule, asking you by default', () => {
+  const { root, current } = page();
+  const group = 'Approval for each MCP tool call';
+  const selected = () =>
+    root.querySelector(`[aria-label="${group}"] button[aria-checked="true"]`)?.textContent;
+  assert.equal(selected(), 'By you');
+  assert.match(root.textContent!, /Every MCP tool call waits for you to allow or deny it\./);
+  choose(root, group, 'Off');
+  assert.deepEqual(current().mcpApproval, { required: false, by: 'user' });
+  assert.match(root.textContent!, /MCP tool calls run right away\./);
+  assert.deepEqual(current().toolApproval, DEFAULT_PERMISSIONS.toolApproval, 'the others stay');
 });

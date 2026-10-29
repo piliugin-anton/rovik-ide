@@ -53,6 +53,8 @@ import {
   type ChatMode,
 } from '../lib/chatMode';
 import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
+import { awaitingServersIn } from '../lib/projectMcpServers';
+import ProjectMcpCard from './ProjectMcpCard';
 import { notify } from '../lib/notifications';
 import { formatBytes, plural } from '../lib/textUtils';
 import ModeSelector from './ModeSelector';
@@ -192,6 +194,7 @@ import {
   resolveSubagentConfig,
   type SubagentSettings,
 } from '../lib/subagentSettings';
+import type { McpServer } from '../lib/mcpServers';
 import { parseComposerImage, type ComposerImage } from '../lib/composerImages';
 import {
   ATTACH_ACCEPT,
@@ -279,11 +282,15 @@ export default function ChatPanel(props: ChatProps) {
   const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
   const [subagentSettings, setSubagentSettings] =
     createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
+  // The Settings dialog edits them; kept here for the runs, and saved as
+  // loaded with the panel's own changes.
+  const [mcpServers, setMcpServers] = createSignal<McpServer[]>([]);
   // P5.7: after a failed load, `subagentSettings` are defaults, not what's saved.
   const aiSettings = createAiSettingsHolder({
     setProviders,
     setPermissions,
     setSubagents: setSubagentSettings,
+    setMcpServers,
   });
 
   // Chat list page + open chats (the app's, kept while the panel is away);
@@ -2908,6 +2915,7 @@ export default function ChatPanel(props: ChatProps) {
         active: nextSelection,
         permissions: nextPermissions,
         subagents: subagentSettings(),
+        mcpServers: mcpServers(),
       })
       .catch((err) => console.error('Failed to save AI settings:', err));
   }
@@ -3011,6 +3019,7 @@ export default function ChatPanel(props: ChatProps) {
     approvalProfiles: approvalProfiles(permissions()),
     subagents: resolveSubagentConfig(subagentSettings(), providers(), resolveProfile),
     autopilot: autopilotConfig(subagentSettings().autopilot),
+    mcpServers: mcpServers(),
   });
   createEffect(() => configureAgent(agentConfig()));
 
@@ -3351,6 +3360,12 @@ export default function ChatPanel(props: ChatProps) {
   const waitingQuestion = () => {
     const id = store.state.activeId;
     return id ? pendingQuestionsIn(id) : undefined;
+  };
+
+  /** The open chat's project servers that wait for the user (Q12). */
+  const awaitingMcp = () => {
+    const id = store.state.activeId;
+    return id ? awaitingServersIn(id) : undefined;
   };
 
   /** The finished plan an "Implement this plan" button goes under, if any. */
@@ -4614,6 +4629,16 @@ export default function ChatPanel(props: ChatProps) {
       {/* The agent's questions, one at a time, above the input. */}
       <Show when={waitingQuestion()} keyed>
         {(pending) => <QuestionPanel pending={pending} />}
+      </Show>
+      {/* The project's own MCP servers, waiting for the user to allow them. */}
+      <Show when={awaitingMcp()} keyed>
+        {(awaiting) => (
+          <ProjectMcpCard
+            dialogId={store.state.activeId!}
+            awaiting={awaiting}
+            root={props.projectId() === awaiting.projectId ? props.rootPath() : null}
+          />
+        )}
       </Show>
       {/* What this request's subagents and connectors used, as they reported it. */}
       <Show when={usageLabel(runUsage(messages()))}>

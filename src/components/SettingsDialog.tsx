@@ -3,8 +3,8 @@
 // The app-wide Settings dialog (lib/appSettings.ts opens it): a menu of
 // pages, each about one thing (components/SettingsMenu.tsx), and the pages.
 // Every setting applies as soon as it's changed: the editor's live
-// (lib/editorSettings.ts); the AI settings (providers, permissions,
-// subagents, Autopilot) through lib/aiSettingsStore.ts, which saves them
+// (lib/editorSettings.ts); the AI settings (providers, MCP servers,
+// permissions, subagents, Autopilot) through lib/aiSettingsStore.ts, which saves them
 // at once and tells the chat panel; the rest (project checks, heavy
 // commands, virtual files, network, cloud hosts) by the backend, and
 // updates' switch in the windows' shared state. There's nothing to save on
@@ -16,6 +16,7 @@ import { kindsWithoutModel } from '../lib/subagentSettings';
 import {
   aiAutopilot,
   aiChatModel,
+  aiMcpServers,
   aiPermissions,
   aiProviders,
   aiSettingsLoadFailed,
@@ -23,6 +24,7 @@ import {
   aiSubagents,
   reloadAiSettings,
   updateAutopilot,
+  updateMcpServers,
   updatePermissions,
   updateProviders,
   updateSubagents,
@@ -31,6 +33,7 @@ import SettingsMenu from './SettingsMenu';
 import EditorSettings from './EditorSettings';
 import ModelProvidersSettings, { type ProvidersSettingsController } from './ModelProvidersSettings';
 import ConnectorsSettings, { type ConnectorsSettingsController } from './ConnectorsSettings';
+import McpServersSettings, { type McpServersSettingsController } from './McpServersSettings';
 import PermissionsSettings from './PermissionsSettings';
 import AgentRunsSettings from './AgentRunsSettings';
 import SubagentSettings from './SubagentSettings';
@@ -48,6 +51,7 @@ import UpdatesSettings from './UpdatesSettings';
 const AI_PAGES: SettingsPage[] = [
   'providers',
   'connectors',
+  'mcp',
   'permissions',
   'agent',
   'subagents',
@@ -67,6 +71,7 @@ export default function SettingsDialog(props: SettingsDialogProps) {
   const [page, setPage] = createSignal<SettingsPage>(props.initialPage ?? 'menu');
   const [providersApi, setProvidersApi] = createSignal<ProvidersSettingsController | null>(null);
   const [connectorsApi, setConnectorsApi] = createSignal<ConnectorsSettingsController | null>(null);
+  const [mcpApi, setMcpApi] = createSignal<McpServersSettingsController | null>(null);
   const [hostsApi, setHostsApi] = createSignal<HostsSettingsController | null>(null);
 
   // The saved settings as they are now: the chat panel may have changed
@@ -77,6 +82,7 @@ export default function SettingsDialog(props: SettingsDialogProps) {
   const title = () => {
     if (page() === 'providers') return providersApi()?.draftTitle() ?? PAGE_TITLE.providers;
     if (page() === 'connectors') return connectorsApi()?.draftTitle() ?? PAGE_TITLE.connectors;
+    if (page() === 'mcp') return mcpApi()?.draftTitle() ?? PAGE_TITLE.mcp;
     if (page() === 'hosts') return hostsApi()?.title() ?? PAGE_TITLE.hosts;
     return PAGE_TITLE[page()];
   };
@@ -84,6 +90,7 @@ export default function SettingsDialog(props: SettingsDialogProps) {
   const backLabel = () => {
     if (page() === 'providers' && providersApi()?.draftTitle() != null) return 'Model providers';
     if (page() === 'connectors' && connectorsApi()?.draftTitle() != null) return 'Connectors';
+    if (page() === 'mcp' && mcpApi()?.draftTitle() != null) return 'MCP servers';
     if (page() === 'hosts' && hostsApi()?.title() != null) return 'Cloud hosts';
     return 'Settings';
   };
@@ -98,6 +105,11 @@ export default function SettingsDialog(props: SettingsDialogProps) {
     const connectors = connectorsApi();
     if (page() === 'connectors' && connectors?.draftTitle() != null) {
       connectors.closeDraft();
+      return;
+    }
+    const mcp = mcpApi();
+    if (page() === 'mcp' && mcp?.draftTitle() != null) {
+      mcp.closeDraft();
       return;
     }
     const hosts = hostsApi();
@@ -183,6 +195,15 @@ export default function SettingsDialog(props: SettingsDialogProps) {
                 providers={aiProviders()}
                 onChange={updateProviders}
                 controller={setConnectorsApi}
+              />
+            </Match>
+            <Match when={page() === 'mcp'}>
+              <McpServersSettings
+                servers={aiMcpServers()}
+                onChange={updateMcpServers}
+                rootPath={props.rootPath ?? null}
+                onOpenPage={setPage}
+                controller={setMcpApi}
               />
             </Match>
             <Match when={page() === 'permissions'}>

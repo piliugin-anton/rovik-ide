@@ -3,7 +3,7 @@
 // Moving a chat to a host, or back (U02, 6.8). Before a move there, the
 // preflight says what moves, what will wait for you there (the permissions
 // with the host's approval policy), whether its CLM context becomes
-// trimming, that the server keeps your API keys, and what the project's
+// trimming, that the server keeps your API keys and MCP servers' secrets, and what the project's
 // push carries that you'd want to know; a host whose Rovik is too old to
 // take chats is upgraded for everyone from here by its administrators
 // (R02). Then the move's steps as `cloud-event` tells them (lib/cloud.ts),
@@ -26,7 +26,7 @@ import { formatBytes, plural } from '../lib/textUtils';
 
 /** What the move dialog says of a server's keeping your keys (design §6). */
 export const KEYS_NOTICE =
-  'Your API keys are stored in your account on this server, so chats there run while this computer is away. The agent’s commands there and anyone with root on it can read them.';
+  'Your API keys and MCP servers’ secrets are stored in your account on this server, so chats there run while this computer is away. The agent’s commands there and anyone with root on it can read them.';
 
 export default function MoveChatDialog(props: {
   dialogId: string;

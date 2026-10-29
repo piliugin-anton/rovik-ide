@@ -72,6 +72,7 @@ fn start(dialog: &str, key: &str, config: Option<AgentConfig>) -> StartRequest {
         config,
         isolate: None,
         project_settings: None,
+        mcp_secrets: Default::default(),
     }
 }
 
@@ -468,4 +469,275 @@ fn a_project_is_its_computers_alone() {
     }
     store.ensure_project(&old, "c2", None, None).unwrap();
     assert!(store.check_project_owner("c1", "p3").is_err());
+}
+
+/// A configuration with MCP server s1, a command with the secret env var
+/// TOKEN, on or off.
+fn with_mcp(enabled: bool) -> AgentConfig {
+    use rovik_protocol::mcp::{McpServer, McpTransport, McpValue};
+    AgentConfig {
+        mcp_servers: vec![McpServer {
+            id: "s1".into(),
+            name: "s1".into(),
+            enabled,
+            transport: McpTransport::Command {
+                command: "srv".into(),
+                args: Vec::new(),
+                env: vec![McpValue {
+                    name: "TOKEN".into(),
+                    value: String::new(),
+                    secret: true,
+                }],
+            },
+            disabled_tools: Vec::new(),
+        }],
+        ..AgentConfig::default()
+    }
+}
+
+/// A start whose configuration has s1 on, bringing its TOKEN.
+fn mcp_start(dialog: &str, value: &str) -> StartRequest {
+    let mut started = start(dialog, "", Some(with_mcp(true)));
+    let secrets = [(
+        "env/TOKEN".to_string(),
+        rovik_protocol::Secret(value.into()),
+    )];
+    started.mcp_secrets = [("s1".to_string(), secrets.into_iter().collect())].into();
+    started
+}
+
+#[test]
+fn a_start_s_mcp_secrets_go_to_keys_json_alone() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &mcp_start("chat", "t0p")).unwrap();
+    let keys = fs::read_to_string(dir.0.join("keys.json")).unwrap();
+    assert!(keys.contains("t0p"), "{keys}");
+    for (path, text) in others(&dir.0) {
+        assert!(!text.contains("t0p"), "in {path:?}");
+    }
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("t0p".into()));
+    assert_eq!(store.mcp_value("s1", "env/OTHER"), None);
+    assert_eq!(store.mcp_value("s2", "env/TOKEN"), None);
+}
+
+#[test]
+fn a_changed_mcp_secret_is_reported_and_an_unchanged_one_is_not() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let started = |value| store.started("laptop", &mcp_start("chat", value)).unwrap();
+    assert_eq!(started("a"), ["s1"]);
+    assert!(started("a").is_empty());
+    assert_eq!(started("b"), ["s1"]);
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("b".into()));
+}
+
+#[test]
+fn removing_every_key_removes_mcp_secrets_and_removing_a_provider_s_does_not() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let mut started = mcp_start("chat", "t0p");
+    started.profile = model("openai::gpt", OPENAI, "sk-1");
+    store.started("laptop", &started).unwrap();
+    assert_eq!(store.remove_keys(Some("openai")).unwrap(), 1);
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("t0p".into()));
+    store.started("laptop", &started).unwrap();
+    assert_eq!(store.mcp_secrets_kept(), 1);
+    // The provider's key and the one server count one each.
+    assert_eq!(store.remove_keys(None).unwrap(), 2);
+    assert_eq!(store.mcp_secrets_kept(), 0);
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), None);
+    let keys = fs::read_to_string(dir.0.join("keys.json")).unwrap();
+    assert!(!keys.contains("t0p"), "{keys}");
+}
+
+#[test]
+fn a_store_from_before_mcp_reads_with_no_mcp_secrets() {
+    let dir = temp_dir();
+    let old =
+        r#"{"providers":{"openai":{"baseUrl":"https://api.openai.example/v1","apiKey":"sk-1"}}}"#;
+    fs::write(dir.0.join("keys.json"), old).unwrap();
+    let store = Store::open(&dir.0).unwrap();
+    assert_eq!(store.keys().len(), 1);
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), None);
+}
+
+#[test]
+fn an_empty_mcp_secret_map_clears_the_server_s_and_is_reported_changed() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &mcp_start("chat", "t0p")).unwrap();
+    let mut cleared = mcp_start("chat", "");
+    cleared.mcp_secrets = [("s1".to_string(), Default::default())].into();
+    assert_eq!(store.started("laptop", &cleared).unwrap(), ["s1"]);
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), None);
+    let keys = fs::read_to_string(dir.0.join("keys.json")).unwrap();
+    assert!(!keys.contains("t0p"), "{keys}");
+    // Cleared already: nothing changes.
+    assert!(store.started("laptop", &cleared).unwrap().is_empty());
+}
+
+/// Q11: what the user takes back on this computer goes from the server
+/// too. A server the configuration no longer has, or has off, loses its
+/// secrets, and so does a secret field the server no longer has.
+#[test]
+fn a_server_removed_turned_off_or_without_the_field_loses_its_secrets() {
+    let without_field = {
+        let mut config = with_mcp(true);
+        let rovik_protocol::mcp::McpTransport::Command { env, .. } =
+            &mut config.mcp_servers[0].transport
+        else {
+            unreachable!()
+        };
+        env[0].secret = false;
+        config
+    };
+    for (taken_back, how) in [
+        (AgentConfig::default(), "removed"),
+        (with_mcp(false), "turned off"),
+        (without_field, "no longer secret"),
+    ] {
+        let dir = temp_dir();
+        let store = Store::open(&dir.0).unwrap();
+        store.started("laptop", &mcp_start("chat", "t0p")).unwrap();
+        assert_eq!(store.mcp_secrets_kept(), 1, "{how}");
+        store.configure("laptop", taken_back).unwrap();
+        assert_eq!(store.mcp_value("s1", "env/TOKEN"), None, "{how}");
+        assert_eq!(store.mcp_secrets_kept(), 0, "{how}");
+        let keys = fs::read_to_string(dir.0.join("keys.json")).unwrap();
+        assert!(!keys.contains("t0p"), "{how}: {keys}");
+    }
+}
+
+/// Q11: a server another computer still has keeps its secrets when one
+/// computer's configuration drops it.
+#[test]
+fn a_server_another_computer_has_keeps_its_secrets() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &mcp_start("chat", "t0p")).unwrap();
+    store.configure("desk", AgentConfig::default()).unwrap();
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("t0p".into()));
+    store.configure("laptop", AgentConfig::default()).unwrap();
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), None);
+}
+
+/// A start whose keys.json can't be written changes no key, here or in
+/// memory: the next start finds the change again, so a server never keeps
+/// running on a secret its start replaced.
+#[test]
+fn a_start_whose_keys_cant_be_written_changes_no_key() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &mcp_start("chat", "old")).unwrap();
+    // A folder where keys.json goes: its write fails, even for root.
+    fs::remove_file(dir.0.join("keys.json")).unwrap();
+    fs::create_dir(dir.0.join("keys.json")).unwrap();
+    assert!(store.started("laptop", &mcp_start("chat", "new")).is_err());
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("old".into()));
+    fs::remove_dir(dir.0.join("keys.json")).unwrap();
+    assert_eq!(
+        store.started("laptop", &mcp_start("chat", "new")).unwrap(),
+        ["s1"],
+        "still a change"
+    );
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("new".into()));
+}
+
+/// Removing the keys when keys.json can't be written removes none: what
+/// the error leaves is what's saved.
+#[test]
+fn removing_keys_that_cant_be_written_removes_none() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let mut started = mcp_start("chat", "t0p");
+    started.profile = model("openai::gpt", OPENAI, "sk-1");
+    store.started("laptop", &started).unwrap();
+    fs::remove_file(dir.0.join("keys.json")).unwrap();
+    fs::create_dir(dir.0.join("keys.json")).unwrap();
+    assert!(store.remove_keys(None).is_err());
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("t0p".into()));
+    assert_eq!(store.keys().len(), 1, "the provider's key too");
+}
+
+/// Q12: a project's variables' values are no server's: a configuration
+/// without servers keeps them, and a start that brings none clears them.
+#[test]
+fn a_project_s_variables_stay_until_a_start_clears_them() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let mut started = start("chat", "", None);
+    let values = [(
+        "GITHUB_TOKEN".to_string(),
+        rovik_protocol::Secret("ghp_1".into()),
+    )];
+    started.mcp_secrets = [("project/p1".to_string(), values.into_iter().collect())].into();
+    assert_eq!(store.started("laptop", &started).unwrap(), ["project/p1"]);
+    store.configure("laptop", AgentConfig::default()).unwrap();
+    assert_eq!(
+        store.mcp_value("project/p1", "GITHUB_TOKEN"),
+        Some("ghp_1".into())
+    );
+    started.mcp_secrets = [("project/p1".to_string(), Default::default())].into();
+    store.started("laptop", &started).unwrap();
+    assert_eq!(store.mcp_value("project/p1", "GITHUB_TOKEN"), None);
+}
+
+/// Q14: a sign-in made for this server is kept in keys.json, by its
+/// server, until it's signed out or the keys are removed; a configuration
+/// without the server keeps it, unlike its secrets. The list of sign-ins
+/// says which want more scopes.
+#[test]
+fn a_sign_in_is_kept_until_signed_out_or_the_keys_go() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let grant = rovik_protocol::mcp::McpGrant {
+        issuer: "https://auth.example.com".into(),
+        token_endpoint: "https://auth.example.com/token".into(),
+        client_id: "c1".into(),
+        client_secret: None,
+        auth_method: "none".into(),
+        resource: "https://mcp.example.com/mcp".into(),
+        scope: String::new(),
+        access_token: rovik_protocol::Secret("at-1".into()),
+        refresh_token: Some(rovik_protocol::Secret("rt-1".into())),
+        expires_at: None,
+        wants: None,
+    };
+    store.set_mcp_grant("s1", Some(grant.clone())).unwrap();
+    store.configure("laptop", AgentConfig::default()).unwrap();
+    assert_eq!(store.mcp_grant("s1"), Some(grant.clone()));
+    let signed = |server: &str, wants: Option<&str>| SignedInServer {
+        server: server.into(),
+        wants: wants.map(str::to_string),
+    };
+    assert_eq!(store.mcp_signed_in(), [signed("s1", None)]);
+    let narrow = rovik_protocol::mcp::McpGrant {
+        wants: Some("read admin".into()),
+        ..grant.clone()
+    };
+    store.set_mcp_grant("s0", Some(narrow)).unwrap();
+    assert_eq!(
+        store.mcp_signed_in(),
+        [signed("s0", Some("read admin")), signed("s1", None)]
+    );
+    store.set_mcp_grant("s0", None).unwrap();
+    let again = Store::open(&dir.0).unwrap();
+    assert_eq!(again.mcp_grant("s1"), Some(grant.clone()), "in keys.json");
+    again.set_mcp_grant("s1", None).unwrap();
+    assert!(again.mcp_signed_in().is_empty());
+    again.set_mcp_grant("s1", Some(grant.clone())).unwrap();
+    again.set_mcp_grant("s2", Some(grant)).unwrap();
+    assert_eq!(
+        again.mcp_secrets_kept(),
+        2,
+        "a sign-in is a server's secret kept"
+    );
+    assert_eq!(
+        again.remove_keys(None).unwrap(),
+        2,
+        "each server counts once"
+    );
+    assert!(again.mcp_signed_in().is_empty());
+    assert_eq!(again.mcp_secrets_kept(), 0);
 }

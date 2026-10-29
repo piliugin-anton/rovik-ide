@@ -432,6 +432,23 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
         />
       </section>
 
+      {/* MCP tool calls (docs/design/mcp-plan.md, Q07) */}
+      <section class="settings-section">
+        <div class="settings-section-title">MCP tool calls</div>
+        <p class="settings-hint">
+          The tools of your MCP servers (Settings → MCP servers), and of the servers Claude Code and
+          Codex have of their own. They can change things outside the project: an issue, a message,
+          a database.
+        </p>
+
+        <ApprovalControl
+          rule={p().mcpApproval}
+          noun="MCP tool call"
+          offText="MCP tool calls run right away."
+          onChange={(mcpApproval) => patch({ mcpApproval })}
+        />
+      </section>
+
       {/* AI reviewer: only when something is approved by AI */}
       <Show when={usesAiReview(p())}>
         <section class="settings-section">

@@ -262,6 +262,31 @@ describe('describeGroup', () => {
   });
 });
 
+describe('mcp', () => {
+  it('names the server’s tools the agent called, or read about', () => {
+    const called = describeGroup(
+      'mcp',
+      [
+        { tool: 'docs.read', arguments: { path: 'intro' } },
+        { tool: 'docs.read', arguments: { path: 'setup' } },
+        { tool: 'github.create_issue', arguments: {} },
+      ],
+      false
+    );
+    assert.equal(called.verb, 'Called');
+    assert.deepEqual(
+      called.items.map((i) => i.text),
+      ['docs.read', 'github.create_issue']
+    );
+    const described = describeGroup('mcp', [{ tool: 'docs.read', describe: true }], true);
+    assert.equal(described.verb, 'Reading about');
+    assert.deepEqual(
+      described.items.map((i) => i.text),
+      ['docs.read']
+    );
+  });
+});
+
 describe('list_dir', () => {
   it('calls the project root by name, however the model wrote it', () => {
     const listed = describeGroup(

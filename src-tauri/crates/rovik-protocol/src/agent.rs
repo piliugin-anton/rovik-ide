@@ -5,10 +5,13 @@
 use crate::autopilot::AutopilotConfig;
 use crate::diff::Hunk;
 use crate::events::{ApprovalRequest, QuestionsRequest};
+use crate::mcp::McpServer;
 use crate::network::HostNetwork;
 use crate::permissions::Permissions;
 use crate::subagents::{ModelChoice, SubagentConfig};
+use crate::Secret;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// A model, resolved by the frontend from the providers in its settings.
 /// Its `Debug` leaves the key out, so a request that gets logged can't
@@ -119,6 +122,11 @@ pub struct AgentConfig {
     pub subagents: SubagentConfig,
     /// How Autopilot's tasks run: read only by chats in Autopilot.
     pub autopilot: AutopilotConfig,
+    /// The user's MCP servers, whose tools the agent calls with `mcp`
+    /// (docs/design/mcp-plan.md, Q01). A host runs them too, with the
+    /// secrets a start brings (`StartRequest::mcp_secrets`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<McpServer>,
     /// How a host connects for this computer's chats (Settings → Network,
     /// "Cloud hosts"). The app sets it for its hosts, the frontend never
     /// does; a host keeps the proxies' passwords in memory only.
@@ -255,6 +263,13 @@ pub struct StartRequest {
     /// them for the folder the run works in, as the app does for its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_settings: Option<serde_json::Value>,
+    /// The values of the MCP servers' secrets (a token in an env var or a
+    /// header) that a host's run needs, by server id and then by key
+    /// (`env/NAME`, `header/Name`). A server given replaces all its older
+    /// values on the host, which keeps them in keys.json (mcp-plan-2.md,
+    /// Q11): an empty map clears them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp_secrets: BTreeMap<String, BTreeMap<String, Secret>>,
 }
 
 /// A running subagent as its block shows it.
