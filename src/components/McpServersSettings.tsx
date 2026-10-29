@@ -358,10 +358,9 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
         fallback={
           <>
             <p class="settings-hint">
-              Servers whose tools the agent can call: GitHub, a database, your docs. Each runs on
-              this computer, a command Rovik starts or an address it connects to. The agent finds
-              their tools listed in its prompt and calls them with one tool, mcp, each call approved
-              as{' '}
+              Servers whose tools the agent can call: GitHub, a database, your docs. Each is a
+              command Rovik starts or an address it connects to. The agent finds their tools listed
+              in its prompt and calls them with one tool, mcp, each call approved as{' '}
               <button class="link-button" onClick={() => props.onOpenPage('permissions')}>
                 Permissions & approval
               </button>{' '}
@@ -369,8 +368,8 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
             </p>
             <p class="settings-hint">
               A server works outside Rovik’s file protections and the allowed hosts, and what its
-              tools say reaches the model: add only servers you trust. Chats on cloud hosts and in
-              WSL don’t use them.
+              tools say reaches the model: add only servers you trust. A chat on a cloud host or in
+              WSL runs them there, and its start sends their secrets.
             </p>
             <For
               each={props.servers}
