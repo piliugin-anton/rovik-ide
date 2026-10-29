@@ -602,10 +602,11 @@ function signIns(
         Object.entries(kept.hosts).map(([host, ids]) => [host, ids.map((s) => answered(host, s))])
       ),
     }),
+    // Every place: the app reaches each host, now or once it connects.
     mcp_sign_out: (args: any) => {
       kept.here = kept.here.filter((id) => id !== args.server);
-      for (const host of args.hosts as string[])
-        kept.hosts[host] = (kept.hosts[host] ?? []).filter((id) => id !== args.server);
+      for (const host of Object.keys(kept.hosts))
+        kept.hosts[host] = kept.hosts[host].filter((id) => id !== args.server);
       return null;
     },
   };
@@ -725,7 +726,7 @@ test('signing out forgets the sign-in of every place, once confirmed', async () 
   assert.deepEqual(sent('mcp_sign_out'), []);
   await click(button('Sign out'));
   await click(button('Sign out', document.querySelector('.confirm-dialog')!));
-  assert.deepEqual(sent('mcp_sign_out'), [{ server: 'linear-id', hosts: ['build'] }]);
+  assert.deepEqual(sent('mcp_sign_out'), [{ server: 'linear-id' }]);
   assert.deepEqual(said(serverRows()[0]), ['linear', 'https://mcp.linear.app/mcp']);
   assert.ok(button('Sign in'), 'offered again');
 });
@@ -753,10 +754,7 @@ test('removing a signed-in server signs it out first, and keeps it listed when t
   refuse = false;
   await click(button('Remove', serverRows()[0]));
   await click(button('Remove', document.querySelector('.confirm-dialog')!));
-  assert.deepEqual(sent('mcp_sign_out'), [
-    { server: 'linear-id', hosts: [] },
-    { server: 'linear-id', hosts: [] },
-  ]);
+  assert.deepEqual(sent('mcp_sign_out'), [{ server: 'linear-id' }, { server: 'linear-id' }]);
   assert.deepEqual(current(), []);
 });
 
@@ -833,6 +831,6 @@ test('a project’s own server that may ask for a sign-in is signed in from its 
     /linear won’t run in the chats of app until you allow it again, and it’s signed out\./
   );
   await click(button('Revoke', document.querySelector('.confirm-dialog')!));
-  assert.deepEqual(sent('mcp_sign_out'), [{ server: 'project/p1/h-l', hosts: [] }]);
+  assert.deepEqual(sent('mcp_sign_out'), [{ server: 'project/p1/h-l' }]);
   assert.deepEqual(rows().map(said), [['db', 'app · .vscode/mcp.json']]);
 });

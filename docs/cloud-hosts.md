@@ -402,7 +402,9 @@ freed.
   `McpSignedIn` says which servers are signed in, and the scopes each
   asked for that its sign-in lacks (a 403 `insufficient_scope`), which the
   next sign-in there asks for. A sign-in the server refuses is forgotten
-  there. Removing the keys forgets them. A host on an older Rovik doesn't say it keeps sign-ins
+  there. Removing the keys forgets them. The user's computer signs a
+  server out on each host; one that's away is owed it (kept with the
+  host in `cloud-hosts.json`) and told as it next connects. A host on an older Rovik doesn't say it keeps sign-ins
   (`mcp-sign-in`), and isn't offered one.
 - A URL server on the loopback (`localhost`, 127.0.0.0/8, `[::1]`) is on
   the user's computer, which a server can't reach: the daemon has the app

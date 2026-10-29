@@ -1,7 +1,8 @@
 // projectMcpServers.ts tests (node:test): what the chats ask of a
 // project's own MCP servers and when they stop asking, and the approvals
 // and values allowing and revoking keep (mcp-plan-2.md, Q12), an approval
-// saying whether its server may ask for a sign-in (Q14). The backend
+// saying whether its server may ask for a sign-in, and a changed server's
+// old sign-in forgotten (Q14). The backend
 // is answered here, with the project settings it keeps by folder and the
 // values it keeps in the keychain. Run with: npm test
 import { test } from 'node:test';
@@ -44,6 +45,7 @@ let projects: { id: string; name: string; path: string }[] = [];
         return;
       }
       if (cmd === 'chat_list_projects') return projects;
+      if (cmd === 'mcp_sign_out') return;
       throw new Error(`no app: ${cmd}`);
     },
   },
@@ -166,6 +168,34 @@ test('allowing keeps the values given in the keychain and the servers in the pro
     ],
   });
   assert.ok(!JSON.stringify(settings.get('/work/app')).includes('ghp_1'), 'never in the settings');
+});
+
+test('allowing a server whose entry changed forgets the sign-in made for it as it was', async () => {
+  const root = '/work/changed';
+  settings.set(root, {
+    mcpApprovals: [
+      { hash: 'h-linear-1', name: 'linear', file: '.mcp.json', signsIn: true },
+      { hash: 'h-local-1', name: 'local', file: '.mcp.json' },
+      { hash: 'h-docs', name: 'docs', file: '.mcp.json', signsIn: true },
+    ],
+  });
+  calls.length = 0;
+  const linear: ProjectServer = {
+    name: 'linear',
+    file: '.mcp.json',
+    hash: 'h-linear-2',
+    transport: { kind: 'url', url: 'https://mcp.linear.app/mcp', headers: [] },
+  };
+  await allowServers(root, 'p7', [linear, server('local', 'h-local-2')], {});
+  assert.deepEqual(
+    calls.filter((c) => c.cmd === 'mcp_sign_out').map((c) => c.args),
+    [{ server: 'project/p7/h-linear-1' }],
+    'local never signed in, and docs is unchanged'
+  );
+  assert.deepEqual(
+    approvalsIn(settings.get(root)).map((a) => a.hash),
+    ['h-docs', 'h-linear-2', 'h-local-2']
+  );
 });
 
 test('revoking forgets the values no other allowed server takes, and the list once empty', async () => {

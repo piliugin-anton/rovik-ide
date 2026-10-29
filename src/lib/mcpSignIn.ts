@@ -65,9 +65,12 @@ export function signInProjectServer(
   return invoke('mcp_project_sign_in', { root, project: projectId, hash, host: place });
 }
 
-/** Signs `server` (its id) out of every place: here, and on each of `hosts`. */
-export function signOut(server: string, hosts: string[]): Promise<void> {
-  return invoke('mcp_sign_out', { server, hosts });
+/**
+ * Signs `server` (its id) out of every place: here, and on each host, now
+ * or, for one that's away, once it next connects.
+ */
+export function signOut(server: string): Promise<void> {
+  return invoke('mcp_sign_out', { server });
 }
 
 /** The id a project's own server is signed in under: `project/<project>/<hash>`. */
@@ -170,7 +173,7 @@ export function createSignIns(
     async signOut(id) {
       let failed: string | null = null;
       try {
-        await signOut(id, on() ?? []);
+        await signOut(id);
       } catch (e) {
         failed = String(e);
       }

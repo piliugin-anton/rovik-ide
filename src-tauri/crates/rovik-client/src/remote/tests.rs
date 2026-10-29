@@ -1669,6 +1669,98 @@ async fn a_start_goes_when_a_secret_can_t_be_read() {
     assert!(!starts(&fake)[0].mcp_secrets.contains_key("s1"));
 }
 
+/// The sign-outs owed to hosts, kept in memory as the hosts' settings
+/// keep them (Q14).
+#[derive(Default)]
+struct Owed(Mutex<HashSet<(String, String)>>);
+
+impl OwedSignOuts for Owed {
+    fn owed(&self, host: &str) -> Vec<String> {
+        let kept = self.0.lock().unwrap();
+        let mut servers: Vec<String> = (kept.iter())
+            .filter(|(h, _)| h == host)
+            .map(|(_, server)| server.clone())
+            .collect();
+        servers.sort();
+        servers
+    }
+
+    fn set(&self, host: &str, server: &str, owed: bool) {
+        let key = (host.to_string(), server.to_string());
+        let mut kept = self.0.lock().unwrap();
+        match owed {
+            true => kept.insert(key),
+            false => kept.remove(&key),
+        };
+    }
+}
+
+/// The sign-ins and sign-outs `fake` was sent: each server, and whether
+/// with a sign-in.
+fn sign_ins(fake: &Fake) -> Vec<(String, bool)> {
+    let requests = fake.requests.lock().unwrap();
+    (requests.iter())
+        .filter_map(|r| match r {
+            Request::McpSignIn { server, grant } => Some((server.clone(), grant.is_some())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A fake host that keeps MCP sign-ins, or not.
+fn signing(keeps: bool) -> Fake {
+    let fake = Fake::default();
+    if keeps {
+        *fake.features.lock().unwrap() = vec![features::MCP_SIGN_IN.to_string()];
+    }
+    fake
+}
+
+/// Waits for `done`, a while at most.
+async fn until(done: impl Fn() -> bool) {
+    for _ in 0..400 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Q14 (mcp-plan-2.md): a sign-out goes at once to each connected host
+/// that keeps sign-ins, and is owed to one that's away, which is signed out
+/// as it next connects; one owed to a host that keeps none is dropped as
+/// it connects, and a sign-in or sign-out sent owes it no more.
+#[tokio::test]
+async fn a_sign_out_reaches_a_host_now_or_as_it_next_connects() {
+    let app = App::new();
+    let (remote, fake) = connected_to(&app, signing(true)).await;
+    let owed = Arc::new(Owed::default());
+    remote.on_sign_outs(owed.clone());
+    remote.connect("away", crate::testing::Nowhere, identity("away"));
+    remote.connect("older", crate::testing::Nowhere, identity("older"));
+    remote.mcp_sign_out("s1").await;
+    assert_eq!(sign_ins(&fake), [("s1".to_string(), false)]);
+    assert!(owed.owed(HOST).is_empty());
+    assert_eq!(owed.owed("away"), ["s1"]);
+    assert_eq!(owed.owed("older"), ["s1"]);
+
+    let back = signing(true);
+    remote.connect("away", back.clone(), identity("away"));
+    until(|| owed.owed("away").is_empty()).await;
+    assert_eq!(sign_ins(&back), [("s1".to_string(), false)]);
+    assert!(owed.owed("away").is_empty());
+
+    let older = signing(false);
+    remote.connect("older", older.clone(), identity("older"));
+    until(|| owed.owed("older").is_empty()).await;
+    assert!(owed.owed("older").is_empty());
+    assert!(sign_ins(&older).is_empty(), "it keeps no sign-ins");
+
+    owed.set(HOST, "s2", true);
+    remote.mcp_sign_in(HOST, "s2", None).await.unwrap();
+    assert!(owed.owed(HOST).is_empty());
+}
+
 #[tokio::test]
 async fn mcp_test_on_a_host_sends_typed_values_over_saved_ones() {
     let (_app, remote, fake) = mcp_host(Ok("old"), &[features::MCP]).await;

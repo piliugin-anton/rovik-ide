@@ -16,7 +16,7 @@ use crate::deploy::{self, Builds, DeployError, Layout, Removal, SetupRun};
 use crate::host_settings::{AuthKind, DeployState, Host, HostSettings, Transport};
 use crate::host_shell::{HostShell, ProcessConnector, ProcessShell};
 use crate::release::Releases;
-use crate::remote::{ApprovalPolicy, Remote};
+use crate::remote::{ApprovalPolicy, OwedSignOuts, Remote};
 use crate::secrets::{SecretName, SecretStore, StoreKind};
 use crate::ssh::{Answerer, Questions, Ssh, SshAuth, SshConnector, SshTarget};
 use crate::system_ssh::{Local, SystemSsh, SystemSshConnector};
@@ -412,13 +412,15 @@ impl HostsPage {
     }
 
     /// What a host's connection is made of: its settings but those that go
-    /// by `follow_policies` (and what only a deploy runs), and its token's
-    /// digest (a deploy makes a new one; the token itself isn't kept).
+    /// by `follow_policies` (and what only a deploy runs, and the sign-outs
+    /// owed to it), and its token's digest (a deploy makes a new one; the
+    /// token itself isn't kept).
     fn made_of(&self, host: &Host) -> (String, Option<String>) {
         let mut made = host.clone();
         made.approval_policy = ApprovalPolicy::default();
         made.autonomy = AutonomySettings::default();
         made.setup_script = None;
+        made.mcp_sign_outs = Vec::new();
         let token = matches!(host.deploy, DeployState::Deployed { .. })
             .then(|| {
                 self.secret(SecretName::Token {
@@ -786,11 +788,14 @@ impl HostsPage {
                     host.approval_policy = old.approval_policy;
                     // Changed through `set_autonomy` only (H01).
                     host.autonomy = old.autonomy.clone();
+                    // Kept by the Remote (`OwedSignOuts`), never the form.
+                    host.mcp_sign_outs = old.mcp_sign_outs.clone();
                 }
                 None => {
                     host.host_key = None;
                     host.deploy = DeployState::NotDeployed;
                     host.autonomy = AutonomySettings::default();
+                    host.mcp_sign_outs = Vec::new();
                 }
             }
             settings.put(host.clone());
@@ -1304,6 +1309,7 @@ impl HostsPage {
             autonomy: AutonomySettings::default(),
             deploy: DeployState::NotDeployed,
             setup_script: None,
+            mcp_sign_outs: Vec::new(),
         };
         self.save(host, HostSecrets::default())?;
         // The packages, as root in the distribution: best-effort, as the
@@ -1514,6 +1520,42 @@ fn missing(id: &str) -> String {
     format!("There's no host {id} here.")
 }
 
+/// The MCP sign-outs owed to hosts that were away (Q14), in each host's
+/// settings: the page's file, changed one change at a time across windows.
+impl OwedSignOuts for std::sync::Weak<HostsPage> {
+    fn owed(&self, host: &str) -> Vec<String> {
+        let found = self.upgrade().map(|page| page.host(host));
+        found
+            .and_then(Result::ok)
+            .map(|h| h.mcp_sign_outs)
+            .unwrap_or_default()
+    }
+
+    fn set(&self, host: &str, server: &str, owed: bool) {
+        let Some(page) = self.upgrade() else {
+            return;
+        };
+        let Ok(saved) = page.host(host) else {
+            if owed {
+                log::warn!("{host}: the sign-out of {server} owed to it can't be kept here");
+            }
+            return;
+        };
+        if saved.mcp_sign_outs.iter().any(|s| s == server) == owed {
+            return;
+        }
+        let changed = page.change_host(host, |h| {
+            h.mcp_sign_outs.retain(|s| s != server);
+            if owed {
+                h.mcp_sign_outs.push(server.to_string());
+            }
+        });
+        if let Err(e) = changed {
+            log::warn!("{host}: the MCP sign-out owed to it wasn't kept: {e}");
+        }
+    }
+}
+
 fn plural(n: usize, one: &str, many: &str) -> String {
     match n {
         1 => format!("1 {one}"),
@@ -1610,6 +1652,7 @@ mod tests {
             autonomy: AutonomySettings::default(),
             deploy: DeployState::NotDeployed,
             setup_script: None,
+            mcp_sign_outs: Vec::new(),
         }
     }
 
@@ -1747,6 +1790,36 @@ mod tests {
 
     /// H01: the block a host works on its own with, checked and kept; the
     /// host's form saved again leaves it as it was.
+    /// Q14: a sign-out owed to a host is kept in its settings, once, and
+    /// owed no more once sent; saving its form keeps it, and keeping it
+    /// never makes the host connect again.
+    #[tokio::test]
+    async fn a_sign_out_owed_to_a_host_is_kept_with_its_settings() {
+        let Setup {
+            app: _app, page, ..
+        } = setup();
+        let id = page.save(new_host(), password("pw")).unwrap().id;
+        let page = Arc::new(page);
+        let owed = Arc::downgrade(&page);
+        let made = page.made_of(&page.host(&id).unwrap());
+        owed.set(&id, "s1", true);
+        owed.set(&id, "s1", true);
+        assert_eq!(owed.owed(&id), ["s1"]);
+        assert_eq!(page.made_of(&page.host(&id).unwrap()), made);
+
+        let form = Host {
+            name: "Renamed".into(),
+            mcp_sign_outs: Vec::new(),
+            ..page.host(&id).unwrap()
+        };
+        page.save(form, HostSecrets::default()).unwrap();
+        assert_eq!(owed.owed(&id), ["s1"], "the form doesn't know of it");
+        owed.set(&id, "s1", false);
+        assert!(owed.owed(&id).is_empty());
+        owed.set("nobody", "s1", true);
+        assert!(owed.owed("nobody").is_empty(), "no such host here");
+    }
+
     #[tokio::test]
     async fn the_autonomy_block_is_checked_and_kept_by_the_hosts_page() {
         use rovik_protocol::autopilot::Delivery;
@@ -2066,6 +2139,7 @@ mod tests {
             autonomy: AutonomySettings::default(),
             deploy: DeployState::NotDeployed,
             setup_script: None,
+            mcp_sign_outs: Vec::new(),
         };
         assert_eq!(check(&host), Ok(()));
         host.key_path = None;

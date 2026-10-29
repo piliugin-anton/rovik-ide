@@ -278,32 +278,21 @@ pub async fn mcp_project_sign_in(
 }
 
 /// Signs MCP server `server` (its id) out of every place (Q14): this
-/// computer, and each of `hosts`. A place that can't be reached says so,
-/// the others signed out all the same.
+/// computer, and each host, now or, for one that's away, once it next
+/// connects. Only this computer's can fail, and says so.
 #[tauri::command]
 pub async fn mcp_sign_out(
     secrets: State<'_, Arc<SecretStore>>,
     core: State<'_, Core>,
     remote: State<'_, Arc<Remote>>,
     server: String,
-    hosts: Vec<String>,
 ) -> Result<(), String> {
     let (grants, id) = (KeychainGrants(Arc::clone(&secrets)), server.clone());
     let here = rovik_core::rt::spawn_blocking(move || grants.forget(&id)).await;
     core.mcp.forget(&server);
-    let mut failed = Vec::new();
-    if let Err(e) = here.map_err(|e| e.to_string()).and_then(|forgot| forgot) {
-        failed.push(format!("this computer: {e}"));
-    }
-    for host in hosts {
-        if let Err(e) = remote.mcp_sign_in(&host, &server, None).await {
-            failed.push(format!("{}: {}", remote.host_name(&host), e.message));
-        }
-    }
-    match failed.is_empty() {
-        true => Ok(()),
-        false => Err(format!("Not signed out everywhere: {}", failed.join("; "))),
-    }
+    remote.mcp_sign_out(&server).await;
+    (here.map_err(|e| e.to_string()).and_then(|forgot| forgot))
+        .map_err(|e| format!("Not signed out on this computer: {e}"))
 }
 
 /// Where the MCP servers are signed in (Q14): which of `servers` (their

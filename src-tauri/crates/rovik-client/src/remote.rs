@@ -193,6 +193,8 @@ pub struct Remote {
     /// What brings the hosts' policies up to date before they go to a
     /// host: another window may have changed them (HostsPage::follow).
     refresh: Mutex<Option<Refresh>>,
+    /// Where the MCP sign-outs owed to hosts that were away are kept.
+    sign_outs: Mutex<Option<Arc<dyn OwedSignOuts>>>,
     /// The ports forwarded for the chats' pages (remote/pages.rs).
     pages: pages::Pages,
 }
@@ -203,6 +205,16 @@ pub type OpenElsewhere = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Brings the hosts' policies up to date from their settings file.
 pub type Refresh = Arc<dyn Fn() + Send + Sync>;
+
+/// The MCP sign-outs owed to hosts that were away when the user signed
+/// out (mcp-plan-2.md, Q14), kept with the hosts' settings and sent to
+/// each when it next connects.
+pub trait OwedSignOuts: Send + Sync {
+    /// The servers (their ids) `host` is owed a sign-out of.
+    fn owed(&self, host: &str) -> Vec<String>;
+    /// `host` is owed a sign-out of `server`, or, `owed` false, no more.
+    fn set(&self, host: &str, server: &str, owed: bool);
+}
 
 #[derive(Default)]
 struct State {
@@ -298,6 +310,7 @@ impl Remote {
             jobs,
             elsewhere: Mutex::new(None),
             refresh: Mutex::new(None),
+            sign_outs: Mutex::new(None),
             pages: pages::Pages::default(),
         });
         rovik_core::rt::spawn(results::work_through(Arc::downgrade(&remote), queue));
@@ -322,6 +335,18 @@ impl Remote {
     /// How to bring the hosts' policies up to date before one is sent.
     pub fn on_refresh(&self, refresh: Refresh) {
         *self.refresh.lock().unwrap_or_else(|e| e.into_inner()) = Some(refresh);
+    }
+
+    /// Where the MCP sign-outs owed to hosts that were away are kept.
+    pub fn on_sign_outs(&self, owed: Arc<dyn OwedSignOuts>) {
+        *self.sign_outs.lock().unwrap_or_else(|e| e.into_inner()) = Some(owed);
+    }
+
+    fn sign_outs(&self) -> Option<Arc<dyn OwedSignOuts>> {
+        self.sign_outs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn refresh_policies(&self) {
@@ -891,10 +916,54 @@ impl Remote {
             grant,
         };
         match self.host_call(host, request).await? {
-            Response::Bool(_) => Ok(()),
+            Response::Bool(_) => {
+                // A sign-out owed to it is done, or would undo this sign-in.
+                if let Some(owed) = self.sign_outs() {
+                    owed.set(host, server, false);
+                }
+                Ok(())
+            }
             other => Err(internal(format!(
                 "{host} answered a sign-in with {other:?}"
             ))),
+        }
+    }
+
+    /// Signs MCP server `server` (its id) out on every host (Q14): now on
+    /// each connected one that keeps sign-ins, else once it next connects,
+    /// the sign-out owed to it kept meanwhile (`on_sign_outs`).
+    pub async fn mcp_sign_out(&self, server: &str) {
+        for (host, state) in self.hosts.states() {
+            let ready = state == HostState::Ready;
+            if ready && !self.serves(&host, features::MCP_SIGN_IN) {
+                continue;
+            }
+            let failed = match ready {
+                true => (self.mcp_sign_in(&host, server, None).await.err()).map(|e| e.message),
+                false => Some("it's away".to_string()),
+            };
+            if let Some(why) = failed {
+                log::info!("{host} is signed out of {server} once it connects: {why}");
+                match self.sign_outs() {
+                    Some(owed) => owed.set(&host, server, true),
+                    None => log::warn!("{host}: the sign-out of {server} can't be kept"),
+                }
+            }
+        }
+    }
+
+    /// The sign-outs `host` is owed, sent now it's connected. One it can't
+    /// keep sign-ins for (an older Rovik) has none to forget.
+    async fn send_owed_sign_outs(&self, host: &str) {
+        let Some(owed) = self.sign_outs() else {
+            return;
+        };
+        for server in owed.owed(host) {
+            if !self.serves(host, features::MCP_SIGN_IN) {
+                owed.set(host, &server, false);
+            } else if let Err(e) = self.mcp_sign_in(host, &server, None).await {
+                log::info!("{host} wasn't signed out of {server} yet: {e}");
+            }
         }
     }
 
@@ -1383,6 +1452,7 @@ impl Remote {
             }
             Incoming::Subscribed { complete } => {
                 self.configure(host).await;
+                self.send_owed_sign_outs(host).await;
                 if !complete {
                     // A `PageClosed` may be among the events missed.
                     self.stop_forwarding(host);

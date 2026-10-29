@@ -179,6 +179,9 @@ pub fn run() {
                     hosts.follow_policies();
                 }
             }));
+            // The MCP sign-outs owed to hosts that were away are kept with
+            // their settings (mcp-plan-2.md, Q14).
+            remote.on_sign_outs(Arc::new(Arc::downgrade(&hosts)));
             // A project left for another while its chats were at work stays
             // this window's until they're done (instances.rs).
             let handle = app.handle().clone();

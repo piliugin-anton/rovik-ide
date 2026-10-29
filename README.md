@@ -1380,7 +1380,8 @@ refuses them.
   host and WSL, one browser tab after another; a host keeps its tokens
   with its keys and refreshes them there. The row says where the server is
   signed in ("Signed in: This computer, build-server"), and **Sign out**
-  forgets every place's sign-in, as removing the server does.
+  forgets every place's sign-in, as removing the server does: a host
+  that's away is signed out as it next connects.
 - A server without a sign-in, or whose sign-in it refuses (its refresh,
   or even a fresh token), is listed unavailable to the agent, saying to
   sign in from Settings → MCP servers; a refused sign-in is forgotten
@@ -1423,7 +1424,8 @@ there (`disabled`). Their values name variables rather than hold secrets:
   **Revoke**, which also forgets the values of their variables that no
   other allowed server of the project takes. One reached at a URL is
   signed in to from there, as your own are; revoking it signs it out, and
-  one whose entry changes needs a sign-in of its own once allowed again.
+  one whose entry changes needs a sign-in of its own once allowed again,
+  the old entry's forgotten.
 - A host's chats run the allowed servers with no one to ask: the
   approvals go with the project's settings, and the values with each
   start, as your servers' secrets do.

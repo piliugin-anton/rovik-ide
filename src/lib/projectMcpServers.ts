@@ -15,6 +15,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { createStore, produce } from 'solid-js/store';
 import { chatApi, type ProjectSummary } from './chatApi';
 import { signsIn, type McpTransport } from './mcpServers';
+import { projectServerId, signOut } from './mcpSignIn';
 import { updateProjectSettings } from './projectProfile';
 
 /** A variable a project's server names: `${GITHUB_TOKEN}`, `${input:db}`. */
@@ -159,7 +160,9 @@ export function prefillValues(projectId: string, names: string[]): Promise<Prefi
 /**
  * Allows the project's `servers` (the project at `root`, `projectId`): the
  * values typed for their variables go to the keychain, then the servers
- * to the project's settings. Their next run has them.
+ * to the project's settings. Their next run has them. One that replaces
+ * the approval of its entry as it was has that one's sign-in forgotten
+ * (Q14): it was made for the server as it was.
  */
 export async function allowServers(
   root: string,
@@ -171,9 +174,18 @@ export async function allowServers(
   if (Object.keys(given).length > 0) {
     await invoke('mcp_save_project_values', { project: projectId, values: given });
   }
-  await updateProjectSettings(root, (saved) => ({
-    mcpApprovals: withApproved(approvalsIn(saved), servers),
-  }));
+  let replaced: McpApproval[] = [];
+  await updateProjectSettings(root, (saved) => {
+    const before = approvalsIn(saved);
+    const after = withApproved(before, servers);
+    replaced = before.filter((a) => a.signsIn && !after.some((b) => b.hash === a.hash));
+    return { mcpApprovals: after };
+  });
+  for (const old of replaced) {
+    await signOut(projectServerId(projectId, old.hash)).catch((e) =>
+      console.error(`${old.name}'s sign-in from before its entry changed wasn't forgotten:`, e)
+    );
+  }
 }
 
 /** A project's allowed servers, for Settings → MCP servers. */

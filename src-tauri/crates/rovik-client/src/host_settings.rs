@@ -66,6 +66,10 @@ pub struct Host {
     /// install what the projects' checks need (design §7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_script: Option<String>,
+    /// The MCP servers (their ids) signed out while it was away
+    /// (mcp-plan-2.md, Q14): it's told when it next connects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_sign_outs: Vec<String>,
 }
 
 /// How the app logs in to a host (H02, H03).
@@ -246,6 +250,7 @@ mod tests {
                 sha256: Some("ab".repeat(32)),
             },
             setup_script: Some("rustup default stable\n".into()),
+            mcp_sign_outs: Vec::new(),
         }
     }
 
