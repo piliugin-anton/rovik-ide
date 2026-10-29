@@ -390,9 +390,14 @@ impl Http {
             })?;
             return match rpc::incoming(&message) {
                 Incoming::Response { id: got, outcome } if got == id => outcome,
-                _ => Err(Failure::Gone(
+                Incoming::Response { .. } => Err(Failure::Gone(
                     "the server's answer was for another request".into(),
                 )),
+                // A web API's JSON, say: not an MCP server's URL.
+                _ => Err(Failure::Gone(format!(
+                    "the server's answer isn't an MCP message (check its URL): {}",
+                    shown(&body)
+                ))),
             };
         }
         let mut events = Events::of(response);
