@@ -1691,6 +1691,31 @@ async fn mcp_test_on_a_host_sends_typed_values_over_saved_ones() {
     assert_eq!(values["header/Authorization"].0, "old");
 }
 
+/// A start without a configuration of its own runs under the app's: the
+/// saved secrets of the servers on there go with it.
+#[tokio::test]
+async fn a_start_without_its_own_configuration_brings_the_app_s_servers_secrets() {
+    let (_app, remote, fake) = mcp_host(Ok("Bearer x"), &[features::MCP]).await;
+    let config = AgentConfig {
+        mcp_servers: vec![mcp_server()],
+        ..AgentConfig::default()
+    };
+    remote
+        .everywhere(Request::AgentConfigure(Box::new(config)))
+        .await
+        .unwrap();
+    remote
+        .start(start("chat", StartKind::Retry, None))
+        .await
+        .unwrap();
+    let started = starts(&fake).remove(0);
+    assert!(started.config.is_none());
+    assert_eq!(
+        started.mcp_secrets["s1"]["header/Authorization"].0,
+        "Bearer x"
+    );
+}
+
 /// A start carries no secrets of a server that's off: the host gets the
 /// servers that are on (Q11).
 #[tokio::test]

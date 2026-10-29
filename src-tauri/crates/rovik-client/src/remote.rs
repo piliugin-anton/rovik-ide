@@ -6,7 +6,7 @@
 //! so the next start of the app knows it (`load`); `dispatch` refuses such
 //! a chat, whose rows here only the mirror writes (K21).
 
-use crate::client::{Client, HostState, Identity, Incoming};
+use crate::client::{Client, DaemonInfo, HostState, Identity, Incoming};
 use crate::connector::Connector;
 use crate::hosts::Hosts;
 use git2::Oid;
@@ -561,15 +561,18 @@ impl Remote {
     /// Whether the host's daemon serves `feature` (4.5): false until it
     /// has said, in its `Welcome`.
     pub fn serves(&self, host: &str, feature: &str) -> bool {
-        let daemon = self.hosts.client(host).and_then(|c| c.daemon());
-        daemon.is_some_and(|d| d.serves(feature))
+        self.daemon(host).is_some_and(|d| d.serves(feature))
     }
 
     /// The features the host's daemon listed in its `Welcome`; none until
     /// it has said.
     pub fn features(&self, host: &str) -> Vec<String> {
-        let daemon = self.hosts.client(host).and_then(|c| c.daemon());
-        daemon.map(|d| d.features).unwrap_or_default()
+        self.daemon(host).map(|d| d.features).unwrap_or_default()
+    }
+
+    /// The host's daemon, as its `Welcome` told of it: none until it has.
+    fn daemon(&self, host: &str) -> Option<DaemonInfo> {
+        self.hosts.client(host).and_then(|c| c.daemon())
     }
 
     pub(crate) fn policy(&self, host: &str) -> ApprovalPolicy {
@@ -800,13 +803,11 @@ impl Remote {
         // on go with the start (Q11), unless its daemon is too old to take
         // them.
         if self.serves(&host, features::MCP) {
-            let config = request
-                .config
-                .clone()
-                .unwrap_or_else(|| self.core.agents.config());
-            let on: Vec<McpServer> = (config.mcp_servers.into_iter())
-                .filter(|s| s.enabled)
-                .collect();
+            let servers = match &request.config {
+                Some(config) => config.mcp_servers.clone(),
+                None => self.core.agents.config().mcp_servers,
+            };
+            let on: Vec<McpServer> = servers.into_iter().filter(|s| s.enabled).collect();
             request.mcp_secrets = self.core.mcp.saved_secrets(&on).await;
         }
         self.leave_out_known_text(&mut request).await;
