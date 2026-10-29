@@ -508,7 +508,9 @@ fn install_claude(home: &std::path::Path) {
 }
 
 /// Q11: a daemon starts the MCP server a test names, with the secrets given,
-/// and answers with what it lists.
+/// and answers with what it lists. The fake server is on the daemon's own
+/// loopback: on the same machine the daemon posts to it itself, where a
+/// host would have the app post (tests/mcp.rs).
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_test_on_the_daemon_lists_the_server_s_tools() {
     use rovik_core::connectors::mcp::McpServer as FakeServer;
@@ -537,7 +539,7 @@ async fn mcp_test_on_the_daemon_lists_the_server_s_tools() {
         "header/Authorization".to_string(),
         Secret(fake.authorization()),
     )];
-    let daemon = Daemon::start(&[]).await;
+    let daemon = Daemon::start(&["--same-machine"]).await;
     let mut session = daemon.session().await;
     let reply = session
         .call(Request::McpTest {
