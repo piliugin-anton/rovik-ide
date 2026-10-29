@@ -210,10 +210,16 @@ fn outcome(message: &Value) -> Result<Value, Failure> {
     }
 }
 
-/// A JSON-RPC error in an HTTP error's body, when it has one.
+/// A JSON-RPC error in an HTTP error's body, when it has one: a JSON-RPC
+/// message whose `error` is an object. A web API's own error, such as
+/// `{"error": "Not Found"}` from a URL that's no MCP server's, isn't one:
+/// its HTTP status says what went wrong.
 pub(super) fn error_in(body: &[u8]) -> Option<Failure> {
     let message: Value = serde_json::from_slice(body).ok()?;
-    message.get("error")?;
+    let rpc = message.get("jsonrpc").and_then(Value::as_str) == Some("2.0");
+    if !rpc || !message.get("error").is_some_and(Value::is_object) {
+        return None;
+    }
     outcome(&message).err()
 }
 
@@ -316,5 +322,12 @@ mod tests {
         assert!(matches!(modern, Failure::Rpc { code: -32022, .. }));
         assert_eq!(error_in(b"Bad Request"), None);
         assert_eq!(error_in(br#"{"jsonrpc":"2.0","id":1,"result":{}}"#), None);
+        // A web API's own errors, not JSON-RPC's.
+        assert_eq!(error_in(br#"{"error":"Not Found"}"#), None);
+        assert_eq!(error_in(br#"{"error":{"message":"Not Found"}}"#), None);
+        assert_eq!(
+            error_in(br#"{"jsonrpc":"2.0","id":1,"error":"Not Found"}"#),
+            None
+        );
     }
 }

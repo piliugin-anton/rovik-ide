@@ -692,6 +692,90 @@ async fn read_http(stream: &mut tokio::net::TcpStream) -> Option<(HashMap<String
     Some((headers, serde_json::from_slice(&body).ok()?))
 }
 
+/// A web API at a URL, not an MCP server: every request, whatever its
+/// method, is answered `status` with the JSON `body`, as Context7's REST
+/// API (`https://context7.com/api/v2`) answers a handshake sent to it.
+async fn web_api(status: &'static str, body: &'static str) -> String {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let url = format!("http://{}/api/v2", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                // Its head, and the body its length says, before the answer.
+                let (mut data, mut buf) = (Vec::new(), [0u8; 4096]);
+                while let Ok(n @ 1..) = stream.read(&mut buf).await {
+                    data.extend_from_slice(&buf[..n]);
+                    let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&data[..end]).to_ascii_lowercase();
+                    let length = (head.lines())
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if data.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                let answer = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(answer.as_bytes()).await;
+            });
+        }
+    });
+    url
+}
+
+/// A URL that's a web API's, not an MCP server's, answers the handshake
+/// with its own JSON: Test says what it answered and what to check, never
+/// an MCP error "without a message (error 0)".
+#[tokio::test]
+async fn a_web_api_s_answer_is_said_as_it_is_with_what_to_check() {
+    let at = |url: String, headers: Vec<McpValue>| {
+        server(
+            "api",
+            McpTransport::Url {
+                url,
+                headers,
+                sse: false,
+                oauth: None,
+            },
+        )
+    };
+    let tested = |server: McpServer| async move {
+        let state = McpState::default();
+        state
+            .test(&server, &HashMap::new(), None, None)
+            .await
+            .unwrap_err()
+    };
+    let missing = web_api("404 Not Found", r#"{"error":"Not Found"}"#).await;
+    let error = tested(at(missing, Vec::new())).await;
+    assert!(
+        error.contains(r#"HTTP 404: {"error":"Not Found"}"#),
+        "{error}"
+    );
+    assert!(error.contains("check its URL"), "{error}");
+    assert!(!error.contains("error 0"), "{error}");
+
+    let keyed = web_api("401 Unauthorized", r#"{"error":"Unauthorized"}"#).await;
+    let wrong = vec![header("Authorization", "Bearer wrong", false)];
+    let error = tested(at(keyed, wrong)).await;
+    assert!(error.contains("refused Rovik's credentials"), "{error}");
+    assert!(error.contains("check its headers"), "{error}");
+
+    let fine = web_api("200 OK", r#"{"status":"ok"}"#).await;
+    let error = tested(at(fine, Vec::new())).await;
+    assert!(
+        error.contains(r#"isn't an MCP message (check its URL): {"status":"ok"}"#),
+        "{error}"
+    );
+}
+
 /// Q03: a server that refuses the handshake and lists 2026-07-28 is spoken
 /// to statelessly: each request with its version in `_meta` and headers,
 /// and a tool's `x-mcp-header` argument mirrored into its header.
