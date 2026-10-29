@@ -868,6 +868,7 @@ fn every_request_round_trips() {
             },
             Request::HostInfo,
             Request::KeysList,
+            Request::McpSecretsKept,
             Request::McpTest {
                 server: crate::mcp::McpServer {
                     id: "s1".into(),

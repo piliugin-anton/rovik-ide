@@ -208,3 +208,64 @@ async fn ended_in(session: &mut Session<UnixStream>) {
     }
     panic!("the run never ended");
 }
+
+/// The host says how many MCP servers it keeps secrets for, never the
+/// secrets; removing every key forgets them and stops the running servers,
+/// so none keeps a removed secret in its environment.
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_every_key_forgets_the_mcp_secrets_and_stops_the_servers() {
+    if which("python3").is_none() {
+        return;
+    }
+    let daemon = Daemon::start(&["--same-machine"]).await;
+    let project = daemon.dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let script = daemon.dir.0.join("fake_mcp.py");
+    std::fs::write(&script, SERVER).unwrap();
+    let log = daemon.dir.0.join("fake.log");
+    let server = McpServer {
+        id: "cmd-id".into(),
+        name: "cmd".into(),
+        enabled: true,
+        transport: McpTransport::Command {
+            command: "python3".into(),
+            args: vec![
+                script.to_string_lossy().into_owned(),
+                log.to_string_lossy().into_owned(),
+            ],
+            env: vec![McpValue {
+                name: "TOKEN".into(),
+                value: String::new(),
+                secret: true,
+            }],
+        },
+        disabled_tools: Vec::new(),
+    };
+    let mut session = daemon.session().await;
+    let kept = session.call(Request::McpSecretsKept).await;
+    assert_eq!(kept, Ok(Response::Count(0)));
+
+    let (url, _) = model(vec![Reply::Text("Done.")]).await;
+    let mut request = start_request(&url, &project, "Hi".into());
+    request.config.as_mut().unwrap().mcp_servers = vec![server];
+    let secrets = [("env/TOKEN".to_string(), Secret("t0p".into()))];
+    request.mcp_secrets = [("cmd-id".to_string(), secrets.into_iter().collect())].into();
+    session
+        .call(Request::AgentStart(Box::new(request)))
+        .await
+        .unwrap();
+    ended_in(&mut session).await;
+    until("the server's start", || logged(&log).first().cloned()).await;
+    let kept = session.call(Request::McpSecretsKept).await;
+    assert_eq!(kept, Ok(Response::Count(1)));
+    assert!(!format!("{kept:?}").contains("t0p"));
+
+    let removed = session.call(Request::KeysRemove { provider: None }).await;
+    assert_eq!(removed, Ok(Response::Count(1)), "the one server's secrets");
+    let kept = session.call(Request::McpSecretsKept).await;
+    assert_eq!(kept, Ok(Response::Count(0)));
+    until("the server's end", || {
+        logged(&log).iter().any(|m| m["bye"] == true).then_some(())
+    })
+    .await;
+}

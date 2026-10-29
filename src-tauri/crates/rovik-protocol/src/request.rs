@@ -320,6 +320,10 @@ pub enum Request {
     KeysRemove {
         provider: Option<String>,
     },
+    /// How many MCP servers the host keeps saved secrets for, which
+    /// `KeysRemove` without a provider forgets: never the secrets. Served
+    /// with `features::MCP`. → `Count`.
+    McpSecretsKept,
     /// Starts `server` on the host with `values` for its secrets (by key,
     /// as `StartRequest::mcp_secrets`) and lists its tools, as Test on the
     /// settings page does here. Served with `features::MCP`. → `McpTested`.
@@ -432,6 +436,7 @@ impl Request {
             | Request::HostInfo
             | Request::KeysList
             | Request::KeysRemove { .. }
+            | Request::McpSecretsKept
             | Request::McpTest { .. }
             | Request::Storage
             | Request::CleanUp

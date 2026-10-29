@@ -180,6 +180,7 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::HostInfo
         | Request::KeysList
         | Request::KeysRemove { .. }
+        | Request::McpSecretsKept
         | Request::McpTest { .. }
         | Request::Storage
         | Request::CleanUp
@@ -666,6 +667,7 @@ mod tests {
         let host = [
             Request::HostInfo,
             Request::KeysList,
+            Request::McpSecretsKept,
             Request::Storage,
             Request::CleanUp,
             Request::PageOpened {

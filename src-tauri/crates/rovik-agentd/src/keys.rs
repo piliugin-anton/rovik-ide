@@ -101,6 +101,11 @@ impl Keys {
         self.mcp.get(server)?.get(key).cloned()
     }
 
+    /// How many MCP servers have saved secrets here.
+    pub fn mcp_servers(&self) -> usize {
+        self.mcp.len()
+    }
+
     /// Forgets `provider`'s key, or every key and every MCP secret. How
     /// many went: each MCP server counts as one.
     pub fn remove(&mut self, provider: Option<&str>) -> usize {

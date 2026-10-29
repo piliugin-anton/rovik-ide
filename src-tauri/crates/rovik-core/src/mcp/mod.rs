@@ -746,7 +746,9 @@ impl McpState {
         tested
     }
 
-    /// Stops every server: as the app exits.
+    /// Stops every server: as the app exits, or as a daemon forgets the
+    /// secrets they started with. A call going on one fails; the next use
+    /// starts one again.
     pub async fn shutdown(&self) {
         let all: Vec<Arc<Instance>> = lock(&self.0.servers).drain().map(|(_, i)| i).collect();
         let stops = all.into_iter().map(|instance| async move {

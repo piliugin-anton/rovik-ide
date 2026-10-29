@@ -363,10 +363,17 @@ impl Store {
             .collect()
     }
 
-    /// Forgets `provider`'s key, or every key (`KeysRemove`): from
-    /// keys.json, and from each computer's configuration, so the runs that
-    /// start from now on go without it until a start brings it again.
-    /// Runs going now finish with theirs. How many keys went.
+    /// How many MCP servers keys.json keeps secrets for: never the secrets
+    /// (`McpSecretsKept`).
+    pub fn mcp_secrets_kept(&self) -> usize {
+        self.lock().keys.mcp_servers()
+    }
+
+    /// Forgets `provider`'s key, or every key and every MCP server's
+    /// secrets (`KeysRemove`): from keys.json, and from each computer's
+    /// configuration, so the runs that start from now on go without it
+    /// until a start brings it again. Runs going now finish with theirs.
+    /// How many keys went, each MCP server counting one.
     pub fn remove_keys(&self, provider: Option<&str>) -> Result<usize, String> {
         let mut inner = self.lock();
         let removed = inner.keys.remove(provider);

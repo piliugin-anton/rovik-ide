@@ -517,8 +517,10 @@ fn removing_every_key_removes_mcp_secrets_and_removing_a_provider_s_does_not() {
     assert_eq!(store.remove_keys(Some("openai")).unwrap(), 1);
     assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("t0p".into()));
     store.started("laptop", &started).unwrap();
+    assert_eq!(store.mcp_secrets_kept(), 1);
     // The provider's key and the one server count one each.
     assert_eq!(store.remove_keys(None).unwrap(), 2);
+    assert_eq!(store.mcp_secrets_kept(), 0);
     assert_eq!(store.mcp_value("s1", "env/TOKEN"), None);
     let keys = fs::read_to_string(dir.0.join("keys.json")).unwrap();
     assert!(!keys.contains("t0p"), "{keys}");

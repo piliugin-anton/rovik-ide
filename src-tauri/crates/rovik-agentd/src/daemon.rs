@@ -106,13 +106,21 @@ impl Daemon {
         match request {
             Request::HostInfo => Ok(Response::HostInfo(host::info(self).await)),
             Request::KeysList => Ok(Response::Keys(self.store.keys())),
+            Request::McpSecretsKept => Ok(Response::Count(self.store.mcp_secrets_kept())),
             // The server's keys, whichever of the user's computers brought
             // them: "Remove keys from this server" leaves none.
-            Request::KeysRemove { provider } => self
-                .store
-                .remove_keys(provider.as_deref())
-                .map(Response::Count)
-                .map_err(|e| Fail::new(FailCode::Internal, e)),
+            Request::KeysRemove { provider } => {
+                let removed = self
+                    .store
+                    .remove_keys(provider.as_deref())
+                    .map_err(|e| Fail::new(FailCode::Internal, e))?;
+                // A running MCP server keeps the secrets it started with:
+                // none survives in one. A call going on one fails.
+                if provider.is_none() {
+                    self.core.mcp.shutdown().await;
+                }
+                Ok(Response::Count(removed))
+            }
             Request::McpTest { server, values } => {
                 let given = values.into_iter().map(|(k, v)| (k, v.0.clone())).collect();
                 self.core
