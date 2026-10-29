@@ -321,25 +321,36 @@ test('a server that can’t be saved says why, and keeps its form and its secret
   assert.deepEqual(current(), [github]);
 });
 
+/** A server as the app's import makes one (mcp/import.rs has its rules' tests). */
+const imported = (
+  id: string,
+  name: string,
+  env: McpServer['transport'] extends never ? never : any[] = []
+) => ({
+  id,
+  name,
+  enabled: true,
+  transport: { kind: 'command' as const, command: 'uvx', args: [], env },
+  disabledTools: [],
+});
+
 test('JSON pasted from a setup adds its server, saves its token and opens its form', async () => {
   const { current, api } = await page([github]);
+  backend.mcp_import = () => {
+    throw 'That isn’t JSON. Paste the server’s settings as its instructions give them.';
+  };
   await click(button('+ Add from JSON'));
   await type(field('Servers as JSON'), '{ nope');
   await click(button('Add'));
   assert.match(statuses()[0], /That isn’t JSON/);
   assert.deepEqual(current(), [github]);
 
-  const setup = {
-    mcpServers: {
-      github: {
-        command: 'npx',
-        args: ['-y', '@modelcontextprotocol/server-github'],
-        env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_123' },
-      },
-    },
-  };
-  await type(field('Servers as JSON'), JSON.stringify(setup));
+  const token = { name: 'GITHUB_PERSONAL_ACCESS_TOKEN', value: 'ghp_123', secret: true };
+  backend.mcp_import = () => [imported('gh2', 'github-2', [token])];
+  const setup = '{ "mcpServers": { "github": { "command": "npx" } } }';
+  await type(field('Servers as JSON'), setup);
   await click(button('Add'));
+  assert.deepEqual(sent('mcp_import').at(-1), { text: setup, taken: ['github'] });
   const added = current()[1];
   assert.equal(added.name, 'github-2');
   assert.deepEqual(sent('mcp_save_secrets'), [
@@ -351,11 +362,9 @@ test('JSON pasted from a setup adds its server, saves its token and opens its fo
   // Two at once are added to the list, and no form opens.
   api().closeDraft();
   await flush();
+  backend.mcp_import = () => [imported('t', 'time'), imported('f', 'fetch')];
   await click(button('+ Add from JSON'));
-  const two = {
-    mcpServers: { time: { command: 'uvx', args: ['mcp-server-time'] }, fetch: { command: 'uvx' } },
-  };
-  await type(field('Servers as JSON'), JSON.stringify(two));
+  await type(field('Servers as JSON'), '{ "time": {}, "fetch": {} }');
   await click(button('Add'));
   assert.deepEqual(
     current().map((s) => s.name),

@@ -1,13 +1,12 @@
 // Unit tests: Settings → MCP servers' logic (lib/mcpServers.ts). Stored
 // servers read back as saved, never with a secret's value; a server checked
 // before it's saved; its secrets taken out to the keychain when it's saved,
-// and forgotten when it no longer has them; JSON from other clients' setups
-// made into servers. Run with: npm test
+// and forgotten when it no longer has them. (The JSON of other clients'
+// setups is read by the app: mcp/import.rs has its tests.) Run with: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   forgettingServer,
-  importServers,
   mcpServersSummary,
   normalizeMcpServers,
   savingServer,
@@ -203,81 +202,4 @@ test('the menu says which servers are on', () => {
   assert.equal(mcpServersSummary([github, docs]), 'github, docs');
   assert.equal(mcpServersSummary([github, { ...docs, enabled: false }]), 'github (1 off)');
   assert.equal(mcpServersSummary([{ ...github, enabled: false }]), 'All turned off');
-});
-
-test('Claude Desktop’s, Cursor’s and VS Code’s JSON become servers, their secrets typed in', () => {
-  const desktop = importServers(
-    JSON.stringify({
-      mcpServers: {
-        GitHub: {
-          command: 'npx',
-          args: ['-y', '@modelcontextprotocol/server-github'],
-          env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_123', LOG_LEVEL: 3 },
-        },
-        'my.docs': {
-          url: 'https://docs.example.com/mcp',
-          headers: { Authorization: 'Bearer <YOUR_TOKEN>' },
-          disabled: true,
-        },
-      },
-    }),
-    [github]
-  );
-  assert.ok('servers' in desktop, JSON.stringify(desktop));
-  const [gh, docs] = desktop.servers;
-  assert.equal(gh.name, 'github-2', 'made valid, and not a name already taken');
-  assert.deepEqual(gh.transport, {
-    kind: 'command',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-github'],
-    env: [
-      { name: 'GITHUB_PERSONAL_ACCESS_TOKEN', value: 'ghp_123', secret: true },
-      { name: 'LOG_LEVEL', value: '3', secret: false },
-    ],
-  });
-  assert.equal(gh.enabled, true);
-  assert.equal(docs.name, 'my-docs');
-  assert.equal(docs.enabled, false, 'turned off as it was');
-  assert.deepEqual(docs.transport, {
-    kind: 'url',
-    url: 'https://docs.example.com/mcp',
-    // The placeholder is left for the user to enter.
-    headers: [{ name: 'Authorization', value: '', secret: true }],
-  });
-  // Saved as a form's would be: the token to the keychain.
-  assert.deepEqual(savingServer(gh, undefined).secrets, {
-    'env/GITHUB_PERSONAL_ACCESS_TOKEN': 'ghp_123',
-  });
-
-  const vscode = importServers(
-    JSON.stringify({
-      servers: { fetch: { type: 'stdio', command: 'uvx', args: ['mcp-server-fetch'] } },
-    }),
-    []
-  );
-  assert.deepEqual('servers' in vscode && vscode.servers.map((s) => s.name), ['fetch']);
-  const alone = importServers(JSON.stringify({ command: 'uvx', args: ['mcp-server-time'] }), []);
-  assert.deepEqual('servers' in alone && alone.servers.map((s) => s.name), ['server']);
-  const named = importServers(JSON.stringify({ time: { command: 'uvx' } }), []);
-  assert.deepEqual('servers' in named && named.servers.map((s) => s.name), ['time']);
-});
-
-test('JSON that has no server, or an SSE one, says what to do instead', () => {
-  assert.match((importServers('{', []) as { error: string }).error, /That isn’t JSON/);
-  assert.match((importServers('[]', []) as { error: string }).error, /Paste an object/);
-  assert.match(
-    (importServers('{"mcpServers": {"x": {"args": []}}}', []) as { error: string }).error,
-    /No server found/
-  );
-  assert.equal(
-    (
-      importServers(
-        JSON.stringify({
-          mcpServers: { old: { type: 'sse', url: 'https://old.example.com/sse' } },
-        }),
-        []
-      ) as { error: string }
-    ).error,
-    'old uses the old SSE transport: add it as a command, through a bridge: npx mcp-remote https://old.example.com/sse'
-  );
 });

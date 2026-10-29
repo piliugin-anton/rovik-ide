@@ -1,5 +1,6 @@
 //! Settings → MCP servers (docs/design/mcp-plan.md, Q02, Q04): where the
-//! servers' secret values go, saving and forgetting them, and Test. The
+//! servers' secret values go, saving and forgetting them, Test, and the
+//! servers in JSON pasted from another client's setup (Q01). The
 //! servers themselves are AI settings; their secret values go in the
 //! keychain (or the encrypted file in its place), never in a settings
 //! file, and the page only learns where they go.
@@ -92,4 +93,12 @@ pub async fn mcp_test(
     core.mcp
         .test(&server, &given, root.as_deref().map(Path::new), None)
         .await
+}
+
+/// The servers in `text`, JSON pasted from another client's setup, named
+/// apart from the `taken` names (Q01): a secret's value is in it, for the
+/// page to save as a form's.
+#[tauri::command]
+pub fn mcp_import(text: String, taken: Vec<String>) -> Result<Vec<McpServer>, String> {
+    rovik_core::mcp::import(&text, &taken)
 }

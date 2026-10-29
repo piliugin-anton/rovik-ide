@@ -7,6 +7,7 @@
 //!   stdio.rs  a command's server, on its stdin and stdout
 //!   http.rs   a URL's server (Streamable HTTP)
 //!   tool.rs   a server's tools as `tools/list` gives them
+//!   import.rs servers from other clients' JSON
 //!
 //! [`McpState`], one of the core's parts, starts each server when a run
 //! first needs it and keeps it running while the app is open (Q04). Only
@@ -17,12 +18,14 @@
 //! [`Relay`] (mcp-plan-2.md, Q11).
 
 mod http;
+mod import;
 mod rpc;
 mod stdio;
 #[cfg(test)]
 mod tests;
 mod tool;
 
+pub use import::{import, looks_secret};
 pub use rovik_protocol::mcp::{is_valid_name, McpServer, McpTransport, McpValue};
 pub use tool::Tool;
 

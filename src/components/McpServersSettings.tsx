@@ -274,7 +274,7 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
    */
   async function addFromJson() {
     if (busy()) return;
-    const result = importServers(json(), props.servers);
+    const result = await importServers(json(), props.servers);
     if ('error' in result) {
       setListError(result.error);
       return;

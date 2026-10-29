@@ -96,16 +96,6 @@ export function newServer(): McpServer {
   };
 }
 
-/** Whether a value's name says it holds a secret: a token, a key, a password. */
-export function looksSecret(name: string): boolean {
-  return /key|token|secret|password|passwd|auth|credential|cookie|pat\b/i.test(name);
-}
-
-/** A value setup instructions show for the user's own: `<YOUR_TOKEN>`, `${API_KEY}`. */
-function isPlaceholder(value: string): boolean {
-  return /<[^<>]*>|\$\{[^}]*\}|\{\{[^}]*\}\}|\byour[-_ ]/i.test(value);
-}
-
 const isString = (v: unknown): v is string => typeof v === 'string';
 
 function normalizeValue(raw: unknown): McpValue | null {
@@ -277,100 +267,24 @@ export function mcpServersSummary(servers: McpServer[]): string {
   return on.length === 0 ? 'All turned off' : `${names} (${servers.length - on.length} off)`;
 }
 
-/** A name for an imported server: `name` made valid, and not one in `taken`. */
-function nameFor(name: string, taken: Set<string>): string {
-  let base = name
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^[^a-z]+/, '')
-    .replace(/-+$/, '')
-    .slice(0, MAX_NAME);
-  if (!base) base = 'server';
-  let candidate = base;
-  for (let n = 2; taken.has(candidate); n += 1) {
-    const suffix = `-${n}`;
-    candidate = `${base.slice(0, MAX_NAME - suffix.length)}${suffix}`;
-  }
-  taken.add(candidate);
-  return candidate;
-}
-
 /**
- * Servers from JSON pasted from another client's setup instructions: an
- * `mcpServers` object (Claude Code, Claude Desktop, Cursor), VS Code's
- * `servers`, one server's entry by its name, or the entry alone. A command
- * (`command`, `args`, `env`) or a URL (`url`, `headers`), turned off when
- * it says `disabled`. A value whose name looks like a secret's
- * (`looksSecret`) is a secret, its value typed (as a form has it, for
- * `savingServer`), but for a placeholder (`<YOUR_TOKEN>`), which is left
- * for the user to enter. An entry of the old SSE transport is refused: it
- * goes through a bridge command.
+ * Servers from JSON pasted from another client's setup instructions, as the
+ * app reads it (mcp/import.rs): an `mcpServers` object (Claude Code, Claude
+ * Desktop, Cursor), VS Code's `servers`, one server's entry by its name, or
+ * the entry alone, named apart from `existing`'s. A secret's value is typed
+ * in, as a form has it, for `savingServer`. What's wrong with the JSON, in
+ * words, when it has no server to add.
  */
-export function importServers(
+export async function importServers(
   text: string,
   existing: McpServer[]
-): { servers: McpServer[] } | { error: string } {
-  let parsed: unknown;
+): Promise<{ servers: McpServer[] } | { error: string }> {
   try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { error: 'That isn’t JSON. Paste the server’s settings as its instructions give them.' };
+    const taken = existing.map((s) => s.name);
+    return { servers: await invoke<McpServer[]>('mcp_import', { text, taken }) };
+  } catch (e) {
+    return { error: String(e) };
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { error: 'Paste an object: an "mcpServers" entry, or one server’s settings.' };
-  }
-  const root = parsed as Record<string, unknown>;
-  const isEntry = (v: unknown) =>
-    !!v && typeof v === 'object' && (isString((v as any).command) || isString((v as any).url));
-  let entries: [string, unknown][];
-  if (root.mcpServers && typeof root.mcpServers === 'object') {
-    entries = Object.entries(root.mcpServers as object);
-  } else if (root.servers && typeof root.servers === 'object') {
-    entries = Object.entries(root.servers as object);
-  } else if (isEntry(root)) {
-    entries = [[isString(root.name) ? root.name : 'server', root]];
-  } else {
-    entries = Object.entries(root);
-  }
-  entries = entries.filter(([, entry]) => isEntry(entry));
-  if (entries.length === 0) {
-    return { error: 'No server found: each needs a "command" or a "url".' };
-  }
-  const taken = new Set(existing.map((s) => s.name));
-  const servers: McpServer[] = [];
-  for (const [name, raw] of entries) {
-    const entry = raw as Record<string, unknown>;
-    if (entry.type === 'sse') {
-      return {
-        error: `${name} uses the old SSE transport: add it as a command, through a bridge: npx mcp-remote ${String(entry.url ?? '<url>')}`,
-      };
-    }
-    const valuesFrom = (map: unknown): McpValue[] =>
-      Object.entries(map && typeof map === 'object' ? (map as object) : {}).flatMap(
-        ([key, value]): McpValue[] => {
-          if (!key.trim()) return [];
-          const text = isString(value) ? value : String(value);
-          if (!looksSecret(key)) return [{ name: key, value: text, secret: false }];
-          return [{ name: key, value: isPlaceholder(text) ? '' : text, secret: true }];
-        }
-      );
-    const transport: McpTransport = isString(entry.command)
-      ? {
-          kind: 'command',
-          command: entry.command,
-          args: Array.isArray(entry.args) ? entry.args.map(String) : [],
-          env: valuesFrom(entry.env),
-        }
-      : { kind: 'url', url: String(entry.url), headers: valuesFrom(entry.headers) };
-    servers.push({
-      id: newServerId(),
-      name: nameFor(name, taken),
-      enabled: entry.disabled !== true,
-      transport,
-      disabledTools: [],
-    });
-  }
-  return { servers };
 }
 
 /** Where secret values go: the keychain, or the encrypted file in its place. */
