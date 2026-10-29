@@ -475,7 +475,7 @@ async fn a_host_that_pushes_is_told_the_projects_remote() {
     let root = app.dir.0.join("project");
     std::fs::create_dir_all(&root).unwrap();
     let repo = git2::Repository::init(&root).unwrap();
-    repo.remote("origin", "https://me:secret@github.com/acme/app.git")
+    repo.remote("origin", "https://me:pw-7f3k9q@github.com/acme/app.git")
         .unwrap();
     std::fs::write(root.join("a.txt"), "a\n").unwrap();
     let at = root.clone();
@@ -532,7 +532,8 @@ async fn a_host_that_pushes_is_told_the_projects_remote() {
         [Some("git@github.com:acme/app.git".to_string())]
     );
     let shown = format!("{:?}", fake.requests.lock().unwrap());
-    assert!(!shown.contains("me:secret"), "no credentials go: {shown}");
+    // The password alone, in any form: no field's name can hold it.
+    assert!(!shown.contains("pw-7f3k9q"), "no credentials go: {shown}");
 
     remote.set_policy(HOST, ApprovalPolicy::AiReviewerThenMe);
     std::fs::write(root.join("a.txt"), "b\n").unwrap();
