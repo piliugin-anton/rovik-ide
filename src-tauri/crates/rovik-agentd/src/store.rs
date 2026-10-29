@@ -277,9 +277,16 @@ impl Store {
         let mut inner = self.lock();
         let earlier = inner.state.chats.get(&start.dialog_id).cloned();
         inner.check_owner(computer, &start.dialog_id)?;
-        let mut keys_changed = inner.keys.take([&start.profile]);
+        let mcp_changed = self
+            .change_keys(&mut inner, |keys| {
+                keys.take([&start.profile]);
+                if let Some(config) = &start.config {
+                    keys.take(config.models());
+                }
+                keys.take_mcp(&start.mcp_secrets);
+            })
+            .map_err(internal)?;
         if let Some(config) = &start.config {
-            keys_changed |= inner.keys.take(config.models());
             inner.set_config(computer, config.clone());
         }
         let mut chat = earlier.unwrap_or_else(|| ChatState {
@@ -288,12 +295,29 @@ impl Store {
         });
         chat.start = Some(StartSettings::of(start));
         inner.state.chats.insert(start.dialog_id.clone(), chat);
-        let mcp_changed = inner.keys.take_mcp(&start.mcp_secrets);
-        if keys_changed || !mcp_changed.is_empty() {
-            inner.keys.write(&self.keys_file).map_err(internal)?;
-        }
         self.save(inner).map_err(internal)?;
         Ok(mcp_changed)
+    }
+
+    /// Changes the keys as `change` does and writes keys.json when that
+    /// changed them, in memory only once the file has them: a write that
+    /// fails changes nothing, so the next start or configuration finds the
+    /// change again and no MCP server goes on with a secret it replaced.
+    /// The ids of the MCP servers whose secrets changed.
+    fn change_keys(
+        &self,
+        inner: &mut Inner,
+        change: impl FnOnce(&mut Keys),
+    ) -> Result<Vec<String>, String> {
+        let mut keys = inner.keys.clone();
+        change(&mut keys);
+        if keys == inner.keys {
+            return Ok(Vec::new());
+        }
+        keys.write(&self.keys_file)?;
+        let changed = inner.keys.mcp_changes(&keys);
+        inner.keys = keys;
+        Ok(changed)
     }
 
     /// The saved secret `key` of MCP server `server`, for the servers the
@@ -307,9 +331,7 @@ impl Store {
     pub fn configure(&self, computer: &str, config: AgentConfig) -> Result<(), String> {
         let _writing = self.writing();
         let mut inner = self.lock();
-        if inner.keys.take(config.models()) {
-            inner.keys.write(&self.keys_file)?;
-        }
+        self.change_keys(&mut inner, |keys| keys.take(config.models()))?;
         inner.set_config(computer, config);
         self.save(inner)
     }
@@ -373,10 +395,12 @@ impl Store {
     /// secrets (`KeysRemove`): from keys.json, and from each computer's
     /// configuration, so the runs that start from now on go without it
     /// until a start brings it again. Runs going now finish with theirs.
-    /// How many keys went, each MCP server counting one.
+    /// How many keys went, each MCP server counting one. When keys.json
+    /// can't be written, none goes.
     pub fn remove_keys(&self, provider: Option<&str>) -> Result<usize, String> {
         let mut inner = self.lock();
-        let removed = inner.keys.remove(provider);
+        let mut removed = 0;
+        self.change_keys(&mut inner, |keys| removed = keys.remove(provider))?;
         for config in inner.configs.values_mut() {
             for model in config.models_mut() {
                 if provider.is_none_or(|p| keys::provider(model) == p) {
@@ -384,7 +408,6 @@ impl Store {
                 }
             }
         }
-        inner.keys.write(&self.keys_file)?;
         Ok(removed)
     }
 

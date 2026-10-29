@@ -7,7 +7,7 @@
 use rovik_protocol::agent::ModelProfile;
 use rovik_protocol::Secret;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
@@ -48,20 +48,15 @@ impl Keys {
     }
 
     /// Keeps the keys these models carry, each replacing its provider's
-    /// older one. True when one was new or changed.
-    pub fn take<'a>(&mut self, models: impl IntoIterator<Item = &'a ModelProfile>) -> bool {
-        let mut changed = false;
+    /// older one.
+    pub fn take<'a>(&mut self, models: impl IntoIterator<Item = &'a ModelProfile>) {
         for model in models.into_iter().filter(|m| !m.api_key.is_empty()) {
             let key = Key {
                 base_url: model.base_url.clone(),
                 api_key: model.api_key.clone(),
             };
-            let old = self
-                .providers
-                .insert(provider(model).to_string(), key.clone());
-            changed |= old.as_ref() != Some(&key);
+            self.providers.insert(provider(model).to_string(), key);
         }
-        changed
     }
 
     /// The providers with a key, and the base URL each key goes with.
@@ -72,28 +67,28 @@ impl Keys {
     }
 
     /// Keeps the MCP secrets a start brought, each server's replacing all
-    /// its older ones, none clearing them. The ids of the servers whose secrets changed.
-    pub fn take_mcp(
-        &mut self,
-        secrets: &BTreeMap<String, BTreeMap<String, Secret>>,
-    ) -> Vec<String> {
-        let mut changed = Vec::new();
+    /// its older ones; a server brought with none loses its.
+    pub fn take_mcp(&mut self, secrets: &BTreeMap<String, BTreeMap<String, Secret>>) {
         for (id, values) in secrets {
             let values: BTreeMap<String, String> = values
                 .iter()
                 .map(|(key, value)| (key.clone(), value.0.clone()))
                 .collect();
-            // No values clears the server's entry.
-            let old = if values.is_empty() {
-                self.mcp.remove(id)
+            if values.is_empty() {
+                self.mcp.remove(id);
             } else {
-                self.mcp.insert(id.clone(), values.clone())
-            };
-            if old.unwrap_or_default() != values {
-                changed.push(id.clone());
+                self.mcp.insert(id.clone(), values);
             }
         }
-        changed
+    }
+
+    /// The ids of the MCP servers whose saved secrets `other` has otherwise.
+    pub fn mcp_changes(&self, other: &Keys) -> Vec<String> {
+        let ids: BTreeSet<&String> = self.mcp.keys().chain(other.mcp.keys()).collect();
+        ids.into_iter()
+            .filter(|id| self.mcp.get(*id) != other.mcp.get(*id))
+            .cloned()
+            .collect()
     }
 
     /// The saved secret `key` of MCP server `server`.

@@ -551,3 +551,41 @@ fn an_empty_mcp_secret_map_clears_the_server_s_and_is_reported_changed() {
     // Cleared already: nothing changes.
     assert!(store.started("laptop", &cleared).unwrap().is_empty());
 }
+
+/// A start whose keys.json can't be written changes no key, here or in
+/// memory: the next start finds the change again, so a server never keeps
+/// running on a secret its start replaced.
+#[test]
+fn a_start_whose_keys_cant_be_written_changes_no_key() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &mcp_start("chat", "old")).unwrap();
+    // A folder where keys.json goes: its write fails, even for root.
+    fs::remove_file(dir.0.join("keys.json")).unwrap();
+    fs::create_dir(dir.0.join("keys.json")).unwrap();
+    assert!(store.started("laptop", &mcp_start("chat", "new")).is_err());
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("old".into()));
+    fs::remove_dir(dir.0.join("keys.json")).unwrap();
+    assert_eq!(
+        store.started("laptop", &mcp_start("chat", "new")).unwrap(),
+        ["s1"],
+        "still a change"
+    );
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("new".into()));
+}
+
+/// Removing the keys when keys.json can't be written removes none: what
+/// the error leaves is what's saved.
+#[test]
+fn removing_keys_that_cant_be_written_removes_none() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let mut started = mcp_start("chat", "t0p");
+    started.profile = model("openai::gpt", OPENAI, "sk-1");
+    store.started("laptop", &started).unwrap();
+    fs::remove_file(dir.0.join("keys.json")).unwrap();
+    fs::create_dir(dir.0.join("keys.json")).unwrap();
+    assert!(store.remove_keys(None).is_err());
+    assert_eq!(store.mcp_value("s1", "env/TOKEN"), Some("t0p".into()));
+    assert_eq!(store.keys().len(), 1, "the provider's key too");
+}
