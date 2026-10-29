@@ -216,6 +216,9 @@ fn answer(request: &Request) -> Response {
                 ..Default::default()
             })
         }
+        Request::KeysList => Response::Keys(Vec::new()),
+        Request::Storage => Response::Storage(Default::default()),
+        Request::McpSecretsKept => Response::Count(1),
         Request::McpTest { .. } => Response::McpTested(rovik_protocol::mcp::Tested {
             server: "fake 1".into(),
             protocol: "2025-06-18".into(),

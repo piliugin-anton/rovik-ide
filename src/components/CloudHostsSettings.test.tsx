@@ -437,6 +437,34 @@ test('removing the server’s keys: confirmed first, then the list asked again',
   await flush();
   assert.deepEqual(sent('hosts_remove_keys'), [{ id: 'h1' }]);
   assert.match(root.querySelector('.host-keys-list')!.textContent!, /No keys are kept there\./);
+  assert.equal(button(root, 'Remove keys from this server'), undefined);
+});
+
+test('MCP servers’ secrets kept on the server are listed and can be removed, with no API key there', async () => {
+  let mcpSecrets = 2;
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => ({ ...DETAILS, keys: [], mcpSecrets }),
+    hosts_remove_keys: () => {
+      const gone = mcpSecrets;
+      mcpSecrets = 0;
+      return gone;
+    },
+  });
+  const list = root.querySelector('.host-keys-list')!.textContent!;
+  assert.match(list, /MCP servers’ secrets 2 servers/);
+  assert.doesNotMatch(list, /No keys are kept there/);
+  button(root, 'Remove keys from this server')!.click();
+  await flush();
+  assert.match(
+    document.querySelector('.confirm-dialog')!.textContent!,
+    /forgets every API key and MCP server’s secret it keeps, and stops the MCP servers running there/
+  );
+  (
+    document.querySelector('.confirm-dialog-actions button.danger-filled') as HTMLButtonElement
+  ).click();
+  await flush();
+  assert.deepEqual(sent('hosts_remove_keys'), [{ id: 'h1' }]);
+  assert.match(root.querySelector('.host-keys-list')!.textContent!, /No keys are kept there\./);
 });
 
 test('upgrade available: anyone but an administrator is told whom to ask', async () => {

@@ -120,6 +120,10 @@ pub struct HostDetails {
     pub keys: Option<Vec<KeyInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage: Option<Storage>,
+    /// How many MCP servers it keeps secrets for: none from a daemon that
+    /// runs no MCP servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_secrets: Option<usize>,
     /// The user is one of Rovik's administrators there.
     pub admin: bool,
     /// The daemon is older than this app.
@@ -1080,6 +1084,10 @@ impl HostsPage {
             ),
             false => (None, None),
         };
+        let mcp_secrets = match self.remote.serves(id, features::MCP) {
+            true => Some(self.call(id, Request::McpSecretsKept).await?),
+            false => None,
+        };
         // The version kept follows the daemon's: an upgrade by someone
         // else shows.
         let version = info.version.clone();
@@ -1098,6 +1106,7 @@ impl HostsPage {
             info,
             keys,
             storage,
+            mcp_secrets,
             app_version: self.version.clone(),
             clean_up: self.remote.serves(id, features::CLEAN_UP),
         })
@@ -1122,8 +1131,9 @@ impl HostsPage {
         })
     }
 
-    /// Forgets every key the host keeps; the next start there that brings
-    /// one keeps it again (D11). How many went.
+    /// Forgets every key and MCP server's secrets the host keeps, and stops
+    /// its MCP servers; the next start there that brings one keeps it again
+    /// (D11). How many went.
     pub async fn remove_keys(&self, id: &str) -> Result<usize, String> {
         self.call(id, Request::KeysRemove { provider: None }).await
     }
@@ -1956,6 +1966,44 @@ mod tests {
         assert!(
             matches!(asked[..], [.., Request::Storage, Request::CleanUp]),
             "{asked:?}"
+        );
+    }
+
+    /// A host that runs MCP servers says how many it keeps secrets for; an
+    /// older one isn't asked, and says nothing of them.
+    #[tokio::test]
+    async fn details_say_how_many_mcp_servers_secrets_a_host_keeps() {
+        use crate::testing::{identity, Fake};
+        let setup = setup();
+        let details = |served: &[&str]| {
+            let host = setup.page.save(new_host(), password("pw")).unwrap();
+            let fake = Fake::default();
+            *fake.info.lock().unwrap() = Some(HostInfo::default());
+            *fake.features.lock().unwrap() = served.iter().map(|f| f.to_string()).collect();
+            setup
+                .remote
+                .connect(&host.id, fake.clone(), identity(&host.name));
+            let (page, remote) = (&setup.page, &setup.remote);
+            async move {
+                for _ in 0..400 {
+                    if (remote.states().iter())
+                        .any(|(id, s)| *id == host.id && *s == HostState::Ready)
+                    {
+                        let details = page.details(&host.id).await.unwrap();
+                        return (details, fake.requests.lock().unwrap().clone());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                panic!("the host never connected");
+            }
+        };
+        let (newer, _) = details(&[features::HOST, features::MCP]).await;
+        assert_eq!(newer.mcp_secrets, Some(1));
+        let (older, asked) = details(&[features::HOST]).await;
+        assert_eq!(older.mcp_secrets, None);
+        assert!(
+            !asked.contains(&Request::McpSecretsKept),
+            "an older daemon isn't asked: {asked:?}"
         );
     }
 

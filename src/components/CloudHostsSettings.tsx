@@ -628,7 +628,7 @@ function HostPage(props: {
     const ok = await confirmDialog({
       title: 'Remove keys from this server?',
       message:
-        'The server forgets every API key it keeps. Runs going now finish with theirs, and the next chat you start there brings its key again.',
+        'The server forgets every API key and MCP server’s secret it keeps, and stops the MCP servers running there. Runs going now finish with their API keys, and the next chat you start there brings its keys and secrets again.',
       confirmLabel: 'Remove keys',
       danger: true,
     });
@@ -649,6 +649,9 @@ function HostPage(props: {
       setDetailsError(String(err));
     }
   }
+
+  /** How many MCP servers the server keeps secrets for: none from one that can't say. */
+  const mcpSecrets = () => details()?.mcpSecrets ?? 0;
 
   const verdict = () => testVerdict(steps(), testing());
   const admins = () => details()?.info.install?.admins ?? [];
@@ -991,10 +994,7 @@ function HostPage(props: {
                   {(keys) => (
                     <>
                       <ul class="host-keys-list">
-                        <For
-                          each={keys()}
-                          fallback={<li class="settings-hint">No keys are kept there.</li>}
-                        >
+                        <For each={keys()}>
                           {(key) => (
                             <li>
                               <span class="host-key-provider">{key.provider}</span>{' '}
@@ -1002,8 +1002,17 @@ function HostPage(props: {
                             </li>
                           )}
                         </For>
+                        <Show when={mcpSecrets() > 0}>
+                          <li>
+                            <span class="host-key-provider">MCP servers’ secrets</span>{' '}
+                            <span class="profile-row-sub">{plural(mcpSecrets(), 'server')}</span>
+                          </li>
+                        </Show>
+                        <Show when={keys().length === 0 && mcpSecrets() === 0}>
+                          <li class="settings-hint">No keys are kept there.</li>
+                        </Show>
                       </ul>
-                      <Show when={keys().length > 0}>
+                      <Show when={keys().length > 0 || mcpSecrets() > 0}>
                         <button class="danger" onClick={() => void forgetKeys()}>
                           Remove keys from this server
                         </button>

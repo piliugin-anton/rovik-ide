@@ -184,6 +184,8 @@ export interface HostDetails {
   /** Absent from a daemon that can't say. */
   keys?: KeyInfo[];
   storage?: Storage;
+  /** How many MCP servers it keeps secrets for: absent from a daemon that runs none. */
+  mcpSecrets?: number;
   /** The user is one of Rovik's administrators there. */
   admin: boolean;
   /** The daemon is older than this app. */

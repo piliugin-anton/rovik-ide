@@ -385,9 +385,10 @@ freed.
   starts in the chat's own worktree, outside the user's private network
   (the allowed hosts don't hold it); a URL server is posted to by the
   daemon. The secrets of the servers are sent with each start and kept in
-  `~/.rovik/keys.json` with the API keys; removing the keys removes them
-  too, and a value cleared on the user's computer is cleared there at the
-  next start. A server unused for 30 minutes is stopped, and a chat's
+  `~/.rovik/keys.json` with the API keys. Settings → Cloud hosts says how
+  many servers' secrets are kept there; removing the keys removes them
+  too and stops the servers running there. A value cleared on the user's
+  computer is cleared there at the next start. A server unused for 30 minutes is stopped, and a chat's
   servers stop when its worktree is deleted. The command (`npx`, `uvx`,
   Docker...) must be installed on the server: Rovik installs and
   translates nothing, and a server that can't start is listed unavailable

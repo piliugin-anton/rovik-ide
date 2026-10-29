@@ -1389,7 +1389,8 @@ What to keep in mind:
 - On a cloud host or in WSL, a chat runs your enabled servers there, as
   you and outside the commands' sandbox, and each start sends their secret
   values to the host, where they stay in `~/.rovik/keys.json` with the API
-  keys until you remove the keys. A command must be installed on the host
+  keys until you remove the keys (Settings → Cloud hosts lists them, by
+  how many servers, and removing them stops the servers there). A command must be installed on the host
   (`npx`, `uvx`, Docker...): Rovik installs and translates nothing, and a
   server that can't start is listed unavailable with why. A `localhost`
   URL server can't be reached from a host yet. A host on an older Rovik
