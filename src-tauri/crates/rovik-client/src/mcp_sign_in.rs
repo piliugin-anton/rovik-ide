@@ -33,11 +33,8 @@ impl GrantStore for KeychainGrants {
         let json = serde_json::to_string(grant).map_err(|e| e.to_string())?;
         self.0.set(&name, &Secret(json)).map_err(|e| e.to_string())
     }
-}
 
-impl KeychainGrants {
-    /// Forgets `server`'s sign-in here: done when it had none.
-    pub fn forget(&self, server: &str) -> Result<(), String> {
+    fn forget(&self, server: &str) -> Result<(), String> {
         let name = SecretName::McpGrant {
             server: server.to_string(),
         };
@@ -102,6 +99,7 @@ mod tests {
             access_token: Secret(access.into()),
             refresh_token: Some(Secret("rt".into())),
             expires_at: Some(1),
+            wants: None,
         }
     }
 

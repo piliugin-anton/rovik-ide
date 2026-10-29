@@ -14,7 +14,7 @@ use crate::connectors::{
 };
 use crate::events::BackgroundTask;
 use crate::host::{HostInfo, KeyInfo, Storage};
-use crate::mcp::{McpGrant, McpServer, RelayPart, RelayedPost, Tested};
+use crate::mcp::{McpGrant, McpServer, RelayPart, RelayedPost, SignedInServer, Tested};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
 use crate::work::{ChatResult, Handed, Project, Synced, UndoneMerge, WorkChange, WorkFile};
@@ -340,8 +340,9 @@ pub enum Request {
         server: String,
         grant: Option<McpGrant>,
     },
-    /// The MCP servers signed in on this host, by id: never their tokens.
-    /// Served with `features::MCP_SIGN_IN`. → `Ids`.
+    /// The MCP servers signed in on this host, and the scopes each asked
+    /// for that its sign-in lacks: never their tokens. Served with
+    /// `features::MCP_SIGN_IN`. → `McpSignedIn`.
     McpSignedIn,
     /// The POST a `McpRelayWanted` event asked this computer to make, once
     /// (Q11): another computer's, or one taken already, is refused. Sent
@@ -521,6 +522,8 @@ pub enum Response {
     McpTested(Tested),
     /// `McpRelayTake`.
     McpRelayed(RelayedPost),
+    /// `McpSignedIn`.
+    McpSignedIn(Vec<SignedInServer>),
     /// `DeliveryTest`.
     DeliveryTested(DeliveryTest),
     /// `TaskStatus`.
@@ -592,6 +595,7 @@ replies! {
     Storage => Storage,
     McpTested => Tested,
     McpRelayed => RelayedPost,
+    McpSignedIn => Vec<SignedInServer>,
     DeliveryTested => DeliveryTest,
     Tasks => Vec<ChatTask>,
     ConnectorProbe => ConnectorProbe,

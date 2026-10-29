@@ -11,7 +11,7 @@ use crate::events::*;
 use crate::host::{HostInfo, Install, KeyInfo, Storage};
 use crate::mcp::{
     is_secret_key, is_valid_name, McpGrant, McpOAuthClient, McpServer, McpTransport, McpValue,
-    RelayPart, RelayedPost, CLIENT_SECRET_KEY,
+    RelayPart, RelayedPost, SignedInServer, CLIENT_SECRET_KEY,
 };
 use crate::network::{HostNetwork, ProxyEndpoint, ProxyKind, ProxyRoute};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
@@ -113,6 +113,7 @@ fn grant() -> McpGrant {
         access_token: Secret("access-t0ken".into()),
         refresh_token: Some(Secret("refresh-t0ken".into())),
         expires_at: Some(1_700_000_000_000),
+        wants: Some("read write admin".into()),
     }
 }
 
@@ -1193,6 +1194,16 @@ fn every_response_round_trips() {
                 }],
             }),
             Response::McpRelayed(relayed_post()),
+            Response::McpSignedIn(vec![
+                SignedInServer {
+                    server: "s1".into(),
+                    wants: None,
+                },
+                SignedInServer {
+                    server: "s2".into(),
+                    wants: Some("read admin".into()),
+                },
+            ]),
             Response::ConnectorSetup(crate::connectors::SetupJob {
                 id: "j".into(),
                 action: crate::connectors::SetupAction::Login,
@@ -1925,6 +1936,17 @@ fn a_url_server_s_oauth_client_reads_as_the_page_keeps_it() {
     let read: McpTransport = serde_json::from_value(before.clone()).unwrap();
     assert!(matches!(read, McpTransport::Url { oauth: None, .. }));
     assert_eq!(serde_json::to_value(&read).unwrap(), before);
+}
+
+/// Q14: a sign-in kept before it could want more scopes reads with none,
+/// and one that wants none is written as it was.
+#[test]
+fn a_sign_in_wants_no_more_scopes_unless_it_says_so() {
+    let mut kept = serde_json::to_value(grant()).unwrap();
+    kept.as_object_mut().unwrap().remove("wants");
+    let read: McpGrant = serde_json::from_value(kept.clone()).unwrap();
+    assert_eq!(read.wants, None);
+    assert_eq!(serde_json::to_value(&read).unwrap(), kept);
 }
 
 /// Q14: a sign-in sent to a host goes and comes back whole, but its tokens

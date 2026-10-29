@@ -38,6 +38,7 @@ import { onCloudEvent } from '../lib/cloud';
 import { listHosts } from '../lib/hosts';
 import { createSignIns, signInServer } from '../lib/mcpSignIn';
 import { confirmDialog } from './ConfirmDialog';
+import { SignInActions, SignInLines } from './McpSignIns';
 import ProjectMcpApprovals from './ProjectMcpApprovals';
 import { SecretsUnlock, Segmented, SettingRow, SettingStatus } from './SettingsControls';
 
@@ -440,27 +441,16 @@ export default function McpServersSettings(props: McpServersSettingsProps) {
                           : `${s.disabledTools.length} tools turned off`}
                       </span>
                     </Show>
-                    <Show when={signIns.at(s.id).length > 0}>
-                      <span class="profile-row-sub">
-                        Signed in: {signIns.said(signIns.at(s.id))}
-                      </span>
-                    </Show>
+                    <SignInLines signIns={signIns} id={s.id} />
                   </div>
                   <div class="profile-row-actions">
-                    <Show when={signsIn(s) && signIns.missing(s.id).length > 0}>
-                      <button
-                        title={`Sign in for ${signIns.said(signIns.missing(s.id))}, if it asks you to`}
-                        disabled={!!signIns.progress()}
-                        onClick={() => void signInTo(s)}
-                      >
-                        Sign in
-                      </button>
-                    </Show>
-                    <Show when={signIns.at(s.id).length > 0}>
-                      <button disabled={!!signIns.progress()} onClick={() => void signOutOf(s)}>
-                        Sign out
-                      </button>
-                    </Show>
+                    <SignInActions
+                      signIns={signIns}
+                      id={s.id}
+                      offered={signsIn(s)}
+                      onSignIn={() => void signInTo(s)}
+                      onSignOut={() => void signOutOf(s)}
+                    />
                     <label
                       class="checkbox-row"
                       title="Off: its settings stay, and chats don’t use it"

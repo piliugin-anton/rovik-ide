@@ -685,7 +685,8 @@ fn a_project_s_variables_stay_until_a_start_clears_them() {
 
 /// Q14: a sign-in made for this server is kept in keys.json, by its
 /// server, until it's signed out or the keys are removed; a configuration
-/// without the server keeps it, unlike its secrets.
+/// without the server keeps it, unlike its secrets. The list of sign-ins
+/// says which want more scopes.
 #[test]
 fn a_sign_in_is_kept_until_signed_out_or_the_keys_go() {
     let dir = temp_dir();
@@ -701,11 +702,26 @@ fn a_sign_in_is_kept_until_signed_out_or_the_keys_go() {
         access_token: rovik_protocol::Secret("at-1".into()),
         refresh_token: Some(rovik_protocol::Secret("rt-1".into())),
         expires_at: None,
+        wants: None,
     };
     store.set_mcp_grant("s1", Some(grant.clone())).unwrap();
     store.configure("laptop", AgentConfig::default()).unwrap();
     assert_eq!(store.mcp_grant("s1"), Some(grant.clone()));
-    assert_eq!(store.mcp_signed_in(), ["s1"]);
+    let signed = |server: &str, wants: Option<&str>| SignedInServer {
+        server: server.into(),
+        wants: wants.map(str::to_string),
+    };
+    assert_eq!(store.mcp_signed_in(), [signed("s1", None)]);
+    let narrow = rovik_protocol::mcp::McpGrant {
+        wants: Some("read admin".into()),
+        ..grant.clone()
+    };
+    store.set_mcp_grant("s0", Some(narrow)).unwrap();
+    assert_eq!(
+        store.mcp_signed_in(),
+        [signed("s0", Some("read admin")), signed("s1", None)]
+    );
+    store.set_mcp_grant("s0", None).unwrap();
     let again = Store::open(&dir.0).unwrap();
     assert_eq!(again.mcp_grant("s1"), Some(grant.clone()), "in keys.json");
     again.set_mcp_grant("s1", None).unwrap();

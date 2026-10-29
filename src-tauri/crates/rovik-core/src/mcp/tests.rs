@@ -274,6 +274,33 @@ impl oauth::GrantStore for Grants {
         self.0.lock().unwrap().insert(server.into(), grant.clone());
         Ok(())
     }
+    fn forget(&self, server: &str) -> Result<(), String> {
+        self.0.lock().unwrap().remove(server);
+        Ok(())
+    }
+}
+
+/// Registrations kept in memory, as the keychain keeps them (Q14).
+struct Registered(Mutex<HashMap<String, oauth::Client>>);
+
+impl oauth::Registrations for Registered {
+    fn get(&self, issuer: &str) -> Option<oauth::Client> {
+        self.0.lock().unwrap().get(issuer).cloned()
+    }
+    fn put(&self, issuer: &str, client: &oauth::Client) -> Result<(), String> {
+        self.0.lock().unwrap().insert(issuer.into(), client.clone());
+        Ok(())
+    }
+}
+
+/// A sign-in to `oauth`'s MCP server, asking for the scopes `wants` too,
+/// its browser `oauth`'s own.
+async fn sign_in(oauth: &crate::testing::OAuthServer, wants: Option<&str>) -> oauth::McpGrant {
+    let kept: Arc<dyn oauth::Registrations> = Arc::new(Registered(Mutex::default()));
+    let browser = |url: &str| oauth.browse(url).map(drop);
+    oauth::sign_in_to(&oauth.mcp_url, false, &[], None, wants, kept, &browser)
+        .await
+        .unwrap()
 }
 
 /// `oauth`'s MCP server, signed in to (its grant kept for `id-signed`),
@@ -287,21 +314,7 @@ async fn signed_in(
     Arc<Grants>,
 ) {
     let oauth = crate::testing::OAuthServer::start(options).await;
-    struct Kept(Mutex<HashMap<String, oauth::Client>>);
-    impl oauth::Registrations for Kept {
-        fn get(&self, issuer: &str) -> Option<oauth::Client> {
-            self.0.lock().unwrap().get(issuer).cloned()
-        }
-        fn put(&self, issuer: &str, client: &oauth::Client) -> Result<(), String> {
-            self.0.lock().unwrap().insert(issuer.into(), client.clone());
-            Ok(())
-        }
-    }
-    let kept: Arc<dyn oauth::Registrations> = Arc::new(Kept(Mutex::default()));
-    let browser = |url: &str| oauth.browse(url).map(drop);
-    let grant = oauth::sign_in_to(&oauth.mcp_url, false, &[], None, kept, &browser)
-        .await
-        .unwrap();
+    let grant = sign_in(&oauth, None).await;
     let grants = Arc::new(Grants::default());
     grants.0.lock().unwrap().insert("id-signed".into(), grant);
     let state = McpState::default();
@@ -366,10 +379,11 @@ async fn a_refused_token_is_refreshed_and_the_request_sent_again() {
 }
 
 /// Q14: a sign-in its server no longer refreshes leaves the server
-/// unavailable, saying to sign in again; one with none says to sign in.
+/// unavailable, saying to sign in again, and is forgotten where it was
+/// kept: the place lists it signed out. One with none says to sign in.
 #[tokio::test]
 async fn a_refused_or_missing_sign_in_says_to_sign_in() {
-    let (oauth, signed, state, _grants) = signed_in(Default::default()).await;
+    let (oauth, signed, state, grants) = signed_in(Default::default()).await;
     oauth.refuse_access();
     oauth.refuse_refresh();
     let listed = state.list(std::slice::from_ref(&signed), None, None).await;
@@ -378,6 +392,7 @@ async fn a_refused_or_missing_sign_in_says_to_sign_in() {
         refused.contains("sign in again from Settings → MCP servers"),
         "{refused}"
     );
+    assert!(grants.0.lock().unwrap().is_empty(), "forgotten");
 
     let never = McpState::default();
     let listed = never.list(std::slice::from_ref(&signed), None, None).await;
@@ -385,21 +400,77 @@ async fn a_refused_or_missing_sign_in_says_to_sign_in() {
     assert_eq!(missing, oauth::NEEDS_SIGN_IN);
 }
 
-/// Q14: a call that needs more than the sign-in gave (a 403
-/// `insufficient_scope`) says which scopes, and to sign in again.
+/// Q14: a server that refuses even a fresh token has its sign-in
+/// forgotten where it was kept, the place listing it signed out, after
+/// one refresh.
 #[tokio::test]
-async fn a_call_needing_more_scopes_says_so() {
+async fn a_sign_in_refused_even_fresh_is_forgotten() {
+    let (oauth, signed, state, grants) = signed_in(Default::default()).await;
+    oauth.refuse_every_token();
+    let refused = whoami(&state, &signed).await.unwrap_err();
+    assert!(
+        refused.contains("refused its sign-in's token: sign in again"),
+        "{refused}"
+    );
+    assert!(grants.0.lock().unwrap().is_empty(), "forgotten");
+    let tokens = (oauth.seen().into_iter())
+        .filter(|r| r.path == "/auth/token")
+        .count();
+    assert_eq!(tokens, 2, "the sign-in's, then one refresh");
+}
+
+/// Q14: a call that needs more than the sign-in gave (a 403
+/// `insufficient_scope`) says which scopes, and to sign in again; they're
+/// kept with the sign-in, and the next sign-in asks for them, after which
+/// the call goes through.
+#[tokio::test]
+async fn a_call_needing_more_scopes_says_so_and_the_next_sign_in_asks_for_them() {
     let options = crate::testing::OAuthOptions {
         call_needs: Some("mcp:write".into()),
         ..Default::default()
     };
-    let (_oauth, signed, state, _grants) = signed_in(options).await;
+    let (oauth, signed, state, grants) = signed_in(options).await;
     let refused = whoami(&state, &signed).await.unwrap_err();
     assert!(
         refused.contains("more permissions (mcp:read mcp:write)"),
         "{refused}"
     );
     assert!(refused.contains("sign in again"), "{refused}");
+    let kept = grants.0.lock().unwrap()["id-signed"].clone();
+    assert_eq!(kept.wants.as_deref(), Some("mcp:read mcp:write"));
+
+    let wider = sign_in(&oauth, kept.wants.as_deref()).await;
+    assert_eq!(wider.scope, "mcp:read mcp:write");
+    assert_eq!(wider.wants, None, "it has them");
+    grants.0.lock().unwrap().insert("id-signed".into(), wider);
+    state.forget(&signed.id);
+    let said = whoami(&state, &signed).await.unwrap();
+    assert!(said.starts_with("token at-"), "{said}");
+}
+
+/// A server reached with its settings' own token, which lacks a scope
+/// (a 403 `insufficient_scope`), says what the server answered: it's
+/// never offered a sign-in, so it isn't told to sign in.
+#[tokio::test]
+async fn a_settings_token_without_a_scope_isnt_told_to_sign_in() {
+    let options = crate::testing::OAuthOptions {
+        call_needs: Some("mcp:write".into()),
+        ..Default::default()
+    };
+    let (oauth, _signed, _state, grants) = signed_in(options).await;
+    let token = grants.0.lock().unwrap()["id-signed"].access_token.0.clone();
+    let keyed = server(
+        "keyed",
+        McpTransport::Url {
+            url: oauth.mcp_url.clone(),
+            headers: vec![header("Authorization", &format!("Bearer {token}"), false)],
+            sse: false,
+            oauth: None,
+        },
+    );
+    let refused = whoami(&McpState::default(), &keyed).await.unwrap_err();
+    assert!(refused.contains("403"), "{refused}");
+    assert!(!refused.contains("sign in"), "{refused}");
 }
 
 /// A wrong token is the server's refusal, said as such; a secret that

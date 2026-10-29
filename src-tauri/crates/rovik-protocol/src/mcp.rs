@@ -136,6 +136,24 @@ pub struct McpGrant {
     /// When the access token expires, in milliseconds since the epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// The scopes the server asked for that this sign-in lacks (a 403's
+    /// `insufficient_scope`), with those it has: the next sign-in for this
+    /// place asks for them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wants: Option<String>,
+}
+
+/// An MCP server signed in on a host (Q14), as `McpSignedIn` answers:
+/// never its tokens.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedInServer {
+    /// The server's id.
+    pub server: String,
+    /// The scopes it asked for that its sign-in there lacks, as
+    /// [`McpGrant::wants`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wants: Option<String>,
 }
 
 /// An environment variable of a command's server, or a header of a URL's.

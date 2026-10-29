@@ -14,7 +14,7 @@ use rovik_client::Remote;
 use rovik_core::mcp::oauth::GrantStore;
 use rovik_core::mcp::{McpServer, Tested};
 use rovik_core::Core;
-use rovik_protocol::mcp::is_secret_key;
+use rovik_protocol::mcp::{is_secret_key, SignedInServer};
 use rovik_protocol::Secret;
 use std::collections::HashMap;
 use std::path::Path;
@@ -185,8 +185,9 @@ fn typed(values: HashMap<String, Secret>) -> HashMap<String, String> {
 /// Signs in to URL server `server` in the browser (mcp-plan-2.md, Q14),
 /// its values as typed on the page over the saved ones: for this computer,
 /// or for `host`, whose daemon keeps the grant and refreshes it from then
-/// on. Each place has a sign-in of its own: refresh tokens rotate, and two
-/// places sharing one would sign each other out.
+/// on, asking for the scopes the server asked that place for too. Each
+/// place has a sign-in of its own: refresh tokens rotate, and two places
+/// sharing one would sign each other out.
 #[tauri::command]
 pub async fn mcp_sign_in(
     secrets: State<'_, Arc<SecretStore>>,
@@ -196,12 +197,14 @@ pub async fn mcp_sign_in(
     values: HashMap<String, Secret>,
     host: Option<String>,
 ) -> Result<(), String> {
+    let wants = wanted(&secrets, &remote, &server.id, host.as_deref()).await?;
     let registrations = Arc::new(KeychainRegistrations(Arc::clone(&secrets)));
     let grant = core
         .mcp
         .sign_in(
             &server,
             &typed(values),
+            wants.as_deref(),
             registrations,
             &crate::open_url::open,
         )
@@ -218,6 +221,27 @@ pub async fn mcp_sign_in(
         .map_err(|e| e.to_string())??;
     core.mcp.forget(&server.id);
     Ok(())
+}
+
+/// The scopes the server `server` (its id) asked for at `host`, or here,
+/// that its sign-in there lacks: what a new sign-in there asks for too. A
+/// sign-in here that can't be read wants none: the new one replaces it.
+async fn wanted(
+    secrets: &Arc<SecretStore>,
+    remote: &Remote,
+    server: &str,
+    host: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(host) = host {
+        let signed = remote.mcp_signed_in(host).await.map_err(|e| e.message)?;
+        let there = signed.into_iter().find(|s| s.server == server);
+        return Ok(there.and_then(|s| s.wants));
+    }
+    let (grants, id) = (KeychainGrants(Arc::clone(secrets)), server.to_string());
+    let kept = rovik_core::rt::spawn_blocking(move || grants.get(&id))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(kept.ok().flatten().and_then(|grant| grant.wants))
 }
 
 /// Signs in to the project's own URL server `hash` (Q12, Q14), as the
@@ -283,12 +307,13 @@ pub async fn mcp_sign_out(
 }
 
 /// Where the MCP servers are signed in (Q14): which of `servers` (their
-/// ids) here, and on each of `hosts` that can say.
+/// ids) here, and on each of `hosts` that can say, each with the scopes
+/// it asked for that its sign-in there lacks.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedIn {
-    here: Vec<String>,
-    hosts: HashMap<String, Vec<String>>,
+    here: Vec<SignedInServer>,
+    hosts: HashMap<String, Vec<SignedInServer>>,
 }
 
 /// Which of `servers` are signed in here, and on each of `hosts`; a host
@@ -302,16 +327,24 @@ pub async fn mcp_signed_in(
 ) -> Result<SignedIn, String> {
     let (grants, ids) = (KeychainGrants(Arc::clone(&secrets)), servers.clone());
     let here = rovik_core::rt::spawn_blocking(move || {
-        let signed = |id: &String| matches!(grants.get(id), Ok(Some(_)));
-        ids.into_iter().filter(signed).collect::<Vec<_>>()
+        let signed = |id: String| match grants.get(&id) {
+            Ok(Some(grant)) => Some(SignedInServer {
+                server: id,
+                wants: grant.wants,
+            }),
+            _ => None,
+        };
+        ids.into_iter().filter_map(signed).collect::<Vec<_>>()
     })
     .await
     .map_err(|e| e.to_string())?;
     let mut on_hosts = HashMap::new();
     for host in hosts {
         match remote.mcp_signed_in(&host).await {
-            Ok(ids) => {
-                let ours = ids.into_iter().filter(|id| servers.contains(id)).collect();
+            Ok(signed) => {
+                let ours = (signed.into_iter())
+                    .filter(|s| servers.contains(&s.server))
+                    .collect();
                 on_hosts.insert(host, ours);
             }
             Err(e) => log::info!(

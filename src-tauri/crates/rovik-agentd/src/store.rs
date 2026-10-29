@@ -14,7 +14,7 @@ use rovik_protocol::agent::{
 };
 use rovik_protocol::autopilot::AutonomyConfig;
 use rovik_protocol::host::KeyInfo;
-use rovik_protocol::mcp::{McpGrant, McpServer};
+use rovik_protocol::mcp::{McpGrant, McpServer, SignedInServer};
 use rovik_protocol::sync::Ownership;
 use rovik_protocol::work::{ChatResult, Project};
 use rovik_protocol::{Fail, FailCode};
@@ -423,9 +423,9 @@ impl Store {
             .map(drop)
     }
 
-    /// The MCP servers signed in here, by id: never their tokens
-    /// (`McpSignedIn`).
-    pub fn mcp_signed_in(&self) -> Vec<String> {
+    /// The MCP servers signed in here, and the scopes each asked for that
+    /// its sign-in lacks: never their tokens (`McpSignedIn`).
+    pub fn mcp_signed_in(&self) -> Vec<SignedInServer> {
         self.lock().keys.signed_in()
     }
 

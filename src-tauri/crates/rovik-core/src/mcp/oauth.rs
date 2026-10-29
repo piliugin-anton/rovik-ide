@@ -48,6 +48,9 @@ pub trait GrantStore: Send + Sync {
     fn get(&self, server: &str) -> Result<Option<McpGrant>, String>;
     /// Keeps `grant`, as a refresh gave it.
     fn put(&self, server: &str, grant: &McpGrant) -> Result<(), String>;
+    /// Forgets `server`'s sign-in, which its server refused: done when it
+    /// has none.
+    fn forget(&self, server: &str) -> Result<(), String>;
 }
 
 /// An OAuth client Rovik signs in as, with an authorization server: the
@@ -413,19 +416,24 @@ async fn authorization_server(issuer: &reqwest::Url) -> Result<Value, String> {
 /// settings', secrets filled in): its 401 asked for (a handshake's POST,
 /// or the event stream's GET on HTTP+SSE), its sign-in discovered, and the
 /// user sent through it in the browser with `open`, as the client they
-/// `entered` or Rovik's (Q14). Registrations Rovik makes are kept in
+/// `entered` or Rovik's (Q14), asking for the scopes the place's last
+/// sign-in `wants` too. Registrations Rovik makes are kept in
 /// `registrations`. Its grant, for the place this runs.
 pub async fn sign_in_to(
     url: &str,
     sse: bool,
     headers: &[(String, String)],
     entered: Option<(String, Option<String>)>,
+    wants: Option<&str>,
     registrations: Arc<dyn Registrations>,
     open: &(dyn Fn(&str) -> Result<(), String> + Send + Sync),
 ) -> Result<McpGrant, String> {
     let url = super::http::checked_url(url)?.to_string();
     let challenge = probe(&url, sse, headers).await?;
-    let found = discover(&url, challenge.as_ref()).await?;
+    let mut found = discover(&url, challenge.as_ref()).await?;
+    if let Some(wants) = wants {
+        found.scope = Some(scopes_with(found.scope.as_deref(), wants));
+    }
     let kept = registered(&registrations, &found.issuer).await;
     let kept_port = (kept.and_then(|kept| kept.redirect_uri))
         .and_then(|uri| reqwest::Url::parse(&uri).ok())
@@ -797,6 +805,7 @@ pub(super) async fn sign_in(
         access_token: Secret(String::new()),
         refresh_token: None,
         expires_at: None,
+        wants: None,
     };
     let tokens = token_request(&base, &mut form)
         .await
@@ -924,7 +933,14 @@ pub(super) async fn refresh(grant: &McpGrant) -> Result<McpGrant, Refusal> {
 pub(super) struct Bearer {
     server: String,
     store: Arc<dyn GrantStore>,
-    grant: tokio::sync::Mutex<McpGrant>,
+    /// None once the server refused it: forgotten where it was kept, as a
+    /// new sign-in (which makes a new `Bearer`) is needed.
+    grant: tokio::sync::Mutex<Option<McpGrant>>,
+}
+
+/// What a request says whose sign-in is gone.
+fn signed_out() -> Failure {
+    Failure::Gone(NEEDS_SIGN_IN.into())
 }
 
 impl Bearer {
@@ -932,21 +948,22 @@ impl Bearer {
         Bearer {
             server: server.to_string(),
             store,
-            grant: tokio::sync::Mutex::new(grant),
+            grant: tokio::sync::Mutex::new(Some(grant)),
         }
     }
 
     /// The access token to send, refreshed first when it's about to expire.
     pub(super) fn token(&self) -> BoxFuture<'_, Result<String, Failure>> {
         Box::pin(async move {
-            let mut grant = self.grant.lock().await;
+            let mut held = self.grant.lock().await;
+            let grant = held.as_ref().ok_or_else(signed_out)?;
             let expiring = grant
                 .expires_at
                 .is_some_and(|at| at <= now_ms() + REFRESH_AHEAD_MS);
             if expiring && grant.refresh_token.is_some() {
-                self.refreshed(&mut grant).await?;
+                self.refreshed(&mut held).await?;
             }
-            Ok(grant.access_token.0.clone())
+            (held.as_ref().map(|g| g.access_token.0.clone())).ok_or_else(signed_out)
         })
     }
 
@@ -955,35 +972,88 @@ impl Bearer {
     pub(super) fn refused(&self, sent: &str) -> BoxFuture<'_, Result<String, Failure>> {
         let sent = sent.to_string();
         Box::pin(async move {
-            let mut grant = self.grant.lock().await;
-            if grant.access_token.0 == sent {
-                self.refreshed(&mut grant).await?;
+            let mut held = self.grant.lock().await;
+            if held.as_ref().ok_or_else(signed_out)?.access_token.0 == sent {
+                self.refreshed(&mut held).await?;
             }
-            Ok(grant.access_token.0.clone())
+            (held.as_ref().map(|g| g.access_token.0.clone())).ok_or_else(signed_out)
         })
     }
 
-    /// Refreshes `grant`, keeping what it gave.
-    async fn refreshed(&self, grant: &mut McpGrant) -> Result<(), Failure> {
+    /// Forgets the sign-in, which the server refused even fresh: none goes
+    /// with a request from now on, and the place lists it signed out.
+    pub(super) async fn forget(&self) {
+        let mut held = self.grant.lock().await;
+        self.forgotten(&mut held).await;
+    }
+
+    /// Keeps with the sign-in the scopes `scope` the server asked for (a
+    /// 403's `insufficient_scope`), with those it has: the place lists it
+    /// as wanting a new sign-in, which asks for them.
+    pub(super) async fn wants(&self, scope: &str) {
+        let mut held = self.grant.lock().await;
+        let Some(grant) = held.as_mut() else {
+            return;
+        };
+        let wants = scopes_with(Some(&grant.scope), scope);
+        if grant.wants.as_deref() != Some(wants.as_str()) {
+            grant.wants = Some(wants);
+            self.keep(grant.clone()).await;
+        }
+    }
+
+    /// Refreshes the sign-in `held`, keeping what it gave; one its server
+    /// refuses is forgotten.
+    async fn refreshed(&self, held: &mut Option<McpGrant>) -> Result<(), Failure> {
+        let grant = held.as_mut().ok_or_else(signed_out)?;
         match refresh(grant).await {
             Ok(fresh) => {
                 *grant = fresh;
-                let (store, server, kept) =
-                    (self.store.clone(), self.server.clone(), grant.clone());
-                let put = crate::rt::spawn_blocking(move || store.put(&server, &kept)).await;
-                if let Ok(Err(e)) | Err(e) = put.map_err(|e| e.to_string()) {
-                    log::warn!("an MCP server's refreshed sign-in wasn't kept: {e}");
-                }
+                self.keep(grant.clone()).await;
                 Ok(())
             }
-            Err(Refusal::Refused(why)) => Err(Failure::Gone(format!(
-                "The server's sign-in was refused ({why}): {SIGN_IN_AGAIN}."
-            ))),
+            Err(Refusal::Refused(why)) => {
+                self.forgotten(held).await;
+                Err(Failure::Gone(format!(
+                    "The server's sign-in was refused ({why}): {SIGN_IN_AGAIN}."
+                )))
+            }
             Err(Refusal::Failed(why)) => Err(Failure::Gone(format!(
                 "The server's sign-in couldn't be refreshed: {why}"
             ))),
         }
     }
+
+    /// Keeps `grant` where the sign-in is kept, off the async threads. One
+    /// that can't be is said in the log, and used all the same.
+    async fn keep(&self, grant: McpGrant) {
+        let (store, server) = (self.store.clone(), self.server.clone());
+        let put = crate::rt::spawn_blocking(move || store.put(&server, &grant)).await;
+        if let Ok(Err(e)) | Err(e) = put.map_err(|e| e.to_string()) {
+            log::warn!("an MCP server's sign-in wasn't kept: {e}");
+        }
+    }
+
+    /// The sign-in `held` gone: here, and where it was kept.
+    async fn forgotten(&self, held: &mut Option<McpGrant>) {
+        *held = None;
+        let (store, server) = (self.store.clone(), self.server.clone());
+        let forgot = crate::rt::spawn_blocking(move || store.forget(&server)).await;
+        if let Ok(Err(e)) | Err(e) = forgot.map_err(|e| e.to_string()) {
+            log::warn!("an MCP server's refused sign-in wasn't forgotten: {e}");
+        }
+    }
+}
+
+/// The scopes of `have` and `more`, each once, in their order.
+fn scopes_with(have: Option<&str>, more: &str) -> String {
+    let mut all: Vec<&str> = Vec::new();
+    for scope in (have.unwrap_or_default().split_whitespace()).chain(more.split_whitespace()) {
+        if !all.contains(&scope) {
+            all.push(scope);
+        }
+    }
+    all.join(" ")
 }
 
 /// What a 401 or 403 answer to a request with a sign-in's token says: the
@@ -1039,6 +1109,7 @@ mod tests {
             false,
             &[],
             entered,
+            None,
             registrations,
             &browser,
         )
@@ -1220,6 +1291,15 @@ mod tests {
             document["redirect_uris"],
             serde_json::json!([redirect.as_str()])
         );
+    }
+
+    /// The scopes a new sign-in asks for are those had and those wanted,
+    /// each once, in their order.
+    #[test]
+    fn the_scopes_asked_again_are_those_had_and_wanted_each_once() {
+        assert_eq!(scopes_with(Some("a b"), "b c"), "a b c");
+        assert_eq!(scopes_with(None, " c  a "), "c a");
+        assert_eq!(scopes_with(Some(""), ""), "");
     }
 
     /// The body of a token request is a form, its values encoded.

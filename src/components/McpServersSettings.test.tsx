@@ -579,12 +579,29 @@ test('the servers projects’ own files set up are listed by project, and revoke
   ]);
 });
 
-/** Where the app says the servers are signed in, which its sign-ins and sign-outs change. */
-function signIns(here: string[] = [], hosts: Record<string, string[]> = {}) {
-  const kept = { here: [...here], hosts: structuredClone(hosts) };
+/**
+ * Where the app says the servers are signed in, which its sign-ins and
+ * sign-outs change; `wants`, by `place/server` (`here/linear-id`), the
+ * scopes a server asked a place for that its sign-in lacks.
+ */
+function signIns(
+  here: string[] = [],
+  hosts: Record<string, string[]> = {},
+  wants: Record<string, string> = {}
+) {
+  const kept = { here: [...here], hosts: structuredClone(hosts), wants: { ...wants } };
+  const answered = (place: string, server: string) => {
+    const scopes = kept.wants[`${place}/${server}`];
+    return { server, ...(scopes && { wants: scopes }) };
+  };
   return {
     kept,
-    mcp_signed_in: () => structuredClone(kept),
+    mcp_signed_in: () => ({
+      here: kept.here.map((server) => answered('here', server)),
+      hosts: Object.fromEntries(
+        Object.entries(kept.hosts).map(([host, ids]) => [host, ids.map((s) => answered(host, s))])
+      ),
+    }),
     mcp_sign_out: (args: any) => {
       kept.here = kept.here.filter((id) => id !== args.server);
       for (const host of args.hosts as string[])
@@ -644,6 +661,36 @@ test('a URL server is signed in for this computer, then each host that keeps sig
   ]);
   assert.equal(button('Sign in', serverRows()[0]), undefined, 'signed in everywhere');
   assert.ok(button('Sign out', serverRows()[0]));
+});
+
+test('a place whose server asked for more permissions says so, and is signed in to again', async () => {
+  const app = signIns(['linear-id'], { build: ['linear-id'] }, { 'build/linear-id': 'read admin' });
+  await page([linear], { kind: 'keychain' }, [hostRow('build', 'ready', ['mcp', 'mcp-sign-in'])], {
+    mcp_signed_in: app.mcp_signed_in,
+    mcp_sign_in: (args) => {
+      delete app.kept.wants[`${args.host ?? 'here'}/${args.server.id}`];
+      return null;
+    },
+  });
+  assert.deepEqual(said(serverRows()[0]), [
+    'linear',
+    'https://mcp.linear.app/mcp',
+    'Signed in: This computer, build',
+    'Needs more permissions: sign in again for build',
+  ]);
+  assert.equal(button('Sign in')?.title, 'Sign in for build, if it asks you to');
+  await click(button('Sign in'));
+  assert.deepEqual(
+    sent('mcp_sign_in').map((a) => a.host),
+    ['build'],
+    'only where it wants more'
+  );
+  assert.deepEqual(said(serverRows()[0]), [
+    'linear',
+    'https://mcp.linear.app/mcp',
+    'Signed in: This computer, build',
+  ]);
+  assert.equal(button('Sign in'), undefined);
 });
 
 test('a sign-in that fails says where and why, and the places after it wait', async () => {

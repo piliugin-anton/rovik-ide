@@ -17,6 +17,7 @@ import {
   type ProjectApprovals as Listed,
 } from '../lib/projectMcpServers';
 import { confirmDialog } from './ConfirmDialog';
+import { SignInActions, SignInLines } from './McpSignIns';
 import { SettingStatus } from './SettingsControls';
 
 export interface ProjectMcpApprovalsProps {
@@ -123,35 +124,16 @@ export default function ProjectMcpApprovals(props: ProjectMcpApprovalsProps) {
                     <span class="profile-row-sub">
                       {listed.project.name} · {approval.file}
                     </span>
-                    <Show when={signIns.at(idOf(listed.project, approval)).length > 0}>
-                      <span class="profile-row-sub">
-                        Signed in: {signIns.said(signIns.at(idOf(listed.project, approval)))}
-                      </span>
-                    </Show>
+                    <SignInLines signIns={signIns} id={idOf(listed.project, approval)} />
                   </div>
                   <div class="profile-row-actions">
-                    <Show
-                      when={
-                        approval.signsIn &&
-                        signIns.missing(idOf(listed.project, approval)).length > 0
-                      }
-                    >
-                      <button
-                        title={`Sign in for ${signIns.said(signIns.missing(idOf(listed.project, approval)))}, if it asks you to`}
-                        disabled={!!signIns.progress()}
-                        onClick={() => void signIn(listed.project, approval)}
-                      >
-                        Sign in
-                      </button>
-                    </Show>
-                    <Show when={signIns.at(idOf(listed.project, approval)).length > 0}>
-                      <button
-                        disabled={!!signIns.progress()}
-                        onClick={() => void signOut(listed.project, approval)}
-                      >
-                        Sign out
-                      </button>
-                    </Show>
+                    <SignInActions
+                      signIns={signIns}
+                      id={idOf(listed.project, approval)}
+                      offered={!!approval.signsIn}
+                      onSignIn={() => void signIn(listed.project, approval)}
+                      onSignOut={() => void signOut(listed.project, approval)}
+                    />
                     <button class="danger" onClick={() => void revoke(listed.project, approval)}>
                       Revoke
                     </button>

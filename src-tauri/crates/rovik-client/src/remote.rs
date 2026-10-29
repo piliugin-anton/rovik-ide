@@ -898,14 +898,18 @@ impl Remote {
         }
     }
 
-    /// The MCP servers signed in on `host`, by id; none on a host that
-    /// can't keep sign-ins (Q14).
-    pub async fn mcp_signed_in(&self, host: &str) -> Result<Vec<String>, Fail> {
+    /// The MCP servers signed in on `host`, each with the scopes it asked
+    /// for that its sign-in there lacks; none on a host that can't keep
+    /// sign-ins (Q14).
+    pub async fn mcp_signed_in(
+        &self,
+        host: &str,
+    ) -> Result<Vec<rovik_protocol::mcp::SignedInServer>, Fail> {
         if !self.serves(host, features::MCP_SIGN_IN) {
             return Ok(Vec::new());
         }
         match self.host_call(host, Request::McpSignedIn).await? {
-            Response::Ids(ids) => Ok(ids),
+            Response::McpSignedIn(signed) => Ok(signed),
             other => Err(internal(format!(
                 "{host} answered which servers are signed in with {other:?}"
             ))),

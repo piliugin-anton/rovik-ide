@@ -472,7 +472,8 @@ async fn a_server_on_http_sse_on_the_user_s_loopback_is_called_through_the_app()
 /// Q14: a sign-in made on the user's computer for the host goes to its
 /// daemon, which keeps it and uses it for the host's runs, refreshing it
 /// there when the server refuses its token; once signed out there, the
-/// server says to sign in.
+/// server says to sign in. One the server refuses even fresh is forgotten
+/// there.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sign_in_for_the_host_is_used_and_refreshed_there_until_signed_out() {
     use common::app::HOST;
@@ -495,15 +496,28 @@ async fn a_sign_in_for_the_host_is_used_and_refreshed_there_until_signed_out() {
     }
     let browser = |url: &str| auth.browse(url).map(drop);
     let kept: std::sync::Arc<dyn oauth::Registrations> = std::sync::Arc::new(Kept::default());
-    let grant = oauth::sign_in_to(&auth.mcp_url, false, &[], None, kept, &browser)
-        .await
-        .unwrap();
+    let sign_in = || {
+        oauth::sign_in_to(
+            &auth.mcp_url,
+            false,
+            &[],
+            None,
+            None,
+            kept.clone(),
+            &browser,
+        )
+    };
+    let grant = sign_in().await.unwrap();
     let first = grant.access_token.clone();
     app.remote
         .mcp_sign_in(HOST, "signed-id", Some(grant))
         .await
         .unwrap();
-    assert_eq!(app.remote.mcp_signed_in(HOST).await.unwrap(), ["signed-id"]);
+    let signed_in = || async {
+        let listed = app.remote.mcp_signed_in(HOST).await.unwrap();
+        listed.into_iter().map(|s| s.server).collect::<Vec<_>>()
+    };
+    assert_eq!(signed_in().await, ["signed-id"]);
 
     let server = McpServer {
         id: "signed-id".into(),
@@ -577,7 +591,7 @@ async fn a_sign_in_for_the_host_is_used_and_refreshed_there_until_signed_out() {
         .mcp_sign_in(HOST, "signed-id", None)
         .await
         .unwrap();
-    assert!(app.remote.mcp_signed_in(HOST).await.unwrap().is_empty());
+    assert!(signed_in().await.is_empty());
     let call = Reply::Call {
         id: "m3",
         name: "mcp",
@@ -593,4 +607,27 @@ async fn a_sign_in_for_the_host_is_used_and_refreshed_there_until_signed_out() {
         .unwrap_or_default()
         .to_string();
     assert!(answered.contains("needs you to sign in"), "{answered}");
+
+    // Signed in again, and refused even fresh: forgotten there.
+    app.remote
+        .mcp_sign_in(HOST, "signed-id", Some(sign_in().await.unwrap()))
+        .await
+        .unwrap();
+    auth.refuse_every_token();
+    let call = Reply::Call {
+        id: "m4",
+        name: "mcp",
+        args: json!({ "tool": "signed.whoami", "arguments": {} }),
+    };
+    let (url, seen) = model(vec![call, Reply::Text("Done.")]).await;
+    app.remote.start(run(&url, "u4")).await.unwrap();
+    ended(&setup.client).await;
+    let messages = seen.lock().unwrap()[1]["messages"].clone();
+    let answered = (messages.as_array().unwrap().iter())
+        .rfind(|m| m["role"] == "tool")
+        .and_then(|m| m["content"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    assert!(answered.contains("sign in again"), "{answered}");
+    assert!(signed_in().await.is_empty(), "forgotten there");
 }

@@ -760,6 +760,8 @@ struct OAuthShared {
     /// it takes.
     access: Mutex<std::collections::HashMap<String, String>>,
     refresh: Mutex<std::collections::HashMap<String, String>>,
+    /// It takes no token at all, even one it just gave.
+    refusing: std::sync::atomic::AtomicBool,
     next: std::sync::atomic::AtomicU64,
 }
 
@@ -855,6 +857,12 @@ impl OAuthServer {
     /// Takes none of its refresh tokens any more: a sign-in revoked.
     pub fn refuse_refresh(&self) {
         self.shared.refresh.lock().unwrap().clear();
+    }
+
+    /// Its MCP server takes no token at all any more, even one just given:
+    /// it refuses the sign-in, whatever its tokens.
+    pub fn refuse_every_token(&self) {
+        (self.shared.refusing).store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -1037,7 +1045,8 @@ fn oauth_mcp(shared: &OAuthShared, body: &Value, authorization: Option<&str>) ->
     let token = authorization
         .and_then(|a| a.strip_prefix("Bearer "))
         .unwrap_or("");
-    let scope = shared.access.lock().unwrap().get(token).cloned();
+    let refusing = shared.refusing.load(std::sync::atomic::Ordering::Relaxed);
+    let scope = (shared.access.lock().unwrap().get(token).cloned()).filter(|_| !refusing);
     let Some(scope) = scope else {
         let challenge = format!(
             "WWW-Authenticate: Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource/mcp\", scope=\"mcp:read\"\r\n",

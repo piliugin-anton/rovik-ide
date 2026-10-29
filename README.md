@@ -1381,9 +1381,13 @@ refuses them.
   with its keys and refreshes them there. The row says where the server is
   signed in ("Signed in: This computer, build-server"), and **Sign out**
   forgets every place's sign-in, as removing the server does.
-- A server without a sign-in, or whose sign-in it refuses, is listed
-  unavailable to the agent, saying to sign in from Settings → MCP servers;
-  one that wants wider scopes (403 `insufficient_scope`) names them.
+- A server without a sign-in, or whose sign-in it refuses (its refresh,
+  or even a fresh token), is listed unavailable to the agent, saying to
+  sign in from Settings → MCP servers; a refused sign-in is forgotten
+  there, so the row offers **Sign in** for that place again. One that
+  wants wider scopes (a 403 `insufficient_scope`) names them, and its row
+  says where it needs more permissions: the next sign-in there asks for
+  them.
 - A server with an `Authorization` header of its own is never offered a
   sign-in. A setup that signs in through a bridge command such as
   `npx mcp-remote <url>` still works as it is.

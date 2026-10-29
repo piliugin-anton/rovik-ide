@@ -7,7 +7,7 @@
 //! server (mcp-plan-2.md, Q11, Q14).
 
 use rovik_protocol::agent::ModelProfile;
-use rovik_protocol::mcp::McpGrant;
+use rovik_protocol::mcp::{McpGrant, SignedInServer};
 use rovik_protocol::Secret;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -160,9 +160,15 @@ impl Keys {
         };
     }
 
-    /// The MCP servers signed in here, by id.
-    pub fn signed_in(&self) -> Vec<String> {
-        self.grants.keys().cloned().collect()
+    /// The MCP servers signed in here, each with the scopes it asked for
+    /// that its sign-in lacks.
+    pub fn signed_in(&self) -> Vec<SignedInServer> {
+        (self.grants.iter())
+            .map(|(server, grant)| SignedInServer {
+                server: server.clone(),
+                wants: grant.wants.clone(),
+            })
+            .collect()
     }
 
     /// Gives each model without a key its provider's, when it came with

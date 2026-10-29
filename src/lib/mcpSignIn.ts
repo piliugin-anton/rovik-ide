@@ -5,7 +5,9 @@
 // for each host apart, since refresh tokens rotate and two places sharing
 // one would sign each other out. A host's sign-in is made here and kept,
 // and refreshed, by its daemon. Settings → MCP servers shows where each
-// server is signed in, with Sign in and Sign out.
+// server is signed in, with Sign in and Sign out; a place whose sign-in the
+// server refused lists it signed out, and one it asked for more
+// permissions (a 403) wants a new sign-in, which asks for them.
 import { invoke } from '@tauri-apps/api/core';
 import { createMemo, createResource, createSignal } from 'solid-js';
 import type { HostRow } from './hosts';
@@ -14,8 +16,20 @@ import type { McpServer } from './mcpServers';
 /** A place a server is signed in: this computer (null), or a host by its id. */
 export type Place = string | null;
 
-/** Where the servers are signed in: by server id, the places. */
-export type SignedIn = Record<string, Place[]>;
+/** A server's sign-in at a place, and the scopes the server asked for that it lacks. */
+export interface SignInAt {
+  place: Place;
+  wants?: string;
+}
+
+/** Where the servers are signed in: by server id. */
+export type SignedIn = Record<string, SignInAt[]>;
+
+/** A server signed in at a place, as the app answers. */
+interface Answered {
+  server: string;
+  wants?: string;
+}
 
 /** The hosts a sign-in can be made for: connected, their daemon keeping sign-ins. */
 export function signInHosts(hosts: HostRow[]): HostRow[] {
@@ -24,14 +38,15 @@ export function signInHosts(hosts: HostRow[]): HostRow[] {
 
 /** Where each of `servers` (ids) is signed in: here, and on each of `hosts` that answers. */
 export async function signedIn(servers: string[], hosts: string[]): Promise<SignedIn> {
-  const answer = await invoke<{ here: string[]; hosts: Record<string, string[]> }>(
+  const answer = await invoke<{ here: Answered[]; hosts: Record<string, Answered[]> }>(
     'mcp_signed_in',
     { servers, hosts }
   );
   const places: SignedIn = {};
-  const add = (id: string, place: Place) => (places[id] ??= []).push(place);
-  for (const id of answer.here) add(id, null);
-  for (const host of hosts) for (const id of answer.hosts[host] ?? []) add(id, host);
+  const add = (place: Place, { server, wants }: Answered) =>
+    (places[server] ??= []).push({ place, ...(wants && { wants }) });
+  for (const signed of answer.here) add(null, signed);
+  for (const host of hosts) for (const signed of answer.hosts[host] ?? []) add(host, signed);
   return places;
 }
 
@@ -64,16 +79,21 @@ export function projectServerId(projectId: string, hash: string): string {
 export interface SignIns {
   /** The places server `id` is signed in. */
   at(id: string): Place[];
-  /** The places it isn't yet: this computer, then each host that keeps sign-ins. */
+  /** The places where the server asked for more permissions than its sign-in has. */
+  wanting(id: string): Place[];
+  /**
+   * The places it wants a sign-in: this computer, then each host that keeps
+   * sign-ins, where it has none or one that wants more.
+   */
   missing(id: string): Place[];
   /** The places as a sentence: "This computer, WSL, build-server". */
   said(places: Place[]): string;
   /** What the sign-in under way says, while one is. */
   progress(): string | null;
   /**
-   * Signs server `id` (called `label`) in where it isn't yet, one browser
-   * sign-in after another by `one`; stops at the first that fails, and
-   * says why.
+   * Signs server `id` (called `label`) in where it wants a sign-in, one
+   * browser sign-in after another by `one`; stops at the first that
+   * fails, and says why.
    */
   signIn(id: string, label: string, one: (place: Place) => Promise<void>): Promise<string | null>;
   /** Signs server `id` out of every place; what failed, if something did. */
@@ -118,11 +138,17 @@ export function createSignIns(
           })
   );
   const [progress, setProgress] = createSignal<string | null>(null);
-  const at = (id: string) => signed()?.[id] ?? [];
+  const of = (id: string) => signed()?.[id] ?? [];
+  const at = (id: string) => of(id).map((s) => s.place);
+  const wanting = (id: string) =>
+    of(id)
+      .filter((s) => s.wants)
+      .map((s) => s.place);
   const missing = (id: string): Place[] =>
-    [null, ...(on() ?? [])].filter((p) => !at(id).includes(p));
+    [null, ...(on() ?? [])].filter((p) => !at(id).includes(p) || wanting(id).includes(p));
   return {
     at,
+    wanting,
     missing,
     said: (list) => list.map(name).join(', '),
     progress,

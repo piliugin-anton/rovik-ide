@@ -165,7 +165,9 @@ impl Wire {
 
     /// Sends with the sign-in's token, if the server has one, and once more
     /// with a fresh one when the server refuses it (401). A refusal a
-    /// sign-in would settle says so, as what to do (Q14).
+    /// sign-in would settle says so, as what to do (Q14): a sign-in refused
+    /// even fresh is forgotten, and the scopes a 403 asks for are kept
+    /// with it, for the next.
     async fn signed<F, Sent>(&self, send: F) -> Result<reqwest::Response, Failure>
     where
         F: Fn(Option<String>) -> Sent,
@@ -185,20 +187,32 @@ impl Wire {
         };
         let status = response.status().as_u16();
         let challenge = oauth::challenge_of(response.headers());
+        if let Some(bearer) = &self.bearer {
+            match status {
+                401 => {
+                    bearer.forget().await;
+                    return Err(Failure::Gone(format!(
+                        "The server refused its sign-in's token: {}.",
+                        oauth::SIGN_IN_AGAIN
+                    )));
+                }
+                403 => {
+                    if let Some(why) = oauth::wider(challenge.as_ref()) {
+                        let scope = challenge.as_ref().and_then(|c| c.scope.as_deref());
+                        bearer.wants(scope.unwrap_or_default()).await;
+                        return Err(Failure::Gone(why));
+                    }
+                }
+                _ => {}
+            }
+            return Ok(response);
+        }
+        // A server that asks for a sign-in, not for the settings' own.
         let set_up = self.headers.contains_key(AUTHORIZATION);
         match status {
-            401 if self.bearer.is_some() => Err(Failure::Gone(format!(
-                "The server refused its sign-in's token: {}.",
-                oauth::SIGN_IN_AGAIN
-            ))),
-            // A server that asks for a sign-in, not for the settings' own.
             401 if !set_up && challenge.is_some() => {
                 Err(Failure::Gone(oauth::NEEDS_SIGN_IN.into()))
             }
-            403 => match oauth::wider(challenge.as_ref()) {
-                Some(why) => Err(Failure::Gone(why)),
-                None => Ok(response),
-            },
             _ => Ok(response),
         }
     }

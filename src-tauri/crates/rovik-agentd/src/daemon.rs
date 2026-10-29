@@ -143,7 +143,7 @@ impl Daemon {
                 self.core.mcp.forget(&server);
                 Ok(Response::Bool(true))
             }
-            Request::McpSignedIn => Ok(Response::Ids(self.store.mcp_signed_in())),
+            Request::McpSignedIn => Ok(Response::McpSignedIn(self.store.mcp_signed_in())),
             Request::McpRelayTake { id } => {
                 (self.relays.take(computer, &id)).map(Response::McpRelayed)
             }

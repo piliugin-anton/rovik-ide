@@ -1009,11 +1009,13 @@ impl McpState {
     /// (Q14): its values as `test` has them (`given` over the saved ones),
     /// as the client the user entered on its form with its secret, else as
     /// Rovik's own (registered through `registrations`), the user sent to
-    /// sign in with `open` (the browser). The grant, for the caller to keep.
+    /// sign in with `open` (the browser), asking for the scopes the place's
+    /// last sign-in `wants` too. The grant, for the caller to keep.
     pub async fn sign_in(
         &self,
         server: &McpServer,
         given: &HashMap<String, String>,
+        wants: Option<&str>,
         registrations: Arc<dyn oauth::Registrations>,
         open: &(dyn Fn(&str) -> Result<(), String> + Send + Sync),
     ) -> Result<oauth::McpGrant, String> {
@@ -1032,7 +1034,7 @@ impl McpState {
                 Some((client.client_id.clone(), Some(secret)))
             }
         };
-        oauth::sign_in_to(url, *sse, &headers, entered, registrations, open).await
+        oauth::sign_in_to(url, *sse, &headers, entered, wants, registrations, open).await
     }
 
     /// The secret of the OAuth client the user entered on `server`'s form:

@@ -577,6 +577,10 @@ impl rovik_core::mcp::oauth::GrantStore for KeptGrants {
     fn put(&self, server: &str, grant: &rovik_protocol::mcp::McpGrant) -> Result<(), String> {
         self.0.set_mcp_grant(server, Some(grant.clone()))
     }
+
+    fn forget(&self, server: &str) -> Result<(), String> {
+        self.0.set_mcp_grant(server, None)
+    }
 }
 
 #[cfg(test)]
