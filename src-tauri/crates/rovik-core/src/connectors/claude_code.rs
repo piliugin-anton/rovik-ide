@@ -16,7 +16,10 @@
 //! hooks (`hook_settings`) have the run make ready what it needs, before
 //! it runs and after it failed (agent_run/environment.rs), and a file its
 //! shell runs first (`CLAUDE_ENV_FILE`) gives it a cloud host's toolchains
-//! as they're installed.
+//! as they're installed. The MCP servers of the project's own `.mcp.json`,
+//! which it would start unasked in a `-p` run, are turned off
+//! (`project_mcp_servers`): Rovik's approval decides on them, and its
+//! `mcp` tool serves those the user allowed (mcp-plan-2.md, Q12).
 //!
 //! What it does comes back as the IDE shows a reply: its text as it streams
 //! (`--include-partial-messages`), its thinking as reasoning, each tool it
@@ -378,8 +381,9 @@ fn git_deny_rules() -> Vec<String> {
 /// `prompt_file` holds the system prompt (`system_text`), read from a file
 /// rather than the command line, which a long prompt would overflow on
 /// Windows; `mcp_config` is Rovik's tools' server, in that mode;
-/// `hooks_file` is the settings with Rovik's hooks around its own shell's
-/// commands (`hook_settings`), when the run makes them ready;
+/// `settings_file` is the settings Rovik adds (`added_settings`): its hooks
+/// around Claude Code's own shell's commands, when the run makes them
+/// ready, and the project's own MCP servers turned off;
 /// `appended_file` is what follows Claude Code's own prompt: the list of the
 /// user's MCP servers' tools, with Rovik's `mcp` tool (`Turn::mcp`).
 pub fn args_for(
@@ -388,7 +392,7 @@ pub fn args_for(
     session: &Session,
     prompt_file: Option<&Path>,
     mcp_config: Option<&Path>,
-    hooks_file: Option<&Path>,
+    settings_file: Option<&Path>,
     appended_file: Option<&Path>,
 ) -> Vec<String> {
     // Rovik answers what would ask, through its server; otherwise nobody
@@ -518,9 +522,9 @@ pub fn args_for(
         }
     }
     // Before the settings' own arguments: a `--settings` of theirs wins.
-    if let Some(hooks) = hooks_file {
+    if let Some(file) = settings_file {
         args.push("--settings".into());
-        args.push(hooks.to_string_lossy().into_owned());
+        args.push(file.to_string_lossy().into_owned());
     }
     args.extend(split_args(&settings.extra_args));
     args
@@ -1893,14 +1897,10 @@ async fn run_turn(
         served = Some(started);
     }
     let cwd = cwd_of(turn);
-    let (mcp_config, hooks, env_file) = match &served {
+    let (mcp_config, env_file) = match &served {
         Some((server, _)) => (
             (asks.is_some() || offer.is_some())
                 .then(|| TempFile::write("mcp", "json", &server.config_json()))
-                .transpose()?,
-            checks
-                .as_ref()
-                .map(|_| TempFile::write("settings", "json", &hook_settings(server)))
                 .transpose()?,
             // Its shell runs this before each command: what's installed
             // while it works reaches the next one (a cloud host's).
@@ -1911,15 +1911,21 @@ async fn run_turn(
                 .map(|script| TempFile::write("env", "sh", &script))
                 .transpose()?,
         ),
-        None => (None, None, None),
+        None => (None, None),
     };
+    let hooks = (served.as_ref())
+        .filter(|_| checks.is_some())
+        .map(|(server, _)| server);
+    let added = added_settings(hooks, &project_mcp_servers(&cwd))
+        .map(|settings| TempFile::write("settings", "json", &settings))
+        .transpose()?;
     let args = args_for(
         &settings,
         turn,
         &session,
         prompt.as_ref().map(TempFile::path),
         mcp_config.as_ref().map(TempFile::path),
-        hooks.as_ref().map(TempFile::path),
+        added.as_ref().map(TempFile::path),
         appended.as_ref().map(TempFile::path),
     );
     let mut env = env_for(&settings, &turn.api_key);
@@ -1936,7 +1942,7 @@ async fn run_turn(
     let files: Vec<TempFile> = prompt
         .into_iter()
         .chain(mcp_config)
-        .chain(hooks)
+        .chain(added)
         .chain(env_file)
         .chain(appended)
         .collect();
@@ -2077,7 +2083,7 @@ const CHECKED_TOOLS: &str = "Bash|Read|Edit|MultiEdit|Write|NotebookEdit|Grep";
 /// Code waits for the answer. The hooks refuse only what would read or
 /// change a restricted file: anything else runs as Claude Code's
 /// permission mode, or Rovik's permissions, have it.
-fn hook_settings(server: &McpServer) -> String {
+fn hook_settings(server: &McpServer) -> Value {
     let hook = |matcher: &str| {
         json!([{
             "matcher": matcher,
@@ -2092,7 +2098,38 @@ fn hook_settings(server: &McpServer) -> String {
     json!({
         "hooks": { "PreToolUse": hook(CHECKED_TOOLS), "PostToolUseFailure": hook("Bash") },
     })
-    .to_string()
+}
+
+/// The names of the MCP servers a project's own `.mcp.json` sets up, in
+/// `cwd` and the folders above it: a `-p` run of Claude Code would start
+/// them itself, without asking (mcp-plan-2.md, Q12). A file that can't be
+/// read, or isn't JSON, names none.
+fn project_mcp_servers(cwd: &Path) -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for folder in cwd.ancestors() {
+        let Ok(text) = std::fs::read_to_string(folder.join(".mcp.json")) else {
+            continue;
+        };
+        if let Ok(Value::Object(file)) = serde_json::from_str::<Value>(&text) {
+            if let Some(Value::Object(servers)) = file.get("mcpServers") {
+                names.extend(servers.keys().cloned());
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+/// The settings Rovik adds to a run (`--settings`): its hooks, posted to
+/// `hooks`' server (`hook_settings`), and the project's own MCP servers
+/// `off` (`disabledMcpjsonServers`, which wins over any approval Claude
+/// Code has of them): Rovik's approval decides on those, and its `mcp`
+/// tool serves the ones allowed. None without either.
+fn added_settings(hooks: Option<&McpServer>, off: &[String]) -> Option<String> {
+    let mut settings = hooks.map_or_else(|| json!({}), hook_settings);
+    if !off.is_empty() {
+        settings["disabledMcpjsonServers"] = json!(off);
+    }
+    (settings != json!({})).then(|| settings.to_string())
 }
 
 /// One of Claude Code's own tool calls as the Rovik call that does the
@@ -4896,7 +4933,7 @@ fi
     #[tokio::test]
     async fn rovik_hooks_wrap_claude_codes_own_tools() {
         let (server, _calls) = McpServer::start(&[], "test", None).await.unwrap();
-        let hooks: Value = serde_json::from_str(&hook_settings(&server)).unwrap();
+        let hooks = hook_settings(&server);
         for (event, matcher) in [
             ("PreToolUse", CHECKED_TOOLS),
             ("PostToolUseFailure", "Bash"),
@@ -5125,6 +5162,67 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Hi there",
             .nth(1)
             .unwrap_or_else(|| panic!("{args}"));
         assert!(!Path::new(file).exists(), "{file}");
+    }
+
+    /// Q12 (mcp-plan-2.md): a `-p` run of Claude Code would start the
+    /// servers of the project's own `.mcp.json` without asking. Each run of
+    /// a turn turns them off, those of the folders above too, a one-off
+    /// request's as well, beside Rovik's hooks when it has them: Rovik's
+    /// approval decides on them, and its `mcp` tool serves those allowed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_project_s_own_mcp_servers_are_turned_off_in_claude_code() {
+        let dir = crate::testing::temp_dir();
+        let project = dir.0.join("app");
+        std::fs::create_dir_all(&project).unwrap();
+        let servers = |names: &[&str]| {
+            let entries: serde_json::Map<String, Value> = (names.iter())
+                .map(|n| (n.to_string(), json!({ "command": "npx", "args": [n] })))
+                .collect();
+            json!({ "mcpServers": entries }).to_string()
+        };
+        std::fs::write(project.join(".mcp.json"), servers(&["github", "evil"])).unwrap();
+        std::fs::write(dir.0.join(".mcp.json"), servers(&["above"])).unwrap();
+        assert_eq!(project_mcp_servers(&project), ["above", "evil", "github"]);
+        let program = fake_claude(
+            &dir.0,
+            r#"
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--settings" ]; then cp "$2" "$(dirname "$0")/settings.json"; fi
+  shift
+done
+cat > /dev/null
+echo '{"type":"system","subtype":"init","session_id":"s-1","model":"claude-sonnet-5"}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":1},"num_turns":1}'
+"#,
+        );
+        let kept = || -> Value {
+            let text = std::fs::read_to_string(dir.0.join("settings.json")).unwrap();
+            std::fs::remove_file(dir.0.join("settings.json")).unwrap();
+            serde_json::from_str(&text).unwrap()
+        };
+        let (_tx, mut cancel) = watch::channel(false);
+        for one_shot in [false, true] {
+            let mut t = turn("Say hi");
+            t.settings = json!({ "program": program, "auth": "token" });
+            t.api_key = "tok".into();
+            t.cwd = Some(project.clone());
+            t.one_shot = one_shot;
+            ClaudeCode.run(t, &mut cancel, &mut |_| {}).await.unwrap();
+            assert_eq!(
+                kept(),
+                json!({ "disabledMcpjsonServers": ["above", "evil", "github"] }),
+                "one-off: {one_shot}"
+            );
+        }
+
+        let (server, _calls) = McpServer::start(&[], "test", None).await.unwrap();
+        let both: Value =
+            serde_json::from_str(&added_settings(Some(&server), &["github".to_string()]).unwrap())
+                .unwrap();
+        assert_eq!(both["hooks"], hook_settings(&server)["hooks"]);
+        assert_eq!(both["disabledMcpjsonServers"], json!(["github"]));
+        assert_eq!(added_settings(None, &[]), None, "nothing to add");
     }
 
     #[cfg(unix)]

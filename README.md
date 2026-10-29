@@ -1412,7 +1412,10 @@ list says why it's unavailable.
 - Claude Code and Codex with their own tools (Agent mode) are served the
   same tool by Rovik, as `mcp__rovik__mcp`, with the list after their own
   prompt, and Rovik approves and runs each call. In Plan mode and
-  Autopilot `mcp` is one of Rovik's tools they call.
+  Autopilot `mcp` is one of Rovik's tools they call. Claude Code doesn't
+  start the servers of the project's `.mcp.json` itself, as its headless
+  runs would without asking: Rovik turns them off there
+  (`disabledMcpjsonServers`) and serves those you allow, as above.
 
 What to keep in mind:
 

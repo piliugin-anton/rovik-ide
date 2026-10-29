@@ -154,6 +154,13 @@ list beside the user's.
 - Project servers take the MCP approval rule (Q07) as the user's do, are
   marked as the project's in the list and the chat, and have the same
   lifecycle (Q04, Q11).
+- Claude Code in Agent mode would start the `.mcp.json` servers itself: a
+  `-p` run loads project-scoped servers without asking
+  (code.claude.com/docs/en/mcp). Each of its runs gets their names in
+  `disabledMcpjsonServers` in its `--settings` (a rejection wins over any
+  approval Claude Code has), not `--strict-mcp-config`, which would drop
+  the user's own Claude Code servers too; those allowed reach it through
+  Rovik's `mcp`.
 
 ## Q13. The HTTP+SSE transport
 
@@ -370,6 +377,3 @@ The first plan's, and:
   intent).
 - The cards' and pickers' exact look, in the chat's and composer's
   existing style.
-- Whether the Claude Code connector in Agent mode, which may read
-  `.mcp.json` itself, needs `--strict-mcp-config` or other handling so a
-  project server isn't loaded twice.
