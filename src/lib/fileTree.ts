@@ -75,7 +75,13 @@ export function createFileTreeController(rootPath: () => string | null) {
       // was saved). Forget it: the effect below retries every expanded
       // folder that isn't cached, so keeping it would retry forever.
       console.warn(`Can't read ${path}, collapsing it:`, err);
-      forget(path);
+      if (path === root) {
+        // The root can't collapse. Remember the failed read so startup
+        // can finish rather than retrying it forever.
+        setCache((prev) => new Map(prev).set(path, []));
+      } else {
+        forget(path);
+      }
     } finally {
       setLoading((prev) => {
         const next = new Set(prev);
@@ -108,7 +114,7 @@ export function createFileTreeController(rootPath: () => string | null) {
       setLastRootPath(root);
     }
     if (root) {
-      if (!cache().has(root)) {
+      if (!cache().has(root) && !loading().has(root)) {
         void loadDir(root);
       }
       // Fetch any expanded directory that isn't cached yet — covers both
@@ -283,5 +289,16 @@ export function createFileTreeController(rootPath: () => string | null) {
     return out;
   });
 
-  return { rows, expanded, toggle, refresh, refreshAncestors, files, presetExpanded, moved };
+  return {
+    rows,
+    expanded,
+    toggle,
+    refresh,
+    refreshAncestors,
+    files,
+    presetExpanded,
+    moved,
+    /** Whether any folder listings are still being read. */
+    loading: () => loading().size > 0,
+  };
 }

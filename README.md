@@ -39,6 +39,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   rust-analyzer when it's installed.
 - A file tree that stays fast on very large projects and refreshes when
   files change on disk.
+- The startup spinner stays visible until the project, restored tabs and
+  expanded folders have finished loading.
 - Browser tabs: a page a dev server on a cloud host opens shows in a tab
   of the editor, hot reload and all, with an address bar for any http or
   https page (see [Servers and pages on a cloud
@@ -321,7 +323,9 @@ is brought to the app's version by itself.
 
 ## Getting started
 
-1. **Open a project:** choose a folder. It appears in the file tree.
+1. **Open a project:** choose a folder with **Open project…**, or create one
+   with **New project…**. Both buttons fill the width of the empty Files
+   tab. The project's files appear in the file tree.
 2. **Add a model:** open **Settings → Model providers**, paste the
    provider's base URL and your API key, and choose the models you want.
 3. **Review permissions:** in **Settings → Permissions & approval**, choose

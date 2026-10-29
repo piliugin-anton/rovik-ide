@@ -204,7 +204,6 @@ export default function App() {
       }
     } finally {
       setRestoringProject(false);
-      dismissBootSplash();
     }
   });
   const [rootId, setRootId] = createSignal<string | null>(null);
@@ -302,6 +301,14 @@ export default function App() {
   const [pendingOpenPath, setPendingOpenPath] = createSignal<string | null>(null);
 
   const tree = createFileTreeController(rootPath);
+
+  // Restored tabs alone don't mean the project is ready: its identity
+  // and the expanded folders' listings finish independently.
+  createEffect(() => {
+    if (!restoringProject() && currentProject() !== undefined && !tree.loading()) {
+      dismissBootSplash();
+    }
+  });
 
   const displayRows = createMemo<TreeRow[]>(() => {
     const rows = tree.rows();

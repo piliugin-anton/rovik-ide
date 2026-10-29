@@ -10,6 +10,7 @@ import type { DirEntryInfo } from '../types';
 
 /** Folders of a fake disk, by path: their entries' names (a trailing / for a folder). */
 let disk: Record<string, string[]> = {};
+let read = (path: string): DirEntryInfo[] | Promise<DirEntryInfo[]> => entries(path);
 
 function entries(path: string): DirEntryInfo[] {
   const names = disk[path];
@@ -24,7 +25,7 @@ function entries(path: string): DirEntryInfo[] {
 
 (window as any).__TAURI_INTERNALS__ = {
   invoke: async (cmd: string, args: { path: string }) => {
-    if (cmd === 'read_dir_entries') return entries(args.path);
+    if (cmd === 'read_dir_entries') return read(args.path);
     throw new Error(`unexpected ${cmd}`);
   },
 };
@@ -32,6 +33,16 @@ function entries(path: string): DirEntryInfo[] {
 const settle = async () => {
   for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
 
 test('a renamed folder stays expanded, and the folders open inside it', async () => {
   disk = {
@@ -72,4 +83,71 @@ test('a renamed folder stays expanded, and the folders open inside it', async ()
     );
     dispose();
   });
+});
+
+test('the file tree stays loading until the root and restored folders have finished reading', async () => {
+  const rootRead = deferred<DirEntryInfo[]>();
+  const folderRead = deferred<DirEntryInfo[]>();
+  read = (path) => (path === '/p' ? rootRead.promise : folderRead.promise);
+  let dispose = () => {};
+  try {
+    const tree = createRoot((stop) => {
+      dispose = stop;
+      const [root, setRoot] = createSignal<string | null>(null);
+      const tree = createFileTreeController(root);
+      tree.presetExpanded('/p', ['/p/src']);
+      setRoot('/p');
+      return tree;
+    });
+    assert.equal(tree.loading(), true);
+    rootRead.resolve([{ id: 'src', path: '/p/src', name: 'src', is_dir: true, ignored: false }]);
+    await settle();
+    assert.ok(tree.rows().some((row) => row.path === '/p/src'));
+    assert.equal(tree.loading(), true);
+    folderRead.resolve([]);
+    await settle();
+    assert.equal(tree.loading(), false);
+  } finally {
+    dispose();
+    read = (path) => entries(path);
+  }
+});
+
+test('a failed root read finishes loading and can be retried by refreshing', async () => {
+  const pending = deferred<DirEntryInfo[]>();
+  let reads = 0;
+  read = () => {
+    reads++;
+    // A mistaken retry stays pending, so it fails the assertion instead
+    // of starving the test's event loop with repeated rejections.
+    return reads === 1 ? pending.promise : new Promise(() => {});
+  };
+  let dispose = () => {};
+  const quiet = console.warn;
+  console.warn = () => {};
+  try {
+    const tree = createRoot((stop) => {
+      dispose = stop;
+      return createFileTreeController(() => '/p');
+    });
+    assert.equal(tree.loading(), true);
+    pending.reject(new Error('permission denied'));
+    await settle();
+    assert.equal(tree.loading(), false);
+    assert.equal(reads, 1, 'a failed root read is not retried forever');
+    assert.deepEqual(tree.rows(), []);
+
+    disk = { '/p': ['README.md'] };
+    read = (path) => entries(path);
+    tree.refresh();
+    await settle();
+    assert.deepEqual(
+      tree.rows().map((row) => row.name),
+      ['README.md']
+    );
+  } finally {
+    dispose();
+    read = (path) => entries(path);
+    console.warn = quiet;
+  }
 });
