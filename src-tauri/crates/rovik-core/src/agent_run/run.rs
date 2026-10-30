@@ -3209,14 +3209,14 @@ impl Run {
         }
         let mut meta = meta.unwrap_or_else(|| json!({}));
         if let Some(fields) = meta.as_object_mut() {
-            fields.insert("outcome".into(), json!(outcome.as_str()));
+            outcome.write_meta(fields);
         }
         let mut m = new_message("tool", &content);
         m.tool_call_id = Some(tool_call_id.to_string());
         m.meta = Some(meta);
         m.attachments = attachments;
         self.append(vec![m]).await?;
-        self.log_tool(tool_call_id, &content, outcome);
+        self.log_tool(tool_call_id, &content, &outcome);
         Ok(())
     }
 
@@ -3225,7 +3225,7 @@ impl Run {
     /// whether it failed and how (`tools::error_class`), how long it took
     /// (from its turn, or its approval, to its result), and for a command
     /// that ran, how it ended.
-    fn log_tool(&self, tool_call_id: &str, content: &str, outcome: Outcome) {
+    fn log_tool(&self, tool_call_id: &str, content: &str, outcome: &Outcome) {
         let (tool, took) = self
             .calls
             .finish(tool_call_id)
@@ -3240,10 +3240,11 @@ impl Run {
             "error": failed.then(|| tools::error_class(content)),
             "ms": took.as_millis() as u64,
         });
-        if tool == "bash" {
-            if let Some((exit_code, timed_out)) = tools::command_end(content) {
-                entry["exitCode"] = json!(exit_code);
-                if timed_out {
+        // How the command ended; one left running in the background hasn't.
+        if let (Outcome::Ran(end), "bash") = (outcome, tool.as_str()) {
+            if end.background.is_none() {
+                entry["exitCode"] = json!(end.exit_code);
+                if end.timed_out {
                     entry["timedOut"] = json!(true);
                 }
             }

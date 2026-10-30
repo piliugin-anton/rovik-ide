@@ -599,9 +599,9 @@ impl Run {
                 self.context_edited = true;
             }
             self.note_finished(tc, &mut result.content, result.outcome.failed(), false);
-            let meta = match result.outcome {
-                Outcome::Done => tools::result_meta(&tc.name, &result.content).map(Value::Object),
-                Outcome::Failed => None,
+            let meta = match result.outcome.failed() {
+                false => tools::result_meta(&tc.name, &result.content).map(Value::Object),
+                true => None,
             };
             return self
                 .add_tool_result(&tc.id, result.content, result.outcome, meta, Vec::new())

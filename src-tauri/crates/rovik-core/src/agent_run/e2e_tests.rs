@@ -6589,6 +6589,51 @@ async fn every_finished_tool_call_leaves_a_tool_line() {
     assert!(lines.iter().all(|l| l.get("role").is_none()), "the lead's");
 }
 
+/// A command of two lines: its status isn't its result's second line, yet
+/// its tool line has its exit code, and its row the meta the chat shows it
+/// by (`exitCode`).
+#[tokio::test]
+async fn a_two_line_commands_tool_line_has_its_exit_code() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "b1",
+            name: "bash",
+            args: json!({ "command": "echo a\necho b" }),
+        },
+        Reply::Call {
+            id: "b2",
+            name: "bash",
+            args: json!({ "command": "echo a\nexit 3" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("Run them"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let lines = tool_lines(&h, 2).await;
+    assert_eq!(lines[0]["exitCode"], 0, "{lines:#?}");
+    assert_eq!(lines[1]["exitCode"], 3, "{lines:#?}");
+    assert!(lines.iter().all(|l| l["failed"] == false), "{lines:#?}");
+    let messages = h.messages().await;
+    for (id, code) in [("b1", 0), ("b2", 3)] {
+        let result = result_of(&messages, id);
+        assert!(
+            result.content.starts_with("$ echo a\n"),
+            "{}",
+            result.content
+        );
+        let meta = result.meta.clone().unwrap();
+        assert_eq!(meta["exitCode"], code, "{id}: {meta}");
+        assert_eq!(meta["outcome"], "done", "{id}: {meta}");
+    }
+}
+
 /// A run that panics before it answers settles the user's message as
 /// failed: the composer gets its draft back instead of waiting forever.
 #[tokio::test]

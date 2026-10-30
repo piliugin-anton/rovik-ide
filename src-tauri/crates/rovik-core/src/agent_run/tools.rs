@@ -9,7 +9,7 @@ use super::plan::{MAX_TODO_ITEMS, PLAN_BLOCKED_TOOLS};
 use super::StopSignal;
 use crate::allowed_hosts::AllowedHosts;
 use crate::code_search::SearchResult;
-use crate::command_tool::CommandOutput;
+use crate::command_tool::{CommandEnd, CommandOutput};
 use crate::file_guard::Seen;
 use crate::outline::Symbol;
 use crate::restricted_files::{Op, RestrictedFiles};
@@ -597,10 +597,13 @@ pub fn tools_for(
 /// so; the loop guard, the agent log, the stored row (`meta.outcome`) and
 /// the chat read it from here, never from the text the model gets, which
 /// says a failure with `Error:` (a file it read may start so too).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Outcome {
     #[default]
     Done,
+    /// A command ran (bash; background's output and stop): done as a call,
+    /// however the command ended.
+    Ran(CommandEnd),
     Failed,
 }
 
@@ -614,15 +617,25 @@ impl Outcome {
     }
 
     /// Whether the call failed.
-    pub fn failed(self) -> bool {
-        self == Outcome::Failed
+    pub fn failed(&self) -> bool {
+        *self == Outcome::Failed
     }
 
-    /// As a tool message's `meta.outcome` stores it.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Outcome::Done => "done",
-            Outcome::Failed => "failed",
+    /// What a tool message's meta says of it: `outcome`, "done" or
+    /// "failed", and for a command that ran, the keys the chat's tool block
+    /// reads: its exit code (null when it didn't exit on its own, or still
+    /// runs), its id while it runs in the background, a long wait.
+    pub fn write_meta(&self, meta: &mut Map<String, Value>) {
+        let outcome = if self.failed() { "failed" } else { "done" };
+        meta.insert("outcome".into(), json!(outcome));
+        if let Outcome::Ran(end) = self {
+            meta.insert("exitCode".into(), json!(end.exit_code));
+            if let Some(id) = &end.background {
+                meta.insert("background".into(), json!(id));
+            }
+            if let Some(waited) = &end.waited {
+                meta.insert("waited".into(), json!(waited));
+            }
         }
     }
 }
@@ -678,7 +691,7 @@ pub(super) fn with_error_prefix(text: String) -> String {
 /// its `tool` line in the agent log and the evaluation's counts: one of
 /// the classes below, by the words the tools write, or "other". A command
 /// that ran and exited non-zero didn't fail as a call: its result is the
-/// command's (`command_end`).
+/// command's (`Outcome::Ran`).
 pub fn error_class(result: &str) -> &'static str {
     let text = result.to_lowercase();
     ERROR_CLASSES
@@ -805,24 +818,6 @@ const ERROR_CLASSES: &[(&str, &[&str])] = &[
         ],
     ),
 ];
-
-/// G02: how a command that ran ended, from its result's second line
-/// (`format_command_output`): its exit code (None when it didn't exit on
-/// its own), and whether it timed out. None: no command ran (a refusal,
-/// another tool's result).
-pub fn command_end(result: &str) -> Option<(Option<i64>, bool)> {
-    let mut lines = result.split('\n');
-    if !lines.next()?.starts_with("$ ") {
-        return None;
-    }
-    let status = lines.next()?;
-    if let Some(c) = EXIT_CODE.captures(status) {
-        return Some((c[1].parse::<i64>().ok(), false));
-    }
-    let timed_out = status.starts_with("timed out");
-    (timed_out || status.starts_with("stopped by the user") || status.starts_with("ended by"))
-        .then_some((None, timed_out))
-}
 
 fn num(args: &Map<String, Value>, key: &str) -> Option<f64> {
     args.get(key).and_then(|v| v.as_f64())
@@ -1362,14 +1357,14 @@ async fn run(
                 .into_iter()
                 .collect();
             let mut whole_output = None;
-            let (mut content, printed) = match background {
+            let (mut content, printed, end) = match background {
                 Some(chat) => {
                     let started_at = std::time::Instant::now();
                     let started =
                         start_agent_command(core, &chat, &root_owned, command, &stop, ctx).await?;
                     notes.extend(commands_kept_out(started_at, &chat));
                     let printed = started.output.clone();
-                    (format_background(&started), printed)
+                    (format_background(&started), printed, started.end())
                 }
                 None => {
                     let started = std::time::Instant::now();
@@ -1398,7 +1393,7 @@ async fn run(
                     if shortened {
                         whole_output = Some(whole_output_text(command, &out));
                     }
-                    (shown, out.text())
+                    (shown, out.text(), out.end())
                 }
             };
             for note in notes {
@@ -1409,6 +1404,7 @@ async fn run(
             }
             return Ok(ToolResult {
                 content,
+                outcome: Outcome::Ran(end),
                 whole_output,
                 ..Default::default()
             });
@@ -1420,26 +1416,33 @@ async fn run(
             };
             let action = text(args, "action").unwrap_or_default();
             let id = text(args, "id").unwrap_or_default().to_string();
-            match action {
-                "list" => format_background_list(&background::list(&chat)),
+            let report = match action {
+                "list" => {
+                    return Ok(ToolResult::ok(format_background_list(&background::list(
+                        &chat,
+                    ))))
+                }
                 "output" | "stop" if id.trim().is_empty() => {
                     return Ok(ToolResult::error(format!(
                         "Error: \"id\" is required to {action} a command."
                     )))
                 }
-                "output" => format_background(&background::output(&chat, &id)?),
+                "output" => background::output(&chat, &id)?,
                 // It waits until what it killed is gone.
-                "stop" => format_background(
-                    &crate::rt::spawn_blocking(move || background::stop(&chat, &id))
-                        .await
-                        .map_err(|e| e.to_string())??,
-                ),
+                "stop" => crate::rt::spawn_blocking(move || background::stop(&chat, &id))
+                    .await
+                    .map_err(|e| e.to_string())??,
                 _ => {
                     return Ok(ToolResult::error(
                         "Error: \"action\" is list, output or stop.",
                     ))
                 }
-            }
+            };
+            return Ok(ToolResult {
+                content: format_background(&report),
+                outcome: Outcome::Ran(report.end()),
+                ..Default::default()
+            });
         }
         "list_dir" => {
             let path = text(args, "path").map(str::to_string);
@@ -1815,12 +1818,14 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> (String, boo
             Some(code) => format!("exit code {code}"),
         }
     };
-    // The first two lines are read back by the chat's tool block (exit code).
+    // The command, then how it ended. The chat takes that from the stored
+    // result's meta (`CommandEnd`); from these lines only in a row stored
+    // before results had one.
     let mut parts = vec![
         format!("$ {command}"),
         format!("{status}, {:.1} s", out.duration_ms as f64 / 1000.0),
     ];
-    // Third line, read back by the tool block too: a long wait for a CPU slot.
+    // Third line: a long wait for a CPU slot.
     if let Some(waited) = out.waited.as_ref().and_then(|w| w.describe()) {
         parts.push(waited);
     }
@@ -2039,7 +2044,6 @@ fn count_lines(text: &str) -> usize {
 
 static MATCH_COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+) match").unwrap());
 static NUMBERED_HIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\. ").unwrap());
-static EXIT_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^exit code (-?\d+)").unwrap());
 /// On the result's first line: a syntax check may follow (V04).
 static WRITE_CHANGES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)\(\+(\d+) -(\d+) lines\)$").unwrap());
@@ -2092,9 +2096,6 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
                 .filter(|l| NUMBERED_HIT.is_match(l))
                 .count()),
         ),
-        "bash" => Some(command_meta(result)),
-        // A command it read or stopped; its list has no meta.
-        "background" if result.starts_with("$ ") => Some(command_meta(result)),
         // A whole-file write: the lines it added and removed (agent_tools::write_file).
         "write" => WRITE_CHANGES.captures(result).map(|c| {
             let mut meta = Map::new();
@@ -2114,31 +2115,6 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
         }
         _ => None,
     }
-}
-
-/// A command's result (`format_command_output`, `format_background`), as
-/// its tool block reads it: its exit code (null when it didn't exit on its
-/// own, or still runs), its id while it runs in the background, and a long
-/// wait for a CPU slot.
-fn command_meta(result: &str) -> Map<String, Value> {
-    let line = result.split('\n').nth(1).unwrap_or("");
-    let code = EXIT_CODE
-        .captures(line)
-        .and_then(|c| c[1].parse::<i64>().ok());
-    let mut meta = Map::new();
-    meta.insert("exitCode".into(), json!(code));
-    if let Some(running) = line.strip_prefix(RUNNING_AS) {
-        let id = running.split(',').next().unwrap_or_default();
-        meta.insert("background".into(), json!(id));
-    }
-    if let Some(waited) = result
-        .split('\n')
-        .nth(2)
-        .filter(|l| l.starts_with("Waited "))
-    {
-        meta.insert("waited".into(), json!(waited.trim_end_matches('.')));
-    }
-    meta
 }
 
 /// Why `command` can't run where the chat works, if it can't: an isolated
@@ -2576,8 +2552,8 @@ mod tests {
             "$ cargo test\nexit code 1, 1.2 s\n--- stderr ---\nerror: boom"
         );
         assert!(!shortened);
-        assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], json!(1));
-        assert!(result_meta("bash", &text).unwrap().get("waited").is_none());
+        assert_eq!(ran_meta(out.end())["exitCode"], json!(1));
+        assert!(ran_meta(out.end()).get("waited").is_none());
 
         // A long wait for a CPU slot: told to the model, kept on the tool block.
         let waited = crate::workload::Waited {
@@ -2594,9 +2570,16 @@ mod tests {
             "$ cargo test\nexit code 1, 1.2 s\nWaited 1 min 20 s for a CPU slot (your terminal is running `cargo build`).\n"
         ));
         assert_eq!(
-            result_meta("bash", &text).unwrap()["waited"],
+            ran_meta(out.end())["waited"],
             json!("Waited 1 min 20 s for a CPU slot (your terminal is running `cargo build`)")
         );
+    }
+
+    /// The meta a call's result is stored with when it ran `end`.
+    fn ran_meta(end: CommandEnd) -> Map<String, Value> {
+        let mut meta = Map::new();
+        Outcome::Ran(end).write_meta(&mut meta);
+        meta
     }
 
     #[test]
@@ -2945,7 +2928,7 @@ a.rs (3 matches)
             text,
             "$ sleep 999\ntimed out (killed), 120.0 s\n(no output)"
         );
-        assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], Value::Null);
+        assert_eq!(ran_meta(out.end())["exitCode"], Value::Null);
         // Truncated by the runner: said so.
         let out = CommandOutput {
             exit_code: Some(0),
@@ -3219,35 +3202,57 @@ a.rs (3 matches)
         assert!(whole.ends_with("line 3000\n--- stderr ---\nwarning: slow\n"));
     }
 
-    /// G02: how a command that ran ended, from its result; nothing for a
-    /// refusal or another tool's result.
+    /// G02: how a command that ran ended comes from what ran, not from its
+    /// result's text, whose second line is its status only when the command
+    /// is one line: exit code, time-out, stop and a signal, each for a
+    /// command of one line and of two. A refusal or another tool's result
+    /// says nothing of a command.
     #[test]
-    fn a_commands_end_comes_from_its_result() {
-        let end = |exit_code: Option<i32>, timed_out: bool, stopped: bool| {
-            let out = CommandOutput {
-                exit_code,
-                stdout: "ok\n".into(),
-                stderr: String::new(),
-                timed_out,
-                stopped,
-                truncated: false,
-                duration_ms: 400,
-                waited: None,
-                whole: None,
-            };
-            command_end(&format_command_output("npm test", &out).0)
+    fn a_command_of_two_lines_reports_how_it_ended() {
+        let output = |exit_code: Option<i32>, timed_out: bool, stopped: bool| CommandOutput {
+            exit_code,
+            stdout: "ok\n".into(),
+            stderr: String::new(),
+            timed_out,
+            stopped,
+            truncated: false,
+            duration_ms: 400,
+            waited: None,
+            whole: None,
         };
-        assert_eq!(end(Some(0), false, false), Some((Some(0), false)));
-        assert_eq!(end(Some(2), false, false), Some((Some(2), false)));
-        assert_eq!(end(None, true, false), Some((None, true)));
-        assert_eq!(end(None, false, true), Some((None, false)));
-        assert_eq!(end(None, false, false), Some((None, false)), "a signal");
-        for other in [
-            "Error: blocked by the user's permission settings.",
-            "wrote 3 bytes to a.txt",
-            "",
-        ] {
-            assert_eq!(command_end(other), None, "{other}");
+        let cases = [
+            (output(Some(0), false, false), "exit code 0", Some(0)),
+            (output(Some(2), false, false), "exit code 2", Some(2)),
+            (output(None, true, false), "timed out (killed)", None),
+            (
+                output(None, false, true),
+                "stopped by the user (killed)",
+                None,
+            ),
+            (output(None, false, false), "ended by a signal", None),
+        ];
+        for command in ["npm test", "npm run build\nnpm test"] {
+            for (out, status, exit_code) in &cases {
+                let (text, _) = format_command_output(command, out);
+                // The model's text as always: the command, then its status.
+                assert!(
+                    text.starts_with(&format!("$ {command}\n{status}, 0.4 s\n")),
+                    "{text}"
+                );
+                let end = out.end();
+                assert_eq!(end.exit_code, *exit_code, "{command}: {status}");
+                assert_eq!(end.timed_out, out.timed_out);
+                assert_eq!(end.stopped, out.stopped);
+                assert_eq!(end.background, None);
+                let meta = ran_meta(end);
+                assert_eq!(meta["exitCode"], json!(exit_code), "{command}: {status}");
+                assert_eq!(meta["outcome"], "done", "a command that ran is a done call");
+            }
+        }
+        for outcome in [Outcome::Failed, Outcome::Done] {
+            let mut meta = Map::new();
+            outcome.write_meta(&mut meta);
+            assert!(meta.get("exitCode").is_none(), "{outcome:?}");
         }
     }
 
@@ -3314,10 +3319,11 @@ a.rs (3 matches)
             running.contains(r#"{"action": "stop", "id": "bg3"}"#),
             "{running}"
         );
-        let meta = result_meta("bash", &running).unwrap();
+        let end = report(None, "", 0).end();
+        assert_eq!(end.background.as_deref(), Some("bg3"), "no command ended");
+        let meta = ran_meta(end);
         assert_eq!(meta["background"], json!("bg3"));
         assert_eq!(meta["exitCode"], Value::Null);
-        assert_eq!(command_end(&running), None, "no command ended");
 
         let crashed = format_background(&report(Some(End::Exited(Some(1))), "", 2048));
         assert_eq!(
@@ -3325,17 +3331,47 @@ a.rs (3 matches)
             "$ npm run dev\nexit code 1, 3.1 s\n[… 2048 bytes of its output weren't kept …]\n\
              (no new output)"
         );
-        let meta = result_meta("background", &crashed).unwrap();
+        let end = report(Some(End::Exited(Some(1))), "", 2048).end();
+        assert_eq!((end.exit_code, end.timed_out), (Some(1), false));
+        let meta = ran_meta(end);
         assert_eq!(meta["exitCode"], json!(1));
         assert!(meta.get("background").is_none());
-        assert_eq!(command_end(&crashed), Some((Some(1), false)));
 
         let stopped = format_background(&report(Some(End::Stopped), "bye\n", 0));
         assert_eq!(stopped, "$ npm run dev\nstopped (killed), 3.1 s\nbye");
+        let end = report(Some(End::Stopped), "", 0).end();
+        assert!(end.stopped && end.exit_code.is_none());
         assert_eq!(
             result_meta("background", "No command runs in the background."),
             None
         );
+    }
+
+    /// A command left running that is two lines long: its id comes from
+    /// its report, while the text has its status on the third line.
+    #[test]
+    fn a_background_command_of_two_lines_reports_its_id() {
+        use crate::command_tool::background::{Report, Status};
+        let report = Report {
+            status: Status {
+                id: "bg4".into(),
+                command: "npm install\nnpm run dev".into(),
+                ran: std::time::Duration::from_millis(2_000),
+                end: None,
+            },
+            output: "ready\n".into(),
+            dropped: 0,
+        };
+        let text = format_background(&report);
+        assert!(
+            text.starts_with(
+                "$ npm install\nnpm run dev\nrunning in the background as bg4, 2.0 s\n"
+            ),
+            "{text}"
+        );
+        let meta = ran_meta(report.end());
+        assert_eq!(meta["background"], json!("bg4"));
+        assert_eq!(meta["exitCode"], Value::Null);
     }
 
     #[test]

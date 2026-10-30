@@ -92,6 +92,22 @@ pub struct Report {
     pub dropped: u64,
 }
 
+impl Report {
+    /// How the command ended, or its id while it runs on.
+    pub fn end(&self) -> super::CommandEnd {
+        let status = &self.status;
+        super::CommandEnd {
+            exit_code: match status.end {
+                Some(End::Exited(code)) => code,
+                _ => None,
+            },
+            stopped: status.end == Some(End::Stopped),
+            background: status.end.is_none().then(|| status.id.clone()),
+            ..Default::default()
+        }
+    }
+}
+
 /// Starts `command` in `root` for `chat`, as the chat's commands start
 /// (`queued`: its sandbox, network and environment, and its queue for heavy
 /// work, whose wait for a slot `stop` ends), and leaves it running. How it

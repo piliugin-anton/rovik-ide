@@ -55,7 +55,44 @@ pub struct CommandOutput {
     pub waited: Option<crate::workload::Waited>,
 }
 
+/// How a command a tool call ran ended, as the run records it: the stored
+/// result's exit code, its id while it runs on in the background and a
+/// long wait for a CPU slot (what the chat's tool block shows), and the
+/// agent log's. Built from what ran ([`CommandOutput::end`],
+/// [`background::Report::end`]), never read back from the result's text,
+/// where a command of several lines pushes its status down.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandEnd {
+    /// None when it didn't exit on its own (timed out, stopped, ended by a
+    /// signal), or still runs.
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    /// Stopped: by the user, or by the agent's `background` stop.
+    pub stopped: bool,
+    /// Its id while it runs on in the background (`bg1`).
+    pub background: Option<String>,
+    /// How long it waited for a CPU slot before it ran, when that was long
+    /// ("Waited 12 s for a CPU slot").
+    pub waited: Option<String>,
+}
+
 impl CommandOutput {
+    /// How it ended: an exit code only when it exited on its own.
+    pub fn end(&self) -> CommandEnd {
+        let killed = self.timed_out || self.stopped;
+        CommandEnd {
+            exit_code: self.exit_code.filter(|_| !killed),
+            timed_out: self.timed_out,
+            stopped: self.stopped,
+            background: None,
+            waited: self
+                .waited
+                .as_ref()
+                .and_then(|w| w.describe())
+                .map(|w| w.trim_end_matches('.').to_string()),
+        }
+    }
+
     /// Both streams as one text, stderr first: compilers print to either,
     /// and a failure's lines are more often there.
     pub fn text(&self) -> String {
