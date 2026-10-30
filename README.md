@@ -34,11 +34,17 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   continue on Enter, and Ctrl+B / Ctrl+I make text bold or italic.
 - IntelliSense for JavaScript/TypeScript that understands the whole
   project, not only open files. Ctrl+click jumps to a definition in another
-  file. Files the agent, git or another program creates or changes are
+  file, keeping the importing project's type context while browsing
+  dependency declarations, including linked packages. Definition loading
+  reuses shared config reads and indexes open files for faster lookups,
+  once the TypeScript worker's model host is ready.
+  Files the agent, git or another program creates or changes are
   picked up as they change, without reopening anything. Rust gets help from
   rust-analyzer when it's installed.
 - A file tree that stays fast on very large projects and refreshes when
   files change on disk.
+- The startup spinner stays visible until the project, restored tabs and
+  expanded folders have finished loading.
 - Browser tabs: a page a dev server on a cloud host opens shows in a tab
   of the editor, hot reload and all, with an address bar for any http or
   https page (see [Servers and pages on a cloud
@@ -321,7 +327,9 @@ is brought to the app's version by itself.
 
 ## Getting started
 
-1. **Open a project:** choose a folder. It appears in the file tree.
+1. **Open a project:** choose a folder with **Open project…**, or create one
+   with **New project…**. Both buttons fill the width of the empty Files
+   tab. The project's files appear in the file tree.
 2. **Add a model:** open **Settings → Model providers**, paste the
    provider's base URL and your API key, and choose the models you want.
 3. **Review permissions:** in **Settings → Permissions & approval**, choose
@@ -1500,7 +1508,9 @@ in the input.
   next step, once its running tools finish, as in its terminal. The chat
   shows it there, between what Claude Code did before and what it does
   next, all in the same turn. Once Claude Code has it, ✕ can't take it
-  back. Codex reads a message once its turn has ended.
+  back. Codex also takes messages during its turn and reads them at its
+  next step. A message stays queued until Codex reports reading it; one
+  it hasn't read when stopped comes back into the input.
 - It's read as the user's words, after a short note telling the agent it
   belongs to the same request, and stored where it was read, marked
   `meta.steer`. It doesn't start a new request: the focus note, the

@@ -17,7 +17,7 @@ use crate::connectors::mcp::SERVER_NAME;
 use crate::connectors::steps::{relative_path, relative_paths, thought_id, thousands, Thought};
 use crate::connectors::{
     harness_error, trimmed_text, trimmed_value, usage_value, ConnectorKind, HarnessCall,
-    HarnessStep,
+    HarnessStep, SteerMessage,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -39,6 +39,11 @@ pub(super) struct Parser {
     started_by: Option<u64>,
     /// The turn being read, once an event names it.
     turn: Option<String>,
+    /// Messages handed to Codex, with the request that sent each once it
+    /// named the active turn. Only its user-message echo means it read one.
+    unread: Vec<(SteerMessage, Option<u64>)>,
+    /// Rovik stores a message where Codex read it, then reads on.
+    waits: bool,
     /// Rovik's tools mode: calls to them are the reply's tool calls.
     rovik_tools: bool,
     /// The folder the run works in, which its steps' paths are relative to.
@@ -86,6 +91,8 @@ impl Parser {
             thread: thread.to_string(),
             started_by: None,
             turn: None,
+            unread: Vec::new(),
+            waits: false,
             rovik_tools: false,
             root: None,
             ledger: None,
@@ -152,6 +159,7 @@ impl Parser {
         self.needs_break = false;
         self.tokens = [0; 4];
         self.yielded = None;
+        self.waits = false;
     }
 
     /// Says the session, as a turn on it begins.
@@ -189,7 +197,49 @@ impl Parser {
                 let error = harness_error(ConnectorKind::Codex, error.message, None);
                 self.fail(error, emit);
             }
+            Some(Message::Response { id, result }) => match result {
+                Ok(result) if Some(id) == self.started_by => {
+                    self.turn = result
+                        .pointer("/turn/id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    self.send_waiting();
+                }
+                Err(error) if self.unread.iter().any(|(_, request)| *request == Some(id)) => {
+                    // The turn can end just before it takes the message:
+                    // leave it in Rovik's queue for the next turn.
+                    if error.message.contains("no active turn") {
+                        ::log::debug!("codex: the turn ended before taking a message");
+                    } else {
+                        self.fail(
+                            harness_error(
+                                ConnectorKind::Codex,
+                                format!("Codex couldn't take the message: {}", error.message),
+                                None,
+                            ),
+                            emit,
+                        );
+                    }
+                }
+                _ => {}
+            },
             _ => {}
+        }
+    }
+
+    /// Sends each queued message once the server has named its turn.
+    fn send_waiting(&mut self) {
+        let Some(turn) = &self.turn else { return };
+        for (message, request) in &mut self.unread {
+            if request.is_none() {
+                *request = Some(self.rpc.request(
+                    "turn/steer",
+                    json!({
+                        "threadId": self.thread, "expectedTurnId": turn,
+                        "input": [{ "type": "text", "text": message.text, "text_elements": [] }],
+                    }),
+                ));
+            }
         }
     }
 
@@ -206,6 +256,7 @@ impl Parser {
             .and_then(Value::as_str)
         {
             self.turn = Some(turn.to_string());
+            self.send_waiting();
         }
         let item = params.get("item").unwrap_or(&Value::Null);
         let delta = params.get("delta").and_then(Value::as_str).unwrap_or("");
@@ -269,6 +320,23 @@ impl Parser {
     fn started(&mut self, item: &Value, emit: &mut dyn FnMut(ChatStreamEvent)) {
         let id = text_of(item, "id");
         match text_of(item, "type") {
+            "userMessage" => {
+                let text = content_text(item.get("content"));
+                if let Some(at) = self
+                    .unread
+                    .iter()
+                    .position(|(message, request)| request.is_some() && message.text == text)
+                {
+                    let (message, _) = self.unread.remove(at);
+                    self.end_thought(emit);
+                    emit(ChatStreamEvent::HarnessRead { id: message.id });
+                    emit(ChatStreamEvent::Finished {
+                        finish_reason: Some("steered".into()),
+                        usage: Some(self.usage_value(json!({ "status": "inProgress" }))),
+                    });
+                    self.waits = true;
+                }
+            }
             "agentMessage" | "plan" => {
                 if self.text_shown {
                     self.needs_break = true;
@@ -659,11 +727,23 @@ impl Lines for Parser {
     }
 
     fn yielded(&self) -> bool {
-        self.yielded.is_some()
+        self.yielded.is_some() || self.waits
     }
 
     fn finished(&self) -> bool {
         self.finished
+    }
+
+    fn message(&mut self, message: &SteerMessage) -> Option<String> {
+        if !self
+            .unread
+            .iter()
+            .any(|(pending, _)| pending.id == message.id)
+        {
+            self.unread.push((message.clone(), None));
+            self.send_waiting();
+        }
+        None
     }
 }
 
@@ -915,6 +995,150 @@ mod tests {
                 "modelContextWindow": 258400,
             } }),
         )
+    }
+
+    #[test]
+    fn steering_waits_for_the_turn_id_and_is_read_only_when_codex_echoes_it() {
+        let (mut parser, mut sent, _input) = parser();
+        parser.begin(100);
+        let message = crate::connectors::SteerMessage {
+            id: "s1".into(),
+            text: "Use the existing client".into(),
+        };
+        parser.message(&message);
+        assert!(sent.try_recv().is_err(), "the turn isn't named yet");
+        let events = feed(
+            &mut parser,
+            &[json!({ "id": 100, "result": { "turn": { "id": "u1" } } })],
+        );
+        assert!(events.is_empty());
+        let request: Value = serde_json::from_str(&sent.try_recv().unwrap()).unwrap();
+        assert_eq!(request["method"], "turn/steer");
+        assert_eq!(
+            request["params"],
+            json!({
+                "threadId": "t1", "expectedTurnId": "u1",
+                "input": [{ "type": "text", "text": message.text, "text_elements": [] }],
+            })
+        );
+        // Handed again after a yield: it must go to Codex only once.
+        parser.message(&message);
+        assert!(sent.try_recv().is_err());
+        let events = feed(
+            &mut parser,
+            &[json!({ "id": request["id"], "result": { "turnId": "u1" } })],
+        );
+        assert!(events.is_empty(), "accepting input isn't reading it");
+        assert!(!parser.yielded());
+
+        let echo = note(
+            "item/started",
+            json!({ "turnId": "u1", "item": {
+            "type": "userMessage", "id": "um1",
+            "content": [{ "type": "text", "text": message.text }],
+        } }),
+        );
+        let mut other_thread = echo.clone();
+        other_thread["params"]["threadId"] = json!("child");
+        assert!(feed(&mut parser, &[other_thread]).is_empty());
+        let events = feed(&mut parser, std::slice::from_ref(&echo));
+        assert!(events.iter().any(|e| matches!(e,
+            ChatStreamEvent::HarnessRead { id } if id == "s1")));
+        assert!(parser.yielded(), "store the message before its next step");
+        assert!(!parser.finished());
+        parser.next_reply();
+        assert!(!parser.yielded());
+        assert!(feed(&mut parser, &[echo]).is_empty(), "read once");
+    }
+
+    #[test]
+    fn steering_refusals_leave_the_message_unread_and_report_unexpected_errors() {
+        for why in ["no active turn to steer", "unknown method turn/steer"] {
+            let (mut parser, mut sent, _input) = parser();
+            feed(
+                &mut parser,
+                &[note("turn/started", json!({ "turn": { "id": "u1" } }))],
+            );
+            parser.message(&SteerMessage {
+                id: "s1".into(),
+                text: "An answer".into(),
+            });
+            let request: Value = serde_json::from_str(&sent.try_recv().unwrap()).unwrap();
+            let events = feed(
+                &mut parser,
+                &[json!({ "id": request["id"],
+                    "error": { "code": -32600, "message": why },
+                })],
+            );
+            assert!(!events
+                .iter()
+                .any(|e| matches!(e, ChatStreamEvent::HarnessRead { .. })));
+            assert_eq!(parser.unread.len(), 1);
+            if why.starts_with("no active turn") {
+                assert!(parser.failure.is_none(), "the next turn takes the message");
+            } else {
+                assert!(parser.failure.as_ref().unwrap().message.contains(why));
+            }
+        }
+    }
+
+    #[test]
+    fn unread_messages_are_not_resent_when_the_turn_continues_after_reading_one() {
+        let (mut parser, mut sent, _input) = parser();
+        feed(
+            &mut parser,
+            &[note("turn/started", json!({ "turn": { "id": "u1" } }))],
+        );
+        let messages = ["s1", "s2"].map(|id| SteerMessage {
+            id: id.into(),
+            text: id.into(),
+        });
+        for message in &messages {
+            parser.message(message);
+            assert!(sent.try_recv().is_ok());
+        }
+        let echo = |text: &str| {
+            note(
+                "item/started",
+                json!({ "item": {
+            "type": "userMessage", "id": text, "content": [{ "type": "text", "text": text }],
+        } }),
+            )
+        };
+        feed(&mut parser, &[echo("s1")]);
+        parser.next_reply();
+        parser.message(&messages[1]);
+        assert!(sent.try_recv().is_err());
+        let events = feed(&mut parser, &[echo("s2")]);
+        assert!(events.iter().any(|e| matches!(e,
+            ChatStreamEvent::HarnessRead { id } if id == "s2")));
+        assert!(parser.unread.is_empty());
+    }
+
+    #[test]
+    fn a_turn_that_ends_before_reading_steering_leaves_it_unread() {
+        let (mut parser, _sent, _input) = parser();
+        feed(
+            &mut parser,
+            &[note("turn/started", json!({ "turn": { "id": "u1" } }))],
+        );
+        parser.message(&crate::connectors::SteerMessage {
+            id: "s1".into(),
+            text: "An answer".into(),
+        });
+        let events = feed(
+            &mut parser,
+            &[note(
+                "turn/completed",
+                json!({
+                    "turn": { "id": "u1", "status": "completed" },
+                }),
+            )],
+        );
+        assert!(parser.finished());
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, ChatStreamEvent::HarnessRead { .. })));
     }
 
     #[test]

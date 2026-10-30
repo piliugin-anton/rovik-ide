@@ -83,6 +83,105 @@ const programFiles = (w: ProjectTypeScriptWorker) =>
     .map((f) => f.fileName);
 
 describe('ProjectTypeScriptWorker', () => {
+  it('indexes open models once instead of scanning them for every imported file', async (t) => {
+    let uriReads = 0;
+    const models = Array.from({ length: 40 }, (_, i) => {
+      const uri = `${ROOT}/src/file${i}.ts`;
+      const m = model(uri, `import { u } from './util'; export const n = u;`);
+      m.uri.toString = () => {
+        uriReads++;
+        return uri;
+      };
+      return m;
+    });
+    const w = worker(models, { ...OPTIONS, types: [] });
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(models[0].uri.toString())), []);
+    assert.ok(uriReads < 40 * 20, `model URI reads: ${uriReads}`);
+    t.diagnostic(`40 open files: ${uriReads} model URI reads`);
+  });
+
+  it('unchanged requests skip scanning project files and model edits still update answers', async () => {
+    const models = [model(APP, 'export const n: number = 1;')];
+    const w = worker(models, { ...OPTIONS, types: [] });
+    let scans = 0;
+    const names = w.getScriptFileNames.bind(w);
+    w.getScriptFileNames = () => {
+      scans++;
+      return names();
+    };
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), []);
+    scans = 0;
+    await w.getQuickInfoAtPosition(APP, 13);
+    await w.getDefinitionAtPosition(APP, 13);
+    assert.equal(scans, 0);
+    models[0] = model(APP, 'export const n: string = 1;', 2);
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), [2322]);
+    models.pop();
+    assert.deepEqual(await w.getDefinitionAtPosition(APP, 13), []);
+    models.push(model(APP, 'export const n: number = 1;'));
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), []);
+  });
+
+  it('an opened linked definition uses its model and can navigate its imports', async () => {
+    const store = `${NM}/.pnpm/foo@1/node_modules/foo`;
+    const opened = `${NM}/foo/index.d.ts`;
+    const text = "import { Base } from './base'; export declare const foo: Base;";
+    const models = [
+      model(APP, "import { foo } from 'foo'; export const n: string = foo;"),
+      model(opened, text),
+    ];
+    const w = worker(
+      models,
+      { ...OPTIONS, types: [] },
+      {
+        [`${store}/index.d.ts`]: { content: 'export declare const foo: string;', version: 1 },
+        [`${store}/base.d.ts`]: { content: 'export type Base = number;', version: 1 },
+        [LINKS_LIB]: { content: JSON.stringify({ [`${NM}/foo`]: store }), version: 1 },
+        [PROJECT_LIB]: {
+          content: JSON.stringify({
+            path: '/home/u/my proj/tsconfig.json',
+            include: ['/home/u/my proj/src/**/*'],
+            files: ['/home/u/my proj/node_modules/foo/index.d.ts'],
+            exclude: ['/home/u/my proj/node_modules'],
+          }),
+          version: 1,
+        },
+      }
+    );
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), [2322]);
+    assert.deepEqual(
+      (await w.getDefinitionAtPosition(opened, text.indexOf('Base')))?.map((d) => d.fileName),
+      [`${store}/base.d.ts`]
+    );
+    assert.equal(programFiles(w).filter((f) => f.endsWith('/foo/index.d.ts')).length, 1);
+    assert.ok(w.getScriptFileNames().includes(`${store}/index.d.ts`));
+    models.pop();
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), [], 'the disk copy takes over');
+  });
+
+  it('changed package entry points and links resolve again without editing importers', async () => {
+    const pkg = `${NM}/foo`;
+    const libs = {
+      [`${pkg}/package.json`]: { content: '{"types":"a.d.ts"}', version: 1 },
+      [`${pkg}/a.d.ts`]: { content: 'export declare const foo: number;', version: 1 },
+      [`${pkg}/b.d.ts`]: { content: 'export declare const foo: string;', version: 1 },
+      [LINKS_LIB]: { content: JSON.stringify({ [`${NM}/alias`]: pkg }), version: 1 },
+    };
+    const text = "import { foo } from 'alias'; export const n: string = foo;";
+    const w = worker([model(APP, text)], { ...OPTIONS, types: [] }, libs);
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), [2322]);
+    await w.updateExtraLibs({
+      ...libs,
+      [`${pkg}/package.json`]: { content: '{"types":"b.d.ts"}', version: 2 },
+    });
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), []);
+    await w.updateExtraLibs({
+      ...libs,
+      [LINKS_LIB]: { content: JSON.stringify({ [`${NM}/alias`]: `${NM}/missing` }), version: 2 },
+    });
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), [2307]);
+  });
+
   it('parses only the typings the project reaches; imports and types resolve', async () => {
     const w = worker([model(APP, APP_TEXT)], { ...OPTIONS, types: ['node', 'vite/client'] });
     assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), []);

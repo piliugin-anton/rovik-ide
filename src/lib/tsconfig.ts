@@ -93,10 +93,18 @@ export async function resolveTsProjects(
   const rootDir = normalize(root);
   const configs: LoadedConfig[] = [];
   const seen = new Set<string>();
+  // Shared extends chains otherwise repeat disk/remote reads for every
+  // config. Cache text, not resolved options: ${configDir} belongs to each leaf.
+  const reads = new Map<string, Promise<string>>();
+  const readOnce: ReadFile = (path) => {
+    let read = reads.get(path);
+    if (!read) reads.set(path, (read = readFile(path)));
+    return read;
+  };
 
   const visit = async (path: string, depth: number): Promise<boolean> => {
     if (seen.has(path) || depth > MAX_DEPTH) return seen.has(path);
-    const config = await loadConfig(path, readFile);
+    const config = await loadConfig(path, readOnce);
     if (!config) return false;
     seen.add(path);
     configs.push(config);

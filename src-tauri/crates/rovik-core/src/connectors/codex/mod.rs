@@ -43,6 +43,7 @@ mod rovik_tools;
 use super::harness::{
     self, expand_home, pump, split_args, Process, Stop, TempFile, MIN_FIRST_LINE,
 };
+use super::live::LiveRuns;
 use super::mcp::{McpCall, McpServer, HOOK};
 use super::{
     Connector, ConnectorAuth, ConnectorCommand, ConnectorKind, ConnectorModel, ConnectorProbe,
@@ -731,6 +732,20 @@ enum Outcome {
     SessionGone,
 }
 
+/// A run with Codex's own tools, kept between Rovik's replies when it
+/// reads a message the user sent while it worked.
+struct Own {
+    process: Process,
+    parser: Parser,
+    calls: mpsc::UnboundedReceiver<McpCall>,
+    servers: Vec<McpServer>,
+    ledger: hooks::Shared,
+    env_path: Option<PathBuf>,
+}
+
+/// Runs waiting for Rovik to store the messages they just read.
+static STEERED: LiveRuns<Own> = LiveRuns::new();
+
 /// The toolchains' script its shell reads before each command, on a cloud
 /// host whose shell has none of its own (`BASH_ENV`): written again after
 /// each command's hook (codex/hooks.rs).
@@ -748,7 +763,7 @@ fn env_file(cwd: &Path) -> Result<Option<TempFile>, String> {
 /// Runs one turn with Codex's own tools (or a one-off request), reporting
 /// it through `emit`.
 async fn run_turn(
-    turn: &Turn,
+    turn: &mut Turn,
     settings: &Settings,
     thread: Option<&str>,
     prompt: &str,
@@ -764,7 +779,7 @@ async fn run_turn(
     let chat = turn.dialog_id.as_deref().unwrap_or_default();
     let held = crate::allowed_hosts::hold_program(chat)?;
     let network = held.network.clone();
-    let (sender, mut calls) = mpsc::unbounded_channel::<McpCall>();
+    let (sender, calls) = mpsc::unbounded_channel::<McpCall>();
     let server = match events.is_empty() {
         true => None,
         false => Some(
@@ -913,6 +928,27 @@ async fn run_turn(
     };
     let (method, params) = request_for(&ask, &id, turn);
     parser.begin(rpc.request(method, params));
+    let run = Own {
+        process,
+        parser,
+        calls,
+        servers: server.into_iter().chain(tools_server).collect(),
+        ledger,
+        env_path,
+    };
+    read_own(run, turn, settings, cancel, emit).await;
+    Ok(Outcome::Done)
+}
+
+/// Reads until Codex finishes or consumes a steering message. At the
+/// latter boundary Rovik stores the message, then resumes this process.
+async fn read_own(
+    mut run: Own,
+    turn: &mut Turn,
+    settings: &Settings,
+    cancel: &mut watch::Receiver<bool>,
+    emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+) {
     let rovik_decides = follows_rovik(settings) && !turn.one_shot;
     let hooks = Arc::new(Hooks {
         checks: turn.commands.clone().filter(|_| !turn.one_shot),
@@ -920,29 +956,33 @@ async fn run_turn(
         ask_commands: rovik_decides,
         ask_patches: rovik_decides,
         rovik_tools: false,
-        root: cwd.clone(),
-        env_file: env_path,
-        ledger,
+        root: cwd_of(turn),
+        env_file: run.env_path.clone(),
+        ledger: run.ledger.clone(),
     });
-    let mut on_call = |call: McpCall| match offer {
+    let mut on_call = |call: McpCall| match turn.mcp.as_ref() {
         _ if call.name == HOOK => hooks.answer(call),
         Some(offer) if call.name == offer.name() => offer.forward(call),
         _ => drop(call),
     };
-    let calls = (server.is_some() || tools_server.is_some()).then_some(&mut calls);
+    let calls = (!run.servers.is_empty()).then_some(&mut run.calls);
     let stop = pump(
-        &mut process,
-        &mut parser,
+        &mut run.process,
+        &mut run.parser,
         calls,
-        None,
+        turn.steering.as_mut(),
         &mut on_call,
         cancel,
         emit,
     )
     .await;
-    conclude(&mut process, &parser, stop, emit).await;
-    drop((server, tools_server));
-    Ok(Outcome::Done)
+    if stop == Stop::Yielded {
+        if let Some(dialog) = turn.dialog_id.clone() {
+            STEERED.keep(dialog, run);
+            return;
+        }
+    }
+    conclude(&mut run.process, &run.parser, stop, emit).await;
 }
 
 /// A run's turn ended: as its events said, or with the error its stderr or
@@ -1270,7 +1310,7 @@ fn headless() -> bool {
 /// A small request, to see that the program is signed in and answers: the
 /// model that answered, its tokens and how long it took.
 async fn test_request(args: &ProbeRequestArgs) -> Result<ProbeRequest, String> {
-    let turn = Turn {
+    let mut turn = Turn {
         settings: args.settings.clone(),
         api_key: args.api_key.clone(),
         model: String::new(),
@@ -1309,7 +1349,14 @@ async fn test_request(args: &ProbeRequestArgs) -> Result<ProbeRequest, String> {
     };
     let (_stop, mut cancel) = watch::channel(false);
     let prompt = turn.prompt.clone();
-    let run = run_turn(&turn, &settings, None, &prompt, &mut cancel, &mut record);
+    let run = run_turn(
+        &mut turn,
+        &settings,
+        None,
+        &prompt,
+        &mut cancel,
+        &mut record,
+    );
     tokio::time::timeout(TEST_WITHIN, run).await.map_err(|_| {
         format!(
             "The test request gave no answer in {} s.",
@@ -1478,10 +1525,16 @@ impl Connector for Codex {
 
     fn end_live(&self, dialog_id: &str) {
         rovik_tools::LIVE.end(dialog_id);
+        STEERED.end(dialog_id);
     }
 
     fn end_all(&self) {
         rovik_tools::LIVE.end_all();
+        STEERED.end_all();
+    }
+
+    fn reads_messages(&self) -> bool {
+        true
     }
 
     fn run<'a>(
@@ -1491,9 +1544,16 @@ impl Connector for Codex {
         on_event: &'a mut (dyn FnMut(ChatStreamEvent) + Send),
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
+            let mut turn = turn;
             let settings = Settings::from_value(&turn.settings);
             if turn.rovik_tools {
                 return rovik_tools::run(turn, settings, cancel, on_event).await;
+            }
+            if let Some(mut run) = turn.dialog_id.as_deref().and_then(|d| STEERED.take(d)) {
+                run.parser.next_reply();
+                run.parser.announce(on_event);
+                read_own(run, &mut turn, &settings, cancel, on_event).await;
+                return Ok(());
             }
             // A session kept for Rovik's tools isn't continued with Codex's
             // own: a new thread, told what the chat was about.
@@ -1504,7 +1564,7 @@ impl Connector for Codex {
                 _ => turn.prompt.clone(),
             };
             match run_turn(
-                &turn,
+                &mut turn,
                 &settings,
                 thread.as_deref(),
                 &prompt,
@@ -1515,7 +1575,7 @@ impl Connector for Codex {
             {
                 Outcome::Done => Ok(()),
                 Outcome::SessionGone => {
-                    run_turn(&turn, &settings, None, &fresh_prompt, cancel, on_event)
+                    run_turn(&mut turn, &settings, None, &fresh_prompt, cancel, on_event)
                         .await
                         .map(|_| ())
                 }

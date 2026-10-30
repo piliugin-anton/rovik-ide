@@ -62,7 +62,7 @@ const browserOnly = {
     });
     b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
       contents:
-        'const stub = new Proxy(function () {}, { get: (_, k) => (k === "__esModule" ? false : stub), apply: () => stub, construct: () => stub });\nmodule.exports = stub;',
+        'const stub = new Proxy(function () {}, { get: (_, k) => (k === "__esModule" ? false : stub), apply: () => stub, construct: () => stub });\nObject.assign(stub, { editor: stub, languages: stub, typescript: stub, Uri: stub, Position: stub, Range: stub, Selection: stub, KeyCode: stub, KeyMod: stub, MarkerSeverity: stub, MarkerTag: stub });\nmodule.exports = stub;',
       loader: 'js',
     }));
   },

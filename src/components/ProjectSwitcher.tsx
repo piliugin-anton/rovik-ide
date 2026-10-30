@@ -19,6 +19,7 @@ export default function ProjectSwitcher(props: {
 }) {
   const [open, setOpen] = createSignal(false);
   const [filter, setFilter] = createSignal('');
+  const loading = () => currentProject() === undefined;
   let root: HTMLDivElement | undefined;
   let filterInput: HTMLInputElement | undefined;
 
@@ -53,23 +54,28 @@ export default function ProjectSwitcher(props: {
         class="project-switcher-trigger"
         aria-haspopup="listbox"
         aria-expanded={open()}
-        title={currentProject()?.path ?? 'No project open'}
+        title={loading() ? 'Loading…' : (currentProject()?.path ?? 'No project open')}
         onClick={toggle}
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linejoin="round"
-          aria-hidden="true"
+        <Show
+          when={!loading()}
+          fallback={<span class="sidebar-tab-spinner" role="status" aria-label="Loading project" />}
         >
-          <path d="M1.75 4.25a1 1 0 0 1 1-1h3.5l1.5 1.5h5.5a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1v-8Z" />
-        </svg>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M1.75 4.25a1 1 0 0 1 1-1h3.5l1.5 1.5h5.5a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1v-8Z" />
+          </svg>
+        </Show>
         <span class="project-switcher-name" classList={{ none: !currentProject() }}>
-          {currentProject()?.name ?? 'No project open'}
+          {loading() ? 'Loading…' : (currentProject()?.name ?? 'No project open')}
         </span>
         <svg
           class="project-switcher-caret"

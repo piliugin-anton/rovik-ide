@@ -75,6 +75,7 @@ def send(message):
 ANSWERS = {}
 ANSWERED = threading.Condition()
 INBOX = queue.Queue()
+STEERS = queue.Queue()
 
 
 def read():
@@ -278,6 +279,15 @@ def play(steps):
             patch_step(n, step)
         elif 'rovik' in step:
             rovik_step(step)
+        elif 'steer' in step:
+            # Wait for live input, then echo it when consumed, as Codex
+            # does at its next step. A held message is accepted but unread.
+            params = STEERS.get()
+            if step['steer'] == 'hold':
+                threading.Event().wait()
+            item = {'type': 'userMessage', 'id': 'um%d' % n, 'content': params['input']}
+            note('item/started', {'item': item})
+            note('item/completed', {'item': item})
         elif 'unchecked' in step:
             # A command its hooks never saw: Rovik stops the turn.
             item = {'type': 'commandExecution', 'id': step['id'], 'command': step['unchecked'],
@@ -379,6 +389,14 @@ def main():
             continue
         elif method == 'turn/interrupt':
             result = {}
+        elif method == 'turn/steer':
+            if params.get('expectedTurnId') != TURN:
+                send({'id': rid, 'error': {'code': -32600, 'message': 'wrong active turn'}})
+                continue
+            result = {'turnId': TURN}
+            send({'id': rid, 'result': result})
+            STEERS.put(params)
+            continue
         else:
             send({'id': rid, 'error': {'code': -32601, 'message': 'unknown method ' + str(method)}})
             continue

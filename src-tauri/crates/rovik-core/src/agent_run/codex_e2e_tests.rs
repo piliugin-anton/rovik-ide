@@ -94,6 +94,125 @@ fn steps_of(reply: &MessageRow) -> HashMap<String, Value> {
         .collect()
 }
 
+/// An answer sent while Codex works is read in that same app-server turn,
+/// stored between its replies, and never sent again on the continuation.
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_reads_a_message_sent_while_it_works_in_the_same_turn() {
+    let h = harness(&[("a.txt", "alpha\n")]).await;
+    let scenario = json!({ "steps": [
+        { "text": "Which client should I use?" },
+        { "steer": "read" },
+        { "command": "git status", "id": "after", "output": "clean" },
+        { "text": "Used the existing client." },
+    ] });
+    let Some(program) = crate::connectors::fake_codex(&h._dir.0, &scenario) else {
+        eprintln!("no python3 with tomllib: skipped");
+        return;
+    };
+    h.start(codex_send(
+        &h,
+        &program,
+        "agent",
+        "Fix it",
+        json!({}),
+        quiet_permissions(),
+    ))
+    .await
+    .unwrap();
+    h.wait_for("Codex's question", |e| {
+        e["type"] == "messagePatched"
+            && e["patch"]["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("Which client"))
+    })
+    .await;
+    let (id, queued) = h.steer("Use the existing client").await;
+    assert_eq!(queued, rovik_protocol::agent::SteerReply::Queued);
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert_eq!(
+        roles(&messages),
+        ["user", "assistant", "user", "assistant"],
+        "{messages:#?}"
+    );
+    assert_eq!(messages[1].content, "Which client should I use?");
+    assert_eq!(messages[2].id, id);
+    assert!(messages[2].meta.as_ref().unwrap().get("steer").is_some());
+    assert_eq!(messages[3].content, "Used the existing client.");
+    assert_eq!(
+        steps_of(&messages[3])["after"]["ok"],
+        true,
+        "the continuing turn's hooks still reach Rovik"
+    );
+    let requests = all_requests(&h);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["method"] == "turn/start")
+            .count(),
+        1
+    );
+    let steers: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"] == "turn/steer")
+        .collect();
+    assert_eq!(steers.len(), 1, "{requests:#?}");
+    let text = steers[0]["params"]["input"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("[The user sent this message while you were working."));
+    assert!(text.ends_with("\n\nUse the existing client"));
+    assert!(!h
+        .steer_lines()
+        .await
+        .iter()
+        .any(|l| l["phase"] == "returned"));
+}
+
+/// Accepted input still belongs to the queue until Codex consumes it.
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_returns_a_message_codex_accepted_but_did_not_read() {
+    let h = harness(&[("a.txt", "alpha\n")]).await;
+    let scenario = json!({ "steps": [
+        { "text": "Which client should I use?" }, { "steer": "hold" },
+    ] });
+    let Some(program) = crate::connectors::fake_codex(&h._dir.0, &scenario) else {
+        eprintln!("no python3 with tomllib: skipped");
+        return;
+    };
+    h.start(codex_send(
+        &h,
+        &program,
+        "agent",
+        "Fix it",
+        json!({}),
+        quiet_permissions(),
+    ))
+    .await
+    .unwrap();
+    h.wait_for("Codex's question", |e| {
+        e["type"] == "messagePatched"
+            && e["patch"]["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("Which client"))
+    })
+    .await;
+    let (id, _) = h.steer("Use the existing client").await;
+    for _ in 0..400 {
+        if all_requests(&h).iter().any(|r| r["method"] == "turn/steer") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(all_requests(&h).iter().any(|r| r["method"] == "turn/steer"));
+    assert!(agent_stop(&h.core, h.dialog_id.clone()).await);
+    assert_eq!(h.run_end().await, "stopped");
+    let returned = h.events_of("steerReturned");
+    assert_eq!(returned.len(), 1);
+    assert_eq!(returned[0]["messageIds"], json!([id]));
+    assert!(!h.messages().await.iter().any(|m| m.id == id));
+}
+
 /// Codex with its own tools under Rovik's permissions: each command and
 /// each patch is put to them as Rovik's own call of the same kind would
 /// be, before Codex would ask: a command outside the allowed list is

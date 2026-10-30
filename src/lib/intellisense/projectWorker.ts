@@ -68,10 +68,13 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
   private linksCache: { version: number; links: ReadonlyMap<string, string> } | undefined;
   private projectCache:
     { version: number; project: TsProject | null; covered: Map<string, boolean> } | undefined;
-  /** Bumped each time a file comes to the libs or goes. */
+  /** Bumped when files or the metadata used to resolve imports change. */
   private filesVersion = 0;
   /** The files the current program's imports were resolved against. */
   private resolvedWith = -1;
+  private libsVersion = 0;
+  /** Rebuilt at TypeScript's synchronization boundary, not on every file probe. */
+  private readonly models = new Map<string, MirrorModel>();
 
   constructor(ctx: WorkerContext, createData: CreateData) {
     super(ctx, createData);
@@ -80,35 +83,67 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
     this._languageService = releasingReplacedPrograms(this._languageService, () => {
       this.resolvedWith = this.filesVersion;
     });
+    // Monaco creates its model host after this constructor returns. Index
+    // at getProjectVersion/getScriptFileNames, once requests can arrive.
   }
 
   override async updateExtraLibs(extraLibs: Record<string, ExtraLib>): Promise<void> {
-    if (!sameNames(this.getExtraLibs(), extraLibs)) this.filesVersion++;
-    return super.updateExtraLibs(extraLibs);
+    const previous = this.getExtraLibs();
+    if (
+      !sameNames(previous, extraLibs) ||
+      Object.keys(extraLibs).some(
+        (name) =>
+          (name === LINKS_LIB || name.endsWith('/package.json')) &&
+          previous[name]?.content !== extraLibs[name].content
+      )
+    )
+      this.filesVersion++;
+    this.libsVersion++;
+    await super.updateExtraLibs(extraLibs);
+    this.indexModels();
+  }
+
+  /** Unchanged requests need not scan and version-check every file of the program. */
+  getProjectVersion(): string {
+    return JSON.stringify([this.libsVersion, this.indexModels()]);
+  }
+
+  private indexModels(): (string | number)[] {
+    this.models.clear();
+    const versions: (string | number)[] = [];
+    for (const model of this._ctx.getMirrorModels()) {
+      const uri = model.uri.toString();
+      this.models.set(this.realpath(uri), model);
+      this.models.set(this.realpath(model.uri.toString(true)), model);
+      versions.push(uri, model.version);
+    }
+    return versions;
   }
 
   /**
    * Whether a file's imports must be resolved again, though the file
-   * didn't change: once the libs gained or lost a file since the program
-   * was built. TypeScript asks this of every file of the program (unbound,
-   * hence an arrow) while it decides whether the program is current.
+   * didn't change: files, package entry points or links changed since the
+   * program was built. TypeScript asks this of every file (unbound, hence
+   * an arrow) while it decides whether the program is current.
    */
   readonly hasInvalidatedResolutions = (): boolean => this.resolvedWith !== this.filesVersion;
 
   override getScriptFileNames(): string[] {
+    this.indexModels();
     const models = this._ctx
       .getMirrorModels()
       .map((model) => model.uri)
       .filter((uri) => !isDefaultLib(uri))
       .map((uri) => libKeyOf(uri.toString()))
-      .filter((key) => this.inProject(key));
+      .filter((key) => this.inProject(key) || this.inProject(this.realpath(key)))
+      .map((key) => this.realpath(key));
     const open = new Set(models);
     // Libs that aren't sources (typings, package.json, the links) are only
     // read when something resolves to them.
     const sources = Object.keys(this.getExtraLibs()).filter(
       (uri) => !open.has(uri) && isProjectSource(uri) && this.inProject(uri)
     );
-    return models.concat(sources);
+    return [...new Set(models.concat(sources))];
   }
 
   /** Whether the active config takes the file in (every file without one). */
@@ -156,10 +191,7 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
 
   /** The model for a name in either form: as Monaco keys it, or as the libs do. */
   protected override _getModel(fileName: string): MirrorModel | null {
-    const direct = super._getModel(fileName);
-    if (direct) return direct;
-    const key = libKeyOf(fileName);
-    return this._ctx.getMirrorModels().find((m) => libKeyOf(m.uri.toString()) === key) ?? null;
+    return this.models.get(this.realpath(fileName)) ?? null;
   }
 
   /** The path a link resolves to; TypeScript keys a resolved module by it. */
@@ -224,7 +256,7 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
     fileName: string,
     span: { start: number; length: number }
   ): Promise<EncodedClassifications> {
-    const key = libKeyOf(fileName);
+    const key = this.realpath(fileName);
     if (isDefaultLibName(key) || !this.inProgram(key)) return { spans: [], endOfLineState: 0 };
     return this.getLanguageService().getEncodedSemanticClassifications(key, span, '2028');
   }
@@ -283,7 +315,7 @@ for (const [name, empty] of Object.entries(FEATURES)) {
   const base = (TypeScriptWorker.prototype as unknown as Record<string, Feature | undefined>)[name];
   if (typeof base !== 'function') continue;
   const wrapped: Feature = async function (fileName, ...rest) {
-    const key = libKeyOf(fileName);
+    const key = this.realpath(fileName);
     if (!isDefaultLibName(key) && !this.inProgram(key)) return empty();
     return base.call(this, key, ...rest);
   };
