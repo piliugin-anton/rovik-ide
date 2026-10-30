@@ -2979,7 +2979,11 @@ async fn a_revision_sent_as_edits_applies_to_the_last_plan() {
     let saved = meta_plan("p5").unwrap();
     assert!(saved.starts_with("# Second") && saved.contains("returns 2"), "{saved}");
     for id in ["p0", "p1", "p3", "p4"] {
-        assert_eq!(crate::agent_run::tools::error_class(&text(id)), Some("plan"), "{id}");
+        assert_eq!(
+            crate::agent_run::tools::error_class(&text(id)),
+            "plan",
+            "{id}"
+        );
     }
     let plans: Vec<_> = std::fs::read_dir(h.project.join(".rovik/plans"))
         .unwrap()
@@ -6444,6 +6448,71 @@ async fn tool_lines(h: &Harness, n: usize) -> Vec<Value> {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("{} tool lines, not {n}: {lines:#?}", lines.len());
+}
+
+/// A read of a file whose text starts with "Error:" succeeded, whatever it
+/// says: its `tool` line says so, its row says `outcome: "done"` with its
+/// line count, and five alike are no streak of errors nor the same error
+/// again. A read of a missing file is still a failed call.
+#[tokio::test]
+async fn a_read_of_a_file_that_starts_with_error_is_not_a_failed_call() {
+    let log = "Error: disk full\nretrying\n";
+    let h = harness(&[
+        ("a.log", log),
+        ("b.log", log),
+        ("c.log", log),
+        ("d.log", log),
+        ("e.log", log),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("r1", "read", json!({ "path": "a.log" })),
+            ("r2", "read", json!({ "path": "b.log" })),
+            ("r3", "read", json!({ "path": "c.log" })),
+            ("r4", "read", json!({ "path": "d.log" })),
+            ("r5", "read", json!({ "path": "e.log" })),
+            ("r6", "read", json!({ "path": "missing.log" })),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Read the logs"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let lines = tool_lines(&h, 6).await;
+    let failed: Vec<bool> = lines
+        .iter()
+        .map(|l| l["failed"].as_bool().unwrap())
+        .collect();
+    assert_eq!(
+        failed,
+        [false, false, false, false, false, true],
+        "{lines:#?}"
+    );
+    assert!(lines[..5].iter().all(|l| l["error"].is_null()));
+    let messages = h.messages().await;
+    for id in ["r1", "r2", "r3", "r4", "r5"] {
+        let read = result_of(&messages, id);
+        assert!(
+            read.content.starts_with("Error: disk full"),
+            "{}",
+            read.content
+        );
+        assert!(
+            !read.content.contains("Step back"),
+            "no loop note: {}",
+            read.content
+        );
+        let meta = read.meta.clone().unwrap();
+        assert_eq!(meta["outcome"], "done", "{id}");
+        assert!(meta["count"].is_u64(), "{id}: {meta}");
+        assert!(!read.call_failed());
+    }
+    let missing = result_of(&messages, "r6");
+    let meta = missing.meta.clone().unwrap();
+    assert_eq!(meta["outcome"], "failed");
+    assert!(meta.get("count").is_none() && missing.call_failed());
 }
 
 /// G02 (autopilot-plan): every finished tool call leaves one `tool` line

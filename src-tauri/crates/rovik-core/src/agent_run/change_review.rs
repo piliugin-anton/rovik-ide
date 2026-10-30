@@ -25,6 +25,7 @@
 use super::diff::{self, Hunk};
 use super::run::{chat_plan_file, new_message, Run, IDE_NOTE};
 use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubStatus, SubagentSettings};
+use super::tools::ToolResult;
 use super::{log, plan, plan_review, tools, ModelProfile};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -1532,14 +1533,14 @@ impl Run {
     /// S06: `answer_review`: the agent's answers to the findings the last
     /// review sent (`review_held`), by their numbers, kept for the
     /// follow-up review; a later answer to a finding replaces the earlier.
-    pub(super) fn answer_review(&mut self, args: &serde_json::Map<String, Value>) -> String {
+    pub(super) fn answer_review(&mut self, args: &serde_json::Map<String, Value>) -> ToolResult {
         let held = self.review_held.len();
         if held == 0 {
-            return "Error: no review findings are waiting for an answer.".into();
+            return ToolResult::error("Error: no review findings are waiting for an answer.");
         }
         let given = plan_review::parse_responses(args.get("responses"));
         if given.is_empty() {
-            return format!("Error: no answer could be read. {ANSWER_SHAPE}");
+            return ToolResult::error(format!("Error: no answer could be read. {ANSWER_SHAPE}"));
         }
         let mut unknown: Vec<String> = Vec::new();
         for answer in given {
@@ -1571,7 +1572,7 @@ impl Run {
                 " Every finding has its answer: finish once the fixes you named are made, and a follow-up review checks them before the project's checks run.",
             ),
         }
-        out
+        ToolResult::ok(out)
     }
 }
 

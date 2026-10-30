@@ -13,6 +13,7 @@ use super::parallel::{self, InOrder};
 use super::permissions::{self, Approver, ToolVerdict};
 use super::review::{self, Group, ReviewInput, ReviewResult};
 use super::run::{chat_plan_file, Run};
+use super::tools::Outcome;
 use super::{log, plan, tools, ApprovalDecision};
 use crate::chat_db::store::ToolCall;
 use serde_json::{json, Map, Value};
@@ -216,7 +217,8 @@ impl Run {
                     let content = format!(
                         "Error: not run: it's past your time budget of about {wall} seconds. Write your report now with what you have."
                     );
-                    self.answer_unrun(tc, content, true, None).await?;
+                    self.answer_unrun(tc, content, Outcome::Failed, true, None)
+                        .await?;
                 }
                 break;
             }
@@ -264,6 +266,7 @@ impl Run {
                             self.add_tool_result(
                                 &tc.id,
                                 DENIED_WITH_MESSAGE.into(),
+                                Outcome::Failed,
                                 None,
                                 Vec::new(),
                             )
@@ -376,10 +379,7 @@ impl Run {
                         tools::execute(&app, root.as_deref(), &name, &args, &stop, &ctx).await
                     })
                     .await
-                    .unwrap_or_else(|e| tools::ToolResult {
-                        content: format!("Error: {e}"),
-                        ..Default::default()
-                    });
+                    .unwrap_or_else(|e| tools::ToolResult::error(e.to_string()));
                     (result, started.elapsed())
                 }
             })
@@ -415,26 +415,31 @@ impl Run {
     /// A call answered without running it (a subagent's refusal, a scope
     /// grant): it counts for the budget and the loop checks like any other
     /// (P2.1), so refusals can't go on for ever.
+    ///
+    /// `refused`: a "no" the guard counts (`FinishedCall::rejected`), apart
+    /// from the outcome: a call not run for the budget failed, unrefused.
     pub(super) async fn answer_unrun(
         &mut self,
         tc: &ToolCall,
         mut content: String,
+        outcome: Outcome,
         refused: bool,
         meta: Option<Value>,
     ) -> Result<(), String> {
-        self.note_finished(tc, &mut content, refused);
-        self.add_tool_result(&tc.id, content, meta, Vec::new())
+        self.note_finished(tc, &mut content, outcome.failed(), refused);
+        self.add_tool_result(&tc.id, content, outcome, meta, Vec::new())
             .await
     }
 
     /// A call that didn't run a tool (or ran one here, without a write) is
     /// still a finished call for the loop guard, whose note joins its
     /// result.
-    fn note_finished(&mut self, tc: &ToolCall, content: &mut String, rejected: bool) {
+    fn note_finished(&mut self, tc: &ToolCall, content: &mut String, failed: bool, rejected: bool) {
         let verdict = self.guard.record(FinishedCall {
             name: &tc.name,
             args_json: &tc.arguments,
             result: content,
+            failed,
             write: None,
             rejected,
         });
@@ -465,7 +470,9 @@ impl Run {
                     spec.label.to_lowercase(),
                     spec.tools.join(", ")
                 );
-                return self.answer_unrun(tc, content, true, None).await;
+                return self
+                    .answer_unrun(tc, content, Outcome::Failed, true, None)
+                    .await;
             }
         }
         let args = permissions::parse_args(&tc.arguments);
@@ -478,7 +485,9 @@ impl Run {
             let refused = granted.is_empty();
             // Kept with the result: a continued worker keeps its grants.
             let meta = (!refused).then(|| json!({ "granted": granted }));
-            return self.answer_unrun(tc, content, refused, meta).await;
+            return self
+                .answer_unrun(tc, content, Outcome::of(refused), refused, meta)
+                .await;
         }
         // The test writer writes test files only (E02).
         if let (true, Some(path), Some(root)) = (
@@ -494,7 +503,9 @@ impl Run {
                 || !real.as_deref().is_some_and(super::project::is_test_path)
             {
                 let content = super::test_writer::not_a_test_file(&key);
-                return self.answer_unrun(tc, content, true, None).await;
+                return self
+                    .answer_unrun(tc, content, Outcome::Failed, true, None)
+                    .await;
             }
         }
         // A writing subagent changes files only with write, where its scope
@@ -507,7 +518,9 @@ impl Run {
                     sub.tests_only,
                     self.root.as_deref().map(std::path::Path::new),
                 ) {
-                    return self.answer_unrun(tc, content, true, None).await;
+                    return self
+                        .answer_unrun(tc, content, Outcome::Failed, true, None)
+                        .await;
                 }
             }
         }
@@ -530,7 +543,9 @@ impl Run {
                 let content = format!(
                     "Error: `{command}` is {what}. The lead runs those after merging your work; use diagnostics, or a light check on one file, run directly."
                 );
-                return self.answer_unrun(tc, content, true, None).await;
+                return self
+                    .answer_unrun(tc, content, Outcome::Failed, true, None)
+                    .await;
             }
         }
         if tc.name == "write" {
@@ -554,7 +569,9 @@ impl Run {
                         _ => key.as_str(),
                     };
                     let content = super::worker::outside_scope(named, scope);
-                    return self.answer_unrun(tc, content, true, None).await;
+                    return self
+                        .answer_unrun(tc, content, Outcome::Failed, true, None)
+                        .await;
                 }
             }
         }
@@ -566,11 +583,11 @@ impl Run {
                 || matches!(tc.name.as_str(), "read" | "write" | "list_dir")
                     && is_context_path(path_arg, context_dir))
         {
-            let mut content = self.context_tool(&tc.name, &args).await;
+            let mut result = self.context_tool(&tc.name, &args).await;
             // A change to the context file itself (or a restore): the
             // compaction the CLM pressure waits for (run.rs,
             // update_clm_pressure). Notes and the task card don't count.
-            if !tools::is_error(&content)
+            if !result.outcome.failed()
                 && (tc.name == "restore_context"
                     || tc.name == "write"
                         && crate::clm::is_live_path(
@@ -581,10 +598,13 @@ impl Run {
             {
                 self.context_edited = true;
             }
-            self.note_finished(tc, &mut content, false);
-            let meta = tools::result_meta(&tc.name, &content).map(Value::Object);
+            self.note_finished(tc, &mut result.content, result.outcome.failed(), false);
+            let meta = match result.outcome {
+                Outcome::Done => tools::result_meta(&tc.name, &result.content).map(Value::Object),
+                Outcome::Failed => None,
+            };
             return self
-                .add_tool_result(&tc.id, content, meta, Vec::new())
+                .add_tool_result(&tc.id, result.content, result.outcome, meta, Vec::new())
                 .await;
         }
         // Phase E: a restricted turn offers only context tools (handled
@@ -603,7 +623,7 @@ impl Run {
                 tc.name
             );
             return self
-                .add_tool_result(&tc.id, content, None, Vec::new())
+                .add_tool_result(&tc.id, content, Outcome::Failed, None, Vec::new())
                 .await;
         }
         // Q05 (mcp-plan.md): a tool's description, or a call that can't be
@@ -614,7 +634,9 @@ impl Run {
             if let super::mcp_tool::Prepared::Answer { content, error } =
                 super::mcp_tool::prepare(self.mcp.as_deref(), &args, read_only)
             {
-                return self.answer_unrun(tc, content, error, None).await;
+                return self
+                    .answer_unrun(tc, content, Outcome::of(error), error, None)
+                    .await;
             }
         }
         match tc.name.as_str() {
@@ -624,21 +646,25 @@ impl Run {
             }
             // S06: the answers to the change review's findings.
             "answer_review" if self.sub().is_none() => {
-                let content = self.answer_review(&args);
+                let result = self.answer_review(&args);
                 return self
-                    .add_tool_result(&tc.id, content, None, Vec::new())
+                    .add_tool_result(&tc.id, result.content, result.outcome, None, Vec::new())
                     .await;
             }
             // The checklist: shown in the panel, never asks, isn't work the
             // loop checks or the pause limit count.
             "todo" => {
                 let items = plan::parse_todo(&args);
-                let mut content = plan::describe_todo(&items);
+                let tools::ToolResult {
+                    mut content,
+                    outcome,
+                    ..
+                } = plan::describe_todo(&items);
                 // Phase D: a step just finished in CLM mode asks for a
                 // compaction of that step's span (and a TASK.md update).
                 // The previous checklist is what was current before this
                 // call: the history up to the message holding it.
-                if clm && !items.is_empty() && !content.starts_with("Error") {
+                if clm && !outcome.failed() {
                     let previous: Option<Vec<plan::TodoItem>> =
                         self.recent().await.ok().and_then(|recent| {
                             let cut = recent
@@ -707,7 +733,7 @@ impl Run {
                         }
                     }
                 }
-                self.add_tool_result(&tc.id, content, None, Vec::new())
+                self.add_tool_result(&tc.id, content, outcome, None, Vec::new())
                     .await?;
                 // The panel's live source while the run goes: every update,
                 // even an empty one (which clears a stale panel).
@@ -725,7 +751,7 @@ impl Run {
             name if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&name) => {
                 let content = plan::blocked_in_plan_mode(name, self.autopilot);
                 return self
-                    .add_tool_result(&tc.id, content, None, Vec::new())
+                    .add_tool_result(&tc.id, content, Outcome::Failed, None, Vec::new())
                     .await;
             }
             _ => {}
@@ -757,7 +783,7 @@ impl Run {
                         self.checklist_gate_refused = true;
                         let content = plan::checklist_gate_error(&reason, &tc.name);
                         return self
-                            .add_tool_result(&tc.id, content, None, Vec::new())
+                            .add_tool_result(&tc.id, content, Outcome::Failed, None, Vec::new())
                             .await;
                     }
                 }
@@ -810,10 +836,7 @@ impl Run {
             .and_then(|p| std::fs::read_to_string(p).ok());
 
         let result = match &auth.refusal {
-            Some(refusal) => tools::ToolResult {
-                content: refusal.clone(),
-                ..Default::default()
-            },
+            Some(refusal) => tools::ToolResult::error(refusal.clone()),
             None if tool_name == super::mcp_tool::NAME => match self.mcp.clone() {
                 Some(catalog) => {
                     let args = permissions::parse_args(&args_json);
@@ -827,10 +850,7 @@ impl Run {
                     )
                     .await
                 }
-                None => tools::ToolResult {
-                    content: "Error: no MCP server is set up for this chat.".into(),
-                    ..Default::default()
-                },
+                None => tools::ToolResult::error("Error: no MCP server is set up for this chat."),
             },
             None => {
                 let ctx = self.call_context(&tc.id);
@@ -925,14 +945,15 @@ impl Run {
             Some(w) => (Some(w.path), w.abs_path, w.before),
             None => (None, None, None),
         };
+        let failed = result.outcome.failed();
         if let Some(note) = &auth.result_note {
-            if !tools::is_error(&result.content) {
+            if !failed {
                 result.content.push_str(note);
             }
         }
         // Redoing work it compacted away: offer the revision that still has it.
         // A hint that fires counts redone work (Phase E compliance).
-        if clm && auth.refusal.is_none() && !tools::is_error(&result.content) {
+        if clm && auth.refusal.is_none() && !failed {
             let (d, id, name, a) = (
                 self.dialog_id.clone(),
                 tc.id.clone(),
@@ -950,7 +971,6 @@ impl Run {
             }
         }
 
-        let failed = tools::is_error(&result.content);
         let after = result.written.as_ref().map(|(_, c)| c.clone()).or_else(|| {
             (tool_name == "write")
                 .then(|| permissions::str_arg(&args_json, "content"))
@@ -961,6 +981,7 @@ impl Run {
             name: &tc.name,
             args_json: &tc.arguments,
             result: &result.content,
+            failed,
             write: match (&write_path, &after) {
                 (Some(path), Some(after)) if writes && !failed => Some(Write {
                     path,
@@ -1001,7 +1022,7 @@ impl Run {
                 None => eprintln!("rovik: couldn't save a command's whole output for chat {owner}"),
             }
         }
-        if writes && !tools::is_error(&result.content) {
+        if writes && !failed {
             if let Some(path) = &write_path {
                 self.note_write(path, abs_write_path.as_deref());
             }
@@ -1051,7 +1072,10 @@ impl Run {
             }
         }
 
-        let mut meta = tools::result_meta(&tc.name, &result.content);
+        let mut meta = match failed {
+            false => tools::result_meta(&tc.name, &result.content),
+            true => None,
+        };
         if let Some(extra) = result.meta {
             meta.get_or_insert_with(Map::new).extend(extra);
         }
@@ -1062,6 +1086,7 @@ impl Run {
         self.add_tool_result(
             &tc.id,
             result.content,
+            result.outcome,
             meta.map(Value::Object),
             result.attachments,
         )
@@ -1106,6 +1131,7 @@ impl Run {
         self.add_tool_result(
             &tc.id,
             "Error: stopped by the user before this ran.".into(),
+            Outcome::Failed,
             None,
             Vec::new(),
         )
@@ -1114,7 +1140,7 @@ impl Run {
 
     /// read / write / list_dir on the agent's context
     /// folder, and restore_context.
-    async fn context_tool(&self, name: &str, args: &Map<String, Value>) -> String {
+    async fn context_tool(&self, name: &str, args: &Map<String, Value>) -> tools::ToolResult {
         let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("");
         let text = |k: &str| args.get(k).and_then(|v| v.as_str());
         let db = self.core.db.clone();
@@ -1133,8 +1159,12 @@ impl Run {
             }
             "write" if tools::is_partial_write(name, args) => {
                 match (text("old_text"), text("content")) {
-                    (None, _) => return "Error: \"old_text\" must be a string.".into(),
-                    (_, None) => return "Error: \"content\" is required.".into(),
+                    (None, _) => {
+                        return tools::ToolResult::error("Error: \"old_text\" must be a string.")
+                    }
+                    (_, None) => {
+                        return tools::ToolResult::error("Error: \"content\" is required.")
+                    }
                     (Some(old), Some(new)) => crate::clm::tool_edit(
                         vfs,
                         &self.dialog_id,
@@ -1147,16 +1177,23 @@ impl Run {
                 }
             }
             "write" => match text("content") {
-                None => return "Error: \"content\" is required.".into(),
+                None => return tools::ToolResult::error("Error: \"content\" is required."),
                 Some(content) => crate::clm::tool_write(vfs, &self.dialog_id, path, content),
             },
             "list_dir" => crate::clm::tool_list(&db, vfs, &self.dialog_id, path).await,
             "restore_context" => {
                 crate::clm::tool_restore(&db, vfs, &self.dialog_id, args.get("revision")).await
             }
-            _ => return format!("Error: {name} can't be used on your context folder."),
+            _ => {
+                return tools::ToolResult::error(format!(
+                    "Error: {name} can't be used on your context folder."
+                ))
+            }
         };
-        result.unwrap_or_else(|e| format!("Error: {e}"))
+        match result {
+            Ok(text) => tools::ToolResult::ok(text),
+            Err(e) => tools::ToolResult::error(format!("Error: {e}")),
+        }
     }
 
     /*
@@ -1577,7 +1614,7 @@ impl Run {
                         )
                         .await;
                         McpReply {
-                            is_error: result.content.starts_with("Error"),
+                            is_error: result.outcome.failed(),
                             text: result.content,
                         }
                     }
@@ -1909,6 +1946,7 @@ impl Run {
                 .add_tool_result(
                     &tc.id,
                     super::autopilot::NO_QUESTIONS.into(),
+                    Outcome::Failed,
                     None,
                     Vec::new(),
                 )
@@ -1918,7 +1956,7 @@ impl Run {
             log_question(self, 0, vec!["over-limit".into()]);
             let content = plan::past_the_question_limit(self.questions_asked, self.plan_mode);
             return self
-                .add_tool_result(&tc.id, content, None, Vec::new())
+                .add_tool_result(&tc.id, content, Outcome::Done, None, Vec::new())
                 .await;
         }
         let questions = plan::parse_questions(args);
@@ -1926,7 +1964,7 @@ impl Run {
             let content =
                 "Error: no question to ask. Pass questions: [{ question, options: [{ label }] }].";
             return self
-                .add_tool_result(&tc.id, content.into(), None, Vec::new())
+                .add_tool_result(&tc.id, content.into(), Outcome::Failed, None, Vec::new())
                 .await;
         }
         self.questions_asked += 1;
@@ -1945,10 +1983,16 @@ impl Run {
         if matches!(outcome, plan::QuestionsOutcome::Stopped { .. }) {
             self.core.agents.stop(&self.core, &self.dialog_id);
         }
-        let content = plan::describe_outcome(&questions, &outcome, self.plan_mode);
+        let answer = plan::describe_outcome(&questions, &outcome, self.plan_mode);
         let meta = json!({ "questions": { "questions": questions, "outcome": outcome } });
-        self.add_tool_result(&tc.id, content, Some(meta), Vec::new())
-            .await
+        self.add_tool_result(
+            &tc.id,
+            answer.content,
+            answer.outcome,
+            Some(meta),
+            Vec::new(),
+        )
+        .await
     }
 
     /// D07: a writing subagent asks for more paths. A sequential worker is
@@ -2067,6 +2111,7 @@ impl Run {
                 .add_tool_result(
                     &tc.id,
                     super::plan_review::BLOCKED_AGAIN.into(),
+                    Outcome::Failed,
                     None,
                     Vec::new(),
                 )
@@ -2083,7 +2128,7 @@ impl Run {
             (None, None) => {
                 let content = "Error: the plan wasn't saved. Neither `plan` nor `edits` was given: send the complete plan.";
                 return self
-                    .add_tool_result(&tc.id, content.into(), None, Vec::new())
+                    .add_tool_result(&tc.id, content.into(), Outcome::Failed, None, Vec::new())
                     .await;
             }
             (None, Some(edits)) => {
@@ -2099,7 +2144,7 @@ impl Run {
                 let Some(draft) = self.plan_draft.clone() else {
                     let content = "Error: the plan wasn't saved. There's no earlier plan to edit: send the complete plan.";
                     return self
-                        .add_tool_result(&tc.id, content.into(), None, Vec::new())
+                        .add_tool_result(&tc.id, content.into(), Outcome::Failed, None, Vec::new())
                         .await;
                 };
                 match edit_last_plan(&draft, self.plan_sent.as_deref(), edits) {
@@ -2109,6 +2154,7 @@ impl Run {
                             .add_tool_result(
                                 &tc.id,
                                 format!("Error: the plan wasn't saved. {e}"),
+                                Outcome::Failed,
                                 Some(json!({ "plan": draft })),
                                 Vec::new(),
                             )
@@ -2199,6 +2245,7 @@ impl Run {
                 .add_tool_result(
                     &tc.id,
                     content,
+                    Outcome::Failed,
                     Some(json!({ "plan": plan_text })),
                     Vec::new(),
                 )
@@ -2210,6 +2257,7 @@ impl Run {
                 .add_tool_result(
                     &tc.id,
                     "Error: no project is open, so the plan can't be saved.".into(),
+                    Outcome::Failed,
                     None,
                     Vec::new(),
                 )
@@ -2238,6 +2286,7 @@ impl Run {
                     .add_tool_result(
                         &tc.id,
                         format!("Error: {result}{}", ide_fixed.unwrap_or_default()),
+                        Outcome::Failed,
                         Some(json!({ "review": record, "plan": checked })),
                         Vec::new(),
                     )
@@ -2284,13 +2333,14 @@ impl Run {
                 if let Some(record) = record {
                     meta["review"] = record;
                 }
-                self.add_tool_result(&tc.id, content, Some(meta), Vec::new())
+                self.add_tool_result(&tc.id, content, Outcome::Done, Some(meta), Vec::new())
                     .await
             }
             Err(e) => {
                 self.add_tool_result(
                     &tc.id,
                     format!("Error: the plan couldn't be saved: {e}"),
+                    Outcome::Failed,
                     None,
                     Vec::new(),
                 )

@@ -141,6 +141,19 @@ pub struct MessageRow {
     pub created_at: i64,
 }
 
+impl MessageRow {
+    /// For a tool message: whether its call failed. Its `meta.outcome` says
+    /// so; a row stored before outcomes were (or mirrored from an older
+    /// daemon) has none, and then its text does, starting with "Error:".
+    pub fn call_failed(&self) -> bool {
+        let outcome = self.meta.as_ref().and_then(|m| m.get("outcome"));
+        match outcome.and_then(Value::as_str) {
+            Some(outcome) => outcome == "failed",
+            None => self.content.trim_start().starts_with("Error:"),
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct NewMessage {

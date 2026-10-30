@@ -15,6 +15,7 @@ use super::plan::PlanStep;
 use super::run::Run;
 use super::subagent::{self, Kind, SubResult, SubStatus, SubagentConfig, SubagentSettings};
 use super::subagent_run::{none_future, run_child, SubFuture};
+use super::tools::Outcome;
 use super::worker::{self, WriteScope};
 use super::{log, permissions, tools};
 use crate::chat_db::store::ToolCall;
@@ -257,16 +258,16 @@ struct Member {
 
 impl Run {
     /// F04: `task{kind:"workers", group}`. Never fails: problems come back
-    /// as the call's result.
+    /// as the call's result, a failed one.
     pub(super) async fn run_group(
         &mut self,
         tc: &ToolCall,
         group: &str,
         config: &SubagentConfig,
-    ) -> (String, Option<Value>) {
+    ) -> (String, Outcome, Option<Value>) {
         match self.try_group(tc, group, config).await {
-            Ok(done) => done,
-            Err(e) => (e, None),
+            Ok((text, meta)) => (text, Outcome::Done, meta),
+            Err(e) => (tools::with_error_prefix(e), Outcome::Failed, None),
         }
     }
 

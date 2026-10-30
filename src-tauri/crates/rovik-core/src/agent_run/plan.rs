@@ -11,6 +11,7 @@
 //!     input. Each call writes the whole list, so the latest call in a run
 //!     is the current state; the tool calls are the record.
 
+use super::tools::ToolResult;
 use crate::chat_db::store::MessageRow;
 use regex::Regex;
 use serde::Serialize;
@@ -2117,13 +2118,15 @@ pub fn describe_outcome(
     questions: &[Question],
     outcome: &QuestionsOutcome,
     plan_mode: bool,
-) -> String {
+) -> ToolResult {
     let (say_so, in_the_plan, next) = match plan_mode {
         true => ("say so in the plan", " in the plan", "Continue planning."),
         false => ("say what you assumed", "", "Continue with the task."),
     };
-    match outcome {
-        QuestionsOutcome::Stopped { .. } => "Error: the user stopped the task instead of answering.".into(),
+    let text = match outcome {
+        QuestionsOutcome::Stopped { .. } => {
+            return ToolResult::error("Error: the user stopped the task instead of answering.")
+        }
         QuestionsOutcome::Reply { reply } => format!(
             "The user replied in their own words instead of picking options:\n\n{reply}\n\n\
              Treat this as their answer to your questions. For anything it leaves open, decide yourself and {say_so}."
@@ -2144,7 +2147,8 @@ pub fn describe_outcome(
             lines.push(format!("Treat these answers as requirements. {next}"));
             lines.join("\n")
         }
-    }
+    };
+    ToolResult::ok(text)
 }
 
 /// How each was answered, for the agent log.
@@ -2230,23 +2234,25 @@ pub fn todo_problems(items: &[TodoItem]) -> Option<String> {
     None
 }
 
-/// What the model reads after an update.
-pub fn describe_todo(items: &[TodoItem]) -> String {
+/// What the model reads after an update: the list taken, or why not.
+pub fn describe_todo(items: &[TodoItem]) -> ToolResult {
     if items.is_empty() {
-        return "Error: the checklist is empty. Pass items: [{ title, status }].".into();
+        return ToolResult::error(
+            "Error: the checklist is empty. Pass items: [{ title, status }].",
+        );
     }
     if let Some(problem) = todo_problems(items) {
-        return problem;
+        return ToolResult::error(problem);
     }
     let done = items.iter().filter(|i| is_settled(i)).count();
     let current = items.iter().find(|i| i.status == "in_progress");
-    format!(
+    ToolResult::ok(format!(
         "Checklist updated: {done} of {} done{}.",
         items.len(),
         current
             .map(|c| format!("; now: {}", c.title))
             .unwrap_or_default()
-    )
+    ))
 }
 
 /// Whether a stored message is one the IDE wrote (check failures, nudges).
@@ -3552,13 +3558,14 @@ mod tests {
         let outcome: QuestionsOutcome =
             serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] }))
                 .unwrap();
-        let text = describe_outcome(&qs, &outcome, true);
+        let text = describe_outcome(&qs, &outcome, true).content;
         assert!(
             text.contains("1. Which DB?\n   → SQLite")
                 && text.contains("2. Name?\n   → left it to you")
         );
         let stopped: QuestionsOutcome = serde_json::from_value(json!({ "stopped": true })).unwrap();
-        assert!(describe_outcome(&qs, &stopped, true).starts_with("Error:"));
+        let stopped_result = describe_outcome(&qs, &stopped, true);
+        assert!(stopped_result.content.starts_with("Error:") && stopped_result.outcome.failed());
         assert_eq!(
             serde_json::to_value(&stopped).unwrap(),
             json!({ "stopped": true })
@@ -3571,7 +3578,7 @@ mod tests {
         let items = parse_todo(args.as_object().unwrap());
         assert_eq!(items[2].status, "pending");
         assert_eq!(
-            describe_todo(&items),
+            describe_todo(&items).content,
             "Checklist updated: 0 of 3 done; now: b."
         );
     }
@@ -3630,7 +3637,7 @@ mod tests {
                 text: "mine".into(),
             }],
         };
-        let text = describe_outcome(&qs, &outcome, true);
+        let text = describe_outcome(&qs, &outcome, true).content;
         assert!(
             text.contains("\"mine\" (in their own words)")
                 && text.contains("B?\n   → left it to you")
@@ -3656,18 +3663,19 @@ mod tests {
             reply: "Up to you.".into(),
         };
         for outcome in [&answers, &reply] {
-            let plan = describe_outcome(&qs, outcome, true);
+            let plan = describe_outcome(&qs, outcome, true).content;
             assert!(plan.contains("in the plan"), "{plan}");
-            let agent = describe_outcome(&qs, outcome, false);
+            let agent = describe_outcome(&qs, outcome, false).content;
             assert!(!agent.contains("plan"), "{agent}");
         }
-        let agent = describe_outcome(&qs, &answers, false);
+        let agent = describe_outcome(&qs, &answers, false).content;
         assert!(
             agent.contains("B?\n   → left it to you: decide, and say what you chose and why\n")
                 && agent.ends_with("Treat these answers as requirements. Continue with the task."),
             "{agent}"
         );
         assert!(describe_outcome(&qs, &reply, false)
+            .content
             .ends_with("For anything it leaves open, decide yourself and say what you assumed."));
         assert_eq!(
             past_the_question_limit(3, false),
@@ -3679,7 +3687,7 @@ mod tests {
     #[test]
     fn checklist_edge_cases() {
         assert_eq!(
-            describe_todo(&[]),
+            describe_todo(&[]).content,
             "Error: the checklist is empty. Pass items: [{ title, status }]."
         );
         let many: Vec<Value> = (0..40).map(|i| json!(format!("step {i}"))).collect();
@@ -3694,7 +3702,7 @@ mod tests {
         );
         assert!(all_settled.iter().all(is_settled));
         assert_eq!(
-            describe_todo(&all_settled),
+            describe_todo(&all_settled).content,
             "Checklist updated: 3 of 3 done."
         );
         // Two steps in_progress: rejected, naming both, so the model narrows to one.
@@ -3703,7 +3711,9 @@ mod tests {
                 .as_object()
                 .unwrap(),
         );
-        let err = describe_todo(&two_active);
+        let refused = describe_todo(&two_active);
+        assert!(refused.outcome.failed());
+        let err = refused.content;
         assert!(err.starts_with("Error: only one step"), "{err}");
         assert!(err.contains("\"a\"") && err.contains("\"b\""), "{err}");
         // Zero in_progress with open steps stays fine: between steps, not an error.
@@ -3712,7 +3722,10 @@ mod tests {
                 .as_object()
                 .unwrap(),
         );
-        assert_eq!(describe_todo(&between), "Checklist updated: 1 of 2 done.");
+        assert_eq!(
+            describe_todo(&between).content,
+            "Checklist updated: 1 of 2 done."
+        );
     }
 
     #[test]

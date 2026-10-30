@@ -14,6 +14,7 @@ use super::permissions::ChecklistMode;
 use super::project::{self, ProjectCheck};
 use super::subagent::SubagentSettings;
 use super::subagent_run::SubCtx;
+use super::tools::Outcome;
 use super::{
     failure, log, plan, repair, repetition, subagent, tools, Controls, EffortPick, ModelProfile,
     PauseRequest, PauseSignal, StartKind, StartRequest, StopSignal,
@@ -699,7 +700,8 @@ impl Run {
     async fn end_over_budget(&mut self, calls: &[ToolCall], why: &str) -> Result<String, String> {
         for tc in calls {
             let content = format!("Error: not run: the task went over its budget ({why}).");
-            self.answer_unrun(tc, content, false, None).await?;
+            self.answer_unrun(tc, content, Outcome::Failed, false, None)
+                .await?;
         }
         log::write(
             &self.core,
@@ -3184,24 +3186,37 @@ impl Run {
         self.append(vec![m]).await
     }
 
-    /// The result of a tool call, stored before the next turn.
+    /// The result of a tool call, stored before the next turn: the text
+    /// the model gets, with how the call went in its `meta.outcome`
+    /// (`MessageRow::call_failed` reads it back), and logged. A failed
+    /// call's text starts with "Error:": the model has always seen failures
+    /// so, and an app older than outcomes still decides by it.
     pub(super) async fn add_tool_result(
         &self,
         tool_call_id: &str,
         content: String,
+        outcome: Outcome,
         meta: Option<Value>,
         attachments: Vec<String>,
     ) -> Result<(), String> {
+        debug_assert!(
+            !outcome.failed() || content.trim_start().starts_with("Error:"),
+            "a failed call's result says so: {content}"
+        );
         #[cfg(test)]
         if FAIL_TOOL_RESULT.lock().unwrap().contains(tool_call_id) {
             return Err("the database is gone (test)".into());
         }
+        let mut meta = meta.unwrap_or_else(|| json!({}));
+        if let Some(fields) = meta.as_object_mut() {
+            fields.insert("outcome".into(), json!(outcome.as_str()));
+        }
         let mut m = new_message("tool", &content);
         m.tool_call_id = Some(tool_call_id.to_string());
-        m.meta = meta;
+        m.meta = Some(meta);
         m.attachments = attachments;
         self.append(vec![m]).await?;
-        self.log_tool(tool_call_id, &content);
+        self.log_tool(tool_call_id, &content, outcome);
         Ok(())
     }
 
@@ -3210,19 +3225,19 @@ impl Run {
     /// whether it failed and how (`tools::error_class`), how long it took
     /// (from its turn, or its approval, to its result), and for a command
     /// that ran, how it ended.
-    fn log_tool(&self, tool_call_id: &str, content: &str) {
+    fn log_tool(&self, tool_call_id: &str, content: &str, outcome: Outcome) {
         let (tool, took) = self
             .calls
             .finish(tool_call_id)
             .unwrap_or_else(|| ("unknown".into(), Duration::ZERO));
-        let class = tools::error_class(content);
+        let failed = outcome.failed();
         let mut entry = json!({
             "event": "tool",
             "dialogId": self.dialog_id,
             "model": self.profile.model,
             "tool": tool,
-            "failed": class.is_some(),
-            "error": class,
+            "failed": failed,
+            "error": failed.then(|| tools::error_class(content)),
             "ms": took.as_millis() as u64,
         });
         if tool == "bash" {

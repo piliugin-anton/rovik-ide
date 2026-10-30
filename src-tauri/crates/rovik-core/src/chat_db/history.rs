@@ -99,6 +99,9 @@ pub struct Msg {
     /// The user dismissed the open checklist with this message
     /// (`meta.checklistClosed`): don't carry an old checklist into it.
     pub checklist_closed: bool,
+    /// A tool message whose call failed (`MessageRow::call_failed`), in a
+    /// history built from the stored rows; CLM's document doesn't keep it.
+    pub call_failed: bool,
     /// Reasoning sent back with an assistant message (`attach_reasoning`):
     /// `{ details }` or `{ text }`.
     pub reasoning: Option<Value>,
@@ -568,7 +571,7 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
                     .get("command")
                     .and_then(|c| c.as_str())
                     .map(|c| c.trim().to_string()),
-                ok: !m.text.starts_with("Error:"),
+                ok: !m.call_failed,
                 partial: m.text.starts_with(crate::read_file::PARTIAL_PREFIX),
             })
         })
@@ -1349,6 +1352,7 @@ pub fn load_messages_in(
                         .or_else(|| meta.get("checklist_closed"))
                         .is_some_and(|v| *v == serde_json::Value::Bool(true))
                 }),
+                call_failed: m.role == "tool" && m.call_failed(),
                 full_chars,
                 needs_body,
                 id: m.id,
@@ -1423,6 +1427,7 @@ pub fn answer_unanswered_calls(messages: Vec<Msg>) -> Vec<Msg> {
                 harness: false,
                 steer: false,
                 checklist_closed: false,
+                call_failed: true,
                 reasoning: None,
             });
         }
@@ -1664,6 +1669,7 @@ mod tests {
             harness: false,
             steer: false,
             checklist_closed: false,
+            call_failed: false,
             reasoning: None,
         }
     }
@@ -3002,6 +3008,34 @@ mod tests {
             "the latest read is whole"
         );
         assert!(pairing_ok(&out));
+    }
+
+    /// Whether a read failed is its call's (`Msg::call_failed`), not its
+    /// text's: reads of a log that starts with "Error:" go out of date as
+    /// any read does; reads that failed hold no file, and never do.
+    #[test]
+    fn a_read_goes_out_of_date_by_its_outcome_not_its_words() {
+        let mut history = vec![msg("user", "q")];
+        for i in 0..20 {
+            let id = format!("r{i}");
+            history.push(call_with(&id, "read", json!({ "path": "app.log" })));
+            history.push(result(
+                &id,
+                &format!("Error: disk full\n{}", "x".repeat(3_000)),
+            ));
+        }
+        let stubs = |out: &[Msg]| {
+            out.iter()
+                .filter(|m| m.text.starts_with("[Read app.log here"))
+                .count()
+        };
+        let (out, _) = fit_with(history.clone(), 10_000, generous(false));
+        assert_eq!(stubs(&out), 8, "one batch of 8");
+        for m in history.iter_mut().filter(|m| m.role == "tool") {
+            m.call_failed = true;
+        }
+        let (out, _) = fit_with(history, 10_000, generous(false));
+        assert_eq!(stubs(&out), 0);
     }
 
     #[test]

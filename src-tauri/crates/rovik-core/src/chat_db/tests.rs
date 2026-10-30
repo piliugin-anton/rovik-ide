@@ -1622,3 +1622,71 @@ fn more_messages_than_a_statement_takes_keep_their_attachments() {
     assert_eq!(rows.len(), MANY);
     assert!(rows.iter().all(|r| r.attachments == ["img"]));
 }
+
+/// A tool row says whether its call failed in `meta.outcome`, and the
+/// history built from it keeps that; a row stored before outcomes were
+/// has none, and its text decides as it did then.
+#[test]
+fn a_stored_result_without_an_outcome_is_judged_by_its_text() {
+    let mut conn = db();
+    dialog(&mut conn, "d", "Chat", 0);
+    let ids = ["done", "failed", "old-error", "old-ok"];
+    let calls = ids
+        .iter()
+        .map(|id| ToolCall {
+            id: id.to_string(),
+            name: "read".into(),
+            arguments: "{}".into(),
+            extra_content: None,
+        })
+        .collect();
+    let tool = |id: &str, content: &str, meta: Option<serde_json::Value>| NewMessage {
+        tool_call_id: Some(id.into()),
+        meta,
+        ..message(&format!("m-{id}"), "tool", content)
+    };
+    add(
+        &mut conn,
+        "d",
+        vec![
+            message("u", "user", "Read them"),
+            NewMessage {
+                tool_calls: Some(calls),
+                ..message("a", "assistant", "")
+            },
+            tool(
+                "done",
+                "Error: disk full",
+                Some(serde_json::json!({ "outcome": "done" })),
+            ),
+            tool(
+                "failed",
+                "Error: no such file",
+                Some(serde_json::json!({ "outcome": "failed" })),
+            ),
+            tool("old-error", "Error: no such file", None),
+            tool(
+                "old-ok",
+                "one\ntwo",
+                Some(serde_json::json!({ "count": 2 })),
+            ),
+        ],
+    );
+    let want: Vec<(String, bool)> = [false, true, true, false]
+        .iter()
+        .zip(ids)
+        .map(|(failed, id)| (id.to_string(), *failed))
+        .collect();
+    let rows = get_messages(&conn, "d", None, 10).unwrap().messages;
+    let stored: Vec<(String, bool)> = rows
+        .iter()
+        .filter_map(|m| Some((m.tool_call_id.clone()?, m.call_failed())))
+        .collect();
+    assert_eq!(stored, want);
+    let history = super::history::load_messages(&conn, "d", None).unwrap();
+    let sent: Vec<(String, bool)> = history
+        .iter()
+        .filter_map(|m| Some((m.tool_call_id.clone()?, m.call_failed)))
+        .collect();
+    assert_eq!(sent, want);
+}

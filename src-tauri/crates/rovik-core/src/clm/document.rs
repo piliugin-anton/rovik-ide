@@ -108,6 +108,7 @@ impl CtxMsg {
             harness: self.harness,
             steer: self.steer,
             checklist_closed: self.checklist_closed,
+            call_failed: false,
             reasoning: None,
         }
     }

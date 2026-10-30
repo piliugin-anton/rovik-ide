@@ -593,10 +593,46 @@ pub fn tools_for(
  * ---------------------------------------------------------------------------
  */
 
+/// Whether a tool call did what it was asked. Whatever answers a call says
+/// so; the loop guard, the agent log, the stored row (`meta.outcome`) and
+/// the chat read it from here, never from the text the model gets, which
+/// says a failure with `Error:` (a file it read may start so too).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Outcome {
+    #[default]
+    Done,
+    Failed,
+}
+
+impl Outcome {
+    /// `Failed` when `failed`.
+    pub fn of(failed: bool) -> Outcome {
+        match failed {
+            true => Outcome::Failed,
+            false => Outcome::Done,
+        }
+    }
+
+    /// Whether the call failed.
+    pub fn failed(self) -> bool {
+        self == Outcome::Failed
+    }
+
+    /// As a tool message's `meta.outcome` stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Done => "done",
+            Outcome::Failed => "failed",
+        }
+    }
+}
+
 /// Text for the model, plus attachments (screenshots) for tools that make them.
 #[derive(Debug, Default)]
 pub struct ToolResult {
     pub content: String,
+    /// Whether the call failed: its content then starts with "Error:".
+    pub outcome: Outcome,
     pub attachments: Vec<String>,
     /// Partial write: the path (as given) and the file's new content.
     pub written: Option<(String, String)>,
@@ -609,33 +645,46 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
-    fn text(content: impl Into<String>) -> Self {
+    /// A call that did what it was asked.
+    pub fn ok(content: impl Into<String>) -> Self {
         ToolResult {
             content: content.into(),
             ..Default::default()
         }
     }
-}
 
-pub fn is_error(result: &str) -> bool {
-    result.trim_start().starts_with("Error:")
-}
-
-/// G02 (autopilot-plan): what kind of error a tool call's result is, for
-/// its `tool` line in the agent log and the evaluation's counts: one of
-/// the classes below, by the words the tools write, or "other". None: the
-/// call didn't fail. A command that ran and exited non-zero didn't fail as
-/// a call: its result is the command's (`command_end`).
-pub fn error_class(result: &str) -> Option<&'static str> {
-    if !is_error(result) {
-        return None;
+    /// A call that failed: its text for the model, which says so with
+    /// `Error: ` before it (added unless it's there).
+    pub fn error(content: impl Into<String>) -> Self {
+        ToolResult {
+            content: with_error_prefix(content.into()),
+            outcome: Outcome::Failed,
+            ..Default::default()
+        }
     }
+}
+
+/// A failure's text as the model reads it: starting with `Error:`, once.
+/// For errors passed on from code that doesn't word them as the model's
+/// (a database's); a refusal builder writes its own.
+pub(super) fn with_error_prefix(text: String) -> String {
+    match text.trim_start().starts_with("Error:") {
+        true => text,
+        false => format!("Error: {text}"),
+    }
+}
+
+/// G02 (autopilot-plan): what kind of error a failed call's result is, for
+/// its `tool` line in the agent log and the evaluation's counts: one of
+/// the classes below, by the words the tools write, or "other". A command
+/// that ran and exited non-zero didn't fail as a call: its result is the
+/// command's (`command_end`).
+pub fn error_class(result: &str) -> &'static str {
     let text = result.to_lowercase();
-    let class = ERROR_CLASSES
+    ERROR_CLASSES
         .iter()
         .find(|(_, words)| words.iter().any(|w| text.contains(w)))
-        .map_or("other", |(class, _)| *class);
-    Some(class)
+        .map_or("other", |(class, _)| *class)
 }
 
 /// The classes of errors cut short by the run, not made by the model: a
@@ -985,15 +1034,14 @@ pub async fn execute(
         match serde_json::from_str::<Value>(args_json) {
             Ok(Value::Object(map)) => map,
             Ok(_) => Map::new(),
-            Err(_) => return ToolResult::text(unparsed_arguments(args_json, ctx.reply_cut_off)),
+            Err(_) => return ToolResult::error(unparsed_arguments(args_json, ctx.reply_cut_off)),
         }
     };
     match run(core, root, name, &args, stop, ctx).await {
         Ok(result) => result,
         // Some tools word their own errors ("Error: no declaration named…"):
-        // don't prefix those twice.
-        Err(e) if e.trim_start().starts_with("Error:") => ToolResult::text(e),
-        Err(e) => ToolResult::text(format!("Error: {e}")),
+        // `error` doesn't prefix those twice.
+        Err(e) => ToolResult::error(e),
     }
 }
 
@@ -1063,7 +1111,7 @@ async fn run(
             if super::test_writer::is_hidden(&ctx.hidden, &key)
                 || real.is_some_and(|real| super::test_writer::is_hidden(&ctx.hidden, &real))
             {
-                return Ok(ToolResult::text(super::test_writer::hidden_file(&key)));
+                return Ok(ToolResult::error(super::test_writer::hidden_file(&key)));
             }
         }
     }
@@ -1076,13 +1124,13 @@ async fn run(
                 uint(args, "start_line"),
                 uint(args, "end_line"),
             )
-            .map(ToolResult::text);
+            .map(ToolResult::ok);
         }
     }
     match name {
         "web_search" => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"query\" is required."));
+                return Ok(ToolResult::error("Error: \"query\" is required."));
             };
             let started = std::time::Instant::now();
             let hits = crate::browser_tools::web_search_inner(
@@ -1094,7 +1142,7 @@ async fn run(
             .await
             .map_err(|e| error_kept_out(e, started))?;
             if hits.is_empty() {
-                return Ok(noting_kept_out(ToolResult::text("No results."), started));
+                return Ok(noting_kept_out(ToolResult::ok("No results."), started));
             }
             let lines: Vec<String> = hits
                 .iter()
@@ -1108,14 +1156,11 @@ async fn run(
                     format!("{}. {}\n   {}{snippet}", i + 1, h.title, h.url)
                 })
                 .collect();
-            return Ok(noting_kept_out(
-                ToolResult::text(lines.join("\n\n")),
-                started,
-            ));
+            return Ok(noting_kept_out(ToolResult::ok(lines.join("\n\n")), started));
         }
         "browse_url" => {
             let Some(url) = text(args, "url").filter(|u| !u.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"url\" is required."));
+                return Ok(ToolResult::error("Error: \"url\" is required."));
             };
             let started = std::time::Instant::now();
             let page = crate::browser_tools::browse_url_inner(
@@ -1155,7 +1200,7 @@ async fn run(
                         .map(|l| format!("- {}: {}", l.text, l.url)),
                 );
             }
-            return Ok(noting_kept_out(ToolResult::text(parts.join("\n")), started));
+            return Ok(noting_kept_out(ToolResult::ok(parts.join("\n")), started));
         }
         "browser_screenshot" => {
             let started = std::time::Instant::now();
@@ -1186,7 +1231,7 @@ async fn run(
     }
 
     let Some(root) = root else {
-        return Ok(ToolResult::text(format!(
+        return Ok(ToolResult::error(format!(
             "Error: \"{name}\" needs an open project folder."
         )));
     };
@@ -1195,7 +1240,7 @@ async fn run(
         "write" if is_partial_write(name, args) => {
             let edit = match edit_args(args) {
                 Ok(edit) => edit,
-                Err(e) => return Ok(ToolResult::text(e)),
+                Err(e) => return Ok(ToolResult::error(e)),
             };
             // Off the async threads: a write may wait for a landing's locks.
             let (root_s, seen_arc) = (root.to_string(), ctx.seen.clone());
@@ -1219,7 +1264,7 @@ async fn run(
         }
         "read" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"path\" is required."));
+                return Ok(ToolResult::error("Error: \"path\" is required."));
             };
             // Off the async threads: a large file takes a while to read.
             let (root, path) = (root.to_string(), path.to_string());
@@ -1234,10 +1279,10 @@ async fn run(
         }
         "write" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"path\" is required."));
+                return Ok(ToolResult::error("Error: \"path\" is required."));
             };
             let Some(content) = text(args, "content") else {
-                return Ok(ToolResult::text("Error: \"content\" is required."));
+                return Ok(ToolResult::error("Error: \"content\" is required."));
             };
             let (root_s, path, content, seen_arc) = (
                 root.to_string(),
@@ -1267,7 +1312,7 @@ async fn run(
         }
         "bash" => {
             let Some(command) = text(args, "command").filter(|c| !c.trim().is_empty()) else {
-                return Ok(ToolResult::text("Error: \"command\" is required."));
+                return Ok(ToolResult::error("Error: \"command\" is required."));
             };
             let timeout = num(args, "timeout_seconds")
                 .filter(|s| *s > 0.0)
@@ -1276,13 +1321,13 @@ async fn run(
             let background = match (flag(args, "background"), &ctx.background_chat) {
                 (false, _) => None,
                 (true, Some(chat)) => Some(chat.clone()),
-                (true, None) => return Ok(ToolResult::text(SUBAGENT_BACKGROUND)),
+                (true, None) => return Ok(ToolResult::error(SUBAGENT_BACKGROUND)),
             };
             let stop = stop.clone();
             if let Some(problem) =
                 copy_command_problem(&ctx.owner, core.agents.on_server(), command)
             {
-                return Ok(ToolResult::text(problem));
+                return Ok(ToolResult::error(problem));
             }
             // Working in the project itself: one such chat at a time runs
             // commands that write.
@@ -1293,7 +1338,7 @@ async fn run(
                     std::path::Path::new(root_owned.as_str()),
                     &ctx.owner,
                 ) {
-                    return Ok(ToolResult::text(problem));
+                    return Ok(ToolResult::error(problem));
                 }
             }
             // What it needs that isn't there yet (a cloud host's Node, Yarn
@@ -1371,14 +1416,14 @@ async fn run(
         "background" => {
             use crate::command_tool::background;
             let Some(chat) = ctx.background_chat.clone() else {
-                return Ok(ToolResult::text(SUBAGENT_BACKGROUND));
+                return Ok(ToolResult::error(SUBAGENT_BACKGROUND));
             };
             let action = text(args, "action").unwrap_or_default();
             let id = text(args, "id").unwrap_or_default().to_string();
             match action {
                 "list" => format_background_list(&background::list(&chat)),
                 "output" | "stop" if id.trim().is_empty() => {
-                    return Ok(ToolResult::text(format!(
+                    return Ok(ToolResult::error(format!(
                         "Error: \"id\" is required to {action} a command."
                     )))
                 }
@@ -1390,7 +1435,7 @@ async fn run(
                         .map_err(|e| e.to_string())??,
                 ),
                 _ => {
-                    return Ok(ToolResult::text(
+                    return Ok(ToolResult::error(
                         "Error: \"action\" is list, output or stop.",
                     ))
                 }
@@ -1430,7 +1475,7 @@ async fn run(
         }
         "search_code" => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"query\" is required."));
+                return Ok(ToolResult::error("Error: \"query\" is required."));
             };
             let regex = flag(args, "regex");
             let search = |regex: bool| {
@@ -1507,21 +1552,21 @@ async fn run(
         }
         "neighbours" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"path\" is required."));
+                return Ok(ToolResult::error("Error: \"path\" is required."));
             };
             crate::agent_tools::tool_neighbours(root_owned, path.into(), ctx.restricted.clone())
                 .await?
         }
         "callers" => {
             let Some(symbol) = text(args, "symbol").filter(|s| !s.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"symbol\" is required."));
+                return Ok(ToolResult::error("Error: \"symbol\" is required."));
             };
             crate::agent_tools::tool_callers(root_owned, symbol.into(), ctx.restricted.clone())
                 .await?
         }
         "outline" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"path\" is required."));
+                return Ok(ToolResult::error("Error: \"path\" is required."));
             };
             crate::agent_tools::tool_outline(root_owned, path.into())?
         }
@@ -1531,7 +1576,11 @@ async fn run(
                 .filter(|p| !p.trim().is_empty())
                 .map(str::to_string),
         )?,
-        _ => format!("Error: unknown tool \"{name}\"."),
+        _ => {
+            return Ok(ToolResult::error(format!(
+                "Error: unknown tool \"{name}\"."
+            )))
+        }
     };
     // P2.4: what these show of other files leaves out the hidden ones.
     let content =
@@ -1540,7 +1589,7 @@ async fn run(
         } else {
             content
         };
-    Ok(ToolResult::text(content))
+    Ok(ToolResult::ok(content))
 }
 
 /// Leaves out of a search's result the lines of the files `out` says,
@@ -1996,11 +2045,9 @@ static WRITE_CHANGES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)\(\+(\d+) -(\d+) lines\)$").unwrap());
 static PAGE_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^# (.+)$").unwrap());
 
-/// Small summary of a tool's result, for the chat's tool block header.
+/// Small summary of a successful call's result, for the chat's tool block
+/// header. Not for a failed call's: its text is the error's.
 pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
-    if is_error(result) {
-        return None;
-    }
     let one = |k: &str, v: Value| {
         let mut m = Map::new();
         m.insert(k.to_string(), v);
@@ -2024,15 +2071,10 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
                 count_lines(result)
             }),
         ),
-        "neighbours" | "callers" | "outline" | "diagnostics" => {
-            if result.trim_start().starts_with("Error:") {
-                return None;
-            }
-            one(
-                "count",
-                json!(result.split('\n').filter(|l| l.starts_with("- ")).count()),
-            )
-        }
+        "neighbours" | "callers" | "outline" | "diagnostics" => one(
+            "count",
+            json!(result.split('\n').filter(|l| l.starts_with("- ")).count()),
+        ),
         "search_code" => {
             // First line: "12 matches in 3 files" (context lines aren't matches).
             if result.trim_start().starts_with("No matches.") {
@@ -2870,7 +2912,11 @@ a.rs (3 matches)
             result_meta("read", "[Symbol read: f, lines 7-9 of a.rs]\nfn f() {\n}").unwrap();
         assert_eq!(symbol["range"], json!([7, 9]));
         assert_eq!(symbol["count"], json!(3));
-        assert!(result_meta("read", "Error: nope").is_none());
+        // Only a success's result gets one: a read may start with "Error:".
+        assert_eq!(
+            result_meta("read", "Error: disk full\nretrying").unwrap()["count"],
+            json!(2)
+        );
         assert_eq!(
             result_meta("browse_url", "# (untitled)\nURL: x")
                 .unwrap()
@@ -2986,6 +3032,24 @@ a.rs (3 matches)
         eprintln!("outlines: cold {cold:?}, cached {:?}", start.elapsed());
     }
 
+    /// A failure's text starts with "Error:", once: `error` adds it to text
+    /// without it and leaves text with it alone; `ok` never adds it, and a
+    /// success may start so too (a file it read).
+    #[test]
+    fn a_failed_call_says_error_once() {
+        let failed = ToolResult::error("no such file");
+        assert_eq!(failed.content, "Error: no such file");
+        assert_eq!(failed.outcome, Outcome::Failed);
+        assert_eq!(
+            ToolResult::error("Error: no such file").content,
+            "Error: no such file"
+        );
+        assert_eq!(ToolResult::error("  Error: x").content, "  Error: x");
+        let read = ToolResult::ok("Error: disk full");
+        assert_eq!(read.content, "Error: disk full");
+        assert_eq!(read.outcome, Outcome::Done);
+    }
+
     /// G02: a failed call's class, by the words the tools write: each from
     /// the code that writes it where a function does, so a change of
     /// wording that loses its class fails here.
@@ -2996,103 +3060,99 @@ a.rs (3 matches)
             let e = crate::edit_file::apply_edit(file, old, new, lines, lines).unwrap_err();
             format!("Error: src/a.rs: {e}")
         };
-        let cases: Vec<(String, Option<&str>)> = vec![
-            // Not failures: a write, and a command that ran and failed.
-            ("wrote 3 bytes to a.txt (+1 -0 lines)".into(), None),
-            (
-                "$ npm test\nexit code 1, 0.4 s\n--- stderr ---\nfail".into(),
-                None,
-            ),
-            (edit("fn b", "x", None), Some("old_text not found")),
-            (edit("fn b", "x", Some(1)), Some("old_text not found")),
-            (edit("fn a", "x", None), Some("old_text not unique")),
-            (edit("", "x", None), Some("bad edit")),
-            (edit("fn a", "fn a", None), Some("bad edit")),
-            (edit("fn a", "x", Some(9)), Some("bad edit")),
+        // Whether a call failed is its outcome (a command that ran and
+        // exited 1 didn't): only a failed call's words get a class.
+        let cases: Vec<(String, &str)> = vec![
+            (edit("fn b", "x", None), "old_text not found"),
+            (edit("fn b", "x", Some(1)), "old_text not found"),
+            (edit("fn a", "x", None), "old_text not unique"),
+            (edit("", "x", None), "bad edit"),
+            (edit("fn a", "fn a", None), "bad edit"),
+            (edit("fn a", "x", Some(9)), "bad edit"),
             (
                 "Error: stopped by the user before this ran.".into(),
-                Some("stopped"),
+                "stopped",
             ),
             (
                 "Error: interrupted: the app closed before this ran. Run it again if you still need it."
                     .into(),
-                Some("interrupted"),
+                "interrupted",
             ),
             (
                 "Error: not run: the task went over its budget (it ran for 2 h).".into(),
-                Some("not run"),
+                "not run",
             ),
             (
                 "Error: a.txt changed since you last read it (by another chat); your write was not applied."
                     .into(),
-                Some("file changed"),
+                "file changed",
             ),
-            ("Error: src/x.ts: not a file".into(), Some("no such file")),
-            ("Error: notes: not a directory".into(), Some("no such file")),
+            ("Error: src/x.ts: not a file".into(), "no such file"),
+            ("Error: notes: not a directory".into(), "no such file"),
             (
                 "Error: no declaration named \"Foo\" in the project graph.".into(),
-                Some("no such symbol"),
+                "no such symbol",
             ),
             (
                 "Error: logo.png: binary file, cannot edit".into(),
-                Some("binary file"),
+                "binary file",
             ),
             (
                 "Error: path must not contain '..': ../x".into(),
-                Some("bad path"),
+                "bad path",
             ),
             (
                 "Error: blocked by the user's permission settings. `git push` isn't allowed in this run."
                     .into(),
-                Some("denied"),
+                "denied",
             ),
             (
                 "Error: rejected by the user's AI reviewer (Reviewer): Not asked for.".into(),
-                Some("denied"),
+                "denied",
             ),
             (
                 super::super::autopilot::DAEMON_FOLDER_REFUSED.into(),
-                Some("denied"),
+                "denied",
             ),
             (
                 super::super::autopilot::NO_QUESTIONS.into(),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
                 "Error: write isn't available in Plan mode, which doesn't change anything.".into(),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
                 super::super::test_writer::not_a_test_file("src/a.ts"),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
                 super::super::test_writer::hidden_file("src/a.ts"),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
                 super::super::plan::checklist_gate_error("4 files changed", "write"),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
                 "Error: unknown tool \"frob\".".into(),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
                 "Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- A \"## Criteria\" section is required."
                     .into(),
-                Some("plan"),
+                "plan",
             ),
             (
                 "Error: subagents are turned off in the settings. Do the work yourself.".into(),
-                Some("subagent"),
+                "subagent",
             ),
             (
                 "Error: could not parse arguments as JSON: {".into(),
-                Some("bad arguments"),
+                "bad arguments",
             ),
-            ("Error: \"path\" is required.".into(), Some("bad arguments")),
-            ("Error: boom.".into(), Some("other")),
+            ("Error: \"path\" is required.".into(), "bad arguments"),
+            ("Error: boom.".into(), "other"),
         ];
         for (text, want) in cases {
             assert_eq!(error_class(&text), want, "{text}");
@@ -3121,14 +3181,14 @@ a.rs (3 matches)
             "{cut}"
         );
         assert!(cut.ends_with('…') && cut.chars().count() < 1_000, "{cut}");
-        assert_eq!(error_class(&cut), Some("output limit"));
+        assert_eq!(error_class(&cut), "output limit");
 
         let broken = unparsed_arguments("{not json", false);
         assert_eq!(
             broken,
             "Error: could not parse arguments as JSON: {not json"
         );
-        assert_eq!(error_class(&broken), Some("bad arguments"));
+        assert_eq!(error_class(&broken), "bad arguments");
         let long = unparsed_arguments(&args, false);
         assert!(long.ends_with('…') && long.chars().count() < 400, "{long}");
     }

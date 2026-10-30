@@ -11101,6 +11101,7 @@ async fn budget_used_record_shape() {
                 "reason": "this run's 2 plan reviews are used",
                 "maxRounds": 2,
             },
+            "outcome": "done",
         })
     );
     assert!(h.plan_files()[0].starts_with("# Users v3"));
