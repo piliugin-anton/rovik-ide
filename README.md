@@ -1507,7 +1507,9 @@ in the input.
   next step, once its running tools finish, as in its terminal. The chat
   shows it there, between what Claude Code did before and what it does
   next, all in the same turn. Once Claude Code has it, ✕ can't take it
-  back. Codex reads a message once its turn has ended.
+  back. Codex also takes messages during its turn and reads them at its
+  next step. A message stays queued until Codex reports reading it; one
+  it hasn't read when stopped comes back into the input.
 - It's read as the user's words, after a short note telling the agent it
   belongs to the same request, and stored where it was read, marked
   `meta.steer`. It doesn't start a new request: the focus note, the
