@@ -816,7 +816,9 @@ once; they touch different files. Everything else is sequential.
     milestone 5).
   - What counts as a by-product (not landed, not counted toward the
     512 MiB): what the project's `.gitignore` files ignore, plus `.git`;
-    a short fallback list when the project has none.
+    a short fallback list when the project has none. Never what git
+    tracks: git ignores only untracked files, so a folder committed before
+    a rule matched it lands like any other work (`tracked.rs`).
 - **Milestone 5 (chats in overlays).**
   - A run in an isolated chat opens the chat's overlay and mounts it at
     `$XDG_RUNTIME_DIR/rovik-ide/chats/<chat id>` (Linux; a temp folder

@@ -1214,6 +1214,33 @@ mod safety {
         assert!(project_file(&d, "node_modules/y.js").is_none());
     }
 
+    /// `rm -rf .superpowers` in a chat, where the folder was committed
+    /// before the project ignored it: git still tracks its files, so the
+    /// delete is the chat's work, and it lands.
+    #[test]
+    fn a_committed_folder_the_project_ignores_is_deleted_by_landing() {
+        let d = setup(&[
+            (".gitignore", ".superpowers/\n"),
+            (".superpowers/brainstorm/layout.html", "<h1>A</h1>\n"),
+        ]);
+        let repo = git2::Repository::init(d.project()).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new(".superpowers/brainstorm/layout.html"))
+            .unwrap();
+        index.write().unwrap();
+        let o = overlay(&d);
+        o.unlink(ino(&o, ".superpowers/brainstorm"), "layout.html")
+            .unwrap();
+        o.rmdir(ino(&o, ".superpowers"), "brainstorm").unwrap();
+        o.rmdir(ROOT, ".superpowers").unwrap();
+        assert_eq!(paths(&landable(&o)), ["-.superpowers"]);
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
+        assert!(!d.project().join(".superpowers").exists());
+    }
+
     #[test]
     fn a_delete_already_done_in_the_project_is_nothing_to_land() {
         let d = setup(&[("a.txt", "one\n")]);

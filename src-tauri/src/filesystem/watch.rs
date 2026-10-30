@@ -8,6 +8,7 @@ use crate::util::ErrText;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::event::ModifyKind;
 use notify::{self, Event, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
+use rovik_core::tracked::Tracked;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
@@ -65,7 +66,8 @@ enum WatchPath {
     /// Inside `.git/`: git's own bookkeeping, reported as one "git-changed"
     /// (visible changes are followed by one too: they change the status).
     Git,
-    /// Matched by a .gitignore (build output, dependencies): not reported.
+    /// Matched by a .gitignore and not tracked by git (build output,
+    /// dependencies): not reported.
     Ignored,
     Visible,
 }
@@ -129,7 +131,15 @@ impl WatchIgnores {
     }
 }
 
-fn watch_path_kind(root: &Path, ignores: &WatchIgnores, path: &Path) -> WatchPath {
+/// What `path` is to the watcher. `tracked`: the project's repository,
+/// whose tracked files are reported even where a .gitignore matches them
+/// (committed before the rule): git lists their changes.
+fn watch_path_kind(
+    root: &Path,
+    ignores: &WatchIgnores,
+    tracked: Option<&Tracked>,
+    path: &Path,
+) -> WatchPath {
     let Ok(rel) = path.strip_prefix(root) else {
         return WatchPath::Visible;
     };
@@ -142,7 +152,13 @@ fn watch_path_kind(root: &Path, ignores: &WatchIgnores, path: &Path) -> WatchPat
         return WatchPath::Ignored;
     }
     if ignores.is_ignored(path, path.is_dir()) {
-        return WatchPath::Ignored;
+        let rel: Vec<_> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect();
+        if !tracked.is_some_and(|t| t.covers(&rel.join("/"))) {
+            return WatchPath::Ignored;
+        }
     }
     WatchPath::Visible
 }
@@ -300,6 +316,7 @@ impl WatchBatch {
 fn folder_contents(
     root: &Path,
     ignores: &WatchIgnores,
+    tracked: Option<&Tracked>,
     dir: &Path,
     limit: usize,
 ) -> Vec<(PathBuf, bool)> {
@@ -318,7 +335,7 @@ fn folder_contents(
                 continue;
             };
             let path = entry.path();
-            if watch_path_kind(root, ignores, &path) != WatchPath::Visible {
+            if watch_path_kind(root, ignores, tracked, &path) != WatchPath::Visible {
                 continue;
             }
             if file_type.is_dir() {
@@ -532,6 +549,8 @@ struct Watch {
     found_ignores: (SyncSender<WatchIgnores>, Receiver<WatchIgnores>),
     finding_ignores: bool,
     ignores_dirty: bool,
+    /// The repository the project is in, for what it tracks; None outside one.
+    tracked: Option<Tracked>,
     batch: WatchBatch,
     /// Last activity inside .git/ (a commit writes hundreds of files there).
     git_touched: Option<Instant>,
@@ -544,6 +563,7 @@ impl Watch {
             found_ignores: std::sync::mpsc::sync_channel(1),
             finding_ignores: false,
             ignores_dirty: false,
+            tracked: Tracked::of(&root),
             app,
             root,
             generation,
@@ -625,9 +645,14 @@ impl Watch {
     /// the app. `brings_folder`: the change can put a folder there (made,
     /// or moved in), whose contents are then reported too.
     fn saw(&mut self, operation: &WatchOp, path: PathBuf, brings_folder: bool) {
-        match watch_path_kind(&self.root, &self.ignores, &path) {
+        match watch_path_kind(&self.root, &self.ignores, self.tracked.as_ref(), &path) {
             WatchPath::Git => {
                 self.git_touched = Some(Instant::now());
+                // A repository made since the watch began (the Git tab's
+                // Initialize).
+                if self.tracked.is_none() {
+                    self.tracked = Tracked::of(&self.root);
+                }
                 // A checkout, merge or rebase is rewriting the working
                 // tree: isolated chats wait it out.
                 if path.parent() == Some(self.root.join(".git").as_path())
@@ -671,9 +696,13 @@ impl Watch {
         // so whatever comes after this look is reported by itself). Past a
         // flush's worth, the batch turns into "re-check everything".
         if appeared {
-            for (inner, inner_is_dir) in
-                folder_contents(&self.root, &self.ignores, &path, MAX_EVENTS_PER_FLUSH + 1)
-            {
+            for (inner, inner_is_dir) in folder_contents(
+                &self.root,
+                &self.ignores,
+                self.tracked.as_ref(),
+                &path,
+                MAX_EVENTS_PER_FLUSH + 1,
+            ) {
                 let payload = FileWatchPayload {
                     path: inner.to_string_lossy().into_owned(),
                     operation: WatchOp::Create,
@@ -894,7 +923,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("target/debug")).unwrap();
         std::fs::write(dir.join(".gitignore"), "target/\n*.log\n").unwrap();
         let m = WatchIgnores::root_only(&dir);
-        let kind = |p: &str| watch_path_kind(&dir, &m, &dir.join(p));
+        let kind = |p: &str| watch_path_kind(&dir, &m, None, &dir.join(p));
         assert_eq!(kind(".git/objects/ab/cdef0123"), WatchPath::Git);
         assert_eq!(kind(".git/index"), WatchPath::Git);
         assert_eq!(kind("sub/.git/HEAD"), WatchPath::Git);
@@ -904,13 +933,70 @@ mod tests {
         assert_eq!(kind(".gitignore"), WatchPath::Visible);
         assert_eq!(kind(".github/workflows/ci.yml"), WatchPath::Visible);
         assert_eq!(
-            watch_path_kind(&dir, &m, Path::new("/elsewhere/x")),
+            watch_path_kind(&dir, &m, None, Path::new("/elsewhere/x")),
             WatchPath::Visible
         );
         assert_eq!(
             kind("packages/a/node_modules/.vite/deps/x.js"),
             WatchPath::Ignored
         );
+    }
+
+    /// `.superpowers` committed, then ignored, then deleted: git lists the
+    /// deletions, so the Git tab must hear of them. What git doesn't track
+    /// stays quiet.
+    #[test]
+    fn what_git_tracks_is_reported_where_a_gitignore_matches_it() {
+        let dir = std::env::temp_dir().join(format!("watch-tracked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".superpowers/brainstorm")).unwrap();
+        std::fs::write(
+            dir.join(".superpowers/brainstorm/layout.html"),
+            "<h1>A</h1>\n",
+        )
+        .unwrap();
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(Path::new(".superpowers/brainstorm/layout.html"))
+            .unwrap();
+        index.write().unwrap();
+        // The folder's own name, so the folder itself is ignored too.
+        std::fs::write(dir.join(".gitignore"), ".superpowers\ntarget/\n").unwrap();
+        std::fs::write(dir.join(".superpowers/brainstorm/new.html"), "").unwrap();
+        let ignores = WatchIgnores::root_only(&dir);
+        let tracked = Tracked::of(&dir);
+        let kind = |p: &str| watch_path_kind(&dir, &ignores, tracked.as_ref(), &dir.join(p));
+        assert_eq!(kind(".superpowers/brainstorm/new.html"), WatchPath::Ignored);
+        assert_eq!(kind("target/debug/app"), WatchPath::Ignored);
+        // A folder coming back (a revert) brings its tracked files only.
+        let found: Vec<PathBuf> = folder_contents(
+            &dir,
+            &ignores,
+            tracked.as_ref(),
+            &dir.join(".superpowers"),
+            10,
+        )
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.contains(&dir.join(".superpowers/brainstorm/layout.html")));
+
+        std::fs::remove_dir_all(dir.join(".superpowers")).unwrap();
+        for path in [
+            ".superpowers",
+            ".superpowers/brainstorm",
+            ".superpowers/brainstorm/layout.html",
+        ] {
+            assert_eq!(kind(path), WatchPath::Visible, "{path}");
+        }
+        assert_eq!(
+            watch_path_kind(&dir, &ignores, None, &dir.join(".superpowers")),
+            WatchPath::Ignored,
+            "without the repository, the rules alone decide"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn change(path: &str) -> FileWatchPayload {
@@ -1072,12 +1158,12 @@ mod tests {
         }
         expected.sort();
         assert_eq!(
-            relative(folder_contents(&dir, &ignores, &dir.join("src"), 100)),
+            relative(folder_contents(&dir, &ignores, None, &dir.join("src"), 100)),
             expected
         );
         // At most `limit`: past a flush's worth the batch reports everything.
         assert_eq!(
-            folder_contents(&dir, &ignores, &dir.join("src"), 2).len(),
+            folder_contents(&dir, &ignores, None, &dir.join("src"), 2).len(),
             2
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1174,7 +1260,7 @@ mod tests {
         std::fs::write(dir.join("node_modules/x/.gitignore"), "*\n").unwrap();
         let m = WatchIgnores::all(&dir);
         assert_eq!(m.matchers.len(), 2, "the root's and packages/web's");
-        let kind = |p: &str| watch_path_kind(&dir, &m, &dir.join(p));
+        let kind = |p: &str| watch_path_kind(&dir, &m, None, &dir.join(p));
         assert_eq!(kind("packages/web/dist/index.js"), WatchPath::Ignored);
         assert_eq!(kind("packages/web/.turbo/cache.json"), WatchPath::Ignored);
         assert_eq!(
