@@ -338,9 +338,25 @@ still use newer ones. A folder holding a socket stays. Where git is
 installed, `git gc --auto` runs in each project's repository; "Clean up
 now" runs a full `git gc`, which drops what no ref has reached for an
 hour, such as what deleted chats committed. A chat still on the server
-keeps everything: its messages, attachments and working copy. The
-host's page shows what Rovik's folders take, and what "Clean up now"
-freed.
+keeps its messages, attachments and working copy; "Clean up now" also
+removes its installed dependencies and build output, unless a run of it
+goes, a command it started in the background still runs, or it's marked
+"Keep ready". A folder
+counts as one only when git ignores it and tracks nothing in it, and it
+is `node_modules` beside a `package.json`, or a folder tagged as a cache
+(`CACHEDIR.TAG`, as Cargo tags `target/`). The chat's edits, its other
+untracked files and the rest git ignores stay; its next run reinstalls
+and rebuilds.
+
+The host's page shows what Rovik's folders take, what "Clean up now"
+freed and, for each of this computer's chats there, the largest first,
+what its working copy takes: source (what git doesn't ignore, edits
+included), dependencies, build output and other files. The chats' working copies, each chat's and the budget are measured in
+the blocks the files take on disk, a file with several hard links counted
+once; blocks a copy-on-write file system shares between chats count for
+each. An optional budget for the chats' working copies is set there:
+over it, each hour, the dependencies and build output of chats idle for
+an hour go, those idle longest first, but those marked "Keep ready".
 
 ## What can read what
 

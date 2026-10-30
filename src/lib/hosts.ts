@@ -177,6 +177,25 @@ export interface Storage {
   work: number;
   data: number;
   tmp: number;
+  /** This computer's chats there, the largest first: absent from an older daemon. */
+  chats?: ChatStorage[];
+  /** The most the chats' working copies may take, when set. */
+  budget?: number;
+}
+
+/** What one chat's working copy takes on the host, in bytes on disk, by kind. */
+export interface ChatStorage {
+  chat: string;
+  title: string;
+  source: number;
+  dependencies: number;
+  build: number;
+  other: number;
+  /** A run of it, or a command it left running, goes: cleanups leave it. */
+  running: boolean;
+  /** The storage budget leaves it ready. */
+  keepReady: boolean;
+  activeMs: number;
 }
 
 export interface HostDetails {
@@ -193,6 +212,8 @@ export interface HostDetails {
   appVersion: string;
   /** The daemon cleans up when asked ("Clean up now"). */
   cleanUp: boolean;
+  /** It lists each chat's storage, cleans idle chats' generated files and keeps a budget. */
+  chatStorage: boolean;
 }
 
 /** Why a deploy, an upgrade or a removal didn't happen. */
@@ -315,6 +336,14 @@ export interface CleanedUp {
 
 /** "Clean up now": resolves with what it did. */
 export const cleanUpHost = (id: string) => invoke<CleanedUp>('hosts_clean_up', { id });
+
+/** Sets the most the chats' working copies may take there, or none: resolves with what they take after. */
+export const setStorageBudget = (id: string, bytes: number | null) =>
+  invoke<Storage>('hosts_storage_budget', { id, bytes });
+
+/** Whether the storage budget leaves the chat ready. */
+export const keepChatReady = (id: string, chat: string, keep: boolean) =>
+  invoke<void>('hosts_keep_ready', { id, chat, keep });
 
 export const hostLimits = (id: string) => invoke<[string, string][]>('hosts_limits', { id });
 

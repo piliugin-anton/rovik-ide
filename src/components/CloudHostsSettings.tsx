@@ -31,6 +31,7 @@ import {
 import { confirmDialog } from './ConfirmDialog';
 import { SecretsUnlock } from './SettingsControls';
 import HostAutonomy from './HostAutonomy';
+import HostChatStorage from './HostChatStorage';
 import HostTasks from './HostTasks';
 import { onCloudEvent, refreshHosts } from '../lib/cloud';
 import { connectorTitle } from '../lib/connectors';
@@ -43,6 +44,8 @@ import {
   AUTH_LABELS,
   CHECK_LABELS,
   cleanUpHost,
+  keepChatReady,
+  setStorageBudget,
   deployHost,
   emptyHost,
   hostDetails,
@@ -624,6 +627,31 @@ function HostPage(props: {
     }
   }
 
+  // The storage budget, fitted at once there, and the chats it leaves ready.
+  async function saveBudget(bytes: number | null) {
+    try {
+      const storage = await setStorageBudget(id, bytes);
+      setDetails((d) => (d ? { ...d, storage } : d));
+    } catch (err) {
+      setDetailsError(String(err));
+    }
+  }
+  async function keepReady(chat: string, keep: boolean): Promise<boolean> {
+    try {
+      await keepChatReady(id, chat, keep);
+      setDetails((d) => {
+        const chats = d?.storage?.chats?.map((c) =>
+          c.chat === chat ? { ...c, keepReady: keep } : c
+        );
+        return d?.storage ? { ...d, storage: { ...d.storage, chats } } : d;
+      });
+      return true;
+    } catch (err) {
+      setDetailsError(String(err));
+      return false;
+    }
+  }
+
   async function forgetKeys() {
     const ok = await confirmDialog({
       title: 'Remove keys from this server?',
@@ -958,11 +986,25 @@ function HostPage(props: {
                       <li>Chats and attachments: {formatBytes(s().data)}</li>
                       <li>Temporary files: {formatBytes(s().tmp)}</li>
                     </ul>
+                    <Show when={d().chatStorage}>
+                      <HostChatStorage
+                        chats={s().chats ?? []}
+                        budget={s().budget}
+                        onKeepReady={keepReady}
+                        onBudget={(bytes) => void saveBudget(bytes)}
+                      />
+                    </Show>
                     <p class="settings-hint">
                       What deleted chats and chats moved back left there, files no message uses, and
                       temporary files unchanged for a day go each day. “Clean up now” doesn’t wait:
                       only temporary files changed in the last hour stay, as a command may still use
                       them.
+                      <Show when={d().chatStorage}>
+                        {' '}
+                        “Clean up now” also removes installed dependencies and build output of chats
+                        that aren’t running or kept ready. Their conversations and changes stay; the
+                        next run reinstalls and rebuilds.
+                      </Show>
                     </p>
                     <Show when={d().cleanUp}>
                       <div class="host-actions">

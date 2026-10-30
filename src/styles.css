@@ -10139,6 +10139,36 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   line-height: 1.6;
 }
 
+.host-chat-storage-scroll {
+  overflow-x: auto;
+  margin-bottom: 8px;
+}
+
+.host-chat-storage-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.host-chat-storage-table th,
+.host-chat-storage-table td {
+  padding: 3px 8px 3px 0;
+  text-align: right;
+}
+
+.host-chat-storage-table th:first-child,
+.host-chat-storage-table td.host-chat-storage-title {
+  text-align: left;
+}
+
+.host-chat-storage-title .host-task-running {
+  margin-left: 6px;
+}
+
+.host-storage-budget {
+  margin-bottom: 4px;
+}
+
 .host-keys-list .settings-hint {
   list-style: none;
   margin-left: -18px;
