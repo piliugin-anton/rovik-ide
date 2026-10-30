@@ -8,6 +8,10 @@ review made six findings. Each was traced to the code at `df34306`, where
 for both. Three behaviours were confirmed by running throwaway tests (not
 committed), and one more bug turned up on the way.
 
+Two changes were asked for on top of the review, and are planned here as
+phase 0: `ask_user` in Agent mode as in Plan mode, and the four working
+principles of `AGENTS.md` in the agent's system prompt.
+
 **The goal:** nothing decides what happened from text written for the
 model, and adding a tool, a piece of a run's state or a message column is a
 change in one place that the compiler or a test checks. Nothing a user sees
@@ -23,7 +27,7 @@ is under `src/`, the frontend.
 
 | #   | Finding                               | Priority | Checked                          | What the code shows                                                                                                                                                                         |
 | --- | ------------------------------------- | -------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | A call's status is read from its text | High     | Confirmed; three bugs reproduced | 6 places in Rust and 2 in the frontend decide "failed" from an `Error` prefix, in three spellings; 3 parsers take a command's exit code from its result's second line                       |
+| 1   | A call's status is read from its text | High     | Confirmed; three bugs reproduced | 7 places in Rust (one unreachable) and 2 in the frontend decide "failed" from an `Error` prefix, in three spellings; 3 parsers take a command's exit code from its result's second line     |
 | 2   | `Run` does too much                   | Medium   | Confirmed                        | 138 fields, 135 of them `pub(super)`; `impl Run` blocks in 23 files; a fix round's state is copied field by field into `VerifyCarry` and back                                               |
 | 3   | Tool policy lives in many lists       | Medium   | Confirmed; no bypass today       | 21 built-in tools, more than 40 places that match their names as strings, 11 per-kind allow-lists; 5 default arms fail open                                                                 |
 | 4   | `plan.rs` mixes concerns              | Medium   | Confirmed; no disagreement found | 2,484 lines of code in ten concerns; 11 functions start again from the raw Markdown; checks and step extraction run the same pipeline twice; `submit_plan` parses one plan up to five times |
@@ -32,20 +36,24 @@ is under `src/`, the frontend.
 
 ## Phases at a glance
 
-| Phase | What                                        | Finding | Why in this order                                          | Size     |
-| ----- | ------------------------------------------- | ------- | ---------------------------------------------------------- | -------- |
-| 1     | A tool call carries its outcome             | 1       | Fixes bugs users see; touches every tool path first        | 3–4 days |
-| 2     | One table of built-in tools                 | 3       | The same files as phase 1, so right after it               | 2–3 days |
-| 3     | `plan.rs` split, and a plan parsed once     | 4       | Mostly moves; independent of phases 1–2                    | 2–3 days |
-| 4     | `Run`'s state in objects of its own         | 2       | The widest change: last, so 1–3 don't rebase over it       | 6–8 days |
-| 5     | One decoder for a message row               | 5       | Small and independent: any time                            | 1 day    |
-| 6     | An owner for the process runtime (deferred) | 6       | When `Core::new`, `shutdown` or a host's start next change | —        |
+| Phase | What                                                               | Finding   | Why in this order                                          | Size     |
+| ----- | ------------------------------------------------------------------ | --------- | ---------------------------------------------------------- | -------- |
+| 0     | `ask_user` in Agent mode; the four principles in the system prompt | asked for | Small, and the principles need the tool to ask with: first | 1 day    |
+| 1     | A tool call carries its outcome                                    | 1         | Fixes bugs users see; touches every tool path first        | 3–4 days |
+| 2     | One table of built-in tools                                        | 3         | The same files as phase 1, so right after it               | 2–3 days |
+| 3     | `plan.rs` split, and a plan parsed once                            | 4         | It moves `plan.rs` code that phases 1–2 change: after them | 2–3 days |
+| 4     | `Run`'s state in objects of its own                                | 2         | The widest change: last, so 0–3 don't rebase over it       | 6–8 days |
+| 5     | One decoder for a message row                                      | 5         | Small; after 1.1, which adds to the type it decodes into   | 1 day    |
+| 6     | An owner for the process runtime (deferred)                        | 6         | When `Core::new`, `shutdown` or a host's start next change | —        |
 
-Phases 3 and 5 touch other files than 1 and 2 and can go in parallel with
-them. Each phase is a few commits, one topic each, every one green on its
-own (`AGENTS.md`'s checks). Each task below says what the code does today,
-the change, the tests that prove it (named as they'll be written) and when
-it's done.
+Phases 0 to 4 go in order. Phase 3 moves what phases 1 and 2 change in
+`plan.rs` (`describe_todo`, `describe_outcome`, `current_checklist`,
+`PLAN_BLOCKED_TOOLS`, the checklist gate), and phase 1.1 adds
+`MessageRow::call_failed` beside the type phase 5 decodes into
+(`chat_db/store.rs:126`); phase 5 can go any time after that. Each phase is
+a few commits, one topic each, every one green on its own (`AGENTS.md`'s
+checks). Each task below says what the code does today, the change, the
+tests that prove it (named as they'll be written) and when it's done.
 
 ## Decisions to confirm
 
@@ -56,16 +64,124 @@ Everything else in this plan keeps behaviour as it is. These change it:
    whatever its length; a checklist the IDE refused isn't the current one;
    without a project, CLM offers for `@context/` only the three tools that
    work there. Recommended: yes, each with its test.
-2. **A tool the mode doesn't offer is refused when called** (2.3). Today
+2. **Asked for** (phase 0): `ask_user` in Agent mode as in Plan mode
+   (Autopilot and subagents still don't ask: nobody is there to answer),
+   and the four principles in the agent's system prompt.
+3. **How the principles meet the prompt that's there** (0.2). Two of its
+   lines pull against them: "Only ask the user a clarifying question when
+   the task is genuinely ambiguous … Otherwise, make a reasonable
+   assumption, state it briefly, and proceed" against "If uncertain, ask"
+   and "don't pick silently"; and the `todo` rule against "state a brief
+   plan". Recommended: the four sections word for word; the clarifying line
+   goes (when to ask is principle 1's, and the line in its place says how:
+   with `ask_user`); the `todo` rule says its checklist is principle 4's
+   brief plan; Autopilot swaps principle 1's asking lines for deciding and
+   recording, as it swaps the clarifying line today. The other way, adding
+   them and changing nothing, leaves the prompt telling the model both to
+   ask when unsure and to assume and go on.
+4. **A tool the mode doesn't offer is refused when called** (2.3). Today
    `todo` runs in Plan mode and `submit_plan` in Agent mode if a model calls
-   them anyway (from an earlier turn's history, say). Only `write`, `bash`
-   and `background` are refused by mode at dispatch, and `ask_user` refuses
-   itself outside Plan mode (`execute.rs:1917`). Recommended: refuse, so
-   what's offered and what's accepted come from one row; the price is a
-   model that relied on the old leniency getting an error it can read.
-3. **A malformed JSON column is logged** when a message row is read
+   them anyway (from an earlier turn's history, say). At dispatch, Plan
+   mode refuses `write`, `bash` and `background` only, and limits `mcp` to
+   the tools a server marks read-only (`run.rs:1478`, which stays: it
+   depends on the server). Recommended: refuse, so what's offered and
+   what's accepted come from one row; the price is a model that relied on
+   the old leniency getting an error it can read.
+5. **A malformed JSON column is logged** when a message row is read
    (phase 5), where today it's dropped without a word. The row still
    loads. Recommended: yes (`AGENTS.md`: never swallow an error silently).
+
+---
+
+## Phase 0: the agent asks in Agent mode, and works by four principles
+
+Asked for on top of the review. The two go together: the first principle
+tells the model to ask when it's unsure, and in Agent mode today it has no
+tool to ask with. Both are small and stand apart from the refactoring, so
+they go first.
+
+### Today
+
+- `ask_user` is offered in Plan mode only (`tools.rs:579`), and its
+  handler refuses it in any other mode (`execute.rs:1917`). Autopilot takes
+  it out of the list (`autopilot::without_questions`, at `run.rs:2194` and
+  `rovik-core/src/agent.rs:1895`) and answers a call with "nobody answers
+  questions" (`execute.rs:1906`). No subagent kind lists it. A run asks at
+  most `MAX_QUESTIONS_PER_RUN` (3) times (`plan.rs:41`). The question panel
+  (`QuestionPanel.tsx`) doesn't depend on the mode.
+- The agent's system prompt is `CODING_AGENT_SYSTEM_PROMPT`
+  (`rovik-core/src/agent.rs:740`), through `lead_system_prompt` (`:782`).
+  The lead gets it in Agent and Plan mode (`:1000`; Plan mode adds its own
+  instructions to the project's section, `run.rs:2265`), Autopilot's lead
+  with its asking line swapped (`rovik-core/src/agent.rs:793`,
+  `run.rs:2291`), and a connector's harness too (`connectors/mod.rs:576`).
+  Subagents have prompts of their own. The context estimate counts the
+  prompt (`rovik-core/src/agent.rs:1964`); a model without tools gets it
+  without "## Tool use rules" (`without_tool_rules`, `:2031`).
+- Two of its lines pull against the principles (decision 3): the
+  clarifying line (`CLARIFYING_QUESTIONS`, `rovik-core/src/agent.rs:776`)
+  and the `todo` rule (`:753`).
+
+### Steps
+
+**0.1 `ask_user` in Agent mode as in Plan mode**
+
+- `tools_for` (`tools.rs:545`) offers it in both modes, and the handler's
+  Plan-mode refusal goes. Autopilot and subagents stay as they are.
+- What's worded for Plan mode follows: the tool's description ("before
+  planning further", `tools.rs:353`), the answer past the limit ("list your
+  assumptions under "Decisions" in the plan"; in Agent mode, "say what you
+  assumed"), and the docs: `README.md:101`, `plan.rs`'s module comment,
+  `src/lib/questions.ts:3`, and the `questions_asked` field's comment
+  (`run.rs:167`).
+- The limit stays 3 a run, in either mode.
+- Tests:
+  - `ask_user_outside_plan_mode_is_refused` (`e2e_tests.rs:2737`) pins the
+    old rule. It's rewritten for the new one, as
+    `an_agent_mode_run_asks_the_user_and_goes_on_with_the_answer`: the
+    questions are shown (`questionsAsked`) and the answer is the call's
+    result.
+  - `tool_lists_by_mode` (`tools.rs:2310`) gains `ask_user` in Agent mode's
+    list.
+  - `a_plan_that_asks_is_refused_and_submits_with_assumptions`
+    (`autopilot_e2e_tests.rs:1034`) passes unchanged: Autopilot still asks
+    nobody.
+
+**0.2 The four principles in the system prompt**
+
+- The four sections, word for word as given (they're the first four
+  sections of `AGENTS.md`), go into `CODING_AGENT_SYSTEM_PROMPT` after
+  "## Core behavior". So everything that uses the prompt gets them (Agent
+  and Plan mode, Autopilot, a connector's harness), the context estimate
+  counts them, and a model without tools keeps them. They add about 500
+  tokens to every request, in the prefix providers cache.
+- With decision 3 as recommended:
+  - The clarifying line goes. In its place, how to ask: with `ask_user`
+    when it's offered, all the questions in one call; otherwise in the
+    reply, and stop there.
+  - The `todo` rule adds that its checklist is principle 4's brief plan,
+    each step with how it will be checked.
+  - Autopilot's prompt swaps principle 1's lines that ask or forbid
+    assuming ("Don't assume.", "If uncertain, ask.", "don't pick
+    silently", "Name what's confusing. Ask.") for deciding and saying what
+    was assumed, as it swaps the clarifying line today.
+- Subagents keep their own prompts: they can't ask, and their kinds'
+  prompts set their work. The writing kinds (worker, test writer) could
+  take principles 2 and 3 later.
+- Tests:
+  - `the_system_prompt_holds_the_four_principles`: in Agent and Plan mode,
+    with tools and without.
+  - `autopilots_system_prompt_decides_instead_of_asking`
+    (`rovik-core/src/agent.rs:3166`) checks today that Autopilot's prompt
+    differs from the plain one by one line. It's rewritten to "by the
+    asking lines only", with no line left in Autopilot's prompt that tells
+    the model to ask.
+
+### Done when
+
+The agent can ask in Agent mode as in Plan mode, and Autopilot and
+subagents can't; the prompt holds the four principles word for word, with
+no line left that contradicts them.
 
 ---
 
@@ -80,6 +196,7 @@ command ended, are read back from that text:
 | Where                                                                                                                                                                                             | Reads               | How                                  |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------ |
 | `tools.rs:619` `is_error`, used by `record` (`execute.rs:929`, `:935`, `:953`, `:1004`), the context tools (`execute.rs:573`), `error_class` (`tools.rs:629`) and `result_meta` (`tools.rs:2000`) | failed              | `trim_start().starts_with("Error:")` |
+| `tools.rs:2027`, inside `result_meta`: unreachable after its check at `:2000`                                                                                                                     | failed              | `trim_start().starts_with("Error:")` |
 | `guard.rs:203` `detect`: the error streak and "the same error again"                                                                                                                              | failed              | `starts_with("Error:")`              |
 | `execute.rs:641`: a finished checklist step in CLM mode                                                                                                                                           | failed              | `starts_with("Error")`               |
 | `execute.rs:1580`: a harness's call of Rovik's `mcp` tool                                                                                                                                         | failed              | `starts_with("Error")`               |
@@ -98,10 +215,12 @@ the status down.
 Confirmed by throwaway tests:
 
 - A `read` of a file holding `Error: disk full` is logged as a failed call
-  (class "other"), stored without its line count, and shown as failed. Five
-  such reads in a row draw the loop guard's "the last 5 tool calls all
-  failed" (`guard.rs:153`); after that note the streak starts again, and
-  five more pause the run.
+  (class "other"), stored without its line count, and shown as failed. The
+  loop guard counts it too: reads of five files whose text starts with
+  `Error:` draw "the last 5 tool calls all failed" (`guard.rs:257–262`, the
+  limit at `:46`). By the code, three that return the same text draw "the
+  same error came back 3 times" (`:265–286`), and the same note a second
+  time pauses the run (`:153`).
 - `bash` with `echo a` and `echo b` on two lines exits 0, and is stored with
   `exitCode: null`, which the tool block shows as "killed"; its log line has
   no exit code.
@@ -152,8 +271,8 @@ returns `Err(String)` for most failures, turned into text at
   value: `context_tool` (`execute.rs:1117`), `answer_review`
   (`change_review.rs:1535`), `describe_todo` (`plan.rs:2214`) and
   `describe_outcome` (`plan.rs:2104`). The refusal builders
-  (`not_a_test_file`, `outside_scope`, `restricted::refusal` and the like,
-  about twenty) always describe a failure, stay `String`, and go through
+  (`not_a_test_file`, `outside_scope`, `restricted_files::refusal` and the
+  like, about twenty) always describe a failure, stay `String`, and go through
   `ToolResult::error` or `answer_unrun`.
 - Stored: the tool message's `meta` gets `"outcome": "done"` or
   `"failed"`, and the command's keys (`exitCode`, `background`, `waited`)
@@ -164,9 +283,10 @@ returns `Err(String)` for most failures, turned into text at
 - One reader per side for stored rows: `MessageRow::call_failed()` in Rust
   and `callFailed(result)` in TypeScript. Each takes `meta.outcome` when
   it's there, else the old prefix test (rows from before this change, and
-  rows a daemon of an older version mirrors). `chat_db/history.rs:571`,
-  `subagent_run.rs:1909`, `current_checklist`, `callStatus` and
-  `ToolCallBlock.tsx:1027` use them.
+  rows a daemon of an older version mirrors). `subagent_run.rs:1909`,
+  `current_checklist`, `callStatus` and `ToolCallBlock.tsx:1027` use them.
+  `chat_db/history.rs:571` reads a `Msg` (`:78`), which has no meta: the
+  outcome is copied into it where rows become `Msg`s (`:1313`).
 - The chat's view of a harness's steps (`connectors.ts:681`) sets
   `meta.outcome` from `step.ok`, instead of writing `Error: ` into the text.
 
@@ -179,8 +299,9 @@ reads the text until 1.3)
   21 `ToolResult::text` calls that carry a failure, and the `Err` arms);
   the typed helpers above; `add_tool_result` and `answer_unrun` take the
   outcome; `record`, the guard and `log_tool` read it; `meta.outcome` is
-  written; `MessageRow::call_failed` serves `chat_db/history.rs:571` and
-  `subagent_run.rs:1909`.
+  written; `MessageRow::call_failed` serves `subagent_run.rs:1909`, and
+  through `Msg`, `chat_db/history.rs:571`. The unreachable check at
+  `tools.rs:2027` goes.
 - Tests:
   - `a_read_of_a_file_that_starts_with_error_is_not_a_failed_call` (e2e,
     `e2e_tests.rs`): its `tool` line says `failed: false`, its row says
@@ -223,11 +344,16 @@ reads the text until 1.3)
 
 **1.4 A checklist the IDE refused isn't the current one**
 
-- `current_checklist` (`plan.rs:2317`) skips a `todo` call whose result
-  failed (by `call_failed`, which also covers rows from before 1.1: the
-  refusal starts with `Error:`).
-- Test: `a_todo_call_the_ide_refused_isnt_the_current_checklist`: the list
-  before it stays current.
+- Two places say what the checklist is. While a run goes, the panel shows
+  the `AgentEvent::Checklist` that every `todo` call emits, refused or not
+  (`execute.rs:714`); the run emits it for an accepted call only. When the
+  chat is idle, the panel asks `current_checklist` (`plan.rs:2317`, through
+  `mod.rs:2047`), which skips a `todo` call whose result failed (by
+  `call_failed`, which also covers rows from before 1.1: the refusal starts
+  with `Error:`).
+- Tests: `a_todo_call_the_ide_refused_isnt_the_current_checklist` (the list
+  before it stays current) and `a_refused_todo_call_sends_no_checklist`
+  (e2e).
 
 ### Done when
 
@@ -243,11 +369,12 @@ frontend reads today plus `outcome`; the protocol types don't change
 
 - Error classes stay derived from the wording (`tools.rs:651`), now only
   for calls known to have failed. They're the evaluation's statistics,
-  pinned by tests; moving them into the 170-odd places that word an
+  pinned by tests; moving them into the over 160 places that word an
   error would change nothing anyone sees.
 - The header counts (`result_meta` for `read`, `search_code`, `list_dir`,
-  `write`, `web_search`, `browse_url`) are still read from text the tool
-  wrote itself, and no wrong count was found. If one turns up, the move is
+  `neighbours`, `callers`, `outline`, `diagnostics`, `write`, `web_search`
+  and `browse_url`) are still read from text the tool wrote itself, and no
+  wrong count was found. If one turns up, the move is
   the same: the tool sets `ToolResult.meta`.
 
 ---
@@ -262,8 +389,10 @@ There are 21 built-in tools: `read`, `write`, `list_dir`, `search_code`,
 `todo`, `submit_plan`, `restore_context`, `task`, `extend_scope`,
 `answer_review` and `mcp`. Their schemas are built in `tools.rs` (`:30`
 on), `subagent.rs:1088`, `worker.rs:201`, `change_review.rs:812` and
-`mcp_tool.rs:35`. They're dispatched in two places: `execute_one`
-(`execute.rs:448`) for the run's own tools and `tools::run` for the rest,
+`mcp_tool.rs:35`. They're dispatched in three places: the lead's `task`
+calls in `execute_tool_calls` (`execute.rs:225–235`, to `subagent_run.rs:275`),
+the run's own tools and the context folder's in `execute_one`
+(`execute.rs:448`, `:563–567`, `:1117`), and the rest in `tools::run`,
 where an unknown name ends in "unknown tool" (`tools.rs:1533`).
 
 What each tool may do is decided by name, in more than 40 places. The ones
@@ -314,13 +443,14 @@ pub enum BuiltinTool { Read, Write, ListDir, /* … 21 in all */ Mcp }
 pub struct ToolSpec {
     pub name: &'static str,
     pub effect: Effect,         // Reads, Writes, Runs, Web, Control, Mcp
+    pub dispatch: Dispatch,     // Subagents (task), Run (its own tools), Tools
     pub modes: Modes,           // Any, PlanOnly, AgentOnly
     pub needs_project: bool,
     pub parallel: bool,         // a local read: may run beside others
     pub context_folder: bool,   // also works on @context/ (CLM)
     pub restricted: Restricted, // path checked (read or write), command parsed, results filtered
     pub hidden: Hidden,         // the test writer: refused by path, filtered from the output
-    pub host: Host,             // None, SearchEngine, UrlArgument
+    pub host: HostCheck,        // None, SearchEngine, UrlArgument
 }
 
 impl BuiltinTool {
@@ -332,7 +462,10 @@ impl BuiltinTool {
 ```
 
 - `Restricted` and `Hidden` are sets, not one choice: `neighbours` is
-  refused by path and has its results filtered, for both.
+  refused by path and has its results filtered, for both. (`HostCheck`,
+  not `Host`: `services::Host` and `prompt_cache::Host` exist.)
+- After phase 0, `ask_user`'s row takes both modes; Autopilot still takes
+  it out, in code, since that depends on the run.
 - Names stay strings on the wire and in the database (`ToolCall.name`,
   the agent log, the headless runner's policy file): `parse` reads them,
   and a name that isn't built in goes the way it goes now (`mcp__…` names
@@ -353,13 +486,16 @@ impl BuiltinTool {
 
 **2.1 The table, and dispatch by it**
 
-- `builtin_tools.rs`; `tools::run` and `execute_one` match on
-  `BuiltinTool` (exhaustive), so a tool without an arm doesn't build. The
-  "needs a project" check reads `needs_project` instead of the order of
-  the arms.
+- `builtin_tools.rs`. Which of the three dispatchers takes a tool is its
+  row's `dispatch`, so a new tool can't go without one; each dispatcher
+  matches on `BuiltinTool` for its own. The "needs a project" check reads
+  `needs_project` instead of the order of the arms.
 - Tests:
   - `every_builtin_tool_has_one_schema_and_parses_back_from_its_name`:
     the names of all schema builders' output equal `ALL`'s.
+  - `every_builtin_tool_reaches_its_dispatcher`: each tool, called through
+    a run with the least arguments it takes, gets an answer of its own,
+    never "unknown tool".
   - `only_local_reads_run_in_parallel`.
 
 **2.2 Permissions by the table**
@@ -383,13 +519,13 @@ impl BuiltinTool {
 - `PARALLEL_TOOLS` and `READ_ONLY` become `spec.parallel`;
   `PLAN_BLOCKED_TOOLS` becomes `spec.modes`; the checklist gate reads
   `effect`; `context_tool_schemas` and `context_only_tool_schemas` read
-  `context_folder`. If decision 2 below says so, dispatch refuses a tool
-  the mode doesn't offer, as it refuses `write` in Plan mode now.
+  `context_folder`. If decision 4 says so, dispatch refuses a tool the
+  mode doesn't offer, as it refuses `write` in Plan mode now.
 - Tests:
   - `plan_mode_takes_no_tool_that_writes_files_or_runs_commands`.
   - `without_a_project_the_context_folder_offers_only_the_tools_it_serves`
     (the fix).
-  - With decision 2: `a_tool_the_mode_doesnt_offer_is_refused_when_called`
+  - With decision 4: `a_tool_the_mode_doesnt_offer_is_refused_when_called`
     (`todo` in Plan mode, `submit_plan` in Agent mode).
   - `tool_lists_by_mode` (`tools.rs:2310`) passes unchanged.
 
@@ -404,8 +540,8 @@ impl BuiltinTool {
 
 ### Done when
 
-Adding a tool means a variant, its row and its schema; a missing row or
-dispatch arm doesn't build, and a missing policy fails a test. The string
+Adding a tool means a variant, its row and its schema; a missing row
+doesn't build, and a missing dispatch arm or policy fails a test. The string
 lists (`PARALLEL_TOOLS`, `READ_ONLY`, `PLAN_BLOCKED_TOOLS` and the kinds'
 lists) are gone.
 
@@ -428,23 +564,23 @@ lists) are gone.
 `agent_run/plan.rs` is 4,394 lines: 2,484 of code and 1,910 of tests.
 The code is ten concerns:
 
-| Lines     | Concern                                                                                                         | Used from                                     |
-| --------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| 20–120    | Plan mode's prompt text, its blocked tools                                                                      | `tools.rs`, `execute.rs`, `run.rs`            |
-| 121–331   | Criteria (S01, D8)                                                                                              | Autopilot, acceptance, plan review            |
-| 332–622   | Checks of a plan's form (`plan_problems`)                                                                       | `submit_plan`                                 |
-| 623–858   | The plan's file; the request that implements it                                                                 | `execute.rs`, `planning.rs`, `run.rs`         |
-| 859–1219  | Steps and their files (`steps`, `step_files`, `file_path`)                                                      | groups, planning, the test writer, repair     |
-| 1220–1397 | Validation commands (V02)                                                                                       | `verify.rs`                                   |
-| 1398–1726 | Findings left in a plan; checks against the project's files (B07)                                               | `submit_plan`                                 |
-| 1727–2022 | Mechanical format fixes (`normalize`, `skeleton`)                                                               | `submit_plan`                                 |
-| 2023–2146 | `ask_user` questions                                                                                            | `execute.rs`                                  |
-| 2147–2484 | The checklist (`todo`), rebuilt from history, and its gate; what a stored message is (`is_request`, `is_steer`) | `run.rs`, `execute.rs`, connectors, Autopilot |
+| Lines     | Concern                                                                                                         | Used from                                                                                                |
+| --------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| 20–120    | Plan mode's prompt text, its blocked tools                                                                      | `tools.rs`, `execute.rs`, `run.rs`                                                                       |
+| 121–331   | Criteria (S01, D8)                                                                                              | Autopilot, acceptance, plan review                                                                       |
+| 332–622   | Checks of a plan's form (`plan_problems`)                                                                       | `submit_plan`                                                                                            |
+| 623–858   | The plan's file; the request that implements it                                                                 | `execute.rs`, `planning.rs`, `run.rs`                                                                    |
+| 859–1219  | Steps and their files (`steps`, `step_files`, `file_path`)                                                      | groups, planning, the test writer, repair                                                                |
+| 1220–1397 | Validation commands (V02)                                                                                       | `Run::prepare` (`run.rs:1072`)                                                                           |
+| 1398–1726 | Findings left in a plan; checks against the project's files (B07)                                               | `submit_plan`, `planning.rs`, `run.rs`, `group.rs`                                                       |
+| 1727–2022 | Mechanical format fixes (`normalize`, `skeleton`)                                                               | `submit_plan`                                                                                            |
+| 2023–2146 | `ask_user` questions                                                                                            | `execute.rs`                                                                                             |
+| 2147–2484 | The checklist (`todo`), rebuilt from history, and its gate; what a stored message is (`is_request`, `is_steer`) | `run.rs`, `execute.rs`, `mod.rs`, `subagent_run.rs`, `change_review.rs`, `chat_db/history.rs`, Autopilot |
 
 Eleven functions start again from the raw Markdown and redo the same
 work (line endings, fences, `##` headings, where a section ends):
 `criteria_section` (`:173`), `with_criteria` (`:271`), `plan_problems`
-(`:493`), `save_plan_file` (`:693`), `steps` (`:1150`), `section`
+(`:493`), `save_plan_file` (`:672`), `steps` (`:1150`), `section`
 (`:1195`), `without_findings` (`:1404`), `project_problems` (`:1449`,
 through `steps`), `files_lines` (`:1736`), `normalize` (`:1810`) and
 `skeleton` (`:1943`).
@@ -525,18 +661,18 @@ Only `PlanDoc::parse` turns Markdown into structure; no other function in
 `impl Run` blocks in 23 files. A scan of which file reads and writes each
 field (outside tests) groups them so:
 
-| State                   | Fields | Which                                                                                                                                                | Touched in                                                                                                                                   |
-| ----------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Context pressure (CLM)  | 20     | `clm_*`, `tier75_*`, `urgent_*`, `step_*`, `pending_step_compaction`, `restricted_turns`, `restricted_stall`, `context_edited`, `edit_delta_pending` | `run.rs`, `execute.rs`                                                                                                                       |
-| Repository map          | 4      | `repo_map`, `repo_map_chars`, `map_refreshed_at`, `map_refreshes`                                                                                    | `run.rs`, `subagent_run.rs`                                                                                                                  |
-| Checklist               | 4      | `checklist_nudges`, `force_todo_next`, `checklist_gate_refused`, `open_steps_at_end`                                                                 | `run.rs`, `execute.rs`                                                                                                                       |
-| Steering                | 4      | `steer`, `harness_waits`, `steers`, `steers_returned`                                                                                                | `run.rs`, `execute.rs`, `mod.rs`                                                                                                             |
-| The plan and its review | 17     | `plan_*`, `questions_asked`, `reply_submits`                                                                                                         | `plan_review.rs`, `execute.rs`, `run.rs`                                                                                                     |
-| The change review       | 14     | `review_*`, `reviews_*`, `writes_since_review`, `last_guidance`, `change_review_progress`                                                            | `change_review.rs`, `verify.rs`, `guide.rs`, `execute.rs`, `subagent_run.rs`, `run.rs`                                                       |
-| Tests and acceptance    | 10     | `test_writer_files`, `tests_changed*`, `tests_after_change`, `breaker_*`, `acceptance_*`                                                             | `test_writer.rs`, `breaker.rs`, `acceptance.rs`, `verify.rs`, `repair.rs`, `run.rs`                                                          |
-| Verification and repair | 24     | `verify_*`, `last_verify_*`, `writes_since_verify`, `checkpoint`, `baseline`, `integrity_*`, `carry_lost*`, `round_commands`, `rechecks`, …          | `verify.rs`, `repair.rs`, `repair_run.rs`, `prepare.rs`, `triage.rs`, `before.rs`, `landing.rs`, `group.rs`, `subagent_run.rs`, `execute.rs` |
-| Landing                 | 3      | `landed`, `merged_from_project`, `marker_reminders`                                                                                                  | `landing.rs`, `run.rs`, `verify.rs`, `before.rs`                                                                                             |
-| The run itself          | 38     | identity and setup, signals, the turn loop's own flags, the run's output (`changed_files`, `ledger`)                                                 | everywhere                                                                                                                                   |
+| State                   | Fields | Which                                                                                                                                                | Touched in                                                                                                                                                                                                     |
+| ----------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Context pressure (CLM)  | 20     | `clm_*`, `tier75_*`, `urgent_*`, `step_*`, `pending_step_compaction`, `restricted_turns`, `restricted_stall`, `context_edited`, `edit_delta_pending` | `run.rs`, `execute.rs`                                                                                                                                                                                         |
+| Repository map          | 4      | `repo_map`, `repo_map_chars`, `map_refreshed_at`, `map_refreshes`                                                                                    | `run.rs`, `subagent_run.rs`                                                                                                                                                                                    |
+| Checklist               | 4      | `checklist_nudges`, `force_todo_next`, `checklist_gate_refused`, `open_steps_at_end`                                                                 | `run.rs`, `execute.rs`                                                                                                                                                                                         |
+| Steering                | 4      | `steer`, `harness_waits`, `steers`, `steers_returned`                                                                                                | `run.rs`, `execute.rs`, `mod.rs`                                                                                                                                                                               |
+| The plan and its review | 17     | `plan_*`, `questions_asked`, `reply_submits`                                                                                                         | `plan_review.rs`, `execute.rs`, `run.rs`                                                                                                                                                                       |
+| The change review       | 14     | `review_*`, `reviews_*`, `writes_since_review`, `last_guidance`, `change_review_progress`                                                            | `change_review.rs`, `verify.rs`, `guide.rs`, `execute.rs`, `subagent_run.rs`, `run.rs`                                                                                                                         |
+| Tests and acceptance    | 10     | `test_writer_files`, `tests_changed*`, `tests_after_change`, `breaker_*`, `acceptance_*`                                                             | `test_writer.rs`, `breaker.rs`, `acceptance.rs`, `verify.rs`, `repair.rs`, `repair_run.rs`, `subagent_run.rs`, `run.rs`                                                                                        |
+| Verification and repair | 24     | `verify_*`, `last_verify_*`, `writes_since_verify`, `checkpoint`, `baseline`, `integrity_*`, `carry_lost*`, `round_commands`, `rechecks`, …          | `verify.rs`, `repair.rs`, `repair_run.rs`, `prepare.rs`, `triage.rs`, `landing.rs`, `group.rs`, `subagent_run.rs`, `execute.rs`, `acceptance.rs`, `breaker.rs`, `test_writer.rs`, `change_review.rs`, `run.rs` |
+| Landing                 | 3      | `landed`, `merged_from_project`, `marker_reminders`                                                                                                  | `landing.rs`, `run.rs`, `verify.rs`, `before.rs`                                                                                                                                                               |
+| The run itself          | 38     | identity and setup, signals, the turn loop's own flags, the run's output (`changed_files`, `ledger`)                                                 | everywhere                                                                                                                                                                                                     |
 
 What that shape costs, concretely:
 
@@ -546,21 +682,24 @@ What that shape costs, concretely:
   `VerifyCarry::for_test` (`:185`) lists them again. A field added to the
   fix rounds and missed in one of the four places is lost, without a word,
   whenever the checks wait for approval.
-- `writes_since_verify` is set in nine files for two different reasons:
-  files changed (`execute.rs:1078`, `:1098`, `subagent_run.rs:1216`,
-  `:1932`), and "run the checks again" (`acceptance.rs:428`,
-  `breaker.rs:428`, `test_writer.rs:805`, `landing.rs:439`, `run.rs:1698`,
-  `prepare.rs:449`, `verify.rs:1103`, `:1567`). `verify.rs` clears or
-  recomputes it in four more places.
+- `writes_since_verify` is set in nine files, for three different things:
+  the lead's own changes (`execute.rs:1078`, `:1098`); changes made by
+  others (a worker's writes, `subagent_run.rs:1216` and `:1932`; the test
+  writer's files, `test_writer.rs:805`; the breaker's, `breaker.rs:428`;
+  the project's changes merged in, `landing.rs:439` and `run.rs:1698`; a
+  rollback, `verify.rs:1103`); and checks run again with nothing changed
+  (`acceptance.rs:428`, `prepare.rs:449`, `verify.rs:1567`). `verify.rs`
+  clears or recomputes it in four more places.
 - `update_clm_pressure` (`run.rs:2874`, 135 lines) is a state machine over
   20 fields, mixed with a database read and log writes: it can only be
   tested through a whole run.
 - `Run::blank` (`run.rs:1268`) is a 140-line struct literal, which every
   new field makes longer.
 
-Tests touch few of these fields directly (`changed_files`,
-`writes_since_verify`, `seen`, `baseline`, and `checkpoint` in
-`subagent_run.rs`'s tests), so the move doesn't churn them.
+Tests touch few of these fields directly: `restricted_e2e_tests.rs`
+(`baseline` at `:606`, `changed_files` at `:631`, `seen` at `:638`) and
+`subagent_e2e_tests.rs` (`:11200`, `:11419–11420`). The move doesn't churn
+them.
 
 ### Design
 
@@ -606,8 +745,10 @@ The objects, in the order to extract them (the review's `ContextState`,
      (`verify_rounds`, read back from the record at `run.rs:900`, the
      stall count, the review's held findings) stays out of the carry.
    - `writes_since_verify` becomes two events: `changes_made()`, from
-     `Run::note_write` and `note_command`, and `recheck(Why)` for the
-     eight places that ask for another round, with `Why` naming each.
+     every place that changes files (`Run::note_write` and `note_command`,
+     a worker's writes, the test writer's and the breaker's files, a
+     merge, a rollback), and `recheck(Why)` for the three that ask for
+     checks with nothing changed, with `Why` naming each.
 7. **`LandingState`**: its three fields.
 
 What stays on `Run` (38 fields): `core`, `dialog_id`, `profile`,
@@ -734,7 +875,8 @@ covered as above.
   closed cleanly.
 - That state lives in process-wide statics: `workload`'s (`HISTORY`,
   `SLOTS`, `SHARED`, the settings, and `SHUTTING_DOWN`, which never resets),
-  `overlay::chats`' (`DATA_DIR`, `OPEN`), four connectors' `LiveRuns`,
+  `overlay::chats`' (`DATA_DIR`, `OPEN`), the two connectors' four
+  `LiveRuns` (two each),
   `command_tool::background::ALL` and `rt::HANDLE`. Free functions read
   them from about 40 files (`overlay::chats`) and dozens of call sites
   (`background`, `workload`), across rovik-core, the app, rovik-agentd and
@@ -798,9 +940,14 @@ Tests then: `a_second_runtime_on_another_data_folder_is_refused`, and
   test-only; it's also under the `testing` feature
   (`overlay/chats.rs:286–287`).
 - `docs/design/subagents.md:100` lists the scout's tools without `mcp`.
+- `connectors/mod.rs:874` has its own `is_request`, with another rule than
+  `plan::is_request`: phase 3's `messages.rs` moves the latter and leaves
+  the connectors' alone, until someone checks why they differ.
 
 ## Progress
 
+- [ ] 0.1 `ask_user` in Agent mode as in Plan mode
+- [ ] 0.2 The four principles in the system prompt
 - [ ] 1.1 Tool calls say whether they failed
 - [ ] 1.2 A command's end travels with its result
 - [ ] 1.3 The chat reads a call's outcome from its meta
