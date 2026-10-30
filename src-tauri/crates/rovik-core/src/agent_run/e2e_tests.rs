@@ -6639,6 +6639,52 @@ async fn every_builtin_tool_reaches_its_dispatcher() {
     }
 }
 
+/// A tool the mode doesn't offer is refused when called, as a model may
+/// call one from an earlier turn's history: `todo` in Plan mode,
+/// `submit_plan` in Agent mode. What's offered and what's taken are one
+/// row's (its modes).
+#[tokio::test]
+async fn a_tool_the_mode_doesnt_offer_is_refused_when_called() {
+    for (plan_mode, name, args) in [
+        (
+            true,
+            "todo",
+            json!({ "items": [{ "title": "Look", "status": "in_progress" }] }),
+        ),
+        (
+            false,
+            "submit_plan",
+            json!({ "plan": "# Plan\n\n## Steps\n1. One" }),
+        ),
+    ] {
+        let h = harness(&[]).await;
+        let (url, _) = model(vec![
+            Reply::Call {
+                id: "c1",
+                name,
+                args,
+            },
+            Reply::Text("Done."),
+        ])
+        .await;
+        let start = match plan_mode {
+            true => plan_send("Go"),
+            false => Harness::send("Go"),
+        };
+        h.start(h.request(&url, start, quiet_permissions())).await;
+        h.run_end().await;
+        let answer = result_of(&h.messages().await, "c1").clone();
+        assert!(answer.call_failed(), "{name}: {}", answer.content);
+        let said = match plan_mode {
+            true => "Error: todo isn't available in Plan mode",
+            false => "Error: submit_plan is only available in Plan mode",
+        };
+        assert!(answer.content.starts_with(said), "{}", answer.content);
+        assert!(h.events_of("checklist").is_empty());
+        assert!(!h.project.join(plan::PLANS_DIR).exists(), "no plan saved");
+    }
+}
+
 /// A `todo` call the IDE refused (two steps in progress) sends no list to
 /// the panel, and the chat's checklist stays the one before it: the panel
 /// never shows the list the model was told was wrong.

@@ -36,6 +36,7 @@
 //! need its own tools to read (`anthropic/maxResultSizeChars`), and marks
 //! the read-only ones, which it then calls in parallel (`readOnlyHint`).
 
+use crate::agent_run::builtin_tools::BuiltinTool;
 use crate::overlay::confine::network::Network;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -65,16 +66,6 @@ const MAX_RESULT_CHARS: u64 = 500_000;
 const KEEPALIVE: Duration = Duration::from_secs(15);
 const MAX_HEAD: usize = 64 * 1024;
 const MAX_BODY: usize = 16 << 20;
-/// Rovik's tools that change nothing, which the harness may call in parallel.
-const READ_ONLY: &[&str] = &[
-    "read",
-    "list_dir",
-    "search_code",
-    "outline",
-    "callers",
-    "neighbours",
-    "diagnostics",
-];
 
 /// A call the harness made: the connector answers it through `reply`.
 #[derive(Debug)]
@@ -276,7 +267,9 @@ pub fn mcp_tools(tools: &[Value]) -> Vec<Value> {
                     "anthropic/maxResultSizeChars": MAX_RESULT_CHARS,
                 },
             });
-            if READ_ONLY.contains(&name) {
+            // Rovik's local reads change nothing: the harness may call them
+            // in parallel.
+            if BuiltinTool::parse(name).is_some_and(|t| t.spec().parallel) {
                 entry["annotations"] = json!({ "readOnlyHint": true });
             }
             Some(entry)

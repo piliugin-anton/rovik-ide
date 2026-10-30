@@ -296,9 +296,14 @@ impl Run {
         clm: bool,
         context_dir: Option<&str>,
     ) -> bool {
+        // A local read (its row's `parallel`), in a mode that has it.
+        let Some(spec) = BuiltinTool::parse(&tc.name).map(|t| t.spec()) else {
+            return false;
+        };
         if resume_note.is_some()
             || self.stopped()
-            || !parallel::PARALLEL_TOOLS.contains(&tc.name.as_str())
+            || !spec.parallel
+            || !spec.modes.offered_in(self.plan_mode)
             || self.sub().is_some_and(|s| !s.allows(&tc.name))
         {
             return false;
@@ -306,9 +311,6 @@ impl Run {
         // A restricted CLM turn: every call goes through execute_one, which
         // refuses project work until the context is compacted.
         if clm && self.clm_restricted {
-            return false;
-        }
-        if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&tc.name.as_str()) {
             return false;
         }
         let args = permissions::parse_args(&tc.arguments);
@@ -636,6 +638,17 @@ impl Run {
                     .await;
             }
         }
+        // A tool the mode doesn't offer (its row's modes): refused, though
+        // a model may call it from an earlier turn's history.
+        if let Some(t) = tool.filter(|t| !t.spec().modes.offered_in(self.plan_mode)) {
+            let content = match self.plan_mode {
+                true => plan::blocked_in_plan_mode(t.name(), self.autopilot),
+                false => plan::only_in_plan_mode(t.name()),
+            };
+            return self
+                .add_tool_result(&tc.id, content, Outcome::Failed, None, Vec::new())
+                .await;
+        }
         // The run's own tools (their row's dispatch): answered here, with
         // the run's state, and never put to an approval. `mcp` is the run's
         // too, but goes by its rule: authorized and called below.
@@ -771,12 +784,6 @@ impl Run {
                     .await;
             }
             _ => {}
-        }
-        if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&tc.name.as_str()) {
-            let content = plan::blocked_in_plan_mode(&tc.name, self.autopilot);
-            return self
-                .add_tool_result(&tc.id, content, Outcome::Failed, None, Vec::new())
-                .await;
         }
 
         // Checklist gate (Agent mode, the checklist setting not Off): no

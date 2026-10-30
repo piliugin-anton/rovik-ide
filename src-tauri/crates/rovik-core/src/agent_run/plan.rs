@@ -11,6 +11,7 @@
 //!     input. Each call writes the whole list, so the latest call in a run
 //!     is the current state; the tool calls are the record.
 
+use super::builtin_tools::{BuiltinTool, Effect};
 use super::tools::ToolResult;
 use crate::chat_db::store::MessageRow;
 use regex::Regex;
@@ -21,12 +22,9 @@ use std::sync::LazyLock;
 
 pub const PLANS_DIR: &str = ".rovik/plans";
 
-/// Tools Plan mode doesn't offer (or allow, if a model calls them anyway).
-pub const PLAN_BLOCKED_TOOLS: &[&str] = &["write", "bash", "background"];
-
-/// What a call of a tool Plan mode doesn't allow gets: why not, and what
-/// comes next. For Rovik's own calls, and for a connector's own tools it
-/// asks about.
+/// What a call of a tool Plan mode doesn't offer gets (its row's modes,
+/// builtin_tools.rs): why not, and what comes next. For Rovik's own calls,
+/// and for a connector's own tools it asks about.
 pub fn blocked_in_plan_mode(name: &str, autopilot: bool) -> String {
     // Autopilot's plan stage: the task implements its plan next.
     let next = match autopilot {
@@ -36,6 +34,15 @@ pub fn blocked_in_plan_mode(name: &str, autopilot: bool) -> String {
     format!(
         "Error: {name} isn't available in Plan mode, which doesn't change anything. \
          Finish the plan; {next}."
+    )
+}
+
+/// What a call of a tool only Plan mode offers (submit_plan) gets in Agent
+/// mode, which has no plan to save.
+pub fn only_in_plan_mode(name: &str) -> String {
+    format!(
+        "Error: {name} is only available in Plan mode. Carry out the task here; a plan asked \
+         for goes in your reply."
     )
 }
 
@@ -2427,8 +2434,9 @@ pub fn checklist_gate_reason(
     tool_calls: u32,
 ) -> Option<String> {
     let norm = |p: &str| super::paths::key(p).unwrap_or_else(|| p.trim().to_string());
-    match tool {
-        "write" => {
+    // Work is what changes files or runs commands (the tool's row).
+    match BuiltinTool::parse(tool).map(|t| t.spec().effect) {
+        Some(Effect::Writes) => {
             let new_file = path
                 .map(norm)
                 .is_some_and(|p| !changed_files.iter().any(|f| norm(f) == p));
@@ -2437,7 +2445,7 @@ pub fn checklist_gate_reason(
                 return Some(format!("{files} files changed"));
             }
         }
-        "bash" => {
+        Some(Effect::Runs) => {
             if changed_files.len() >= GATE_FILES_BEFORE_COMMAND {
                 return Some(format!(
                     "{} files changed, now a command",

@@ -6,7 +6,7 @@
 use super::builtin_tools::BuiltinTool;
 use super::command_output::{cap_output, clean_output, focus_failures};
 use super::permissions::{commands_available, Permissions};
-use super::plan::{MAX_TODO_ITEMS, PLAN_BLOCKED_TOOLS};
+use super::plan::MAX_TODO_ITEMS;
 use super::StopSignal;
 use crate::allowed_hosts::AllowedHosts;
 use crate::code_search::SearchResult;
@@ -484,12 +484,19 @@ fn restore_context_schema() -> Value {
     })
 }
 
+/// Whether the schema's tool works on the agent's context folder too (its
+/// row's `context_folder`): read, write, list_dir.
+fn on_context_folder(t: &Value) -> bool {
+    BuiltinTool::parse(tool_name(t)).is_some_and(|b| b.spec().context_folder)
+}
+
 /// The tools on the agent's context folder (CLM mode): those that aren't
 /// offered for the project here (Plan mode, no project) are offered for
 /// `@context/…` only, and restore_context.
 fn context_tool_schemas(offered: &[Value]) -> Vec<Value> {
     let mut out: Vec<Value> = file_tool_schemas()
         .into_iter()
+        .filter(on_context_folder)
         .filter(|t| !offered.iter().any(|o| tool_name(o) == tool_name(t)))
         .map(|mut t| {
             if let Some(Value::String(d)) = t.pointer_mut("/function/description") {
@@ -512,7 +519,7 @@ fn context_tool_schemas(offered: &[Value]) -> Vec<Value> {
 fn context_only_tool_schemas(plan_mode: bool) -> Vec<Value> {
     let mut out: Vec<Value> = file_tool_schemas()
         .into_iter()
-        .filter(|t| matches!(tool_name(t), "read" | "write" | "list_dir"))
+        .filter(on_context_folder)
         .map(|mut t| {
             if let Some(Value::String(d)) = t.pointer_mut("/function/description") {
                 *d = format!(
@@ -577,7 +584,10 @@ pub fn tools_for(
         }
         all.push(ask_user_schema());
     } else {
-        all.retain(|t| !PLAN_BLOCKED_TOOLS.contains(&tool_name(t)));
+        // What changes files or runs commands is Agent mode's (its row).
+        all.retain(|t| {
+            BuiltinTool::parse(tool_name(t)).is_none_or(|b| b.spec().modes.offered_in(true))
+        });
         all.push(ask_user_schema());
         all.push(submit_plan_schema());
     }
@@ -1367,7 +1377,7 @@ async fn run(
                 root: root_owned.clone(),
                 stop: stop.clone(),
                 note: ctx.note.clone(),
-                // Plan mode has no `bash` (PLAN_BLOCKED_TOOLS).
+                // Plan mode has no `bash` (its row's modes).
                 plan_mode: false,
             };
             let before =
@@ -2366,7 +2376,7 @@ mod tests {
         let plan = names(tools_for(true, true, false, &p, true, false, false));
         assert!(!plan
             .iter()
-            .any(|n| PLAN_BLOCKED_TOOLS.contains(&n.as_str())));
+            .any(|n| ["write", "bash", "background", "todo"].contains(&n.as_str())));
         assert!(
             plan.contains(&"browser_screenshot".to_string())
                 && plan.ends_with(&["ask_user".into(), "submit_plan".into()])
@@ -3161,6 +3171,55 @@ a.rs (3 matches)
         }
     }
 
+    /// Plan mode changes nothing: no tool that writes files or runs
+    /// commands is its (their rows' modes), so none is offered there,
+    /// whatever else the run has.
+    #[test]
+    fn plan_mode_takes_no_tool_that_writes_files_or_runs_commands() {
+        use super::super::builtin_tools::Effect;
+        let changes = |t: &BuiltinTool| matches!(t.spec().effect, Effect::Writes | Effect::Runs);
+        for tool in BuiltinTool::ALL.iter().filter(|t| changes(t)) {
+            assert!(!tool.spec().modes.offered_in(true), "{tool:?}");
+        }
+        let p = Permissions::default();
+        for (project, clm) in [(true, false), (true, true), (false, true)] {
+            let mut plan = tools_for(project, true, false, &p, true, clm, false);
+            offer_background(&mut plan);
+            for t in &plan {
+                let tool = BuiltinTool::parse(tool_name(t)).unwrap();
+                // In CLM mode write is offered for the context folder only.
+                let context_only = t["function"]["description"]
+                    .as_str()
+                    .is_some_and(|d| d.starts_with("Only for your context folder"));
+                assert!(!changes(&tool) || context_only, "{tool:?}");
+            }
+        }
+    }
+
+    /// Without a project, CLM's context folder is offered the tools that
+    /// work on it (read, write, list_dir), not the project's others, which
+    /// would only answer that they need a project.
+    #[test]
+    fn without_a_project_the_context_folder_offers_only_the_tools_it_serves() {
+        let p = Permissions::default();
+        for plan_mode in [false, true] {
+            let tools = tools_for(false, false, false, &p, plan_mode, true, false);
+            let offered: Vec<&str> = tools.iter().map(tool_name).collect();
+            for name in [
+                "search_code",
+                "neighbours",
+                "callers",
+                "outline",
+                "diagnostics",
+            ] {
+                assert!(!offered.contains(&name), "{name}: {offered:?}");
+            }
+            for name in ["read", "write", "list_dir", "restore_context"] {
+                assert!(offered.contains(&name), "{name}: {offered:?}");
+            }
+        }
+    }
+
     /// A failure's text starts with "Error:", once: `error` adds it to text
     /// without it and leaves text with it alone; `ok` never adds it, and a
     /// success may start so too (a file it read).
@@ -3431,7 +3490,8 @@ a.rs (3 matches)
         let mut plan = tools_for(true, false, false, &p, true, false, false);
         offer_background(&mut plan);
         assert!(!plan.iter().any(|t| tool_name(t) == "background"));
-        assert!(PLAN_BLOCKED_TOOLS.contains(&"background"));
+        use super::super::builtin_tools::Modes;
+        assert_eq!(BuiltinTool::Background.spec().modes, Modes::AgentOnly);
     }
 
     /// A command left running reads as a command's result does: running,
