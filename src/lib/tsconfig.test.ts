@@ -35,6 +35,30 @@ const resolve = (files, root = '/p') => {
 };
 
 describe('resolveTsOptions', () => {
+  it('reads shared base configs and missing candidates once per load, then refreshes them', async () => {
+    const files = {
+      '/p/tsconfig.json': '{"files":[],"references":[{"path":"./app"},{"path":"./tools"}]}',
+      '/p/app/tsconfig.json': '{"extends":"../base"}',
+      '/p/tools/tsconfig.json': '{"extends":"../base"}',
+      '/p/base.json': '{"include":["${configDir}/src"],"compilerOptions":{"jsx":"preserve"}}',
+    };
+    const reads = new Map<string, number>();
+    const { readFile } = fsOf(files);
+    const read = async (path: string) => {
+      reads.set(path, (reads.get(path) ?? 0) + 1);
+      return readFile(path);
+    };
+    const result = await resolveTsProjects('/p', read);
+    assert.equal(reads.get('/p/base'), 1, 'failed probes are shared too');
+    assert.equal(reads.get('/p/base.json'), 1);
+    assert.deepEqual(
+      result.projects.slice(1).map((p) => p.include),
+      [['/p/app/src'], ['/p/tools/src']]
+    );
+    files['/p/base.json'] = '{"compilerOptions":{"jsx":"react-jsx"}}';
+    assert.equal((await resolveTsProjects('/p', read)).options.jsx, 'react-jsx');
+  });
+
   it('follows a Vite-style solution config into its references', async () => {
     const options = await resolve({
       '/p/tsconfig.json': `{

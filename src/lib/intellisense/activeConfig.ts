@@ -23,7 +23,7 @@
 import type * as monaco from 'monaco-editor';
 import { projectFor, typesFor, type TsProject } from '../tsconfig';
 import { workerLibs } from './libs';
-import { PROJECT_LIB, SOURCE_FILE } from './paths';
+import { isDependencyPath, PROJECT_LIB, SOURCE_FILE } from './paths';
 import { sanitizeCompilerOptions, type ProjectConfig } from './compilerOptions';
 import { applyCompilerOptions, BASE_OPTIONS } from './defaults';
 import { installedTypesFor, typesPackagesByFolder } from './typeRoots';
@@ -36,6 +36,8 @@ export class ActiveConfig {
   /** @types package names by node_modules folder URI (typeRoots.ts). */
   private typesByFolder: ReadonlyMap<string, readonly string[]> = new Map();
   private activeFile: string | null = null;
+  /** Last source file: dependency tabs retain its compiler options and roots. */
+  private contextFile: string | null = null;
   /** Owning config of a path (undefined: none), until the configs change. */
   private readonly owners = new Map<string, TsProject | undefined>();
 
@@ -55,16 +57,24 @@ export class ActiveConfig {
 
   /** The file shown in the editor: its config's @types become the worker's. */
   setActiveFile(path: string | null): void {
+    // Definitions belong to the importing project's context. Dropping it
+    // would restart the worker with every workspace's sources and globals.
     this.activeFile = path;
+    if (path === null || !isDependencyPath(path)) this.contextFile = path;
   }
 
   /** Gives the worker the active file's config: its options and its files. */
   apply(): void {
-    const owner = this.activeFile === null ? undefined : this.ownerOf(this.activeFile);
+    const owner = this.contextFile === null ? undefined : this.ownerOf(this.contextFile);
     // Options first: a change restarts the worker, which then starts with
     // the lib set as it is after the second call.
-    applyCompilerOptions(this.optionsFor(this.activeFile));
-    workerLibs.set(PROJECT_LIB, JSON.stringify(owner ?? null));
+    applyCompilerOptions(this.optionsFor(this.contextFile));
+    // A directly opened dependency may not be imported by any source yet.
+    const project =
+      owner && this.activeFile !== null && isDependencyPath(this.activeFile)
+        ? { ...owner, files: [...owner.files, this.activeFile.replace(/\\/g, '/')] }
+        : owner;
+    workerLibs.set(PROJECT_LIB, JSON.stringify(project ?? null));
   }
 
   /** The complete options for a file's config. */
@@ -85,7 +95,7 @@ export class ActiveConfig {
   covers(path: string): boolean {
     // Other files (Markdown, Rust...) aren't validated by the worker.
     if (!SOURCE_FILE.test(path)) return true;
-    const active = this.activeFile === null ? undefined : this.ownerOf(this.activeFile);
+    const active = this.contextFile === null ? undefined : this.ownerOf(this.contextFile);
     return this.ownerOf(path) === active;
   }
 

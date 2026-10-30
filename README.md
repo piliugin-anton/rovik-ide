@@ -34,7 +34,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   continue on Enter, and Ctrl+B / Ctrl+I make text bold or italic.
 - IntelliSense for JavaScript/TypeScript that understands the whole
   project, not only open files. Ctrl+click jumps to a definition in another
-  file. Files the agent, git or another program creates or changes are
+  file, keeping the importing project's type context while browsing
+  dependency declarations, including linked packages. Definition loading
+  reuses shared config reads and indexes open files for faster lookups.
+  Files the agent, git or another program creates or changes are
   picked up as they change, without reopening anything. Rust gets help from
   rust-analyzer when it's installed.
 - A file tree that stays fast on very large projects and refreshes when

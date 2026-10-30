@@ -39,7 +39,7 @@ import { registerSemanticTokens } from './semanticTokens';
 export { modelUriFor } from './uris';
 export { isProjectSource } from './paths';
 export { refreshSemanticTokens } from './semanticTokens';
-import { SOURCE_FILE } from './paths';
+import { isDependencyPath, SOURCE_FILE } from './paths';
 
 initLanguageDefaults();
 // Semantic colouring for TS/JS (semanticTokens.ts): the legend and the
@@ -102,9 +102,9 @@ export function notifyProjectFileWritten(path: string): void {
 
 /** The file shown in the editor: its config's @types become the worker's. */
 export function setActiveTypesFile(path: string | null): void {
-  // Other files (Markdown, Rust...) don't use the worker: keep the scope.
+  // Keep the source context while browsing dependencies or non-TS files.
   if (path !== null && !SOURCE_FILE.test(path)) return;
-  activeFile = path;
+  if (path === null || !isDependencyPath(path)) activeFile = path;
   current?.setActiveFile(path);
 }
 
