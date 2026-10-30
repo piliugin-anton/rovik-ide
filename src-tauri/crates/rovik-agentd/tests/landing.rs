@@ -457,6 +457,10 @@ async fn after_a_restart_the_result_imported_last_isnt_imported_again() {
         .unwrap();
     assert!(!setup.project.join("src/new.rs").exists());
     let newest = newest_result(&setup).await;
+    // After the daemon's answer the app tells of the landing, then keeps
+    // the result's number. Land waits behind that in the queue: once it's
+    // through, both are done before the app restarts.
+    let _ = app.remote.land(CHAT, false).await;
     let told = landing_notices(&app);
 
     let app = app.restart(&setup).await;
