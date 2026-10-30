@@ -18,14 +18,24 @@
 //!   snapshots left. The chats' kept blobs have refs, so it doesn't prune
 //!   them.
 //!
+//! - When asked, each chat's installed dependencies and build output, but
+//!   a busy chat's or one kept ready (generated.rs): the chat and its
+//!   edits stay.
+//!
+//! - Each hour, when a storage budget is set and the chats' worktrees take
+//!   more: the dependencies and build output of the chats idle longest,
+//!   but those kept ready (`fit_budget`).
+//!
 //! Folders in `work/` that no chat has go only at start-up (serve.rs):
 //! while the daemon serves, one may be a worktree a sync is making.
 
 use crate::daemon::Daemon;
+use crate::generated;
 use crate::host;
+use crate::usage::allocated_in;
 use crate::work;
 use rovik_core::chat_db::attachments;
-use rovik_core::chat_db::store::now_ms;
+use rovik_core::chat_db::store::{self, now_ms};
 use rovik_core::rt;
 use rovik_protocol::host::Storage;
 use std::fs::{self, Metadata};
@@ -79,15 +89,97 @@ pub fn daily(daemon: Arc<Daemon>) {
 
 /// "Clean up now": as each day does, the chats taken back without their
 /// week, the temporary files nothing changed for an hour, and each
-/// repository in full. What Rovik's folders take after.
-pub async fn now(daemon: &Daemon) -> Storage {
+/// repository in full; and the dependencies and build output of each chat
+/// that isn't busy nor kept ready. What Rovik's folders take after, with `computer`'s
+/// chats.
+pub async fn now(daemon: &Daemon, computer: &str) -> Storage {
     let sweep = Sweep {
         released_before: i64::MAX,
         unused_for: HOUR,
         full_gc: true,
     };
     clean_up(daemon, sweep).await;
-    host::storage(daemon).await
+    let freed = collect_generated(daemon).await;
+    log::info!("cleaned up: the chats' dependencies and build output, {freed} bytes");
+    host::storage(daemon, computer).await
+}
+
+/// Keeps the chats' worktrees within the storage budget each hour from now
+/// on (`fit_budget`).
+pub fn hourly(daemon: Arc<Daemon>) {
+    rt::spawn(async move {
+        loop {
+            tokio::time::sleep(HOUR).await;
+            fit_budget(&daemon).await;
+        }
+    });
+}
+
+/// When the chats' worktrees take more than the storage budget: the
+/// dependencies and build output of the chats idle longest go, one chat
+/// at a time until they fit. Not a chat kept ready, nor one active within
+/// the hour, whose next message is likely soon. The bytes freed.
+pub async fn fit_budget(daemon: &Daemon) -> u64 {
+    let Some(budget) = daemon.store.storage_budget() else {
+        return 0;
+    };
+    let work = daemon.worktrees.clone();
+    let mut used = rt::spawn_blocking(move || allocated_in(&work))
+        .await
+        .unwrap_or(0);
+    if used <= budget {
+        return 0;
+    }
+    let chats: Vec<String> = (daemon.store.chats_with_worktrees().into_iter())
+        .filter(|chat| !daemon.store.keeps_ready(chat))
+        .collect();
+    let active = daemon.core.db.read(move |c| {
+        let each = chats.into_iter().map(|id| {
+            let at = store::get_dialog(c, &id).ok().flatten();
+            (id, at.map_or(0, |d| d.updated_at))
+        });
+        Ok(each.collect::<Vec<_>>())
+    });
+    let active = active.await.unwrap_or_else(|e| {
+        log::warn!("the storage budget: the chats' last activity: {e}");
+        Vec::new()
+    });
+    let _one = daemon.imports.lock().await;
+    let mut freed = 0;
+    for chat in idle_longest_first(active, now_ms(), HOUR.as_millis() as i64) {
+        if used <= budget {
+            break;
+        }
+        let went = generated::clean_chat(daemon, &chat).await.unwrap_or(0);
+        used = used.saturating_sub(went);
+        freed += went;
+    }
+    log::info!(
+        "the storage budget: {freed} bytes of the chats' dependencies and build output went"
+    );
+    freed
+}
+
+/// The chats of `active` (each with when it was last active, ms) idle for
+/// `idle_ms` at `now`, the one idle longest first.
+fn idle_longest_first(mut active: Vec<(String, i64)>, now: i64, idle_ms: i64) -> Vec<String> {
+    active.retain(|(_, at)| now - at >= idle_ms);
+    active.sort_by_key(|(id, at)| (*at, id.clone()));
+    active.into_iter().map(|(id, _)| id).collect()
+}
+
+/// The dependencies and build output of each chat with a worktree that
+/// isn't busy nor kept ready (generated.rs). The bytes freed.
+async fn collect_generated(daemon: &Daemon) -> u64 {
+    // Not while a move brings a chat, its worktree with its rows.
+    let _one = daemon.imports.lock().await;
+    let mut freed = 0;
+    for chat in daemon.store.chats_with_worktrees() {
+        if !daemon.store.keeps_ready(&chat) {
+            freed += generated::clean_chat(daemon, &chat).await.unwrap_or(0);
+        }
+    }
+    freed
 }
 
 /// At start-up: the temporary files nothing changed for a day. The daily
@@ -280,6 +372,22 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn the_budget_takes_the_chats_idle_longest_first_and_spares_recent_ones() {
+        let hour = 60 * 60 * 1000;
+        let now = 10 * hour;
+        let active = vec![
+            ("recent".to_string(), now - hour / 2),
+            ("yesterday".to_string(), now - 9 * hour),
+            ("an-hour-ago".to_string(), now - hour),
+            ("never".to_string(), 0),
+        ];
+        assert_eq!(
+            idle_longest_first(active, now, hour),
+            ["never", "yesterday", "an-hour-ago"]
+        );
     }
 
     #[tokio::test]

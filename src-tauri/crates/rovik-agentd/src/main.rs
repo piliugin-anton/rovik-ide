@@ -34,6 +34,8 @@
 //!   network.rs  this user's private network on a team server (D20)
 //!   pages.rs    the pages its commands open, on this user's computer (D20)
 //!   services.rs this user's project services, under their Podman (D21)
+//!   usage.rs    what a chat's worktree holds, by kind
+//!   generated.rs  a chat's dependencies and build output removed
 
 #[cfg(unix)]
 mod attach;
@@ -59,6 +61,8 @@ mod events;
 mod fail;
 #[cfg(unix)]
 mod gc;
+#[cfg(unix)]
+mod generated;
 #[cfg(unix)]
 mod home;
 #[cfg(unix)]
@@ -101,6 +105,8 @@ mod status;
 mod store;
 #[cfg(unix)]
 mod sync;
+#[cfg(unix)]
+mod usage;
 #[cfg(unix)]
 mod work;
 

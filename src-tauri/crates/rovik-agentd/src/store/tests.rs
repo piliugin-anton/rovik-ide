@@ -741,3 +741,35 @@ fn a_sign_in_is_kept_until_signed_out_or_the_keys_go() {
     assert!(again.mcp_signed_in().is_empty());
     assert_eq!(again.mcp_secrets_kept(), 0);
 }
+
+/// The storage budget and the chats it leaves ready are read back after a
+/// restart; a state written before them has neither. Only a chat with a
+/// worktree here can be kept ready.
+#[test]
+fn the_storage_budget_and_kept_ready_chats_are_read_back() {
+    let dir = temp_dir();
+    {
+        let store = Store::open(&dir.0).unwrap();
+        assert_eq!(store.storage_budget(), None, "none at first");
+        store.started("laptop", &start("mine", "", None)).unwrap();
+        let refused = store.set_keep_ready("mine", true).unwrap_err();
+        assert_eq!(refused.code, FailCode::BadRequest, "no worktree yet");
+        let place = Place {
+            project: "app".into(),
+            worktree: dir.0.join("work/mine"),
+        };
+        store.worktree_made("laptop", "mine", place, "abc").unwrap();
+        store.set_storage_budget(Some(20 << 30)).unwrap();
+        store.set_keep_ready("mine", true).unwrap();
+    }
+    let store = Store::open(&dir.0).unwrap();
+    assert_eq!(store.storage_budget(), Some(20 << 30));
+    assert!(store.chats_of("laptop")[0].1.keep_ready);
+    store.set_storage_budget(None).unwrap();
+    store.set_keep_ready("mine", false).unwrap();
+    let file = fs::read_to_string(dir.0.join("state.json")).unwrap();
+    assert!(
+        !file.contains("storageBudget") && !file.contains("keepReady"),
+        "{file}"
+    );
+}

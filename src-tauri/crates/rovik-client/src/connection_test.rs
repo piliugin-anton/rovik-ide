@@ -614,6 +614,7 @@ mod tests {
                 work: 1 << 20,
                 data: 0,
                 tmp: 0,
+                ..Storage::default()
             },
             disks: vec![Disk {
                 folder: "/home/ann/.rovik".into(),

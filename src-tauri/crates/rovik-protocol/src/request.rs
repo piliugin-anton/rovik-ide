@@ -363,6 +363,20 @@ pub enum Request {
     /// message names, and the repositories' garbage. → `Storage`, what the
     /// folders take after.
     CleanUp,
+    /// The most the chats' working copies may take here, in bytes, or
+    /// none: past it, the dependencies and build output of the chats
+    /// longest idle go (`features::CHAT_STORAGE`). → `Done`.
+    StorageBudget {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes: Option<u64>,
+    },
+    /// Whether the storage budget leaves the chat's dependencies and build
+    /// output alone, ready for its next run (`features::CHAT_STORAGE`). It
+    /// changes none of the chat's rows. → `Done`.
+    ChatKeepReady {
+        dialog_id: String,
+        keep: bool,
+    },
     /// How the page a `PageWanted` event asked for went (`id`): forwarded
     /// from `local_port` on the user's computer (the page's own port where
     /// it was free there) and ready to open, or `error`, why not, in words
@@ -469,6 +483,8 @@ impl Request {
             | Request::McpRelayPart { .. }
             | Request::Storage
             | Request::CleanUp
+            | Request::StorageBudget { .. }
+            | Request::ChatKeepReady { .. }
             | Request::PageOpened { .. } => None,
         }
     }

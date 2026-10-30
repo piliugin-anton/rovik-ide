@@ -2012,6 +2012,7 @@ mod tests {
             work: 3 * gb,
             data: gb,
             tmp: 2 * gb,
+            ..Storage::default()
         };
         let after = Storage {
             work: gb,

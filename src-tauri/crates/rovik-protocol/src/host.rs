@@ -69,12 +69,49 @@ pub struct Storage {
     pub data: u64,
     /// The agent's temporary files.
     pub tmp: u64,
+    /// The asking computer's chats with a working copy here, what each
+    /// holds, the largest first (`features::CHAT_STORAGE`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chats: Vec<ChatStorage>,
+    /// The most the chats' working copies may take (`StorageBudget`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<u64>,
 }
 
 impl Storage {
     /// What the folders take together.
     pub fn total(&self) -> u64 {
         self.projects + self.work + self.data + self.tmp
+    }
+}
+
+/// What one chat's working copy takes on the host, in bytes on disk, by
+/// kind (`Storage::chats`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ChatStorage {
+    pub chat: String,
+    pub title: String,
+    /// What git doesn't ignore: the project's files and the chat's edits.
+    pub source: u64,
+    /// Installed dependencies, which a cleanup removes.
+    pub dependencies: u64,
+    /// Build output, which a cleanup removes.
+    pub build: u64,
+    /// The other files git ignores, which stay.
+    pub other: u64,
+    /// One of its runs goes: a cleanup leaves it.
+    pub running: bool,
+    /// The storage budget leaves it ready (`ChatKeepReady`).
+    pub keep_ready: bool,
+    /// When its messages last changed, in epoch ms.
+    pub active_ms: i64,
+}
+
+impl ChatStorage {
+    /// What its working copy takes in all.
+    pub fn total(&self) -> u64 {
+        self.source + self.dependencies + self.build + self.other
     }
 }
 

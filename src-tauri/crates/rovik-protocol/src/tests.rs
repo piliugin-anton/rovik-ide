@@ -969,6 +969,14 @@ fn every_request_round_trips() {
             },
             Request::Storage,
             Request::CleanUp,
+            Request::StorageBudget {
+                bytes: Some(20 << 30),
+            },
+            Request::StorageBudget { bytes: None },
+            Request::ChatKeepReady {
+                dialog_id: "chat-1".into(),
+                keep: true,
+            },
             Request::PageOpened {
                 id: "page-1".into(),
                 local_port: Some(5174),
@@ -1149,6 +1157,18 @@ fn every_response_round_trips() {
                 work: 2,
                 data: 3,
                 tmp: 0,
+                chats: vec![crate::host::ChatStorage {
+                    chat: "chat-1".into(),
+                    title: "Fix the login".into(),
+                    source: 15 << 20,
+                    dependencies: 316 << 20,
+                    build: 1600 << 20,
+                    other: 4096,
+                    running: true,
+                    keep_ready: true,
+                    active_ms: 1_761_800_000_000,
+                }],
+                budget: Some(20 << 30),
             }),
             Response::DeliveryTested(crate::autopilot::DeliveryTest {
                 remote: "git@github.com:acme/app.git".into(),
@@ -2060,4 +2080,14 @@ fn a_relayed_get_of_an_event_stream_says_so_and_a_post_needs_not() {
     let post = serde_json::to_value(relayed_post()).unwrap();
     assert!(post.get("stream").is_none(), "{post}");
     assert!(!serde_json::from_value::<RelayedPost>(post).unwrap().stream);
+}
+
+/// An older daemon's `Storage` has no chats, and one without chats sends
+/// none: an older app reads it as before.
+#[test]
+fn a_storage_from_an_older_daemon_has_no_chats() {
+    let older = serde_json::json!({ "projects": 1, "work": 2, "data": 3, "tmp": 4 });
+    let storage: Storage = serde_json::from_value(older.clone()).unwrap();
+    assert!(storage.chats.is_empty());
+    assert_eq!(serde_json::to_value(&storage).unwrap(), older);
 }
