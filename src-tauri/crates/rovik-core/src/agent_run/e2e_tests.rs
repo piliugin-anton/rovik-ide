@@ -2666,6 +2666,35 @@ async fn a_model_without_tools_gets_none_and_no_tool_rules() {
     assert!(!system.contains("## Tool use rules"));
 }
 
+/// The agent works by the four principles in Agent and Plan mode, with
+/// tools and without: its system prompt holds them word for word.
+#[tokio::test]
+async fn the_system_prompt_holds_the_four_principles() {
+    for plan_mode in [false, true] {
+        for no_tools in [false, true] {
+            let case = format!("Plan mode: {plan_mode}, no tools: {no_tools}");
+            let h = harness(&[]).await;
+            let (url, seen) = model(vec![Reply::Text("Hi.")]).await;
+            let start = match plan_mode {
+                true => plan_send("Hi"),
+                false => Harness::send("Hi"),
+            };
+            let mut request = h.request(&url, start, quiet_permissions());
+            request.profile.no_tools = no_tools;
+            h.start(request).await;
+            assert_eq!(h.run_end().await, "done", "{case}");
+            let body = seen.lock().unwrap()[0].clone();
+            let system = body["messages"][0]["content"].as_str().unwrap();
+            assert!(system.contains(crate::agent::PRINCIPLES), "{case}");
+            assert_eq!(
+                system.contains("## Plan mode"),
+                plan_mode && !no_tools,
+                "{case}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn plan_mode_refuses_changes_and_extra_questions() {
     let h = harness(&[("a.txt", "keep")]).await;
