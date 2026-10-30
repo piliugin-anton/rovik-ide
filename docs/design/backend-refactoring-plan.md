@@ -58,10 +58,11 @@ Everything else in this plan keeps behaviour as it is. These change it:
    work there. Recommended: yes, each with its test.
 2. **A tool the mode doesn't offer is refused when called** (2.3). Today
    `todo` runs in Plan mode and `submit_plan` in Agent mode if a model calls
-   them anyway (from an earlier turn's history, say); only `write`, `bash`
-   and `background` are refused by mode. Recommended: refuse, so what's
-   offered and what's accepted come from one row; the price is a model
-   that relied on the old leniency getting an error it can read.
+   them anyway (from an earlier turn's history, say). Only `write`, `bash`
+   and `background` are refused by mode at dispatch, and `ask_user` refuses
+   itself outside Plan mode (`execute.rs:1917`). Recommended: refuse, so
+   what's offered and what's accepted come from one row; the price is a
+   model that relied on the old leniency getting an error it can read.
 3. **A malformed JSON column is logged** when a message row is read
    (phase 5), where today it's dropped without a word. The row still
    loads. Recommended: yes (`AGENTS.md`: never swallow an error silently).
