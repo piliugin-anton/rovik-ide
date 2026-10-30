@@ -36,7 +36,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   project, not only open files. Ctrl+click jumps to a definition in another
   file, keeping the importing project's type context while browsing
   dependency declarations, including linked packages. Definition loading
-  reuses shared config reads and indexes open files for faster lookups.
+  reuses shared config reads and indexes open files for faster lookups,
+  once the TypeScript worker's model host is ready.
   Files the agent, git or another program creates or changes are
   picked up as they change, without reopening anything. Rust gets help from
   rust-analyzer when it's installed.

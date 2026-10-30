@@ -83,7 +83,8 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
     this._languageService = releasingReplacedPrograms(this._languageService, () => {
       this.resolvedWith = this.filesVersion;
     });
-    this.indexModels();
+    // Monaco creates its model host after this constructor returns. Index
+    // at getProjectVersion/getScriptFileNames, once requests can arrive.
   }
 
   override async updateExtraLibs(extraLibs: Record<string, ExtraLib>): Promise<void> {
