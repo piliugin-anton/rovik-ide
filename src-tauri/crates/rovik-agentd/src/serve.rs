@@ -299,6 +299,7 @@ async fn run(
         }
     }
     gc::daily(daemon.clone());
+    gc::hourly(daemon.clone());
 
     // 8. The socket, then serving.
     let listener = server::bind(&socket)?;

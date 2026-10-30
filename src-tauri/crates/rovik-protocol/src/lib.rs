@@ -75,6 +75,10 @@ pub mod features {
     pub const HOST: &str = "host";
     /// "Clean up now" on the hosts page (R01): `CleanUp`.
     pub const CLEAN_UP: &str = "clean-up";
+    /// Each chat's storage by kind in `Storage`, `CleanUp` removing idle
+    /// chats' dependencies and build output, `StorageBudget` and
+    /// `ChatKeepReady`.
+    pub const CHAT_STORAGE: &str = "chat-storage";
     /// A server that works on its own (autopilot-plan H02):
     /// `AutonomyConfigure`.
     pub const AUTONOMY: &str = "autonomy";

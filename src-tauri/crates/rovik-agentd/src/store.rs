@@ -45,6 +45,9 @@ pub struct State {
     /// user or sat between two stages of a task, and none crashed (5.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clean_stop: Option<i64>,
+    /// The most the chats' worktrees may take, in bytes (`StorageBudget`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_budget: Option<u64>,
 }
 
 /// A project a computer carried here, as its last `ProjectEnsure` said.
@@ -130,6 +133,10 @@ pub struct ChatState {
     /// until `ChatForget`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub released: Option<i64>,
+    /// The storage budget leaves its dependencies and build output
+    /// (`ChatKeepReady`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_ready: bool,
 }
 
 /// A chat a computer moved here (6.8), as its import left it.
@@ -726,6 +733,47 @@ impl Store {
             released: chat.released.is_some(),
             rev: chat.imported_rev.unwrap_or(0),
         })
+    }
+
+    /// Whether the storage budget and "Clean up now" leave the chat ready
+    /// (`ChatKeepReady`). Refused for a chat with no worktree here.
+    pub fn set_keep_ready(&self, dialog_id: &str, keep: bool) -> Result<(), Fail> {
+        let _writing = self.writing();
+        let mut inner = self.lock();
+        let chat = inner.state.chats.get_mut(dialog_id);
+        let Some(chat) = chat.filter(|c| c.worktree.is_some()) else {
+            return Err(Fail::new(
+                FailCode::BadRequest,
+                "This chat has no working copy on this server.",
+            ));
+        };
+        if chat.keep_ready == keep {
+            return Ok(());
+        }
+        chat.keep_ready = keep;
+        self.save(inner)
+            .map_err(|e| Fail::new(FailCode::Internal, e))
+    }
+
+    /// Whether the storage budget leaves the chat ready.
+    pub fn keeps_ready(&self, dialog_id: &str) -> bool {
+        (self.lock().state.chats.get(dialog_id)).is_some_and(|c| c.keep_ready)
+    }
+
+    /// The most the chats' worktrees may take (`StorageBudget`).
+    pub fn storage_budget(&self) -> Option<u64> {
+        self.lock().state.storage_budget
+    }
+
+    /// Sets the storage budget, or none.
+    pub fn set_storage_budget(&self, bytes: Option<u64>) -> Result<(), String> {
+        let _writing = self.writing();
+        let mut inner = self.lock();
+        if inner.state.storage_budget == bytes {
+            return Ok(());
+        }
+        inner.state.storage_budget = bytes;
+        self.save(inner)
     }
 
     /// The chat's computer took it back at `now` (`ChatRelease`).

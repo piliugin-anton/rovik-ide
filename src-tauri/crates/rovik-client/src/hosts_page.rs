@@ -131,6 +131,9 @@ pub struct HostDetails {
     pub app_version: String,
     /// The daemon cleans up when asked ("Clean up now", R01).
     pub clean_up: bool,
+    /// The daemon measures each chat's working copy by kind, removes idle
+    /// chats' dependencies and build output, and keeps a storage budget.
+    pub chat_storage: bool,
 }
 
 /// How long "Clean up now" may take: gigabytes of worktrees and temporary
@@ -1085,7 +1088,7 @@ impl HostsPage {
         let (keys, storage) = match self.remote.serves(id, features::HOST) {
             true => (
                 Some(self.call(id, Request::KeysList).await?),
-                Some(self.call(id, Request::Storage).await?),
+                Some(self.measured(id, Request::Storage).await?),
             ),
             false => (None, None),
         };
@@ -1114,7 +1117,38 @@ impl HostsPage {
             mcp_secrets,
             app_version: self.version.clone(),
             clean_up: self.remote.serves(id, features::CLEAN_UP),
+            chat_storage: self.remote.serves(id, features::CHAT_STORAGE),
         })
+    }
+
+    /// Sets the most the host's chats' working copies may take, or none:
+    /// the daemon fits them at once, removing idle chats' dependencies and
+    /// build output. What Rovik's folders take there after.
+    pub async fn set_storage_budget(
+        &self,
+        id: &str,
+        bytes: Option<u64>,
+    ) -> Result<Storage, String> {
+        let set = Request::StorageBudget { bytes };
+        let reply = self.remote.host_call_within(id, set, CLEAN_UP_WAIT).await;
+        reply.map_err(|fail| fail.message)?;
+        self.measured(id, Request::Storage).await
+    }
+
+    /// `request`'s `Storage`, given the time a cleanup may take: each one
+    /// measures every folder and each chat's working copy by kind, which
+    /// takes a while on a big server.
+    async fn measured(&self, id: &str, request: Request) -> Result<Storage, String> {
+        let reply = self.remote.host_call_within(id, request, CLEAN_UP_WAIT);
+        let storage = reply.await.and_then(Storage::try_from);
+        storage.map_err(|fail| fail.message)
+    }
+
+    /// Whether the host's storage budget leaves the chat ready.
+    pub async fn keep_ready(&self, id: &str, chat: &str, keep: bool) -> Result<(), String> {
+        let dialog_id = chat.to_string();
+        self.call(id, Request::ChatKeepReady { dialog_id, keep })
+            .await
     }
 
     /// "Clean up now" (R01): what the host's daemon no longer needs goes,
@@ -1122,14 +1156,8 @@ impl HostsPage {
     /// much less than just before: measured then, not when the page asked,
     /// so what changed meanwhile isn't counted as freed.
     pub async fn clean_up(&self, id: &str) -> Result<CleanedUp, String> {
-        // Both measure every folder, which takes a while on a big server.
-        let ask = |request| async move {
-            let reply = self.remote.host_call_within(id, request, CLEAN_UP_WAIT);
-            let storage = reply.await.and_then(Storage::try_from);
-            storage.map_err(|fail| fail.message)
-        };
-        let before = ask(Request::Storage).await?;
-        let after = ask(Request::CleanUp).await?;
+        let before = self.measured(id, Request::Storage).await?;
+        let after = self.measured(id, Request::CleanUp).await?;
         Ok(CleanedUp {
             freed: before.total().saturating_sub(after.total()),
             storage: after,
@@ -2012,6 +2040,7 @@ mod tests {
             work: 3 * gb,
             data: gb,
             tmp: 2 * gb,
+            ..Storage::default()
         };
         let after = Storage {
             work: gb,
@@ -2040,6 +2069,48 @@ mod tests {
             matches!(asked[..], [.., Request::Storage, Request::CleanUp]),
             "{asked:?}"
         );
+    }
+
+    /// A storage budget is set, then the host measured again; a chat is
+    /// kept ready by its id.
+    #[tokio::test]
+    async fn a_storage_budget_is_set_then_measured_and_a_chat_kept_ready() {
+        use crate::testing::{identity, Fake};
+        let setup = setup();
+        let host = setup.page.save(new_host(), password("hunter2")).unwrap();
+        let fake = Fake::default();
+        setup
+            .remote
+            .connect(&host.id, fake.clone(), identity(&host.name));
+        for _ in 0..400 {
+            if (setup.remote.states().iter())
+                .any(|(id, s)| *id == host.id && *s == HostState::Ready)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let gb = 1 << 30;
+        let budget = setup.page.set_storage_budget(&host.id, Some(20 * gb));
+        assert_eq!(budget.await.unwrap(), Storage::default());
+        setup
+            .page
+            .keep_ready(&host.id, "chat-1", true)
+            .await
+            .unwrap();
+        let asked = fake.requests.lock().unwrap().clone();
+        let expected = [
+            Request::StorageBudget {
+                bytes: Some(20 * gb),
+            },
+            Request::Storage,
+            Request::ChatKeepReady {
+                dialog_id: "chat-1".into(),
+                keep: true,
+            },
+        ];
+        assert!(asked.ends_with(&expected), "{asked:?}");
     }
 
     /// A host that runs MCP servers says how many it keeps secrets for; an

@@ -33,6 +33,7 @@ const FEATURES: &[&str] = &[
     features::MIRROR,
     features::HOST,
     features::CLEAN_UP,
+    features::CHAT_STORAGE,
     features::AUTONOMY,
     features::MCP,
     features::MCP_SIGN_IN,

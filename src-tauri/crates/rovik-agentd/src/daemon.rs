@@ -150,8 +150,20 @@ impl Daemon {
             Request::McpRelayPart { id, part } => {
                 Ok(Response::Bool(self.relays.part(computer, &id, part)))
             }
-            Request::Storage => Ok(Response::Storage(host::storage(self).await)),
-            Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),
+            Request::Storage => Ok(Response::Storage(host::storage(self, computer).await)),
+            Request::CleanUp => Ok(Response::Storage(gc::now(self, computer).await)),
+            // Fitted at once: the page measures again after.
+            Request::StorageBudget { bytes } => {
+                (self.store.set_storage_budget(bytes))
+                    .map_err(|e| Fail::new(FailCode::Internal, e))?;
+                gc::fit_budget(self).await;
+                Ok(Response::Done)
+            }
+            Request::ChatKeepReady { dialog_id, keep } => {
+                self.store.check_owner(computer, &dialog_id)?;
+                self.store.set_keep_ready(&dialog_id, keep)?;
+                Ok(Response::Done)
+            }
             Request::PageOpened {
                 id,
                 local_port,

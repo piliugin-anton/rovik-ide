@@ -93,6 +93,7 @@ const DETAILS: HostDetails = {
   upgrade: false,
   appVersion: '0.2.0',
   cleanUp: true,
+  chatStorage: false,
 };
 
 const step = (
@@ -380,6 +381,112 @@ test('“Clean up now”: what the server no longer needs goes, and it’s measu
   assert.deepEqual(sent('hosts_clean_up'), [{ id: 'h1' }]);
   assert.match(root.textContent!, /Chats’ working copies: 128 MB/);
   assert.match(root.textContent!, /384 MB freed\./);
+});
+
+const MB = 1024 ** 2;
+const CHAT_STORAGE: HostDetails = {
+  ...DETAILS,
+  chatStorage: true,
+  storage: {
+    ...DETAILS.storage!,
+    chats: [
+      {
+        chat: 'c2',
+        title: 'Port to Tauri',
+        source: 15 * MB,
+        dependencies: 316 * MB,
+        build: 1600 * MB,
+        other: 0,
+        running: true,
+        keepReady: false,
+        activeMs: 0,
+      },
+      {
+        chat: 'c1',
+        title: '',
+        source: 2 * MB,
+        dependencies: 0,
+        build: 0,
+        other: MB,
+        running: false,
+        keepReady: true,
+        activeMs: 0,
+      },
+    ],
+  },
+};
+
+test('the server’s chats are listed by size with what each holds', async () => {
+  const { root } = await hostPage(hostsList(DEPLOYED), { hosts_details: () => CHAT_STORAGE });
+  const rows = [...root.querySelectorAll('.host-chat-storage-table tbody tr')].map((row) =>
+    [...row.querySelectorAll('td')].map((cell) => cell.textContent)
+  );
+  assert.deepEqual(
+    rows.map((cells) => cells.slice(0, 6)),
+    [
+      ['Port to TauriRunning', '1.9 GB', '15 MB', '316 MB', '1.6 GB', '0 bytes'],
+      ['c1', '3 MB', '2 MB', '0 bytes', '0 bytes', '1 MB'],
+    ]
+  );
+  assert.match(
+    root.textContent!,
+    /“Clean up now” also removes installed dependencies and build output of chats that aren’t running or kept ready\. Their conversations and changes stay; the next run reinstalls and rebuilds\./
+  );
+});
+
+test('an older server shows only the totals', async () => {
+  const { root } = await hostPage(hostsList(DEPLOYED), { hosts_details: () => DETAILS });
+  assert.match(root.textContent!, /Chats’ working copies: 512 MB/);
+  assert.equal(root.querySelector('.host-chat-storage'), null);
+  assert.doesNotMatch(root.textContent!, /also removes installed dependencies/);
+});
+
+test('keep ready toggles one chat, and a budget is set in GB, or none', async () => {
+  const fitted = { ...CHAT_STORAGE.storage!, budget: 20 * 1024 ** 3 };
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => CHAT_STORAGE,
+    hosts_keep_ready: () => undefined,
+    hosts_storage_budget: () => fitted,
+  });
+  const keep = root.querySelector(
+    'input[aria-label="Keep Port to Tauri ready"]'
+  ) as HTMLInputElement;
+  keep.click();
+  await flush();
+  assert.deepEqual(sent('hosts_keep_ready'), [{ id: 'h1', chat: 'c2', keep: true }]);
+
+  const budget = root.querySelector('#host-storage-budget') as HTMLInputElement;
+  type(budget, '20');
+  button(root, 'Save budget')!.click();
+  await flush();
+  type(budget, '');
+  button(root, 'Save budget')!.click();
+  await flush();
+  assert.deepEqual(sent('hosts_storage_budget'), [
+    { id: 'h1', bytes: 20 * 1024 ** 3 },
+    { id: 'h1', bytes: null },
+  ]);
+  for (const wrong of ['-3', '0.5', '2e', '1,5']) {
+    type(budget, wrong);
+    await flush();
+    assert.ok(button(root, 'Save budget')!.disabled, `not a size of 1 GB or more: ${wrong}`);
+  }
+});
+
+test('keep ready that the server refused unticks again', async () => {
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => CHAT_STORAGE,
+    hosts_keep_ready: () => {
+      throw new Error('This chat has no working copy on this server.');
+    },
+  });
+  const keep = root.querySelector(
+    'input[aria-label="Keep Port to Tauri ready"]'
+  ) as HTMLInputElement;
+  keep.click();
+  await flush();
+  assert.equal(keep.checked, false);
+  assert.match(root.textContent!, /no working copy on this server/);
 });
 
 test('“Clean up now” that freed nothing says so', async () => {

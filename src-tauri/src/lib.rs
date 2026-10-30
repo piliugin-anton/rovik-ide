@@ -314,6 +314,8 @@ pub fn run() {
             commands::hosts::hosts_details,
             commands::hosts::hosts_remove_keys,
             commands::hosts::hosts_clean_up,
+            commands::hosts::hosts_storage_budget,
+            commands::hosts::hosts_keep_ready,
             commands::hosts::hosts_limits,
             commands::hosts::hosts_set_limits,
             commands::chat::chat_search,

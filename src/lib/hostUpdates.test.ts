@@ -60,6 +60,7 @@ function details(version: string, admin: boolean, admins: string[] = []): HostDe
     upgrade: true,
     appVersion: '2.0.0',
     cleanUp: true,
+    chatStorage: true,
   };
 }
 

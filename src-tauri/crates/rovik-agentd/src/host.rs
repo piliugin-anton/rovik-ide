@@ -6,9 +6,11 @@ use crate::cli::VERSION;
 use crate::daemon::{Daemon, MIN_PROTOCOL};
 use crate::home;
 use crate::limits::{size_of, AdminFile, ADMIN_FILE};
-use rovik_protocol::host::{HostInfo, Install, Storage};
+use crate::{generated, usage};
+use rovik_core::chat_db::store;
+use rovik_protocol::host::{ChatStorage, HostInfo, Install, Storage};
 use rovik_protocol::PROTOCOL;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub async fn info(daemon: &Daemon) -> HostInfo {
     let mounted = daemon.core.vfs.mountpoint().is_some();
@@ -62,8 +64,67 @@ pub fn user_namespaces(sys: &Path) -> bool {
 }
 
 /// What Rovik's folders take here (`Storage`), measured now: links not
-/// followed, other file systems (the virtual files' mount) not entered.
-pub async fn storage(daemon: &Daemon) -> Storage {
+/// followed, other file systems (the virtual files' mount) not entered;
+/// with what each of `computer`'s chats' working copies holds.
+pub async fn storage(daemon: &Daemon, computer: &str) -> Storage {
+    let mut storage = folders(daemon).await;
+    storage.chats = chats(daemon, computer).await;
+    storage.budget = daemon.store.storage_budget();
+    storage
+}
+
+/// `computer`'s chats with a worktree here, what each holds by kind, the
+/// largest first.
+async fn chats(daemon: &Daemon, computer: &str) -> Vec<ChatStorage> {
+    let chats = daemon.store.chats_of(computer).into_iter();
+    let worktrees: Vec<(String, PathBuf)> = chats
+        .filter_map(|(id, chat)| Some((id, chat.worktree.filter(|w| w.is_dir())?)))
+        .collect();
+    let ids: Vec<String> = worktrees.iter().map(|(id, _)| id.clone()).collect();
+    // Each chat's title and last change, in `ids`' order.
+    let dialogs = daemon.core.db.read(move |c| {
+        let each = ids.iter().map(|id| match store::get_dialog(c, id) {
+            Ok(Some(d)) => (d.title, d.updated_at),
+            _ => (String::new(), 0),
+        });
+        Ok(each.collect::<Vec<_>>())
+    });
+    let dialogs = dialogs.await.unwrap_or_else(|e| {
+        log::warn!("the chats' titles: {e}");
+        Vec::new()
+    });
+    // Whether each is busy, and kept ready.
+    let flags: Vec<(bool, bool)> = (worktrees.iter())
+        .map(|(id, _)| (generated::busy(daemon, id), daemon.store.keeps_ready(id)))
+        .collect();
+    let measured = rovik_core::rt::spawn_blocking(move || {
+        (worktrees.into_iter())
+            .map(|(id, worktree)| (id, usage::measure(&worktree)))
+            .collect::<Vec<_>>()
+    });
+    let measured = measured.await.unwrap_or_default();
+    let mut chats: Vec<ChatStorage> = (measured.into_iter().enumerate())
+        .map(|(i, (chat, usage))| {
+            let (title, active_ms) = dialogs.get(i).cloned().unwrap_or_default();
+            ChatStorage {
+                chat,
+                title,
+                source: usage.source,
+                dependencies: usage.dependencies,
+                build: usage.build,
+                other: usage.other,
+                running: flags[i].0,
+                keep_ready: flags[i].1,
+                active_ms,
+            }
+        })
+        .collect();
+    chats.sort_by(|a, b| b.total().cmp(&a.total()).then_with(|| a.chat.cmp(&b.chat)));
+    chats
+}
+
+/// What Rovik's folders take here.
+async fn folders(daemon: &Daemon) -> Storage {
     let folders = (
         daemon.projects.dir().to_path_buf(),
         daemon.worktrees.clone(),
@@ -72,9 +133,11 @@ pub async fn storage(daemon: &Daemon) -> Storage {
     );
     rovik_core::rt::spawn_blocking(move || Storage {
         projects: size_of(&folders.0),
-        work: size_of(&folders.1),
+        // As each chat's and the budget are: blocks, a hard link once.
+        work: usage::allocated_in(&folders.1),
         data: size_of(&folders.2),
         tmp: size_of(&folders.3),
+        ..Storage::default()
     })
     .await
     .unwrap_or_default()

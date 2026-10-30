@@ -267,9 +267,10 @@ pub fn gather(server: &Server) -> Doctor {
         other_daemons,
         storage: Storage {
             projects: size_of(&home.root.join("projects")),
-            work: size_of(&home.work()),
+            work: crate::usage::allocated_in(&home.work()),
             data: size_of(&home.data()),
             tmp: size_of(&home.tmp()),
+            ..Storage::default()
         },
         logs: size_of(&home.logs()),
     }

@@ -10,6 +10,7 @@ use rovik_client::hosts_page::{
     CleanedUp, DeployFailure, HostDetails, HostSecrets, HostSummary, HostsList, HostsPage,
 };
 use rovik_client::ApprovalPolicy;
+use rovik_protocol::host::Storage;
 use rovik_protocol::Secret;
 use serde::Serialize;
 use std::sync::Arc;
@@ -220,6 +221,28 @@ pub async fn hosts_clean_up(
     id: String,
 ) -> Result<CleanedUp, String> {
     page.clean_up(&id).await
+}
+
+/// The most the host's chats' working copies may take, or none: what
+/// Rovik's folders take there once it's fitted.
+#[tauri::command]
+pub async fn hosts_storage_budget(
+    page: State<'_, Arc<HostsPage>>,
+    id: String,
+    bytes: Option<u64>,
+) -> Result<Storage, String> {
+    page.set_storage_budget(&id, bytes).await
+}
+
+/// Whether the host's storage budget leaves the chat ready.
+#[tauri::command]
+pub async fn hosts_keep_ready(
+    page: State<'_, Arc<HostsPage>>,
+    id: String,
+    chat: String,
+    keep: bool,
+) -> Result<(), String> {
+    page.keep_ready(&id, &chat, keep).await
 }
 
 #[tauri::command]

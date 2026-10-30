@@ -188,6 +188,8 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::McpRelayPart { .. }
         | Request::Storage
         | Request::CleanUp
+        | Request::StorageBudget { .. }
+        | Request::ChatKeepReady { .. }
         | Request::PageOpened { .. }
         | Request::AutonomyConfigure(_)
         | Request::DeliveryTest { .. }
@@ -676,6 +678,11 @@ mod tests {
             Request::McpRelayTake { id: "r1".into() },
             Request::Storage,
             Request::CleanUp,
+            Request::StorageBudget { bytes: Some(1) },
+            Request::ChatKeepReady {
+                dialog_id: "c1".into(),
+                keep: true,
+            },
             Request::PageOpened {
                 id: "page-1".into(),
                 local_port: Some(5173),
