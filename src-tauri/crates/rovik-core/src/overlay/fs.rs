@@ -297,6 +297,10 @@ impl OverlayChange {
     }
 
     pub fn by_product(&self) -> bool {
+        // Older saved changes may still classify chat context as project work.
+        if super::tiers::is_chat_context(self.path()) {
+            return true;
+        }
         match self {
             OverlayChange::Delete { by_product, .. } | OverlayChange::Write { by_product, .. } => {
                 *by_product

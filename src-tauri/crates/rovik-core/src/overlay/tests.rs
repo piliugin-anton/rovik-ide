@@ -741,6 +741,52 @@ mod landing {
     }
 
     #[test]
+    fn chat_context_changes_are_not_listed_or_landed() {
+        let d = setup(&[
+            ("context/TASK.md", "original task"),
+            ("context/old.md", "old note"),
+            ("src/context/code.rs", "original code"),
+        ]);
+        let o = overlay(&d);
+        write_all(&o, "context/TASK.md", "chat task");
+        write_all(&o, "src/context/code.rs", "new code");
+        let context = ino(&o, "context");
+        o.unlink(context, "old.md").unwrap();
+        let note = o
+            .create(context, "new.md", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
+        o.write(note.ino, 0, b"new note").unwrap();
+        assert_eq!(paths(&landable(&o)), ["+src/context/code.rs"]);
+
+        // Saved manifests from before context was excluded can mark it as work.
+        let mut changes = o.changes();
+        for change in &mut changes {
+            match change {
+                OverlayChange::Write { by_product, .. }
+                | OverlayChange::Delete { by_product, .. } => *by_product = false,
+            }
+        }
+        let landed = land::land(&data(&d), "chat", &d.project(), &changes, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(landed.paths, ["src/context/code.rs"]);
+        assert_eq!(
+            project_file(&d, "src/context/code.rs").as_deref(),
+            Some("new code")
+        );
+        assert_eq!(
+            project_file(&d, "context/TASK.md").as_deref(),
+            Some("original task")
+        );
+        assert_eq!(
+            project_file(&d, "context/old.md").as_deref(),
+            Some("old note")
+        );
+        assert!(!d.project().join("context/new.md").exists());
+        assert_eq!(read_all(&o, "context/TASK.md"), "chat task");
+    }
+
+    #[test]
     fn changes_land_and_undo_puts_everything_back() {
         let d = setup(&[
             ("a.txt", "one\n"),

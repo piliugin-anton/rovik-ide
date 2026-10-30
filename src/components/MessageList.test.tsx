@@ -7,20 +7,31 @@ import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
+import { createSignal } from 'solid-js';
 import MessageList from './MessageList';
 import type { ChatMessage } from '../types';
 
 (window as any).__TAURI_INTERNALS__ = { invoke: async () => null, transformCallback: () => 0 };
 
 const noop = async () => 0;
-function list(messages: ChatMessage[], connectorTitle?: string) {
+function list(messages: ChatMessage[], connectorTitle?: string, starting = false) {
   const root = container();
+  const [rows, setRows] = createSignal(messages);
+  const [isStarting, setStarting] = createSignal(starting);
+  const [hasNewer, setHasNewer] = createSignal(false);
   const dispose = render(
     () => (
       <MessageList
         dialogId="d1"
-        chat={{ messages, hasOlder: false, hasNewer: false, loadingOlder: false, lastUsed: 0 }}
+        chat={{
+          messages: rows(),
+          hasOlder: false,
+          hasNewer: hasNewer(),
+          loadingOlder: false,
+          lastUsed: 0,
+        }}
         sending={true}
+        starting={isStarting()}
         connectorTitle={connectorTitle}
         focusMessageId={null}
         onLoadOlder={noop}
@@ -35,12 +46,57 @@ function list(messages: ChatMessage[], connectorTitle?: string) {
     ),
     root
   );
-  return { root, dispose };
+  return { root, dispose, setRows, setStarting, setHasNewer };
 }
 
 const user: ChatMessage = { id: 'u1', role: 'user', content: 'Add a test', finalized: true };
 const working = (root: HTMLElement) =>
   [...root.querySelectorAll('[role="status"]')].map((e) => e.textContent);
+
+test('an API chat shows progress during preparation and hands over to the reply', () => {
+  const model = list([user], undefined, true);
+  try {
+    assert.deepEqual(working(model.root), ['Roviking…']);
+    model.setRows([
+      user,
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        pending: true,
+        status: { text: 'Waiting for a response' },
+      },
+    ]);
+    assert.deepEqual(working(model.root), ['Waiting for a response']);
+    model.setStarting(false);
+    assert.deepEqual(working(model.root), ['Waiting for a response']);
+  } finally {
+    model.dispose();
+  }
+});
+
+test('startup progress disappears when starting fails and stays off older pages', () => {
+  const model = list([user], undefined, true);
+  try {
+    model.setHasNewer(true);
+    assert.deepEqual(working(model.root), []);
+    model.setHasNewer(false);
+    assert.deepEqual(working(model.root), ['Roviking…']);
+    model.setStarting(false);
+    assert.deepEqual(working(model.root), []);
+  } finally {
+    model.dispose();
+  }
+});
+
+test('a connector shows its startup label during preparation', () => {
+  const model = list([user], 'Codex', true);
+  try {
+    assert.deepEqual(working(model.root), ['Starting Codex…']);
+  } finally {
+    model.dispose();
+  }
+});
 
 test('a connector’s reply not started yet says the connector is starting', () => {
   const reply: ChatMessage = { id: 'a1', role: 'assistant', content: '', pending: true };

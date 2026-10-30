@@ -18,6 +18,12 @@ use std::sync::Mutex;
 
 /// By-products whatever the project's ignore files say.
 const ALWAYS: &[&str] = &[".git"];
+
+/// Whether a project-relative path belongs to the chat's context directory.
+pub fn is_chat_context(rel: &str) -> bool {
+    rel == "context" || rel.starts_with("context/")
+}
+
 /// By-products in a project that ignores nothing.
 const FALLBACK: &[&str] = &[
     "node_modules",
@@ -56,8 +62,11 @@ impl Tiers {
     }
 
     /// Whether a project-relative path (with `/`) is build output,
-    /// dependencies or `.git`.
+    /// dependencies, `.git` or chat-owned context.
     pub fn is_by_product(&self, rel: &str, is_dir: bool) -> bool {
+        if is_chat_context(rel) {
+            return true;
+        }
         let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
         if parts.iter().any(|p| ALWAYS.contains(p)) {
             return true;
@@ -116,6 +125,18 @@ impl Tiers {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn chat_context_is_excluded_even_when_ignore_rules_allow_it() {
+        let dir = project(&[(".gitignore", "!context/\n!context/**\n")]);
+        let tiers = Tiers::new(&dir);
+        for path in ["context", "context/TASK.md", "context/revisions/1.md"] {
+            assert!(tiers.is_by_product(path, false), "{path}");
+        }
+        for path in ["src/context/TASK.md", "contextual/a.md", "context.md"] {
+            assert!(!tiers.is_by_product(path, false), "{path}");
+        }
+    }
 
     fn project(files: &[(&str, &str)]) -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};

@@ -9161,11 +9161,11 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  /* It scrolls: short of room, it gives way rather than the input. */
+  /* The file list gives way to keep the actions and composer visible. */
   flex-shrink: 1;
   min-height: 0;
   max-height: 35%;
-  overflow-y: auto;
+  overflow: hidden;
   margin: 0 10px 8px;
   padding: 6px 10px;
   background: var(--bg-subtle);
@@ -9173,6 +9173,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   border-radius: 8px;
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+.isolation-bar > :not(.isolation-bar-files) {
+  flex-shrink: 0;
 }
 
 .isolation-bar-head {
@@ -9301,6 +9305,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .isolation-bar-files {
+  min-height: 0;
+  overflow-y: auto;
   list-style: none;
   margin: 0;
   padding: 0;

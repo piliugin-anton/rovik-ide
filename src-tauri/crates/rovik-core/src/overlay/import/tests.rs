@@ -158,6 +158,28 @@ fn store(dialog_id: &str) -> Vec<(String, &'static str)> {
 const TEXT: FileMode = FileMode::Blob;
 
 #[test]
+fn imported_chat_context_is_not_listed_or_landed() {
+    let f = fixture(
+        &[
+            ("context/TASK.md", "original task"),
+            ("code.rs", "old code"),
+        ],
+        false,
+    );
+    let result = f.result(&[
+        ("context/TASK.md", Some("chat task"), TEXT),
+        ("context/revisions/1.md", Some("revision"), TEXT),
+        ("code.rs", Some("new code"), TEXT),
+    ]);
+    f.import(result).unwrap();
+    assert_eq!(store(CHAT), [("code.rs".into(), "changed")]);
+    land_by_itself(CHAT).unwrap().unwrap();
+    assert_eq!(f.read("code.rs"), "new code");
+    assert_eq!(f.read("context/TASK.md"), "original task");
+    assert!(!f.project.join("context/revisions").exists());
+}
+
+#[test]
 fn a_result_becomes_the_chats_changes_and_lands() {
     let f = fixture(
         &[

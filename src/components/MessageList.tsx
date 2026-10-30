@@ -117,6 +117,8 @@ export default function MessageList(props: {
   dialogId: string | null;
   chat: OpenChat | undefined;
   sending: boolean;
+  /** The backend is preparing the run, before its first reply exists. */
+  starting?: boolean;
   /**
    * The chat runs on this connector (`Claude Code`): a reply it hasn't
    * started says so, instead of the IDE's own "Roviking…".
@@ -220,10 +222,12 @@ export default function MessageList(props: {
     return false;
   };
 
+  const startingText = () =>
+    props.connectorTitle ? `Starting ${props.connectorTitle}…` : 'Roviking…';
   const statusText = (m: ChatMessage) => {
     const status = m.status;
     // Sent, nothing back yet: not "Thinking", the model hasn't started.
-    if (!status) return props.connectorTitle ? `Starting ${props.connectorTitle}…` : 'Roviking…';
+    if (!status) return startingText();
     if (status.since) {
       const elapsed = now() - status.since;
       return elapsed >= 1000 ? `${status.text}… ${formatDuration(elapsed)}` : `${status.text}…`;
@@ -1803,6 +1807,15 @@ export default function MessageList(props: {
               </div>
             )}
           </For>
+          {/* Preparation can wait on MCP servers before a reply row exists. */}
+          <Show when={props.starting && atNewest() && !messages().some((m) => m.pending)}>
+            <div class="tool-group active chat-waiting" role="status">
+              <div class="tool-group-header">
+                <span class="tool-call-spinner" aria-hidden="true" />
+                <span class="tool-group-verb">{startingText()}</span>
+              </div>
+            </div>
+          </Show>
           {/* Sent to the run while it works, not read yet: once it's read, its
               stored row shows where the run read it, and this goes. */}
           <Show when={atNewest()}>
