@@ -476,7 +476,7 @@ impl Run {
                     "Error: {} isn't available to a {} subagent. Its tools: {}. If you can't do the task with them, say so under \"## Blocked\" in your report.",
                     tc.name,
                     spec.label.to_lowercase(),
-                    spec.tools.join(", ")
+                    spec.tools.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
                 );
                 return self
                     .answer_unrun(tc, content, Outcome::Failed, true, None)

@@ -16,6 +16,7 @@
 //! fails, or whose report can't be read, is recorded as skipped, and the
 //! findings go to the agent as they would without it.
 
+use super::builtin_tools::BuiltinTool;
 use super::change_review::{
     describe, diff_budget, render_diff, score, skipped, Finding, RenderedDiff,
 };
@@ -69,15 +70,7 @@ Add "## Blocked" with the reason only if you couldn't guide."###;
 /// The guide's kind: read-only, its three sections all needed.
 pub static GUIDE: KindSpec = KindSpec {
     label: "Guide",
-    tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-    ],
+    tools: &BuiltinTool::READS,
     default_budget: Budget {
         tool_calls: 20,
         wall: Duration::from_secs(240),

@@ -17,6 +17,7 @@
 //!   - its report is data, not instructions: the lead is told so, since a
 //!     report may quote untrusted files or web pages.
 
+use super::builtin_tools::{BuiltinTool, Effect};
 use super::{permissions, ModelProfile};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -176,9 +177,13 @@ impl Kind {
         }
     }
 
-    /// Kinds that change files: they get a write scope (D7).
+    /// Kinds that change files (a tool of theirs does, by its row): they
+    /// get a write scope (D7).
     pub fn writes(self) -> bool {
-        matches!(self, Kind::Worker | Kind::TestWriter | Kind::Breaker)
+        self.spec()
+            .tools
+            .iter()
+            .any(|t| t.spec().effect == Effect::Writes)
     }
 }
 
@@ -304,7 +309,7 @@ pub struct KindSpec {
     /// For the user: "Scout".
     pub label: &'static str,
     /// The tools it's offered (and the only ones it may call).
-    pub tools: &'static [&'static str],
+    pub tools: &'static [BuiltinTool],
     pub default_budget: Budget,
     /// The report's sections, as `## ` headings; the first ones up to
     /// `required` must be there.
@@ -316,8 +321,9 @@ pub struct KindSpec {
 }
 
 impl KindSpec {
+    /// Whether a call of the tool named `tool` is one of the kind's.
     pub fn allows(&self, tool: &str) -> bool {
-        self.tools.contains(&tool)
+        BuiltinTool::parse(tool).is_some_and(|t| self.tools.contains(&t))
     }
 
     /// The kind's system prompt with its budget.
@@ -435,16 +441,16 @@ static SCOUT: KindSpec = KindSpec {
     // `mcp`: the read-only tools of the user's MCP servers, when there are
     // any (docs/design/mcp-plan.md, Q08).
     tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-        "web_search",
-        "browse_url",
-        "mcp",
+        BuiltinTool::Read,
+        BuiltinTool::ListDir,
+        BuiltinTool::SearchCode,
+        BuiltinTool::Neighbours,
+        BuiltinTool::Callers,
+        BuiltinTool::Outline,
+        BuiltinTool::Diagnostics,
+        BuiltinTool::WebSearch,
+        BuiltinTool::BrowseUrl,
+        BuiltinTool::Mcp,
     ],
     default_budget: Budget {
         tool_calls: 20,
@@ -1356,6 +1362,38 @@ pub struct Admission {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A kind that doesn't write gets no tool that writes files or runs
+    /// commands (by their rows), and no kind gets the lead's own tools: the
+    /// questions, the checklist, the plan, the context, subagents.
+    #[test]
+    fn a_kind_that_doesnt_write_gets_no_tool_that_writes_or_runs_commands() {
+        use super::super::builtin_tools::BuiltinTool::*;
+        for kind in Kind::ALL {
+            let tools = kind.spec().tools;
+            if !kind.writes() {
+                for tool in tools {
+                    let effect = tool.spec().effect;
+                    assert!(
+                        !matches!(effect, Effect::Writes | Effect::Runs),
+                        "{kind:?}: {tool:?}"
+                    );
+                }
+            }
+            for lead_only in [
+                AskUser,
+                Todo,
+                SubmitPlan,
+                RestoreContext,
+                Task,
+                AnswerReview,
+            ] {
+                assert!(!tools.contains(&lead_only), "{kind:?}: {lead_only:?}");
+            }
+        }
+        let writers: Vec<Kind> = Kind::ALL.iter().copied().filter(|k| k.writes()).collect();
+        assert_eq!(writers, [Kind::Worker, Kind::TestWriter, Kind::Breaker]);
+    }
 
     /// Round 2 (section 4.2): the notes cap cuts by characters, not bytes.
     #[test]

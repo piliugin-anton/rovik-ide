@@ -22,6 +22,7 @@
 //! the run `review-open`: the change isn't accepted until every one is
 //! resolved.
 
+use super::builtin_tools::BuiltinTool;
 use super::diff::{self, Hunk};
 use super::run::{chat_plan_file, new_message, Run, IDE_NOTE};
 use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubStatus, SubagentSettings};
@@ -75,15 +76,7 @@ Severity: high (wrong results, data loss, a crash in normal use), medium (wrong 
 
 pub static REVIEWER: KindSpec = KindSpec {
     label: "Change reviewer",
-    tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-    ],
+    tools: &BuiltinTool::READS,
     default_budget: Budget {
         tool_calls: 30,
         wall: Duration::from_secs(300),

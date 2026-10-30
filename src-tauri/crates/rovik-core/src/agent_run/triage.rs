@@ -9,6 +9,7 @@
 //! whose report can't be read is recorded as skipped, and the agent gets
 //! the failure report it would have had without it.
 
+use super::builtin_tools::BuiltinTool;
 use super::check_output;
 use super::command_output::{error_locations, focus_failures, split_by_changed};
 use super::log;
@@ -67,15 +68,7 @@ Add "## Blocked" with the reason only if you couldn't triage it."###;
 
 pub static TRIAGE: KindSpec = KindSpec {
     label: "Failure triage",
-    tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-    ],
+    tools: &BuiltinTool::READS,
     default_budget: Budget {
         tool_calls: 15,
         wall: Duration::from_secs(180),

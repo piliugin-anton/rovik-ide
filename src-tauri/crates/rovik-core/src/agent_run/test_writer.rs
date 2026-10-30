@@ -5,6 +5,7 @@
 //! their outlines), and its commands are light ones: the lead runs the
 //! tests with the project's checks.
 
+use super::builtin_tools::BuiltinTool;
 use super::project;
 use super::subagent::{Budget, Format, KindSpec};
 use crate::command_tool::CommandOutput;
@@ -44,15 +45,15 @@ Add "## Blocked" with the reason only if you couldn't write the tests."###;
 pub static TEST_WRITER: KindSpec = KindSpec {
     label: "Test writer",
     tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-        "write",
-        "bash",
+        BuiltinTool::Read,
+        BuiltinTool::ListDir,
+        BuiltinTool::SearchCode,
+        BuiltinTool::Neighbours,
+        BuiltinTool::Callers,
+        BuiltinTool::Outline,
+        BuiltinTool::Diagnostics,
+        BuiltinTool::Write,
+        BuiltinTool::Bash,
     ],
     default_budget: Budget {
         tool_calls: 40,
