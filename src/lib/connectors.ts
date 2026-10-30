@@ -31,9 +31,9 @@ import type {
   ModelProfile,
   Provider,
   ProviderModel,
+  ToolMeta,
 } from '../types';
 import { plural } from './textUtils';
-import { isErrorResult } from './toolArgs';
 import type { RemoteModel } from './aiSettings';
 import { notify } from './notifications';
 import { CLAUDE_CODE } from './claudeCode';
@@ -656,7 +656,7 @@ export function textAfterSteps(meta: ConnectorMeta, text: string): string {
  */
 const ROVIK_MCP_STEP = 'mcp__rovik__mcp';
 
-/** A tool step as Rovik's call, and its result once it has one ("Error: …" when it failed). */
+/** A tool step as Rovik's call, and its result once it has one (`meta.outcome` says whether it failed). */
 function chatStep(
   step: HarnessStep,
   spec: ConnectorSpec | undefined,
@@ -677,13 +677,15 @@ function chatStep(
     kept.set(step.id, entry);
   }
   if (step.ok === undefined || step.ok === null) return { call: entry.call };
-  const text = step.result ?? '';
-  const content = step.ok || isErrorResult(text) ? text : `Error: ${text}`;
-  if (entry.resultKey !== content) {
-    entry.resultKey = content;
-    // The harness's own output, cut short: nothing in it is read as Rovik's
+  const content = step.result ?? '';
+  const outcome = step.ok ? 'done' : 'failed';
+  const resultKey = `${outcome}\n${content}`;
+  if (entry.resultKey !== resultKey) {
+    entry.resultKey = resultKey;
+    // The harness's own output, cut short and as it wrote it: whether the
+    // step failed is the harness's to say; nothing in it is read as Rovik's
     // tools' results are (an exit code, a count), which it doesn't say.
-    const meta = {};
+    const meta: ToolMeta = { outcome };
     entry.result = { id: `${step.id}:result`, role: 'tool', content, tool_call_id: step.id, meta };
   }
   return { call: entry.call, result: entry.result };

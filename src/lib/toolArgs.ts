@@ -4,6 +4,7 @@
 // call's own block (ToolCallBlock) and a group of calls (ToolCallGroup,
 // lib/toolGroups.ts).
 import { parseTodo, progressLabel } from './todo';
+import type { ToolMeta } from '../types';
 
 export type Args = Record<string, unknown>;
 
@@ -81,8 +82,22 @@ export function parseArgsLenient(raw: string): Args {
   }
 }
 
-/** A tool result reporting a failure. */
-export function isErrorResult(result?: string) {
+/**
+ * Whether a tool call failed, from its result as stored: its `meta.outcome`
+ * (agent_run's `Outcome`), else, for a result stored before results had
+ * one, its text (`failedByText`).
+ */
+export function callFailed(result: { content: string; meta?: ToolMeta }): boolean {
+  const outcome = result.meta?.outcome;
+  return outcome === undefined ? failedByText(result.content) : outcome === 'failed';
+}
+
+/**
+ * How a result stored before outcomes says it failed: its text starts with
+ * "Error:". Only for such results: another's text may start so and be a
+ * success (a file it read).
+ */
+export function failedByText(result?: string) {
   return result !== undefined && /^Error:/.test(result.trimStart());
 }
 
@@ -95,12 +110,12 @@ export type CallStatus = 'running' | 'done' | 'error' | 'idle';
  * happening now, even while a later run goes.
  */
 export function callStatus(
-  result: { content: string } | undefined,
+  result: { content: string; meta?: ToolMeta } | undefined,
   running: boolean | undefined,
   superseded?: boolean
 ): CallStatus {
   if (!result) return running && !superseded ? 'running' : 'idle';
-  return isErrorResult(result.content) ? 'error' : 'done';
+  return callFailed(result) ? 'error' : 'done';
 }
 
 /**
