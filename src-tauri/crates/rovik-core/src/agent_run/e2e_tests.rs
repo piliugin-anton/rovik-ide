@@ -6589,6 +6589,42 @@ async fn every_finished_tool_call_leaves_a_tool_line() {
     assert!(lines.iter().all(|l| l.get("role").is_none()), "the lead's");
 }
 
+/// A `todo` call the IDE refused (two steps in progress) sends no list to
+/// the panel, and the chat's checklist stays the one before it: the panel
+/// never shows the list the model was told was wrong.
+#[tokio::test]
+async fn a_refused_todo_call_sends_no_checklist() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Look", "status": "in_progress" }, { "title": "Fix", "status": "pending" }] }),
+        },
+        Reply::Call {
+            id: "t2",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Look", "status": "in_progress" }, { "title": "Fix", "status": "in_progress" }] }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Go"), quiet_permissions()))
+        .await;
+    // Its open step is pointed out at the end.
+    assert_eq!(h.run_end().await, "unfinished-checklist");
+    let sent = h.events_of("checklist");
+    assert_eq!(sent.len(), 1, "{sent:#?}");
+    assert_eq!(sent[0]["items"][1]["status"], "pending");
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "t2").call_failed());
+    let current = super::chat_checklist(&h.core, h.dialog_id.clone())
+        .await
+        .unwrap()
+        .expect("a checklist");
+    assert_eq!(current.items[1].status, "pending", "{current:?}");
+}
+
 /// A command of two lines: its status isn't its result's second line, yet
 /// its tool line has its exit code, and its row the meta the chat shows it
 /// by (`exitCode`).

@@ -733,14 +733,18 @@ impl Run {
                         }
                     }
                 }
+                let accepted = !outcome.failed();
                 self.add_tool_result(&tc.id, content, outcome, None, Vec::new())
                     .await?;
-                // The panel's live source while the run goes: every update,
-                // even an empty one (which clears a stale panel).
-                self.core.emit(AgentEvent::Checklist {
-                    dialog_id: self.dialog_id.clone(),
-                    items,
-                });
+                // The panel's live source while the run goes: every list the
+                // IDE took. One it refused (two steps in progress, an empty
+                // list) isn't the checklist: the model was told it's wrong.
+                if accepted {
+                    self.core.emit(AgentEvent::Checklist {
+                        dialog_id: self.dialog_id.clone(),
+                        items,
+                    });
+                }
                 return Ok(());
             }
             // Questions to the user: answered in the chat, no approval

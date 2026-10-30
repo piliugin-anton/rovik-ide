@@ -2293,8 +2293,11 @@ pub fn is_checklist_dismissed(m: &MessageRow) -> bool {
         .is_some_and(|v| v == &Value::Bool(true))
 }
 
-/// The latest `todo` call in one message, if it parses to a non-empty list.
-fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
+/// The latest `todo` call in `messages[at]` that the IDE took, if it
+/// parses to a non-empty list. One it refused (two steps in progress) set
+/// nothing: its result failed, and the list before it stays current.
+fn todo_in_message(messages: &[MessageRow], at: usize) -> Option<Vec<TodoItem>> {
+    let m = &messages[at];
     // A step worker's result: the checklist with its step marked done (D04).
     if let Some(items) = m
         .meta
@@ -2310,7 +2313,7 @@ fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
         .iter()
         .flatten()
         .rev()
-        .find(|c| c.name == "todo")?;
+        .find(|c| c.name == "todo" && !call_failed_in_reply(messages, at, &c.id))?;
     if let Ok(Value::Object(args)) = serde_json::from_str::<Value>(&call.arguments) {
         let items = parse_todo(&args);
         if !items.is_empty() {
@@ -2318,6 +2321,17 @@ fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
         }
     }
     None
+}
+
+/// Whether the call `id` that `messages[at]` made failed: its result is
+/// one of the messages after it, before the next reply (call ids repeat
+/// across replies: Gemini numbers them per reply).
+fn call_failed_in_reply(messages: &[MessageRow], at: usize, id: &str) -> bool {
+    messages[at + 1..]
+        .iter()
+        .take_while(|m| m.role != "assistant")
+        .find(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some(id))
+        .is_some_and(MessageRow::call_failed)
 }
 
 /// The checklist the chat is currently working from.
@@ -2344,8 +2358,8 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
     let last_user = messages.iter().rposition(is_request);
     let Some(last) = last_user else {
         // No user message yet: whatever the latest todo call says.
-        for m in messages.iter().rev() {
-            if let Some(items) = todo_in_message(m) {
+        for (at, m) in messages.iter().enumerate().rev() {
+            if let Some(items) = todo_in_message(messages, at) {
                 if is_checklist_dismissed(m) {
                     return None;
                 }
@@ -2359,8 +2373,8 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
         return None;
     };
     // The current request: everything after the last real user message.
-    for m in messages[last + 1..].iter().rev() {
-        if let Some(items) = todo_in_message(m) {
+    for (at, m) in messages.iter().enumerate().skip(last + 1).rev() {
+        if let Some(items) = todo_in_message(messages, at) {
             if is_checklist_dismissed(m) {
                 return None;
             }
@@ -2380,8 +2394,8 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
     // checklist doesn't linger across unrelated work.
     let prev_user = messages[..last].iter().rposition(is_request);
     let from = prev_user.map(|p| p + 1).unwrap_or(0);
-    for m in messages[from..last].iter().rev() {
-        if let Some(items) = todo_in_message(m) {
+    for (at, m) in messages.iter().enumerate().take(last).skip(from).rev() {
+        if let Some(items) = todo_in_message(messages, at) {
             if items.iter().all(is_settled) || is_checklist_dismissed(m) {
                 return None;
             }
@@ -3777,6 +3791,65 @@ mod tests {
             extra_content: None,
         }]);
         m
+    }
+
+    /// A `todo` call the IDE refused (two steps in progress) set nothing:
+    /// the list before it stays current, whether its result says so in its
+    /// meta or, stored before outcomes, by its text. A refusal is matched
+    /// to its own reply's call: Gemini numbers calls per reply.
+    #[test]
+    fn a_todo_call_the_ide_refused_isnt_the_current_checklist() {
+        let result = |id: &str, call: &str, content: &str, meta: Option<Value>| {
+            let mut m = row(id, "tool", meta);
+            m.content = content.into();
+            m.tool_call_id = Some(call.into());
+            m
+        };
+        let first = json!({ "items": [{ "title": "a", "status": "in_progress" }, { "title": "b", "status": "pending" }] });
+        let both = json!({ "items": [{ "title": "a", "status": "in_progress" }, { "title": "b", "status": "in_progress" }] });
+        let refused = describe_todo(&parse_todo(both.as_object().unwrap()));
+        assert!(refused.outcome.failed());
+        for meta in [Some(json!({ "outcome": "failed" })), None] {
+            let messages = vec![
+                row("u1", "user", None),
+                todo_row("a1", first.clone()),
+                result(
+                    "r1",
+                    "a1-call",
+                    "Checklist updated: 0 of 2 done; now: a.",
+                    None,
+                ),
+                todo_row("a2", both.clone()),
+                result("r2", "a2-call", &refused.content, meta.clone()),
+            ];
+            let current = current_checklist(&messages).expect("the list before it");
+            assert_eq!(current.from_message_id.as_deref(), Some("a1"), "{meta:?}");
+            assert_eq!(current.items[1].status, "pending");
+        }
+        let gemini = |id: &str, items: &Value| {
+            let mut m = todo_row(id, items.clone());
+            m.tool_calls.as_mut().unwrap()[0].id = "function-call-1".into();
+            m
+        };
+        let messages = vec![
+            row("u1", "user", None),
+            gemini("a1", &first),
+            result(
+                "r1",
+                "function-call-1",
+                "Checklist updated.",
+                Some(json!({ "outcome": "done" })),
+            ),
+            gemini("a2", &both),
+            result(
+                "r2",
+                "function-call-1",
+                &refused.content,
+                Some(json!({ "outcome": "failed" })),
+            ),
+        ];
+        let current = current_checklist(&messages).expect("the first reply's");
+        assert_eq!(current.from_message_id.as_deref(), Some("a1"));
     }
 
     /// An unfinished checklist is carried across one user message.

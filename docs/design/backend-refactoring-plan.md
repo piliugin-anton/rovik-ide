@@ -954,7 +954,7 @@ Tests then: `a_second_runtime_on_another_data_folder_is_refused`, and
 - [x] 1.1 Tool calls say whether they failed
 - [x] 1.2 A command's end travels with its result
 - [x] 1.3 The chat reads a call's outcome from its meta
-- [ ] 1.4 A checklist the IDE refused isn't the current one
+- [x] 1.4 A checklist the IDE refused isn't the current one
 - [ ] 2.1 The table, and dispatch by it
 - [ ] 2.2 Permissions by the table
 - [ ] 2.3 The lists by the table
