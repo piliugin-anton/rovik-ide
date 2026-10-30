@@ -38,6 +38,7 @@ import {
   LINKS_LIB,
   SOURCE_FILE,
 } from './paths';
+import { ModelWatch } from './modelWatch';
 import { QuietRunner } from './quietRunner';
 import { refreshSemanticTokens } from './semanticTokens';
 import { SourceChangeQueue, type SourceChangeSink } from './sourceChanges';
@@ -90,7 +91,8 @@ export class IntelliSenseProject {
   private readonly early = new Map<string, string | null | undefined>();
   /** Open models edited since their imports were last looked at. */
   private readonly editedModels = new Set<monaco.editor.ITextModel>();
-  private readonly modelListeners: monaco.IDisposable[] = [];
+  /** The open models' listeners: each goes with its model, all with the project. */
+  private models: ModelWatch<monaco.editor.ITextModel> | null = null;
 
   constructor(
     readonly root: string,
@@ -117,8 +119,8 @@ export class IntelliSenseProject {
     this.typingsRefresh.dispose();
     this.configReload.dispose();
     this.importsLookup.dispose();
-    for (const listener of this.modelListeners) listener.dispose();
-    this.modelListeners.length = 0;
+    this.models?.dispose();
+    this.models = null;
     this.editedModels.clear();
   }
 
@@ -327,21 +329,21 @@ export class IntelliSenseProject {
 
   /** Open TypeScript/JavaScript models: their imports are looked at as they're typed. */
   private watchModels(): void {
-    const watch = (model: monaco.editor.ITextModel) => {
-      if (!this.isSourceModel(model)) return;
-      const edited = model.onDidChangeContent(() => {
-        this.editedModels.add(model);
-        this.importsLookup.trigger();
-      });
-      const gone = model.onWillDispose(() => {
-        edited.dispose();
-        this.editedModels.delete(model);
-      });
-      this.modelListeners.push(edited, gone);
-    };
     try {
-      for (const model of monaco.editor.getModels()) watch(model);
-      this.modelListeners.push(monaco.editor.onDidCreateModel(watch));
+      this.models = new ModelWatch<monaco.editor.ITextModel>(
+        {
+          wants: (model) => this.isSourceModel(model),
+          edited: (model) => {
+            this.editedModels.add(model);
+            this.importsLookup.trigger();
+          },
+          disposed: (model) => this.editedModels.delete(model),
+        },
+        {
+          all: () => monaco.editor.getModels(),
+          onDidCreateModel: (listen) => monaco.editor.onDidCreateModel(listen),
+        }
+      );
     } catch {
       // no editor (tests): imports come from the files alone
     }
