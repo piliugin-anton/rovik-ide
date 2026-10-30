@@ -6,9 +6,9 @@
 // (from the chat, or from the editor bar on a plan file, which saves it
 // first) sends its path: the backend reads the file as it is then, so edits
 // made to it count, and writes the request the model gets
-// (src-tauri/crates/rovik-core/src/agent_run/plan.rs, `expand_implementation`).
+// (src-tauri/crates/rovik-core/src/agent_run/plan/file.rs, `expand_implementation`).
 //
-// Saving a submitted plan happens in the backend (src-tauri/src/agent_run/plan.rs).
+// Saving a submitted plan happens in the backend (src-tauri/crates/rovik-core/src/agent_run/plan/file.rs).
 //
 // A remote chat's plan is in its worktree on its host: it's read through
 // `chat_read_plan`, which reads a local chat's file too, and opens

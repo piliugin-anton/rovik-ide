@@ -25,7 +25,7 @@
 //!   autopilot/    a task carried out with nobody there: its stages
 //!   candidates.rs Thorough's two implementers, each in its own copy, and
 //!                 the pick of the better
-//!   permissions.rs, plan.rs, questions.rs, checklist.rs, messages.rs,
+//!   permissions.rs, plan/, questions.rs, checklist.rs, messages.rs,
 //!   project.rs, repetition.rs, diff.rs, command_output.rs: the rules and
 //!   text they use
 

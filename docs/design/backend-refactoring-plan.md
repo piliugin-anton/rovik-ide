@@ -960,7 +960,7 @@ Tests then: `a_second_runtime_on_another_data_folder_is_refused`, and
 - [x] 2.3 The lists by the table
 - [x] 2.4 Kinds by the table
 - [x] 3.1 Questions, the checklist and message kinds move out
-- [ ] 3.2 `plan/` by concern
+- [x] 3.2 `plan/` by concern
 - [ ] 3.3 `PlanDoc`, with `steps` and `plan_problems`
 - [ ] 3.4 The other nine functions on `PlanDoc`
 - [ ] 4.1 `ContextState`

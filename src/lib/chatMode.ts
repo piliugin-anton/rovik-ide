@@ -20,7 +20,7 @@
 // A chat on a host that works on its own starts in Autopilot: the selector
 // shows its own mode while it's open (`setOwnModeChat`).
 // What Plan mode tells the model and allows is in the backend
-// (src-tauri/src/agent_run/plan.rs).
+// (src-tauri/crates/rovik-core/src/agent_run/plan/).
 import { createSignal } from 'solid-js';
 import type { ModelProfile } from '../types';
 import { connectorKindOf } from './connectors';

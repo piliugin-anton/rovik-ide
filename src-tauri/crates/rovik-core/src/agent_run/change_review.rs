@@ -2238,7 +2238,7 @@ mod tests {
     }
 
     /// Round 2 (§4.2), decided: `subagent::sections` takes only backtick
-    /// fences, not `~~~` (plan.rs's `is_fence` takes both). Models fence with
+    /// fences, not `~~~` (`plan::is_fence` takes both). Models fence with
     /// backticks; a report wrapped in `~~~` still reads without a repair
     /// turn, at the cost of a `## ` line inside a `~~~` block starting a
     /// section.

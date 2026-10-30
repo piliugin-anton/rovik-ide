@@ -405,7 +405,7 @@ pub struct Run {
     /// evidence they needed, for the next review's brief.
     pub(super) plan_dropped: Vec<String>,
     /// Balanced Autopilot: submits the checker sent back for format
-    /// problems alone (plan.rs `skeleton` after two).
+    /// problems alone (`plan::skeleton` after two).
     pub(super) plan_format_rejections: u32,
     /// A person's Retry or Continue of the plan stage: the `seq` of the
     /// Plan record it started. The stage's time and budget share count
