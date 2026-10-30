@@ -9,16 +9,36 @@ use std::{
 
 struct Directory(PathBuf);
 impl Directory {
+    /// A new folder in the system's temp folder. fastrand seeds itself from
+    /// the clock and the thread's id, so tests that cargo-nextest starts
+    /// together, each in a process of its own, can draw the same name: a
+    /// taken one is skipped, as mkdtemp does.
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("eoka-rt-{:08x}", fastrand::u32(..)));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
+        loop {
+            let path = std::env::temp_dir().join(format!("eoka-rt-{:08x}", fastrand::u32(..)));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("{}: {error}", path.display()),
+            }
+        }
     }
 }
 impl Drop for Directory {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+#[test]
+fn a_temp_folder_name_another_test_took_is_skipped() {
+    // Two test processes whose generators were seeded alike draw the same names.
+    fastrand::seed(1);
+    let taken = Directory::new();
+    fastrand::seed(1);
+    let other = Directory::new();
+    assert_ne!(other.0, taken.0);
+    assert!(other.0.is_dir());
 }
 
 fn executable(path: &Path, body: &str) {
