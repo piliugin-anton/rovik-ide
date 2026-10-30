@@ -26,6 +26,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 
 - Monaco editor (the editor used in VS Code) with syntax highlighting,
   themes and tabs.
+- Consecutive updates from disk or the agent share one undo step: Ctrl+Z
+  restores the text before those updates. Typing, undoing or redoing starts
+  a new group, so local edits keep their own undo history.
 - Markdown files have a rendered preview, as GitHub shows them: beside the
   source (Ctrl+K V), instead of it (Ctrl+Shift+V), or switched with the
   buttons at the end of the tab strip. It scrolls with the editor, opens

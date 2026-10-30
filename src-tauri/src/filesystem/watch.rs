@@ -12,8 +12,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -155,10 +155,62 @@ const MAX_EVENTS_PER_FLUSH: usize = 300;
 /// Raw events handled per pass, so a flood can't keep the loop from ever
 /// reporting anything.
 const MAX_RAW_EVENTS_PER_PASS: usize = 5_000;
+/// Waiting raw events, before filtering and batching. Never block notify's thread.
+const MAX_QUEUED_EVENTS: usize = 1_024;
 /// Changes are reported once things are quiet for this long...
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 /// ...or at the latest this long after the first, while they keep coming.
 const WATCH_MAX_WAIT: Duration = Duration::from_secs(2);
+
+/// Bounded intake from notify. Lost detail is remembered outside the queue,
+/// so even a full queue can request a complete Files and Git refresh.
+struct WatchEvents {
+    receiver: Receiver<NotifyResult<Event>>,
+    overflowed: Arc<AtomicBool>,
+}
+
+fn watch_events() -> (impl Fn(NotifyResult<Event>) + Send + 'static, WatchEvents) {
+    let (tx, receiver) = std::sync::mpsc::sync_channel(MAX_QUEUED_EVENTS);
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let lost = overflowed.clone();
+    let send = move |event: NotifyResult<Event>| {
+        match &event {
+            // Kernel overflow, errors, or a huge multi-path event: detail
+            // is already lost or too large to retain. Recover by rescanning.
+            Ok(e) if e.need_rescan() || e.paths.len() > MAX_EVENTS_PER_FLUSH => {
+                lost.store(true, Ordering::Release);
+                return;
+            }
+            Err(_) => {
+                lost.store(true, Ordering::Release);
+                return;
+            }
+            Ok(e) if WatchOp::of(&e.kind).is_none() => return,
+            _ => {}
+        }
+        if let Err(TrySendError::Full(_)) = tx.try_send(event) {
+            lost.store(true, Ordering::Release);
+        }
+        // A disconnected receiver belongs to a replaced watch.
+    };
+    (
+        send,
+        WatchEvents {
+            receiver,
+            overflowed,
+        },
+    )
+}
+
+impl WatchEvents {
+    fn take_overflow(&self, batch: &mut WatchBatch, now: Instant) -> bool {
+        if !self.overflowed.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        batch.overflow(now);
+        true
+    }
+}
 
 /// The watcher's changes waiting to be reported: each path once, when the
 /// burst is quiet for WATCH_DEBOUNCE or WATCH_MAX_WAIT after it began; past
@@ -193,9 +245,15 @@ impl WatchBatch {
         self.events.insert(payload, now);
         if self.events.len() > MAX_EVENTS_PER_FLUSH {
             // Too many to report one by one: stop collecting them.
-            self.events.clear();
-            self.overflowed = true;
+            self.overflow(now);
         }
+    }
+
+    fn overflow(&mut self, now: Instant) {
+        self.started.get_or_insert(now);
+        self.last = Some(now);
+        self.events.clear();
+        self.overflowed = true;
     }
 
     fn take_due(&mut self, now: Instant) -> WatchFlush {
@@ -417,12 +475,12 @@ pub async fn start_file_watch(
     // waking every 50 ms forever, one more per project opened.
     let generation = begin_watch(&state.active_watcher, &WATCH_GENERATION);
 
-    let (tx, rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
+    let (send, events) = watch_events();
     // Off the main thread: watching a big tree folder by folder takes a
     // while (inotify), and nothing else must wait for it.
     let watch_root = root.clone();
     let watcher = crate::util::blocking(move || {
-        let mut watcher = notify::recommended_watcher(tx).err_text()?;
+        let mut watcher = notify::recommended_watcher(send).err_text()?;
         // One unreadable subdir (a database owned by another user, a FUSE
         // mount with restricted permissions) must not fail the whole
         // project's watch.
@@ -455,7 +513,7 @@ pub async fn start_file_watch(
     // and run shares.
     std::thread::Builder::new()
         .name("file-watch".into())
-        .spawn(move || Watch::new(app_handle, root, generation, rx).run())
+        .spawn(move || Watch::new(app_handle, root, generation, events).run())
         .err_text()?;
     Ok(())
 }
@@ -465,30 +523,32 @@ struct Watch {
     app: AppHandle,
     root: PathBuf,
     generation: u64,
-    events: Receiver<NotifyResult<Event>>,
+    events: WatchEvents,
+    /// Intake overflow can hide new dirs and .gitignore edits; repair both.
+    recovering: bool,
     /// The project's .gitignore files: the root's at once, all of them when
     /// found (and again whenever one changes).
     ignores: Arc<WatchIgnores>,
-    found_ignores: (Sender<WatchIgnores>, Receiver<WatchIgnores>),
+    found_ignores: (SyncSender<WatchIgnores>, Receiver<WatchIgnores>),
+    finding_ignores: bool,
+    ignores_dirty: bool,
     batch: WatchBatch,
     /// Last activity inside .git/ (a commit writes hundreds of files there).
     git_touched: Option<Instant>,
 }
 
 impl Watch {
-    fn new(
-        app: AppHandle,
-        root: PathBuf,
-        generation: u64,
-        events: Receiver<NotifyResult<Event>>,
-    ) -> Self {
-        let watch = Watch {
+    fn new(app: AppHandle, root: PathBuf, generation: u64, events: WatchEvents) -> Self {
+        let mut watch = Watch {
             ignores: Arc::new(WatchIgnores::root_only(&root)),
-            found_ignores: std::sync::mpsc::channel(),
+            found_ignores: std::sync::mpsc::sync_channel(1),
+            finding_ignores: false,
+            ignores_dirty: false,
             app,
             root,
             generation,
             events,
+            recovering: false,
             batch: WatchBatch::default(),
             git_touched: None,
         };
@@ -496,8 +556,14 @@ impl Watch {
         watch
     }
 
-    /// Every .gitignore of the project, looked for off the runtime.
-    fn find_ignores(&self) {
+    /// Every .gitignore of the project, looked for off the runtime. At most
+    /// one scan runs, with one rerun queued for edits that arrived meanwhile.
+    fn find_ignores(&mut self) {
+        if self.finding_ignores {
+            self.ignores_dirty = true;
+            return;
+        }
+        self.finding_ignores = true;
         let (root, tx) = (self.root.clone(), self.found_ignores.0.clone());
         tauri::async_runtime::spawn_blocking(move || {
             let _ = tx.send(WatchIgnores::all(&root));
@@ -512,6 +578,10 @@ impl Watch {
             }
             if let Ok(found) = self.found_ignores.1.try_recv() {
                 self.ignores = Arc::new(found);
+                self.finding_ignores = false;
+                if std::mem::take(&mut self.ignores_dirty) {
+                    self.find_ignores();
+                }
             }
             let disconnected = self.drain();
             self.report();
@@ -527,8 +597,13 @@ impl Watch {
     /// once the watcher is gone (dropped on a switch): no event can come
     /// any more.
     fn drain(&mut self) -> bool {
+        if self.events.take_overflow(&mut self.batch, Instant::now()) {
+            self.recovering = true;
+            // A dropped event could have been .git/HEAD during a checkout.
+            rovik_core::overlay::chats::project_busy(&self.root);
+        }
         for _ in 0..MAX_RAW_EVENTS_PER_PASS {
-            let event = match self.events.try_recv() {
+            let event = match self.events.receiver.try_recv() {
                 Ok(Ok(event)) => event,
                 Ok(Err(_)) => continue,
                 Err(TryRecvError::Empty) => return false,
@@ -567,9 +642,12 @@ impl Watch {
             WatchPath::Ignored => return,
             WatchPath::Visible => {}
         }
-        let state = self.app.state::<WatcherState>();
-        if path.file_name().is_some_and(|n| n == ".gitignore") {
+        let ignore_changed = path.file_name().is_some_and(|n| n == ".gitignore");
+        if ignore_changed {
             self.find_ignores();
+        }
+        let state = self.app.state::<WatcherState>();
+        if ignore_changed {
             // The tree's listing re-reads it too.
             if let Ok(mut cached) = state.gitignore.lock() {
                 *cached = None;
@@ -617,6 +695,9 @@ impl Watch {
         match flush {
             WatchFlush::Nothing => {}
             WatchFlush::Everything => {
+                if std::mem::take(&mut self.recovering) {
+                    self.recover();
+                }
                 // Isolated chats on this project read it afresh.
                 rovik_core::overlay::chats::project_changed(&self.root, &[], true);
                 let _ = self.app.emit(
@@ -661,11 +742,150 @@ impl Watch {
             let _ = self.app.emit("git-changed", ());
         }
     }
+
+    /// Overflow may hide a new directory in the per-directory fallback or
+    /// an ignore-file edit. Repair once per reported burst, not per raw event.
+    fn recover(&mut self) {
+        self.find_ignores();
+        let state = self.app.state::<WatcherState>();
+        if let Ok(mut cached) = state.gitignore.lock() {
+            *cached = None;
+        }
+        if let Ok(mut slot) = state.active_watcher.lock() {
+            // Never add the old root to a newer project's watcher.
+            if !watch_replaced(self.generation) {
+                if let Some(watcher) = slot.as_mut() {
+                    match watch_recursive_lenient(watcher, &self.root) {
+                        Ok(skipped) if !skipped.is_empty() => eprintln!(
+                            "file watch: recovery skipped {} unreadable dirs",
+                            skipped.len()
+                        ),
+                        Err(e) => eprintln!("file watch: couldn't restore directory watches: {e}"),
+                        _ => {}
+                    }
+                }
+            }
+        };
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn raw_change(path: &str) -> NotifyResult<Event> {
+        Ok(Event::new(EventKind::Modify(ModifyKind::Any)).add_path(PathBuf::from(path)))
+    }
+
+    #[test]
+    fn a_flood_never_blocks_notify_and_requests_one_full_refresh() {
+        let (send, events) = watch_events();
+        let (done, finished) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            for _ in 0..MAX_QUEUED_EVENTS * 10 {
+                send(raw_change("a.ts"));
+            }
+            done.send(send).unwrap();
+        });
+        let send = finished
+            .recv_timeout(Duration::from_secs(2))
+            .expect("notify's callback never waits for the consumer");
+        producer.join().unwrap();
+        assert_eq!(events.receiver.try_iter().count(), MAX_QUEUED_EVENTS);
+
+        let t0 = Instant::now();
+        let mut batch = WatchBatch::default();
+        batch.add(change("earlier.ts"), t0);
+        assert!(events.take_overflow(&mut batch, t0));
+        assert!(!events.take_overflow(&mut batch, t0));
+        assert_eq!(batch.take_due(t0), WatchFlush::Nothing);
+        assert_eq!(batch.take_due(t0 + WATCH_DEBOUNCE), WatchFlush::Everything);
+        assert_eq!(batch.take_due(t0 + WATCH_MAX_WAIT), WatchFlush::Nothing);
+
+        send(raw_change("after.ts"));
+        assert_eq!(
+            events.receiver.try_recv().unwrap().unwrap().paths,
+            vec![PathBuf::from("after.ts")]
+        );
+        assert!(!events.take_overflow(&mut batch, t0));
+    }
+
+    #[test]
+    fn lost_git_events_request_a_full_refresh_even_with_a_full_queue() {
+        let (send, events) = watch_events();
+        for _ in 0..MAX_QUEUED_EVENTS {
+            send(raw_change("a.ts"));
+        }
+        send(raw_change(".git/HEAD"));
+        let t0 = Instant::now();
+        let mut batch = WatchBatch::default();
+        assert!(events.take_overflow(&mut batch, t0));
+        // Everything is also a tree change: report() refreshes Git with it.
+        assert_eq!(batch.take_due(t0 + WATCH_DEBOUNCE), WatchFlush::Everything);
+    }
+
+    #[test]
+    fn oversized_events_and_notify_errors_are_rescanned_instead_of_retained() {
+        let (send, events) = watch_events();
+        let mut event = Event::new(EventKind::Modify(ModifyKind::Any));
+        event.paths = (0..=MAX_EVENTS_PER_FLUSH)
+            .map(|i| PathBuf::from(format!("{i}.ts")))
+            .collect();
+        let t0 = Instant::now();
+        let mut batch = WatchBatch::default();
+        send(Ok(event));
+        assert!(matches!(
+            events.receiver.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+        assert!(events.take_overflow(&mut batch, t0));
+        assert_eq!(batch.take_due(t0 + WATCH_DEBOUNCE), WatchFlush::Everything);
+
+        send(Err(notify::Error::generic("events lost")));
+        assert!(events.take_overflow(&mut batch, t0));
+        assert_eq!(batch.take_due(t0 + WATCH_DEBOUNCE), WatchFlush::Everything);
+    }
+
+    #[test]
+    fn kernel_overflow_is_reported_even_while_events_keep_arriving() {
+        let (send, events) = watch_events();
+        let t0 = Instant::now();
+        let mut batch = WatchBatch::default();
+        for i in 0..=10 {
+            let now = t0 + WATCH_MAX_WAIT * i / 10;
+            send(Ok(
+                Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan)
+            ));
+            assert!(events.take_overflow(&mut batch, now));
+            let expected = if i == 10 {
+                WatchFlush::Everything
+            } else {
+                WatchFlush::Nothing
+            };
+            assert_eq!(batch.take_due(now), expected);
+        }
+        assert!(matches!(
+            events.receiver.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn irrelevant_events_use_no_queue_space_and_a_replaced_watch_accepts_no_more() {
+        let (send, events) = watch_events();
+        for _ in 0..MAX_QUEUED_EVENTS * 2 {
+            send(Ok(Event::new(EventKind::Access(
+                notify::event::AccessKind::Any,
+            ))));
+        }
+        assert!(matches!(
+            events.receiver.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+        assert!(!events.take_overflow(&mut WatchBatch::default(), Instant::now()));
+        drop(events);
+        send(raw_change("a.ts"));
+    }
 
     #[test]
     fn git_files_and_ignored_paths_are_kept_out() {

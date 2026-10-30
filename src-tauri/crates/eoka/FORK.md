@@ -59,6 +59,10 @@ commands.
 - Tests: the transport tests run over both links; `tests/pipe.rs` checks
   a real Chrome over the pipe, and the hook with a stand-in for Chrome;
   `tests/actions.rs` checks a refused navigation's reason with a real Chrome.
+- `tests/runtime_launch.rs`: a test's temp folder skips a name that's
+  taken. fastrand seeds itself from the clock and the thread's id, so tests
+  that cargo-nextest starts together, each in a process of its own, could
+  draw the same name, and the second failed with "File exists".
 - `CHANGELOG.md` and `README.md` describe the pipe, the navigation's reason
   and the hook; `CLAUDE.md` and `AGENTS.md` name the pipe in the
   architecture and `CommandHook` in the exported types.

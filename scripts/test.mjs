@@ -14,7 +14,7 @@ import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 
 function testFiles(dir) {
   return readdirSync(dir).flatMap((name) => {
@@ -55,6 +55,15 @@ const browserOnly = {
   name: 'browser-only',
   setup(b) {
     b.onResolve({ filter: /^monaco-editor(\/|$)|\?worker$/ }, (args) => {
+      // Undo regression tests need real text models and their edit stacks.
+      if (
+        args.path === 'monaco-editor' &&
+        b.initialOptions.entryPoints.some(
+          (entry) => resolve(entry) === resolve('src/lib/modelsUndo.test.ts')
+        )
+      ) {
+        return { path: resolve('node_modules/monaco-editor/esm/vs/editor/editor.api.js') };
+      }
       // Monaco's TypeScript worker is TypeScript's own services, which run
       // in Node as they do: the project worker's test runs on the real one.
       if (args.path === 'monaco-editor/language/typescript/ts.worker.js') return undefined;

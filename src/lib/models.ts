@@ -16,9 +16,9 @@
 //     disk: it follows the file's changes, and goes with the file. A tab
 //     closed without saving gives its model the file's text back.
 //
-// The text goes in as one edit that can be undone (replaceKeepingUndo),
-// so the undo history stays with the model, and where the editor was
-// (scroll, cursor) stays with the path (lib/viewStates.ts).
+// Consecutive outside updates share one undo step (replaceKeepingUndo),
+// so intermediate disk versions aren't kept. User edits keep their own
+// undo steps. Scroll and cursor positions stay with the path (lib/viewStates.ts).
 //
 // Idle models are cleaned up. Models are cached by URI and kept when a tab
 // closes (Editor.tsx: disposing on close caused a "reopen -> empty editor"
@@ -43,13 +43,18 @@ let registered = false;
 let openTabUris: () => Set<string> = () => new Set();
 let pruneTimer: ReturnType<typeof setTimeout> | undefined;
 
+/** A model's version after its last outside update; local edits break the group. */
+const outsideVersions = new WeakMap<monaco.editor.ITextModel, number>();
+
 /**
  * Puts outside text (an agent's write, a revert, a reload from disk) into
- * the model as one undoable edit. `setValue` would also clear the undo
- * history, so Ctrl+Z could no longer reach what was typed before.
+ * the model as one undoable edit. Consecutive updates share that edit,
+ * retaining the first and latest text instead of every disk version.
+ * A local edit, undo or redo starts another group, preserving user history.
  */
 export function replaceKeepingUndo(model: monaco.editor.ITextModel, text: string): void {
-  model.pushStackElement();
+  if (outsideVersions.get(model) === model.getVersionId()) model.popStackElement();
+  else model.pushStackElement();
   // Line endings come with the text, as setValue would take them.
   const crlf = text.includes('\r\n');
   if (model.getEOL() !== (crlf ? '\r\n' : '\n')) {
@@ -57,6 +62,7 @@ export function replaceKeepingUndo(model: monaco.editor.ITextModel, text: string
   }
   model.pushEditOperations([], [{ range: model.getFullModelRange(), text }], () => null);
   model.pushStackElement();
+  outsideVersions.set(model, model.getVersionId());
 }
 
 /** A model was shown or created: it's the most recently used. */
