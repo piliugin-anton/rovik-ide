@@ -541,7 +541,9 @@ fn changes_of(
     };
     let in_project = |file: DiffFile| {
         let path = file.path()?.to_string_lossy().replace('\\', "/");
-        path.strip_prefix(&prefix).map(String::from)
+        path.strip_prefix(&prefix)
+            .filter(|rel| !rovik_core::overlay::tiers::is_chat_context(rel))
+            .map(String::from)
     };
     let mut changes: Vec<WorkChange> = Vec::new();
     let mut add = |path: String, change, from| {
@@ -745,6 +747,43 @@ fn file_mode(entry: &git2::TreeEntry) -> Option<FileMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_changes_exclude_chat_context_at_the_project_root() {
+        for subpath in ["", "web"] {
+            let dir = rovik_core::testing::temp_dir();
+            let worktree = dir.0.join("worktree");
+            let repo = Repository::init(&worktree).unwrap();
+            let root = worktree.join(subpath);
+            std::fs::create_dir_all(root.join("context")).unwrap();
+            std::fs::write(root.join("context/TASK.md"), "old task").unwrap();
+            std::fs::write(root.join("context/old.md"), "old note").unwrap();
+            let mut index = repo.index().unwrap();
+            index
+                .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+            let base = repo
+                .commit(Some("HEAD"), &signature, &signature, "base", &tree, &[])
+                .unwrap();
+            std::fs::write(root.join("context/TASK.md"), "new task").unwrap();
+            std::fs::remove_file(root.join("context/old.md")).unwrap();
+            std::fs::write(root.join("context/new.md"), "new note").unwrap();
+            std::fs::create_dir_all(root.join("src/context")).unwrap();
+            std::fs::write(root.join("src/context/code.rs"), "code").unwrap();
+            let changes = changes_of(
+                &worktree,
+                &dir.0.join("result.index"),
+                &base.to_string(),
+                subpath,
+                &[],
+            )
+            .unwrap();
+            assert_eq!(changes.len(), 1, "{changes:?}");
+            assert_eq!(changes[0].path, "src/context/code.rs");
+        }
+    }
 
     /// H04: a commit whose task panicked isn't waited for: the delivery
     /// and the rechecks after it go on.

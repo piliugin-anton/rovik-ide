@@ -4553,6 +4553,7 @@ export default function ChatPanel(props: ChatProps) {
         dialogId={activeDialogId()}
         chat={activeChat()}
         sending={sending()}
+        starting={!!store.state.starting[activeDialogId() ?? '']}
         liveStageId={liveStageId()}
         focusMessageId={focusMessageId()}
         onLoadOlder={() =>

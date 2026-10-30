@@ -156,6 +156,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 - **Long tasks stay on track.** Older history is trimmed automatically, or
   the agent can manage its own context (see
   [Context management](#context-management)).
+  Chats show “Roviking…” (or the connector's startup label) while preparing
+  a run, including while waiting for MCP servers, before the first reply.
 - **Subagents (optional, off by default).** The agent can send scouts:
   read-only helpers that explore one question about the code in a fresh
   context and hand back a short report, so long explorations don't fill
@@ -1540,7 +1542,8 @@ project meanwhile, checked, and written. A clean merge with passing checks
 lands on its own. Anything else (conflicts, failing checks, a dev server the
 agent left running in the chat's view) is shown in the bar above the chat's
 message box, where you can resolve conflicts, land anyway, discard, or undo
-a landing.
+a landing. The changed-file list scrolls independently, keeping the bar’s
+actions visible.
 
 On Linux, every command the agent runs is sandboxed with bubblewrap
 (`bwrap`): the system is read-only to it but for the chat's own folders
@@ -1687,7 +1690,8 @@ How CLM mode works:
   log, may be shortened, with a pointer to the full text.)
 - The agent keeps its own notes in a task card, `@context/TASK.md` (goal,
   scope, decisions, progress, next step). It's saved in the chat database
-  and survives restarts.
+  and survives restarts. The root `context/` directory belongs to the chat:
+  its files are excluded from the landing list and never land in the project.
 - Every state of the file is a revision the agent can read
   (`@context/revisions/<n>.md`) or restore (`restore_context`). The context
   row in the UI shows the current revision and size, and lets you view or
