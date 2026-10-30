@@ -682,7 +682,7 @@ impl Run {
         member: &Member,
         result: Option<SubResult>,
         stopped_join: bool,
-        checklist: &mut Option<Vec<super::plan::TodoItem>>,
+        checklist: &mut Option<Vec<super::checklist::TodoItem>>,
         joined: &mut Joins,
     ) -> (Joined, (String, Value)) {
         let n = member.step.number;

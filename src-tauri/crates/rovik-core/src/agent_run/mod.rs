@@ -25,8 +25,9 @@
 //!   autopilot/    a task carried out with nobody there: its stages
 //!   candidates.rs Thorough's two implementers, each in its own copy, and
 //!                 the pick of the better
-//!   permissions.rs, plan.rs, project.rs, repetition.rs, diff.rs,
-//!   command_output.rs: the rules and text they use
+//!   permissions.rs, plan.rs, questions.rs, checklist.rs, messages.rs,
+//!   project.rs, repetition.rs, diff.rs, command_output.rs: the rules and
+//!   text they use
 
 pub mod acceptance;
 pub mod autopilot;
@@ -38,6 +39,7 @@ pub mod candidates;
 pub mod causes;
 pub mod change_review;
 pub mod check_output;
+pub mod checklist;
 pub mod command_output;
 pub mod diff;
 #[cfg(test)]
@@ -55,6 +57,7 @@ mod landing;
 pub mod log;
 pub mod loops;
 pub mod mcp_tool;
+pub mod messages;
 mod parallel;
 pub mod paths;
 pub mod permissions;
@@ -65,6 +68,7 @@ pub mod planning;
 mod ports;
 pub mod prepare;
 pub mod project;
+pub mod questions;
 pub mod recovery;
 pub mod repair;
 mod repair_run;
@@ -88,7 +92,7 @@ use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewMessage};
 use crate::core::Core;
 use events::{AgentEvent, ApprovalRequest, QuestionsRequest};
-use plan::QuestionsOutcome;
+use questions::QuestionsOutcome;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -2033,31 +2037,31 @@ pub fn agent_status(core: &Core) -> AgentStatus {
 }
 
 /// The chat's current checklist, as the backend computes it
-/// (`plan::current_checklist`, carried checklists included): the single
+/// (`checklist::current_checklist`, carried checklists included): the single
 /// source of truth for the UI panel, instead of the UI recomputing it from
 /// the messages it has loaded.
 pub async fn chat_checklist(
     core: &Core,
     dialog_id: String,
-) -> Result<Option<plan::CurrentChecklist>, String> {
+) -> Result<Option<checklist::CurrentChecklist>, String> {
     const RECENT: usize = 500;
     let page = core
         .db
         .read(move |c| store::get_messages(c, &dialog_id, None, RECENT))
         .await
         .map_err(|e| e.to_string())?;
-    Ok(plan::current_checklist(&page.messages))
+    Ok(checklist::current_checklist(&page.messages))
 }
 
 /// The checklist panel's dismiss ✕: marks the message holding the
 /// checklist's `todo` call `checklistClosed` (its other meta kept), so
-/// `plan::current_checklist` treats it as closed now and never carries it
+/// `checklist::current_checklist` treats it as closed now and never carries it
 /// into a later request. Returns the chat's checklist after that.
 pub async fn chat_dismiss_checklist(
     core: &Core,
     dialog_id: String,
     message_id: String,
-) -> Result<Option<plan::CurrentChecklist>, String> {
+) -> Result<Option<checklist::CurrentChecklist>, String> {
     let (id, chat) = (message_id.clone(), dialog_id.clone());
     let meta = core
         .db

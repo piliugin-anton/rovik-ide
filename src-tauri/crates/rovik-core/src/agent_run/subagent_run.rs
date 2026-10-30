@@ -1654,7 +1654,7 @@ impl Run {
         let path = recent
             .iter()
             .rev()
-            .filter(|m| super::plan::is_request(m))
+            .filter(|m| super::messages::is_request(m))
             .find_map(|m| worker::plan_file_named(&m.content, base))
             .or_else(|| super::run::chat_plan_file(&recent))?;
         let text = std::fs::read_to_string(&path).ok()?;
@@ -2050,8 +2050,8 @@ impl Run {
     pub(super) async fn after_worker(
         &mut self,
         result: &mut SubResult,
-        base: Option<&[super::plan::TodoItem]>,
-    ) -> Option<Vec<super::plan::TodoItem>> {
+        base: Option<&[super::checklist::TodoItem]>,
+    ) -> Option<Vec<super::checklist::TodoItem>> {
         if result.kind != Kind::Worker {
             return None;
         }
@@ -2113,7 +2113,7 @@ impl Run {
             Some(items) => items.to_vec(),
             None => {
                 let recent = self.recent().await.ok()?;
-                super::plan::current_checklist(&recent)?.items
+                super::checklist::current_checklist(&recent)?.items
             }
         };
         let items = worker::mark_step_done(&current, step, &steps)?;

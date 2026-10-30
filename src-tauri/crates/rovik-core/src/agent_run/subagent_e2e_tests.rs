@@ -3982,7 +3982,7 @@ async fn workers_carry_out_the_plan_step_by_step() {
     );
     assert!(r2.meta.as_ref().unwrap().get("checklistUpdate").is_none());
     let recent = h.messages().await;
-    let current = plan::current_checklist(&recent).unwrap();
+    let current = checklist::current_checklist(&recent).unwrap();
     let statuses: Vec<&str> = current.items.iter().map(|i| i.status.as_str()).collect();
     assert_eq!(statuses, ["done", "pending", "done"], "{:?}", current.items);
     // The workers' changes are the lead's (S03b).

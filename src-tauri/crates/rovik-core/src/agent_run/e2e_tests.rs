@@ -1918,7 +1918,7 @@ async fn plan_mode_asks_and_saves_the_plan() {
         .await;
     assert_eq!(asked["request"]["questions"][0]["question"], "Which DB?");
     let core = h.core.clone();
-    let outcome: plan::QuestionsOutcome =
+    let outcome: questions::QuestionsOutcome =
         serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] }))
             .unwrap();
     assert!(agent_answer_questions(&core, h.dialog_id.clone(), "q1".into(), outcome).await);
@@ -2400,7 +2400,7 @@ fn result_of<'a>(messages: &'a [MessageRow], call: &str) -> &'a MessageRow {
 fn harness_notes(messages: &[MessageRow]) -> Vec<&MessageRow> {
     messages
         .iter()
-        .filter(|m| m.role == "user" && plan::is_harness(m))
+        .filter(|m| m.role == "user" && messages::is_harness(m))
         .collect()
 }
 
@@ -2727,11 +2727,11 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
             e["type"] == "questionsAsked" && e["request"]["toolCallId"] == id
         })
         .await;
-        let outcome: plan::QuestionsOutcome =
+        let outcome: questions::QuestionsOutcome =
             serde_json::from_value(json!({ "reply": "whatever" })).unwrap();
         assert!(agent_answer_questions(&core, h.dialog_id.clone(), id.into(), outcome).await);
         // Answering twice does nothing.
-        let again: plan::QuestionsOutcome =
+        let again: questions::QuestionsOutcome =
             serde_json::from_value(json!({ "reply": "again" })).unwrap();
         assert!(!agent_answer_questions(&core, h.dialog_id.clone(), id.into(), again).await);
     }
@@ -2781,7 +2781,7 @@ async fn an_agent_mode_run_asks_the_user_and_goes_on_with_the_answer() {
         .await;
     assert_eq!(asked["request"]["questions"][0]["question"], "Which DB?");
     let core = h.core.clone();
-    let outcome: plan::QuestionsOutcome =
+    let outcome: questions::QuestionsOutcome =
         serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] }))
             .unwrap();
     assert!(agent_answer_questions(&core, h.dialog_id.clone(), "q1".into(), outcome).await);

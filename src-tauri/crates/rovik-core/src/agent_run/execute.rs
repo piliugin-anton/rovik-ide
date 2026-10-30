@@ -15,7 +15,7 @@ use super::permissions::{self, Approver, ToolVerdict};
 use super::review::{self, Group, ReviewInput, ReviewResult};
 use super::run::{chat_plan_file, Run};
 use super::tools::Outcome;
-use super::{log, plan, tools, ApprovalDecision};
+use super::{checklist, log, messages, plan, questions, tools, ApprovalDecision};
 use crate::chat_db::store::ToolCall;
 use serde_json::{json, Map, Value};
 
@@ -667,18 +667,18 @@ impl Run {
             // The checklist: shown in the panel, never asks, isn't work the
             // loop checks or the pause limit count.
             Some(BuiltinTool::Todo) => {
-                let items = plan::parse_todo(&args);
+                let items = checklist::parse_todo(&args);
                 let tools::ToolResult {
                     mut content,
                     outcome,
                     ..
-                } = plan::describe_todo(&items);
+                } = checklist::describe_todo(&items);
                 // Phase D: a step just finished in CLM mode asks for a
                 // compaction of that step's span (and a TASK.md update).
                 // The previous checklist is what was current before this
                 // call: the history up to the message holding it.
                 if clm && !outcome.failed() {
-                    let previous: Option<Vec<plan::TodoItem>> =
+                    let previous: Option<Vec<checklist::TodoItem>> =
                         self.recent().await.ok().and_then(|recent| {
                             let cut = recent
                                 .iter()
@@ -688,18 +688,18 @@ impl Run {
                                         .is_some_and(|calls| calls.iter().any(|c| c.id == tc.id))
                                 })
                                 .unwrap_or(recent.len());
-                            plan::current_checklist(&recent[..cut]).map(|c| c.items)
+                            checklist::current_checklist(&recent[..cut]).map(|c| c.items)
                         });
                     if let Some(before) = previous {
                         let settled_before = |title: &str| {
                             before
                                 .iter()
                                 .find(|i| i.title == title)
-                                .is_some_and(plan::is_settled)
+                                .is_some_and(checklist::is_settled)
                         };
-                        let newly: Vec<&plan::TodoItem> = items
+                        let newly: Vec<&checklist::TodoItem> = items
                             .iter()
-                            .filter(|i| plan::is_settled(i) && !settled_before(&i.title))
+                            .filter(|i| checklist::is_settled(i) && !settled_before(&i.title))
                             .collect();
                         if !newly.is_empty() {
                             let dialog_id = self.dialog_id.clone();
@@ -716,7 +716,7 @@ impl Run {
                             let pct = crate::clm::prompt::percent(tokens, budget);
                             let next = items
                                 .iter()
-                                .find(|i| !plan::is_settled(i))
+                                .find(|i| !checklist::is_settled(i))
                                 .map(|i| i.title.as_str());
                             let done_names = newly
                                 .iter()
@@ -788,7 +788,7 @@ impl Run {
 
         // Checklist gate (Agent mode, the checklist setting not Off): no
         // checklist yet, and the task has clearly grown past the "3 or more
-        // steps" rule the model decides by (plan::checklist_gate_reason).
+        // steps" rule the model decides by (checklist::checklist_gate_reason).
         // Refused once per run: if the model judged the task small and
         // repeats the call, it runs. Writes to the CLM context folder are
         // exempt (context management, not project work), as are fixes after
@@ -801,16 +801,16 @@ impl Run {
             && self.config().permissions.checklist != permissions::ChecklistMode::Off
             && !(clm && is_context_path(path_arg, context_dir))
         {
-            if let Some(reason) = plan::checklist_gate_reason(
+            if let Some(reason) = checklist::checklist_gate_reason(
                 &tc.name,
                 path_arg,
                 &self.changed_files,
                 self.guard.tool_calls,
             ) {
                 if let Ok(recent) = self.recent().await {
-                    if plan::current_checklist(&recent).is_none() {
+                    if checklist::current_checklist(&recent).is_none() {
                         self.checklist_gate_refused = true;
-                        let content = plan::checklist_gate_error(&reason, &tc.name);
+                        let content = checklist::checklist_gate_error(&reason, &tc.name);
                         return self
                             .add_tool_result(&tc.id, content, Outcome::Failed, None, Vec::new())
                             .await;
@@ -1981,14 +1981,14 @@ impl Run {
                 )
                 .await;
         }
-        if self.questions_asked >= plan::MAX_QUESTIONS_PER_RUN {
+        if self.questions_asked >= questions::MAX_QUESTIONS_PER_RUN {
             log_question(self, 0, vec!["over-limit".into()]);
-            let content = plan::past_the_question_limit(self.questions_asked, self.plan_mode);
+            let content = questions::past_the_question_limit(self.questions_asked, self.plan_mode);
             return self
                 .add_tool_result(&tc.id, content, Outcome::Done, None, Vec::new())
                 .await;
         }
-        let questions = plan::parse_questions(args);
+        let questions = questions::parse_questions(args);
         if questions.is_empty() {
             let content =
                 "Error: no question to ask. Pass questions: [{ question, options: [{ label }] }].";
@@ -2008,11 +2008,11 @@ impl Run {
             .agents
             .wait_for_answers(&self.core, request, &self.stop)
             .await;
-        log_question(self, questions.len(), plan::outcome_kinds(&outcome));
-        if matches!(outcome, plan::QuestionsOutcome::Stopped { .. }) {
+        log_question(self, questions.len(), questions::outcome_kinds(&outcome));
+        if matches!(outcome, questions::QuestionsOutcome::Stopped { .. }) {
             self.core.agents.stop(&self.core, &self.dialog_id);
         }
-        let answer = plan::describe_outcome(&questions, &outcome, self.plan_mode);
+        let answer = questions::describe_outcome(&questions, &outcome, self.plan_mode);
         let meta = json!({ "questions": { "questions": questions, "outcome": outcome } });
         self.add_tool_result(
             &tc.id,
@@ -2197,7 +2197,7 @@ impl Run {
         let request = recent
             .iter()
             .rev()
-            .find(|m| plan::is_request(m))
+            .find(|m| messages::is_request(m))
             .map(|m| m.content.clone());
         // Balanced Autopilot: the IDE fixes the plan's mechanical format
         // problems itself (never a reviewer's finding).

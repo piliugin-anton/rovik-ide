@@ -4,9 +4,9 @@
 //! sets the absolute root; it's filled in here from the run.
 
 use super::builtin_tools::BuiltinTool;
+use super::checklist::MAX_TODO_ITEMS;
 use super::command_output::{cap_output, clean_output, focus_failures};
 use super::permissions::{commands_available, Permissions};
-use super::plan::MAX_TODO_ITEMS;
 use super::StopSignal;
 use crate::allowed_hosts::AllowedHosts;
 use crate::code_search::SearchResult;
@@ -3319,7 +3319,7 @@ a.rs (3 matches)
                 "not allowed",
             ),
             (
-                super::super::plan::checklist_gate_error("4 files changed", "write"),
+                super::super::checklist::checklist_gate_error("4 files changed", "write"),
                 "not allowed",
             ),
             (

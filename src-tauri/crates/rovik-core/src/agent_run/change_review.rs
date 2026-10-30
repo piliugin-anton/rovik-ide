@@ -27,7 +27,7 @@ use super::diff::{self, Hunk};
 use super::run::{chat_plan_file, new_message, Run, IDE_NOTE};
 use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubStatus, SubagentSettings};
 use super::tools::ToolResult;
-use super::{log, plan, plan_review, tools, ModelProfile};
+use super::{checklist, log, plan, plan_review, tools, ModelProfile};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1030,7 +1030,7 @@ pub fn render_diff(changes: &[FileChange], budget: usize) -> RenderedDiff {
 pub struct BriefParts<'a> {
     pub request: &'a str,
     pub plan: Option<(&'a str, &'a str)>,
-    pub checklist: &'a [plan::TodoItem],
+    pub checklist: &'a [checklist::TodoItem],
     pub diff: &'a RenderedDiff,
     /// A later round: the earlier findings and the agent's answers.
     pub earlier: Option<(&'a [Finding], &'a str)>,
@@ -1262,7 +1262,7 @@ impl Run {
             let shown = plan::relative_plan_path(&path, self.project_root.as_deref());
             Some((shown, text))
         });
-        let checklist = plan::current_checklist(&recent)
+        let checklist = checklist::current_checklist(&recent)
             .filter(|c| !c.carried)
             .map(|c| c.items)
             .unwrap_or_default();
@@ -1995,7 +1995,7 @@ mod tests {
         assert!(!diff.reduced);
         assert_eq!(diff.changed_lines, 3);
         assert_eq!(diff.files, ["src/a.ts", "src/new.ts"]);
-        let checklist = vec![plan::TodoItem {
+        let checklist = vec![checklist::TodoItem {
             title: "Do it".into(),
             status: "done".into(),
         }];

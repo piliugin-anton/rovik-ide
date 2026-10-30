@@ -718,7 +718,7 @@ const FOCUS_STEER_CHARS: usize = 300;
 /// ("continue"): the focus note quotes the previous real request as well.
 const SHORT_REQUEST_CHARS: usize = 80;
 
-fn todo_in_msg(m: &Msg) -> Option<Vec<crate::agent_run::plan::TodoItem>> {
+fn todo_in_msg(m: &Msg) -> Option<Vec<crate::agent_run::checklist::TodoItem>> {
     m.tool_calls
         .iter()
         .flatten()
@@ -726,7 +726,7 @@ fn todo_in_msg(m: &Msg) -> Option<Vec<crate::agent_run::plan::TodoItem>> {
         .filter(|c| c.name == "todo")
         .find_map(|c| match serde_json::from_str::<Value>(&c.arguments) {
             Ok(Value::Object(args)) => {
-                Some(crate::agent_run::plan::parse_todo(&args)).filter(|i| !i.is_empty())
+                Some(crate::agent_run::checklist::parse_todo(&args)).filter(|i| !i.is_empty())
             }
             _ => None,
         })
@@ -770,7 +770,8 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
         for m in messages[from..start].iter().rev() {
             if let Some(items) = todo_in_msg(m) {
                 // A finished or dismissed one isn't carried.
-                if !m.checklist_closed && !items.iter().all(crate::agent_run::plan::is_settled) {
+                if !m.checklist_closed && !items.iter().all(crate::agent_run::checklist::is_settled)
+                {
                     checklist = Some(items);
                 }
                 break;
@@ -779,7 +780,7 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     }
     if checklist
         .as_ref()
-        .is_some_and(|items| items.iter().all(crate::agent_run::plan::is_settled))
+        .is_some_and(|items| items.iter().all(crate::agent_run::checklist::is_settled))
     {
         return None;
     }
@@ -853,7 +854,7 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     if let Some(items) = checklist {
         let done = items
             .iter()
-            .filter(|i| crate::agent_run::plan::is_settled(i))
+            .filter(|i| crate::agent_run::checklist::is_settled(i))
             .count();
         note.push_str(&format!(
             "\nYour checklist ({done} of {} done):",
