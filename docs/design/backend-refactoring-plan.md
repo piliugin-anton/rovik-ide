@@ -970,5 +970,5 @@ Tests then: `a_second_runtime_on_another_data_folder_is_refused`, and
 - [ ] 4.5 `TestsState`
 - [ ] 4.6 `VerificationState`, with the carry
 - [ ] 4.7 `LandingState`
-- [ ] 5 `RawMessage`
+- [x] 5 `RawMessage`
 - [ ] 6 `ProcessRuntime` (when the area next changes)

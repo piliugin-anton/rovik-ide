@@ -28,6 +28,7 @@
 
 use super::attachments;
 use super::location::{self, Location};
+use super::message_columns::{columns, RawMessage};
 use super::store::{self, err, DbResult};
 use super::DbState;
 use rovik_protocol::sync::{
@@ -49,10 +50,6 @@ const BATCH: i64 = 32;
 pub(crate) const CHANGED_MESSAGES: &str = "SELECT id FROM messages
      WHERE dialog_id = ?1 AND rev > ?2 AND rev <= ?3 AND (rev, id) > (?4, ?5)
      ORDER BY rev, id LIMIT ?6";
-
-const MESSAGE_COLUMNS: &str = "m.id, m.dialog_id, m.seq, m.role, m.body_external, m.body_bytes, \
-     m.tool_calls, m.tool_call_id, m.meta, m.error, m.failed, m.finalized, m.created_at, m.content, \
-     b.content, m.rev";
 
 const DIALOG_COLUMNS: &str =
     "id, title, created_at, updated_at, message_count, preview, archived, \
@@ -356,11 +353,16 @@ fn read_message(conn: &Connection, id: &str) -> DbResult<Option<(StoredMessage, 
     let row = conn
         .query_row(
             &format!(
-                "SELECT {MESSAGE_COLUMNS} FROM messages m
-                 LEFT JOIN message_bodies b ON b.message_id = m.id WHERE m.id = ?1"
+                "SELECT {}, b.content, m.rev FROM messages m
+                 LEFT JOIN message_bodies b ON b.message_id = m.id WHERE m.id = ?1",
+                columns(Some("m"))
             ),
             params![id],
-            |r| Ok((message_from_row(r)?, r.get::<_, i64>(15)?)),
+            |r| {
+                let body = r.get(RawMessage::COUNT)?;
+                let rev = r.get::<_, i64>(RawMessage::COUNT + 1)?;
+                Ok((RawMessage::read(r)?.into_stored(body), rev))
+            },
         )
         .optional()
         .map_err(err)?;
@@ -436,28 +438,6 @@ fn dialog_from_row(r: &Row) -> rusqlite::Result<StoredDialog> {
         model_provider: r.get(11)?,
         model_id: r.get(12)?,
         effort: r.get(13)?,
-    })
-}
-
-fn message_from_row(r: &Row) -> rusqlite::Result<StoredMessage> {
-    Ok(StoredMessage {
-        id: r.get(0)?,
-        dialog_id: r.get(1)?,
-        seq: r.get(2)?,
-        role: r.get(3)?,
-        body_external: r.get::<_, i64>(4)? != 0,
-        body_bytes: r.get(5)?,
-        tool_calls: r.get(6)?,
-        tool_call_id: r.get(7)?,
-        meta: r.get(8)?,
-        error: r.get(9)?,
-        failed: r.get::<_, i64>(10)? != 0,
-        finalized: r.get::<_, i64>(11)? != 0,
-        created_at: r.get(12)?,
-        content: r.get(13)?,
-        body: r.get(14)?,
-        attachments: Vec::new(),
-        extras: Vec::new(),
     })
 }
 

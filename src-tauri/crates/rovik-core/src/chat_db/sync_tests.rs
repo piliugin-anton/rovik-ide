@@ -758,3 +758,112 @@ fn a_resync_replaces_the_mirror_but_keeps_the_chat_and_its_draft() {
     assert!(late.is_none());
     assert_eq!(dump(&mirror), dump(&owner));
 }
+
+/*
+ * The app's reads and the mirror's (message_columns.rs)
+ */
+
+/// The app reads a message's JSON parsed and a mirror as its text; the
+/// rest reads the same, here for a message with every column set.
+#[test]
+fn a_message_reads_the_same_through_the_store_and_the_mirror() {
+    let mut owner = owner();
+    attachments::add_unavailable(&owner, FILE).unwrap();
+    let every_column = NewMessage {
+        tool_calls: Some(vec![ToolCall {
+            id: "c2".into(),
+            name: "bash".into(),
+            arguments: "{\"command\":\"make\"}".into(),
+            extra_content: None,
+        }]),
+        tool_call_id: Some("c1".into()),
+        meta: Some(serde_json::json!({ "outcome": "failed", "exitCode": 2 })),
+        error: Some("Stopped".into()),
+        failed: true,
+        attachments: vec![FILE.into()],
+        ..message("t1", "tool", &"x".repeat(store::EXTERNAL_BODY_BYTES * 2))
+    };
+    store::append_messages(&mut owner, ROOT, &[every_column]).unwrap();
+
+    let app = store::get_messages(&owner, ROOT, None, 10)
+        .unwrap()
+        .messages;
+    let (mirror, _) = read_message(&owner, "t1").unwrap().unwrap();
+    assert_eq!(app.len(), 1);
+
+    // The mirror's message in the app's type. Every field of both is named,
+    // so one added to either doesn't build until it's compared here too.
+    let StoredMessage {
+        id,
+        dialog_id,
+        seq,
+        role,
+        body_external,
+        body_bytes,
+        tool_calls,
+        tool_call_id,
+        meta,
+        error,
+        failed,
+        finalized,
+        created_at,
+        content,
+        body: _,
+        attachments,
+        extras: _,
+    } = mirror;
+    assert!(body_external, "its body is stored apart");
+    let expected = store::MessageRow {
+        id,
+        dialog_id,
+        seq,
+        role,
+        content,
+        body_external,
+        body_bytes,
+        tool_calls: tool_calls.map(|t| serde_json::from_str(&t).unwrap()),
+        tool_call_id,
+        meta: meta.map(|m| serde_json::from_str(&m).unwrap()),
+        error,
+        failed,
+        finalized,
+        attachments,
+        created_at,
+    };
+    // Field by field, so that a difference names its field.
+    let app = serde_json::to_value(&app[0]).unwrap();
+    let expected = serde_json::to_value(expected).unwrap();
+    for (field, value) in expected.as_object().unwrap() {
+        assert_eq!(&app[field], value, "{field}");
+    }
+}
+
+/// A message whose JSON doesn't parse still loads: the app reads it
+/// without that JSON (and logs it), and a mirror keeps the bytes as stored.
+#[test]
+fn a_message_with_malformed_json_still_loads() {
+    let mut owner = owner();
+    store::append_messages(&mut owner, ROOT, &[message("a1", "assistant", "Done")]).unwrap();
+    // Calls that aren't a list, and meta cut short.
+    let (calls, meta) = (r#"{"id":"c1"}"#, r#"{"outcome":"#);
+    owner
+        .execute(
+            "UPDATE messages SET tool_calls = ?2, meta = ?3 WHERE id = ?1",
+            ["a1", calls, meta],
+        )
+        .unwrap();
+
+    let app = store::get_messages(&owner, ROOT, None, 10)
+        .unwrap()
+        .messages;
+    let (mirror, _) = read_message(&owner, "a1").unwrap().unwrap();
+
+    assert_eq!(app.len(), 1);
+    assert!(app[0].tool_calls.is_none() && app[0].meta.is_none());
+    assert_eq!(
+        (app[0].id.as_str(), app[0].content.as_str()),
+        ("a1", "Done")
+    );
+    assert_eq!(mirror.tool_calls.as_deref(), Some(calls));
+    assert_eq!(mirror.meta.as_deref(), Some(meta));
+}
