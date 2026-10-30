@@ -9,8 +9,11 @@
 //! crate: no git needed) is a by-product. A project without any falls back
 //! to a short list of names that are build output or dependencies nearly
 //! everywhere. Names that can be source in some projects (`build/`, `bin/`,
-//! `vendor/`) count only when the project's ignore files say so.
+//! `vendor/`) count only when the project's ignore files say so. What git
+//! tracks is never a by-product, as git ignores only untracked files: a
+//! folder committed before a rule matched it lands like any other work.
 
+use crate::tracked::Tracked;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -51,6 +54,8 @@ pub struct Tiers {
     /// Each folder's own rules (its `.gitignore` and `.ignore`), rooted at
     /// that folder as git reads them; None: it has none.
     rules: Mutex<HashMap<String, Option<Gitignore>>>,
+    /// What git tracks in the project; None outside a repository.
+    tracked: Mutex<Option<Tracked>>,
 }
 
 impl Tiers {
@@ -58,11 +63,13 @@ impl Tiers {
         Tiers {
             root: root.to_path_buf(),
             rules: Mutex::new(HashMap::new()),
+            tracked: Mutex::new(Tracked::of(root)),
         }
     }
 
     /// Whether a project-relative path (with `/`) is build output,
-    /// dependencies, `.git` or chat-owned context.
+    /// dependencies, `.git` or chat-owned context: ignored, and not
+    /// tracked by git (nor, a folder, holding anything git tracks).
     pub fn is_by_product(&self, rel: &str, is_dir: bool) -> bool {
         if is_chat_context(rel) {
             return true;
@@ -71,9 +78,19 @@ impl Tiers {
         if parts.iter().any(|p| ALWAYS.contains(p)) {
             return true;
         }
-        // Ignored itself, or inside an ignored folder. Each path is checked
-        // against the rules of the folders above it, the deepest first: the
-        // first that says something decides (a deeper `!keep` un-ignores).
+        self.ignored(&parts, is_dir) && !self.tracks(&parts.join("/"))
+    }
+
+    /// Whether git tracks the path, or anything in it.
+    fn tracks(&self, rel: &str) -> bool {
+        let tracked = self.tracked.lock().unwrap_or_else(|e| e.into_inner());
+        tracked.as_ref().is_some_and(|t| t.covers(rel))
+    }
+
+    /// Ignored itself, or inside an ignored folder. Each path is checked
+    /// against the rules of the folders above it, the deepest first: the
+    /// first that says something decides (a deeper `!keep` un-ignores).
+    fn ignored(&self, parts: &[&str], is_dir: bool) -> bool {
         let mut any_rules = false;
         for end in 1..=parts.len() {
             let path = self.root.join(parts[..end].join("/"));
@@ -214,5 +231,52 @@ mod tests {
         assert!(t.is_by_product("target/debug/app", false));
         assert!(!t.is_by_product("build/script.sh", false));
         assert!(!t.is_by_product("src/a.rs", false));
+    }
+
+    /// A repository at `dir` tracking `files`: staged, as what git tracks
+    /// is its index, committed or not.
+    fn track(dir: &Path, files: &[&str]) {
+        let repo = git2::Repository::init(dir).unwrap();
+        let mut index = repo.index().unwrap();
+        for file in files {
+            index.add_path(Path::new(file)).unwrap();
+        }
+        index.write().unwrap();
+    }
+
+    #[test]
+    fn what_git_tracks_is_work_though_the_project_ignores_it() {
+        // Committed before `.superpowers/` was ignored.
+        let dir = project(&[
+            (".gitignore", ".superpowers/\ntarget/\n"),
+            (".superpowers/brainstorm/layout.html", "<h1>A</h1>\n"),
+            (".superpowers/sdd/progress.md", "- [x] 1\n"),
+            ("target/debug/app", ""),
+            ("context/TASK.md", "the task\n"),
+        ]);
+        track(
+            &dir,
+            &[".superpowers/brainstorm/layout.html", "context/TASK.md"],
+        );
+        let t = Tiers::new(&dir);
+        assert!(!t.is_by_product(".superpowers", true));
+        assert!(!t.is_by_product(".superpowers/brainstorm", true));
+        assert!(!t.is_by_product(".superpowers/brainstorm/layout.html", false));
+        // What git doesn't track there is still a by-product.
+        assert!(t.is_by_product(".superpowers/sdd", true));
+        assert!(t.is_by_product(".superpowers/sdd/progress.md", false));
+        assert!(t.is_by_product("target", true));
+        // And the chat's context stays its own.
+        assert!(t.is_by_product("context/TASK.md", false));
+    }
+
+    #[test]
+    fn a_tracked_file_among_the_short_lists_names_is_work() {
+        let dir = project(&[("node_modules/x/index.js", ""), ("src/a.rs", "")]);
+        track(&dir, &["node_modules/x/index.js"]);
+        let t = Tiers::new(&dir);
+        assert!(!t.is_by_product("node_modules/x/index.js", false));
+        assert!(t.is_by_product("node_modules/y/index.js", false));
+        assert!(t.is_by_product("target/debug/app", false));
     }
 }
