@@ -6,6 +6,7 @@
 //! A run of consecutive local reads that need no approval runs at the same
 //! time (parallel.rs); their results are still recorded in the calls' order.
 
+use super::builtin_tools::{BuiltinTool, Dispatch};
 use super::diff::{self, Hunk};
 use super::events::{AgentEvent, ApprovalRequest, EditProposal, QuestionsRequest};
 use super::guard::{FinishedCall, GuardVerdict, Write};
@@ -225,7 +226,12 @@ impl Run {
             // The lead's subagents: a run of `task` calls starts together
             // (subagent_run.rs), at most the settings' number at once.
             let tasks = if self.sub().is_none() {
-                rest.iter().take_while(|tc| tc.name == "task").count()
+                rest.iter()
+                    .take_while(|tc| {
+                        BuiltinTool::parse(&tc.name)
+                            .is_some_and(|t| t.spec().dispatch == Dispatch::Subagents)
+                    })
+                    .count()
             } else {
                 0
             };
@@ -475,20 +481,11 @@ impl Run {
                     .await;
             }
         }
+        let tool = BuiltinTool::parse(&tc.name);
         let args = permissions::parse_args(&tc.arguments);
         let path_arg = args.get("path").and_then(|p| p.as_str());
 
-        // A writing subagent: more scope on request (D07), and no write
-        // outside it (D7).
-        if tc.name == "extend_scope" && self.sub().is_some_and(|s| s.scope.is_some()) {
-            let (content, granted) = self.extend_scope(&args);
-            let refused = granted.is_empty();
-            // Kept with the result: a continued worker keeps its grants.
-            let meta = (!refused).then(|| json!({ "granted": granted }));
-            return self
-                .answer_unrun(tc, content, Outcome::of(refused), refused, meta)
-                .await;
-        }
+        // A writing subagent writes nothing outside its scope (D7).
         // The test writer writes test files only (E02).
         if let (true, Some(path), Some(root)) = (
             tc.name == "write" && self.sub().is_some_and(|s| s.tests_only),
@@ -629,7 +626,7 @@ impl Run {
         // Q05 (mcp-plan.md): a tool's description, or a call that can't be
         // made (a name that isn't listed, a tool the mode doesn't call), is
         // answered at once: no approval is asked for it.
-        if tc.name == super::mcp_tool::NAME {
+        if tool == Some(BuiltinTool::Mcp) {
             let read_only = self.mcp_read_only();
             if let super::mcp_tool::Prepared::Answer { content, error } =
                 super::mcp_tool::prepare(self.mcp.as_deref(), &args, read_only)
@@ -639,13 +636,16 @@ impl Run {
                     .await;
             }
         }
-        match tc.name.as_str() {
+        // The run's own tools (their row's dispatch): answered here, with
+        // the run's state, and never put to an approval. `mcp` is the run's
+        // too, but goes by its rule: authorized and called below.
+        match tool {
             // The plan (Plan mode): checked, then saved; problems go back to the model.
-            "submit_plan" => {
+            Some(BuiltinTool::SubmitPlan) => {
                 return self.submit_plan(tc, &args).await;
             }
             // S06: the answers to the change review's findings.
-            "answer_review" if self.sub().is_none() => {
+            Some(BuiltinTool::AnswerReview) if self.sub().is_none() => {
                 let result = self.answer_review(&args);
                 return self
                     .add_tool_result(&tc.id, result.content, result.outcome, None, Vec::new())
@@ -653,7 +653,7 @@ impl Run {
             }
             // The checklist: shown in the panel, never asks, isn't work the
             // loop checks or the pause limit count.
-            "todo" => {
+            Some(BuiltinTool::Todo) => {
                 let items = plan::parse_todo(&args);
                 let tools::ToolResult {
                     mut content,
@@ -749,16 +749,34 @@ impl Run {
             }
             // Questions to the user: answered in the chat, no approval
             // involved (a resumed one after a restart is simply asked again).
-            "ask_user" => {
+            Some(BuiltinTool::AskUser) => {
                 return self.ask_user(tc, &args).await;
             }
-            name if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&name) => {
-                let content = plan::blocked_in_plan_mode(name, self.autopilot);
+            // D07: more scope for a writing subagent, on request.
+            Some(BuiltinTool::ExtendScope) => {
+                let (content, granted) = self.extend_scope(&args);
+                let refused = granted.is_empty();
+                // Kept with the result: a continued worker keeps its grants.
+                let meta = (!refused).then(|| json!({ "granted": granted }));
                 return self
-                    .add_tool_result(&tc.id, content, Outcome::Failed, None, Vec::new())
+                    .answer_unrun(tc, content, Outcome::of(refused), refused, meta)
+                    .await;
+            }
+            // In CLM mode, answered with the context folder's tools above.
+            Some(BuiltinTool::RestoreContext) => {
+                let content =
+                    "Error: restore_context works only in CLM mode, where your context is a file you manage.";
+                return self
+                    .add_tool_result(&tc.id, content.into(), Outcome::Failed, None, Vec::new())
                     .await;
             }
             _ => {}
+        }
+        if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&tc.name.as_str()) {
+            let content = plan::blocked_in_plan_mode(&tc.name, self.autopilot);
+            return self
+                .add_tool_result(&tc.id, content, Outcome::Failed, None, Vec::new())
+                .await;
         }
 
         // Checklist gate (Agent mode, the checklist setting not Off): no
@@ -841,7 +859,7 @@ impl Run {
 
         let result = match &auth.refusal {
             Some(refusal) => tools::ToolResult::error(refusal.clone()),
-            None if tool_name == super::mcp_tool::NAME => match self.mcp.clone() {
+            None if tool == Some(BuiltinTool::Mcp) => match self.mcp.clone() {
                 Some(catalog) => {
                     let args = permissions::parse_args(&args_json);
                     super::mcp_tool::call(

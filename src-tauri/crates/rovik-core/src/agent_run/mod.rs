@@ -20,6 +20,7 @@
 //!   guide.rs      after the second review that found problems: where and
 //!                 why the agent goes wrong, with the review's findings
 //!   tools.rs      tool schemas and running a tool
+//!   builtin_tools.rs  the table of Rovik's tools: what each is and may do
 //!   steer.rs      messages the user sends a run while it works
 //!   autopilot/    a task carried out with nobody there: its stages
 //!   candidates.rs Thorough's two implementers, each in its own copy, and
@@ -32,6 +33,7 @@ pub mod autopilot;
 mod before;
 pub mod breaker;
 pub mod budget;
+pub mod builtin_tools;
 pub mod candidates;
 pub mod causes;
 pub mod change_review;

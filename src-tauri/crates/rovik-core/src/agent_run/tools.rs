@@ -3,6 +3,7 @@
 //! back. Paths are relative to the project root: the model never sees or
 //! sets the absolute root; it's filled in here from the run.
 
+use super::builtin_tools::BuiltinTool;
 use super::command_output::{cap_output, clean_output, focus_failures};
 use super::permissions::{commands_available, Permissions};
 use super::plan::{MAX_TODO_ITEMS, PLAN_BLOCKED_TOOLS};
@@ -1088,42 +1089,15 @@ fn error_kept_out(error: String, started: std::time::Instant) -> String {
     }
 }
 
-async fn run(
+/// The tools that need no project (`ToolSpec::needs_project`): the web's.
+async fn run_web(
     core: &Core,
-    root: Option<&str>,
-    name: &str,
+    tool: BuiltinTool,
     args: &Map<String, Value>,
     stop: &Arc<StopSignal>,
-    ctx: &CallContext,
 ) -> Result<ToolResult, String> {
-    // The test writer doesn't read the change's code by any tool (P2.4):
-    // first, before any path is served; by the path's name, and by where
-    // it really leads (a link under the tests to the code).
-    if !ctx.hidden.is_empty() && matches!(name, "read" | "neighbours" | "diagnostics") {
-        if let (Some(path), Some(root)) = (text(args, "path"), root) {
-            let key = super::repair::rel_key(root, path);
-            let real = super::repair::real_key(root, path);
-            if super::test_writer::is_hidden(&ctx.hidden, &key)
-                || real.is_some_and(|real| super::test_writer::is_hidden(&ctx.hidden, &real))
-            {
-                return Ok(ToolResult::error(super::test_writer::hidden_file(&key)));
-            }
-        }
-    }
-    // A check's whole output, saved by the verification gate (C01).
-    if name == "read" {
-        if let Some(path) = text(args, "path").filter(|p| super::check_output::is_checks_path(p)) {
-            return super::check_output::read(
-                &ctx.checks_owner,
-                path,
-                uint(args, "start_line"),
-                uint(args, "end_line"),
-            )
-            .map(ToolResult::ok);
-        }
-    }
-    match name {
-        "web_search" => {
+    match tool {
+        BuiltinTool::WebSearch => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
                 return Ok(ToolResult::error("Error: \"query\" is required."));
             };
@@ -1151,9 +1125,9 @@ async fn run(
                     format!("{}. {}\n   {}{snippet}", i + 1, h.title, h.url)
                 })
                 .collect();
-            return Ok(noting_kept_out(ToolResult::ok(lines.join("\n\n")), started));
+            Ok(noting_kept_out(ToolResult::ok(lines.join("\n\n")), started))
         }
-        "browse_url" => {
+        BuiltinTool::BrowseUrl => {
             let Some(url) = text(args, "url").filter(|u| !u.is_empty()) else {
                 return Ok(ToolResult::error("Error: \"url\" is required."));
             };
@@ -1195,9 +1169,9 @@ async fn run(
                         .map(|l| format!("- {}: {}", l.text, l.url)),
                 );
             }
-            return Ok(noting_kept_out(ToolResult::ok(parts.join("\n")), started));
+            Ok(noting_kept_out(ToolResult::ok(parts.join("\n")), started))
         }
-        "browser_screenshot" => {
+        BuiltinTool::BrowserScreenshot => {
             let started = std::time::Instant::now();
             let shot = crate::browser_tools::browser_screenshot_inner(
                 &core.browser,
@@ -1220,19 +1194,71 @@ async fn run(
                 attachments: vec![shot.attachment_id],
                 ..Default::default()
             };
-            return Ok(noting_kept_out(result, started));
+            Ok(noting_kept_out(result, started))
         }
-        _ => {}
+        _ => Ok(ToolResult::error(format!(
+            "Error: unknown tool \"{}\".",
+            tool.name()
+        ))),
     }
+}
 
+async fn run(
+    core: &Core,
+    root: Option<&str>,
+    name: &str,
+    args: &Map<String, Value>,
+    stop: &Arc<StopSignal>,
+    ctx: &CallContext,
+) -> Result<ToolResult, String> {
+    let Some(tool) = BuiltinTool::parse(name) else {
+        return Ok(ToolResult::error(format!(
+            "Error: unknown tool \"{name}\"."
+        )));
+    };
+    // The test writer doesn't read the change's code by any tool (P2.4):
+    // first, before any path is served; by the path's name, and by where
+    // it really leads (a link under the tests to the code).
+    if !ctx.hidden.is_empty()
+        && matches!(
+            tool,
+            BuiltinTool::Read | BuiltinTool::Neighbours | BuiltinTool::Diagnostics
+        )
+    {
+        if let (Some(path), Some(root)) = (text(args, "path"), root) {
+            let key = super::repair::rel_key(root, path);
+            let real = super::repair::real_key(root, path);
+            if super::test_writer::is_hidden(&ctx.hidden, &key)
+                || real.is_some_and(|real| super::test_writer::is_hidden(&ctx.hidden, &real))
+            {
+                return Ok(ToolResult::error(super::test_writer::hidden_file(&key)));
+            }
+        }
+    }
+    // A check's whole output, saved by the verification gate (C01).
+    if tool == BuiltinTool::Read {
+        if let Some(path) = text(args, "path").filter(|p| super::check_output::is_checks_path(p)) {
+            return super::check_output::read(
+                &ctx.checks_owner,
+                path,
+                uint(args, "start_line"),
+                uint(args, "end_line"),
+            )
+            .map(ToolResult::ok);
+        }
+    }
+    // The tools that work without a project: the web's.
+    if !tool.spec().needs_project {
+        return run_web(core, tool, args, stop).await;
+    }
     let Some(root) = root else {
         return Ok(ToolResult::error(format!(
             "Error: \"{name}\" needs an open project folder."
         )));
     };
     let root_owned = root.to_string();
-    let content = match name {
-        "write" if is_partial_write(name, args) => {
+    let content = match tool {
+        BuiltinTool::Write if is_partial_write(name, args) => {
             let edit = match edit_args(args) {
                 Ok(edit) => edit,
                 Err(e) => return Ok(ToolResult::error(e)),
@@ -1257,7 +1283,7 @@ async fn run(
                 ..Default::default()
             });
         }
-        "read" => {
+        BuiltinTool::Read => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
                 return Ok(ToolResult::error("Error: \"path\" is required."));
             };
@@ -1272,7 +1298,7 @@ async fn run(
             .await
             .map_err(|e| e.to_string())??
         }
-        "write" => {
+        BuiltinTool::Write => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
                 return Ok(ToolResult::error("Error: \"path\" is required."));
             };
@@ -1305,7 +1331,7 @@ async fn run(
             .await
             .map_err(|e| e.to_string())??
         }
-        "bash" => {
+        BuiltinTool::Bash => {
             let Some(command) = text(args, "command").filter(|c| !c.trim().is_empty()) else {
                 return Ok(ToolResult::error("Error: \"command\" is required."));
             };
@@ -1409,7 +1435,7 @@ async fn run(
                 ..Default::default()
             });
         }
-        "background" => {
+        BuiltinTool::Background => {
             use crate::command_tool::background;
             let Some(chat) = ctx.background_chat.clone() else {
                 return Ok(ToolResult::error(SUBAGENT_BACKGROUND));
@@ -1444,7 +1470,7 @@ async fn run(
                 ..Default::default()
             });
         }
-        "list_dir" => {
+        BuiltinTool::ListDir => {
             let path = text(args, "path").map(str::to_string);
             let entries = crate::agent_tools::tool_list_dir(
                 root_owned.clone(),
@@ -1476,7 +1502,7 @@ async fn run(
                 ..Default::default()
             });
         }
-        "search_code" => {
+        BuiltinTool::SearchCode => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
                 return Ok(ToolResult::error("Error: \"query\" is required."));
             };
@@ -1553,32 +1579,34 @@ async fn run(
                 shown
             }
         }
-        "neighbours" => {
+        BuiltinTool::Neighbours => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
                 return Ok(ToolResult::error("Error: \"path\" is required."));
             };
             crate::agent_tools::tool_neighbours(root_owned, path.into(), ctx.restricted.clone())
                 .await?
         }
-        "callers" => {
+        BuiltinTool::Callers => {
             let Some(symbol) = text(args, "symbol").filter(|s| !s.is_empty()) else {
                 return Ok(ToolResult::error("Error: \"symbol\" is required."));
             };
             crate::agent_tools::tool_callers(root_owned, symbol.into(), ctx.restricted.clone())
                 .await?
         }
-        "outline" => {
+        BuiltinTool::Outline => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
                 return Ok(ToolResult::error("Error: \"path\" is required."));
             };
             crate::agent_tools::tool_outline(root_owned, path.into())?
         }
-        "diagnostics" => crate::agent_tools::tool_diagnostics(
+        BuiltinTool::Diagnostics => crate::agent_tools::tool_diagnostics(
             root_owned,
             text(args, "path")
                 .filter(|p| !p.trim().is_empty())
                 .map(str::to_string),
         )?,
+        // Not this dispatcher's: the run's own tools and subagents
+        // (`Dispatch`), and the web's (above).
         _ => {
             return Ok(ToolResult::error(format!(
                 "Error: unknown tool \"{name}\"."
@@ -1586,8 +1614,11 @@ async fn run(
         }
     };
     // P2.4: what these show of other files leaves out the hidden ones.
-    let content =
-        if !ctx.hidden.is_empty() && matches!(name, "callers" | "neighbours" | "diagnostics") {
+    let content = if !ctx.hidden.is_empty()
+        && matches!(
+            tool,
+            BuiltinTool::Callers | BuiltinTool::Neighbours | BuiltinTool::Diagnostics
+        ) {
             super::test_writer::without_hidden_lines(&content, &ctx.hidden)
         } else {
             content
@@ -3013,6 +3044,37 @@ a.rs (3 matches)
         let _ = search_outlines(&root, &result, start + SEARCH_OUTLINE_TIME);
         println!("{}", format_search_result(&result, &outlines));
         eprintln!("outlines: cold {cold:?}, cached {:?}", start.elapsed());
+    }
+
+    /// Each of Rovik's tools has one schema, and each schema names one of
+    /// them: a new tool comes with both, or this fails.
+    #[test]
+    fn every_builtin_tool_has_one_schema_and_parses_back_from_its_name() {
+        use super::super::builtin_tools::BuiltinTool;
+        let p = Permissions::default();
+        let mut schemas = file_tool_schemas();
+        schemas.extend(web_tool_schemas(&p));
+        schemas.extend([
+            browser_screenshot_tool_schema(),
+            run_command_schema(&p),
+            background_schema(),
+            ask_user_schema(),
+            todo_schema(),
+            submit_plan_schema(),
+            restore_context_schema(),
+            super::super::subagent::task_schema(&[super::super::subagent::Kind::Scout], false),
+            super::super::worker::extend_scope_schema(),
+            super::super::change_review::answer_review_schema(),
+            super::super::mcp_tool::schema(),
+        ]);
+        let mut names: Vec<&str> = schemas.iter().map(tool_name).collect();
+        names.sort_unstable();
+        let mut all: Vec<&str> = BuiltinTool::ALL.iter().map(|t| t.name()).collect();
+        all.sort_unstable();
+        assert_eq!(names, all);
+        for name in names {
+            assert_eq!(BuiltinTool::parse(name).map(|t| t.name()), Some(name));
+        }
     }
 
     /// A failure's text starts with "Error:", once: `error` adds it to text

@@ -6589,6 +6589,56 @@ async fn every_finished_tool_call_leaves_a_tool_line() {
     assert!(lines.iter().all(|l| l.get("role").is_none()), "the lead's");
 }
 
+/// Each of Rovik's tools, called with the least it takes in a mode that
+/// offers it, gets its answer from its own dispatcher (`ToolSpec::dispatch`):
+/// never "unknown tool".
+#[tokio::test]
+async fn every_builtin_tool_reaches_its_dispatcher() {
+    use super::builtin_tools::{BuiltinTool, Modes};
+    let least = |tool: BuiltinTool| match tool {
+        BuiltinTool::Read | BuiltinTool::Neighbours | BuiltinTool::Outline => {
+            json!({ "path": "a.rs" })
+        }
+        BuiltinTool::Write => json!({ "path": "b.rs", "content": "fn beta() {}\n" }),
+        BuiltinTool::SearchCode => json!({ "query": "alpha" }),
+        BuiltinTool::Callers => json!({ "symbol": "alpha" }),
+        // Refused before any browser opens.
+        BuiltinTool::BrowserScreenshot => json!({ "url": "ftp://example.com" }),
+        BuiltinTool::Bash => json!({ "command": "true" }),
+        BuiltinTool::Background => json!({ "action": "list" }),
+        _ => json!({}),
+    };
+    for plan_mode in [false, true] {
+        // Plan mode for the tools only it offers; Agent mode for the rest.
+        let tools: Vec<BuiltinTool> = BuiltinTool::ALL
+            .into_iter()
+            .filter(|t| (t.spec().modes == Modes::PlanOnly) == plan_mode)
+            .collect();
+        let calls = tools
+            .iter()
+            .map(|t| (t.name(), t.name(), least(*t)))
+            .collect();
+        let h = harness(&[("a.rs", "fn alpha() {}\n")]).await;
+        let (url, _) = model(vec![Reply::Calls(calls), Reply::Text("Done.")]).await;
+        let permissions = Permissions {
+            allow_any_command: true,
+            checklist: ChecklistMode::Off,
+            ..quiet_permissions()
+        };
+        let start = match plan_mode {
+            true => plan_send("Go"),
+            false => Harness::send("Go"),
+        };
+        h.start(h.request(&url, start, permissions)).await;
+        h.run_end().await;
+        let messages = h.messages().await;
+        for tool in &tools {
+            let answer = &result_of(&messages, tool.name()).content;
+            assert!(!answer.contains("unknown tool"), "{tool:?}: {answer}");
+        }
+    }
+}
+
 /// A `todo` call the IDE refused (two steps in progress) sends no list to
 /// the panel, and the chat's checklist stays the one before it: the panel
 /// never shows the list the model was told was wrong.
