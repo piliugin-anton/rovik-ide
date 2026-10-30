@@ -1219,12 +1219,7 @@ async fn run(
     // The test writer doesn't read the change's code by any tool (P2.4):
     // first, before any path is served; by the path's name, and by where
     // it really leads (a link under the tests to the code).
-    if !ctx.hidden.is_empty()
-        && matches!(
-            tool,
-            BuiltinTool::Read | BuiltinTool::Neighbours | BuiltinTool::Diagnostics
-        )
-    {
+    if !ctx.hidden.is_empty() && tool.spec().hidden.path {
         if let (Some(path), Some(root)) = (text(args, "path"), root) {
             let key = super::repair::rel_key(root, path);
             let real = super::repair::real_key(root, path);
@@ -1569,7 +1564,7 @@ async fn run(
             } else {
                 shown
             };
-            if restricted_out > 0 {
+            let shown = if restricted_out > 0 {
                 format!(
                     "{shown}\n[{restricted_out} match{} in restricted files left out ({}): the agent may not read them.]",
                     if restricted_out == 1 { "" } else { "es" },
@@ -1577,7 +1572,9 @@ async fn run(
                 )
             } else {
                 shown
-            }
+            };
+            // Its matches in hidden files are left out above, by file.
+            return Ok(ToolResult::ok(shown));
         }
         BuiltinTool::Neighbours => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
@@ -1614,15 +1611,11 @@ async fn run(
         }
     };
     // P2.4: what these show of other files leaves out the hidden ones.
-    let content = if !ctx.hidden.is_empty()
-        && matches!(
-            tool,
-            BuiltinTool::Callers | BuiltinTool::Neighbours | BuiltinTool::Diagnostics
-        ) {
-            super::test_writer::without_hidden_lines(&content, &ctx.hidden)
-        } else {
-            content
-        };
+    let content = if !ctx.hidden.is_empty() && tool.spec().hidden.results {
+        super::test_writer::without_hidden_lines(&content, &ctx.hidden)
+    } else {
+        content
+    };
     Ok(ToolResult::ok(content))
 }
 
@@ -3046,11 +3039,8 @@ a.rs (3 matches)
         eprintln!("outlines: cold {cold:?}, cached {:?}", start.elapsed());
     }
 
-    /// Each of Rovik's tools has one schema, and each schema names one of
-    /// them: a new tool comes with both, or this fails.
-    #[test]
-    fn every_builtin_tool_has_one_schema_and_parses_back_from_its_name() {
-        use super::super::builtin_tools::BuiltinTool;
+    /// Every schema of Rovik's tools, as their builders make them.
+    fn every_schema() -> Vec<Value> {
         let p = Permissions::default();
         let mut schemas = file_tool_schemas();
         schemas.extend(web_tool_schemas(&p));
@@ -3067,6 +3057,27 @@ a.rs (3 matches)
             super::super::change_review::answer_review_schema(),
             super::super::mcp_tool::schema(),
         ]);
+        schemas
+    }
+
+    /// The tools whose schema has the `property` argument.
+    fn tools_taking(property: &str) -> Vec<super::super::builtin_tools::BuiltinTool> {
+        every_schema()
+            .iter()
+            .filter(|t| {
+                t.pointer(&format!("/function/parameters/properties/{property}"))
+                    .is_some()
+            })
+            .filter_map(|t| super::super::builtin_tools::BuiltinTool::parse(tool_name(t)))
+            .collect()
+    }
+
+    /// Each of Rovik's tools has one schema, and each schema names one of
+    /// them: a new tool comes with both, or this fails.
+    #[test]
+    fn every_builtin_tool_has_one_schema_and_parses_back_from_its_name() {
+        use super::super::builtin_tools::BuiltinTool;
+        let schemas = every_schema();
         let mut names: Vec<&str> = schemas.iter().map(tool_name).collect();
         names.sort_unstable();
         let mut all: Vec<&str> = BuiltinTool::ALL.iter().map(|t| t.name()).collect();
@@ -3074,6 +3085,79 @@ a.rs (3 matches)
         assert_eq!(names, all);
         for name in names {
             assert_eq!(BuiltinTool::parse(name).map(|t| t.name()), Some(name));
+        }
+    }
+
+    /// A tool that takes a `path` keeps to the restricted files by it: it
+    /// refuses one the agent may not read (or, writing, change). Only
+    /// list_dir doesn't: it shows names, no contents. A new tool with a
+    /// path gets a rule in its row, or is named here with its reason.
+    #[test]
+    fn every_tool_with_a_path_argument_has_a_restricted_files_rule() {
+        use super::super::builtin_tools::BuiltinTool;
+        use crate::restricted_files::RestrictedFiles;
+        let with_path = tools_taking("path");
+        assert!(with_path.contains(&BuiltinTool::Read) && with_path.contains(&BuiltinTool::Write));
+        let dir = std::env::temp_dir().join(format!("restricted-rule-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".env"), "SECRET=1\n").unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let restricted = RestrictedFiles::default();
+        for tool in with_path {
+            if tool == BuiltinTool::ListDir {
+                assert_eq!(tool.spec().restricted.path, None);
+                continue;
+            }
+            assert!(tool.spec().restricted.path.is_some(), "{tool:?}");
+            let args = json!({ "path": ".env", "content": "x" });
+            let problem = super::super::restricted::problem(
+                tool.name(),
+                args.as_object().unwrap(),
+                &root,
+                &restricted,
+            );
+            assert!(
+                problem
+                    .as_deref()
+                    .is_some_and(|p| p.contains(".env is a restricted file")),
+                "{tool:?}: {problem:?}"
+            );
+        }
+        // A tool that reads the project without a path keeps to them by
+        // what it shows of other files.
+        for tool in BuiltinTool::READS {
+            let rule = tool.spec().restricted;
+            assert!(
+                rule.path.is_some() || rule.results || tool == BuiltinTool::ListDir,
+                "{tool:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tool that opens the page its `url` names is checked against the
+    /// user's allowed hosts before it runs.
+    #[test]
+    fn every_tool_with_a_url_argument_is_checked_against_the_allowed_hosts() {
+        use super::super::builtin_tools::{BuiltinTool, HostCheck};
+        use super::super::permissions::{check_tool_call, ToolVerdict};
+        let with_url = tools_taking("url");
+        assert!(with_url.contains(&BuiltinTool::BrowseUrl));
+        let listed = Permissions {
+            allow_any_host: false,
+            allowed_hosts: vec!["docs.rs".into()],
+            ..Permissions::default()
+        };
+        for tool in with_url {
+            assert_eq!(tool.spec().host, HostCheck::UrlArgument, "{tool:?}");
+            let refused =
+                check_tool_call(tool.name(), r#"{"url":"https://example.com/a"}"#, &listed);
+            assert!(
+                matches!(refused, ToolVerdict::Refused(_)),
+                "{tool:?}: {refused:?}"
+            );
+            let allowed = check_tool_call(tool.name(), r#"{"url":"https://docs.rs/a"}"#, &listed);
+            assert!(matches!(allowed, ToolVerdict::Permitted { .. }), "{tool:?}");
         }
     }
 

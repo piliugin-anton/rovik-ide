@@ -13,6 +13,7 @@
 //! this is where they're enforced. They travel to the daemon too, so their
 //! type is the protocol's (rovik-protocol).
 
+use super::builtin_tools::{BuiltinTool, Effect, HostCheck};
 use crate::allowed_hosts::{self, AllowedHosts};
 use regex::Regex;
 use std::ops::Range;
@@ -1561,9 +1562,10 @@ pub(crate) fn check_command_in(command: &str, permissions: &Permissions, shell: 
  * ---------------------------------------------------------------------------
  */
 
-/// Tools that always change files; everything else (reads, web) doesn't.
+/// Whether a call of `tool` changes the project's files (its row's
+/// `Effect::Writes`): such a call is an edit, reviewed and tracked as one.
 pub fn modifies_files(tool: &str) -> bool {
-    tool == "write"
+    BuiltinTool::parse(tool).is_some_and(|t| t.spec().effect == Effect::Writes)
 }
 
 #[derive(Debug, PartialEq)]
@@ -1620,7 +1622,8 @@ pub fn is_mcp_call(name: &str) -> bool {
 
 /// Permission first, then who (if anyone) has to approve.
 pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -> ToolVerdict {
-    if name == "bash" {
+    let effect = BuiltinTool::parse(name).map(|t| t.spec().effect);
+    if effect == Some(Effect::Runs) {
         let command = str_arg(args_json, "command").unwrap_or_default();
         if command.trim().is_empty() {
             // The executor reports the missing argument.
@@ -1634,14 +1637,14 @@ pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -
         return ToolVerdict::Refused(reason);
     }
 
-    let rule = if name == "bash" {
-        permissions.command_approval
-    } else if modifies_files(name) {
-        permissions.edit_approval
-    } else if is_mcp_call(name) {
-        permissions.mcp_approval
-    } else {
-        permissions.tool_approval
+    // By what the tool does; a name that isn't Rovik's is a harness's call
+    // of one of its own tools, or of its MCP servers'.
+    let rule = match effect {
+        Some(Effect::Runs) => permissions.command_approval,
+        Some(Effect::Writes) => permissions.edit_approval,
+        Some(Effect::Mcp) => permissions.mcp_approval,
+        None if is_mcp_call(name) => permissions.mcp_approval,
+        _ => permissions.tool_approval,
     };
     ToolVerdict::Permitted {
         approval: rule.required.then_some(rule.by),
@@ -1655,21 +1658,27 @@ pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -
 /// permitted. A URL the tool can't open is left for the tool to refuse.
 fn host_refusal(name: &str, args_json: &str, permissions: &Permissions) -> Option<String> {
     let list = AllowedHosts::of(permissions)?;
-    let host = match name {
-        "web_search" => crate::browser_tools::SEARCH_HOST.to_string(),
-        "browse_url" | "browser_screenshot" | "WebFetch" => {
+    let check = match BuiltinTool::parse(name) {
+        Some(tool) => tool.spec().host,
+        // A harness's WebFetch opens the page its `url` names, as browse_url.
+        None if name == "WebFetch" => HostCheck::UrlArgument,
+        None => HostCheck::None,
+    };
+    let host = match check {
+        HostCheck::SearchEngine => crate::browser_tools::SEARCH_HOST.to_string(),
+        HostCheck::UrlArgument => {
             let url = str_arg(args_json, "url").filter(|url| !url.trim().is_empty())?;
             let url = crate::browser_tools::validate_url(&url).ok()?;
             reqwest::Url::parse(&url).ok()?.host_str()?.to_string()
         }
-        _ => return None,
+        HostCheck::None => return None,
     };
     if allowed_hosts::is_loopback(&host) || list.allows(&host) {
         return None;
     }
     let ask = format!("ask the user to add {host} in Settings → Permissions & approval");
-    Some(match name {
-        "web_search" => format!(
+    Some(match check {
+        HostCheck::SearchEngine => format!(
             "Web search goes to {host}, which isn't in the user's allowed hosts ({}). Open a page on \
              a listed host with browse_url, or {ask}.",
             list.shown()
@@ -2412,6 +2421,47 @@ mod tests {
             check_tool_call("bash", r#"{"command":"rm x"}"#, &p),
             ToolVerdict::Refused(_)
         ));
+    }
+
+    /// A tool that changes files (its row's effect) is an edit, whatever
+    /// its name: with edits asked about and the other tools not, it asks,
+    /// and the run reviews and tracks it as one (`modifies_files`).
+    #[test]
+    fn a_tool_that_writes_files_asks_for_edit_approval() {
+        use super::super::builtin_tools::{BuiltinTool, Effect};
+        let p = Permissions {
+            edit_approval: ApprovalRule {
+                required: true,
+                by: Approver::User,
+            },
+            tool_approval: ApprovalRule {
+                required: false,
+                by: Approver::User,
+            },
+            ..Permissions::default()
+        };
+        let writers: Vec<BuiltinTool> = BuiltinTool::ALL
+            .into_iter()
+            .filter(|t| t.spec().effect == Effect::Writes)
+            .collect();
+        assert_eq!(writers, [BuiltinTool::Write]);
+        for tool in BuiltinTool::ALL {
+            let writes = writers.contains(&tool);
+            assert_eq!(modifies_files(tool.name()), writes, "{tool:?}");
+            if writes {
+                assert_eq!(
+                    check_tool_call(tool.name(), r#"{"path":"a.txt","content":"a"}"#, &p),
+                    ToolVerdict::Permitted {
+                        approval: Some(Approver::User)
+                    },
+                    "{tool:?}"
+                );
+            }
+        }
+        assert!(
+            !modifies_files("Edit"),
+            "a harness's own name: mapped onto write first"
+        );
     }
 
     /// Q07 (mcp-plan.md): `mcp`, and a connector's own call of one of its
