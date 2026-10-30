@@ -164,7 +164,7 @@ pub struct Run {
     pub(super) current_user_content: Option<String>,
     pub(super) local_date: String,
     pub(super) guard: Guard,
-    /// ask_user calls so far (Plan mode caps them).
+    /// ask_user calls so far (at most `plan::MAX_QUESTIONS_PER_RUN` a run).
     pub(super) questions_asked: u32,
     /// The project's checks and the system-prompt section about it. Fixed
     /// for the run: what changes (the repository map) is sent apart.

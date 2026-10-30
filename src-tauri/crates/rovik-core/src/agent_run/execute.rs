@@ -1882,13 +1882,13 @@ impl Run {
 
     /*
      * -----------------------------------------------------------------------
-     * Plan mode's tools
+     * Questions, scope and plans
      * -----------------------------------------------------------------------
      */
 
     /// ask_user: shows the questions in the chat and waits for the answer.
-    /// Only in Plan mode, a few per run; the answer is the tool's result,
-    /// kept with the questions in its meta for the card.
+    /// In Agent and Plan mode, a few per run; the answer is the tool's
+    /// result, kept with the questions in its meta for the card.
     async fn ask_user(&mut self, tc: &ToolCall, args: &Map<String, Value>) -> Result<(), String> {
         let log_question = |run: &Run, questions: usize, answers: Vec<String>| {
             log::write(
@@ -1914,19 +1914,9 @@ impl Run {
                 )
                 .await;
         }
-        if !self.plan_mode {
-            let content =
-                "Error: asking the user is only available in Plan mode. Decide yourself and say what you assumed.";
-            return self
-                .add_tool_result(&tc.id, content.into(), None, Vec::new())
-                .await;
-        }
         if self.questions_asked >= plan::MAX_QUESTIONS_PER_RUN {
             log_question(self, 0, vec!["over-limit".into()]);
-            let content = format!(
-                "You've already asked {} times in this task. Decide the rest yourself and list your assumptions under \"Decisions\" in the plan.",
-                self.questions_asked
-            );
+            let content = plan::past_the_question_limit(self.questions_asked, self.plan_mode);
             return self
                 .add_tool_result(&tc.id, content, None, Vec::new())
                 .await;
@@ -1955,7 +1945,7 @@ impl Run {
         if matches!(outcome, plan::QuestionsOutcome::Stopped { .. }) {
             self.core.agents.stop(&self.core, &self.dialog_id);
         }
-        let content = plan::describe_outcome(&questions, &outcome);
+        let content = plan::describe_outcome(&questions, &outcome, self.plan_mode);
         let meta = json!({ "questions": { "questions": questions, "outcome": outcome } });
         self.add_tool_result(&tc.id, content, Some(meta), Vec::new())
             .await

@@ -949,7 +949,7 @@ Tests then: `a_second_runtime_on_another_data_folder_is_refused`, and
 
 ## Progress
 
-- [ ] 0.1 `ask_user` in Agent mode as in Plan mode
+- [x] 0.1 `ask_user` in Agent mode as in Plan mode
 - [ ] 0.2 The four principles in the system prompt
 - [ ] 1.1 Tool calls say whether they failed
 - [ ] 1.2 A command's end travels with its result

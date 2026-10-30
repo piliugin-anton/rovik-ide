@@ -1,10 +1,10 @@
 // questions.ts
 //
-// The agent's questions to the user (the ask_user tool, Plan mode). Like an
-// approval, a question suspends the run (in the backend: agent_run): the
-// tool call waits until the user answers in the panel above the input
-// (QuestionPanel), types a reply in the composer, or stops. The answer goes
-// back to the run, and to the model as the tool's result.
+// The agent's questions to the user (the ask_user tool, in Agent and Plan
+// mode). Like an approval, a question suspends the run (in the backend:
+// agent_run): the tool call waits until the user answers in the panel above
+// the input (QuestionPanel), types a reply in the composer, or stops. The
+// answer goes back to the run, and to the model as the tool's result.
 import { invoke } from '@tauri-apps/api/core';
 import { createStore, produce } from 'solid-js/store';
 import { notify } from './notifications';

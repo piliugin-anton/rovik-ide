@@ -2618,7 +2618,7 @@ async fn a_call_cut_off_by_the_output_limit_is_told_why_it_did_not_run() {
 }
 
 #[tokio::test]
-async fn without_a_project_only_web_tools_are_offered() {
+async fn without_a_project_only_web_tools_and_questions_are_offered() {
     let h = harness(&[]).await;
     let (url, seen) = model(vec![
         Reply::Call {
@@ -2639,7 +2639,7 @@ async fn without_a_project_only_web_tools_are_offered() {
         .iter()
         .map(|t| t["function"]["name"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(tools, ["web_search", "browse_url"]);
+    assert_eq!(tools, ["web_search", "browse_url", "ask_user"]);
     let messages = h.messages().await;
     assert_eq!(
         result_of(&messages, "c1").content,
@@ -2734,24 +2734,43 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
 }
 
 #[tokio::test]
-async fn ask_user_outside_plan_mode_is_refused() {
+async fn an_agent_mode_run_asks_the_user_and_goes_on_with_the_answer() {
     let h = harness(&[]).await;
-    let (url, _) = model(vec![
+    let (url, seen) = model(vec![
         Reply::Call {
             id: "q1",
             name: "ask_user",
-            args: json!({ "questions": [{ "question": "Q?", "options": [] }] }),
+            args: json!({ "questions": [{ "question": "Which DB?", "options": ["Postgres", "SQLite"] }] }),
         },
-        Reply::Text("Decided."),
+        Reply::Text("Done, with SQLite."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Do it"), quiet_permissions()))
+    h.start(h.request(&url, Harness::send("Add users"), quiet_permissions()))
         .await;
+    let asked = h
+        .wait_for("questionsAsked", |e| e["type"] == "questionsAsked")
+        .await;
+    assert_eq!(asked["request"]["questions"][0]["question"], "Which DB?");
+    let core = h.core.clone();
+    let outcome: plan::QuestionsOutcome =
+        serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] }))
+            .unwrap();
+    assert!(agent_answer_questions(&core, h.dialog_id.clone(), "q1".into(), outcome).await);
     assert_eq!(h.run_end().await, "done");
-    assert!(h.events_of("questionsAsked").is_empty());
-    assert!(result_of(&h.messages().await, "q1")
-        .content
-        .starts_with("Error: asking the user is only available in Plan mode"));
+
+    let answer = result_of(&h.messages().await, "q1").clone();
+    assert_eq!(
+        answer.content,
+        "The user answered:\n1. Which DB?\n   → SQLite\n\nTreat these answers as requirements. Continue with the task."
+    );
+    assert_eq!(
+        answer.meta.unwrap()["questions"]["outcome"]["answers"][0]["label"],
+        "SQLite"
+    );
+    // Offered in Agent mode, and the answer goes to the model as the call's result.
+    let requests = seen.lock().unwrap().clone();
+    assert!(requests[0]["tools"].to_string().contains("\"ask_user\""));
+    assert!(requests[1]["messages"].to_string().contains("→ SQLite"));
 }
 
 #[tokio::test]

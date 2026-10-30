@@ -4,8 +4,9 @@
 //!     plan, saved with `submit_plan` as Markdown in `.rovik/plans/`, where it
 //!     can be read, edited and implemented. A revised plan in the same chat
 //!     updates the same file.
-//!   - `ask_user` (Plan mode): questions only the user can answer. The run
-//!     waits for the answer in the chat; it's the tool's result.
+//!   - `ask_user` (Agent and Plan mode): questions only the user can
+//!     answer. The run waits for the answer in the chat; it's the tool's
+//!     result.
 //!   - `todo` (Agent mode): the agent's checklist, shown read-only above the
 //!     input. Each call writes the whole list, so the latest call in a run
 //!     is the current state; the tool calls are the record.
@@ -39,6 +40,16 @@ pub fn blocked_in_plan_mode(name: &str, autopilot: bool) -> String {
 
 /// Questions one run may ask; past that, the agent decides.
 pub const MAX_QUESTIONS_PER_RUN: u32 = 3;
+
+/// What an `ask_user` call past `MAX_QUESTIONS_PER_RUN` gets: the agent
+/// decides, and says what it assumed (in Plan mode, in the plan).
+pub fn past_the_question_limit(asked: u32, plan_mode: bool) -> String {
+    let say = match plan_mode {
+        true => "list your assumptions under \"Decisions\" in the plan",
+        false => "say what you assumed",
+    };
+    format!("You've already asked {asked} times in this task. Decide the rest yourself and {say}.")
+}
 
 /// Added to the system prompt in Plan mode.
 pub const PLAN_MODE_INSTRUCTIONS: &str = r###"## Plan mode
@@ -2100,13 +2111,22 @@ pub fn parse_questions(args: &Map<String, Value>) -> Vec<Question> {
     out
 }
 
-/// What the model reads as the tool's result.
-pub fn describe_outcome(questions: &[Question], outcome: &QuestionsOutcome) -> String {
+/// What the model reads as the tool's result. What the user leaves open,
+/// the agent decides and says so: in Plan mode, in the plan.
+pub fn describe_outcome(
+    questions: &[Question],
+    outcome: &QuestionsOutcome,
+    plan_mode: bool,
+) -> String {
+    let (say_so, in_the_plan, next) = match plan_mode {
+        true => ("say so in the plan", " in the plan", "Continue planning."),
+        false => ("say what you assumed", "", "Continue with the task."),
+    };
     match outcome {
         QuestionsOutcome::Stopped { .. } => "Error: the user stopped the task instead of answering.".into(),
         QuestionsOutcome::Reply { reply } => format!(
             "The user replied in their own words instead of picking options:\n\n{reply}\n\n\
-             Treat this as their answer to your questions. For anything it leaves open, decide yourself and say so in the plan."
+             Treat this as their answer to your questions. For anything it leaves open, decide yourself and {say_so}."
         ),
         QuestionsOutcome::Answers { answers } => {
             let mut lines = vec!["The user answered:".to_string()];
@@ -2115,13 +2135,13 @@ pub fn describe_outcome(questions: &[Question], outcome: &QuestionsOutcome) -> S
                     QuestionAnswer::Option { label } => label.clone(),
                     QuestionAnswer::Custom { text } => format!("\"{text}\" (in their own words)"),
                     QuestionAnswer::Agent => {
-                        "left it to you: decide, and say what you chose and why in the plan".to_string()
+                        format!("left it to you: decide, and say what you chose and why{in_the_plan}")
                     }
                 };
                 lines.push(format!("{}. {}\n   → {answer}", i + 1, q.question));
             }
             lines.push(String::new());
-            lines.push("Treat these answers as requirements. Continue planning.".into());
+            lines.push(format!("Treat these answers as requirements. {next}"));
             lines.join("\n")
         }
     }
@@ -3532,13 +3552,13 @@ mod tests {
         let outcome: QuestionsOutcome =
             serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] }))
                 .unwrap();
-        let text = describe_outcome(&qs, &outcome);
+        let text = describe_outcome(&qs, &outcome, true);
         assert!(
             text.contains("1. Which DB?\n   → SQLite")
                 && text.contains("2. Name?\n   → left it to you")
         );
         let stopped: QuestionsOutcome = serde_json::from_value(json!({ "stopped": true })).unwrap();
-        assert!(describe_outcome(&qs, &stopped).starts_with("Error:"));
+        assert!(describe_outcome(&qs, &stopped, true).starts_with("Error:"));
         assert_eq!(
             serde_json::to_value(&stopped).unwrap(),
             json!({ "stopped": true })
@@ -3610,12 +3630,50 @@ mod tests {
                 text: "mine".into(),
             }],
         };
-        let text = describe_outcome(&qs, &outcome);
+        let text = describe_outcome(&qs, &outcome, true);
         assert!(
             text.contains("\"mine\" (in their own words)")
                 && text.contains("B?\n   → left it to you")
         );
         assert_eq!(outcome_kinds(&outcome), ["custom"]);
+    }
+
+    /// In Agent mode there's no plan: what the user leaves open, the agent
+    /// decides and says in its reply, and it goes on with the task.
+    #[test]
+    fn answers_in_agent_mode_point_at_the_reply_not_a_plan() {
+        let qs = parse_questions(
+            json!({ "questions": [{ "question": "A?" }, { "question": "B?" }] })
+                .as_object()
+                .unwrap(),
+        );
+        let answers = QuestionsOutcome::Answers {
+            answers: vec![QuestionAnswer::Option {
+                label: "Yes".into(),
+            }],
+        };
+        let reply = QuestionsOutcome::Reply {
+            reply: "Up to you.".into(),
+        };
+        for outcome in [&answers, &reply] {
+            let plan = describe_outcome(&qs, outcome, true);
+            assert!(plan.contains("in the plan"), "{plan}");
+            let agent = describe_outcome(&qs, outcome, false);
+            assert!(!agent.contains("plan"), "{agent}");
+        }
+        let agent = describe_outcome(&qs, &answers, false);
+        assert!(
+            agent.contains("B?\n   → left it to you: decide, and say what you chose and why\n")
+                && agent.ends_with("Treat these answers as requirements. Continue with the task."),
+            "{agent}"
+        );
+        assert!(describe_outcome(&qs, &reply, false)
+            .ends_with("For anything it leaves open, decide yourself and say what you assumed."));
+        assert_eq!(
+            past_the_question_limit(3, false),
+            "You've already asked 3 times in this task. Decide the rest yourself and say what you assumed."
+        );
+        assert!(past_the_question_limit(3, true).ends_with("under \"Decisions\" in the plan."));
     }
 
     #[test]

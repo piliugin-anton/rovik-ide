@@ -349,13 +349,13 @@ fn background_schema() -> Value {
     })
 }
 
-/// Plan mode's question tool.
+/// The question tool, in Agent and Plan mode.
 fn ask_user_schema() -> Value {
     json!({
         "type": "function",
         "function": {
             "name": "ask_user",
-            "description": "Ask the user about decisions only they can make, before planning further: the run waits for the answer. Ask only what the code and the request can't tell you and what really changes the design, behavior or scope. Put all your questions in one call (up to 3), each with concrete options and a short reason why it matters. Mark the option you'd choose as recommended. The user can also answer in their own words or leave a question to you.",
+            "description": "Ask the user about decisions only they can make, before going further: the run waits for the answer. Ask only what the code and the request can't tell you and what really changes the design, behavior or scope. Put all your questions in one call (up to 3), each with concrete options and a short reason why it matters. Mark the option you'd choose as recommended. The user can also answer in their own words or leave a question to you.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -574,6 +574,7 @@ pub fn tools_for(
         if has_project {
             all.push(todo_schema());
         }
+        all.push(ask_user_schema());
     } else {
         all.retain(|t| !PLAN_BLOCKED_TOOLS.contains(&tool_name(t)));
         all.push(ask_user_schema());
@@ -2316,7 +2317,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let agent = names(tools_for(true, false, false, &p, false, false, false));
-        assert!(agent.contains(&"bash".to_string()) && agent.last().unwrap() == "todo");
+        assert!(
+            agent.contains(&"bash".to_string())
+                && agent.ends_with(&["todo".into(), "ask_user".into()])
+        );
         let plan = names(tools_for(true, true, false, &p, true, false, false));
         assert!(!plan
             .iter()
@@ -2327,7 +2331,7 @@ mod tests {
         );
         assert_eq!(
             names(tools_for(false, false, false, &p, false, false, false)),
-            vec!["web_search", "browse_url"]
+            vec!["web_search", "browse_url", "ask_user"]
         );
         assert!(tools_for(true, true, true, &p, false, false, false).is_empty());
         assert!(tools_for(true, true, true, &p, false, true, false).is_empty());
@@ -2378,10 +2382,13 @@ mod tests {
             allowed_hosts: vec!["docs.rs".into()],
             ..Permissions::default()
         };
-        assert_eq!(names(&listed), vec!["browse_url"]);
+        assert_eq!(names(&listed), vec!["browse_url", "ask_user"]);
         let mut searching = listed.clone();
         searching.allowed_hosts.push("html.duckduckgo.com".into());
-        assert_eq!(names(&searching), vec!["web_search", "browse_url"]);
+        assert_eq!(
+            names(&searching),
+            vec!["web_search", "browse_url", "ask_user"]
+        );
         let browse = |p: &Permissions| {
             web_tool_schemas(p)
                 .iter()
