@@ -3,10 +3,13 @@
 Follows a review of the backend at `abcc2e6`. The crate boundaries and the
 connector traits held up; the problems sit in the agent's run
 (`rovik-core/src/agent_run`) and in policy written out more than once. The
-review made six findings. Each was traced to the code at `df34306`, where
-`rovik-core` is unchanged since `abcc2e6`, so the line numbers below are good
-for both. Three behaviours were confirmed by running throwaway tests (not
-committed), and one more bug turned up on the way.
+review made six findings, and each was traced to the code. Three
+behaviours were confirmed by running throwaway tests (not committed), and
+one more bug turned up on the way.
+
+Line numbers are at `b5898ed`, today's master. Every file they point to is
+the same at `abcc2e6`, the reviewed commit, except `README.md`: master
+added three lines near its top, so its line 101 is line 98 there.
 
 Two changes were asked for on top of the review, and are planned here as
 phase 0: `ask_user` in Agent mode as in Plan mode, and the four working
