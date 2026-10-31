@@ -566,3 +566,41 @@ mod tests {
         );
     }
 }
+
+/// The queue and steering outcomes accumulated by one run.
+#[derive(Default)]
+pub(super) struct SteerState {
+    queue: std::sync::Arc<SteerQueue>,
+    harness_waits: bool,
+    read: u32,
+    returned: u32,
+}
+impl SteerState {
+    pub(super) fn new(queue: std::sync::Arc<SteerQueue>) -> Self {
+        Self {
+            queue,
+            ..Self::default()
+        }
+    }
+    pub(super) fn queue(&self) -> &std::sync::Arc<SteerQueue> {
+        &self.queue
+    }
+    pub(super) fn harness_read(&mut self, waits: bool) {
+        self.harness_waits = waits;
+    }
+    pub(super) fn harness_waits(&self) -> bool {
+        self.harness_waits
+    }
+    pub(super) fn read(&mut self, count: usize) {
+        self.read += count as u32;
+    }
+    pub(super) fn returned(&mut self, count: usize) {
+        self.returned += count as u32;
+    }
+    pub(super) fn read_count(&self) -> u32 {
+        self.read
+    }
+    pub(super) fn returned_count(&self) -> u32 {
+        self.returned
+    }
+}

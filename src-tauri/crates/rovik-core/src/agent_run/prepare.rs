@@ -440,13 +440,14 @@ impl Run {
             }),
         );
         // Not counted: the next round is this one again.
-        self.verify_rounds = self.verify_rounds.saturating_sub(1);
+        self.verification.round_refunded();
         if self.stopped() {
             return Ok("verify-stopped".into());
         }
         if environment_outcome(&done, &toolchains) {
             // The same code: the checks run again on it now.
-            self.writes_since_verify = true;
+            self.verification
+                .recheck(super::verify::Recheck::PreparedEnvironment);
             return Ok("repaired".into());
         }
         let note = environment_note(&failure, &toolchains);
@@ -459,7 +460,7 @@ impl Run {
             self.profile.no_tools,
         );
         self.add_harness(report, "verification").await?;
-        self.last_verify_failed = true;
+        self.verification.round_failed();
         self.take_checkpoint();
         Ok("continue".into())
     }

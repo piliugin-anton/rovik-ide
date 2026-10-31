@@ -34,7 +34,7 @@ pub const MAX_RECHECKS: u32 = 2;
 
 /// A parallel group joined in this run: who owns what (R03), and each
 /// landed worker's chat, to resume for a fix (R04).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GroupRecord {
     pub name: String,
     pub owners: Vec<(String, usize, WriteScope)>,
@@ -246,7 +246,7 @@ impl Run {
     /// which a parallel group joined, with step workers on.
     fn repair_on(&self) -> bool {
         self.sub().is_none()
-            && !self.groups.is_empty()
+            && !self.verification.groups().is_empty()
             && !self.profile.no_tools
             && self
                 .core
@@ -273,7 +273,7 @@ impl Run {
         if !self.repair_on() || self.stopped() {
             return Ok(Repair::None);
         }
-        let Some(group) = self.groups.last().cloned() else {
+        let Some(group) = self.verification.groups().last().cloned() else {
             return Ok(Repair::None);
         };
         let fix = FixRound {
@@ -294,7 +294,7 @@ impl Run {
             let owners = Owners {
                 workers: &group.owners,
                 contract: &group.contract,
-                test_files: &self.test_writer_files,
+                test_files: self.tests.files(),
                 created: &created,
                 roots: &roots,
                 known: &known,
@@ -302,7 +302,7 @@ impl Run {
             causes::group(
                 &keys,
                 &owners,
-                triaged.then_some(self.last_triage.as_ref()).flatten(),
+                triaged.then_some(self.verification.triage()).flatten(),
             )
         };
         if found.is_empty() {
@@ -310,7 +310,7 @@ impl Run {
         }
         // R06: the owners fix in the first round; then, or after a round
         // that made no progress, the lead does it all.
-        let lead_only = lead_only(judgement.verdict, self.rechecks, round);
+        let lead_only = lead_only(judgement.verdict, self.verification.rechecks(), round);
         let config = self.config().subagents;
         let parallel: Vec<usize> = if lead_only.is_none() && config.parallel_repair {
             let set = causes::parallel_set(&found);
@@ -388,7 +388,7 @@ impl Run {
         });
         let status = if self.stopped() {
             "stopped"
-        } else if fixing && all_fixed && self.writes_since_verify {
+        } else if fixing && all_fixed && self.verification.needs_checks() {
             "recheck"
         } else {
             "lead"
@@ -413,7 +413,7 @@ impl Run {
             }),
         );
         if status == "recheck" {
-            self.rechecks += 1;
+            self.verification.rechecked();
             return Ok(Repair::Recheck);
         }
         let mut note = format!(
@@ -528,7 +528,7 @@ impl Run {
             if let Some(root) = root {
                 run.root = Some(root);
                 // Its copy is discarded if it fails.
-                run.checkpoint = None;
+                run.verification.checkpoint_discarded();
             }
             Ok((child.clone(), run))
         }

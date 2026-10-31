@@ -389,9 +389,7 @@ impl Run {
                     self.absorb_child_writes(&result.writes);
                     if result.kind == Kind::TestWriter {
                         for w in &result.writes {
-                            if !self.test_writer_files.contains(&w.path) {
-                                self.test_writer_files.push(w.path.clone());
-                            }
+                            self.tests.test_added(w.path.clone());
                         }
                         // E04: tests that pass on the code before the change.
                         if config.red_check {
@@ -704,7 +702,7 @@ impl Run {
         }
         if let Some(view) = kept_view {
             run.root = Some(view.to_string_lossy().into_owned());
-            run.checkpoint = None;
+            run.verification.checkpoint_discarded();
         }
         Ok(run)
     }
@@ -819,11 +817,12 @@ impl Run {
         // D06: what the files were before its first write to each, so a
         // worker that fails or is stopped can be rolled back (R02's code).
         if writes {
-            child.checkpoint = Some(super::repair::Checkpoint::default());
+            child
+                .verification
+                .checkpoint_taken(super::repair::Checkpoint::default());
         }
         if let Some((map, chars)) = map {
-            child.repo_map = map;
-            child.repo_map_chars = chars;
+            child.map.prepared(map, chars);
         }
         Ok(child)
     }
@@ -835,7 +834,7 @@ impl Run {
             return None;
         };
         let root = self.root.clone()?;
-        let chars = (self.repo_map_chars * fraction_percent / 100).max(500);
+        let chars = (self.map.budget() * fraction_percent / 100).max(500);
         let mut touched: Vec<String> = self.touched_keys().into_iter().collect();
         touched.extend(focus_files.iter().cloned());
         let root_path = std::path::Path::new(&root);
@@ -1185,7 +1184,7 @@ impl Run {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for (path, original) in &self.baseline {
+        for (path, original) in self.verification.baseline() {
             let now = std::fs::read(tools::to_absolute_path(path, &root)).ok();
             if now != original.bytes {
                 out.push(ChildWrite {
@@ -1208,18 +1207,13 @@ impl Run {
         };
         for w in writes {
             self.note_changed_file(&root, &w.path);
-            self.baseline
-                .entry(w.path.clone())
-                .or_insert_with(|| w.original.clone());
+            self.verification.child_wrote(w);
             let abs = tools::to_absolute_path(&w.path, &root);
-            if let Some(cp) = self.checkpoint.as_mut() {
-                note_round_start(cp, w);
-            }
             if let Ok(now) = std::fs::read(&abs) {
                 self.seen.record(std::path::Path::new(&abs), &now);
             }
-            self.writes_since_verify = true;
-            self.writes_since_review = true;
+            self.verification.changes_made();
+            self.review.changes_made();
         }
     }
 
@@ -1694,7 +1688,7 @@ impl Run {
             plan_path: &plan_path,
             plan: &plan,
             step: &step,
-            done: &self.worker_steps,
+            done: self.verification.worker_steps(),
             diff: &diff,
             scope: &scope,
             note: Some(lead_note.as_str()).filter(|n| !n.is_empty()),
@@ -1930,12 +1924,12 @@ impl Run {
         }
         for key in &paths {
             if let Some(original) = self.original_bytes_of(key) {
-                child.baseline.entry(key.clone()).or_insert(original);
+                child.verification.original_found(key.clone(), original);
             }
             // The lead's checks and reviewer look at it either way.
             self.note_changed_file(&root, key);
-            self.writes_since_verify = true;
-            self.writes_since_review = true;
+            self.verification.changes_made();
+            self.review.changes_made();
         }
         if let Some(sub) = child.sub_mut() {
             sub.resumed_writes = paths;
@@ -2099,15 +2093,13 @@ impl Run {
             .get("Summary")
             .map(|s| s.lines().next().unwrap_or("").trim().to_string())
             .unwrap_or_default();
-        self.worker_steps.retain(|d| d.number != n);
-        self.worker_steps.push(worker::DoneStep {
+        self.verification.worker_finished(worker::DoneStep {
             number: n,
             title: step.title.clone(),
             summary: crate::chat_db::store::char_prefix(&summary, 300).to_string(),
             decisions: worker::step_decisions(&result.text),
             light,
         });
-        self.worker_steps.sort_by_key(|d| d.number);
         // The list so far: a group's earlier joins, else the chat's.
         let current = match base {
             Some(items) => items.to_vec(),
@@ -2429,7 +2421,7 @@ fn time_left(started: Instant, waited: Duration, wall: Duration) -> Duration {
 /// was never changed: an older original (the project's copy, the run's
 /// start) is still what the round started with, and the file as it is now
 /// is the subagent's write.
-fn note_round_start(cp: &mut super::repair::Checkpoint, w: &ChildWrite) {
+pub(super) fn note_round_start(cp: &mut super::repair::Checkpoint, w: &ChildWrite) {
     if !cp.too_big {
         cp.files
             .entry(w.path.clone())

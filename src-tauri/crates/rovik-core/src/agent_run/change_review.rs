@@ -1172,7 +1172,7 @@ impl Run {
     /// agent, the run goes on.
     pub(super) async fn review_change(&mut self) -> Result<bool, String> {
         // While fix rounds are under way, the review waits for green (R08).
-        if self.last_verify_failed {
+        if self.verification.last_failed() {
             return Ok(false);
         }
         self.review_change_as(false).await
@@ -1197,20 +1197,20 @@ impl Run {
         // The review blocks in every mode: the change isn't accepted while
         // a finding is open.
         let blocking = true;
-        let follow_up = !self.review_held.is_empty();
+        let follow_up = !self.review.review_held.is_empty();
         // T07: a Thorough task's reviews go on by progress, to a backstop.
         let thorough = self.thorough();
         let cap = self.change_review_cap();
-        if follow_up && self.reviews_total < cap {
+        if follow_up && self.review.carry.reviews_total < cap {
             if let Some(problem) = self.unanswered_review() {
                 self.add_harness(format!("{IDE_NOTE}{problem}"), "review")
                     .await?;
                 return Ok(true);
             }
         }
-        if !(self.writes_since_review || follow_up)
-            || self.reviews_total >= cap
-            || (self.reviews_in_row >= MAX_REVIEWS_IN_ROW && !follow_up)
+        if !(self.review.writes_since_review || follow_up)
+            || self.review.carry.reviews_total >= cap
+            || (self.review.reviews_in_row >= MAX_REVIEWS_IN_ROW && !follow_up)
         {
             return Ok(false);
         }
@@ -1219,20 +1219,18 @@ impl Run {
         let rendered = render_diff(&changes, diff_budget(&models[0]));
         // A follow-up checks its findings however small the change is.
         if rendered.changed_lines < config.review_min_lines().max(1) && !follow_up {
-            self.review_outcome = Some((
+            self.review.finished(
                 "skipped".into(),
                 Some(format!(
                     "the change is under the review's {} lines",
                     config.review_min_lines().max(1)
                 )),
-            ));
+            );
             return Ok(false);
         }
-        let changed_since = self.writes_since_review;
-        self.writes_since_review = false;
-        self.reviews_total += 1;
-        self.reviews_in_row += 1;
-        let round = self.reviews_total;
+        let changed_since = self.review.writes_since_review;
+        self.review.started();
+        let round = self.review.carry.reviews_total;
         // A Thorough review's: once its findings are in.
         let mut last = !thorough && round >= MAX_CHANGE_REVIEWS_PER_RUN;
 
@@ -1272,9 +1270,9 @@ impl Run {
             "Each of them was settled: a follow-up review found it fixed, or not a problem."
                 .to_string();
         let request = self.latest_user_request().await;
-        let earlier = self.review_findings.clone();
-        let held = self.review_held.clone();
-        let responses = self.review_answers.clone();
+        let earlier = self.review.carry.review_findings.clone();
+        let held = self.review.review_held.clone();
+        let responses = self.review.review_answers.clone();
         let brief = review_brief(&BriefParts {
             request: &request,
             plan: plan_text.as_ref().map(|(p, t)| (p.as_str(), t.as_str())),
@@ -1320,7 +1318,8 @@ impl Run {
                         .collect();
                     // An optional finding sent before, in any review that
                     // follows: its brief doesn't list them.
-                    let (found, mut dropped) = drop_optional_repeats(found, &self.review_optional);
+                    let (found, mut dropped) =
+                        drop_optional_repeats(found, &self.review.carry.review_optional);
                     let kept = if follow_up {
                         // S06: B13's rules: an answered finding stays open
                         // when the review says it isn't resolved, or the
@@ -1378,6 +1377,7 @@ impl Run {
             // the backstop's is the last all the same.
             last = match reported {
                 true => !self
+                    .review
                     .change_review_progress
                     .another_round(serious.len(), round),
                 false => round >= cap,
@@ -1387,32 +1387,15 @@ impl Run {
         // numbers the agent answers to. A review that couldn't report
         // leaves them as they were.
         if blocking && reported {
-            // guide.rs: the findings the last review sent are settled now,
-            // with the agent's answers and this review's verdicts; this
-            // review's own, if any, are the next to settle.
-            if follow_up {
-                if let Some(sent) = self.review_rounds.last_mut() {
-                    sent.answers = responses.clone();
-                    sent.verdicts = std::mem::take(&mut verdicts);
-                }
-            }
-            if !serious.is_empty() {
-                self.review_rounds.push(super::guide::ReviewRound {
-                    round,
-                    findings: serious.clone(),
-                    ..Default::default()
-                });
-            }
-            self.review_held = serious.clone();
-            self.review_answers.clear();
-            self.review_answer_nudges = 0;
+            self.review
+                .reported(round, &serious, follow_up, &responses, &mut verdicts);
         }
         // D10: a review that couldn't report found none of the findings it
         // was to check resolved: they're open still. The last review's
         // block; an earlier review's are asked about again, as the plan
         // review's are (S02), never let through unchecked.
         let unchecked: Vec<Finding> = match blocking && !reported {
-            true => self.review_held.clone(),
+            true => self.review.review_held.clone(),
             false => Vec::new(),
         };
         let open = serious.len() + unchecked.len();
@@ -1422,18 +1405,18 @@ impl Run {
             }
             review["blocked"] = json!(true);
             review["open"] = json!(open);
-            self.review_blocked = true;
+            self.review.blocked_by_findings();
         }
-        let asked_again = blocking && !reported && !last && !self.review_held.is_empty();
+        let asked_again = blocking && !reported && !last && !self.review.review_held.is_empty();
         if asked_again {
-            serious = self.review_held.clone();
+            serious = self.review.review_held.clone();
             review["findings"] = ranked(&serious);
         }
         self.review_record(&record_id, review.clone()).await?;
-        self.review_outcome = Some((
+        self.review.finished(
             review["status"].as_str().unwrap_or("").to_string(),
             review["reason"].as_str().map(str::to_string),
-        ));
+        );
         let (upheld, rejected) = disputes(&review["earlier"]);
         log::write(
             &self.core,
@@ -1453,11 +1436,14 @@ impl Run {
                 "changedLines": rendered.changed_lines,
                 "reduced": rendered.reduced,
                 "followUp": follow_up,
-                "blocked": self.review_blocked,
+                "blocked": self.review.review_blocked,
                 "ms": review["ms"],
             }),
         );
-        if self.stopped() || self.review_blocked || (serious.is_empty() && optional.is_empty()) {
+        if self.stopped()
+            || self.review.review_blocked
+            || (serious.is_empty() && optional.is_empty())
+        {
             return Ok(false);
         }
         // guide.rs: from the run's second review that found problems on,
@@ -1473,7 +1459,7 @@ impl Run {
         }
         let rounds = match thorough {
             true => Rounds::ByProgress {
-                stalled: self.change_review_progress.stalled(),
+                stalled: self.review.change_review_progress.stalled(),
             },
             false => Rounds::Count,
         };
@@ -1489,13 +1475,12 @@ impl Run {
             ),
         );
         note.meta = Some(json!({ "harness": "review" }));
-        self.review_note_id = Some(note.id.clone());
+        self.review.note_sent(note.id.clone());
         // Findings asked about again were kept when first found. The
         // optional ones apart: a later brief lists `review_findings` as
         // settled, and nothing settles an optional one.
         if !asked_again {
-            self.review_findings.extend(serious);
-            self.review_optional.extend(optional);
+            self.review.findings_sent(serious, optional);
         }
         self.append(vec![note]).await?;
         Ok(true)
@@ -1515,57 +1500,11 @@ impl Run {
     /// takes: asked for, at most `plan_review::MAX_ANSWER_NUDGES` times a
     /// review; past that, the follow-up checks what was answered.
     fn unanswered_review(&mut self) -> Option<String> {
-        if self.review_answer_nudges >= plan_review::MAX_ANSWER_NUDGES {
-            return None;
-        }
-        let problem = unanswered_review_problem(self.review_held.len(), &self.review_answers)?;
-        self.review_answer_nudges += 1;
-        Some(problem)
+        self.review.unanswered_review()
     }
 
-    /// S06: `answer_review`: the agent's answers to the findings the last
-    /// review sent (`review_held`), by their numbers, kept for the
-    /// follow-up review; a later answer to a finding replaces the earlier.
     pub(super) fn answer_review(&mut self, args: &serde_json::Map<String, Value>) -> ToolResult {
-        let held = self.review_held.len();
-        if held == 0 {
-            return ToolResult::error("Error: no review findings are waiting for an answer.");
-        }
-        let given = plan_review::parse_responses(args.get("responses"));
-        if given.is_empty() {
-            return ToolResult::error(format!("Error: no answer could be read. {ANSWER_SHAPE}"));
-        }
-        let mut unknown: Vec<String> = Vec::new();
-        for answer in given {
-            if answer.finding > held {
-                unknown.push(answer.finding.to_string());
-                continue;
-            }
-            self.review_answers.retain(|a| a.finding != answer.finding);
-            self.review_answers.push(answer);
-        }
-        self.review_answers.sort_by_key(|a| a.finding);
-        let recorded = self
-            .review_answers
-            .iter()
-            .map(|a| format!("{}: {}", a.finding, a.describe()))
-            .collect::<Vec<_>>()
-            .join("; ");
-        let mut out = format!("Recorded: {recorded}.");
-        if !unknown.is_empty() {
-            out.push_str(&format!(
-                " The review sent {held} finding{}: no finding {} to answer.",
-                if held == 1 { "" } else { "s" },
-                unknown.join(", ")
-            ));
-        }
-        match unanswered_review_problem(held, &self.review_answers) {
-            Some(problem) => out.push_str(&format!(" {problem}")),
-            None => out.push_str(
-                " Every finding has its answer: finish once the fixes you named are made, and a follow-up review checks them before the project's checks run.",
-            ),
-        }
-        ToolResult::ok(out)
+        self.review.answer_review(args)
     }
 }
 
@@ -2711,5 +2650,202 @@ mod tests {
             e.contains("finding 1 has a second \"- Scenario:\" line"),
             "{e}"
         );
+    }
+}
+
+/// Review totals and settled/optional findings that survive check approval.
+#[derive(Default, Debug, Clone, PartialEq)]
+pub(super) struct ReviewCarry {
+    /// Change reviews in this run, and since the checks last ran.
+    reviews_total: u32,
+    /// The findings sent to the agent so far, and the note that sent the
+    /// latest (its answers follow it).
+    review_findings: Vec<super::change_review::Finding>,
+    /// The optional findings sent so far (change_review.rs `weigh`): one
+    /// comes back only with new evidence, or weighing more. Apart from
+    /// `review_findings`, which a later brief lists as settled.
+    review_optional: Vec<super::change_review::Finding>,
+}
+/// Change review progress and answers for this run.
+#[derive(Default)]
+pub(super) struct ReviewState {
+    carry: ReviewCarry,
+    /// Files changed since the change reviewer last ran (change_review.rs).
+    writes_since_review: bool,
+    /// How the last change review went: its status and why it was skipped.
+    /// None when it didn't start.
+    review_outcome: Option<(String, Option<String>)>,
+    reviews_in_row: u32,
+    review_note_id: Option<String>,
+    /// S06, the blocking review (every mode): the findings the last review sent,
+    /// numbered as the agent got them, which the next review follows up;
+    /// the agent's answers to them (`answer_review`), and the times it was
+    /// asked for missing ones.
+    review_held: Vec<super::change_review::Finding>,
+    review_answers: Vec<super::plan_review::Response>,
+    review_answer_nudges: u32,
+    /// A finding, of any severity, still open after the run's last review:
+    /// the run ends `review-open`.
+    review_blocked: bool,
+    /// Each change review that found problems in this run, oldest first:
+    /// what it sent, the agent's answers and the next review's verdicts,
+    /// which the guide reads (guide.rs); and what the last guide said.
+    review_rounds: Vec<super::guide::ReviewRound>,
+    last_guidance: Option<super::guide::Guidance>,
+    change_review_progress: super::loops::Progress,
+}
+impl ReviewState {
+    fn started(&mut self) {
+        self.writes_since_review = false;
+        self.carry.reviews_total += 1;
+        self.reviews_in_row += 1;
+    }
+    fn reported(
+        &mut self,
+        round: u32,
+        serious: &[Finding],
+        follow_up: bool,
+        responses: &[plan_review::Response],
+        verdicts: &mut Vec<plan_review::Verdict>,
+    ) {
+        if follow_up {
+            if let Some(sent) = self.review_rounds.last_mut() {
+                sent.answers = responses.to_vec();
+                sent.verdicts = std::mem::take(verdicts);
+            }
+        }
+        if !serious.is_empty() {
+            self.review_rounds.push(super::guide::ReviewRound {
+                round,
+                findings: serious.to_vec(),
+                ..Default::default()
+            });
+        }
+        self.review_held = serious.to_vec();
+        self.review_answers.clear();
+        self.review_answer_nudges = 0;
+    }
+    fn blocked_by_findings(&mut self) {
+        self.review_blocked = true;
+    }
+    fn finished(&mut self, status: String, reason: Option<String>) {
+        self.review_outcome = Some((status, reason));
+    }
+    fn note_sent(&mut self, id: String) {
+        self.review_note_id = Some(id);
+    }
+    fn findings_sent(&mut self, serious: Vec<Finding>, optional: Vec<Finding>) {
+        self.carry.review_findings.extend(serious);
+        self.carry.review_optional.extend(optional);
+    }
+
+    fn unanswered_review(&mut self) -> Option<String> {
+        if self.review_answer_nudges >= plan_review::MAX_ANSWER_NUDGES {
+            return None;
+        }
+        let problem = unanswered_review_problem(self.review_held.len(), &self.review_answers)?;
+        self.review_answer_nudges += 1;
+        Some(problem)
+    }
+
+    /// S06: `answer_review`: the agent's answers to the findings the last
+    /// review sent (`review_held`), by their numbers, kept for the
+    /// follow-up review; a later answer to a finding replaces the earlier.
+    pub(super) fn answer_review(&mut self, args: &serde_json::Map<String, Value>) -> ToolResult {
+        let held = self.review_held.len();
+        if held == 0 {
+            return ToolResult::error("Error: no review findings are waiting for an answer.");
+        }
+        let given = plan_review::parse_responses(args.get("responses"));
+        if given.is_empty() {
+            return ToolResult::error(format!("Error: no answer could be read. {ANSWER_SHAPE}"));
+        }
+        let mut unknown: Vec<String> = Vec::new();
+        for answer in given {
+            if answer.finding > held {
+                unknown.push(answer.finding.to_string());
+                continue;
+            }
+            self.review_answers.retain(|a| a.finding != answer.finding);
+            self.review_answers.push(answer);
+        }
+        self.review_answers.sort_by_key(|a| a.finding);
+        let recorded = self
+            .review_answers
+            .iter()
+            .map(|a| format!("{}: {}", a.finding, a.describe()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let mut out = format!("Recorded: {recorded}.");
+        if !unknown.is_empty() {
+            out.push_str(&format!(
+                " The review sent {held} finding{}: no finding {} to answer.",
+                if held == 1 { "" } else { "s" },
+                unknown.join(", ")
+            ));
+        }
+        match unanswered_review_problem(held, &self.review_answers) {
+            Some(problem) => out.push_str(&format!(" {problem}")),
+            None => out.push_str(
+                " Every finding has its answer: finish once the fixes you named are made, and a follow-up review checks them before the project's checks run.",
+            ),
+        }
+        ToolResult::ok(out)
+    }
+
+    pub(super) fn has_held_findings(&self) -> bool {
+        !self.review_held.is_empty()
+    }
+    pub(super) fn changes_made(&mut self) {
+        self.writes_since_review = true;
+    }
+    pub(super) fn rounds(&self) -> &[super::guide::ReviewRound] {
+        &self.review_rounds
+    }
+    pub(super) fn guidance(&self) -> Option<&super::guide::Guidance> {
+        self.last_guidance.as_ref()
+    }
+    pub(super) fn guided(&mut self, found: Option<super::guide::Guidance>) {
+        self.last_guidance = found;
+    }
+    pub(super) fn take_carry(&mut self) -> ReviewCarry {
+        std::mem::take(&mut self.carry)
+    }
+    pub(super) fn restore(&mut self, carry: ReviewCarry) {
+        self.carry = carry;
+    }
+    pub(super) fn checks_started(&mut self) {
+        self.reviews_in_row = 0;
+    }
+    pub(super) fn blocked(&self) -> bool {
+        self.review_blocked
+    }
+    pub(super) fn total(&self) -> u32 {
+        self.carry.reviews_total
+    }
+    pub(super) fn after_green(&mut self) {
+        self.writes_since_review = true;
+        self.review_outcome = None;
+    }
+    pub(super) fn take_outcome(&mut self) -> Option<(String, Option<String>)> {
+        self.review_outcome.take()
+    }
+    pub(super) fn exhausted(&mut self) {
+        self.reviews_in_row = MAX_REVIEWS_IN_ROW;
+    }
+}
+
+#[cfg(test)]
+impl ReviewCarry {
+    pub(super) fn for_test() -> Self {
+        let finding: Finding = serde_json::from_value(serde_json::json!({
+            "severity":"high", "location":"a.rs:1", "path":"a.rs", "line":1,
+            "title":"A failure", "scenario":"A call fails", "fix":"Handle the error", "confidence":"confirmed"
+        })).unwrap();
+        Self {
+            reviews_total: 3,
+            review_findings: vec![finding.clone()],
+            review_optional: vec![finding],
+        }
     }
 }

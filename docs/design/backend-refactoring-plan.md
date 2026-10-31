@@ -961,14 +961,28 @@ Tests then: `a_second_runtime_on_another_data_folder_is_refused`, and
 - [x] 2.4 Kinds by the table
 - [x] 3.1 Questions, the checklist and message kinds move out
 - [x] 3.2 `plan/` by concern
-- [ ] 3.3 `PlanDoc`, with `steps` and `plan_problems`
-- [ ] 3.4 The other nine functions on `PlanDoc`
-- [ ] 4.1 `ContextState`
-- [ ] 4.2 `SteerState`, `ChecklistState`, `RepoMapState`
-- [ ] 4.3 `PlanState`
-- [ ] 4.4 `ReviewState`
-- [ ] 4.5 `TestsState`
-- [ ] 4.6 `VerificationState`, with the carry
-- [ ] 4.7 `LandingState`
+- [x] 3.3 `PlanDoc`, with `steps` and `plan_problems`
+- [x] 3.4 The other nine functions on `PlanDoc`
+- [x] 4.1 `ContextState`
+- [x] 4.2 `SteerState`, `ChecklistState`, `RepoMapState`
+- [x] 4.3 `PlanState`
+- [x] 4.4 `ReviewState`
+- [x] 4.5 `TestsState`
+- [x] 4.6 `VerificationState`, with the carry
+- [x] 4.7 `LandingState`
 - [x] 5 `RawMessage`
 - [ ] 6 `ProcessRuntime` (when the area next changes)
+
+Phases 3.3–4.7 are implemented. `PlanDoc` shares the plan's indexed structure
+across its readers and transformations; unchanged transformations retain the
+original line endings. The port was compared with the old readers over 65 plan
+samples before removing the old implementation.
+
+`Run` now has 47 fields. Its nine state objects own private fields and expose
+queries and transitions; context-pressure decisions run without database or log
+access. Approval pauses move `FixRounds`, `ReviewCarry` and `TestsCarry` as whole
+objects. Baseline contents are restored from spill files before merging, and
+originals already known by the new run take precedence. File changes and the
+three reasons for checking unchanged files have separate event methods.
+
+Phase 6 remains deferred until the process-runtime area next changes.

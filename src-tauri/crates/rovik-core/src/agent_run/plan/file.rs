@@ -63,37 +63,50 @@ pub fn save_plan_file(
     existing: Option<&str>,
     date: &str,
 ) -> Result<String, String> {
-    let path = match existing {
-        Some(p) => p.to_string(),
-        None => {
-            let stem = file_stem(request, date);
-            let mut path = join(root, &format!("{PLANS_DIR}/{stem}.md"));
-            let mut n = 2;
-            while Path::new(&path).exists() && n < 100 {
-                path = join(root, &format!("{PLANS_DIR}/{stem}-{n}.md"));
-                n += 1;
+    super::PlanDoc::parse(plan).save_plan_file(root, request, existing, date)
+}
+
+impl super::PlanDoc {
+    /// Save this parsed plan with normalized line endings.
+    pub fn save_plan_file(
+        &self,
+        root: &str,
+        request: &str,
+        existing: Option<&str>,
+        date: &str,
+    ) -> Result<String, String> {
+        let path = match existing {
+            Some(p) => p.to_string(),
+            None => {
+                let stem = file_stem(request, date);
+                let mut path = join(root, &format!("{PLANS_DIR}/{stem}.md"));
+                let mut n = 2;
+                while Path::new(&path).exists() && n < 100 {
+                    path = join(root, &format!("{PLANS_DIR}/{stem}-{n}.md"));
+                    n += 1;
+                }
+                path
             }
-            path
-        }
-    };
-    // Round 2: one kind of line ending in the file, as the plan is read.
-    let plan = plan.replace("\r\n", "\n");
-    let body = plan.trim();
-    // A title, if the plan doesn't start with one.
-    let titled = if body.starts_with("# ") || body.starts_with("#\t") {
-        body.to_string()
-    } else {
-        let first: String = request
-            .split('\n')
-            .next()
-            .unwrap_or("")
-            .chars()
-            .take(100)
-            .collect();
-        format!("# Plan: {first}\n\n{body}")
-    };
-    crate::file_guard::write_app_file(Path::new(&path), format!("{titled}\n").as_bytes())?;
-    Ok(path)
+        };
+        // Round 2: one kind of line ending in the file, as the plan is read.
+        let plan = self.text();
+        let body = plan.trim();
+        // A title, if the plan doesn't start with one.
+        let titled = if self.save_title() {
+            body.to_string()
+        } else {
+            let first: String = request
+                .split('\n')
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(100)
+                .collect();
+            format!("# Plan: {first}\n\n{body}")
+        };
+        crate::file_guard::write_app_file(Path::new(&path), format!("{titled}\n").as_bytes())?;
+        Ok(path)
+    }
 }
 
 /// The plan's path for display: relative to the project.

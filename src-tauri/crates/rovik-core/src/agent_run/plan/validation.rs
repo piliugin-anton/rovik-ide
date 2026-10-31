@@ -1,7 +1,6 @@
 //! A plan's validation commands (V02): the checks its "## Validation"
 //! section names, which become the run's checks when it's implemented.
 
-use super::steps::{is_fence, section};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -87,31 +86,41 @@ const RUNS_ON: &[&str] = &["dev", "start", "serve", "watch", "runserver", "previ
 /// read as a check, not a file (`tests/test_x.py`), a function, or a step
 /// to do by hand. They become an Autopilot task's checks when the project
 /// has none (V02). Nothing when the plan has no such section.
-pub fn validation_commands(plan: &str) -> Vec<String> {
-    let Some(section) = section(plan, "validation") else {
-        return Vec::new();
-    };
-    let mut spans: Vec<String> = Vec::new();
-    let mut fenced = false;
-    for line in section.lines() {
-        if is_fence(line) {
-            fenced = !fenced;
-            continue;
+pub fn validation_commands(markdown: &str) -> Vec<String> {
+    super::PlanDoc::parse(markdown).validation_commands()
+}
+
+impl super::PlanDoc {
+    /// Validation commands using this document's indexed structure.
+    pub fn validation_commands(&self) -> Vec<String> {
+        let Some(section) = self.named_section("validation") else {
+            return Vec::new();
+        };
+        let mut spans: Vec<String> = Vec::new();
+        for line in self
+            .lines()
+            .iter()
+            .filter(|l| l.range.start >= section.body.start && l.range.start < section.body.end)
+        {
+            if line.delimiter {
+                continue;
+            }
+            let text = &self.text()[line.range.clone()];
+            if line.fenced != section.fenced {
+                spans.push(text.trim().to_string());
+                continue;
+            }
+            spans.extend(CODE_SPAN.captures_iter(text).map(|c| c[1].to_string()));
         }
-        if fenced {
-            spans.push(line.trim().to_string());
-            continue;
+        let mut out: Vec<String> = Vec::new();
+        for span in spans {
+            let command = span.trim().trim_start_matches("$ ").trim().to_string();
+            if is_validation_command(&command) && !out.contains(&command) {
+                out.push(command);
+            }
         }
-        spans.extend(CODE_SPAN.captures_iter(line).map(|c| c[1].to_string()));
+        out
     }
-    let mut out: Vec<String> = Vec::new();
-    for span in spans {
-        let command = span.trim().trim_start_matches("$ ").trim().to_string();
-        if is_validation_command(&command) && !out.contains(&command) {
-            out.push(command);
-        }
-    }
-    out
 }
 
 static CODE_SPAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`\n]+)`").unwrap());

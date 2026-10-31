@@ -303,7 +303,7 @@ impl Run {
                 self.notice("success", "Landed", &landed.notice(unchecked));
                 // The project changed under the chat's view: the next run
                 // starts from it.
-                self.landed = true;
+                self.landing.landed();
                 Some(("landed", n))
             }
             Ok(Ok(None)) => Some(("nothing new", count)),
@@ -435,10 +435,10 @@ impl Run {
             &self.core,
             serde_json::json!({ "event": "merged-project-changes", "dialogId": self.dialog_id, "files": files.iter().map(|(p, _)| p).collect::<Vec<_>>() }),
         );
-        self.merged_from_project = Some(files);
-        self.writes_since_verify = true;
+        self.landing.merge_started(files);
+        self.verification.changes_made();
         let outcome = self.verify_at_end(false, None).await?;
-        self.merged_from_project = None;
+        self.landing.merge_checked();
         Ok(Some(outcome))
     }
 
@@ -447,7 +447,7 @@ impl Run {
     /// isolated chat's overlay knows its marked files; a server's daemon
     /// knows those of its worktrees (6.7).
     pub(super) async fn remind_of_markers(&mut self) -> Result<bool, String> {
-        if self.plan_mode || self.marker_reminders >= 2 {
+        if self.plan_mode || self.landing.marker_reminders() >= 2 {
             return Ok(false);
         }
         let id = self.dialog_id.clone();
@@ -462,7 +462,7 @@ impl Run {
         if left.is_empty() {
             return Ok(false);
         }
-        self.marker_reminders += 1;
+        self.landing.markers_reminded();
         self.add_harness(
             format!(
                 "{}Conflict markers are still in {}. Your changes can't land until every marker is gone: combine both sides in each conflict, then finish.",
@@ -639,5 +639,37 @@ mod tests {
         );
         background::stop_chat(chat);
         assert_eq!(running_in_view(chat), None);
+    }
+}
+
+/// Landing outcomes and the project changes awaiting checks.
+#[derive(Default)]
+pub(super) struct LandingState {
+    /// An isolated chat's changes landed at the end of this run.
+    landed: bool,
+    /// Files the project's newer changes were just merged into, for the
+    /// failure report of the checks that follow (landing.rs).
+    merged_from_project: Option<Vec<(String, String)>>,
+    /// Times the model was reminded of conflict markers it left.
+    marker_reminders: u32,
+}
+impl LandingState {
+    pub(super) fn merge_started(&mut self, files: Vec<(String, String)>) {
+        self.merged_from_project = Some(files);
+    }
+    pub(super) fn merge_checked(&mut self) {
+        self.merged_from_project = None;
+    }
+    pub(super) fn merged_files(&self) -> Option<&Vec<(String, String)>> {
+        self.merged_from_project.as_ref()
+    }
+    fn landed(&mut self) {
+        self.landed = true;
+    }
+    fn markers_reminded(&mut self) {
+        self.marker_reminders += 1;
+    }
+    fn marker_reminders(&self) -> u32 {
+        self.marker_reminders
     }
 }
