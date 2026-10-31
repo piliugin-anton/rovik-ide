@@ -187,6 +187,62 @@ pub fn shell() -> String {
     }
 }
 
+/// `command` as cmd.exe runs it: one line. `/C` takes a single command line,
+/// where a newline is just another character, not a separator (`echo a` and
+/// `exit 3` on two lines ran as one `echo`), so the lines are joined with
+/// `&`, which in cmd separates commands as a newline does in a POSIX shell.
+/// A newline where it continues the command instead is whitespace only: one
+/// inside double quotes (part of a value, a commit message's body), one a
+/// line ends with `^`, one after a separator already there (`a &&` and the
+/// next line are one command), on a blank line, and at the start or end of
+/// the command: a `&` in any of those would be a second one, which cmd
+/// refuses.
+#[cfg(any(windows, test))]
+fn cmd_one_line(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut chars = command.chars().peekable();
+    let mut quoted = false;
+    // The character before was an unquoted `^`, which takes the next one
+    // literally (in a pair, the second `^` is the literal one).
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        match c {
+            // A CRLF ends its line once: its LF joins it. In double quotes
+            // the CR is part of the value, as written.
+            '\r' if !quoted && chars.peek() == Some(&'\n') => {
+                escaped = false;
+                continue;
+            }
+            '\r' | '\n' if quoted => out.push(c),
+            '\r' | '\n' => {
+                // Nothing after it: the command ends with this line.
+                if chars.clone().all(char::is_whitespace) {
+                    continue;
+                }
+                // Read by what's already written, so a blank line or a
+                // leading one adds no second separator.
+                let last = out.trim_end().chars().next_back();
+                // One space joins, whatever the line left behind it.
+                out.truncate(out.trim_end().len());
+                if escaped || matches!(last, None | Some('&' | '|' | '(' | '>' | '<')) {
+                    out.push(' ');
+                } else {
+                    out.push_str(" & ");
+                }
+                escaped = false;
+                continue;
+            }
+            '"' if !escaped => {
+                quoted = !quoted;
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+        escaped = !quoted && c == '^' && !escaped;
+    }
+    out
+}
+
 /// No Windows mechanism yet (overlay/confine.rs, `windows`): the policy is
 /// ignored here and the callers' text checks apply. When one is added, build
 /// the line below through `confine::command`, as the Unix one does, keeping
@@ -198,7 +254,8 @@ fn shell_command(command: &str, _confine: Option<&crate::overlay::confine::Confi
     // Passed as is: `arg` would escape its quotes as `\"`, which cmd doesn't
     // understand, so `git commit -m "msg"` arrived mangled. With /S, cmd
     // strips exactly the outer pair of quotes and runs the rest verbatim.
-    cmd.raw_arg("/S /C").raw_arg(format!("\"{command}\""));
+    cmd.raw_arg("/S /C")
+        .raw_arg(format!("\"{}\"", cmd_one_line(command)));
     cmd
 }
 
@@ -849,6 +906,58 @@ mod tests {
         )
         .unwrap();
         assert!(plain.whole.is_none());
+    }
+
+    /// `/C` takes one command line: a command of two lines ran as one, so
+    /// its second command never ran (and its exit code was the first's).
+    /// Split out to be tested on every build, like the cmd.exe readings.
+    #[test]
+    fn a_windows_command_of_two_lines_runs_both() {
+        assert_eq!(cmd_one_line("cargo test"), "cargo test");
+        assert_eq!(cmd_one_line("echo a\necho b"), "echo a & echo b");
+        assert_eq!(cmd_one_line("echo a\r\nexit /b 3"), "echo a & exit /b 3");
+        // A value with lines in it is one: a commit's message body.
+        assert_eq!(
+            cmd_one_line("git commit -m \"subject\n\nbody\""),
+            "git commit -m \"subject\n\nbody\""
+        );
+        // `^` continues the line: the next one is part of that command.
+        assert_eq!(cmd_one_line("echo a ^\necho b"), "echo a ^ echo b");
+        // `^^` is a literal caret, not a continuation.
+        assert_eq!(cmd_one_line("echo a^^\necho b"), "echo a^^ & echo b");
+        // A line ending with a separator already continues the command: a
+        // second one would be a syntax error cmd refuses.
+        assert_eq!(
+            cmd_one_line("cargo build &&\ncargo test"),
+            "cargo build && cargo test"
+        );
+        assert_eq!(cmd_one_line("ls |\nwc -l"), "ls | wc -l");
+        assert_eq!(
+            cmd_one_line("type a >\nout.txt\necho done"),
+            "type a > out.txt & echo done"
+        );
+        // The command ending with a line: no separator joins nothing.
+        assert_eq!(cmd_one_line("echo a\n"), "echo a");
+        assert_eq!(cmd_one_line("echo a\r\n"), "echo a");
+        // A blank line between commands, or one at the start, separates once.
+        assert_eq!(
+            cmd_one_line("git commit -m \"subject\"\n\ngit push"),
+            "git commit -m \"subject\" & git push"
+        );
+        assert_eq!(cmd_one_line("a\n\nb"), "a & b");
+        assert_eq!(cmd_one_line("a\n  \nb"), "a & b");
+        assert_eq!(cmd_one_line("\necho a"), " echo a");
+        assert_eq!(cmd_one_line("a &&\n\nb"), "a && b");
+    }
+
+    /// A CRLF inside a quoted value is the value's own, as written: the
+    /// program receives what the model sent, not a line ending it changed.
+    #[test]
+    fn a_windows_commands_quoted_value_keeps_its_own_line_endings() {
+        assert_eq!(
+            cmd_one_line("git commit -m \"subject\r\n\r\nbody\""),
+            "git commit -m \"subject\r\n\r\nbody\""
+        );
     }
 
     #[cfg(windows)]
