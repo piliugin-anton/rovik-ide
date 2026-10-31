@@ -46,6 +46,9 @@ pub struct SubagentConfig {
     pub review_min_lines: Option<usize>,
     /// Plans with at least this many steps are carried out by step workers.
     pub worker_min_steps: Option<usize>,
+    /// The plan reviews one request may have, the first submit's included.
+    /// None: the default (`plan_review::DEFAULT_PLAN_REVIEWS`).
+    pub max_plan_reviews: Option<u32>,
     /// Plan groups run as parallel workers in child overlays (milestone F).
     pub parallel_workers: bool,
     /// The test writer's new tests also run on the code before the change;

@@ -80,7 +80,7 @@ export const SUBAGENT_KINDS: {
     id: 'planReviewer',
     label: 'Plan reviewer',
     hint: 'Checks a plan against the code before it’s saved. Read-only.',
-    when: 'Runs in Plan mode when the agent submits a plan, at most twice a run; small revisions aren’t reviewed. In Autopilot, reviews continue within the “Plan fixing” limits, and it also settles a finding the plan’s author keeps disputing.',
+    when: 'Runs in Plan mode when the agent submits a plan, as often as “Plan reviews per request” allows; small revisions aren’t reviewed. In Autopilot, reviews continue within the “Plan fixing” limits, and it also settles a finding the plan’s author keeps disputing.',
     toolCalls: 25,
     minutes: 4,
   },
@@ -160,6 +160,8 @@ export interface SubagentSettings {
   maxPerRun: number;
   /** The change reviewer runs on changes of at least this many lines. */
   reviewMinLines: number;
+  /** The plan reviews one request may have (agent_run/plan_review.rs). */
+  maxPlanReviews: number;
   /** Plans of at least this many steps go to step workers. */
   workerMinSteps: number;
   /** Plan groups run as parallel workers (isolated chats only). */
@@ -178,6 +180,7 @@ export const LIMITS = {
   atOnce: { min: 1, max: 8, default: 3 },
   perRun: { min: 1, max: 50, default: 12 },
   reviewMinLines: { min: 1, max: 10_000, default: 10 },
+  maxPlanReviews: { min: 1, max: 20, default: 5 },
   workerMinSteps: { min: 1, max: 100, default: 6 },
   runTokens: { min: 1_000, max: 100_000_000 },
   toolCalls: { min: 1, max: 200 },
@@ -188,13 +191,18 @@ type Limit = { min: number; max: number };
 
 /** The whole-number limits that always have a value: the field, its row's label and its range. */
 export const LIMIT_FIELDS: {
-  field: 'maxAtOnce' | 'maxPerRun' | 'reviewMinLines' | 'workerMinSteps';
+  field: 'maxAtOnce' | 'maxPerRun' | 'reviewMinLines' | 'maxPlanReviews' | 'workerMinSteps';
   label: string;
   limit: Limit & { default: number };
 }[] = [
   { field: 'maxAtOnce', label: 'At once per chat', limit: LIMITS.atOnce },
   { field: 'maxPerRun', label: 'Per run', limit: LIMITS.perRun },
   { field: 'reviewMinLines', label: 'Review changes from (lines)', limit: LIMITS.reviewMinLines },
+  {
+    field: 'maxPlanReviews',
+    label: 'Plan reviews per request',
+    limit: LIMITS.maxPlanReviews,
+  },
   {
     field: 'workerMinSteps',
     label: 'Step workers from (plan steps)',
@@ -229,6 +237,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
   maxAtOnce: LIMITS.atOnce.default,
   maxPerRun: LIMITS.perRun.default,
   reviewMinLines: LIMITS.reviewMinLines.default,
+  maxPlanReviews: LIMITS.maxPlanReviews.default,
   workerMinSteps: LIMITS.workerMinSteps.default,
   parallelWorkers: false,
   redCheck: false,
@@ -345,6 +354,7 @@ export interface SubagentConfig {
   maxAtOnce: number;
   maxPerRun: number;
   reviewMinLines: number;
+  maxPlanReviews: number;
   workerMinSteps: number;
   parallelWorkers: boolean;
   redCheck: boolean;
@@ -476,6 +486,7 @@ export function resolveSubagentConfig(
     maxAtOnce: settings.maxAtOnce,
     maxPerRun: settings.maxPerRun,
     reviewMinLines: settings.reviewMinLines,
+    maxPlanReviews: settings.maxPlanReviews,
     workerMinSteps: settings.workerMinSteps,
     parallelWorkers: settings.parallelWorkers,
     redCheck: settings.redCheck,

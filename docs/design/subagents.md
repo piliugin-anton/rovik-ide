@@ -173,12 +173,13 @@ Rovik already has most of the pieces a subagent system needs:
   - registration points (such as `lib.rs` or `commands.ts`) that several
     steps of one group would all edit.
 
-  At most 2 rounds. The agent answers each finding by number (fixed, or
-  not a problem and why), and the second round checks those answers
-  against the revision: it says which earlier findings are resolved and
-  adds only new findings that are high or about what the revision
-  changed. Anything still open is listed at the end of the plan for the
-  user.
+  As many rounds as the Limits' "Plan reviews per request" allows (5 by
+  default, 1–20). The agent answers each finding by number (fixed, or
+  not a problem and why), and each round after the first checks those
+  answers against the revision: it says which earlier findings are
+  resolved and adds only new findings that are high or about what the
+  revision changed. Anything still open is listed at the end of the plan
+  for the user.
 
 **C. Failure triage.**
 
@@ -266,7 +267,7 @@ flowchart TD
     S1 & S2 & S3 --> PL[Lead writes plan<br/>steps + files + parallel groups]
     PL --> PR[Plan reviewer<br/>fresh context, reads the code]
     PR -- findings --> PL
-    PR -- clean or 2 rounds --> AP{User approves plan}
+    PR -- clean or the Limit --> AP{User approves plan}
     AP -- edits --> PL
     AP -- yes --> EX[Execute groups in order]
 
@@ -302,8 +303,8 @@ flowchart TD
    names its files. A new optional "Group" line marks steps that can run
    together, and the plan checker accepts a group only if its steps' file
    lists don't overlap. Before the plan is saved, the plan reviewer checks
-   it against the code, for at most 2 rounds. The user approves or edits
-   the plan, as today.
+   it against the code, as often as the Limits' "Plan reviews per request"
+   allows (5 by default). The user approves or edits the plan, as today.
 4. **Execute.** Groups run in order.
    - A one-step group runs on the lead, or on a fresh step worker when the
      plan is long.

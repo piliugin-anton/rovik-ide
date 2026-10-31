@@ -260,7 +260,7 @@ export default function MessageList(props: {
     kind: 'plan',
     status: 'running',
     round: 0,
-    maxRounds: 2,
+    maxRounds: 5,
   };
   /**
    * A submit_plan call's review (B10): from its result, or running while

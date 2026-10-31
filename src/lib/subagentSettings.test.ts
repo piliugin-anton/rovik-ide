@@ -72,6 +72,7 @@ test('defaults: everything off, chats work as before', () => {
   assert.deepEqual(ids(config.kinds.scout!.models), ['chat']);
   assert.equal(config.kinds.reviewer!.enabled, false);
   assert.equal(config.reviewMinLines, 10);
+  assert.equal(config.maxPlanReviews, 5);
   assert.equal(config.workerMinSteps, 6);
 });
 
@@ -313,6 +314,10 @@ test('limits_clamp_table: each limit is kept whole and within its range', () => 
     ['reviewMinLines', 20_000, 10_000],
     ['reviewMinLines', 2.5, 3],
     ['reviewMinLines', undefined, 10],
+    ['maxPlanReviews', 0, 1],
+    ['maxPlanReviews', 99, 20],
+    ['maxPlanReviews', 3.4, 3],
+    ['maxPlanReviews', undefined, 5],
     ['workerMinSteps', 0.2, 1],
     ['workerMinSteps', 500, 100],
     ['workerMinSteps', NaN, 6],

@@ -483,6 +483,10 @@ pub trait SubagentSettings {
     fn worker_min_steps(&self) -> usize;
     fn max_at_once(&self) -> usize;
     fn max_per_run(&self) -> usize;
+    /// The plan reviews one run may have, the first submit's included:
+    /// "Plan reviews per request" (`plan_review::DEFAULT_PLAN_REVIEWS` when
+    /// the settings say nothing).
+    fn plan_reviews(&self) -> u32;
     /// The kind's budget: its default, lowered or raised by the settings
     /// within sane bounds.
     fn budget(&self, kind: Kind) -> Budget;
@@ -529,6 +533,15 @@ impl SubagentSettings for SubagentConfig {
 
     fn max_per_run(&self) -> usize {
         self.max_per_run.unwrap_or(DEFAULT_MAX_PER_RUN).clamp(1, 50)
+    }
+
+    fn plan_reviews(&self) -> u32 {
+        self.max_plan_reviews
+            .unwrap_or(super::plan_review::DEFAULT_PLAN_REVIEWS)
+            .clamp(
+                super::plan_review::MIN_PLAN_REVIEWS,
+                super::plan_review::MAX_PLAN_REVIEWS,
+            )
     }
 
     fn budget(&self, kind: Kind) -> Budget {
@@ -1795,6 +1808,18 @@ mod tests {
         assert_eq!(none.budget(Kind::Scout), Kind::Scout.spec().default_budget);
         assert_eq!(none.max_at_once(), 3);
         assert_eq!(none.max_per_run(), 12);
+    }
+
+    #[test]
+    fn plan_reviews_take_the_settings_count_within_its_range() {
+        assert_eq!(SubagentConfig::default().plan_reviews(), 5, "the default");
+        let with = |n: u32| SubagentConfig {
+            max_plan_reviews: Some(n),
+            ..Default::default()
+        };
+        assert_eq!(with(0).plan_reviews(), 1, "at least one");
+        assert_eq!(with(2).plan_reviews(), 2);
+        assert_eq!(with(99).plan_reviews(), 20, "at most twenty");
     }
 
     #[test]
