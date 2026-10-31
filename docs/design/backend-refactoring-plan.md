@@ -865,7 +865,7 @@ covered as above.
 
 ---
 
-## Phase 6: an owner for the process runtime (deferred)
+## Phase 6: an owner for the process runtime (planned separately)
 
 ### Today
 
@@ -902,10 +902,12 @@ covered as above.
 
 ### Plan
 
-Not scheduled. One core per process is a decision, and moving the statics
-behind an owner touches about a hundred call sites in four crates for no
-behaviour a user sees. Do it when `Core::new`, `shutdown` or a host's
-start-up next changes, in this order:
+Scheduled in the [ProcessRuntime implementation plan](process-runtime-plan.md),
+based on the implemented phases 3–5. The original reason for deferring it was
+that one core per process is a decision, and moving the statics behind an owner
+touches many call sites across the core and its hosts. The outline below records
+the original direction; the separate plan defines the lifecycle, migration order,
+host integration, and tests:
 
 1. A `ProcessRuntime` made at the host boundary does exactly what's done
    now: `workload::init` and `overlay::chats::init`, and the host's own
@@ -971,7 +973,7 @@ Tests then: `a_second_runtime_on_another_data_folder_is_refused`, and
 - [x] 4.6 `VerificationState`, with the carry
 - [x] 4.7 `LandingState`
 - [x] 5 `RawMessage`
-- [ ] 6 `ProcessRuntime` (when the area next changes)
+- [ ] 6 `ProcessRuntime` ([implementation plan](process-runtime-plan.md))
 
 Phases 3.3–4.7 are implemented. `PlanDoc` shares the plan's indexed structure
 across its readers and transformations; unchanged transformations retain the
@@ -985,4 +987,4 @@ objects. Baseline contents are restored from spill files before merging, and
 originals already known by the new run take precedence. File changes and the
 three reasons for checking unchanged files have separate event methods.
 
-Phase 6 remains deferred until the process-runtime area next changes.
+Phase 6 is now planned separately; its implementation has not started.
