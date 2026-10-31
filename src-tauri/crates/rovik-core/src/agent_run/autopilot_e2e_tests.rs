@@ -519,6 +519,95 @@ async fn a_running_stage_always_has_its_run_or_its_driver_at_work() {
     assert!(!running && !driving, "over: nothing at work");
 }
 
+/// U04: the delivery's record, which its run ends itself (report.rs) before
+/// that run's end, carries what the run spent: in the write that ends it,
+/// and settled by the time its run's end is told — so a reader that finds
+/// no run of the chat going never finds the task's last record underpaid.
+#[tokio::test]
+async fn a_delivery_record_ends_carrying_what_its_run_spent() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        task_script(),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    stages_until(&h, "the delivery", delivered).await;
+
+    let chat = json!(h.dialog_id);
+    let events = h.events.lock().unwrap().clone();
+    let mut delivery: Option<String> = None;
+    // Its record as the events leave it, the first write that says it's
+    // over (its run's end), and its record as that run's end is told.
+    let mut record = Value::Null;
+    let mut ended_with = None;
+    let mut at_run_end = None;
+    for e in events.iter().filter(|e| e["dialogId"] == chat) {
+        match e["type"].as_str().unwrap_or_default() {
+            "messagesAdded" => {
+                for m in e["messages"].as_array().into_iter().flatten() {
+                    if m["meta"]["stage"]["name"] == "deliver" {
+                        delivery = m["id"].as_str().map(str::to_string);
+                        record = m["meta"]["stage"].clone();
+                    }
+                }
+            }
+            "messagePatched" => {
+                let stage = &e["patch"]["meta"]["stage"];
+                let mine = e["messageId"]
+                    .as_str()
+                    .is_some_and(|id| Some(id) == delivery.as_deref());
+                if stage.is_object() && mine {
+                    if stage["status"] != "running" && ended_with.is_none() {
+                        ended_with = Some(stage.clone());
+                    }
+                    record = stage.clone();
+                }
+            }
+            "runEnded" if e["stage"] == "deliver" => at_run_end = Some(record.clone()),
+            _ => {}
+        }
+    }
+    let ended = ended_with.expect("the delivery's record ends");
+    assert!(
+        spent_of(&ended).is_some_and(spends_something),
+        "it ends carrying its run's spend, in that write: {ended}"
+    );
+    // Nothing of the chat runs once its delivery's ends: what a reader of the
+    // chat finds then is its task's last record, whole — its run's spend on
+    // it, and none of it left apart.
+    let found = at_run_end.expect("the delivery's run ends");
+    assert!(
+        found["spent"].is_object() && spends_something(&found["spent"]),
+        "settled before its run's end is told: {found}"
+    );
+    assert!(
+        found["spending"].is_null(),
+        "nothing of its run's spend left apart: {found}"
+    );
+}
+
+/// What a record holds as spent: its ended runs' (`spent`), and what its run
+/// kept as it went (`spending`).
+fn spent_of(record: &Value) -> Option<&Value> {
+    [&record["spent"], &record["spending"]]
+        .into_iter()
+        .find(|spent| spent.is_object())
+}
+
+/// Whether a `Spent` holds what a run spent, not a settle of nothing: some
+/// time, cost, token or reply of it.
+fn spends_something(spent: &Value) -> bool {
+    ["ms", "tokens", "uncosted"]
+        .iter()
+        .any(|key| spent[key].as_u64().is_some_and(|n| n > 0))
+        || spent["cost"].as_f64().is_some_and(|cost| cost > 0.0)
+}
+
 /// A03: one message runs the task to its delivery: the plan run (its
 /// review clean), then the implementation, started by the IDE with the
 /// plan as "Implement this plan" sends it; its checks pass, and every stage
