@@ -45,6 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::task::AbortHandle;
 
 /// How long a server has to start and answer the handshake: an `npx`
 /// server may download itself first.
@@ -57,6 +58,16 @@ const START_WITHIN: Duration = Duration::from_secs(10);
 const LIST_WITHIN: Duration = Duration::from_secs(30);
 #[cfg(any(test, feature = "testing"))]
 const LIST_WITHIN: Duration = Duration::from_secs(5);
+/// How long a run waits for its servers as it starts, before it goes on
+/// without one: a server still starting (a slow handshake, an `npx` that
+/// downloads itself) answers a later run rather than holding the user's
+/// message back. See [`McpState::list_at_start`].
+#[cfg(not(any(test, feature = "testing")))]
+const LISTED_AT_START: Duration = Duration::from_secs(2);
+#[cfg(any(test, feature = "testing"))]
+const LISTED_AT_START: Duration = Duration::from_millis(200);
+/// What a run's listing says of a server it didn't wait for.
+const STILL_STARTING: &str = "Still starting: its tools come with the next message.";
 /// How long a call may take.
 const CALL_WITHIN: Duration = Duration::from_secs(10 * 60);
 /// How long a server that failed waits to be started again.
@@ -554,6 +565,11 @@ struct Instance {
     last_used: Mutex<Instant>,
     /// How many lists and calls are running on it now.
     in_use: AtomicUsize,
+    /// The detached start of its session, if one is in flight
+    /// (`keep_starting`): another run doesn't wait for it, and doesn't
+    /// start it a second time; `shutdown` and `stop_all` stop it, so a
+    /// handshake that never answers holds nothing.
+    starting: Mutex<Option<AbortHandle>>,
 }
 
 /// A list or call using an instance: while it lives, the instance isn't
@@ -566,6 +582,11 @@ impl Busy {
         instance.in_use.fetch_add(1, Ordering::SeqCst);
         *lock(&instance.last_used) = Instant::now();
         Busy(instance)
+    }
+
+    /// The server it holds, for a task of its own that goes on with it.
+    fn shared(&self) -> Arc<Instance> {
+        self.0.clone()
     }
 }
 
@@ -580,6 +601,34 @@ impl Drop for Busy {
     fn drop(&mut self) {
         *lock(&self.0.last_used) = Instant::now();
         self.0.in_use.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Clears an instance's start slot as the task holding it ends, a panic or
+/// an abort included: a server left marked as starting would never be
+/// started again.
+struct StartingStart(Arc<Instance>);
+
+impl Drop for StartingStart {
+    fn drop(&mut self) {
+        *lock(&self.0.starting) = None;
+    }
+}
+
+impl Instance {
+    /// Whether a task of its own is starting it.
+    fn starting(&self) -> bool {
+        lock(&self.starting).is_some()
+    }
+
+    /// Stops the start in flight, if one is: the task's handshake ends with
+    /// it, and so does a server it had started. A start nobody waits for
+    /// must not hold the instance's state (`session` holds it for the whole
+    /// handshake) while the app quits or the server is forgotten.
+    fn stop_starting(&self) {
+        if let Some(start) = lock(&self.starting).take() {
+            start.abort();
+        }
     }
 }
 
@@ -876,17 +925,50 @@ impl McpState {
     /// The tools of the enabled `servers`, for a run whose project is
     /// `project`, its loopback URLs `via` that computer on a daemon (Q04,
     /// Q06, Q11): each server started if it isn't, side by side. Servers in
-    /// name order, each one's tools too.
+    /// name order, each one's tools too. It waits as long as a server needs,
+    /// which only the tests want: a run uses [`McpState::list_at_start`],
+    /// and the settings' Test opens its server itself (`test`, with the
+    /// values typed on the form).
     pub async fn list(
         &self,
         servers: &[McpServer],
         project: Option<&Path>,
         via: Option<&str>,
     ) -> Vec<Listed> {
+        self.listed(servers, project, via, None).await
+    }
+
+    /// The tools of the enabled `servers` for a run that is starting, which
+    /// waits `LISTED_AT_START` for each one: a server that hasn't answered
+    /// by then is reported as still starting, and its start begins again on
+    /// a task of nobody's — the attempt the run waited for ended with the
+    /// wait, a command server's process stopped with it — so a later run
+    /// lists the tools it then has. A run whose start hung on a slow server
+    /// left the user's message unanswered for as long as the server took
+    /// (measured: 60 s, a server whose handshake never came).
+    pub async fn list_at_start(
+        &self,
+        servers: &[McpServer],
+        project: Option<&Path>,
+        via: Option<&str>,
+    ) -> Vec<Listed> {
+        self.listed(servers, project, via, Some(LISTED_AT_START))
+            .await
+    }
+
+    /// Each server's tools, listed side by side: each waited for up to
+    /// `within`, or as long as it takes.
+    async fn listed(
+        &self,
+        servers: &[McpServer],
+        project: Option<&Path>,
+        via: Option<&str>,
+        within: Option<Duration>,
+    ) -> Vec<Listed> {
         let enabled = servers
             .iter()
             .filter(|s| s.enabled && is_valid_name(&s.name));
-        let listed = enabled.map(|server| self.list_one(server, project, via));
+        let listed = enabled.map(|server| self.list_one(server, project, via, within));
         let mut listed = futures_util::future::join_all(listed).await;
         listed.sort_by(|a, b| a.name.cmp(&b.name));
         listed.dedup_by(|a, b| a.name == b.name);
@@ -898,33 +980,94 @@ impl McpState {
         server: &McpServer,
         project: Option<&Path>,
         via: Option<&str>,
+        within: Option<Duration>,
     ) -> Listed {
         let instance = self.instance(server, project, via);
-        let mut instructions = String::new();
-        let tools = match self.session(&instance, server, project, via, None).await {
-            Err(error) => Err(error),
-            Ok(session) => {
-                instructions = session.instructions.clone();
-                match session.list_tools().await {
-                    Ok(mut tools) => {
-                        tools.retain(|t| !server.disabled_tools.contains(&t.name));
-                        tools.sort_by(|a, b| a.name.cmp(&b.name));
-                        tools.dedup_by(|a, b| a.name == b.name);
-                        Ok(tools)
-                    }
-                    Err(failure) => {
-                        let error = failure.text();
-                        failed(&instance, &session, &error).await;
-                        Err(error)
-                    }
+        let answered = self.answered(&instance, server, project, via);
+        let (instructions, tools) = match within {
+            None => answered.await,
+            // A start an earlier run left going: nothing to wait for, and
+            // nothing to start again.
+            Some(_) if instance.starting() => (String::new(), Err(STILL_STARTING.to_string())),
+            Some(within) => match tokio::time::timeout(within, answered).await {
+                Ok(answered) => answered,
+                Err(_) => {
+                    self.keep_starting(&instance, server, project, via);
+                    (String::new(), Err(STILL_STARTING.to_string()))
                 }
-            }
+            },
         };
         Listed {
             name: server.name.clone(),
             instructions,
             tools,
         }
+    }
+
+    /// What a server tells of itself and the tools it offers, its session
+    /// started if it isn't running.
+    async fn answered(
+        &self,
+        instance: &Instance,
+        server: &McpServer,
+        project: Option<&Path>,
+        via: Option<&str>,
+    ) -> (String, Result<Vec<Tool>, String>) {
+        let session = match self.session(instance, server, project, via, None).await {
+            Err(error) => return (String::new(), Err(error)),
+            Ok(session) => session,
+        };
+        let instructions = session.instructions.clone();
+        let tools = match session.list_tools().await {
+            Ok(mut tools) => {
+                tools.retain(|t| !server.disabled_tools.contains(&t.name));
+                tools.sort_by(|a, b| a.name.cmp(&b.name));
+                tools.dedup_by(|a, b| a.name == b.name);
+                Ok(tools)
+            }
+            Err(failure) => {
+                let error = failure.text();
+                failed(instance, &session, &error).await;
+                Err(error)
+            }
+        };
+        (instructions, tools)
+    }
+
+    /// Starts the server a listing stopped waiting for, on a task of its
+    /// own — the attempt it was waiting for stopped with the wait — unless
+    /// a task is starting it already: the session it makes is kept, so a
+    /// later run finds it up (and a server that never answers is marked
+    /// failed, not started again for `RETRY_AFTER`). `shutdown` and
+    /// `stop_all` stop it with the instance.
+    fn keep_starting(
+        &self,
+        instance: &Busy,
+        server: &McpServer,
+        project: Option<&Path>,
+        via: Option<&str>,
+    ) {
+        let instance = instance.shared();
+        let (mcp, server) = (self.clone(), server.clone());
+        let (project, via) = (project.map(Path::to_path_buf), via.map(str::to_string));
+        let mut starting = lock(&instance.starting);
+        // One start at a time: `session` holds the instance's state for the
+        // whole handshake, so a second task would only queue on it.
+        if starting.is_some() {
+            return;
+        }
+        let mine = instance.clone();
+        let task = crate::rt::spawn(async move {
+            // Cleared however this ends, an abort included.
+            let _starting = StartingStart(mine.clone());
+            // Busy while it goes: the idle sweep doesn't stop what is starting.
+            let _busy = Busy::new(mine.clone());
+            // Whatever came of it is in the instance's state: nothing to do here.
+            let _ = mcp
+                .session(&mine, &server, project.as_deref(), via.as_deref(), None)
+                .await;
+        });
+        *starting = Some(task.abort_handle());
     }
 
     /// Calls `tool` (as the run's list has it) of `server` with `arguments`,
@@ -1067,6 +1210,13 @@ impl McpState {
     /// starts one again.
     pub async fn shutdown(&self) {
         let all: Vec<Arc<Instance>> = lock(&self.0.servers).drain().map(|(_, i)| i).collect();
+        // A start nobody waited for ends with it: it holds the instance's
+        // state for its whole handshake, and quitting waits for that state
+        // (`before_exit`), so a server that never answers would hold the app
+        // for up to `START_WITHIN`.
+        for instance in &all {
+            instance.stop_starting();
+        }
         let stops = all.into_iter().map(|instance| async move {
             if let State::Up(session) =
                 std::mem::replace(&mut *instance.state.lock().await, State::Down)
@@ -1093,6 +1243,7 @@ impl McpState {
             state: tokio::sync::Mutex::new(State::Down),
             last_used: Mutex::new(Instant::now()),
             in_use: AtomicUsize::new(0),
+            starting: Mutex::new(None),
         });
         if let Some(old) = running.insert(key, instance.clone()) {
             stop_all(vec![old]);
@@ -1251,6 +1402,9 @@ async fn down(instance: &Instance, session: &Arc<Session>) {
 /// going on one fails, saying the server ended.
 fn stop_all(instances: Vec<Arc<Instance>>) {
     for instance in instances {
+        // A start in flight goes with the instance, rather than holding its
+        // state for the rest of its handshake.
+        instance.stop_starting();
         crate::rt::spawn(async move {
             let state = std::mem::replace(&mut *instance.state.lock().await, State::Down);
             if let State::Up(session) = state {

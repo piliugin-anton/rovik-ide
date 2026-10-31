@@ -867,10 +867,142 @@ async fn a_server_that_cant_be_reached_waits_before_it_is_tried_again() {
     assert!(started.elapsed() < Duration::from_millis(100));
 }
 
+/// A run's listing doesn't wait for a server that hasn't answered: it goes
+/// without its tools, saying so, and the user's message isn't held back
+/// while the server takes its time.
+#[tokio::test]
+async fn a_run_doesnt_wait_for_a_server_that_says_nothing() {
+    // A server that accepts the connection and then never answers: what a
+    // command hanging on a tunnel, or a slow host, looks like.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let silent = server(
+        "silent",
+        McpTransport::Url {
+            url,
+            headers: Vec::new(),
+            sse: false,
+            oauth: None,
+        },
+    );
+    let state = McpState::default();
+    let started = Instant::now();
+    let listed = state
+        .list_at_start(std::slice::from_ref(&silent), None, None)
+        .await;
+    assert_eq!(listed.len(), 1);
+    let error = listed[0].tools.as_ref().unwrap_err();
+    assert_eq!(error.as_str(), STILL_STARTING);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the run's listing waited {:?} for it",
+        started.elapsed()
+    );
+    drop(listener);
+}
+
+/// A send whose server is still being started from an earlier one goes on
+/// at once: it doesn't wait for that start, nor start the server again.
+#[tokio::test]
+async fn a_send_while_a_server_is_starting_isnt_waited_for_again() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let silent = server(
+        "silent",
+        McpTransport::Url {
+            url,
+            headers: Vec::new(),
+            sse: false,
+            oauth: None,
+        },
+    );
+    let state = McpState::default();
+    let servers = std::slice::from_ref(&silent);
+    let first = state.list_at_start(servers, None, None).await;
+    assert_eq!(
+        first[0].tools.as_ref().unwrap_err().as_str(),
+        STILL_STARTING
+    );
+    // It is being started now; the next send doesn't wait for it.
+    let started = Instant::now();
+    let again = state.list_at_start(servers, None, None).await;
+    assert_eq!(
+        again[0].tools.as_ref().unwrap_err().as_str(),
+        STILL_STARTING
+    );
+    assert!(
+        started.elapsed() < LISTED_AT_START / 2,
+        "the second send waited {:?} for the start",
+        started.elapsed()
+    );
+    drop(listener);
+}
+
+/// Quitting doesn't wait for a start nobody waited for: the start stops
+/// with the app, rather than holding its server's state for a handshake
+/// that never answers (`START_WITHIN`).
+#[tokio::test]
+async fn shutdown_doesnt_wait_for_a_start_nobody_waits_for() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let silent = server(
+        "silent",
+        McpTransport::Url {
+            url,
+            headers: Vec::new(),
+            sse: false,
+            oauth: None,
+        },
+    );
+    let state = McpState::default();
+    let listed = state
+        .list_at_start(std::slice::from_ref(&silent), None, None)
+        .await;
+    assert_eq!(
+        listed[0].tools.as_ref().unwrap_err().as_str(),
+        STILL_STARTING
+    );
+    // Its start is in flight, and nobody waits for it.
+    let started = Instant::now();
+    state.shutdown().await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "shutting down waited {:?} for the start",
+        started.elapsed()
+    );
+    drop(listener);
+}
+
+/// A server that answers at once is listed for the run as it always was:
+/// the short wait takes nothing from it.
+#[tokio::test]
+async fn a_run_lists_a_server_that_answers_at_once() {
+    let (rovik, _calls) = RovikServer::start(&rovik_tools(), "", None).await.unwrap();
+    let state = McpState::default();
+    let token = rovik.authorization();
+    state.set_secrets(Arc::new(move |_, _| Ok(Some(token.clone()))));
+    let rovik_server = server(
+        "rovik",
+        McpTransport::Url {
+            url: rovik.url(),
+            headers: vec![header("Authorization", "", true)],
+            sse: false,
+            oauth: None,
+        },
+    );
+    let listed = state
+        .list_at_start(std::slice::from_ref(&rovik_server), None, None)
+        .await;
+    let tools = listed[0].tools.clone().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["bash", "read"]);
+}
+
 /// The fake command server (Python): `legacy` speaks the handshake and asks
 /// Rovik a `ping` in the middle of a call; `modern` refuses the handshake
 /// and wants `_meta` on every request; `wait` holds a call until the file
-/// `<log>.release` exists; `crash` exits at once, saying why.
+/// `<log>.release` exists; `crash` exits at once, saying why; `late` answers
+/// the handshake half a second late, and notes that it did.
 /// What it receives, its folder and its environment go in `log`, one JSON
 /// line each.
 const FAKE_SERVER: &str = r#"
@@ -906,10 +1038,14 @@ while True:
         continue
     params = message.get('params') or {}
     if method == 'initialize':
+        if mode == 'late':
+            time.sleep(0.5)
         if mode == 'modern':
             send({'jsonrpc': '2.0', 'id': id, 'error': {'code': -32601, 'message': 'Method not found'}})
         else:
             send({'jsonrpc': '2.0', 'id': id, 'result': {'protocolVersion': '2025-06-18', 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'fake', 'version': '1.2'}, 'instructions': 'Fake tools.'}})
+            if mode == 'late':
+                record({'answered': 'initialize'})
         continue
     if method == 'server/discover':
         send({'jsonrpc': '2.0', 'id': id, 'result': {'resultType': 'complete', 'supportedVersions': ['2026-07-28'], 'capabilities': {'tools': {}}, '_meta': {'io.modelcontextprotocol/serverInfo': {'name': 'fake', 'version': '2.0'}}}})
@@ -989,6 +1125,40 @@ fn with_token(state: &McpState) {
         assert_eq!(key, "env/FAKE_TOKEN");
         Ok(Some("t0ken".into()))
     }));
+}
+
+/// A server a run stopped waiting for keeps starting on its own: the run
+/// after it lists the tools the first one went without.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_server_a_run_didnt_wait_for_is_started_anyway() {
+    let dir = temp_dir();
+    // It answers the handshake half a second late: past the run's wait.
+    let (transport, log) = fake(&dir.0, "late");
+    let state = McpState::default();
+    with_token(&state);
+    let late = server("late", transport);
+    let listed = state
+        .list_at_start(std::slice::from_ref(&late), None, None)
+        .await;
+    assert_eq!(
+        listed[0].tools.as_ref().unwrap_err().as_str(),
+        STILL_STARTING
+    );
+    // Nobody waits now, and it answers anyway: the start went on.
+    let answered = || {
+        logged(&log)
+            .iter()
+            .any(|line| line.get("answered") == Some(&json!("initialize")))
+    };
+    let started = Instant::now();
+    while !answered() && started.elapsed() < Duration::from_secs(5) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(answered(), "the start went on without a waiter");
+    // And its session is the run's to list: nothing to start again.
+    let next = state.list(std::slice::from_ref(&late), None, None).await;
+    assert!(next[0].tools.is_ok(), "{:?}", next[0].tools);
 }
 
 /// A legacy command server: started in the project's folder with its

@@ -181,7 +181,15 @@ don't hold it, and the page says so. The agent can't add or change one.
 - Each run lists its servers' tools as it starts (`tools/list`, the servers
   side by side): a server's change of tools, or of the switches on the
   page, reaches the next run with no notifications to follow. A run's list
-  stays as it was listed (Q06).
+  stays as it was listed (Q06). A server that hasn't answered within
+  `LISTED_AT_START` (2 s) isn't waited for: the run goes on, its list
+  saying the server is still starting, and a fresh start begins on a task
+  of nobody's (the attempt the run waited for ended with the wait, a
+  command server's process stopped with it), so a later run lists the
+  tools it then has. `shutdown` stops such a start, so quitting never waits
+  for a handshake. `list` waits as long as a server needs: only the tests
+  use it; the settings' Test opens its server itself. A server hanging on
+  its handshake once held every send's start for `START_WITHIN` (60 s).
 - A server that fails to start or to list, or exits, is started again at
   the next run that needs it, not more often than once a minute; meanwhile
   the agent's list says it's unavailable, and why, so the agent can tell

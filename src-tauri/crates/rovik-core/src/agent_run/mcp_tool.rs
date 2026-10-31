@@ -110,8 +110,10 @@ impl Catalog {
             return None;
         }
         let via = core.mcp.via(chat);
+        // A run's listing doesn't wait for a server that's slow to answer:
+        // a hanging one held every send back for a minute (`list_at_start`).
         let listed = (core.mcp)
-            .list(&servers, project.as_deref(), via.as_deref())
+            .list_at_start(&servers, project.as_deref(), via.as_deref())
             .await;
         Some(Arc::new(Catalog {
             servers,
