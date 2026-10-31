@@ -1639,6 +1639,17 @@ pub(super) async fn start_run(
         // Autopilot task's run: told before it's gone.
         let spent = core.agents.run_spent(&dialog_id).unwrap_or_default();
         let autopilot = core.agents.autopilot_of(&dialog_id).is_some();
+        // U04: its spend is its stage record's before its end is told, so a
+        // reader that finds no run of the chat going finds its task's last
+        // record whole: a stage the run ended itself (a delivery's, its
+        // report) carries all it spent already.
+        if let Some(stage) = &stage {
+            if let Err(e) = autopilot::settle_spent(&core, &dialog_id, &stage.record, spent).await {
+                eprintln!(
+                    "agent: chat {dialog_id}: its run's spend wasn't put on its stage's record: {e}"
+                );
+            }
+        }
         drop(registered);
         core.emit(AgentEvent::RunEnded {
             dialog_id: dialog_id.clone(),
@@ -1648,7 +1659,7 @@ pub(super) async fn start_run(
             stage: stage.as_ref().map(|s| s.stage.id().to_string()),
         });
         if let (Some(stage), Some(driving)) = (stage, driving) {
-            autopilot::after_run(core, dialog_id, stage, outcome, spent, settings, driving).await;
+            autopilot::after_run(core, dialog_id, stage, outcome, settings, driving).await;
         }
     });
     Ok(Some(run_id))

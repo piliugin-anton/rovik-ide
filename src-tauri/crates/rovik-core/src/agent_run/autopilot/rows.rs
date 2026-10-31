@@ -48,6 +48,25 @@ pub async fn end_stage(
     Ok(record)
 }
 
+/// `end_stage` with what the run spent so far (`so_far`) on the record, in
+/// the same write (U04): the stage's end puts no less on its record than
+/// its run had spent, so a reader never finds it over and underpaid.
+pub(in crate::agent_run) async fn end_stage_spent(
+    core: &Core,
+    dialog_id: &str,
+    id: &str,
+    so_far: Option<Spent>,
+    change: impl FnOnce(&mut StageRecord),
+) -> Result<StageRecord, String> {
+    end_stage(core, dialog_id, id, |record| {
+        change(record);
+        if so_far.is_some() {
+            record.spending = so_far;
+        }
+    })
+    .await
+}
+
 /// The log's line for a stage record as it's added, or as it ends (with
 /// its outcome).
 pub(super) fn log_stage(core: &Core, dialog_id: &str, record: &StageRecord, ended: bool) {
@@ -94,9 +113,15 @@ impl crate::agent_run::run::Run {
         change: impl FnOnce(&mut StageRecord),
     ) -> Result<(), String> {
         match &self.stage {
-            Some(stage) => end_stage(&self.core, &self.dialog_id, &stage.record, change)
-                .await
-                .map(drop),
+            // U04: what the run spent so far ends with its record, in one
+            // write: its stage never reads as over with less on it than
+            // the run spent.
+            Some(stage) => {
+                let so_far = self.spent_so_far();
+                end_stage_spent(&self.core, &self.dialog_id, &stage.record, so_far, change)
+                    .await
+                    .map(drop)
+            }
             None => Ok(()),
         }
     }
@@ -133,8 +158,10 @@ pub(in crate::agent_run) async fn keep_spending(
 }
 
 /// U04: a run's spend is its stage record's from its end, all of it
-/// (`total`), in place of what the run kept of it as it went.
-pub(super) async fn settle_spent(
+/// (`total`), in place of what the run kept of it as it went. Told before
+/// the run's end is, so the record a reader finds once no run of the chat
+/// goes is whole.
+pub(in crate::agent_run) async fn settle_spent(
     core: &Core,
     dialog_id: &str,
     record: &str,

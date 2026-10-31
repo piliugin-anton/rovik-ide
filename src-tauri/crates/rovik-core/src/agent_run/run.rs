@@ -676,13 +676,10 @@ impl Run {
     /// record's `spent` instead. A failed write costs only what it would
     /// have kept.
     pub(super) async fn keep_spending(&self) {
-        if self.sub().is_some() {
-            return;
-        }
         let Some(stage) = &self.stage else {
             return;
         };
-        let Some(so_far) = self.core.agents.run_spent(&self.dialog_id) else {
+        let Some(so_far) = self.spent_so_far() else {
             return;
         };
         let kept =
@@ -693,6 +690,15 @@ impl Run {
                 self.dialog_id
             );
         }
+    }
+
+    /// U04: what the run spent so far, for its stage's record; none for a
+    /// subagent's, whose replies count for its lead's.
+    pub(super) fn spent_so_far(&self) -> Option<super::budget::Spent> {
+        if self.sub().is_some() {
+            return None;
+        }
+        self.core.agents.run_spent(&self.dialog_id)
     }
 
     /// Ends the run over its task's budget: the reply's calls get a result

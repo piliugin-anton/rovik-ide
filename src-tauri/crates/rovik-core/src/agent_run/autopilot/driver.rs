@@ -12,13 +12,13 @@ use super::outcome::{
     failure_of, failure_summary, reopens, run_continues, task_outcome, undelivered,
 };
 use super::rate_limit::{rate_limit_wait, retry_later, RateLimited};
-use super::rows::{add_stage, current_task, end_stage, load, settle_spent, task_chat, task_spent};
+use super::rows::{add_stage, current_task, end_stage, load, task_chat, task_spent};
 use super::stage::{
     next_after, next_round, total_spent, Carrier, Next, Recorded, Stage, StageRecord, StageRun,
     Status,
 };
 use crate::agent::OpenAIChatOptions;
-use crate::agent_run::budget::{self, Spent};
+use crate::agent_run::budget;
 use crate::agent_run::events::AgentEvent;
 use crate::agent_run::recovery::{self, Recovery};
 use crate::agent_run::{plan, StartKind, StartRequest, UserMessage};
@@ -218,23 +218,23 @@ pub(in crate::agent_run) type DriveGuard = tokio::sync::OwnedMutexGuard<()>;
 /// task goes on to its next stages. Called where the run's end is told,
 /// after its landing (`agent_start`), with the driver's turn taken before
 /// it was told. Boxed: what it starts is a run whose end comes back here.
-/// `spent`: what the run spent (U04), which its stage's record keeps.
+/// What the run spent is its record's before its end is told (`settle_spent`,
+/// in `agent_start`), so nothing here pays for it again.
 pub(in crate::agent_run) fn after_run(
     core: Core,
     dialog_id: String,
     run: StageRun,
     outcome: String,
-    spent: Spent,
     settings: Settings,
     driving: (DriveGuard, AtWork),
 ) -> Driving {
     Box::pin(async move {
         let _driving = driving;
         let result = async {
-            // U04: what the run spent is its record's from here, all of it.
-            settle_spent(&core, &dialog_id, &run.record, spent).await?;
             if run_continues(&outcome) {
-                // Under way still: what it spent so far is kept with it.
+                // Under way still: its spend was settled onto its record
+                // before its end was told (`settle_spent`, in `agent_start`),
+                // and the stage's next run counts from there.
                 return Ok(());
             }
             // H07: the provider's rate limit holds the stage up until it

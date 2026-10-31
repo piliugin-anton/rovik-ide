@@ -70,6 +70,7 @@ pub(super) use rate_limit::{rate_limit_armed, stop_waiting};
 pub use rovik_protocol::autopilot::{AutopilotConfig, Budget, Effort};
 pub(super) use rows::{
     add_record_row, append, history_window, keep_cut_spending, keep_spending, save_meta,
+    settle_spent,
 };
 pub use rows::{
     add_stage, current_task, end_stage, load, task_spent, task_stages, unfinished, StageRow,
