@@ -1318,6 +1318,7 @@ const CHECK_COMMANDS: &[&[&str]] = &[
     &["cargo", "check"],
     &["cargo", "test"],
     &["cargo", "clippy"],
+    &["cargo", "nextest"],
     &["cargo", "build"],
     &["cargo", "tree"],
     &["cargo", "metadata"],
@@ -1360,6 +1361,116 @@ static BRANCH_CHANGES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^-(d|D|m|M|c|C|f)$|^--(delete|move|copy|force)").unwrap());
 static REWRITES_FILES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(--fix|--write|--in-place)\b").unwrap());
+
+/// Whether a `sed` option name asks it to rewrite its files in place: `-i`,
+/// `-I` (BSD sed's), and `--in-place` as short as GNU sed takes it
+/// (`--in-p`: the only long option it has beginning with `i`).
+fn rewrites_in_place(option: &str) -> bool {
+    if option.starts_with("--") {
+        return option.len() > 2 && "--in-place".starts_with(option);
+    }
+    matches!(option, "-i" | "-I")
+}
+
+/// Whether a `sed` invocation may change a file: `-i` rewrites the files it
+/// reads, a script file (`-f`) could hold anything, and a script itself
+/// writes one (`w`, `W`), runs a program (`e`), or does either from an `s`
+/// command's flags (`s/a/b/w out`, `s/.*/rm -rf src/e`). The arguments are
+/// read as restricted.rs reads them (`filter_effects`, and sed's options
+/// take the same values there): a script is each `-e` value, or the first
+/// word when there's none. Only an option asks for `-i`: a word after `--`
+/// (an operand sed opens) does not.
+fn sed_may_write(rest: &[String]) -> bool {
+    let args = super::restricted::Args::split(
+        rest,
+        &["-e", "--expression", "-f", "--file", "-l", "--line-length"],
+        false,
+    );
+    if args.options.iter().any(|(name, _)| rewrites_in_place(name)) || args.has(&["-f", "--file"]) {
+        return true;
+    }
+    let scripts: Vec<&str> = args.values(&["-e", "--expression"]).collect();
+    match scripts.first() {
+        Some(_) => scripts.iter().any(|script| sed_script_may_write(script)),
+        None => args
+            .words
+            .first()
+            .is_some_and(|script| sed_script_may_write(script)),
+    }
+}
+
+/// Whether a sed script writes a file or runs a program: its `w`/`W` and
+/// `e` commands, and an `s` (or `y`) command flagged `w`, `W` or `e`. Every
+/// other command, and an address, only reads (`p`, `d`, `s/a/b/g`, `/w/p`).
+fn sed_script_may_write(script: &str) -> bool {
+    let chars: Vec<char> = script.chars().collect();
+    let mut at = 0;
+    while at < chars.len() {
+        let c = chars[at];
+        match c {
+            // Separators, and what an address is made of.
+            _ if c.is_whitespace()
+                || matches!(c, ';' | ',' | '{' | '}' | '!' | '0'..='9' | '$' | '+' | '~') =>
+            {
+                at += 1;
+            }
+            // An address's regular expression: `/re/`, or `\xre x`.
+            '/' => at = past_delimiter(&chars, at + 1, '/'),
+            '\\' => at = past_delimiter(&chars, at + 1, chars.get(at + 1).copied().unwrap_or('/')),
+            'w' | 'W' | 'e' => return true,
+            // `s` and `y` take a delimiter, a pattern, the delimiter again, a
+            // replacement and its closing delimiter, then the flags.
+            's' | 'y' => {
+                let Some(&delimiter) = chars.get(at + 1) else {
+                    return true;
+                };
+                let flags =
+                    past_delimiter(&chars, past_delimiter(&chars, at + 2, delimiter), delimiter);
+                let to = separator_after(&chars, flags);
+                if chars[flags..to]
+                    .iter()
+                    .any(|f| matches!(f, 'w' | 'W' | 'e'))
+                {
+                    return true;
+                }
+                at = to;
+            }
+            // Anything else may take words to the end of its line (`a text`,
+            // `:label`, `w` alone would have been caught above).
+            _ => at = separator_after(&chars, at + 1),
+        }
+    }
+    false
+}
+
+/// Where `from` continues once the `delimiter` it's in is closed, an escaped
+/// one (`\/`) not counting; the end of the script when it isn't closed.
+fn past_delimiter(chars: &[char], from: usize, delimiter: char) -> usize {
+    let mut at = from;
+    while at < chars.len() {
+        match chars[at] {
+            c if c == delimiter => return at + 1,
+            '\\' => at += 2,
+            _ => at += 1,
+        }
+    }
+    chars.len()
+}
+
+/// Where a command's words end: at the `;`, the newline or the `}` closing
+/// its block, or the end of the script.
+fn separator_after(chars: &[char], from: usize) -> usize {
+    let mut at = from;
+    while at < chars.len() {
+        match chars[at] {
+            ';' | '\n' | '}' => return at + 1,
+            // A backslash before a newline continues the words on the next.
+            '\\' if chars.get(at + 1) == Some(&'\n') => at += 2,
+            _ => at += 1,
+        }
+    }
+    chars.len()
+}
 
 pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
     // `env rm -rf x` runs `rm`; `sudo` anything changes who runs it.
@@ -1407,6 +1518,11 @@ pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
         return !rest
             .iter()
             .any(|a| AWK_WRITES.is_match(a) || a.starts_with("--file") || a.starts_with("-f"));
+    }
+    if matches!(cmd, "sed" | "gsed") {
+        // `sed` reads the files it's given, so a run that only reads one
+        // with it changed nothing and its end runs no checks (verify.rs).
+        return !sed_may_write(rest);
     }
     if cmd == "tree" {
         // `tree -o FILE` writes the listing to FILE.
@@ -2052,6 +2168,62 @@ mod tests {
                 read_only,
                 "{command}"
             );
+        }
+    }
+
+    /// `sed` reads the files it's given unless `-i` rewrites them, and a
+    /// test runner builds output without editing the project's files: a run
+    /// that only read and ran them changed nothing, so its end runs no
+    /// checks (verify.rs, `note_command`).
+    #[test]
+    fn reading_with_sed_or_running_the_tests_is_no_change() {
+        for command in [
+            "sed -n '1,60p' src/main.rs",
+            "sed -n '1,60p' /run/user/1000/rovik-ide/vfs-2/context/chat/LIVE_CONTEXT.md",
+            "gsed -n 5,9p @context/TASK.md",
+            "cat f | sed 's/a/b/'",
+            "cargo nextest run -p rovik-core",
+            "cargo nextest run --tests",
+        ] {
+            assert!(!command_modifies_files(command), "{command}");
+        }
+        for command in [
+            "sed -i 's/a/b/' f",
+            "sed -i.bak 's/a/b/' f",
+            "sed -ni 's/a/b/' f",
+            "sed -I '' s/a/b/ f",
+            "sed --in-place s/a/b/ f",
+            "sed --in-place=.bak s/a/b/ f",
+            "sed --in-p s/a/b/ f",
+            "sed -e s/a/b/ -i f",
+            // A script writes a file, or runs a program, without `-i`.
+            "sed -n 'w out.txt' src/a.rs",
+            "sed -n '1w /tmp/x' a.rs",
+            "sed -n 's/a/b/w out.txt' f",
+            "sed -n '/a/W out.txt' f",
+            "sed '1e rm -rf src' f",
+            "sed 's/.*/rm -rf src/e' f",
+            // A script it reads (`-f`) could hold any of them.
+            "sed -n -f prog.sed f",
+            "sed -n --file=prog.sed f",
+            // A long option takes its value before the script: `--line-length 70`.
+            "sed --line-length 70 'w out.txt' f",
+        ] {
+            assert!(command_modifies_files(command), "{command}");
+        }
+        // What only reads stays a read.
+        for command in [
+            "sed -n 's/foo/bar/p' f",
+            "sed -n '/w/p' f",
+            "sed -e 's/a/b/g' -e 'p' f",
+            "sed -n '1,60p;' f",
+            "sed -- s/a/b/ f",
+            // After `--` sed opens `-i` as a file: it's no option.
+            "sed -- s/a/b/ f -i",
+            // Nor is a value an option: here `-i` is the script `-e` takes.
+            "sed -e '-i' f",
+        ] {
+            assert!(!command_modifies_files(command), "{command}");
         }
     }
 
