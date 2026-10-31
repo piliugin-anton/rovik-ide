@@ -14,9 +14,10 @@ use super::permissions::ChecklistMode;
 use super::project::{self, ProjectCheck};
 use super::subagent::SubagentSettings;
 use super::subagent_run::SubCtx;
+use super::tools::Outcome;
 use super::{
-    failure, log, plan, repair, repetition, subagent, tools, Controls, EffortPick, ModelProfile,
-    PauseRequest, PauseSignal, StartKind, StartRequest, StopSignal,
+    checklist, failure, log, messages, plan, repair, repetition, subagent, tools, Controls,
+    EffortPick, ModelProfile, PauseRequest, PauseSignal, StartKind, StartRequest, StopSignal,
 };
 use crate::agent::{
     ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS,
@@ -164,7 +165,7 @@ pub struct Run {
     pub(super) current_user_content: Option<String>,
     pub(super) local_date: String,
     pub(super) guard: Guard,
-    /// ask_user calls so far (Plan mode caps them).
+    /// ask_user calls so far (at most `questions::MAX_QUESTIONS_PER_RUN` a run).
     pub(super) questions_asked: u32,
     /// The project's checks and the system-prompt section about it. Fixed
     /// for the run: what changes (the repository map) is sent apart.
@@ -404,7 +405,7 @@ pub struct Run {
     /// evidence they needed, for the next review's brief.
     pub(super) plan_dropped: Vec<String>,
     /// Balanced Autopilot: submits the checker sent back for format
-    /// problems alone (plan.rs `skeleton` after two).
+    /// problems alone (`plan::skeleton` after two).
     pub(super) plan_format_rejections: u32,
     /// A person's Retry or Continue of the plan stage: the `seq` of the
     /// Plan record it started. The stage's time and budget share count
@@ -699,7 +700,8 @@ impl Run {
     async fn end_over_budget(&mut self, calls: &[ToolCall], why: &str) -> Result<String, String> {
         for tc in calls {
             let content = format!("Error: not run: the task went over its budget ({why}).");
-            self.answer_unrun(tc, content, false, None).await?;
+            self.answer_unrun(tc, content, Outcome::Failed, false, None)
+                .await?;
         }
         log::write(
             &self.core,
@@ -937,7 +939,7 @@ impl Run {
             recent: &mut Vec<MessageRow>,
             content: String,
             meta: Value,
-            items: Option<Vec<plan::TodoItem>>,
+            items: Option<Vec<checklist::TodoItem>>,
         ) {
             let mut m = new_message("user", &content);
             m.meta = Some(meta);
@@ -986,13 +988,13 @@ impl Run {
         // Agent mode only: Plan mode has no `todo` tool, so a note asking
         // for it would only confuse the plan.
         if is_send && !plan_mode {
-            if let Some(carried) = plan::current_checklist(&recent) {
-                if carried.carried && !plan::open_steps(&carried.items).is_empty() {
+            if let Some(carried) = checklist::current_checklist(&recent) {
+                if carried.carried && !checklist::open_steps(&carried.items).is_empty() {
                     append_carry_note(
                         core,
                         &dialog_id,
                         &mut recent,
-                        plan::carry_note(&carried.items),
+                        checklist::carry_note(&carried.items),
                         json!({ "harness": "checklistCarried", "fromMessageId": carried.from_message_id }),
                         Some(carried.items),
                     )
@@ -1001,13 +1003,13 @@ impl Run {
             }
         }
         if is_continue_run && !plan_mode {
-            if let Some(current) = plan::current_checklist(&recent) {
-                if !plan::open_steps(&current.items).is_empty() {
+            if let Some(current) = checklist::current_checklist(&recent) {
+                if !checklist::open_steps(&current.items).is_empty() {
                     append_carry_note(
                         core,
                         &dialog_id,
                         &mut recent,
-                        plan::continue_note(&current.items),
+                        checklist::continue_note(&current.items),
                         json!({ "harness": "checklistContinued", "fromMessageId": current.from_message_id }),
                         Some(current.items),
                     )
@@ -1176,13 +1178,13 @@ impl Run {
         // has its own checklist. A carried one still gets a fresh `todo`
         // call: the model confirms or closes it before anything else.
         let checklist_mode = config.permissions.checklist;
-        let has_own_checklist = plan::current_checklist(&recent).is_some_and(|c| !c.carried);
+        let has_own_checklist = checklist::current_checklist(&recent).is_some_and(|c| !c.carried);
         let force_todo_next = !plan_mode
             && root.is_some()
             && !has_own_checklist
             && match checklist_mode {
                 ChecklistMode::Always => is_send,
-                _ => implements_plan && plan::current_checklist(&recent).is_none(),
+                _ => implements_plan && checklist::current_checklist(&recent).is_none(),
             };
 
         // D2: a stage's fresh context, from its own rows.
@@ -1879,8 +1881,13 @@ impl Run {
                 // final message carries `meta.checklistOpen`.
                 if !self.plan_mode && self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
                     let recent = self.recent().await?;
-                    let open = plan::current_checklist(&recent)
-                        .map(|c| c.items.into_iter().filter(|i| !plan::is_settled(i)).count())
+                    let open = checklist::current_checklist(&recent)
+                        .map(|c| {
+                            c.items
+                                .into_iter()
+                                .filter(|i| !checklist::is_settled(i))
+                                .count()
+                        })
                         .unwrap_or(0);
                     if open > 0 {
                         // P4: a message sent meanwhile is read, and the run
@@ -2313,8 +2320,8 @@ impl Run {
                 .recent()
                 .await
                 .ok()
-                .and_then(|recent| plan::current_checklist(&recent))
-                .map(|c| plan::checklist_note(&c.items, c.carried));
+                .and_then(|recent| checklist::current_checklist(&recent))
+                .map(|c| checklist::checklist_note(&c.items, c.carried));
             if context_only {
                 let restriction = "[context: this turn offers only context tools (read/write/list_dir on \
                     @context/…, restore_context) and todo: compact your context file now, copying facts forward, \
@@ -2723,7 +2730,7 @@ impl Run {
         let recent = self.recent().await?;
         let mut submitted = None;
         for m in recent.iter().rev() {
-            if plan::is_request(m) {
+            if messages::is_request(m) {
                 break;
             }
             if m.role == "tool" {
@@ -2810,12 +2817,12 @@ impl Run {
             return Ok(false);
         }
         let recent = self.recent().await?;
-        let open: Vec<plan::TodoItem> = plan::current_checklist(&recent)
+        let open: Vec<checklist::TodoItem> = checklist::current_checklist(&recent)
             .filter(|c| !c.carried || !self.changed_files.is_empty())
             .map(|c| c.items)
             .unwrap_or_default()
             .into_iter()
-            .filter(|i| !plan::is_settled(i))
+            .filter(|i| !checklist::is_settled(i))
             .collect();
         if open.is_empty() {
             return Ok(false);
@@ -3184,24 +3191,37 @@ impl Run {
         self.append(vec![m]).await
     }
 
-    /// The result of a tool call, stored before the next turn.
+    /// The result of a tool call, stored before the next turn: the text
+    /// the model gets, with how the call went in its `meta.outcome`
+    /// (`MessageRow::call_failed` reads it back), and logged. A failed
+    /// call's text starts with "Error:": the model has always seen failures
+    /// so, and an app older than outcomes still decides by it.
     pub(super) async fn add_tool_result(
         &self,
         tool_call_id: &str,
         content: String,
+        outcome: Outcome,
         meta: Option<Value>,
         attachments: Vec<String>,
     ) -> Result<(), String> {
+        debug_assert!(
+            !outcome.failed() || content.trim_start().starts_with("Error:"),
+            "a failed call's result says so: {content}"
+        );
         #[cfg(test)]
         if FAIL_TOOL_RESULT.lock().unwrap().contains(tool_call_id) {
             return Err("the database is gone (test)".into());
         }
+        let mut meta = meta.unwrap_or_else(|| json!({}));
+        if let Some(fields) = meta.as_object_mut() {
+            outcome.write_meta(fields);
+        }
         let mut m = new_message("tool", &content);
         m.tool_call_id = Some(tool_call_id.to_string());
-        m.meta = meta;
+        m.meta = Some(meta);
         m.attachments = attachments;
         self.append(vec![m]).await?;
-        self.log_tool(tool_call_id, &content);
+        self.log_tool(tool_call_id, &content, &outcome);
         Ok(())
     }
 
@@ -3210,25 +3230,26 @@ impl Run {
     /// whether it failed and how (`tools::error_class`), how long it took
     /// (from its turn, or its approval, to its result), and for a command
     /// that ran, how it ended.
-    fn log_tool(&self, tool_call_id: &str, content: &str) {
+    fn log_tool(&self, tool_call_id: &str, content: &str, outcome: &Outcome) {
         let (tool, took) = self
             .calls
             .finish(tool_call_id)
             .unwrap_or_else(|| ("unknown".into(), Duration::ZERO));
-        let class = tools::error_class(content);
+        let failed = outcome.failed();
         let mut entry = json!({
             "event": "tool",
             "dialogId": self.dialog_id,
             "model": self.profile.model,
             "tool": tool,
-            "failed": class.is_some(),
-            "error": class,
+            "failed": failed,
+            "error": failed.then(|| tools::error_class(content)),
             "ms": took.as_millis() as u64,
         });
-        if tool == "bash" {
-            if let Some((exit_code, timed_out)) = tools::command_end(content) {
-                entry["exitCode"] = json!(exit_code);
-                if timed_out {
+        // How the command ended; one left running in the background hasn't.
+        if let (Outcome::Ran(end), "bash") = (outcome, tool.as_str()) {
+            if end.background.is_none() {
+                entry["exitCode"] = json!(end.exit_code);
+                if end.timed_out {
                     entry["timedOut"] = json!(true);
                 }
             }
@@ -3360,7 +3381,7 @@ impl Run {
         let recent = self.recent().await.unwrap_or_default();
         let own = recent
             .iter()
-            .rposition(|m| plan::is_request(m) && !m.failed);
+            .rposition(|m| messages::is_request(m) && !m.failed);
         if let Some(at) = own {
             let m = &recent[at];
             let request = sent_content(m).unwrap_or_else(|| m.content.clone());
@@ -4120,7 +4141,7 @@ pub(super) fn sent_text(meta: Option<&serde_json::Value>) -> Option<String> {
 
 /// The mode of the request a run belongs to: its starting message's.
 fn run_mode_for(messages: &[MessageRow]) -> Option<String> {
-    let m = messages.iter().rev().find(|m| plan::is_request(m))?;
+    let m = messages.iter().rev().find(|m| messages::is_request(m))?;
     m.meta.as_ref()?.get("mode")?.as_str().map(str::to_string)
 }
 
@@ -4147,7 +4168,7 @@ fn plan_check_at_start(
     let named = recent
         .iter()
         .rev()
-        .find(|m| plan::is_request(m))
+        .find(|m| messages::is_request(m))
         .and_then(|m| {
             let rest = m.content.strip_prefix("Implement the plan in `")?;
             Some(rest[..rest.find('`')?].to_string())
@@ -4252,7 +4273,7 @@ const MAX_TOUCHED_PATHS: usize = 20;
 pub(super) fn with_steering(request: String, after: &[MessageRow]) -> String {
     let added: Vec<&str> = after
         .iter()
-        .filter(|m| plan::is_steer(m) && !m.failed)
+        .filter(|m| messages::is_steer(m) && !m.failed)
         .map(|m| m.content.trim())
         .filter(|text| !text.is_empty())
         .collect();
@@ -4272,11 +4293,11 @@ pub(super) fn with_steering(request: String, after: &[MessageRow]) -> String {
 fn steering_text(messages: &[MessageRow]) -> String {
     let at = messages
         .iter()
-        .rposition(|m| plan::is_request(m) && !m.failed)
+        .rposition(|m| messages::is_request(m) && !m.failed)
         .map_or(0, |i| i + 1);
     messages[at..]
         .iter()
-        .filter(|m| plan::is_steer(m) && !m.failed)
+        .filter(|m| messages::is_steer(m) && !m.failed)
         .map(|m| m.content.trim())
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
@@ -4290,7 +4311,7 @@ pub fn last_user_wire_content(messages: &[MessageRow]) -> Option<String> {
     let m = messages
         .iter()
         .rev()
-        .find(|m| plan::is_request(m) && !m.failed)?;
+        .find(|m| messages::is_request(m) && !m.failed)?;
     sent_content(m).or_else(|| Some(m.content.clone()))
 }
 
@@ -4323,7 +4344,7 @@ fn restriction_reason(
 fn previous_user_wire_content(messages: &[MessageRow]) -> Option<String> {
     let mut real = messages
         .iter()
-        .filter(|m| plan::is_request(m) && !m.failed)
+        .filter(|m| messages::is_request(m) && !m.failed)
         .rev();
     real.next()?;
     let m = real.next()?;

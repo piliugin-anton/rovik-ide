@@ -949,18 +949,18 @@ Tests then: `a_second_runtime_on_another_data_folder_is_refused`, and
 
 ## Progress
 
-- [ ] 0.1 `ask_user` in Agent mode as in Plan mode
-- [ ] 0.2 The four principles in the system prompt
-- [ ] 1.1 Tool calls say whether they failed
-- [ ] 1.2 A command's end travels with its result
-- [ ] 1.3 The chat reads a call's outcome from its meta
-- [ ] 1.4 A checklist the IDE refused isn't the current one
-- [ ] 2.1 The table, and dispatch by it
-- [ ] 2.2 Permissions by the table
-- [ ] 2.3 The lists by the table
-- [ ] 2.4 Kinds by the table
-- [ ] 3.1 Questions, the checklist and message kinds move out
-- [ ] 3.2 `plan/` by concern
+- [x] 0.1 `ask_user` in Agent mode as in Plan mode
+- [x] 0.2 The four principles in the system prompt
+- [x] 1.1 Tool calls say whether they failed
+- [x] 1.2 A command's end travels with its result
+- [x] 1.3 The chat reads a call's outcome from its meta
+- [x] 1.4 A checklist the IDE refused isn't the current one
+- [x] 2.1 The table, and dispatch by it
+- [x] 2.2 Permissions by the table
+- [x] 2.3 The lists by the table
+- [x] 2.4 Kinds by the table
+- [x] 3.1 Questions, the checklist and message kinds move out
+- [x] 3.2 `plan/` by concern
 - [ ] 3.3 `PlanDoc`, with `steps` and `plan_problems`
 - [ ] 3.4 The other nine functions on `PlanDoc`
 - [ ] 4.1 `ContextState`
@@ -970,5 +970,5 @@ Tests then: `a_second_runtime_on_another_data_folder_is_refused`, and
 - [ ] 4.5 `TestsState`
 - [ ] 4.6 `VerificationState`, with the carry
 - [ ] 4.7 `LandingState`
-- [ ] 5 `RawMessage`
+- [x] 5 `RawMessage`
 - [ ] 6 `ProcessRuntime` (when the area next changes)

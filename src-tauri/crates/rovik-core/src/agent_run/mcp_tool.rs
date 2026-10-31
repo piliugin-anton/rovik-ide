@@ -5,7 +5,7 @@
 //! In Plan mode, and for scouts, only the tools a server marks read-only
 //! are listed and called (Q08).
 
-use super::tools::ToolResult;
+use super::tools::{Outcome, ToolResult};
 use crate::agent_run::StopSignal;
 use crate::core::Core;
 use crate::mcp::{is_valid_name, project, Listed, McpServer, Tool};
@@ -435,10 +435,6 @@ pub async fn call(
     stop: &StopSignal,
     vision: bool,
 ) -> ToolResult {
-    let error = |content: String| ToolResult {
-        content,
-        ..Default::default()
-    };
     let name = args
         .get("tool")
         .and_then(Value::as_str)
@@ -446,11 +442,11 @@ pub async fn call(
         .trim();
     let (server, tool) = match catalog.find(name, read_only) {
         Ok(found) => found,
-        Err(e) => return error(e),
+        Err(e) => return ToolResult::error(e),
     };
     let arguments = match arguments_of(args) {
         Ok(arguments) => arguments,
-        Err(e) => return error(e),
+        Err(e) => return ToolResult::error(e),
     };
     let (project, via) = (catalog.project.as_deref(), catalog.via.as_deref());
     match core
@@ -468,7 +464,7 @@ pub async fn call(
                     cut(&schema, SCHEMA_CHARS)
                 ));
             }
-            error(content)
+            ToolResult::error(content)
         }
     }
 }
@@ -536,7 +532,8 @@ async fn result_of(core: &Core, result: &Value, vision: bool) -> ToolResult {
     if content.trim().is_empty() {
         content = "(The tool returned nothing.)".into();
     }
-    if result.get("isError").and_then(Value::as_bool) == Some(true) {
+    let failed = result.get("isError").and_then(Value::as_bool) == Some(true);
+    if failed {
         content = format!("Error: {content}");
     }
     let mut whole_output = None;
@@ -547,6 +544,7 @@ async fn result_of(core: &Core, result: &Value, vision: bool) -> ToolResult {
     }
     ToolResult {
         content,
+        outcome: Outcome::of(failed),
         attachments,
         whole_output,
         ..Default::default()
@@ -823,7 +821,15 @@ mod tests {
         )
         .await;
         assert_eq!(failed.content, "Error: No such repo.");
-        assert!(super::super::tools::is_error(&failed.content));
+        assert_eq!(failed.outcome, Outcome::Failed);
+        // A tool's text that starts with "Error:" fails only if the server says so.
+        let said = result_of(
+            core,
+            &json!({ "content": [{ "type": "text", "text": "Error: none found, as asked." }] }),
+            false,
+        )
+        .await;
+        assert_eq!(said.outcome, Outcome::Done);
         let long = "x".repeat(RESULT_CHARS + 10);
         let cut = result_of(
             core,

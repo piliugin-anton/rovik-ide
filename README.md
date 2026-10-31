@@ -97,9 +97,14 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   [Anthropic's API](#anthropics-api)).
 - Two modes:
   - **Agent** does the work: reads code, edits files, runs commands and
-    checks the result.
+    checks the result. When a decision is yours to make, it asks you.
   - **Plan** only looks around, asks you questions and writes a plan. When
     you approve it, Agent mode carries it out.
+- **Four working principles** in its system prompt: think before coding
+  (say what it assumes, ask when unsure), simplicity first, surgical
+  changes, and goal-driven execution (a short plan, each step with how
+  it's checked). In Autopilot it decides what it would otherwise ask, and
+  says what it assumed.
 - **Steer it while it works.** In Agent mode, a message you send while the
   agent works is read at its next step, as part of the same request: "use
   the existing HTTP client", "the tests are in `tests/unit`". Nothing it's

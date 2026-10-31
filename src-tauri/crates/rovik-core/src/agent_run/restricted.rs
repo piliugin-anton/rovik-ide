@@ -21,6 +21,7 @@
 //! an interpreter's command line, by the files it names in quotes): what
 //! runs at all is the allowed commands' and the approvals' to decide.
 
+use super::builtin_tools::BuiltinTool;
 use super::permissions::{self, is_assignment, HereDoc, ParsedCommand, Shell, KEYWORDS};
 use super::{paths, repair, tools};
 use crate::restricted_files::{
@@ -244,14 +245,27 @@ fn problem_read(
     restricted: &RestrictedFiles,
     readings: &[Shell],
 ) -> Option<String> {
-    let path = permissions::trimmed_str(args.get("path"));
-    match name {
-        "read" | "outline" | "diagnostics" | "neighbours" => {
-            let file = restricted.blocked(root, path?, Op::Read)?;
+    // The tool's rule (its row's `restricted`); what it shows of other
+    // files, its own code leaves the restricted ones out of.
+    let rule = BuiltinTool::parse(name)?.spec().restricted;
+    if rule.command {
+        let command = args.get("command")?.as_str()?;
+        return judged_by(
+            command,
+            root,
+            cwd,
+            restricted,
+            readings,
+            Instant::now() + CHECK_TIME,
+        );
+    }
+    let path = permissions::trimmed_str(args.get("path"))?;
+    match rule.path? {
+        Op::Read => {
+            let file = restricted.blocked(root, path, Op::Read)?;
             Some(refusal(Op::Read, &file))
         }
-        "write" => {
-            let path = path?;
+        Op::Write => {
             if let Some(file) = restricted.blocked(root, path, Op::Write) {
                 return Some(refusal(Op::Write, &file));
             }
@@ -263,18 +277,6 @@ fn problem_read(
                 "Error: {file} is a restricted file: the agent may not read it, so it can't change part of it, which takes its text. Write it whole only if replacing all of it is what the user asked; otherwise tell them what to change in it. They can allow reading it in {SETTINGS_PAGE}."
             ))
         }
-        "bash" => {
-            let command = args.get("command")?.as_str()?;
-            judged_by(
-                command,
-                root,
-                cwd,
-                restricted,
-                readings,
-                Instant::now() + CHECK_TIME,
-            )
-        }
-        _ => None,
     }
 }
 

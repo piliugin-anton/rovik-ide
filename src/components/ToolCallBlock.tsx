@@ -28,9 +28,10 @@ import {
 import { APPROVE_AT, REJECT_AT, reviewChecks } from '../lib/aiApproval';
 import { openInEditor } from '../lib/openInEditor';
 import {
+  callFailed,
   callStatus,
   dirName,
-  isErrorResult,
+  failedByText,
   isPartialWrite,
   lineArg,
   num,
@@ -142,12 +143,12 @@ interface Summary {
 }
 
 /**
- * Header counts for a finished tool result. Computed once when the tool
- * finishes and stored with the message, so the header never needs the full
- * body (which may only be loaded on expand).
+ * Header counts for a finished tool result, from its text: for a result
+ * stored without meta (before the backend stored them with it), so the
+ * header never needs the full body (which may only be loaded on expand).
  */
 export function toolResultMeta(name: string, result: string): ToolMeta | undefined {
-  if (isErrorResult(result)) return undefined;
+  if (failedByText(result)) return undefined;
   switch (name) {
     case 'read': {
       // By symbol: the header names the lines it found (read_symbol.rs).
@@ -172,10 +173,10 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
     case 'web_search':
       return { count: result.split('\n').filter((line) => /^\d+\. /.test(line)).length };
     case 'bash':
-      return commandMeta(result);
+      return commandMetaFromText(result);
     // A command it read or stopped; its list has no meta.
     case 'background':
-      return result.startsWith('$ ') ? commandMeta(result) : undefined;
+      return result.startsWith('$ ') ? commandMetaFromText(result) : undefined;
     case 'write': {
       // A whole-file write: "wrote 120 bytes to a.ts (+3 -1 lines)", on the
       // first line: a syntax check may follow it (V04).
@@ -192,12 +193,14 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
 }
 
 /**
- * A command's result (agent_run/tools.rs: `format_command_output`,
- * `format_background`), as its tool block reads it: its exit code (null
- * when it didn't exit on its own, or still runs), its id while it runs in
- * the background, and a long wait for a CPU slot.
+ * A command's result stored without meta (agent_run/tools.rs:
+ * `format_command_output`, `format_background`), as its tool block reads
+ * it from its second and third lines: its exit code (null when it didn't
+ * exit on its own, or still runs), its id while it runs in the background,
+ * and a long wait for a CPU slot. A result stored since says these in its
+ * meta (agent_run's `CommandEnd`), right for a command of several lines too.
  */
-function commandMeta(result: string): ToolMeta {
+function commandMetaFromText(result: string): ToolMeta {
   const lines = result.split('\n');
   const status = lines[1] ?? '';
   const code = status.match(/^exit code (-?\d+)/)?.[1];
@@ -1024,7 +1027,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
       if (landed !== undefined) return { line: landed };
       // Not applied (yet): the text it replaces is still in the file.
       const oldText = str(a.old_text);
-      const failedOrPending = !resultText() || resultText()!.startsWith('Error:');
+      const failedOrPending = !props.result || callFailed(props.result);
       const snippet = failedOrPending ? oldText : str(a.content) || oldText;
       if (snippet) return { snippet };
     }

@@ -20,6 +20,7 @@
 //! gives no judgment: the first planner's plan that passes the checks,
 //! with a note saying why.
 
+use super::builtin_tools::BuiltinTool;
 use super::run::{new_message, Run, IDE_NOTE};
 use super::subagent::{self, Budget, Format, Kind, KindSpec, SubOutcome};
 use super::subagent_run::IdeJob;
@@ -56,15 +57,15 @@ Reply in the form your brief gives, and nothing before it: for a plan, the headi
 pub static PLANNER: KindSpec = KindSpec {
     label: "Planner",
     tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-        "web_search",
-        "browse_url",
+        BuiltinTool::Read,
+        BuiltinTool::ListDir,
+        BuiltinTool::SearchCode,
+        BuiltinTool::Neighbours,
+        BuiltinTool::Callers,
+        BuiltinTool::Outline,
+        BuiltinTool::Diagnostics,
+        BuiltinTool::WebSearch,
+        BuiltinTool::BrowseUrl,
     ],
     default_budget: Budget {
         tool_calls: 40,

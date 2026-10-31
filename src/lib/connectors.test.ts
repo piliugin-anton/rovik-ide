@@ -41,6 +41,7 @@ import {
   PERMISSION_MODES,
 } from './claudeCode';
 import { CODEX_AUTH_KINDS, CODEX_PERMISSION_MODES } from './codex';
+import { callStatus } from './toolArgs';
 import { providersSummary, resolveProfile } from './aiSettings';
 import { EFFORTS } from './reasoning';
 import { dismiss, notifications } from './notifications';
@@ -243,8 +244,29 @@ test('a reply’s steps show as Rovik’s work does: its thoughts apart, its cal
   );
   assert.equal(calls[0].result?.content, 'fn a() {}');
   assert.equal(calls[0].result?.tool_call_id, 't1');
-  assert.equal(calls[1].result?.content, 'Error: boom', 'a failed step reads as a failed call');
+  assert.equal(calls[1].result?.content, 'boom', 'in its own words');
+  assert.equal(calls[1].result?.meta?.outcome, 'failed', 'a failed step reads as a failed call');
   assert.equal(calls[2].result, undefined, 'still running');
+});
+
+test('a harness step that failed shows as failed and keeps its text', () => {
+  const meta: ConnectorMeta = {
+    kind: 'claude-code',
+    steps: [
+      { id: 't1', name: 'Bash', input: { command: 'npm test' }, result: 'boom', ok: false },
+      // A log that starts so, read: a success all the same.
+      { id: 't2', name: 'Read', input: { file_path: 'a.log' }, result: 'Error: x', ok: true },
+    ],
+  };
+  const [segment] = connectorSegments(meta);
+  const calls = 'calls' in segment ? segment.calls : [];
+  assert.deepEqual(
+    calls.map((c) => [c.result?.content, callStatus(c.result, false)]),
+    [
+      ['boom', 'error'],
+      ['Error: x', 'done'],
+    ]
+  );
 });
 
 // docs/design/mcp-plan.md, Q09: Rovik serves its `mcp` tool to a harness

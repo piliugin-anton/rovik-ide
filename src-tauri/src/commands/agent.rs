@@ -7,7 +7,8 @@ use rovik_core::agent::{
     self, ChatParams, ChatStreamEvent, ContextEstimate, OpenAIChatOptions, ReasoningEffort,
     RemoteModel, WireChatMessage,
 };
-use rovik_core::agent_run::plan::{CurrentChecklist, QuestionsOutcome};
+use rovik_core::agent_run::checklist::CurrentChecklist;
+use rovik_core::agent_run::questions::QuestionsOutcome;
 use rovik_core::agent_run::{
     AgentConfig, AgentStatus, ApprovalDecision, StartRequest, SteerReply, UserMessage,
 };

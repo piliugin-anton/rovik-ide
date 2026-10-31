@@ -56,6 +56,9 @@ pub struct FinishedCall<'a> {
     pub args_json: &'a str,
     /// The result text the model gets.
     pub result: &'a str,
+    /// The call failed (its `Outcome`): never read from the text, which a
+    /// read of a file may start with "Error:" too.
+    pub failed: bool,
     /// A successful file write: the file before (None when it didn't exist) and after.
     pub write: Option<Write<'a>>,
     /// Rejected by the user, their AI reviewer or their permission settings
@@ -200,7 +203,7 @@ impl Guard {
     /// "identical", "alternating", "errorStreak", "sameError"), and the
     /// reason the model is told.
     fn detect(&mut self, call: &FinishedCall) -> Option<(&'static str, String)> {
-        let failed = call.result.starts_with("Error:");
+        let failed = call.failed;
 
         if call.rejected {
             let key = (call.name.to_string(), canonical_args(call.args_json));
@@ -441,8 +444,16 @@ mod tests {
             name,
             args_json: args,
             result,
+            failed: false,
             write: None,
             rejected: false,
+        }
+    }
+
+    fn failure<'a>(name: &'a str, args: &'a str, result: &'a str) -> FinishedCall<'a> {
+        FinishedCall {
+            failed: true,
+            ..call(name, args, result)
         }
     }
 
@@ -509,6 +520,7 @@ mod tests {
                 name: "write",
                 args_json: r#"{"path":"a.ts"}"#,
                 result: "wrote 4 bytes",
+                failed: false,
                 write: w,
                 rejected: false,
             })
@@ -578,12 +590,12 @@ mod tests {
         // Another pattern: its own warning, not a pause.
         for i in 0..2 {
             assert_eq!(
-                g.record(call("x", &i.to_string(), "Error: boom.")),
+                g.record(failure("x", &i.to_string(), "Error: boom.")),
                 GuardVerdict::Ok
             );
         }
         assert!(matches!(
-            g.record(call("x", "3", "Error: boom.")),
+            g.record(failure("x", "3", "Error: boom.")),
             GuardVerdict::Nudge(_)
         ));
         assert!(g.pause().is_none());
@@ -608,6 +620,7 @@ mod tests {
             name: "bash",
             args_json: args,
             result: "Error: the user denied this \"bash\" call.",
+            failed: true,
             write: None,
             rejected: true,
         };
@@ -629,9 +642,9 @@ mod tests {
         assert_eq!(g.pause().unwrap().kind, "loop");
         // The same call that merely failed twice is no rejection.
         let mut g = Guard::new(None, 0);
-        g.record(call("bash", r#"{"command":"make"}"#, "Error: exit 2"));
+        g.record(failure("bash", r#"{"command":"make"}"#, "Error: exit 2"));
         assert_eq!(
-            g.record(call("bash", r#"{"command":"make"}"#, "Error: exit 2")),
+            g.record(failure("bash", r#"{"command":"make"}"#, "Error: exit 2")),
             GuardVerdict::Ok
         );
     }
@@ -641,11 +654,11 @@ mod tests {
         let mut g = Guard::new(None, 0);
         for i in 0..2 {
             assert_eq!(
-                g.record(call("x", &i.to_string(), "Error: boom.")),
+                g.record(failure("x", &i.to_string(), "Error: boom.")),
                 GuardVerdict::Ok
             );
         }
-        let v = g.record(call("x", "3", "Error: boom."));
+        let v = g.record(failure("x", "3", "Error: boom."));
         assert!(
             matches!(&v, GuardVerdict::Nudge(n) if n.contains("the same error came back 3 times: \"Error: boom\""))
         );
@@ -666,6 +679,7 @@ mod tests {
             name: "write",
             args_json: "{}",
             result: "ok",
+            failed: false,
             write: w(Some("v1"), "v2"),
             rejected: false,
         });
@@ -674,6 +688,7 @@ mod tests {
             name: "write",
             args_json: "{}",
             result: "ok",
+            failed: false,
             write: w(Some("v2"), "v1"),
             rejected: false,
         });
@@ -699,15 +714,44 @@ mod tests {
         );
     }
 
+    /// A read of a file whose text starts with "Error:" succeeded: five of
+    /// them are no streak of failures, and three alike no repeated error.
+    #[test]
+    fn successes_whose_text_starts_with_error_make_no_error_streak() {
+        let args: Vec<String> = (0..5)
+            .map(|i| format!(r#"{{"path":"log{i}.txt"}}"#))
+            .collect();
+        let mut g = Guard::new(None, 0);
+        for a in &args {
+            assert_eq!(
+                g.record(call("read", a, "Error: disk full")),
+                GuardVerdict::Ok
+            );
+        }
+        assert!(g.finding.is_none());
+        // The same calls, failed: the third is the same error again.
+        let mut g = Guard::new(None, 0);
+        g.record(failure("read", &args[0], "Error: disk full"));
+        g.record(failure("read", &args[1], "Error: disk full"));
+        let v = g.record(failure("read", &args[2], "Error: disk full"));
+        assert!(
+            matches!(&v, GuardVerdict::Nudge(n) if n.contains("the same error came back 3 times")),
+            "{v:?}"
+        );
+    }
+
     #[test]
     fn different_errors_in_a_row_are_a_streak() {
         let mut g = Guard::new(None, 0);
         for i in 0..4 {
             let err = format!("Error: problem {i}");
-            assert_eq!(g.record(call("x", &i.to_string(), &err)), GuardVerdict::Ok);
+            assert_eq!(
+                g.record(failure("x", &i.to_string(), &err)),
+                GuardVerdict::Ok
+            );
         }
         assert!(
-            matches!(g.record(call("x", "9", "Error: other")), GuardVerdict::Nudge(n) if n.contains("last 5 tool calls all failed"))
+            matches!(g.record(failure("x", "9", "Error: other")), GuardVerdict::Nudge(n) if n.contains("last 5 tool calls all failed"))
         );
     }
 
@@ -715,10 +759,10 @@ mod tests {
     fn a_success_breaks_the_streak_and_unparseable_args_still_compare() {
         let mut g = Guard::new(None, 0);
         for i in 0..4 {
-            g.record(call("x", &i.to_string(), &format!("Error: {i}")));
+            g.record(failure("x", &i.to_string(), &format!("Error: {i}")));
         }
         g.record(call("x", "ok", "fine"));
-        assert_eq!(g.record(call("x", "5", "Error: 5")), GuardVerdict::Ok);
+        assert_eq!(g.record(failure("x", "5", "Error: 5")), GuardVerdict::Ok);
         let mut g = Guard::new(None, 0);
         g.record(call("x", "{broken", "r"));
         g.record(call("x", " {broken ", "r"));
@@ -737,6 +781,7 @@ mod tests {
             name: "write",
             args_json: "{}",
             result: "ok",
+            failed: false,
             write: Some(Write {
                 path: "a",
                 before: None,

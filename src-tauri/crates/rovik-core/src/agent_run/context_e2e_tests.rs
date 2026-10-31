@@ -354,9 +354,9 @@ async fn three_turns_on_a_small_window_are_trimmed_to_fit() {
         Reply::Text("Read b."),
     ])
     .await;
-    // The system prompt, the tools and the map take ~5 600 tokens and the
-    // reply 6 400: ~4 000 for the history, which the two reads outgrow.
-    let window = 16_000;
+    // The system prompt, the tools and the map take ~6 800 tokens and the
+    // reply 7 200: ~4 000 for the history, which the two reads outgrow.
+    let window = 18_000;
     run_turns(
         &h,
         &url,

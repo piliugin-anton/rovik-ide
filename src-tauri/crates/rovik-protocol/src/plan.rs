@@ -58,7 +58,7 @@ pub struct TodoItem {
     pub status: String,
 }
 
-/// The chat's current checklist (`plan::current_checklist` in the core):
+/// The chat's current checklist (`checklist::current_checklist` in the core):
 /// its items, whether it was carried from an earlier request, and the
 /// message whose `todo` call holds it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

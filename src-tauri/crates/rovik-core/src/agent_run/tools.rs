@@ -3,13 +3,14 @@
 //! back. Paths are relative to the project root: the model never sees or
 //! sets the absolute root; it's filled in here from the run.
 
+use super::builtin_tools::BuiltinTool;
+use super::checklist::MAX_TODO_ITEMS;
 use super::command_output::{cap_output, clean_output, focus_failures};
 use super::permissions::{commands_available, Permissions};
-use super::plan::{MAX_TODO_ITEMS, PLAN_BLOCKED_TOOLS};
 use super::StopSignal;
 use crate::allowed_hosts::AllowedHosts;
 use crate::code_search::SearchResult;
-use crate::command_tool::CommandOutput;
+use crate::command_tool::{CommandEnd, CommandOutput};
 use crate::file_guard::Seen;
 use crate::outline::Symbol;
 use crate::restricted_files::{Op, RestrictedFiles};
@@ -349,13 +350,13 @@ fn background_schema() -> Value {
     })
 }
 
-/// Plan mode's question tool.
+/// The question tool, in Agent and Plan mode.
 fn ask_user_schema() -> Value {
     json!({
         "type": "function",
         "function": {
             "name": "ask_user",
-            "description": "Ask the user about decisions only they can make, before planning further: the run waits for the answer. Ask only what the code and the request can't tell you and what really changes the design, behavior or scope. Put all your questions in one call (up to 3), each with concrete options and a short reason why it matters. Mark the option you'd choose as recommended. The user can also answer in their own words or leave a question to you.",
+            "description": "Ask the user about decisions only they can make, before going further: the run waits for the answer. Ask only what the code and the request can't tell you and what really changes the design, behavior or scope. Put all your questions in one call (up to 3), each with concrete options and a short reason why it matters. Mark the option you'd choose as recommended. The user can also answer in their own words or leave a question to you.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -483,12 +484,19 @@ fn restore_context_schema() -> Value {
     })
 }
 
+/// Whether the schema's tool works on the agent's context folder too (its
+/// row's `context_folder`): read, write, list_dir.
+fn on_context_folder(t: &Value) -> bool {
+    BuiltinTool::parse(tool_name(t)).is_some_and(|b| b.spec().context_folder)
+}
+
 /// The tools on the agent's context folder (CLM mode): those that aren't
 /// offered for the project here (Plan mode, no project) are offered for
 /// `@context/…` only, and restore_context.
 fn context_tool_schemas(offered: &[Value]) -> Vec<Value> {
     let mut out: Vec<Value> = file_tool_schemas()
         .into_iter()
+        .filter(on_context_folder)
         .filter(|t| !offered.iter().any(|o| tool_name(o) == tool_name(t)))
         .map(|mut t| {
             if let Some(Value::String(d)) = t.pointer_mut("/function/description") {
@@ -511,7 +519,7 @@ fn context_tool_schemas(offered: &[Value]) -> Vec<Value> {
 fn context_only_tool_schemas(plan_mode: bool) -> Vec<Value> {
     let mut out: Vec<Value> = file_tool_schemas()
         .into_iter()
-        .filter(|t| matches!(tool_name(t), "read" | "write" | "list_dir"))
+        .filter(on_context_folder)
         .map(|mut t| {
             if let Some(Value::String(d)) = t.pointer_mut("/function/description") {
                 *d = format!(
@@ -574,8 +582,12 @@ pub fn tools_for(
         if has_project {
             all.push(todo_schema());
         }
+        all.push(ask_user_schema());
     } else {
-        all.retain(|t| !PLAN_BLOCKED_TOOLS.contains(&tool_name(t)));
+        // What changes files or runs commands is Agent mode's (its row).
+        all.retain(|t| {
+            BuiltinTool::parse(tool_name(t)).is_none_or(|b| b.spec().modes.offered_in(true))
+        });
         all.push(ask_user_schema());
         all.push(submit_plan_schema());
     }
@@ -592,10 +604,59 @@ pub fn tools_for(
  * ---------------------------------------------------------------------------
  */
 
+/// Whether a tool call did what it was asked. Whatever answers a call says
+/// so; the loop guard, the agent log, the stored row (`meta.outcome`) and
+/// the chat read it from here, never from the text the model gets, which
+/// says a failure with `Error:` (a file it read may start so too).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Outcome {
+    #[default]
+    Done,
+    /// A command ran (bash; background's output and stop): done as a call,
+    /// however the command ended.
+    Ran(CommandEnd),
+    Failed,
+}
+
+impl Outcome {
+    /// `Failed` when `failed`.
+    pub fn of(failed: bool) -> Outcome {
+        match failed {
+            true => Outcome::Failed,
+            false => Outcome::Done,
+        }
+    }
+
+    /// Whether the call failed.
+    pub fn failed(&self) -> bool {
+        *self == Outcome::Failed
+    }
+
+    /// What a tool message's meta says of it: `outcome`, "done" or
+    /// "failed", and for a command that ran, the keys the chat's tool block
+    /// reads: its exit code (null when it didn't exit on its own, or still
+    /// runs), its id while it runs in the background, a long wait.
+    pub fn write_meta(&self, meta: &mut Map<String, Value>) {
+        let outcome = if self.failed() { "failed" } else { "done" };
+        meta.insert("outcome".into(), json!(outcome));
+        if let Outcome::Ran(end) = self {
+            meta.insert("exitCode".into(), json!(end.exit_code));
+            if let Some(id) = &end.background {
+                meta.insert("background".into(), json!(id));
+            }
+            if let Some(waited) = &end.waited {
+                meta.insert("waited".into(), json!(waited));
+            }
+        }
+    }
+}
+
 /// Text for the model, plus attachments (screenshots) for tools that make them.
 #[derive(Debug, Default)]
 pub struct ToolResult {
     pub content: String,
+    /// Whether the call failed: its content then starts with "Error:".
+    pub outcome: Outcome,
     pub attachments: Vec<String>,
     /// Partial write: the path (as given) and the file's new content.
     pub written: Option<(String, String)>,
@@ -608,33 +669,46 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
-    fn text(content: impl Into<String>) -> Self {
+    /// A call that did what it was asked.
+    pub fn ok(content: impl Into<String>) -> Self {
         ToolResult {
             content: content.into(),
             ..Default::default()
         }
     }
-}
 
-pub fn is_error(result: &str) -> bool {
-    result.trim_start().starts_with("Error:")
-}
-
-/// G02 (autopilot-plan): what kind of error a tool call's result is, for
-/// its `tool` line in the agent log and the evaluation's counts: one of
-/// the classes below, by the words the tools write, or "other". None: the
-/// call didn't fail. A command that ran and exited non-zero didn't fail as
-/// a call: its result is the command's (`command_end`).
-pub fn error_class(result: &str) -> Option<&'static str> {
-    if !is_error(result) {
-        return None;
+    /// A call that failed: its text for the model, which says so with
+    /// `Error: ` before it (added unless it's there).
+    pub fn error(content: impl Into<String>) -> Self {
+        ToolResult {
+            content: with_error_prefix(content.into()),
+            outcome: Outcome::Failed,
+            ..Default::default()
+        }
     }
+}
+
+/// A failure's text as the model reads it: starting with `Error:`, once.
+/// For errors passed on from code that doesn't word them as the model's
+/// (a database's); a refusal builder writes its own.
+pub(super) fn with_error_prefix(text: String) -> String {
+    match text.trim_start().starts_with("Error:") {
+        true => text,
+        false => format!("Error: {text}"),
+    }
+}
+
+/// G02 (autopilot-plan): what kind of error a failed call's result is, for
+/// its `tool` line in the agent log and the evaluation's counts: one of
+/// the classes below, by the words the tools write, or "other". A command
+/// that ran and exited non-zero didn't fail as a call: its result is the
+/// command's (`Outcome::Ran`).
+pub fn error_class(result: &str) -> &'static str {
     let text = result.to_lowercase();
-    let class = ERROR_CLASSES
+    ERROR_CLASSES
         .iter()
         .find(|(_, words)| words.iter().any(|w| text.contains(w)))
-        .map_or("other", |(class, _)| *class);
-    Some(class)
+        .map_or("other", |(class, _)| *class)
 }
 
 /// The classes of errors cut short by the run, not made by the model: a
@@ -755,24 +829,6 @@ const ERROR_CLASSES: &[(&str, &[&str])] = &[
         ],
     ),
 ];
-
-/// G02: how a command that ran ended, from its result's second line
-/// (`format_command_output`): its exit code (None when it didn't exit on
-/// its own), and whether it timed out. None: no command ran (a refusal,
-/// another tool's result).
-pub fn command_end(result: &str) -> Option<(Option<i64>, bool)> {
-    let mut lines = result.split('\n');
-    if !lines.next()?.starts_with("$ ") {
-        return None;
-    }
-    let status = lines.next()?;
-    if let Some(c) = EXIT_CODE.captures(status) {
-        return Some((c[1].parse::<i64>().ok(), false));
-    }
-    let timed_out = status.starts_with("timed out");
-    (timed_out || status.starts_with("stopped by the user") || status.starts_with("ended by"))
-        .then_some((None, timed_out))
-}
 
 fn num(args: &Map<String, Value>, key: &str) -> Option<f64> {
     args.get(key).and_then(|v| v.as_f64())
@@ -984,15 +1040,14 @@ pub async fn execute(
         match serde_json::from_str::<Value>(args_json) {
             Ok(Value::Object(map)) => map,
             Ok(_) => Map::new(),
-            Err(_) => return ToolResult::text(unparsed_arguments(args_json, ctx.reply_cut_off)),
+            Err(_) => return ToolResult::error(unparsed_arguments(args_json, ctx.reply_cut_off)),
         }
     };
     match run(core, root, name, &args, stop, ctx).await {
         Ok(result) => result,
         // Some tools word their own errors ("Error: no declaration named…"):
-        // don't prefix those twice.
-        Err(e) if e.trim_start().starts_with("Error:") => ToolResult::text(e),
-        Err(e) => ToolResult::text(format!("Error: {e}")),
+        // `error` doesn't prefix those twice.
+        Err(e) => ToolResult::error(e),
     }
 }
 
@@ -1044,44 +1099,17 @@ fn error_kept_out(error: String, started: std::time::Instant) -> String {
     }
 }
 
-async fn run(
+/// The tools that need no project (`ToolSpec::needs_project`): the web's.
+async fn run_web(
     core: &Core,
-    root: Option<&str>,
-    name: &str,
+    tool: BuiltinTool,
     args: &Map<String, Value>,
     stop: &Arc<StopSignal>,
-    ctx: &CallContext,
 ) -> Result<ToolResult, String> {
-    // The test writer doesn't read the change's code by any tool (P2.4):
-    // first, before any path is served; by the path's name, and by where
-    // it really leads (a link under the tests to the code).
-    if !ctx.hidden.is_empty() && matches!(name, "read" | "neighbours" | "diagnostics") {
-        if let (Some(path), Some(root)) = (text(args, "path"), root) {
-            let key = super::repair::rel_key(root, path);
-            let real = super::repair::real_key(root, path);
-            if super::test_writer::is_hidden(&ctx.hidden, &key)
-                || real.is_some_and(|real| super::test_writer::is_hidden(&ctx.hidden, &real))
-            {
-                return Ok(ToolResult::text(super::test_writer::hidden_file(&key)));
-            }
-        }
-    }
-    // A check's whole output, saved by the verification gate (C01).
-    if name == "read" {
-        if let Some(path) = text(args, "path").filter(|p| super::check_output::is_checks_path(p)) {
-            return super::check_output::read(
-                &ctx.checks_owner,
-                path,
-                uint(args, "start_line"),
-                uint(args, "end_line"),
-            )
-            .map(ToolResult::text);
-        }
-    }
-    match name {
-        "web_search" => {
+    match tool {
+        BuiltinTool::WebSearch => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"query\" is required."));
+                return Ok(ToolResult::error("Error: \"query\" is required."));
             };
             let started = std::time::Instant::now();
             let hits = crate::browser_tools::web_search_inner(
@@ -1093,7 +1121,7 @@ async fn run(
             .await
             .map_err(|e| error_kept_out(e, started))?;
             if hits.is_empty() {
-                return Ok(noting_kept_out(ToolResult::text("No results."), started));
+                return Ok(noting_kept_out(ToolResult::ok("No results."), started));
             }
             let lines: Vec<String> = hits
                 .iter()
@@ -1107,14 +1135,11 @@ async fn run(
                     format!("{}. {}\n   {}{snippet}", i + 1, h.title, h.url)
                 })
                 .collect();
-            return Ok(noting_kept_out(
-                ToolResult::text(lines.join("\n\n")),
-                started,
-            ));
+            Ok(noting_kept_out(ToolResult::ok(lines.join("\n\n")), started))
         }
-        "browse_url" => {
+        BuiltinTool::BrowseUrl => {
             let Some(url) = text(args, "url").filter(|u| !u.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"url\" is required."));
+                return Ok(ToolResult::error("Error: \"url\" is required."));
             };
             let started = std::time::Instant::now();
             let page = crate::browser_tools::browse_url_inner(
@@ -1154,9 +1179,9 @@ async fn run(
                         .map(|l| format!("- {}: {}", l.text, l.url)),
                 );
             }
-            return Ok(noting_kept_out(ToolResult::text(parts.join("\n")), started));
+            Ok(noting_kept_out(ToolResult::ok(parts.join("\n")), started))
         }
-        "browser_screenshot" => {
+        BuiltinTool::BrowserScreenshot => {
             let started = std::time::Instant::now();
             let shot = crate::browser_tools::browser_screenshot_inner(
                 &core.browser,
@@ -1179,22 +1204,69 @@ async fn run(
                 attachments: vec![shot.attachment_id],
                 ..Default::default()
             };
-            return Ok(noting_kept_out(result, started));
+            Ok(noting_kept_out(result, started))
         }
-        _ => {}
+        _ => Ok(ToolResult::error(format!(
+            "Error: unknown tool \"{}\".",
+            tool.name()
+        ))),
     }
+}
 
+async fn run(
+    core: &Core,
+    root: Option<&str>,
+    name: &str,
+    args: &Map<String, Value>,
+    stop: &Arc<StopSignal>,
+    ctx: &CallContext,
+) -> Result<ToolResult, String> {
+    let Some(tool) = BuiltinTool::parse(name) else {
+        return Ok(ToolResult::error(format!(
+            "Error: unknown tool \"{name}\"."
+        )));
+    };
+    // The test writer doesn't read the change's code by any tool (P2.4):
+    // first, before any path is served; by the path's name, and by where
+    // it really leads (a link under the tests to the code).
+    if !ctx.hidden.is_empty() && tool.spec().hidden.path {
+        if let (Some(path), Some(root)) = (text(args, "path"), root) {
+            let key = super::repair::rel_key(root, path);
+            let real = super::repair::real_key(root, path);
+            if super::test_writer::is_hidden(&ctx.hidden, &key)
+                || real.is_some_and(|real| super::test_writer::is_hidden(&ctx.hidden, &real))
+            {
+                return Ok(ToolResult::error(super::test_writer::hidden_file(&key)));
+            }
+        }
+    }
+    // A check's whole output, saved by the verification gate (C01).
+    if tool == BuiltinTool::Read {
+        if let Some(path) = text(args, "path").filter(|p| super::check_output::is_checks_path(p)) {
+            return super::check_output::read(
+                &ctx.checks_owner,
+                path,
+                uint(args, "start_line"),
+                uint(args, "end_line"),
+            )
+            .map(ToolResult::ok);
+        }
+    }
+    // The tools that work without a project: the web's.
+    if !tool.spec().needs_project {
+        return run_web(core, tool, args, stop).await;
+    }
     let Some(root) = root else {
-        return Ok(ToolResult::text(format!(
+        return Ok(ToolResult::error(format!(
             "Error: \"{name}\" needs an open project folder."
         )));
     };
     let root_owned = root.to_string();
-    let content = match name {
-        "write" if is_partial_write(name, args) => {
+    let content = match tool {
+        BuiltinTool::Write if is_partial_write(name, args) => {
             let edit = match edit_args(args) {
                 Ok(edit) => edit,
-                Err(e) => return Ok(ToolResult::text(e)),
+                Err(e) => return Ok(ToolResult::error(e)),
             };
             // Off the async threads: a write may wait for a landing's locks.
             let (root_s, seen_arc) = (root.to_string(), ctx.seen.clone());
@@ -1216,9 +1288,9 @@ async fn run(
                 ..Default::default()
             });
         }
-        "read" => {
+        BuiltinTool::Read => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"path\" is required."));
+                return Ok(ToolResult::error("Error: \"path\" is required."));
             };
             // Off the async threads: a large file takes a while to read.
             let (root, path) = (root.to_string(), path.to_string());
@@ -1231,12 +1303,12 @@ async fn run(
             .await
             .map_err(|e| e.to_string())??
         }
-        "write" => {
+        BuiltinTool::Write => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"path\" is required."));
+                return Ok(ToolResult::error("Error: \"path\" is required."));
             };
             let Some(content) = text(args, "content") else {
-                return Ok(ToolResult::text("Error: \"content\" is required."));
+                return Ok(ToolResult::error("Error: \"content\" is required."));
             };
             let (root_s, path, content, seen_arc) = (
                 root.to_string(),
@@ -1264,9 +1336,9 @@ async fn run(
             .await
             .map_err(|e| e.to_string())??
         }
-        "bash" => {
+        BuiltinTool::Bash => {
             let Some(command) = text(args, "command").filter(|c| !c.trim().is_empty()) else {
-                return Ok(ToolResult::text("Error: \"command\" is required."));
+                return Ok(ToolResult::error("Error: \"command\" is required."));
             };
             let timeout = num(args, "timeout_seconds")
                 .filter(|s| *s > 0.0)
@@ -1275,13 +1347,13 @@ async fn run(
             let background = match (flag(args, "background"), &ctx.background_chat) {
                 (false, _) => None,
                 (true, Some(chat)) => Some(chat.clone()),
-                (true, None) => return Ok(ToolResult::text(SUBAGENT_BACKGROUND)),
+                (true, None) => return Ok(ToolResult::error(SUBAGENT_BACKGROUND)),
             };
             let stop = stop.clone();
             if let Some(problem) =
                 copy_command_problem(&ctx.owner, core.agents.on_server(), command)
             {
-                return Ok(ToolResult::text(problem));
+                return Ok(ToolResult::error(problem));
             }
             // Working in the project itself: one such chat at a time runs
             // commands that write.
@@ -1292,7 +1364,7 @@ async fn run(
                     std::path::Path::new(root_owned.as_str()),
                     &ctx.owner,
                 ) {
-                    return Ok(ToolResult::text(problem));
+                    return Ok(ToolResult::error(problem));
                 }
             }
             // What it needs that isn't there yet (a cloud host's Node, Yarn
@@ -1305,7 +1377,7 @@ async fn run(
                 root: root_owned.clone(),
                 stop: stop.clone(),
                 note: ctx.note.clone(),
-                // Plan mode has no `bash` (PLAN_BLOCKED_TOOLS).
+                // Plan mode has no `bash` (its row's modes).
                 plan_mode: false,
             };
             let before =
@@ -1316,14 +1388,14 @@ async fn run(
                 .into_iter()
                 .collect();
             let mut whole_output = None;
-            let (mut content, printed) = match background {
+            let (mut content, printed, end) = match background {
                 Some(chat) => {
                     let started_at = std::time::Instant::now();
                     let started =
                         start_agent_command(core, &chat, &root_owned, command, &stop, ctx).await?;
                     notes.extend(commands_kept_out(started_at, &chat));
                     let printed = started.output.clone();
-                    (format_background(&started), printed)
+                    (format_background(&started), printed, started.end())
                 }
                 None => {
                     let started = std::time::Instant::now();
@@ -1352,7 +1424,7 @@ async fn run(
                     if shortened {
                         whole_output = Some(whole_output_text(command, &out));
                     }
-                    (shown, out.text())
+                    (shown, out.text(), out.end())
                 }
             };
             for note in notes {
@@ -1363,39 +1435,47 @@ async fn run(
             }
             return Ok(ToolResult {
                 content,
+                outcome: Outcome::Ran(end),
                 whole_output,
                 ..Default::default()
             });
         }
-        "background" => {
+        BuiltinTool::Background => {
             use crate::command_tool::background;
             let Some(chat) = ctx.background_chat.clone() else {
-                return Ok(ToolResult::text(SUBAGENT_BACKGROUND));
+                return Ok(ToolResult::error(SUBAGENT_BACKGROUND));
             };
             let action = text(args, "action").unwrap_or_default();
             let id = text(args, "id").unwrap_or_default().to_string();
-            match action {
-                "list" => format_background_list(&background::list(&chat)),
+            let report = match action {
+                "list" => {
+                    return Ok(ToolResult::ok(format_background_list(&background::list(
+                        &chat,
+                    ))))
+                }
                 "output" | "stop" if id.trim().is_empty() => {
-                    return Ok(ToolResult::text(format!(
+                    return Ok(ToolResult::error(format!(
                         "Error: \"id\" is required to {action} a command."
                     )))
                 }
-                "output" => format_background(&background::output(&chat, &id)?),
+                "output" => background::output(&chat, &id)?,
                 // It waits until what it killed is gone.
-                "stop" => format_background(
-                    &crate::rt::spawn_blocking(move || background::stop(&chat, &id))
-                        .await
-                        .map_err(|e| e.to_string())??,
-                ),
+                "stop" => crate::rt::spawn_blocking(move || background::stop(&chat, &id))
+                    .await
+                    .map_err(|e| e.to_string())??,
                 _ => {
-                    return Ok(ToolResult::text(
+                    return Ok(ToolResult::error(
                         "Error: \"action\" is list, output or stop.",
                     ))
                 }
-            }
+            };
+            return Ok(ToolResult {
+                content: format_background(&report),
+                outcome: Outcome::Ran(report.end()),
+                ..Default::default()
+            });
         }
-        "list_dir" => {
+        BuiltinTool::ListDir => {
             let path = text(args, "path").map(str::to_string);
             let entries = crate::agent_tools::tool_list_dir(
                 root_owned.clone(),
@@ -1427,9 +1507,9 @@ async fn run(
                 ..Default::default()
             });
         }
-        "search_code" => {
+        BuiltinTool::SearchCode => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"query\" is required."));
+                return Ok(ToolResult::error("Error: \"query\" is required."));
             };
             let regex = flag(args, "regex");
             let search = |regex: bool| {
@@ -1494,7 +1574,7 @@ async fn run(
             } else {
                 shown
             };
-            if restricted_out > 0 {
+            let shown = if restricted_out > 0 {
                 format!(
                     "{shown}\n[{restricted_out} match{} in restricted files left out ({}): the agent may not read them.]",
                     if restricted_out == 1 { "" } else { "es" },
@@ -1502,44 +1582,51 @@ async fn run(
                 )
             } else {
                 shown
-            }
+            };
+            // Its matches in hidden files are left out above, by file.
+            return Ok(ToolResult::ok(shown));
         }
-        "neighbours" => {
+        BuiltinTool::Neighbours => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"path\" is required."));
+                return Ok(ToolResult::error("Error: \"path\" is required."));
             };
             crate::agent_tools::tool_neighbours(root_owned, path.into(), ctx.restricted.clone())
                 .await?
         }
-        "callers" => {
+        BuiltinTool::Callers => {
             let Some(symbol) = text(args, "symbol").filter(|s| !s.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"symbol\" is required."));
+                return Ok(ToolResult::error("Error: \"symbol\" is required."));
             };
             crate::agent_tools::tool_callers(root_owned, symbol.into(), ctx.restricted.clone())
                 .await?
         }
-        "outline" => {
+        BuiltinTool::Outline => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
-                return Ok(ToolResult::text("Error: \"path\" is required."));
+                return Ok(ToolResult::error("Error: \"path\" is required."));
             };
             crate::agent_tools::tool_outline(root_owned, path.into())?
         }
-        "diagnostics" => crate::agent_tools::tool_diagnostics(
+        BuiltinTool::Diagnostics => crate::agent_tools::tool_diagnostics(
             root_owned,
             text(args, "path")
                 .filter(|p| !p.trim().is_empty())
                 .map(str::to_string),
         )?,
-        _ => format!("Error: unknown tool \"{name}\"."),
+        // Not this dispatcher's: the run's own tools and subagents
+        // (`Dispatch`), and the web's (above).
+        _ => {
+            return Ok(ToolResult::error(format!(
+                "Error: unknown tool \"{name}\"."
+            )))
+        }
     };
     // P2.4: what these show of other files leaves out the hidden ones.
-    let content =
-        if !ctx.hidden.is_empty() && matches!(name, "callers" | "neighbours" | "diagnostics") {
-            super::test_writer::without_hidden_lines(&content, &ctx.hidden)
-        } else {
-            content
-        };
-    Ok(ToolResult::text(content))
+    let content = if !ctx.hidden.is_empty() && tool.spec().hidden.results {
+        super::test_writer::without_hidden_lines(&content, &ctx.hidden)
+    } else {
+        content
+    };
+    Ok(ToolResult::ok(content))
 }
 
 /// Leaves out of a search's result the lines of the files `out` says,
@@ -1765,12 +1852,14 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> (String, boo
             Some(code) => format!("exit code {code}"),
         }
     };
-    // The first two lines are read back by the chat's tool block (exit code).
+    // The command, then how it ended. The chat takes that from the stored
+    // result's meta (`CommandEnd`); from these lines only in a row stored
+    // before results had one.
     let mut parts = vec![
         format!("$ {command}"),
         format!("{status}, {:.1} s", out.duration_ms as f64 / 1000.0),
     ];
-    // Third line, read back by the tool block too: a long wait for a CPU slot.
+    // Third line: a long wait for a CPU slot.
     if let Some(waited) = out.waited.as_ref().and_then(|w| w.describe()) {
         parts.push(waited);
     }
@@ -1989,17 +2078,14 @@ fn count_lines(text: &str) -> usize {
 
 static MATCH_COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+) match").unwrap());
 static NUMBERED_HIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\. ").unwrap());
-static EXIT_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^exit code (-?\d+)").unwrap());
 /// On the result's first line: a syntax check may follow (V04).
 static WRITE_CHANGES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)\(\+(\d+) -(\d+) lines\)$").unwrap());
 static PAGE_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^# (.+)$").unwrap());
 
-/// Small summary of a tool's result, for the chat's tool block header.
+/// Small summary of a successful call's result, for the chat's tool block
+/// header. Not for a failed call's: its text is the error's.
 pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
-    if is_error(result) {
-        return None;
-    }
     let one = |k: &str, v: Value| {
         let mut m = Map::new();
         m.insert(k.to_string(), v);
@@ -2023,15 +2109,10 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
                 count_lines(result)
             }),
         ),
-        "neighbours" | "callers" | "outline" | "diagnostics" => {
-            if result.trim_start().starts_with("Error:") {
-                return None;
-            }
-            one(
-                "count",
-                json!(result.split('\n').filter(|l| l.starts_with("- ")).count()),
-            )
-        }
+        "neighbours" | "callers" | "outline" | "diagnostics" => one(
+            "count",
+            json!(result.split('\n').filter(|l| l.starts_with("- ")).count()),
+        ),
         "search_code" => {
             // First line: "12 matches in 3 files" (context lines aren't matches).
             if result.trim_start().starts_with("No matches.") {
@@ -2049,9 +2130,6 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
                 .filter(|l| NUMBERED_HIT.is_match(l))
                 .count()),
         ),
-        "bash" => Some(command_meta(result)),
-        // A command it read or stopped; its list has no meta.
-        "background" if result.starts_with("$ ") => Some(command_meta(result)),
         // A whole-file write: the lines it added and removed (agent_tools::write_file).
         "write" => WRITE_CHANGES.captures(result).map(|c| {
             let mut meta = Map::new();
@@ -2071,31 +2149,6 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
         }
         _ => None,
     }
-}
-
-/// A command's result (`format_command_output`, `format_background`), as
-/// its tool block reads it: its exit code (null when it didn't exit on its
-/// own, or still runs), its id while it runs in the background, and a long
-/// wait for a CPU slot.
-fn command_meta(result: &str) -> Map<String, Value> {
-    let line = result.split('\n').nth(1).unwrap_or("");
-    let code = EXIT_CODE
-        .captures(line)
-        .and_then(|c| c[1].parse::<i64>().ok());
-    let mut meta = Map::new();
-    meta.insert("exitCode".into(), json!(code));
-    if let Some(running) = line.strip_prefix(RUNNING_AS) {
-        let id = running.split(',').next().unwrap_or_default();
-        meta.insert("background".into(), json!(id));
-    }
-    if let Some(waited) = result
-        .split('\n')
-        .nth(2)
-        .filter(|l| l.starts_with("Waited "))
-    {
-        meta.insert("waited".into(), json!(waited.trim_end_matches('.')));
-    }
-    meta
 }
 
 /// Why `command` can't run where the chat works, if it can't: an isolated
@@ -2316,18 +2369,21 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let agent = names(tools_for(true, false, false, &p, false, false, false));
-        assert!(agent.contains(&"bash".to_string()) && agent.last().unwrap() == "todo");
+        assert!(
+            agent.contains(&"bash".to_string())
+                && agent.ends_with(&["todo".into(), "ask_user".into()])
+        );
         let plan = names(tools_for(true, true, false, &p, true, false, false));
         assert!(!plan
             .iter()
-            .any(|n| PLAN_BLOCKED_TOOLS.contains(&n.as_str())));
+            .any(|n| ["write", "bash", "background", "todo"].contains(&n.as_str())));
         assert!(
             plan.contains(&"browser_screenshot".to_string())
                 && plan.ends_with(&["ask_user".into(), "submit_plan".into()])
         );
         assert_eq!(
             names(tools_for(false, false, false, &p, false, false, false)),
-            vec!["web_search", "browse_url"]
+            vec!["web_search", "browse_url", "ask_user"]
         );
         assert!(tools_for(true, true, true, &p, false, false, false).is_empty());
         assert!(tools_for(true, true, true, &p, false, true, false).is_empty());
@@ -2378,10 +2434,13 @@ mod tests {
             allowed_hosts: vec!["docs.rs".into()],
             ..Permissions::default()
         };
-        assert_eq!(names(&listed), vec!["browse_url"]);
+        assert_eq!(names(&listed), vec!["browse_url", "ask_user"]);
         let mut searching = listed.clone();
         searching.allowed_hosts.push("html.duckduckgo.com".into());
-        assert_eq!(names(&searching), vec!["web_search", "browse_url"]);
+        assert_eq!(
+            names(&searching),
+            vec!["web_search", "browse_url", "ask_user"]
+        );
         let browse = |p: &Permissions| {
             web_tool_schemas(p)
                 .iter()
@@ -2527,8 +2586,8 @@ mod tests {
             "$ cargo test\nexit code 1, 1.2 s\n--- stderr ---\nerror: boom"
         );
         assert!(!shortened);
-        assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], json!(1));
-        assert!(result_meta("bash", &text).unwrap().get("waited").is_none());
+        assert_eq!(ran_meta(out.end())["exitCode"], json!(1));
+        assert!(ran_meta(out.end()).get("waited").is_none());
 
         // A long wait for a CPU slot: told to the model, kept on the tool block.
         let waited = crate::workload::Waited {
@@ -2545,9 +2604,16 @@ mod tests {
             "$ cargo test\nexit code 1, 1.2 s\nWaited 1 min 20 s for a CPU slot (your terminal is running `cargo build`).\n"
         ));
         assert_eq!(
-            result_meta("bash", &text).unwrap()["waited"],
+            ran_meta(out.end())["waited"],
             json!("Waited 1 min 20 s for a CPU slot (your terminal is running `cargo build`)")
         );
+    }
+
+    /// The meta a call's result is stored with when it ran `end`.
+    fn ran_meta(end: CommandEnd) -> Map<String, Value> {
+        let mut meta = Map::new();
+        Outcome::Ran(end).write_meta(&mut meta);
+        meta
     }
 
     #[test]
@@ -2863,7 +2929,11 @@ a.rs (3 matches)
             result_meta("read", "[Symbol read: f, lines 7-9 of a.rs]\nfn f() {\n}").unwrap();
         assert_eq!(symbol["range"], json!([7, 9]));
         assert_eq!(symbol["count"], json!(3));
-        assert!(result_meta("read", "Error: nope").is_none());
+        // Only a success's result gets one: a read may start with "Error:".
+        assert_eq!(
+            result_meta("read", "Error: disk full\nretrying").unwrap()["count"],
+            json!(2)
+        );
         assert_eq!(
             result_meta("browse_url", "# (untitled)\nURL: x")
                 .unwrap()
@@ -2892,7 +2962,7 @@ a.rs (3 matches)
             text,
             "$ sleep 999\ntimed out (killed), 120.0 s\n(no output)"
         );
-        assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], Value::Null);
+        assert_eq!(ran_meta(out.end())["exitCode"], Value::Null);
         // Truncated by the runner: said so.
         let out = CommandOutput {
             exit_code: Some(0),
@@ -2979,6 +3049,195 @@ a.rs (3 matches)
         eprintln!("outlines: cold {cold:?}, cached {:?}", start.elapsed());
     }
 
+    /// Every schema of Rovik's tools, as their builders make them.
+    fn every_schema() -> Vec<Value> {
+        let p = Permissions::default();
+        let mut schemas = file_tool_schemas();
+        schemas.extend(web_tool_schemas(&p));
+        schemas.extend([
+            browser_screenshot_tool_schema(),
+            run_command_schema(&p),
+            background_schema(),
+            ask_user_schema(),
+            todo_schema(),
+            submit_plan_schema(),
+            restore_context_schema(),
+            super::super::subagent::task_schema(&[super::super::subagent::Kind::Scout], false),
+            super::super::worker::extend_scope_schema(),
+            super::super::change_review::answer_review_schema(),
+            super::super::mcp_tool::schema(),
+        ]);
+        schemas
+    }
+
+    /// The tools whose schema has the `property` argument.
+    fn tools_taking(property: &str) -> Vec<super::super::builtin_tools::BuiltinTool> {
+        every_schema()
+            .iter()
+            .filter(|t| {
+                t.pointer(&format!("/function/parameters/properties/{property}"))
+                    .is_some()
+            })
+            .filter_map(|t| super::super::builtin_tools::BuiltinTool::parse(tool_name(t)))
+            .collect()
+    }
+
+    /// Each of Rovik's tools has one schema, and each schema names one of
+    /// them: a new tool comes with both, or this fails.
+    #[test]
+    fn every_builtin_tool_has_one_schema_and_parses_back_from_its_name() {
+        use super::super::builtin_tools::BuiltinTool;
+        let schemas = every_schema();
+        let mut names: Vec<&str> = schemas.iter().map(tool_name).collect();
+        names.sort_unstable();
+        let mut all: Vec<&str> = BuiltinTool::ALL.iter().map(|t| t.name()).collect();
+        all.sort_unstable();
+        assert_eq!(names, all);
+        for name in names {
+            assert_eq!(BuiltinTool::parse(name).map(|t| t.name()), Some(name));
+        }
+    }
+
+    /// A tool that takes a `path` keeps to the restricted files by it: it
+    /// refuses one the agent may not read (or, writing, change). Only
+    /// list_dir doesn't: it shows names, no contents. A new tool with a
+    /// path gets a rule in its row, or is named here with its reason.
+    #[test]
+    fn every_tool_with_a_path_argument_has_a_restricted_files_rule() {
+        use super::super::builtin_tools::BuiltinTool;
+        use crate::restricted_files::RestrictedFiles;
+        let with_path = tools_taking("path");
+        assert!(with_path.contains(&BuiltinTool::Read) && with_path.contains(&BuiltinTool::Write));
+        let dir = std::env::temp_dir().join(format!("restricted-rule-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".env"), "SECRET=1\n").unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let restricted = RestrictedFiles::default();
+        for tool in with_path {
+            if tool == BuiltinTool::ListDir {
+                assert_eq!(tool.spec().restricted.path, None);
+                continue;
+            }
+            assert!(tool.spec().restricted.path.is_some(), "{tool:?}");
+            let args = json!({ "path": ".env", "content": "x" });
+            let problem = super::super::restricted::problem(
+                tool.name(),
+                args.as_object().unwrap(),
+                &root,
+                &restricted,
+            );
+            assert!(
+                problem
+                    .as_deref()
+                    .is_some_and(|p| p.contains(".env is a restricted file")),
+                "{tool:?}: {problem:?}"
+            );
+        }
+        // A tool that reads the project without a path keeps to them by
+        // what it shows of other files.
+        for tool in BuiltinTool::READS {
+            let rule = tool.spec().restricted;
+            assert!(
+                rule.path.is_some() || rule.results || tool == BuiltinTool::ListDir,
+                "{tool:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tool that opens the page its `url` names is checked against the
+    /// user's allowed hosts before it runs.
+    #[test]
+    fn every_tool_with_a_url_argument_is_checked_against_the_allowed_hosts() {
+        use super::super::builtin_tools::{BuiltinTool, HostCheck};
+        use super::super::permissions::{check_tool_call, ToolVerdict};
+        let with_url = tools_taking("url");
+        assert!(with_url.contains(&BuiltinTool::BrowseUrl));
+        let listed = Permissions {
+            allow_any_host: false,
+            allowed_hosts: vec!["docs.rs".into()],
+            ..Permissions::default()
+        };
+        for tool in with_url {
+            assert_eq!(tool.spec().host, HostCheck::UrlArgument, "{tool:?}");
+            let refused =
+                check_tool_call(tool.name(), r#"{"url":"https://example.com/a"}"#, &listed);
+            assert!(
+                matches!(refused, ToolVerdict::Refused(_)),
+                "{tool:?}: {refused:?}"
+            );
+            let allowed = check_tool_call(tool.name(), r#"{"url":"https://docs.rs/a"}"#, &listed);
+            assert!(matches!(allowed, ToolVerdict::Permitted { .. }), "{tool:?}");
+        }
+    }
+
+    /// Plan mode changes nothing: no tool that writes files or runs
+    /// commands is its (their rows' modes), so none is offered there,
+    /// whatever else the run has.
+    #[test]
+    fn plan_mode_takes_no_tool_that_writes_files_or_runs_commands() {
+        use super::super::builtin_tools::Effect;
+        let changes = |t: &BuiltinTool| matches!(t.spec().effect, Effect::Writes | Effect::Runs);
+        for tool in BuiltinTool::ALL.iter().filter(|t| changes(t)) {
+            assert!(!tool.spec().modes.offered_in(true), "{tool:?}");
+        }
+        let p = Permissions::default();
+        for (project, clm) in [(true, false), (true, true), (false, true)] {
+            let mut plan = tools_for(project, true, false, &p, true, clm, false);
+            offer_background(&mut plan);
+            for t in &plan {
+                let tool = BuiltinTool::parse(tool_name(t)).unwrap();
+                // In CLM mode write is offered for the context folder only.
+                let context_only = t["function"]["description"]
+                    .as_str()
+                    .is_some_and(|d| d.starts_with("Only for your context folder"));
+                assert!(!changes(&tool) || context_only, "{tool:?}");
+            }
+        }
+    }
+
+    /// Without a project, CLM's context folder is offered the tools that
+    /// work on it (read, write, list_dir), not the project's others, which
+    /// would only answer that they need a project.
+    #[test]
+    fn without_a_project_the_context_folder_offers_only_the_tools_it_serves() {
+        let p = Permissions::default();
+        for plan_mode in [false, true] {
+            let tools = tools_for(false, false, false, &p, plan_mode, true, false);
+            let offered: Vec<&str> = tools.iter().map(tool_name).collect();
+            for name in [
+                "search_code",
+                "neighbours",
+                "callers",
+                "outline",
+                "diagnostics",
+            ] {
+                assert!(!offered.contains(&name), "{name}: {offered:?}");
+            }
+            for name in ["read", "write", "list_dir", "restore_context"] {
+                assert!(offered.contains(&name), "{name}: {offered:?}");
+            }
+        }
+    }
+
+    /// A failure's text starts with "Error:", once: `error` adds it to text
+    /// without it and leaves text with it alone; `ok` never adds it, and a
+    /// success may start so too (a file it read).
+    #[test]
+    fn a_failed_call_says_error_once() {
+        let failed = ToolResult::error("no such file");
+        assert_eq!(failed.content, "Error: no such file");
+        assert_eq!(failed.outcome, Outcome::Failed);
+        assert_eq!(
+            ToolResult::error("Error: no such file").content,
+            "Error: no such file"
+        );
+        assert_eq!(ToolResult::error("  Error: x").content, "  Error: x");
+        let read = ToolResult::ok("Error: disk full");
+        assert_eq!(read.content, "Error: disk full");
+        assert_eq!(read.outcome, Outcome::Done);
+    }
+
     /// G02: a failed call's class, by the words the tools write: each from
     /// the code that writes it where a function does, so a change of
     /// wording that loses its class fails here.
@@ -2989,103 +3248,99 @@ a.rs (3 matches)
             let e = crate::edit_file::apply_edit(file, old, new, lines, lines).unwrap_err();
             format!("Error: src/a.rs: {e}")
         };
-        let cases: Vec<(String, Option<&str>)> = vec![
-            // Not failures: a write, and a command that ran and failed.
-            ("wrote 3 bytes to a.txt (+1 -0 lines)".into(), None),
-            (
-                "$ npm test\nexit code 1, 0.4 s\n--- stderr ---\nfail".into(),
-                None,
-            ),
-            (edit("fn b", "x", None), Some("old_text not found")),
-            (edit("fn b", "x", Some(1)), Some("old_text not found")),
-            (edit("fn a", "x", None), Some("old_text not unique")),
-            (edit("", "x", None), Some("bad edit")),
-            (edit("fn a", "fn a", None), Some("bad edit")),
-            (edit("fn a", "x", Some(9)), Some("bad edit")),
+        // Whether a call failed is its outcome (a command that ran and
+        // exited 1 didn't): only a failed call's words get a class.
+        let cases: Vec<(String, &str)> = vec![
+            (edit("fn b", "x", None), "old_text not found"),
+            (edit("fn b", "x", Some(1)), "old_text not found"),
+            (edit("fn a", "x", None), "old_text not unique"),
+            (edit("", "x", None), "bad edit"),
+            (edit("fn a", "fn a", None), "bad edit"),
+            (edit("fn a", "x", Some(9)), "bad edit"),
             (
                 "Error: stopped by the user before this ran.".into(),
-                Some("stopped"),
+                "stopped",
             ),
             (
                 "Error: interrupted: the app closed before this ran. Run it again if you still need it."
                     .into(),
-                Some("interrupted"),
+                "interrupted",
             ),
             (
                 "Error: not run: the task went over its budget (it ran for 2 h).".into(),
-                Some("not run"),
+                "not run",
             ),
             (
                 "Error: a.txt changed since you last read it (by another chat); your write was not applied."
                     .into(),
-                Some("file changed"),
+                "file changed",
             ),
-            ("Error: src/x.ts: not a file".into(), Some("no such file")),
-            ("Error: notes: not a directory".into(), Some("no such file")),
+            ("Error: src/x.ts: not a file".into(), "no such file"),
+            ("Error: notes: not a directory".into(), "no such file"),
             (
                 "Error: no declaration named \"Foo\" in the project graph.".into(),
-                Some("no such symbol"),
+                "no such symbol",
             ),
             (
                 "Error: logo.png: binary file, cannot edit".into(),
-                Some("binary file"),
+                "binary file",
             ),
             (
                 "Error: path must not contain '..': ../x".into(),
-                Some("bad path"),
+                "bad path",
             ),
             (
                 "Error: blocked by the user's permission settings. `git push` isn't allowed in this run."
                     .into(),
-                Some("denied"),
+                "denied",
             ),
             (
                 "Error: rejected by the user's AI reviewer (Reviewer): Not asked for.".into(),
-                Some("denied"),
+                "denied",
             ),
             (
                 super::super::autopilot::DAEMON_FOLDER_REFUSED.into(),
-                Some("denied"),
+                "denied",
             ),
             (
                 super::super::autopilot::NO_QUESTIONS.into(),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
                 "Error: write isn't available in Plan mode, which doesn't change anything.".into(),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
                 super::super::test_writer::not_a_test_file("src/a.ts"),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
                 super::super::test_writer::hidden_file("src/a.ts"),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
-                super::super::plan::checklist_gate_error("4 files changed", "write"),
-                Some("not allowed"),
+                super::super::checklist::checklist_gate_error("4 files changed", "write"),
+                "not allowed",
             ),
             (
                 "Error: unknown tool \"frob\".".into(),
-                Some("not allowed"),
+                "not allowed",
             ),
             (
                 "Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- A \"## Criteria\" section is required."
                     .into(),
-                Some("plan"),
+                "plan",
             ),
             (
                 "Error: subagents are turned off in the settings. Do the work yourself.".into(),
-                Some("subagent"),
+                "subagent",
             ),
             (
                 "Error: could not parse arguments as JSON: {".into(),
-                Some("bad arguments"),
+                "bad arguments",
             ),
-            ("Error: \"path\" is required.".into(), Some("bad arguments")),
-            ("Error: boom.".into(), Some("other")),
+            ("Error: \"path\" is required.".into(), "bad arguments"),
+            ("Error: boom.".into(), "other"),
         ];
         for (text, want) in cases {
             assert_eq!(error_class(&text), want, "{text}");
@@ -3114,14 +3369,14 @@ a.rs (3 matches)
             "{cut}"
         );
         assert!(cut.ends_with('…') && cut.chars().count() < 1_000, "{cut}");
-        assert_eq!(error_class(&cut), Some("output limit"));
+        assert_eq!(error_class(&cut), "output limit");
 
         let broken = unparsed_arguments("{not json", false);
         assert_eq!(
             broken,
             "Error: could not parse arguments as JSON: {not json"
         );
-        assert_eq!(error_class(&broken), Some("bad arguments"));
+        assert_eq!(error_class(&broken), "bad arguments");
         let long = unparsed_arguments(&args, false);
         assert!(long.ends_with('…') && long.chars().count() < 400, "{long}");
     }
@@ -3152,35 +3407,57 @@ a.rs (3 matches)
         assert!(whole.ends_with("line 3000\n--- stderr ---\nwarning: slow\n"));
     }
 
-    /// G02: how a command that ran ended, from its result; nothing for a
-    /// refusal or another tool's result.
+    /// G02: how a command that ran ended comes from what ran, not from its
+    /// result's text, whose second line is its status only when the command
+    /// is one line: exit code, time-out, stop and a signal, each for a
+    /// command of one line and of two. A refusal or another tool's result
+    /// says nothing of a command.
     #[test]
-    fn a_commands_end_comes_from_its_result() {
-        let end = |exit_code: Option<i32>, timed_out: bool, stopped: bool| {
-            let out = CommandOutput {
-                exit_code,
-                stdout: "ok\n".into(),
-                stderr: String::new(),
-                timed_out,
-                stopped,
-                truncated: false,
-                duration_ms: 400,
-                waited: None,
-                whole: None,
-            };
-            command_end(&format_command_output("npm test", &out).0)
+    fn a_command_of_two_lines_reports_how_it_ended() {
+        let output = |exit_code: Option<i32>, timed_out: bool, stopped: bool| CommandOutput {
+            exit_code,
+            stdout: "ok\n".into(),
+            stderr: String::new(),
+            timed_out,
+            stopped,
+            truncated: false,
+            duration_ms: 400,
+            waited: None,
+            whole: None,
         };
-        assert_eq!(end(Some(0), false, false), Some((Some(0), false)));
-        assert_eq!(end(Some(2), false, false), Some((Some(2), false)));
-        assert_eq!(end(None, true, false), Some((None, true)));
-        assert_eq!(end(None, false, true), Some((None, false)));
-        assert_eq!(end(None, false, false), Some((None, false)), "a signal");
-        for other in [
-            "Error: blocked by the user's permission settings.",
-            "wrote 3 bytes to a.txt",
-            "",
-        ] {
-            assert_eq!(command_end(other), None, "{other}");
+        let cases = [
+            (output(Some(0), false, false), "exit code 0", Some(0)),
+            (output(Some(2), false, false), "exit code 2", Some(2)),
+            (output(None, true, false), "timed out (killed)", None),
+            (
+                output(None, false, true),
+                "stopped by the user (killed)",
+                None,
+            ),
+            (output(None, false, false), "ended by a signal", None),
+        ];
+        for command in ["npm test", "npm run build\nnpm test"] {
+            for (out, status, exit_code) in &cases {
+                let (text, _) = format_command_output(command, out);
+                // The model's text as always: the command, then its status.
+                assert!(
+                    text.starts_with(&format!("$ {command}\n{status}, 0.4 s\n")),
+                    "{text}"
+                );
+                let end = out.end();
+                assert_eq!(end.exit_code, *exit_code, "{command}: {status}");
+                assert_eq!(end.timed_out, out.timed_out);
+                assert_eq!(end.stopped, out.stopped);
+                assert_eq!(end.background, None);
+                let meta = ran_meta(end);
+                assert_eq!(meta["exitCode"], json!(exit_code), "{command}: {status}");
+                assert_eq!(meta["outcome"], "done", "a command that ran is a done call");
+            }
+        }
+        for outcome in [Outcome::Failed, Outcome::Done] {
+            let mut meta = Map::new();
+            outcome.write_meta(&mut meta);
+            assert!(meta.get("exitCode").is_none(), "{outcome:?}");
         }
     }
 
@@ -3213,7 +3490,8 @@ a.rs (3 matches)
         let mut plan = tools_for(true, false, false, &p, true, false, false);
         offer_background(&mut plan);
         assert!(!plan.iter().any(|t| tool_name(t) == "background"));
-        assert!(PLAN_BLOCKED_TOOLS.contains(&"background"));
+        use super::super::builtin_tools::Modes;
+        assert_eq!(BuiltinTool::Background.spec().modes, Modes::AgentOnly);
     }
 
     /// A command left running reads as a command's result does: running,
@@ -3247,10 +3525,11 @@ a.rs (3 matches)
             running.contains(r#"{"action": "stop", "id": "bg3"}"#),
             "{running}"
         );
-        let meta = result_meta("bash", &running).unwrap();
+        let end = report(None, "", 0).end();
+        assert_eq!(end.background.as_deref(), Some("bg3"), "no command ended");
+        let meta = ran_meta(end);
         assert_eq!(meta["background"], json!("bg3"));
         assert_eq!(meta["exitCode"], Value::Null);
-        assert_eq!(command_end(&running), None, "no command ended");
 
         let crashed = format_background(&report(Some(End::Exited(Some(1))), "", 2048));
         assert_eq!(
@@ -3258,17 +3537,47 @@ a.rs (3 matches)
             "$ npm run dev\nexit code 1, 3.1 s\n[… 2048 bytes of its output weren't kept …]\n\
              (no new output)"
         );
-        let meta = result_meta("background", &crashed).unwrap();
+        let end = report(Some(End::Exited(Some(1))), "", 2048).end();
+        assert_eq!((end.exit_code, end.timed_out), (Some(1), false));
+        let meta = ran_meta(end);
         assert_eq!(meta["exitCode"], json!(1));
         assert!(meta.get("background").is_none());
-        assert_eq!(command_end(&crashed), Some((Some(1), false)));
 
         let stopped = format_background(&report(Some(End::Stopped), "bye\n", 0));
         assert_eq!(stopped, "$ npm run dev\nstopped (killed), 3.1 s\nbye");
+        let end = report(Some(End::Stopped), "", 0).end();
+        assert!(end.stopped && end.exit_code.is_none());
         assert_eq!(
             result_meta("background", "No command runs in the background."),
             None
         );
+    }
+
+    /// A command left running that is two lines long: its id comes from
+    /// its report, while the text has its status on the third line.
+    #[test]
+    fn a_background_command_of_two_lines_reports_its_id() {
+        use crate::command_tool::background::{Report, Status};
+        let report = Report {
+            status: Status {
+                id: "bg4".into(),
+                command: "npm install\nnpm run dev".into(),
+                ran: std::time::Duration::from_millis(2_000),
+                end: None,
+            },
+            output: "ready\n".into(),
+            dropped: 0,
+        };
+        let text = format_background(&report);
+        assert!(
+            text.starts_with(
+                "$ npm install\nnpm run dev\nrunning in the background as bg4, 2.0 s\n"
+            ),
+            "{text}"
+        );
+        let meta = ran_meta(report.end());
+        assert_eq!(meta["background"], json!("bg4"));
+        assert_eq!(meta["exitCode"], Value::Null);
     }
 
     #[test]

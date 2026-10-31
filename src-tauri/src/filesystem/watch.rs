@@ -178,6 +178,41 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 /// ...or at the latest this long after the first, while they keep coming.
 const WATCH_MAX_WAIT: Duration = Duration::from_secs(2);
 
+/// Repairs after a flood (a re-walk of the project for its ignore files, a
+/// re-watch of every folder) wait this long between them: bursts follow one
+/// another without pause while a build or an install churns, and each
+/// repair walks the whole project.
+const WATCH_REPAIR_EVERY: Duration = Duration::from_secs(30);
+
+/// The repairs floods ask for, at [`WATCH_REPAIR_EVERY`] at most.
+#[derive(Default)]
+struct Repairs {
+    /// A burst lost events: a repair is owed.
+    wanted: bool,
+    last: Option<Instant>,
+}
+
+impl Repairs {
+    /// Events were lost: one is owed.
+    fn want(&mut self) {
+        self.wanted = true;
+    }
+
+    /// Whether one is owed and has waited long enough — then it's due now.
+    fn take(&mut self, now: Instant) -> bool {
+        let waited = match self.last {
+            None => true,
+            Some(last) => now.duration_since(last) >= WATCH_REPAIR_EVERY,
+        };
+        if !(self.wanted && waited) {
+            return false;
+        }
+        self.wanted = false;
+        self.last = Some(now);
+        true
+    }
+}
+
 /// Bounded intake from notify. Lost detail is remembered outside the queue,
 /// so even a full queue can request a complete Files and Git refresh.
 struct WatchEvents {
@@ -541,8 +576,9 @@ struct Watch {
     root: PathBuf,
     generation: u64,
     events: WatchEvents,
-    /// Intake overflow can hide new dirs and .gitignore edits; repair both.
-    recovering: bool,
+    /// Floods' repairs: a re-walk of the project and a re-watch of every
+    /// folder, at most once every [`WATCH_REPAIR_EVERY`].
+    repairs: Repairs,
     /// The project's .gitignore files: the root's at once, all of them when
     /// found (and again whenever one changes).
     ignores: Arc<WatchIgnores>,
@@ -568,7 +604,7 @@ impl Watch {
             root,
             generation,
             events,
-            recovering: false,
+            repairs: Repairs::default(),
             batch: WatchBatch::default(),
             git_touched: None,
         };
@@ -618,7 +654,7 @@ impl Watch {
     /// any more.
     fn drain(&mut self) -> bool {
         if self.events.take_overflow(&mut self.batch, Instant::now()) {
-            self.recovering = true;
+            self.repairs.want();
             // A dropped event could have been .git/HEAD during a checkout.
             rovik_core::overlay::chats::project_busy(&self.root);
         }
@@ -724,9 +760,6 @@ impl Watch {
         match flush {
             WatchFlush::Nothing => {}
             WatchFlush::Everything => {
-                if std::mem::take(&mut self.recovering) {
-                    self.recover();
-                }
                 // Isolated chats on this project read it afresh.
                 rovik_core::overlay::chats::project_changed(&self.root, &[], true);
                 let _ = self.app.emit(
@@ -760,6 +793,11 @@ impl Watch {
                     let _ = self.app.emit("fs-changes", payload);
                 }
             }
+        }
+        // A repair a burst had to wait for happens now that it's due: the
+        // walk it takes is what a storm of bursts must not repeat.
+        if self.repairs.take(now) {
+            self.recover();
         }
         let git_settled = self
             .git_touched
@@ -837,6 +875,31 @@ mod tests {
             vec![PathBuf::from("after.ts")]
         );
         assert!(!events.take_overflow(&mut batch, t0));
+    }
+
+    /// A build or an install churns without pause: one flood after another.
+    /// Repairing is a walk of the project and a re-watch of every folder, so
+    /// the bursts' repairs are one per WATCH_REPAIR_EVERY, not one per burst.
+    #[test]
+    fn floods_ask_for_one_repair_per_repair_interval() {
+        let t0 = Instant::now();
+        let mut repairs = Repairs::default();
+        assert!(!repairs.take(t0), "nothing was lost");
+        // Bursts back to back, as churn makes them: the first is repaired,
+        // the rest wait.
+        for ms in [0u64, 300, 600, 900] {
+            repairs.want();
+            assert_eq!(
+                repairs.take(t0 + Duration::from_millis(ms)),
+                ms == 0,
+                "{ms} ms"
+            );
+        }
+        // What waited isn't lost: it's repaired once the interval is up, with
+        // no new burst needed.
+        assert!(repairs.take(t0 + WATCH_REPAIR_EVERY));
+        // And done, not owed any more.
+        assert!(!repairs.take(t0 + WATCH_REPAIR_EVERY * 2));
     }
 
     #[test]

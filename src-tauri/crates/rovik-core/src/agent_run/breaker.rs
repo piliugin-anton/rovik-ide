@@ -15,6 +15,7 @@
 //! that passes found nothing and is removed; one that fails stays, as a
 //! finding. A speculative file there's no way to run alone stays.
 
+use super::builtin_tools::BuiltinTool;
 use super::change_review::render_diff;
 use super::project;
 use super::run::{new_message, Run};
@@ -57,15 +58,15 @@ What you assumed where the request and the criteria weren't explicit, or "None".
 pub static BREAKER: KindSpec = KindSpec {
     label: "Adversarial tester",
     tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-        "write",
-        "bash",
+        BuiltinTool::Read,
+        BuiltinTool::ListDir,
+        BuiltinTool::SearchCode,
+        BuiltinTool::Neighbours,
+        BuiltinTool::Callers,
+        BuiltinTool::Outline,
+        BuiltinTool::Diagnostics,
+        BuiltinTool::Write,
+        BuiltinTool::Bash,
     ],
     default_budget: Budget {
         tool_calls: 40,

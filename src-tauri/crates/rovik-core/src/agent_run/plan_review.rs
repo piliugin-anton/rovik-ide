@@ -18,6 +18,7 @@
 //! reviewer that fails is recorded as skipped and the plan is saved with a
 //! note (layer 7).
 
+use super::builtin_tools::BuiltinTool;
 use super::change_review::{
     describe, drop_repeats, findingless, parse_findings, reviewer_skip_reason, same_finding,
     skipped, Finding,
@@ -95,12 +96,12 @@ Then "## Findings", with only new findings. Every new finding counts, wherever i
 pub static PLAN_REVIEWER: KindSpec = KindSpec {
     label: "Plan reviewer",
     tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
+        BuiltinTool::Read,
+        BuiltinTool::ListDir,
+        BuiltinTool::SearchCode,
+        BuiltinTool::Neighbours,
+        BuiltinTool::Callers,
+        BuiltinTool::Outline,
     ],
     default_budget: Budget {
         tool_calls: 25,

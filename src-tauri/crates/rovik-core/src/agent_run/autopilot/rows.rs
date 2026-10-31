@@ -7,7 +7,7 @@ use super::stage::{
     Recorded, Stage, StageRecord, StageRun, Status,
 };
 use crate::agent_run::budget::Spent;
-use crate::agent_run::plan;
+use crate::agent_run::messages;
 use crate::chat_db::store::{self, MessagePatch, MessageRow, NewMessage};
 use crate::core::Core;
 use serde::Serialize;
@@ -276,7 +276,7 @@ pub async fn current_task(
         .db
         .read(move |c| store::role_messages_after(c, &id, "user", since))
         .await?;
-    if later.iter().any(|m| !plan::is_harness(m) && !m.failed) {
+    if later.iter().any(|m| !messages::is_harness(m) && !m.failed) {
         return Ok(None);
     }
     Ok(Some((task, records)))

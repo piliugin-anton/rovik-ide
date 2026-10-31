@@ -22,10 +22,12 @@
 //! the run `review-open`: the change isn't accepted until every one is
 //! resolved.
 
+use super::builtin_tools::BuiltinTool;
 use super::diff::{self, Hunk};
 use super::run::{chat_plan_file, new_message, Run, IDE_NOTE};
 use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubStatus, SubagentSettings};
-use super::{log, plan, plan_review, tools, ModelProfile};
+use super::tools::ToolResult;
+use super::{checklist, log, plan, plan_review, tools, ModelProfile};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -74,15 +76,7 @@ Severity: high (wrong results, data loss, a crash in normal use), medium (wrong 
 
 pub static REVIEWER: KindSpec = KindSpec {
     label: "Change reviewer",
-    tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-    ],
+    tools: &BuiltinTool::READS,
     default_budget: Budget {
         tool_calls: 30,
         wall: Duration::from_secs(300),
@@ -1036,7 +1030,7 @@ pub fn render_diff(changes: &[FileChange], budget: usize) -> RenderedDiff {
 pub struct BriefParts<'a> {
     pub request: &'a str,
     pub plan: Option<(&'a str, &'a str)>,
-    pub checklist: &'a [plan::TodoItem],
+    pub checklist: &'a [checklist::TodoItem],
     pub diff: &'a RenderedDiff,
     /// A later round: the earlier findings and the agent's answers.
     pub earlier: Option<(&'a [Finding], &'a str)>,
@@ -1268,7 +1262,7 @@ impl Run {
             let shown = plan::relative_plan_path(&path, self.project_root.as_deref());
             Some((shown, text))
         });
-        let checklist = plan::current_checklist(&recent)
+        let checklist = checklist::current_checklist(&recent)
             .filter(|c| !c.carried)
             .map(|c| c.items)
             .unwrap_or_default();
@@ -1532,14 +1526,14 @@ impl Run {
     /// S06: `answer_review`: the agent's answers to the findings the last
     /// review sent (`review_held`), by their numbers, kept for the
     /// follow-up review; a later answer to a finding replaces the earlier.
-    pub(super) fn answer_review(&mut self, args: &serde_json::Map<String, Value>) -> String {
+    pub(super) fn answer_review(&mut self, args: &serde_json::Map<String, Value>) -> ToolResult {
         let held = self.review_held.len();
         if held == 0 {
-            return "Error: no review findings are waiting for an answer.".into();
+            return ToolResult::error("Error: no review findings are waiting for an answer.");
         }
         let given = plan_review::parse_responses(args.get("responses"));
         if given.is_empty() {
-            return format!("Error: no answer could be read. {ANSWER_SHAPE}");
+            return ToolResult::error(format!("Error: no answer could be read. {ANSWER_SHAPE}"));
         }
         let mut unknown: Vec<String> = Vec::new();
         for answer in given {
@@ -1571,7 +1565,7 @@ impl Run {
                 " Every finding has its answer: finish once the fixes you named are made, and a follow-up review checks them before the project's checks run.",
             ),
         }
-        out
+        ToolResult::ok(out)
     }
 }
 
@@ -2001,7 +1995,7 @@ mod tests {
         assert!(!diff.reduced);
         assert_eq!(diff.changed_lines, 3);
         assert_eq!(diff.files, ["src/a.ts", "src/new.ts"]);
-        let checklist = vec![plan::TodoItem {
+        let checklist = vec![checklist::TodoItem {
             title: "Do it".into(),
             status: "done".into(),
         }];
@@ -2244,7 +2238,7 @@ mod tests {
     }
 
     /// Round 2 (§4.2), decided: `subagent::sections` takes only backtick
-    /// fences, not `~~~` (plan.rs's `is_fence` takes both). Models fence with
+    /// fences, not `~~~` (`plan::is_fence` takes both). Models fence with
     /// backticks; a report wrapped in `~~~` still reads without a repair
     /// turn, at the cost of a `## ` line inside a `~~~` block starting a
     /// section.

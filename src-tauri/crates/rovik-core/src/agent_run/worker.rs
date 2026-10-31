@@ -17,10 +17,12 @@
 //! same choices: a worker sees only its step, and a choice made in one
 //! step and not passed on is one the next step makes again, differently.
 
+use super::builtin_tools::BuiltinTool;
+use super::checklist::{self, TodoItem};
 use super::diff;
 use super::paths;
 use super::permissions::program_name;
-use super::plan::{self, PlanStep, TodoItem};
+use super::plan::{self, PlanStep};
 use super::subagent::{self, Budget, Format, KindSpec};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -66,16 +68,16 @@ Add "## Blocked" with the reason only if you couldn't do the step."###;
 pub static WORKER: KindSpec = KindSpec {
     label: "Step worker",
     tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-        "write",
-        "bash",
-        "extend_scope",
+        BuiltinTool::Read,
+        BuiltinTool::ListDir,
+        BuiltinTool::SearchCode,
+        BuiltinTool::Neighbours,
+        BuiltinTool::Callers,
+        BuiltinTool::Outline,
+        BuiltinTool::Diagnostics,
+        BuiltinTool::Write,
+        BuiltinTool::Bash,
+        BuiltinTool::ExtendScope,
     ],
     default_budget: Budget {
         tool_calls: 60,
@@ -553,7 +555,7 @@ pub fn mark_step_done(
     // Open items only, and only one that matches: a settled item, or two
     // that match as well, aren't this step's to mark.
     let open: Vec<usize> = (0..items.len())
-        .filter(|&i| !plan::is_settled(&items[i]))
+        .filter(|&i| !checklist::is_settled(&items[i]))
         .collect();
     let only = |f: &dyn Fn(&str) -> bool| -> Option<usize> {
         let found: Vec<usize> = open

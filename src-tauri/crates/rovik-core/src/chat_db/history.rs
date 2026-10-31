@@ -99,6 +99,9 @@ pub struct Msg {
     /// The user dismissed the open checklist with this message
     /// (`meta.checklistClosed`): don't carry an old checklist into it.
     pub checklist_closed: bool,
+    /// A tool message whose call failed (`MessageRow::call_failed`), in a
+    /// history built from the stored rows; CLM's document doesn't keep it.
+    pub call_failed: bool,
     /// Reasoning sent back with an assistant message (`attach_reasoning`):
     /// `{ details }` or `{ text }`.
     pub reasoning: Option<Value>,
@@ -568,7 +571,7 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
                     .get("command")
                     .and_then(|c| c.as_str())
                     .map(|c| c.trim().to_string()),
-                ok: !m.text.starts_with("Error:"),
+                ok: !m.call_failed,
                 partial: m.text.starts_with(crate::read_file::PARTIAL_PREFIX),
             })
         })
@@ -715,7 +718,7 @@ const FOCUS_STEER_CHARS: usize = 300;
 /// ("continue"): the focus note quotes the previous real request as well.
 const SHORT_REQUEST_CHARS: usize = 80;
 
-fn todo_in_msg(m: &Msg) -> Option<Vec<crate::agent_run::plan::TodoItem>> {
+fn todo_in_msg(m: &Msg) -> Option<Vec<crate::agent_run::checklist::TodoItem>> {
     m.tool_calls
         .iter()
         .flatten()
@@ -723,7 +726,7 @@ fn todo_in_msg(m: &Msg) -> Option<Vec<crate::agent_run::plan::TodoItem>> {
         .filter(|c| c.name == "todo")
         .find_map(|c| match serde_json::from_str::<Value>(&c.arguments) {
             Ok(Value::Object(args)) => {
-                Some(crate::agent_run::plan::parse_todo(&args)).filter(|i| !i.is_empty())
+                Some(crate::agent_run::checklist::parse_todo(&args)).filter(|i| !i.is_empty())
             }
             _ => None,
         })
@@ -767,7 +770,8 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
         for m in messages[from..start].iter().rev() {
             if let Some(items) = todo_in_msg(m) {
                 // A finished or dismissed one isn't carried.
-                if !m.checklist_closed && !items.iter().all(crate::agent_run::plan::is_settled) {
+                if !m.checklist_closed && !items.iter().all(crate::agent_run::checklist::is_settled)
+                {
                     checklist = Some(items);
                 }
                 break;
@@ -776,7 +780,7 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     }
     if checklist
         .as_ref()
-        .is_some_and(|items| items.iter().all(crate::agent_run::plan::is_settled))
+        .is_some_and(|items| items.iter().all(crate::agent_run::checklist::is_settled))
     {
         return None;
     }
@@ -850,7 +854,7 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     if let Some(items) = checklist {
         let done = items
             .iter()
-            .filter(|i| crate::agent_run::plan::is_settled(i))
+            .filter(|i| crate::agent_run::checklist::is_settled(i))
             .count();
         note.push_str(&format!(
             "\nYour checklist ({done} of {} done):",
@@ -1349,6 +1353,7 @@ pub fn load_messages_in(
                         .or_else(|| meta.get("checklist_closed"))
                         .is_some_and(|v| *v == serde_json::Value::Bool(true))
                 }),
+                call_failed: m.role == "tool" && m.call_failed(),
                 full_chars,
                 needs_body,
                 id: m.id,
@@ -1423,6 +1428,7 @@ pub fn answer_unanswered_calls(messages: Vec<Msg>) -> Vec<Msg> {
                 harness: false,
                 steer: false,
                 checklist_closed: false,
+                call_failed: true,
                 reasoning: None,
             });
         }
@@ -1664,6 +1670,7 @@ mod tests {
             harness: false,
             steer: false,
             checklist_closed: false,
+            call_failed: false,
             reasoning: None,
         }
     }
@@ -3002,6 +3009,34 @@ mod tests {
             "the latest read is whole"
         );
         assert!(pairing_ok(&out));
+    }
+
+    /// Whether a read failed is its call's (`Msg::call_failed`), not its
+    /// text's: reads of a log that starts with "Error:" go out of date as
+    /// any read does; reads that failed hold no file, and never do.
+    #[test]
+    fn a_read_goes_out_of_date_by_its_outcome_not_its_words() {
+        let mut history = vec![msg("user", "q")];
+        for i in 0..20 {
+            let id = format!("r{i}");
+            history.push(call_with(&id, "read", json!({ "path": "app.log" })));
+            history.push(result(
+                &id,
+                &format!("Error: disk full\n{}", "x".repeat(3_000)),
+            ));
+        }
+        let stubs = |out: &[Msg]| {
+            out.iter()
+                .filter(|m| m.text.starts_with("[Read app.log here"))
+                .count()
+        };
+        let (out, _) = fit_with(history.clone(), 10_000, generous(false));
+        assert_eq!(stubs(&out), 8, "one batch of 8");
+        for m in history.iter_mut().filter(|m| m.role == "tool") {
+            m.call_failed = true;
+        }
+        let (out, _) = fit_with(history, 10_000, generous(false));
+        assert_eq!(stubs(&out), 0);
     }
 
     #[test]

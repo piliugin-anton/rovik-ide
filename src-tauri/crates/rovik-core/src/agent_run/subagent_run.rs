@@ -30,6 +30,7 @@ use super::run::{
 use super::subagent::{
     self, Brief, Budget, ChildWrite, Kind, SubResult, SubStatus, SubagentConfig, SubagentSettings,
 };
+use super::tools::Outcome;
 use super::worker::{self, WriteScope};
 use super::{log, permissions, tools, ModelProfile};
 use crate::agent::OpenAIChatOptions;
@@ -215,8 +216,8 @@ pub(super) struct IdeJob {
 enum Job {
     Run(Box<Run>),
     /// Answered without a child of its own: a refusal, or a whole group of
-    /// parallel workers (group.rs), with the result's meta.
-    Answered(String, Option<Value>),
+    /// parallel workers (group.rs), with how it went and the result's meta.
+    Answered(String, Outcome, Option<Value>),
 }
 
 pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Send>>;
@@ -301,19 +302,20 @@ impl Run {
             if self.stopped() {
                 jobs.push(Job::Answered(
                     "Error: stopped by the user before this ran.".into(),
+                    Outcome::Failed,
                     None,
                 ));
                 continue;
             }
             // F04: a plan group, run as parallel workers and joined here.
             if let Some(group) = super::group::group_call(&tc.arguments) {
-                let (text, meta) = self.run_group(tc, &group, &config).await;
-                jobs.push(Job::Answered(text, meta));
+                let (text, outcome, meta) = self.run_group(tc, &group, &config).await;
+                jobs.push(Job::Answered(text, outcome, meta));
                 continue;
             }
             jobs.push(match self.start_task(tc, &config, resumed).await {
                 Ok(child) => Job::Run(Box::new(child)),
-                Err(text) => Job::Answered(text, None),
+                Err(text) => Job::Answered(tools::with_error_prefix(text), Outcome::Failed, None),
             });
         }
         let started = Instant::now();
@@ -342,12 +344,13 @@ impl Run {
                 Job::Answered(..) => None,
             })
             .collect();
-        let mut answered: Vec<Option<(String, Option<Value>)>> = Vec::with_capacity(jobs.len());
+        let mut answered: Vec<Option<(String, Outcome, Option<Value>)>> =
+            Vec::with_capacity(jobs.len());
         let futures: Vec<SubFuture> = jobs
             .into_iter()
             .map(|job| match job {
-                Job::Answered(text, meta) => {
-                    answered.push(Some((text, meta)));
+                Job::Answered(text, outcome, meta) => {
+                    answered.push(Some((text, outcome, meta)));
                     none_future()
                 }
                 Job::Run(child) => {
@@ -377,8 +380,8 @@ impl Run {
             {
                 panic!("a test's lead panics");
             }
-            let (content, meta): (String, Option<Value>) = match (refusal, result) {
-                (Some((text, meta)), _) => (text, meta),
+            let (content, outcome, meta) = match (refusal, result) {
+                (Some(answered), _) => answered,
                 (None, Some(mut result)) => {
                     if let Some(child) = kept {
                         self.land_kept(&child, &mut result).await;
@@ -403,10 +406,11 @@ impl Run {
                     if let Some(items) = update {
                         meta["checklistUpdate"] = json!(items);
                     }
-                    (result.for_lead(), Some(meta))
+                    (result.for_lead(), Outcome::Done, Some(meta))
                 }
                 (None, None) => (
                     "Error: the subagent ended without a report (its run failed).".into(),
+                    Outcome::Failed,
                     None,
                 ),
             };
@@ -415,6 +419,7 @@ impl Run {
                 name: &tc.name,
                 args_json: &tc.arguments,
                 result: &content,
+                failed: outcome.failed(),
                 write: None,
                 rejected: false,
             });
@@ -422,7 +427,7 @@ impl Run {
                 content.push_str(note);
             }
             if let Err(e) = self
-                .add_tool_result(&tc.id, content, meta, Vec::new())
+                .add_tool_result(&tc.id, content, outcome, meta, Vec::new())
                 .await
             {
                 // P1.1: the run ends in an error; its subagents end first,
@@ -1406,7 +1411,7 @@ impl Run {
                     "Error: not run: it's past your budget of {} tool calls. Write your report now with what you have.",
                     self.sub().map_or(0, |s| s.budget.tool_calls)
                 );
-                self.add_tool_result(&tc.id, content, None, Vec::new())
+                self.add_tool_result(&tc.id, content, Outcome::Failed, None, Vec::new())
                     .await?;
             }
             if self.stopped() {
@@ -1649,7 +1654,7 @@ impl Run {
         let path = recent
             .iter()
             .rev()
-            .filter(|m| super::plan::is_request(m))
+            .filter(|m| super::messages::is_request(m))
             .find_map(|m| worker::plan_file_named(&m.content, base))
             .or_else(|| super::run::chat_plan_file(&recent))?;
         let text = std::fs::read_to_string(&path).ok()?;
@@ -1906,7 +1911,7 @@ impl Run {
         let failed = |call: &str| {
             page.messages
                 .iter()
-                .any(|m| m.tool_call_id.as_deref() == Some(call) && m.content.starts_with("Error"))
+                .any(|m| m.tool_call_id.as_deref() == Some(call) && m.call_failed())
         };
         let mut paths: Vec<String> = Vec::new();
         for m in &page.messages {
@@ -2045,8 +2050,8 @@ impl Run {
     pub(super) async fn after_worker(
         &mut self,
         result: &mut SubResult,
-        base: Option<&[super::plan::TodoItem]>,
-    ) -> Option<Vec<super::plan::TodoItem>> {
+        base: Option<&[super::checklist::TodoItem]>,
+    ) -> Option<Vec<super::checklist::TodoItem>> {
         if result.kind != Kind::Worker {
             return None;
         }
@@ -2108,7 +2113,7 @@ impl Run {
             Some(items) => items.to_vec(),
             None => {
                 let recent = self.recent().await.ok()?;
-                super::plan::current_checklist(&recent)?.items
+                super::checklist::current_checklist(&recent)?.items
             }
         };
         let items = worker::mark_step_done(&current, step, &steps)?;

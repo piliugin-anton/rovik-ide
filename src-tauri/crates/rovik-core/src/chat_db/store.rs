@@ -2,6 +2,7 @@
 //! tested directly; `commands.rs` runs them on the writer thread or a reader.
 
 use super::location::Location;
+use super::message_columns::{columns, RawMessage};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -139,6 +140,19 @@ pub struct MessageRow {
     pub finalized: bool,
     pub attachments: Vec<String>,
     pub created_at: i64,
+}
+
+impl MessageRow {
+    /// For a tool message: whether its call failed. Its `meta.outcome` says
+    /// so; a row stored before outcomes were (or mirrored from an older
+    /// daemon) has none, and then its text does, starting with "Error:".
+    pub fn call_failed(&self) -> bool {
+        let outcome = self.meta.as_ref().and_then(|m| m.get("outcome"));
+        match outcome.and_then(Value::as_str) {
+            Some(outcome) => outcome == "failed",
+            None => self.content.trim_start().starts_with("Error:"),
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -685,36 +699,17 @@ pub(super) fn index_message(
  * ---------------------------------------------------------------------------
  */
 
-const MESSAGE_COLUMNS: &str = "id, dialog_id, seq, role, body_external, body_bytes, tool_calls, \
-     tool_call_id, meta, error, failed, finalized, created_at, content";
-
+/// A row selected as `columns(None)` lists them, as the app reads it.
 fn message_from_row(r: &Row) -> rusqlite::Result<MessageRow> {
-    let tool_calls: Option<String> = r.get(6)?;
-    let meta: Option<String> = r.get(8)?;
-    Ok(MessageRow {
-        id: r.get(0)?,
-        dialog_id: r.get(1)?,
-        seq: r.get(2)?,
-        role: r.get(3)?,
-        body_external: r.get::<_, i64>(4)? != 0,
-        body_bytes: r.get(5)?,
-        tool_calls: tool_calls.and_then(|t| serde_json::from_str(&t).ok()),
-        tool_call_id: r.get(7)?,
-        meta: meta.and_then(|m| serde_json::from_str(&m).ok()),
-        error: r.get(9)?,
-        failed: r.get::<_, i64>(10)? != 0,
-        finalized: r.get::<_, i64>(11)? != 0,
-        created_at: r.get(12)?,
-        content: r.get(13)?,
-        attachments: Vec::new(),
-    })
+    RawMessage::read(r).map(RawMessage::into_row)
 }
 
 /// The messages with these ids, in that order, those that are here.
 pub fn messages_by_id(conn: &Connection, ids: &[String]) -> DbResult<Vec<MessageRow>> {
     let mut stmt = conn
         .prepare_cached(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1"
+            "SELECT {} FROM messages WHERE id = ?1",
+            columns(None)
         ))
         .map_err(err)?;
     let mut rows = Vec::with_capacity(ids.len());
@@ -854,8 +849,9 @@ pub fn append_messages(
 fn insert_message(tx: &Connection, dialog_id: &str, seq: i64, m: &NewMessage) -> DbResult<()> {
     tx.execute(
         &format!(
-            "INSERT INTO messages ({MESSAGE_COLUMNS}) VALUES
-             (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12)"
+            "INSERT INTO messages ({}) VALUES
+             (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12)",
+            columns(None)
         ),
         params![
             m.id,
@@ -1050,8 +1046,9 @@ pub fn get_messages(
     let limit = limit.clamp(1, 500);
     let mut stmt = conn
         .prepare_cached(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages
-             WHERE dialog_id = ?1 AND seq < ?2 ORDER BY seq DESC LIMIT ?3"
+            "SELECT {} FROM messages
+             WHERE dialog_id = ?1 AND seq < ?2 ORDER BY seq DESC LIMIT ?3",
+            columns(None)
         ))
         .map_err(err)?;
     let mut messages: Vec<MessageRow> = stmt
@@ -1096,8 +1093,9 @@ pub fn get_messages_around(
     let mut older = get_messages(conn, &dialog_id, Some(seq + 1), before + 1)?;
     let mut stmt = conn
         .prepare_cached(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages
-             WHERE dialog_id = ?1 AND seq > ?2 ORDER BY seq ASC LIMIT ?3"
+            "SELECT {} FROM messages
+             WHERE dialog_id = ?1 AND seq > ?2 ORDER BY seq ASC LIMIT ?3",
+            columns(None)
         ))
         .map_err(err)?;
     let mut newer: Vec<MessageRow> = stmt
@@ -1134,8 +1132,9 @@ pub fn messages_with_meta(
     // one on the meta as read.
     let mut stmt = conn
         .prepare_cached(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages
-             WHERE dialog_id = ?1 AND seq > ?2 AND meta LIKE ?3 ORDER BY seq ASC"
+            "SELECT {} FROM messages
+             WHERE dialog_id = ?1 AND seq > ?2 AND meta LIKE ?3 ORDER BY seq ASC",
+            columns(None)
         ))
         .map_err(err)?;
     let mut messages: Vec<MessageRow> = stmt
@@ -1169,8 +1168,9 @@ pub fn role_messages_after(
 ) -> DbResult<Vec<MessageRow>> {
     let mut stmt = conn
         .prepare_cached(&format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages
-             WHERE dialog_id = ?1 AND role = ?2 AND seq > ?3 ORDER BY seq ASC"
+            "SELECT {} FROM messages
+             WHERE dialog_id = ?1 AND role = ?2 AND seq > ?3 ORDER BY seq ASC",
+            columns(None)
         ))
         .map_err(err)?;
     let mut messages: Vec<MessageRow> = stmt

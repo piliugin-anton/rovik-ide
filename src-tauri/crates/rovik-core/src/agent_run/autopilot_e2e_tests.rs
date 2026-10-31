@@ -1109,7 +1109,7 @@ async fn the_button_and_the_driver_send_the_same_implementation_request() {
     assert_eq!(
         messages
             .iter()
-            .filter(|m| m.role == "user" && !plan::is_harness(m))
+            .filter(|m| m.role == "user" && !messages::is_harness(m))
             .count(),
         1,
         "the task's message alone is the user's"

@@ -21,6 +21,7 @@
 //! criteria and their reviews, and its report is "## Verdict" (the
 //! letter of the better) and "## Why".
 
+use super::builtin_tools::BuiltinTool;
 use super::plan;
 use super::subagent::{Budget, Format, KindSpec};
 use std::time::Duration;
@@ -98,15 +99,7 @@ A few sentences: what decided it, and what the other change got wrong or missed.
 
 pub static JUDGE: KindSpec = KindSpec {
     label: "Judge",
-    tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-    ],
+    tools: &BuiltinTool::READS,
     default_budget: Budget {
         tool_calls: 30,
         wall: Duration::from_secs(360),

@@ -15,6 +15,7 @@ pub mod attachments;
 pub mod history;
 pub mod images;
 pub mod location;
+mod message_columns;
 pub mod mirror;
 pub mod moves;
 pub mod projects;

@@ -2,7 +2,16 @@
 // toolArgs.ts tests (node:test). Run with: npm test
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { callStatus, isPartialWrite, lineArg, num, planTitle, str, todoSummary } from './toolArgs';
+import {
+  callFailed,
+  callStatus,
+  isPartialWrite,
+  lineArg,
+  num,
+  planTitle,
+  str,
+  todoSummary,
+} from './toolArgs';
 
 describe('str and num', () => {
   it('keep only their own type', () => {
@@ -64,6 +73,28 @@ describe('todoSummary', () => {
     assert.equal(
       todoSummary({ items }, (t) => t.slice(0, 3)),
       '1 of 3 done · Two'
+    );
+  });
+});
+
+describe('callFailed', () => {
+  it('a result that starts with Error: but succeeded is done', () => {
+    const read = { content: 'Error: disk full\nretrying', meta: { outcome: 'done' as const } };
+    assert.equal(callFailed(read), false);
+    assert.equal(callStatus(read, false), 'done');
+    const missing = { content: 'Error: no such file', meta: { outcome: 'failed' as const } };
+    assert.equal(callStatus(missing, false), 'error');
+    // Failed in its own words (a harness's step): failed all the same.
+    assert.equal(callStatus({ content: 'boom', meta: { outcome: 'failed' } }, false), 'error');
+  });
+  it('a result stored before outcomes is judged by its text', () => {
+    assert.equal(callFailed({ content: 'Error: no such file' }), true);
+    assert.equal(callFailed({ content: '  Error: no' }), true);
+    assert.equal(callFailed({ content: 'ok' }), false);
+    assert.equal(
+      callFailed({ content: 'Error: no', meta: { count: 2 } }),
+      true,
+      'meta, no outcome'
     );
   });
 });

@@ -56,7 +56,7 @@ use rovik_core::agent::OpenAIChatOptions;
 pub use rovik_core::agent_run::autopilot::Effort;
 pub use rovik_core::agent_run::budget::{usage_of, Price, Totals};
 use rovik_core::agent_run::events::AgentEvent;
-use rovik_core::agent_run::plan::{QuestionAnswer, QuestionsOutcome};
+use rovik_core::agent_run::questions::{QuestionAnswer, QuestionsOutcome};
 use rovik_core::agent_run::{
     self, AgentConfig, ApprovalDecision, ModelProfile, StartKind, StartRequest, SteerReply,
     UserMessage,

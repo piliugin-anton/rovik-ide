@@ -1918,7 +1918,7 @@ async fn plan_mode_asks_and_saves_the_plan() {
         .await;
     assert_eq!(asked["request"]["questions"][0]["question"], "Which DB?");
     let core = h.core.clone();
-    let outcome: plan::QuestionsOutcome =
+    let outcome: questions::QuestionsOutcome =
         serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] }))
             .unwrap();
     assert!(agent_answer_questions(&core, h.dialog_id.clone(), "q1".into(), outcome).await);
@@ -2400,7 +2400,7 @@ fn result_of<'a>(messages: &'a [MessageRow], call: &str) -> &'a MessageRow {
 fn harness_notes(messages: &[MessageRow]) -> Vec<&MessageRow> {
     messages
         .iter()
-        .filter(|m| m.role == "user" && plan::is_harness(m))
+        .filter(|m| m.role == "user" && messages::is_harness(m))
         .collect()
 }
 
@@ -2618,7 +2618,7 @@ async fn a_call_cut_off_by_the_output_limit_is_told_why_it_did_not_run() {
 }
 
 #[tokio::test]
-async fn without_a_project_only_web_tools_are_offered() {
+async fn without_a_project_only_web_tools_and_questions_are_offered() {
     let h = harness(&[]).await;
     let (url, seen) = model(vec![
         Reply::Call {
@@ -2639,7 +2639,7 @@ async fn without_a_project_only_web_tools_are_offered() {
         .iter()
         .map(|t| t["function"]["name"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(tools, ["web_search", "browse_url"]);
+    assert_eq!(tools, ["web_search", "browse_url", "ask_user"]);
     let messages = h.messages().await;
     assert_eq!(
         result_of(&messages, "c1").content,
@@ -2664,6 +2664,35 @@ async fn a_model_without_tools_gets_none_and_no_tool_rules() {
     assert!(body.get("tools").is_none() && body.get("tool_choice").is_none());
     let system = body["messages"][0]["content"].as_str().unwrap();
     assert!(!system.contains("## Tool use rules"));
+}
+
+/// The agent works by the four principles in Agent and Plan mode, with
+/// tools and without: its system prompt holds them word for word.
+#[tokio::test]
+async fn the_system_prompt_holds_the_four_principles() {
+    for plan_mode in [false, true] {
+        for no_tools in [false, true] {
+            let case = format!("Plan mode: {plan_mode}, no tools: {no_tools}");
+            let h = harness(&[]).await;
+            let (url, seen) = model(vec![Reply::Text("Hi.")]).await;
+            let start = match plan_mode {
+                true => plan_send("Hi"),
+                false => Harness::send("Hi"),
+            };
+            let mut request = h.request(&url, start, quiet_permissions());
+            request.profile.no_tools = no_tools;
+            h.start(request).await;
+            assert_eq!(h.run_end().await, "done", "{case}");
+            let body = seen.lock().unwrap()[0].clone();
+            let system = body["messages"][0]["content"].as_str().unwrap();
+            assert!(system.contains(crate::agent::PRINCIPLES), "{case}");
+            assert_eq!(
+                system.contains("## Plan mode"),
+                plan_mode && !no_tools,
+                "{case}"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -2698,11 +2727,11 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
             e["type"] == "questionsAsked" && e["request"]["toolCallId"] == id
         })
         .await;
-        let outcome: plan::QuestionsOutcome =
+        let outcome: questions::QuestionsOutcome =
             serde_json::from_value(json!({ "reply": "whatever" })).unwrap();
         assert!(agent_answer_questions(&core, h.dialog_id.clone(), id.into(), outcome).await);
         // Answering twice does nothing.
-        let again: plan::QuestionsOutcome =
+        let again: questions::QuestionsOutcome =
             serde_json::from_value(json!({ "reply": "again" })).unwrap();
         assert!(!agent_answer_questions(&core, h.dialog_id.clone(), id.into(), again).await);
     }
@@ -2734,24 +2763,43 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
 }
 
 #[tokio::test]
-async fn ask_user_outside_plan_mode_is_refused() {
+async fn an_agent_mode_run_asks_the_user_and_goes_on_with_the_answer() {
     let h = harness(&[]).await;
-    let (url, _) = model(vec![
+    let (url, seen) = model(vec![
         Reply::Call {
             id: "q1",
             name: "ask_user",
-            args: json!({ "questions": [{ "question": "Q?", "options": [] }] }),
+            args: json!({ "questions": [{ "question": "Which DB?", "options": ["Postgres", "SQLite"] }] }),
         },
-        Reply::Text("Decided."),
+        Reply::Text("Done, with SQLite."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Do it"), quiet_permissions()))
+    h.start(h.request(&url, Harness::send("Add users"), quiet_permissions()))
         .await;
+    let asked = h
+        .wait_for("questionsAsked", |e| e["type"] == "questionsAsked")
+        .await;
+    assert_eq!(asked["request"]["questions"][0]["question"], "Which DB?");
+    let core = h.core.clone();
+    let outcome: questions::QuestionsOutcome =
+        serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] }))
+            .unwrap();
+    assert!(agent_answer_questions(&core, h.dialog_id.clone(), "q1".into(), outcome).await);
     assert_eq!(h.run_end().await, "done");
-    assert!(h.events_of("questionsAsked").is_empty());
-    assert!(result_of(&h.messages().await, "q1")
-        .content
-        .starts_with("Error: asking the user is only available in Plan mode"));
+
+    let answer = result_of(&h.messages().await, "q1").clone();
+    assert_eq!(
+        answer.content,
+        "The user answered:\n1. Which DB?\n   → SQLite\n\nTreat these answers as requirements. Continue with the task."
+    );
+    assert_eq!(
+        answer.meta.unwrap()["questions"]["outcome"]["answers"][0]["label"],
+        "SQLite"
+    );
+    // Offered in Agent mode, and the answer goes to the model as the call's result.
+    let requests = seen.lock().unwrap().clone();
+    assert!(requests[0]["tools"].to_string().contains("\"ask_user\""));
+    assert!(requests[1]["messages"].to_string().contains("→ SQLite"));
 }
 
 #[tokio::test]
@@ -2931,7 +2979,11 @@ async fn a_revision_sent_as_edits_applies_to_the_last_plan() {
     let saved = meta_plan("p5").unwrap();
     assert!(saved.starts_with("# Second") && saved.contains("returns 2"), "{saved}");
     for id in ["p0", "p1", "p3", "p4"] {
-        assert_eq!(crate::agent_run::tools::error_class(&text(id)), Some("plan"), "{id}");
+        assert_eq!(
+            crate::agent_run::tools::error_class(&text(id)),
+            "plan",
+            "{id}"
+        );
     }
     let plans: Vec<_> = std::fs::read_dir(h.project.join(".rovik/plans"))
         .unwrap()
@@ -6398,6 +6450,71 @@ async fn tool_lines(h: &Harness, n: usize) -> Vec<Value> {
     panic!("{} tool lines, not {n}: {lines:#?}", lines.len());
 }
 
+/// A read of a file whose text starts with "Error:" succeeded, whatever it
+/// says: its `tool` line says so, its row says `outcome: "done"` with its
+/// line count, and five alike are no streak of errors nor the same error
+/// again. A read of a missing file is still a failed call.
+#[tokio::test]
+async fn a_read_of_a_file_that_starts_with_error_is_not_a_failed_call() {
+    let log = "Error: disk full\nretrying\n";
+    let h = harness(&[
+        ("a.log", log),
+        ("b.log", log),
+        ("c.log", log),
+        ("d.log", log),
+        ("e.log", log),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("r1", "read", json!({ "path": "a.log" })),
+            ("r2", "read", json!({ "path": "b.log" })),
+            ("r3", "read", json!({ "path": "c.log" })),
+            ("r4", "read", json!({ "path": "d.log" })),
+            ("r5", "read", json!({ "path": "e.log" })),
+            ("r6", "read", json!({ "path": "missing.log" })),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Read the logs"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let lines = tool_lines(&h, 6).await;
+    let failed: Vec<bool> = lines
+        .iter()
+        .map(|l| l["failed"].as_bool().unwrap())
+        .collect();
+    assert_eq!(
+        failed,
+        [false, false, false, false, false, true],
+        "{lines:#?}"
+    );
+    assert!(lines[..5].iter().all(|l| l["error"].is_null()));
+    let messages = h.messages().await;
+    for id in ["r1", "r2", "r3", "r4", "r5"] {
+        let read = result_of(&messages, id);
+        assert!(
+            read.content.starts_with("Error: disk full"),
+            "{}",
+            read.content
+        );
+        assert!(
+            !read.content.contains("Step back"),
+            "no loop note: {}",
+            read.content
+        );
+        let meta = read.meta.clone().unwrap();
+        assert_eq!(meta["outcome"], "done", "{id}");
+        assert!(meta["count"].is_u64(), "{id}: {meta}");
+        assert!(!read.call_failed());
+    }
+    let missing = result_of(&messages, "r6");
+    let meta = missing.meta.clone().unwrap();
+    assert_eq!(meta["outcome"], "failed");
+    assert!(meta.get("count").is_none() && missing.call_failed());
+}
+
 /// G02 (autopilot-plan): every finished tool call leaves one `tool` line
 /// in the agent log, whatever path it took (a parallel batch, a call run
 /// alone, one refused by the user's denied commands, the checklist):
@@ -6470,6 +6587,183 @@ async fn every_finished_tool_call_leaves_a_tool_line() {
     assert_eq!(lines[3]["exitCode"], 3, "the command ran, and failed");
     assert!(lines[4].get("exitCode").is_none(), "it never ran");
     assert!(lines.iter().all(|l| l.get("role").is_none()), "the lead's");
+}
+
+/// Each of Rovik's tools, called with the least it takes in a mode that
+/// offers it, gets its answer from its own dispatcher (`ToolSpec::dispatch`):
+/// never "unknown tool".
+#[tokio::test]
+async fn every_builtin_tool_reaches_its_dispatcher() {
+    use super::builtin_tools::{BuiltinTool, Modes};
+    let least = |tool: BuiltinTool| match tool {
+        BuiltinTool::Read | BuiltinTool::Neighbours | BuiltinTool::Outline => {
+            json!({ "path": "a.rs" })
+        }
+        BuiltinTool::Write => json!({ "path": "b.rs", "content": "fn beta() {}\n" }),
+        BuiltinTool::SearchCode => json!({ "query": "alpha" }),
+        BuiltinTool::Callers => json!({ "symbol": "alpha" }),
+        // Refused before any browser opens.
+        BuiltinTool::BrowserScreenshot => json!({ "url": "ftp://example.com" }),
+        BuiltinTool::Bash => json!({ "command": "true" }),
+        BuiltinTool::Background => json!({ "action": "list" }),
+        _ => json!({}),
+    };
+    for plan_mode in [false, true] {
+        // Plan mode for the tools only it offers; Agent mode for the rest.
+        let tools: Vec<BuiltinTool> = BuiltinTool::ALL
+            .into_iter()
+            .filter(|t| (t.spec().modes == Modes::PlanOnly) == plan_mode)
+            .collect();
+        let calls = tools
+            .iter()
+            .map(|t| (t.name(), t.name(), least(*t)))
+            .collect();
+        let h = harness(&[("a.rs", "fn alpha() {}\n")]).await;
+        let (url, _) = model(vec![Reply::Calls(calls), Reply::Text("Done.")]).await;
+        let permissions = Permissions {
+            allow_any_command: true,
+            checklist: ChecklistMode::Off,
+            ..quiet_permissions()
+        };
+        let start = match plan_mode {
+            true => plan_send("Go"),
+            false => Harness::send("Go"),
+        };
+        h.start(h.request(&url, start, permissions)).await;
+        h.run_end().await;
+        let messages = h.messages().await;
+        for tool in &tools {
+            let answer = &result_of(&messages, tool.name()).content;
+            assert!(!answer.contains("unknown tool"), "{tool:?}: {answer}");
+        }
+    }
+}
+
+/// A tool the mode doesn't offer is refused when called, as a model may
+/// call one from an earlier turn's history: `todo` in Plan mode,
+/// `submit_plan` in Agent mode. What's offered and what's taken are one
+/// row's (its modes).
+#[tokio::test]
+async fn a_tool_the_mode_doesnt_offer_is_refused_when_called() {
+    for (plan_mode, name, args) in [
+        (
+            true,
+            "todo",
+            json!({ "items": [{ "title": "Look", "status": "in_progress" }] }),
+        ),
+        (
+            false,
+            "submit_plan",
+            json!({ "plan": "# Plan\n\n## Steps\n1. One" }),
+        ),
+    ] {
+        let h = harness(&[]).await;
+        let (url, _) = model(vec![
+            Reply::Call {
+                id: "c1",
+                name,
+                args,
+            },
+            Reply::Text("Done."),
+        ])
+        .await;
+        let start = match plan_mode {
+            true => plan_send("Go"),
+            false => Harness::send("Go"),
+        };
+        h.start(h.request(&url, start, quiet_permissions())).await;
+        h.run_end().await;
+        let answer = result_of(&h.messages().await, "c1").clone();
+        assert!(answer.call_failed(), "{name}: {}", answer.content);
+        let said = match plan_mode {
+            true => "Error: todo isn't available in Plan mode",
+            false => "Error: submit_plan is only available in Plan mode",
+        };
+        assert!(answer.content.starts_with(said), "{}", answer.content);
+        assert!(h.events_of("checklist").is_empty());
+        assert!(!h.project.join(plan::PLANS_DIR).exists(), "no plan saved");
+    }
+}
+
+/// A `todo` call the IDE refused (two steps in progress) sends no list to
+/// the panel, and the chat's checklist stays the one before it: the panel
+/// never shows the list the model was told was wrong.
+#[tokio::test]
+async fn a_refused_todo_call_sends_no_checklist() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Look", "status": "in_progress" }, { "title": "Fix", "status": "pending" }] }),
+        },
+        Reply::Call {
+            id: "t2",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Look", "status": "in_progress" }, { "title": "Fix", "status": "in_progress" }] }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Go"), quiet_permissions()))
+        .await;
+    // Its open step is pointed out at the end.
+    assert_eq!(h.run_end().await, "unfinished-checklist");
+    let sent = h.events_of("checklist");
+    assert_eq!(sent.len(), 1, "{sent:#?}");
+    assert_eq!(sent[0]["items"][1]["status"], "pending");
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "t2").call_failed());
+    let current = super::chat_checklist(&h.core, h.dialog_id.clone())
+        .await
+        .unwrap()
+        .expect("a checklist");
+    assert_eq!(current.items[1].status, "pending", "{current:?}");
+}
+
+/// A command of two lines: its status isn't its result's second line, yet
+/// its tool line has its exit code, and its row the meta the chat shows it
+/// by (`exitCode`).
+#[tokio::test]
+async fn a_two_line_commands_tool_line_has_its_exit_code() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "b1",
+            name: "bash",
+            args: json!({ "command": "echo a\necho b" }),
+        },
+        Reply::Call {
+            id: "b2",
+            name: "bash",
+            args: json!({ "command": "echo a\nexit 3" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("Run them"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let lines = tool_lines(&h, 2).await;
+    assert_eq!(lines[0]["exitCode"], 0, "{lines:#?}");
+    assert_eq!(lines[1]["exitCode"], 3, "{lines:#?}");
+    assert!(lines.iter().all(|l| l["failed"] == false), "{lines:#?}");
+    let messages = h.messages().await;
+    for (id, code) in [("b1", 0), ("b2", 3)] {
+        let result = result_of(&messages, id);
+        assert!(
+            result.content.starts_with("$ echo a\n"),
+            "{}",
+            result.content
+        );
+        let meta = result.meta.clone().unwrap();
+        assert_eq!(meta["exitCode"], code, "{id}: {meta}");
+        assert_eq!(meta["outcome"], "done", "{id}: {meta}");
+    }
 }
 
 /// A run that panics before it answers settles the user's message as

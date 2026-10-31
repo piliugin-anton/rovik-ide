@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import ToolCallBlock, { toolResultMeta } from './ToolCallBlock';
-import type { ChatMessage, ChatToolCall } from '../types';
+import type { ChatMessage, ChatToolCall, ToolMeta } from '../types';
 
 const call = (name: string, args: Record<string, unknown>): ChatToolCall => ({
   id: `${name}-call`,
@@ -15,22 +15,23 @@ const call = (name: string, args: Record<string, unknown>): ChatToolCall => ({
   arguments: JSON.stringify(args),
 });
 
-const result = (content: string): ChatMessage => ({
+const result = (content: string, meta?: ToolMeta): ChatMessage => ({
   id: 'result',
   role: 'tool',
   content,
   tool_call_id: 'call',
+  meta,
 });
 
 /** The block's header: its title and its muted detail. */
-function header(toolCall: ChatToolCall, content: string, running = false) {
+function header(toolCall: ChatToolCall, content: string, running = false, meta?: ToolMeta) {
   const root = container();
   const dispose = render(
     () => (
       <ToolCallBlock
         toolCall={toolCall}
         dialogId="chat"
-        result={running ? undefined : result(content)}
+        result={running ? undefined : result(content, meta)}
         running={running}
       />
     ),
@@ -82,4 +83,19 @@ test('the background tool says which task it read or stopped, and how it is', ()
     undefined,
   ]);
   assert.equal(toolResultMeta('background', 'No command runs in the background.'), undefined);
+});
+
+test('a two-line command shows its exit code', () => {
+  const twoLines = call('bash', { command: 'echo a\necho b' });
+  // Its status is the result's third line: what's stored with it says how it ended.
+  const text = '$ echo a\necho b\nexit code 0, 0.1 s\n--- stdout ---\na\nb';
+  assert.equal(header(twoLines, text, false, { outcome: 'done', exitCode: 0 })[1], 'ok');
+  const failing = '$ echo a\nexit 3\nexit code 3, 0.1 s\n--- stdout ---\na';
+  assert.equal(
+    header(call('bash', { command: 'echo a\nexit 3' }), failing, false, {
+      outcome: 'done',
+      exitCode: 3,
+    })[1],
+    'exit 3'
+  );
 });

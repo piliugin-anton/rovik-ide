@@ -226,6 +226,11 @@ export interface ReviewCheck {
 
 /** Small per-message metadata, stored with the message. */
 export interface ToolMeta {
+  /**
+   * Tool results: whether the call failed (agent_run's `Outcome`). Results
+   * stored before it say so by their text alone (`callFailed`).
+   */
+  outcome?: 'done' | 'failed';
   /** Tool results: counts for the block header. */
   count?: number;
   /** submit_plan results: the plan as checked (full, or after `edits`). */

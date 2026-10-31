@@ -8,6 +8,7 @@
 //! `unmet`. Its verdicts are parsed strictly: a reply that can't be read,
 //! even after its repair turn, is recorded skipped, never satisfied.
 
+use super::builtin_tools::BuiltinTool;
 use super::change_review::{render_diff, skipped, RenderedDiff};
 use super::run::{new_message, Run, IDE_NOTE};
 use super::subagent::{self, Budget, Format, Kind, KindSpec, SubagentSettings};
@@ -54,15 +55,7 @@ For each unsatisfied criterion, what the change still needs; or "None."."###;
 
 pub static ACCEPTANCE: KindSpec = KindSpec {
     label: "Acceptance checker",
-    tools: &[
-        "read",
-        "list_dir",
-        "search_code",
-        "neighbours",
-        "callers",
-        "outline",
-        "diagnostics",
-    ],
+    tools: &BuiltinTool::READS,
     default_budget: Budget {
         tool_calls: 30,
         wall: Duration::from_secs(300),
