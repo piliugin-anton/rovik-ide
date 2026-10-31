@@ -603,7 +603,7 @@ async fn the_diffs_a_run_shows_leave_out_what_the_agent_may_not_read() {
     // A step's brief: what its files' changes are so far.
     for (key, before) in [(".env.local", "OLD=1\n"), ("src/app.ts", "const x = 1;\n")] {
         let original = Original::new(Some(before.as_bytes().to_vec()), Source::ViewAtRunStart);
-        run.baseline.insert(key.to_string(), original);
+        run.verification.original_found(key.to_string(), original);
     }
     write(".env.local", &format!("KEY={SECRET}\n"));
     write("src/app.ts", "const x = 2;\n");

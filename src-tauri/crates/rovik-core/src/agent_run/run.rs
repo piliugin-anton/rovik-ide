@@ -16,8 +16,8 @@ use super::subagent::SubagentSettings;
 use super::subagent_run::SubCtx;
 use super::tools::Outcome;
 use super::{
-    checklist, failure, log, messages, plan, repair, repetition, subagent, tools, Controls,
-    EffortPick, ModelProfile, PauseRequest, PauseSignal, StartKind, StartRequest, StopSignal,
+    checklist, failure, log, messages, plan, repetition, subagent, tools, Controls, EffortPick,
+    ModelProfile, PauseRequest, PauseSignal, StartKind, StartRequest, StopSignal,
 };
 use crate::agent::{
     ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS,
@@ -99,6 +99,10 @@ impl Drop for HarnessGuard {
     }
 }
 
+#[cfg(test)]
+pub(super) use super::context_state::{
+    CLM_ESCALATE_AFTER_CALLS, CLM_MAX_RESTRICTED_STALL, CLM_RESTRICT_LIFT_BELOW,
+};
 pub(super) const IDE_NOTE: &str = "[Automatic check by the IDE, not written by the user]\n";
 /// End-of-run checklist reminders before the run ends as unfinished-checklist.
 const MAX_CHECKLIST_NUDGES: u32 = 2;
@@ -106,31 +110,15 @@ const MAX_CHECKLIST_NUDGES: u32 = 2;
 /// context compaction (Phase D). Below it, only a TASK.md update is asked.
 pub(super) const CLM_STEP_COMPACT_MIN: u32 = 35;
 
-/// A step-compaction request waiting for its edit (Phase D asks, Phase E
-/// escalates when it is ignored).
-#[derive(Debug, Clone)]
-pub(super) struct PendingStepCompaction {
-    pub(super) tool_calls: u32,
-}
-
-/// When a compaction pressure started (Phase E): the tool-call count then,
-/// and the run's turn then (for turns-to-edit). Any edit clears it.
-#[derive(Debug, Clone)]
-pub(super) struct ClmWait {
-    pub(super) tool_calls: u32,
-    pub(super) turn: u32,
-}
-
-/// Phase E pressure thresholds: a step-compaction request or the 75%
-/// reminder escalates after this many tool calls with no edit (at 50%+);
-/// 90%+ restricts at once until an edit lands.
-pub(super) const CLM_ESCALATE_AFTER_CALLS: u32 = 4;
-pub(super) const CLM_ESCALATE_MIN_PCT: u32 = 50;
-pub(super) const CLM_RESTRICT_LIFT_BELOW: u32 = 75;
-/// Restricted turns with no edit before the safety valve lifts it.
-pub(super) const CLM_MAX_RESTRICTED_STALL: u32 = 2;
-
 pub struct Run {
+    pub(super) landing: super::landing::LandingState,
+    pub(super) verification: super::verify::VerificationState,
+    pub(super) tests: super::test_writer::TestsState,
+    pub(super) review: super::change_review::ReviewState,
+    pub(super) plan: super::plan_review::PlanState,
+    pub(super) map: RepoMapState,
+    pub(super) checklist: super::checklist::ChecklistState,
+    pub(super) steering: super::steer::SteerState,
     /// The host: the chat database, the other runs, where events go.
     pub(super) core: Core,
     pub(super) dialog_id: String,
@@ -151,13 +139,6 @@ pub struct Run {
     /// The project folder itself. Differs from `root` in an isolated chat,
     /// whose tools and commands work in its overlay's view.
     pub(super) project_root: Option<String>,
-    /// An isolated chat's changes landed at the end of this run.
-    pub(super) landed: bool,
-    /// Files the project's newer changes were just merged into, for the
-    /// failure report of the checks that follow (landing.rs).
-    pub(super) merged_from_project: Option<Vec<(String, String)>>,
-    /// Times the model was reminded of conflict markers it left.
-    pub(super) marker_reminders: u32,
     /// What this run has read and written of each file, so a whole-file
     /// write over a change it hasn't seen is refused (file_guard.rs).
     pub(super) seen: Arc<crate::file_guard::Seen>,
@@ -165,8 +146,6 @@ pub struct Run {
     pub(super) current_user_content: Option<String>,
     pub(super) local_date: String,
     pub(super) guard: Guard,
-    /// ask_user calls so far (at most `questions::MAX_QUESTIONS_PER_RUN` a run).
-    pub(super) questions_asked: u32,
     /// The project's checks and the system-prompt section about it. Fixed
     /// for the run: what changes (the repository map) is sent apart.
     pub(super) checks: Vec<ProjectCheck>,
@@ -177,111 +156,21 @@ pub struct Run {
     /// The files the agent may not read or change (restricted_files.rs):
     /// the project's list, fixed for the run like its checks.
     pub(super) restricted: Arc<crate::restricted_files::RestrictedFiles>,
-    /// The current repository map text (the `## Repository map` section),
-    /// if any. Every model turn sends it on the request's message
-    /// (`ChatParams::request_context`), never in the system prompt or at
-    /// the end of the request. Rebuilt mid-run at most every MAP_MAX_AGE.
-    pub(super) repo_map: Option<String>,
-    /// Map budget in chars (about 2% of the context window), fixed at prepare.
-    pub(super) repo_map_chars: usize,
     /// The tools of the user's MCP servers, listed as the run started
     /// (mcp-plan.md, Q04): the `mcp` tool and the prompt's list come from
     /// it. A scout shares its lead's.
     pub(super) mcp: Option<Arc<super::mcp_tool::Catalog>>,
-    /// When the map was last (re)built: a mid-run rebuild waits until it's
-    /// MAP_MAX_AGE old.
-    pub(super) map_refreshed_at: Instant,
-    /// Successful refreshes this run (for logs and tests).
-    pub(super) map_refreshes: u32,
     /// Project-relative paths written in this run, in order.
     pub(super) changed_files: Vec<String>,
-    /// Files changed since the gate last ran: there is something to check.
-    pub(super) writes_since_verify: bool,
-    pub(super) verify_rounds: u32,
-    /// The last round failed and was sent back to the agent.
-    pub(super) last_verify_failed: bool,
-    /// Autopilot's rounds in a row that made no progress: two end them
-    /// (V03, D12).
-    pub(super) stalled_rounds: u32,
-    /// A check failed on its environment and Prepare ran again: once a
-    /// run (V03).
-    pub(super) prepared_again: bool,
-    /// The last round put back only the files behind what it broke, and
-    /// its checks run again: should they still break it, everything goes
-    /// back (V05).
-    pub(super) after_partial_rollback: bool,
-    /// Unfinished checklist steps were pointed out; at most MAX_CHECKLIST_NUDGES.
-    pub(super) checklist_nudges: u32,
-    /// Force the `todo` tool on the next model turn (plan implementation
-    /// first turn, second checklist nudge). Consumed by `model_turn`.
-    pub(super) force_todo_next: bool,
-    /// The checklist gate refused one call this run (small-task safety):
-    /// everything after that is let through, repeats included.
-    pub(super) checklist_gate_refused: bool,
     /// Autopilot: the loop guard's pause went on once already this run
     /// (U03); the next one ends the run.
     pub(super) loop_resumed: bool,
     /// A Resume: when the reply whose calls run again was stored, which
     /// a child chat they started comes after (S14).
     pub(super) resumed_since: Option<i64>,
-    /// The run ended as unfinished-checklist with this many open steps
-    /// (for the run's log line).
-    pub(super) open_steps_at_end: Option<usize>,
-    /// A step-compaction request is outstanding (Phase D, for Phase E
-    /// escalation): the step that just finished, the context revision it
-    /// was asked at, and how many tool calls had run then.
-    pub(super) pending_step_compaction: Option<PendingStepCompaction>,
-    /// Phase E: this turn offers only context tools (the model must compact
-    /// before anything else). Set when a step-compaction request or the 75%
-    /// reminder is ignored, or at 90%+ with no edit since the urgent
-    /// reminder; lifted by an edit, by dropping below 75%, or by the safety
-    /// valve (`clm_non_compliant`).
-    pub(super) clm_restricted: bool,
-    /// Restricted turns so far, and consecutive restricted turns with no
-    /// edit (the safety valve lifts at CLM_MAX_RESTRICTED_STALL).
-    pub(super) restricted_turns: u32,
-    pub(super) restricted_stall: u32,
-    /// The safety valve fired: weak models aren't restricted again.
-    pub(super) clm_non_compliant: bool,
-    /// CLM turns so far (for turns-to-edit), and the peak context percent.
-    pub(super) clm_turns: u32,
-    pub(super) clm_peak_pct: u32,
-    /// Edits seen (new context revisions) and their token deltas
-    /// (revision, tokens before, tokens after), oldest first.
-    pub(super) clm_edits_seen: u32,
-    pub(super) clm_edit_deltas: Vec<(u64, usize, usize)>,
-    /// Redone work: recall-hint notes offered after a compaction removed
-    /// an earlier result the model then asked for again.
-    pub(super) clm_recall_hits: u32,
-    /// Reminder tiers seen this run (25, 50, 75, 90), and turns-to-edit after
-    /// each pressure started.
-    pub(super) clm_reminders_fired: Vec<u32>,
-    pub(super) step_asked_turn: Option<u32>,
-    pub(super) step_turns_to_edit: Option<u32>,
-    pub(super) tier75_turns_to_edit: Option<u32>,
-    pub(super) urgent_turns_to_edit: Option<u32>,
-    /// The 75% reminder and the 90%+ urgent state while no edit has landed
-    /// since (revision, tool calls and turn when first seen).
-    pub(super) tier75_since: Option<ClmWait>,
-    pub(super) urgent_since: Option<ClmWait>,
-    /// CLM tracking started (the first CLM state was seen).
-    pub(super) clm_tracking_started: bool,
-    /// A write to the context file (or a restore) succeeded since the last
-    /// turn (set in execute.rs). The file is rewritten before every request,
-    /// so a new revision alone doesn't mean the agent edited anything.
-    pub(super) context_edited: bool,
-    /// An edit seen last turn, waiting for its size: the context is only
-    /// re-measured by the next request (tokens before the edit).
-    pub(super) edit_delta_pending: Option<usize>,
+    pub(super) context: super::context_state::ContextState,
     /// The next request may not call tools (a summary before a pause).
     pub(super) words_only: bool,
-    /// Plan mode: the current plan, shown to the model so it revises it.
-    pub(super) plan_context: String,
-    /// A plan written in a reply instead of submitted was pointed out once.
-    pub(super) plan_nudged: bool,
-    /// Balanced Autopilot: plans written in a reply that the IDE submitted
-    /// for the model this run (at most `MAX_REPLY_SUBMITS`).
-    pub(super) reply_submits: u32,
     /// Replies stopped for repeating themselves.
     pub(super) repetition_stops: u32,
     pub(super) started_at: Instant,
@@ -301,152 +190,15 @@ pub struct Run {
     pub(super) role: Role,
     /// The subagents this run started (a lead's).
     pub(super) ledger: subagent::Ledger,
-    /// Each verification round's failures, oldest first (repair.rs, R01):
-    /// a rolled-back round isn't among them.
-    pub(super) verify_history: Vec<repair::RoundFailures>,
-    /// The last round's results, reported again after a rollback.
-    pub(super) last_verify_results: Vec<super::verify::CheckResult>,
-    /// The files as they were before the current fix round (R02).
-    pub(super) checkpoint: Option<repair::Checkpoint>,
-    /// Each file as it was when the run first wrote it (R05), by path
-    /// relative to the root; None: it didn't exist.
-    pub(super) baseline: std::collections::HashMap<String, super::subagent::Original>,
-    /// Changes that weaken the checks, which the agent was asked about (R05).
-    pub(super) integrity_open: Vec<String>,
-    /// Files changed since the change reviewer last ran (change_review.rs).
-    pub(super) writes_since_review: bool,
-    /// Change reviews in this run, and since the checks last ran.
-    pub(super) reviews_total: u32,
-    /// How the last change review went: its status and why it was skipped.
-    /// None when it didn't start.
-    pub(super) review_outcome: Option<(String, Option<String>)>,
-    /// The checks were started from `record` with no carried state for it
-    /// (P1.7): its record says so, and the agent is told once.
-    pub(super) carry_lost: Option<String>,
-    /// Commands that may have changed files since the round's checkpoint
-    /// (P3.5): a rollback can't undo them, and says so.
-    pub(super) round_commands: Vec<String>,
-    /// What files were before the run couldn't all be rebuilt after a
-    /// restart (P3.9): checks that pass aren't "verified".
-    pub(super) integrity_unchecked: bool,
-    /// Rounds checked again at once after fixers (P3.10, `MAX_RECHECKS`).
-    pub(super) rechecks: u32,
-    pub(super) carry_lost_told: bool,
-    pub(super) reviews_in_row: u32,
-    /// The findings sent to the agent so far, and the note that sent the
-    /// latest (its answers follow it).
-    pub(super) review_findings: Vec<super::change_review::Finding>,
-    pub(super) review_note_id: Option<String>,
-    /// S06, the blocking review (every mode): the findings the last review sent,
-    /// numbered as the agent got them, which the next review follows up;
-    /// the agent's answers to them (`answer_review`), and the times it was
-    /// asked for missing ones.
-    pub(super) review_held: Vec<super::change_review::Finding>,
-    pub(super) review_answers: Vec<super::plan_review::Response>,
-    pub(super) review_answer_nudges: u32,
-    /// A finding, of any severity, still open after the run's last review:
-    /// the run ends `review-open`.
-    pub(super) review_blocked: bool,
-    /// Each change review that found problems in this run, oldest first:
-    /// what it sent, the agent's answers and the next review's verdicts,
-    /// which the guide reads (guide.rs); and what the last guide said.
-    pub(super) review_rounds: Vec<super::guide::ReviewRound>,
-    pub(super) last_guidance: Option<super::guide::Guidance>,
-    /// The optional findings sent so far (change_review.rs `weigh`): one
-    /// comes back only with new evidence, or weighing more. Apart from
-    /// `review_findings`, which a later brief lists as settled.
-    pub(super) review_optional: Vec<super::change_review::Finding>,
-    /// S07: the test writer ran for a change that had no test (once).
-    pub(super) tests_after_change: bool,
-    /// T04: the adversarial tester ran in this run (once a run).
-    pub(super) breaker_ran: bool,
-    /// T07: a Thorough task's loops, by their progress so far.
-    pub(super) plan_review_progress: super::loops::Progress,
-    pub(super) change_review_progress: super::loops::Progress,
-    pub(super) acceptance_progress: super::loops::Progress,
-    /// T04: its tests, until the gate's round that runs them is judged.
-    pub(super) breaker_round: Option<super::breaker::BreakerRound>,
-    /// S08: the acceptance checks this run had; the criteria the last
-    /// found unsatisfied, for the next; and whether the last check left
-    /// one unmet: the run ends `unmet`.
-    pub(super) acceptance_checks: u32,
-    pub(super) acceptance_unsatisfied: Vec<super::acceptance::Verdict>,
-    pub(super) acceptance_unmet: bool,
-    /// What the last failure triage found, for the next one (triage.rs).
-    pub(super) last_triage: Option<super::triage::Triage>,
     /// The running parallel group's extend_scope grants.
     pub(super) group_grants: super::group::GroupGrants,
-    /// P4.7: earlier runs' saved check output was removed.
-    pub(super) cleaned_this_run: bool,
     /// The latest reply reached the model's output limit (finish reason
     /// "length"): a call of it whose arguments don't parse was cut off
     /// there, and is told so (tools.rs `CallContext`).
     pub(super) reply_cut_off: bool,
-    /// Plan reviews in this run, the findings that hold a plan back (until
-    /// a plan is saved), and the `submit_plan` call they answered
-    /// (plan_review.rs).
-    pub(super) plan_reviews: u32,
-    /// S02: an Autopilot task's last plan review blocked the plan: it's
-    /// never saved in this run.
-    pub(super) plan_blocked: bool,
-    pub(super) plan_findings: Vec<super::change_review::Finding>,
-    /// The plan as it was held with those findings (round 3): sent again
-    /// unchanged with nothing said, every one stays open; the follow-up
-    /// review is shown what a revision changed (B13).
-    pub(super) plan_held: Option<String>,
-    pub(super) plan_review_call: Option<String>,
-    /// Submits sent back since the hold for leaving a held finding
-    /// unanswered (B12, at most `MAX_ANSWER_NUDGES`).
-    pub(super) plan_answer_nudges: u32,
-    /// Balanced Autopilot: the plan's finding list, kept across reviews and
-    /// automatic retries, resolved entries included (plan_review.rs).
-    pub(super) plan_ledger: Vec<super::plan_review::LedgerEntry>,
-    /// Balanced Autopilot: the titles the last review reported without the
-    /// evidence they needed, for the next review's brief.
-    pub(super) plan_dropped: Vec<String>,
-    /// Balanced Autopilot: submits the checker sent back for format
-    /// problems alone (`plan::skeleton` after two).
-    pub(super) plan_format_rejections: u32,
-    /// A person's Retry or Continue of the plan stage: the `seq` of the
-    /// Plan record it started. The stage's time and budget share count
-    /// from there, so the Retry gets a review (plan_review.rs `plan_spent`).
-    pub(super) plan_spent_from: Option<i64>,
-    /// The last plan submitted, held or saved: what `edits` apply to.
-    pub(super) plan_draft: Option<String>,
-    /// The last plan as the agent sent it, before the IDE fixed its form
-    /// (Balanced Autopilot): what an edit copied from its own submission
-    /// matches when the fixed draft doesn't.
-    pub(super) plan_sent: Option<String>,
-    /// Plan steps step workers finished in this run (worker.rs, D03).
-    pub(super) worker_steps: Vec<super::worker::DoneStep>,
-    /// Files the test writer wrote, those the lead changed after it, and
-    /// how many of those the final message listed already (E03).
-    pub(super) test_writer_files: Vec<String>,
-    pub(super) tests_changed: Vec<String>,
-    pub(super) tests_changed_listed: usize,
-    /// Parallel groups joined in this run, for the repair loop (R03).
-    pub(super) groups: Vec<super::repair_run::GroupRecord>,
-    /// Fix attempts rolled back in this run, for a gave-up record (R06).
-    pub(super) rolled_back_attempts: Vec<super::repair::Rollback>,
-    /// Fix rounds beyond MAX_VERIFY_ROUNDS a review after green granted (R08).
-    pub(super) bonus_rounds: u32,
-    /// The last round asked the agent about changes that weaken the checks
-    /// (R05): the next round's new failures aren't a regression.
-    pub(super) asked_integrity: bool,
-    /// How the checks that failed went on the code before the change, by
-    /// command: each runs there once a run (before.rs).
-    pub(super) befores: super::before::Befores,
     /// G02: the run's tool calls under way, for each one's `tool` line in
     /// the agent log as its result is stored.
     pub(super) calls: CallClock,
-    /// The messages the user sends it while it works (steer.rs).
-    pub(super) steer: Arc<super::steer::SteerQueue>,
-    /// Its connector's harness read some of them mid-turn, and waits: the
-    /// next turn goes on with it, and what waits is its to read.
-    pub(super) harness_waits: bool,
-    /// Messages it read, and those it handed back (the `run` line).
-    pub(super) steers: u32,
-    pub(super) steers_returned: u32,
     /// The user denied the call that just ended (D6, execute.rs).
     pub(super) denied_by_user: bool,
 }
@@ -1221,7 +973,7 @@ impl Run {
             autopilot,
             stage,
             history_window,
-            test_writer_files,
+            tests: super::test_writer::TestsState::new(test_writer_files),
             context_mode: request
                 .context_mode
                 .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
@@ -1234,15 +986,12 @@ impl Run {
             checks_from_plan,
             project_context,
             restricted,
-            repo_map,
-            repo_map_chars,
+            map: RepoMapState::new(repo_map, repo_map_chars),
             mcp,
-            writes_since_verify: !changed_files.is_empty() || inherits_changes,
-            writes_since_review: inherits_changes,
             changed_files,
-            verify_rounds,
-            force_todo_next,
-            plan_context,
+            verification: super::verify::VerificationState::new(verify_rounds),
+            checklist: super::checklist::ChecklistState::new(force_todo_next),
+            plan: super::plan_review::PlanState::new(plan_context),
             settle_message: Arc::new(Mutex::new(settle_message)),
             continue_reply,
             ..Run::blank(
@@ -1255,11 +1004,16 @@ impl Run {
                 Role::Lead,
             )
         };
+        if !run.changed_files.is_empty() || inherits_changes {
+            run.verification.changes_made();
+        }
+        if inherits_changes {
+            run.review.changes_made();
+        }
         // Balanced Autopilot's plan reviews go on by the plan-fix limits.
         if run.balanced_autopilot() {
             let fix = run.plan_fix();
-            run.plan_review_progress =
-                super::loops::Progress::with(fix.stall_rounds, fix.max_rounds);
+            run.plan.review_limits(fix.stall_rounds, fix.max_rounds);
             if let Err(e) = run.restore_plan_state().await {
                 eprintln!(
                     "agent: chat {}: the plan's state wasn't restored: {e}",
@@ -1273,7 +1027,7 @@ impl Run {
     /// A run with nothing set yet: every counter at zero, nothing changed,
     /// no plan, no checks. `prepare` and `prepare_child` fill in the rest.
     #[allow(clippy::too_many_arguments)]
-    fn blank(
+    pub(super) fn blank(
         core: Core,
         seen: Arc<crate::file_guard::Seen>,
         dialog_id: String,
@@ -1283,6 +1037,14 @@ impl Run {
         role: Role,
     ) -> Run {
         Run {
+            landing: Default::default(),
+            verification: Default::default(),
+            tests: Default::default(),
+            review: Default::default(),
+            plan: Default::default(),
+            map: Default::default(),
+            checklist: Default::default(),
+            steering: super::steer::SteerState::new(controls.steer),
             core,
             seen,
             dialog_id,
@@ -1296,58 +1058,18 @@ impl Run {
             root: None,
             project_root: None,
             mcp: None,
-            merged_from_project: None,
-            marker_reminders: 0,
-            landed: false,
             current_user_content: None,
             local_date: String::new(),
             guard: Guard::new(None, 0),
-            questions_asked: 0,
             checks: Vec::new(),
             checks_from_plan: false,
             project_context: String::new(),
             restricted: Arc::default(),
-            repo_map: None,
-            repo_map_chars: 0,
-            map_refreshed_at: Instant::now(),
-            map_refreshes: 0,
-            writes_since_verify: false,
             changed_files: Vec::new(),
-            verify_rounds: 0,
-            last_verify_failed: false,
-            stalled_rounds: 0,
-            prepared_again: false,
-            after_partial_rollback: false,
-            checklist_nudges: 0,
-            force_todo_next: false,
-            checklist_gate_refused: false,
             loop_resumed: false,
             resumed_since: None,
-            open_steps_at_end: None,
-            pending_step_compaction: None,
-            clm_restricted: false,
-            restricted_turns: 0,
-            restricted_stall: 0,
-            clm_non_compliant: false,
-            clm_turns: 0,
-            clm_peak_pct: 0,
-            clm_edits_seen: 0,
-            clm_edit_deltas: Vec::new(),
-            clm_recall_hits: 0,
-            clm_reminders_fired: Vec::new(),
-            step_asked_turn: None,
-            step_turns_to_edit: None,
-            tier75_turns_to_edit: None,
-            urgent_turns_to_edit: None,
-            tier75_since: None,
-            urgent_since: None,
-            clm_tracking_started: false,
-            context_edited: false,
-            edit_delta_pending: None,
+            context: Default::default(),
             words_only: false,
-            plan_context: String::new(),
-            plan_nudged: false,
-            reply_submits: 0,
             repetition_stops: 0,
             started_at: Instant::now(),
             stop: controls.stop,
@@ -1358,68 +1080,9 @@ impl Run {
             continue_reply: false,
             role,
             ledger: subagent::Ledger::default(),
-            verify_history: Vec::new(),
-            last_verify_results: Vec::new(),
-            checkpoint: None,
-            baseline: Default::default(),
-            integrity_open: Vec::new(),
-            writes_since_review: false,
-            reviews_total: 0,
-            review_outcome: None,
-            carry_lost: None,
-            round_commands: Vec::new(),
-            integrity_unchecked: false,
-            rechecks: 0,
-            carry_lost_told: false,
-            reviews_in_row: 0,
-            review_findings: Vec::new(),
-            review_note_id: None,
-            review_held: Vec::new(),
-            review_answers: Vec::new(),
-            review_answer_nudges: 0,
-            review_blocked: false,
-            review_rounds: Vec::new(),
-            last_guidance: None,
-            review_optional: Vec::new(),
-            tests_after_change: false,
-            breaker_ran: false,
-            plan_review_progress: Default::default(),
-            change_review_progress: Default::default(),
-            acceptance_progress: Default::default(),
-            breaker_round: None,
-            acceptance_checks: 0,
-            acceptance_unsatisfied: Vec::new(),
-            acceptance_unmet: false,
-            last_triage: None,
-            cleaned_this_run: false,
             reply_cut_off: false,
             group_grants: Default::default(),
-            plan_reviews: 0,
-            plan_blocked: false,
-            plan_findings: Vec::new(),
-            plan_held: None,
-            plan_review_call: None,
-            plan_answer_nudges: 0,
-            plan_ledger: Vec::new(),
-            plan_dropped: Vec::new(),
-            plan_format_rejections: 0,
-            plan_spent_from: None,
-            plan_draft: None,
-            plan_sent: None,
-            worker_steps: Vec::new(),
-            test_writer_files: Vec::new(),
-            tests_changed: Vec::new(),
-            tests_changed_listed: 0,
-            groups: Vec::new(),
-            rolled_back_attempts: Vec::new(),
-            bonus_rounds: 0,
-            asked_integrity: false,
-            befores: Default::default(),
             calls: CallClock::default(),
-            steer: controls.steer,
-            harness_waits: false,
-            steers: 0,
-            steers_returned: 0,
             denied_by_user: false,
         }
     }
@@ -1451,9 +1114,8 @@ impl Run {
             project_root: parent.project_root.clone(),
             local_date: parent.local_date.clone(),
             project_context: parent.project_context.clone(),
+            map: RepoMapState::new(parent.map.text().clone(), parent.map.budget()),
             restricted: parent.restricted.clone(),
-            repo_map: parent.repo_map.clone(),
-            repo_map_chars: parent.repo_map_chars,
             mcp: parent.mcp.clone(),
             ..Run::blank(
                 parent.core.clone(),
@@ -1579,7 +1241,7 @@ impl Run {
         let outcome = self.drive(entry).await;
         // Whatever ended it, the run takes no more messages from here, and
         // what it holds unread goes back to the user (D9, D15).
-        let unread = self.steer.close_and_take();
+        let unread = self.steering.queue().close_and_take();
         crate::overlay::chats::set_running(&self.dialog_id, false);
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -1606,7 +1268,7 @@ impl Run {
             }
             _ => outcome,
         };
-        self.steers_returned += unread.len() as u32;
+        self.steering.returned(unread.len());
         super::hand_back_steering(&self.core, &self.dialog_id, unread, &outcome);
         // P1.8: a lead's run that leaves no checks waiting leaves no state
         // for them either (an older run's is stale now).
@@ -1625,15 +1287,15 @@ impl Run {
             "outcome": outcome,
             "toolCalls": self.guard.tool_calls,
             "filesChanged": self.changed_files.len(),
-            "verifyRounds": self.verify_rounds,
+            "verifyRounds": self.verification.rounds(),
             "ms": self.started_at.elapsed().as_millis() as u64,
         });
-        if let Some(open) = self.open_steps_at_end {
+        if let Some(open) = self.checklist.open_steps_at_end() {
             entry["openSteps"] = json!(open);
         }
-        if self.steers > 0 || self.steers_returned > 0 {
-            entry["steers"] = json!(self.steers);
-            entry["steersReturned"] = json!(self.steers_returned);
+        if self.steering.read_count() > 0 || self.steering.returned_count() > 0 {
+            entry["steers"] = json!(self.steering.read_count());
+            entry["steersReturned"] = json!(self.steering.returned_count());
         }
         if self.autopilot {
             entry["autopilot"] = json!(true);
@@ -1662,11 +1324,12 @@ impl Run {
             }
             Entry::Turn => {}
             Entry::Verify { record_id } => {
-                self.steer
+                self.steering
+                    .queue()
                     .note(super::steer::Doing::Checks, self.guard.tool_calls);
                 // What the last run's fix rounds knew (command approval on).
                 self.restore_verify_state(&record_id);
-                if self.carry_lost.is_some() {
+                if self.verification.carry_lost().is_some() {
                     self.rebuild_baseline(&record_id).await;
                 }
                 // The waiting record becomes the running one, then the results.
@@ -1700,12 +1363,13 @@ impl Run {
             Entry::CheckMerged { files } => {
                 // As `take_project_changes` after a local merge: the checks
                 // run on the merged files, and a failure is a fix round.
-                self.steer
+                self.steering
+                    .queue()
                     .note(super::steer::Doing::Checks, self.guard.tool_calls);
-                self.merged_from_project = Some(files);
-                self.writes_since_verify = true;
+                self.landing.merge_started(files);
+                self.verification.changes_made();
                 let outcome = self.verify_at_end(false, None).await?;
-                self.merged_from_project = None;
+                self.landing.merge_checked();
                 if outcome != "continue" && !self.read_at_end(&outcome).await? {
                     return Ok(outcome);
                 }
@@ -1722,7 +1386,7 @@ impl Run {
             // the next request. Not before an interrupted reply is picked up:
             // its continuation must follow it. Nor while a connector's harness
             // waits to go on with its turn: it reads them itself.
-            if !self.continue_reply && !self.harness_waits {
+            if !self.continue_reply && !self.steering.harness_waits() {
                 self.read_waiting("step").await?;
             }
             // Every tool call has its result here, and the checks are
@@ -1823,7 +1487,7 @@ impl Run {
                 return Ok("stopped".into());
             }
             // Its harness read the user's messages and waits to go on.
-            if self.harness_waits {
+            if self.steering.harness_waits() {
                 continue;
             }
 
@@ -1835,9 +1499,8 @@ impl Run {
                     continue;
                 }
                 // E03: test-writer tests it changed are listed for the user.
-                if self.sub().is_none() && self.tests_changed.len() > self.tests_changed_listed {
-                    let line = super::test_writer::changed_tests_line(&self.tests_changed);
-                    self.tests_changed_listed = self.tests_changed.len();
+                if self.sub().is_none() && self.tests.unlisted_changes() {
+                    let line = self.tests.changes_reported();
                     self.finalize(
                         &turn.message_id,
                         format!("{}{line}", turn.text.trim_end()),
@@ -1859,7 +1522,8 @@ impl Run {
                     continue;
                 }
                 // A fresh-context review of the change, before the checks.
-                self.steer
+                self.steering
+                    .queue()
                     .note(super::steer::Doing::Checks, self.guard.tool_calls);
                 if self.review_change().await? {
                     continue;
@@ -1867,7 +1531,7 @@ impl Run {
                 // S06: a finding still open after the last review, in any
                 // mode. A message sent meanwhile isn't read here: it's
                 // handed back (`steer_goes_on`), never a way past the block.
-                if self.review_blocked {
+                if self.review.blocked() {
                     return Ok("review-open".into());
                 }
                 if self.stopped() {
@@ -1885,7 +1549,7 @@ impl Run {
                 // Reminders exhausted with steps still open: the run ends as
                 // unfinished-checklist so the UI can offer Continue. The
                 // final message carries `meta.checklistOpen`.
-                if !self.plan_mode && self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
+                if !self.plan_mode && self.checklist.nudges() >= MAX_CHECKLIST_NUDGES {
                     let recent = self.recent().await?;
                     let open = checklist::current_checklist(&recent)
                         .map(|c| {
@@ -1910,7 +1574,7 @@ impl Run {
                         meta["checklistOpen"] = json!(open);
                         let _ = self.update_meta(&turn.message_id, meta).await;
                         // Logged with the run's one `run` line (go()).
-                        self.open_steps_at_end = Some(open);
+                        self.checklist.ended_with_open_steps(open);
                         return Ok("unfinished-checklist".into());
                     }
                 }
@@ -1995,7 +1659,7 @@ impl Run {
         // the chat takes it where it goes and the `ContinueRun` there reads
         // it. The run takes no more.
         if !self.stopped() {
-            let waiting = self.steer.close_and_take();
+            let waiting = self.steering.queue().close_and_take();
             self.read_steering(waiting, request.kind).await?;
         }
         let pause = super::guard::PauseInfo {
@@ -2038,7 +1702,7 @@ impl Run {
         if self.stopped() {
             return Ok(false);
         }
-        let waiting = self.steer.take();
+        let waiting = self.steering.queue().take();
         self.read_steering(waiting, at).await
     }
 
@@ -2049,7 +1713,7 @@ impl Run {
         if self.stopped() {
             return Ok(false);
         }
-        let waiting = self.steer.take_or_close();
+        let waiting = self.steering.queue().take_or_close();
         self.read_steering(waiting, at).await
     }
 
@@ -2092,7 +1756,7 @@ impl Run {
             .map(|q| super::steer::stored_row(q, clm))
             .collect();
         if let Err(e) = self.append(rows).await {
-            self.steers_returned += queued.len() as u32;
+            self.steering.returned(queued.len());
             super::hand_back_steering(&self.core, &self.dialog_id, queued, "error");
             return Err(e);
         }
@@ -2111,7 +1775,7 @@ impl Run {
                 }),
             );
         }
-        self.steers += queued.len() as u32;
+        self.steering.read(queued.len());
         Ok(true)
     }
 
@@ -2185,7 +1849,8 @@ impl Run {
 
         // An effort picked since the last request applies from this one.
         self.take_effort();
-        self.steer
+        self.steering
+            .queue()
             .note(super::steer::Doing::Reply, self.guard.tool_calls);
         let config = self.config();
         let clm = self.context_mode == crate::clm::MODE_CLM
@@ -2193,7 +1858,7 @@ impl Run {
         // Phase E: ignored compaction pressure restricts this turn to
         // context tools (90%+ at once, step/75% after 4 calls with no edit).
         self.update_clm_pressure(clm).await;
-        let context_only = clm && self.clm_restricted;
+        let context_only = clm && self.context.restricted();
         let mut tools = tools::tools_for(
             self.root.is_some(),
             self.profile.vision,
@@ -2228,7 +1893,7 @@ impl Run {
         };
         // S06: the answers to the change review's findings: always in
         // Autopilot; in Agent mode while a review's findings wait for them.
-        if (self.autopilot || !self.review_held.is_empty())
+        if (self.autopilot || self.review.has_held_findings())
             && !self.profile.no_tools
             && !self.plan_mode
             && self.sub().is_none()
@@ -2281,7 +1946,7 @@ impl Run {
                 self.project_context.as_str(),
                 plan_instructions.as_str(),
                 group_rules,
-                self.plan_context.as_str(),
+                self.plan.context(),
             ]
             .iter()
             .filter(|s| !s.is_empty())
@@ -2313,7 +1978,7 @@ impl Run {
         // nudge): consumed by this turn, carried across its ask-again
         // retries. Providers rejecting the named `tool_choice` fall back to
         // `auto` per request; the execute gate covers them regardless.
-        let force_tool = if std::mem::take(&mut self.force_todo_next) {
+        let force_tool = if self.checklist.take_required_tool() {
             Some("todo".to_string())
         } else {
             None
@@ -2344,7 +2009,7 @@ impl Run {
         };
         // A connector's harness that reads the user's messages mid-turn is
         // handed them as they come, in a run that takes them (steer.rs).
-        let reads = self.steer.steerable()
+        let reads = self.steering.queue().steerable()
             && crate::connectors::kind_of(&self.profile.base_url)
                 .is_some_and(|kind| crate::connectors::connector(kind).reads_messages());
         // Q09 (mcp-plan.md): a connector's harness that runs its own tools
@@ -2370,7 +2035,7 @@ impl Run {
             // those a harness that goes on with its run hasn't read yet.
             let (to_harness, steering) = tokio::sync::mpsc::unbounded_channel();
             if reads {
-                for q in self.steer.handed() {
+                for q in self.steering.queue().handed() {
                     let _ = to_harness.send(super::steer::for_harness(&q, clm));
                 }
             }
@@ -2402,7 +2067,7 @@ impl Run {
                 tools: Some(tools.clone()),
                 system_prompt: system_prompt.clone(),
                 project_context: Some(project_context.clone()),
-                request_context: self.repo_map.clone(),
+                request_context: self.map.text().clone(),
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),
                 carried_notes: carried_notes.clone(),
@@ -2497,7 +2162,7 @@ impl Run {
                             // What the user sent since goes to the harness,
                             // until Stop.
                             if let (Some(to), None) = (&to_harness, stop_deadline) {
-                                for q in self.steer.hand_over() {
+                                for q in self.steering.queue().hand_over() {
                                     let _ = to.send(super::steer::for_harness(&q, clm));
                                 }
                             }
@@ -2650,10 +2315,11 @@ impl Run {
             // its reply. Unless it failed, its turn ended there, and the
             // harness waits to go on with the others it has; once its turn
             // is over, it never reads them, and they wait again.
-            output.read = self.steer.read_by_harness(&read_ids);
-            self.harness_waits = !output.read.is_empty() && output.failure.is_none();
-            if !self.harness_waits {
-                self.steer.take_back();
+            output.read = self.steering.queue().read_by_harness(&read_ids);
+            self.steering
+                .harness_read(!output.read.is_empty() && output.failure.is_none());
+            if !self.steering.harness_waits() {
+                self.steering.queue().take_back();
             }
             self.reply_cut_off = finish_reason.as_deref() == Some("length");
 
@@ -2770,13 +2436,13 @@ impl Run {
         // the model answers the result on its next turn. At most twice a
         // run, and not past the plan's share; then the one nudge below.
         if self.balanced_autopilot()
-            && !self.plan_blocked
-            && self.reply_submits < MAX_REPLY_SUBMITS
+            && !self.plan.blocked()
+            && self.plan.reply_submits() < MAX_REPLY_SUBMITS
             && self.over_plan_share().await.is_none()
         {
-            self.reply_submits += 1;
-            let open = super::plan_review::open_numbers(&self.plan_ledger);
-            let responses = (!self.plan_findings.is_empty() && !open.is_empty()).then(|| {
+            self.plan.reply_submitted();
+            let open = self.plan.open_numbers();
+            let responses = (self.plan.has_findings() && !open.is_empty()).then(|| {
                 json!(open
                     .iter()
                     .map(|n| json!({ "finding": n, "action": "fixed", "note": "revised in the reply" }))
@@ -2791,10 +2457,10 @@ impl Run {
                 .await?;
             return Ok(true);
         }
-        if self.plan_nudged {
+        if self.plan.nudged() {
             return Ok(false);
         }
-        self.plan_nudged = true;
+        self.plan.reply_reminded();
         self.add_harness(
             format!(
                 "{IDE_NOTE}You wrote the plan in your reply, so it wasn't saved. Submit it with submit_plan (the complete plan, \
@@ -2819,7 +2485,7 @@ impl Run {
     /// to keep the checklist with (a connector's harness in Agent mode
     /// keeps its own): it isn't held to it.
     async fn check_checklist(&mut self) -> Result<bool, String> {
-        if self.profile.no_tools || self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
+        if self.profile.no_tools || self.checklist.nudges() >= MAX_CHECKLIST_NUDGES {
             return Ok(false);
         }
         let recent = self.recent().await?;
@@ -2833,16 +2499,16 @@ impl Run {
         if open.is_empty() {
             return Ok(false);
         }
-        self.checklist_nudges += 1;
+        self.checklist.nudged();
         let steps = open
             .iter()
             .map(|i| format!("\"{}\"", i.title))
             .collect::<Vec<_>>()
             .join(", ");
-        if self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
+        if self.checklist.nudges() >= MAX_CHECKLIST_NUDGES {
             // Last reminder: stronger, and the next turn must update the
             // checklist first.
-            self.force_todo_next = true;
+            self.checklist.require_tool();
             self.add_harness(
                 format!(
                     "{IDE_NOTE}Your checklist still has unfinished steps: {steps}. \
@@ -2888,7 +2554,6 @@ impl Run {
         if !clm {
             return;
         }
-        self.clm_turns += 1;
         let dialog_id = self.dialog_id.clone();
         let state = self
             .core
@@ -2897,126 +2562,17 @@ impl Run {
             .await
             .unwrap_or_default();
         let pct = crate::clm::prompt::percent(state.tokens, state.budget);
-        self.clm_peak_pct = self.clm_peak_pct.max(pct);
-        for t in state
-            .nudged
-            .iter()
-            .copied()
-            .chain((pct >= crate::clm::prompt::URGENT).then_some(90))
-        {
-            if !self.clm_reminders_fired.contains(&t) {
-                self.clm_reminders_fired.push(t);
-            }
-        }
-        self.clm_reminders_fired.sort_unstable();
-
-        // An edit: a successful write to the context file, a restore, or a
-        // command on the file's real path, flagged as it happens
-        // (execute.rs). Not a new revision as such: the file is rewritten
-        // before every request with the new messages, so its revision moves
-        // every turn whether the agent edited it or not.
-        let edited = std::mem::take(&mut self.context_edited);
-        // Last turn's edit, now measured by the request that read it back.
-        if let (Some(before), Some(r)) = (self.edit_delta_pending.take(), state.rendered_revision) {
-            self.clm_edit_deltas.push((r, before, state.tokens));
-        }
-        if !self.clm_tracking_started {
-            self.clm_tracking_started = true;
-            if !edited {
-                return;
-            }
-        }
-        if edited {
-            self.clm_edits_seen += 1;
-            self.edit_delta_pending = Some(state.tokens);
-            if self.pending_step_compaction.take().is_some() {
-                if let Some(asked) = self.step_asked_turn.take() {
-                    self.step_turns_to_edit
-                        .get_or_insert(self.clm_turns.saturating_sub(asked));
-                }
-            }
-            if let Some(w) = self.urgent_since.take() {
-                self.urgent_turns_to_edit
-                    .get_or_insert(self.clm_turns.saturating_sub(w.turn));
-            }
-            if let Some(w) = self.tier75_since.take() {
-                self.tier75_turns_to_edit
-                    .get_or_insert(self.clm_turns.saturating_sub(w.turn));
-            }
-            self.clm_restricted = false;
-            self.restricted_stall = 0;
-            return;
-        }
-
-        // Safety valve first: two restricted turns already, still no edit.
-        if self.clm_restricted && self.restricted_stall >= CLM_MAX_RESTRICTED_STALL {
-            self.clm_restricted = false;
-            self.restricted_stall = 0;
-            self.clm_non_compliant = true;
-            log::write(
-                &self.core,
-                json!({
-                    "event": "clmNonCompliant",
-                    "dialogId": self.dialog_id,
-                    "model": self.profile.model,
-                    "turn": self.clm_turns,
-                    "pct": pct,
-                    "restrictedTurns": self.restricted_turns,
-                }),
-            );
-            return;
-        }
-        // Below 75% the restriction no longer applies.
-        if self.clm_restricted && pct < CLM_RESTRICT_LIFT_BELOW {
-            self.clm_restricted = false;
-            self.restricted_stall = 0;
-        }
-
-        // Remember when each pressure started waiting for its edit; an edit
-        // clears it, and it re-arms if the pressure is still there.
-        if state.nudged.contains(&75) && self.tier75_since.is_none() {
-            self.tier75_since = Some(ClmWait {
-                tool_calls: self.guard.tool_calls,
-                turn: self.clm_turns,
-            });
-        }
-        if pct >= crate::clm::prompt::URGENT && self.urgent_since.is_none() {
-            self.urgent_since = Some(ClmWait {
-                tool_calls: self.guard.tool_calls,
-                turn: self.clm_turns,
-            });
-        }
-
-        if self.clm_non_compliant || self.clm_restricted {
-            if self.clm_restricted {
-                self.restricted_turns += 1;
-                self.restricted_stall += 1;
-            }
-            return;
-        }
-        let reason = restriction_reason(
+        if let Some(event) = self.context.turn(super::context_state::ClmTurn {
             pct,
-            self.urgent_since.is_some(),
-            self.pending_step_compaction.as_ref().map(|p| p.tool_calls),
-            self.tier75_since.as_ref().map(|w| w.tool_calls),
-            self.guard.tool_calls,
-        );
-        if let Some(reason) = reason {
-            self.clm_restricted = true;
-            self.restricted_turns += 1;
-            self.restricted_stall += 1;
-            log::write(
-                &self.core,
-                json!({
-                    "event": "clmRestricted",
-                    "dialogId": self.dialog_id,
-                    "model": self.profile.model,
-                    "reason": reason,
-                    "turn": self.clm_turns,
-                    "pct": pct,
-                    "toolCalls": self.guard.tool_calls,
-                }),
-            );
+            nudged: &state.nudged,
+            revision: state.rendered_revision,
+            tokens: state.tokens,
+            tool_calls: self.guard.tool_calls,
+        }) {
+            let mut line = event.log(pct, self.guard.tool_calls);
+            line["dialogId"] = json!(self.dialog_id);
+            line["model"] = json!(self.profile.model);
+            log::write(&self.core, line);
         }
     }
 
@@ -3025,7 +2581,7 @@ impl Run {
     /// hits (redone work), the peak context, restricted turns and the
     /// safety-valve fallback.
     async fn log_clm_compliance(&self, outcome: &str) {
-        if self.context_mode != crate::clm::MODE_CLM || !self.clm_tracking_started {
+        if self.context_mode != crate::clm::MODE_CLM || !self.context.tracking_started() {
             return;
         }
         let dialog_id = self.dialog_id.clone();
@@ -3036,29 +2592,13 @@ impl Run {
             .await
             .unwrap_or_default();
         let edit_revisions = revisions.iter().filter(|r| r.kind != "context").count();
-        log::write(
-            &self.core,
-            json!({
-                "event": "clm",
-                "dialogId": self.dialog_id,
-                "model": self.profile.model,
-                "outcome": outcome,
-                "remindersFired": self.clm_reminders_fired,
-                "turnsToEditStep": self.step_turns_to_edit,
-                "turnsToEdit75": self.tier75_turns_to_edit,
-                "turnsToEditUrgent": self.urgent_turns_to_edit,
-                "edits": self.clm_edits_seen,
-                // Chat-wide (every run so far), not this run only.
-                "chatEditRevisions": edit_revisions,
-                "editDeltas": self.clm_edit_deltas.iter().map(|(r, before, after)| json!({
-                    "revision": r, "before": before, "after": after,
-                })).collect::<Vec<_>>(),
-                "recallHints": self.clm_recall_hits,
-                "peakPct": self.clm_peak_pct,
-                "restrictedTurns": self.restricted_turns,
-                "nonCompliant": self.clm_non_compliant,
-            }),
-        );
+        let mut line = self.context.compliance();
+        line["event"] = json!("clm");
+        line["dialogId"] = json!(self.dialog_id);
+        line["model"] = json!(self.profile.model);
+        line["outcome"] = json!(outcome);
+        line["chatEditRevisions"] = json!(edit_revisions);
+        log::write(&self.core, line);
     }
 
     /// Rebuilds the repository map mid-run, so the next model turns see the
@@ -3089,11 +2629,11 @@ impl Run {
         let Some(root) = self.root.clone() else {
             return Ok(false);
         };
-        if self.stopped() || self.map_refreshed_at.elapsed() < MAP_MAX_AGE {
+        if self.stopped() || self.map.age() < MAP_MAX_AGE {
             return Ok(false);
         }
         // Reset first: a failed rebuild must not retry every turn.
-        self.map_refreshed_at = Instant::now();
+        self.map.refresh_started();
         let recent = self.recent().await?;
         let touched = touched_paths(&recent);
         // The request, with what the user added while the run worked.
@@ -3104,7 +2644,7 @@ impl Run {
                 added => format!("{request}\n\n{added}"),
             }
         };
-        let max_chars = self.repo_map_chars;
+        let max_chars = self.map.budget();
         let restricted = self.restricted.clone();
         let rebuilt = crate::rt::spawn_blocking(move || {
             let root_path = std::path::Path::new(&root);
@@ -3123,18 +2663,16 @@ impl Run {
         let Ok(new_map) = rebuilt else {
             return Ok(false);
         };
-        if new_map == self.repo_map {
+        if !self.map.refreshed(new_map) {
             return Ok(false);
         }
-        self.repo_map = new_map;
-        self.map_refreshes += 1;
         log::write(
             &self.core,
             json!({
                 "event": "repoMapRefresh",
                 "dialogId": self.dialog_id,
-                "refreshes": self.map_refreshes,
-                "mapChars": self.repo_map.as_ref().map(|m| m.chars().count()).unwrap_or(0),
+                "refreshes": self.map.refreshes(),
+                "mapChars": self.map.text().as_ref().map(|m| m.chars().count()).unwrap_or(0),
             }),
         );
         Ok(true)
@@ -3319,10 +2857,10 @@ impl Run {
         // round 3: so does one whose integrity check couldn't be complete
         // (a spilled file lost), carry or not.
         if let Some(v) = meta.get_mut("verification").and_then(|v| v.as_object_mut()) {
-            if self.carry_lost.as_deref() == Some(message_id) {
+            if self.verification.carry_lost() == Some(message_id) {
                 v.insert("stateRestored".into(), json!(false));
             }
-            if self.integrity_unchecked {
+            if self.verification.integrity_unchecked() {
                 v.insert("integrityChecked".into(), json!(false));
             }
         }
@@ -4321,30 +3859,6 @@ pub fn last_user_wire_content(messages: &[MessageRow]) -> Option<String> {
     sent_content(m).or_else(|| Some(m.content.clone()))
 }
 
-/// Whether this CLM turn is restricted to context tools, and why: at 90%+
-/// while the urgent state waits for an edit, or at 50%+ once a
-/// step-compaction request or the 75% reminder has gone unanswered for
-/// CLM_ESCALATE_AFTER_CALLS tool calls. The waits are cleared by an edit,
-/// so a wait that's still here means no edit since it started.
-fn restriction_reason(
-    pct: u32,
-    urgent_waiting: bool,
-    step_asked_at: Option<u32>,
-    tier75_seen_at: Option<u32>,
-    tool_calls: u32,
-) -> Option<&'static str> {
-    let waited = |since: u32| tool_calls.saturating_sub(since) >= CLM_ESCALATE_AFTER_CALLS;
-    if pct >= crate::clm::prompt::URGENT && urgent_waiting {
-        Some("urgent")
-    } else if pct >= CLM_ESCALATE_MIN_PCT && step_asked_at.is_some_and(waited) {
-        Some("step")
-    } else if pct >= CLM_ESCALATE_MIN_PCT && tier75_seen_at.is_some_and(waited) {
-        Some("tier75")
-    } else {
-        None
-    }
-}
-
 /// The real user message before the latest one, as sent: what a short
 /// "continue" is continuing. None when there is no earlier request.
 fn previous_user_wire_content(messages: &[MessageRow]) -> Option<String> {
@@ -4637,41 +4151,6 @@ mod repo_map_tests {
     }
 }
 
-#[cfg(test)]
-mod clm_pressure_tests {
-    use super::*;
-
-    #[test]
-    fn restriction_needs_an_unanswered_pressure() {
-        // Urgent: restricted at once while it waits for an edit.
-        assert_eq!(restriction_reason(92, true, None, None, 0), Some("urgent"));
-        assert_eq!(
-            restriction_reason(92, false, None, None, 0),
-            None,
-            "an edit cleared the wait"
-        );
-        // A step-compaction request escalates after 4 calls with no edit, at 50%+.
-        assert_eq!(restriction_reason(60, false, Some(10), None, 13), None);
-        assert_eq!(
-            restriction_reason(60, false, Some(10), None, 14),
-            Some("step")
-        );
-        assert_eq!(
-            restriction_reason(40, false, Some(10), None, 30),
-            None,
-            "below 50%"
-        );
-        // The 75% reminder, likewise.
-        assert_eq!(
-            restriction_reason(78, false, None, Some(5), 9),
-            Some("tier75")
-        );
-        assert_eq!(restriction_reason(78, false, None, Some(5), 8), None);
-        // Nothing waiting: never restricted, whatever the size.
-        assert_eq!(restriction_reason(85, false, None, None, 100), None);
-    }
-}
-
 /// Where a run of `chat` finds its project's own MCP servers (mcp-plan-2.md,
 /// Q12): the files in its view of the project, and the project's settings,
 /// which keep those the user allowed. None for a chat of no project.
@@ -4705,4 +4184,54 @@ async fn project_mcp_files(
         root: std::path::PathBuf::from(root),
         settings,
     })
+}
+
+/// The repository map and its refresh budget for a run.
+pub(super) struct RepoMapState {
+    text: Option<String>,
+    budget: usize,
+    refreshed_at: Instant,
+    refreshes: u32,
+}
+impl Default for RepoMapState {
+    fn default() -> Self {
+        Self::new(None, 0)
+    }
+}
+impl RepoMapState {
+    fn new(text: Option<String>, budget: usize) -> Self {
+        Self {
+            text,
+            budget,
+            refreshed_at: Instant::now(),
+            refreshes: 0,
+        }
+    }
+    pub(super) fn prepared(&mut self, text: Option<String>, budget: usize) {
+        self.text = text;
+        self.budget = budget;
+    }
+    pub(super) fn text(&self) -> &Option<String> {
+        &self.text
+    }
+    pub(super) fn budget(&self) -> usize {
+        self.budget
+    }
+    fn age(&self) -> Duration {
+        self.refreshed_at.elapsed()
+    }
+    fn refresh_started(&mut self) {
+        self.refreshed_at = Instant::now();
+    }
+    fn refreshed(&mut self, text: Option<String>) -> bool {
+        if self.text == text {
+            return false;
+        }
+        self.text = text;
+        self.refreshes += 1;
+        true
+    }
+    fn refreshes(&self) -> u32 {
+        self.refreshes
+    }
 }

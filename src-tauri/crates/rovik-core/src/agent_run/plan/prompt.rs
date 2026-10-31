@@ -2,9 +2,6 @@
 //! stage's lines in their place), what a call of a tool it doesn't offer
 //! gets, and whether a reply wrote a plan out instead of submitting it.
 
-use regex::Regex;
-use std::sync::LazyLock;
-
 /// What a call of a tool Plan mode doesn't offer gets (its row's modes,
 /// builtin_tools.rs): why not, and what comes next. For Rovik's own calls,
 /// and for a connector's own tools it asks about.
@@ -113,24 +110,10 @@ pub fn plan_form() -> String {
         .to_string()
 }
 
-static LOOKS_LIKE_STEPS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?im)^##\s+.*\bsteps?\b").unwrap());
-
-static NUMBERED_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*\d+[.)]\s").unwrap());
-
-static TITLE_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^#\s+\S").unwrap());
-
-/// A section a plan has besides its steps.
-static PLAN_SECTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?im)^##\s+.*\b(decisions?|validat\w*|verif\w*|risks?)\b").unwrap()
-});
-
 /// A reply that reads like a plan (written out instead of submitted): a
 /// steps section with numbered steps, and a title or another of a plan's
 /// sections. An answer with "## Steps to reproduce" and a numbered list
 /// is an explanation, not a plan to submit.
 pub fn looks_like_plan(text: &str) -> bool {
-    LOOKS_LIKE_STEPS.is_match(text)
-        && NUMBERED_LINE.is_match(text)
-        && (TITLE_LINE.is_match(text) || PLAN_SECTION.is_match(text))
+    super::PlanDoc::parse(text).looks_like_plan()
 }

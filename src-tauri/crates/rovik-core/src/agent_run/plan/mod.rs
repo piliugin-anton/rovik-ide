@@ -6,6 +6,7 @@
 
 mod check;
 mod criteria;
+mod doc;
 mod file;
 mod format;
 mod prompt;
@@ -16,6 +17,7 @@ mod validation;
 
 pub use check::*;
 pub use criteria::*;
+pub use doc::PlanDoc;
 pub use file::*;
 pub use format::*;
 pub use prompt::*;

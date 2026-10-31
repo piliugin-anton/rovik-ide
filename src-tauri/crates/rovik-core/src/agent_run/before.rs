@@ -76,7 +76,7 @@ impl Before {
 
 /// The run's checks on the code before the change, by command: each runs
 /// there once a run, the first time it fails.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Befores(HashMap<String, Before>);
 
 impl Befores {
@@ -222,7 +222,7 @@ impl Run {
     /// compared with it: an isolated chat's project, except on the round
     /// that checks the project's new changes merged in (module docs).
     pub(super) fn code_before(&self) -> Option<PathBuf> {
-        if !self.isolated() || self.merged_from_project.is_some() {
+        if !self.isolated() || self.landing.merged_files().is_some() {
             return None;
         }
         self.project_root.as_deref().map(PathBuf::from)

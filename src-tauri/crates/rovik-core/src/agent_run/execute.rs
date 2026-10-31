@@ -205,7 +205,8 @@ impl Run {
 
         // G02: calls an earlier run made (a resume) are this run's now.
         self.calls.made(calls);
-        self.steer
+        self.steering
+            .queue()
             .note(super::steer::Doing::Calls, self.guard.tool_calls);
         let mut rest = calls;
         while !rest.is_empty() {
@@ -265,7 +266,7 @@ impl Run {
                 // message redirects the reply, whose later calls don't run.
                 // It's taken now, so the note below always has it after it.
                 if std::mem::take(&mut self.denied_by_user) && !rest.is_empty() && !self.stopped() {
-                    let waiting = self.steer.take();
+                    let waiting = self.steering.queue().take();
                     if !waiting.is_empty() {
                         for tc in rest {
                             self.calls.start(&tc.id);
@@ -310,7 +311,7 @@ impl Run {
         }
         // A restricted CLM turn: every call goes through execute_one, which
         // refuses project work until the context is compacted.
-        if clm && self.clm_restricted {
+        if clm && self.context.restricted() {
             return false;
         }
         let args = permissions::parse_args(&tc.arguments);
@@ -595,7 +596,7 @@ impl Run {
                             path_arg.unwrap_or(""),
                         ))
             {
-                self.context_edited = true;
+                self.context.edited();
             }
             self.note_finished(tc, &mut result.content, result.outcome.failed(), false);
             let meta = match result.outcome.failed() {
@@ -611,7 +612,7 @@ impl Run {
         // Anything else is refused without running, so the model compacts
         // before doing more work. The restriction lifts with an edit.
         if clm
-            && self.clm_restricted
+            && self.context.restricted()
             && !matches!(tc.name.as_str(), "todo" | "ask_user" | "submit_plan")
         {
             let content = format!(
@@ -726,11 +727,7 @@ impl Run {
                             let done_word = if newly.len() == 1 { "Step" } else { "Steps" };
                             if pct >= super::run::CLM_STEP_COMPACT_MIN {
                                 // Asked for: the pressure escalates if it's ignored.
-                                self.pending_step_compaction =
-                                    Some(super::run::PendingStepCompaction {
-                                        tool_calls: self.guard.tool_calls,
-                                    });
-                                self.step_asked_turn = Some(self.clm_turns);
+                                self.context.step_compaction_asked(self.guard.tool_calls);
                                 match next {
                                     Some(n) => content.push_str(&format!(
                                         "\n\n{done_word} {done_names} done. Before \"{n}\": compact that step's span in one edit, copy facts forward, and update @context/TASK.md (done, NEXT)."
@@ -795,9 +792,9 @@ impl Run {
         // the checks failed (continuing started work, not new scope).
         if !self.plan_mode
             && self.sub().is_none()
-            && !self.checklist_gate_refused
+            && !self.checklist.was_gate_refused()
             && resume_note.is_none()
-            && !self.last_verify_failed
+            && !self.verification.last_failed()
             && self.config().permissions.checklist != permissions::ChecklistMode::Off
             && !(clm && is_context_path(path_arg, context_dir))
         {
@@ -809,7 +806,7 @@ impl Run {
             ) {
                 if let Ok(recent) = self.recent().await {
                     if checklist::current_checklist(&recent).is_none() {
-                        self.checklist_gate_refused = true;
+                        self.checklist.gate_refused();
                         let content = checklist::checklist_gate_error(&reason, &tc.name);
                         return self
                             .add_tool_result(&tc.id, content, Outcome::Failed, None, Vec::new())
@@ -996,7 +993,7 @@ impl Run {
                 .await;
             if let Ok(Some(hint)) = hint {
                 result.content.push_str(&hint);
-                self.clm_recall_hits += 1;
+                self.context.recall_hit();
             }
         }
 
@@ -1074,7 +1071,7 @@ impl Run {
                     if (command.contains(&file) || command.contains("LIVE_CONTEXT.md"))
                         && permissions::command_modifies_files(&command)
                     {
-                        self.context_edited = true;
+                        self.context.edited();
                     }
                 }
             }
@@ -1129,8 +1126,8 @@ impl Run {
         if !self.changed_files.iter().any(|p| p == path) {
             self.changed_files.push(path.to_string());
         }
-        self.writes_since_verify = true;
-        self.writes_since_review = true;
+        self.verification.changes_made();
+        self.review.changes_made();
         // The parse caches key on mtime+size: a fast same-size rewrite
         // could otherwise serve the old parse all run. Invalidate now,
         // while the absolute path is at hand; failures never break the run.
@@ -1149,11 +1146,8 @@ impl Run {
         if !permissions::command_modifies_files(command) {
             return;
         }
-        self.writes_since_verify = true;
-        if self.checkpoint.is_some() && !self.isolated() {
-            self.round_commands
-                .push(crate::chat_db::store::char_prefix(command, 120).to_string());
-        }
+        self.verification.changes_made();
+        self.verification.command_ran(command, self.isolated());
     }
 
     async fn stopped_result(&self, tc: &ToolCall) -> Result<(), String> {
@@ -1981,9 +1975,10 @@ impl Run {
                 )
                 .await;
         }
-        if self.questions_asked >= questions::MAX_QUESTIONS_PER_RUN {
+        if self.plan.questions_asked() >= questions::MAX_QUESTIONS_PER_RUN {
             log_question(self, 0, vec!["over-limit".into()]);
-            let content = questions::past_the_question_limit(self.questions_asked, self.plan_mode);
+            let content =
+                questions::past_the_question_limit(self.plan.questions_asked(), self.plan_mode);
             return self
                 .add_tool_result(&tc.id, content, Outcome::Done, None, Vec::new())
                 .await;
@@ -1996,7 +1991,7 @@ impl Run {
                 .add_tool_result(&tc.id, content.into(), Outcome::Failed, None, Vec::new())
                 .await;
         }
-        self.questions_asked += 1;
+        self.plan.question_asked();
 
         let request = QuestionsRequest {
             tool_call_id: tc.id.clone(),
@@ -2135,7 +2130,7 @@ impl Run {
         args: &Map<String, Value>,
     ) -> Result<(), String> {
         // S02: blocked by its last review, the plan is never saved.
-        if self.plan_blocked {
+        if self.plan.blocked() {
             return self
                 .add_tool_result(
                     &tc.id,
@@ -2161,22 +2156,23 @@ impl Run {
                     .await;
             }
             (None, Some(edits)) => {
-                if self.plan_draft.is_none() {
+                if self.plan.draft().is_none() {
                     let file = match self.in_autopilot() {
                         true => {
                             super::autopilot::task_plan_file(&self.core, &self.dialog_id).await?
                         }
                         false => chat_plan_file(&recent),
                     };
-                    self.plan_draft = file.and_then(|f| std::fs::read_to_string(f).ok());
+                    self.plan
+                        .draft_received(file.and_then(|f| std::fs::read_to_string(f).ok()));
                 }
-                let Some(draft) = self.plan_draft.clone() else {
+                let Some(draft) = self.plan.draft().clone() else {
                     let content = "Error: the plan wasn't saved. There's no earlier plan to edit: send the complete plan.";
                     return self
                         .add_tool_result(&tc.id, content.into(), Outcome::Failed, None, Vec::new())
                         .await;
                 };
-                match edit_last_plan(&draft, self.plan_sent.as_deref(), edits) {
+                match edit_last_plan(&draft, self.plan.sent(), edits) {
                     Ok(plan) => plan,
                     Err(e) => {
                         return self
@@ -2192,8 +2188,12 @@ impl Run {
                 }
             }
         };
-        self.plan_sent = Some(given.clone());
-        let (plan_text, findings_dropped) = plan::without_findings(&given);
+        self.plan.submitted(given.clone());
+        let mut doc = plan::PlanDoc::parse(&given);
+        let (plan_text, findings_dropped) = doc.without_findings();
+        if findings_dropped {
+            doc = plan::PlanDoc::parse(&plan_text);
+        }
         let request = recent
             .iter()
             .rev()
@@ -2202,20 +2202,21 @@ impl Run {
         // Balanced Autopilot: the IDE fixes the plan's mechanical format
         // problems itself (never a reviewer's finding).
         let (plan_text, fixes) = match self.balanced_autopilot() {
-            true => plan::normalize(
-                &plan_text,
+            true => doc.normalize(
                 self.root.as_deref().map(std::path::Path::new),
                 request.as_deref(),
             ),
             false => (plan_text, Vec::new()),
         };
+        if !fixes.is_empty() {
+            doc = plan::PlanDoc::parse(&plan_text);
+        }
         let plan_text = plan_text.as_str();
         // B12: the agent's answers to the findings that held the plan back.
         let responses = super::plan_review::parse_responses(args.get("responses"));
         // B07: against the project too, as this chat sees it; S01: an
         // Autopilot task's plan says what done means.
-        let mut problems = plan::plan_problems_for(
-            plan_text,
+        let mut problems = doc.plan_problems_for(
             self.root.as_deref().map(std::path::Path::new),
             self.in_autopilot(),
         );
@@ -2239,7 +2240,7 @@ impl Run {
                 json!({
                     "event": "planSubmit",
                     "dialogId": self.dialog_id,
-                    "formatRejections": self.plan_format_rejections + u32::from(format_problems && !answers_only),
+                    "formatRejections": self.plan.format_rejections() + u32::from(format_problems && !answers_only),
                     "fixes": fixes.len(),
                     "edits": edits.map_or(0, Vec::len),
                     "fromReply": from_reply,
@@ -2258,18 +2259,18 @@ impl Run {
             // Balanced Autopilot: after repeated format rejections, the
             // plan's frame to fill in. They never use a review round.
             if self.balanced_autopilot() && format_problems && !answers_only {
-                self.plan_format_rejections += 1;
-                if self.plan_format_rejections >= 2 {
+                self.plan.format_rejected();
+                if self.plan.format_rejections() >= 2 {
                     content.push_str(&format!(
                         "\n\nThe plan was sent back {} times for its form. Here is its frame, with TODO where you must write; fill it in with your content and send the complete plan:\n\n{}",
-                        self.plan_format_rejections,
-                        plan::skeleton(plan_text)
+                        self.plan.format_rejections(),
+                        doc.skeleton()
                     ));
                 }
             }
             // The plan sent back is the last one submitted: what `edits`
             // apply to next.
-            self.plan_draft = Some(plan_text.to_string());
+            self.plan.draft_received(Some(plan_text.to_string()));
             return self
                 .add_tool_result(
                     &tc.id,
@@ -2323,13 +2324,10 @@ impl Run {
             }
             super::plan_review::Decision::Save { plan, note } => (plan, note),
         };
-        match plan::save_plan_file(
-            &root,
-            &request,
-            &plan_text,
-            existing.as_deref(),
-            &self.local_date,
-        ) {
+        if plan_text != checked {
+            doc = plan::PlanDoc::parse(&plan_text);
+        }
+        match doc.save_plan_file(&root, &request, existing.as_deref(), &self.local_date) {
             Ok(path) => {
                 let mut content = format!(
                     "Saved the plan to {}.",

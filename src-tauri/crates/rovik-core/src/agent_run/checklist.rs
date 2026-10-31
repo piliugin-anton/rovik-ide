@@ -660,3 +660,44 @@ mod tests {
         assert!(current_checklist(&messages).is_some());
     }
 }
+
+/// Checklist reminders and the one-shot tool requirement of a run.
+#[derive(Default)]
+pub(super) struct ChecklistState {
+    nudges: u32,
+    force_tool: bool,
+    gate_refused: bool,
+    open_steps_at_end: Option<usize>,
+}
+impl ChecklistState {
+    pub(super) fn new(force_tool: bool) -> Self {
+        Self {
+            force_tool,
+            ..Self::default()
+        }
+    }
+    pub(super) fn nudged(&mut self) {
+        self.nudges += 1;
+    }
+    pub(super) fn nudges(&self) -> u32 {
+        self.nudges
+    }
+    pub(super) fn require_tool(&mut self) {
+        self.force_tool = true;
+    }
+    pub(super) fn take_required_tool(&mut self) -> bool {
+        std::mem::take(&mut self.force_tool)
+    }
+    pub(super) fn gate_refused(&mut self) {
+        self.gate_refused = true;
+    }
+    pub(super) fn was_gate_refused(&self) -> bool {
+        self.gate_refused
+    }
+    pub(super) fn ended_with_open_steps(&mut self, count: usize) {
+        self.open_steps_at_end = Some(count);
+    }
+    pub(super) fn open_steps_at_end(&self) -> Option<usize> {
+        self.open_steps_at_end
+    }
+}

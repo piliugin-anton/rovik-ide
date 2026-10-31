@@ -1576,3 +1576,72 @@ fn a_skeleton_keeps_the_frame_and_marks_what_is_missing() {
     assert!(s.starts_with("# TODO: title"));
     assert!(s.contains("1. TODO: step title"));
 }
+
+/// The checker and execution agree on the steps, including tolerant forms.
+#[test]
+fn checks_and_steps_read_the_same_steps_from_every_plan() {
+    let headings = regex::Regex::new(r"(?m)^(\d+)\. (.+)$").unwrap();
+    let mut samples = vec![
+        GOOD_PLAN.to_string(),
+        REAL_PLAN.to_string(),
+        CRITERIA_PLAN.to_string(),
+    ];
+    for heading in [
+        "## 3. Steps",
+        "## Next steps",
+        "## Steps:",
+        "## Steps (ordered)",
+    ] {
+        samples.push(REAL_PLAN.replace("## Steps", heading));
+    }
+    samples.extend([
+        REAL_PLAN
+            .replace("2. **", "1. **")
+            .replace("3. **", "1. **"),
+        REAL_PLAN
+            .replace("2. **", "4. **")
+            .replace("3. **", "7. **"),
+        headings
+            .replace_all(GOOD_PLAN, "### Step $1: $2")
+            .into_owned(),
+        headings
+            .replace_all(GOOD_PLAN, "**Step $1: $2**")
+            .into_owned(),
+        GOOD_PLAN.replace("\n2. API", "\n   ```rs\n1. This is code\n   ```\n2. API"),
+        GOOD_PLAN.replace("\n2. API", "\n   1. Nested list\n2. API"),
+        GOOD_PLAN.replace('\n', "\r\n"),
+    ]);
+    for sample in samples {
+        // Removing the file labels makes the checker name every step.
+        let no_files: String = sample
+            .replace("\r\n", "\n")
+            .split_inclusive('\n')
+            .filter(|line| !super::steps::FILES_LINE.is_match(line))
+            .collect();
+        let parsed = PlanDoc::parse(&no_files);
+        let steps = parsed.steps();
+        if steps.len() < 2 {
+            continue;
+        }
+        let expected: Vec<_> = steps.iter().map(PlanStep::named).collect();
+        let names: Vec<_> = expected.iter().map(String::as_str).collect();
+        let problem = parsed
+            .plan_problems()
+            .into_iter()
+            .find(|p| p.contains("name no file"))
+            .unwrap();
+        assert!(
+            problem.starts_with(&format!(
+                "Steps {} name no file",
+                super::check::list_steps(&names)
+            )),
+            "{problem}\n{sample}"
+        );
+        for step in &steps {
+            assert!(
+                parsed.text().contains(&step.body),
+                "step body must stay as written"
+            );
+        }
+    }
+}

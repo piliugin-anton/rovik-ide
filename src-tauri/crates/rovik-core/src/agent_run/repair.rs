@@ -845,7 +845,7 @@ pub fn integrity_note(flags: &[String], checks_pass: bool) -> String {
 
 /// Files as they were before a fix round: content, or None when the file
 /// didn't exist.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Checkpoint {
     pub files: BTreeMap<String, Option<Vec<u8>>>,
     /// The run's changed files then.
@@ -955,18 +955,10 @@ impl Run {
         }
         let key = rel_key(&root, path);
         // E03: the lead changes a test the test writer wrote.
-        if self.sub().is_none()
-            && self.test_writer_files.contains(&key)
-            && !self.tests_changed.contains(&key)
-        {
-            self.tests_changed.push(key.clone());
+        if self.sub().is_none() {
+            self.tests.lead_changed(&key);
         }
-        let needs_baseline = !self.baseline.contains_key(&key);
-        let needs_checkpoint = self
-            .checkpoint
-            .as_ref()
-            .is_some_and(|c| !c.too_big && !c.files.contains_key(&key));
-        if !needs_baseline && !needs_checkpoint {
+        if !self.verification.needs_original(&key) {
             return;
         }
         let abs = tools::to_absolute_path(path, &root);
@@ -981,7 +973,7 @@ impl Run {
     /// time in the run (R05), and in the open checkpoint the first time in
     /// the round (R02).
     pub(super) fn note_original(&mut self, key: &str, before: Option<Vec<u8>>) {
-        if !self.baseline.contains_key(key) {
+        if !self.verification.baseline().contains_key(key) {
             // In an isolated chat, the project's copy is what the file was
             // before the chat (an earlier run may have changed the view).
             // A subagent runs within one round of its lead's.
@@ -995,11 +987,9 @@ impl Run {
                 }
                 _ => Original::new(before.clone(), Source::ViewAtRunStart),
             };
-            self.baseline.insert(key.to_string(), original);
+            self.verification.original_found(key.to_string(), original);
         }
-        if let Some(cp) = self.checkpoint.as_mut().filter(|c| !c.too_big) {
-            cp.files.entry(key.to_string()).or_insert(before);
-        }
+        self.verification.checkpoint_file(key, before);
     }
 
     /// A checkpoint of the files the run changed, before a fix round.
@@ -1012,7 +1002,7 @@ impl Run {
             ..Default::default()
         };
         // A new round: its commands are counted afresh (P3.5).
-        self.round_commands.clear();
+        self.verification.round_started();
         let mut paths: BTreeSet<String> = self
             .changed_files
             .iter()
@@ -1032,7 +1022,7 @@ impl Run {
                 break;
             }
         }
-        self.checkpoint = Some(cp);
+        self.verification.checkpoint_taken(cp);
     }
 
     /// Puts the files back as they were at the checkpoint. A file changed
@@ -1050,7 +1040,7 @@ impl Run {
         only: Option<&[String]>,
     ) -> Option<Rollback> {
         let root = self.root.clone()?;
-        let cp = self.checkpoint.take().filter(|c| !c.too_big)?;
+        let cp = self.verification.take_checkpoint()?;
         let isolated = self.isolated();
         // Changed in the round but not in the checkpoint: in an isolated
         // chat, a command's change; before the round it was the project's.
@@ -1089,7 +1079,7 @@ impl Run {
             commands: if isolated || partial {
                 Vec::new()
             } else {
-                std::mem::take(&mut self.round_commands)
+                self.verification.take_commands()
             },
             kept,
             ..Default::default()
@@ -1198,7 +1188,7 @@ impl Run {
         }
         if partial {
             // The rest of the fix stays changed, and so does the checkpoint.
-            self.checkpoint = Some(cp);
+            self.verification.checkpoint_taken(cp);
         } else {
             // The run's list of changed files is what it was then, plus what
             // couldn't be put back.
@@ -1227,7 +1217,7 @@ impl Run {
         let Some(root) = self.root.clone() else {
             return BTreeSet::new();
         };
-        let mut paths: BTreeSet<String> = self.baseline.keys().cloned().collect();
+        let mut paths: BTreeSet<String> = self.verification.baseline().keys().cloned().collect();
         paths.extend(self.overlay_paths());
         paths.extend(self.changed_files.iter().map(|p| rel_key(&root, p)));
         paths
@@ -1242,7 +1232,7 @@ impl Run {
 
     /// `original_of` as bytes, with where they're from.
     pub(super) fn original_bytes_of(&self, key: &str) -> Option<Original> {
-        if let Some(b) = self.baseline.get(key) {
+        if let Some(b) = self.verification.baseline().get(key) {
             return Some(b.clone());
         }
         // An overlay change the write tool didn't make: the project's copy

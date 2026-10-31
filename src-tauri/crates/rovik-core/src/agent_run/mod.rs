@@ -41,6 +41,7 @@ pub mod change_review;
 pub mod check_output;
 pub mod checklist;
 pub mod command_output;
+mod context_state;
 pub mod diff;
 #[cfg(test)]
 mod e2e_tests;
@@ -1573,7 +1574,7 @@ pub(super) async fn start_run(
 
     // An Agent-mode lead's run takes the messages the user sends it while
     // it works (steering-plan.md, D1), from now on.
-    let steering = prepared.0.steer.clone();
+    let steering = prepared.0.steering.queue().clone();
     let steerable = match prepared.0.steering_refusal() {
         None => {
             steering.open();

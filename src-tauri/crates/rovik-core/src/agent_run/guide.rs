@@ -338,7 +338,7 @@ impl Run {
         record_id: &str,
         review: &mut Value,
     ) -> Result<Option<String>, String> {
-        if self.review_rounds.len() < MIN_FAILED_REVIEWS || self.stopped() {
+        if self.review.rounds().len() < MIN_FAILED_REVIEWS || self.stopped() {
             return Ok(None);
         }
         let config = self.config().subagents;
@@ -352,9 +352,9 @@ impl Run {
         let message = brief(&BriefParts {
             request: &request,
             plan: plan.as_ref().map(|(p, t)| (p.as_str(), t.as_str())),
-            rounds: &self.review_rounds,
+            rounds: self.review.rounds(),
             diff: &rendered,
-            earlier: self.last_guidance.as_ref(),
+            earlier: self.review.guidance(),
         });
         let mut record = json!({ "status": "running" });
         review["guide"] = record.clone();
@@ -397,15 +397,15 @@ impl Run {
                 "event": "reviewGuide",
                 "dialogId": self.dialog_id,
                 "round": review["round"],
-                "reviews": self.review_rounds.len(),
-                "scores": self.review_rounds.iter().map(|r| score(&r.findings)).collect::<Vec<_>>(),
+                "reviews": self.review.rounds().len(),
+                "scores": self.review.rounds().iter().map(|r| score(&r.findings)).collect::<Vec<_>>(),
                 "status": record["status"],
                 "ms": record["ms"],
             }),
         );
-        let section = found.as_ref().map(|g| for_agent(g, &self.review_rounds));
+        let section = found.as_ref().map(|g| for_agent(g, self.review.rounds()));
         if found.is_some() {
-            self.last_guidance = found;
+            self.review.guided(found);
         }
         Ok(section)
     }

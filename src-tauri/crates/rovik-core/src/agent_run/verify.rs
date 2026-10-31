@@ -143,35 +143,15 @@ impl CheckResult {
 /// restart, the next round starts afresh, as before.
 pub struct VerifyCarry {
     pub record_id: String,
-    history: Vec<RoundFailures>,
-    last_results: Vec<CheckResult>,
-    last_failed: bool,
-    checkpoint: Option<repair::Checkpoint>,
-    baseline: std::collections::HashMap<String, super::subagent::Original>,
-    integrity_open: Vec<String>,
-    asked_integrity: bool,
-    rolled_back: Vec<repair::Rollback>,
-    bonus_rounds: u32,
-    groups: Vec<super::repair_run::GroupRecord>,
-    last_triage: Option<super::triage::Triage>,
-    test_writer_files: Vec<String>,
-    tests_changed: Vec<String>,
-    worker_steps: Vec<super::worker::DoneStep>,
-    reviews_total: u32,
-    review_findings: Vec<super::change_review::Finding>,
-    review_optional: Vec<super::change_review::Finding>,
+    rounds: FixRounds,
+    review: super::change_review::ReviewCarry,
+    tests: super::test_writer::TestsCarry,
     /// What the run last wrote or read: in a chat that isn't isolated, a
     /// rollback undoes only what's still the run's (K15).
     seen: std::sync::Arc<crate::file_guard::Seen>,
     /// What the run's subagents used of their limits (P3.10): the next
     /// rounds' fixers count on.
     ledger: super::subagent::Ledger,
-    rechecks: u32,
-    /// Commands the waiting round's fix ran (P3.5): listed if it's rolled
-    /// back after "Run checks" (round 2).
-    round_commands: Vec<String>,
-    /// How the checks went on the code before the change (before.rs).
-    befores: super::before::Befores,
     /// When it was kept: one older than `CARRY_TTL` is dropped (P1.8).
     pub stored: std::time::Instant,
     /// Baseline contents past `CARRY_MEMORY_BYTES`, on disk until taken up.
@@ -189,28 +169,11 @@ impl VerifyCarry {
     ) -> VerifyCarry {
         VerifyCarry {
             record_id: record_id.into(),
-            history: Vec::new(),
-            last_results: Vec::new(),
-            last_failed: false,
-            checkpoint: None,
-            baseline: Default::default(),
-            integrity_open: Vec::new(),
-            asked_integrity: false,
-            rolled_back: Vec::new(),
-            bonus_rounds: 0,
-            groups: Vec::new(),
-            last_triage: None,
-            test_writer_files: Vec::new(),
-            tests_changed: Vec::new(),
-            worker_steps: Vec::new(),
-            reviews_total: 0,
-            review_findings: Vec::new(),
-            review_optional: Vec::new(),
+            rounds: Default::default(),
+            review: Default::default(),
+            tests: Default::default(),
             seen: crate::file_guard::Seen::new("test"),
             ledger: Default::default(),
-            rechecks: 0,
-            round_commands: Vec::new(),
-            befores: Default::default(),
             stored: std::time::Instant::now() - age,
             spilled: Spilled(
                 spilled
@@ -662,28 +625,11 @@ impl Run {
         use std::mem::take;
         VerifyCarry {
             record_id,
-            history: take(&mut self.verify_history),
-            last_results: take(&mut self.last_verify_results),
-            last_failed: self.last_verify_failed,
-            checkpoint: self.checkpoint.take(),
-            baseline: take(&mut self.baseline),
-            integrity_open: take(&mut self.integrity_open),
-            asked_integrity: self.asked_integrity,
-            rolled_back: take(&mut self.rolled_back_attempts),
-            bonus_rounds: self.bonus_rounds,
-            groups: take(&mut self.groups),
-            last_triage: self.last_triage.take(),
-            test_writer_files: take(&mut self.test_writer_files),
-            tests_changed: take(&mut self.tests_changed),
-            worker_steps: take(&mut self.worker_steps),
-            reviews_total: self.reviews_total,
-            review_findings: take(&mut self.review_findings),
-            review_optional: take(&mut self.review_optional),
+            rounds: self.verification.take_carry(),
+            review: self.review.take_carry(),
+            tests: self.tests.take_carry(),
             seen: self.seen.clone(),
             ledger: take(&mut self.ledger),
-            rechecks: self.rechecks,
-            round_commands: take(&mut self.round_commands),
-            befores: take(&mut self.befores),
             stored: std::time::Instant::now(),
             spilled: Spilled::default(),
         }
@@ -694,40 +640,20 @@ impl Run {
     /// the record and the agent are told the checks start afresh (P1.7).
     pub(super) fn restore_verify_state(&mut self, record_id: &str) {
         let Some(mut c) = self.core.agents.take_carry(&self.dialog_id, record_id) else {
-            self.carry_lost = Some(record_id.to_string());
+            self.verification.carry_lost = Some(record_id.to_string());
             return;
         };
         // Spilled contents come back; one that can't is left out (its
         // file's original isn't known, like a command's change), and the
         // integrity check can't be complete (round 2, P3.9).
-        if !c.spilled.restore(&mut c.baseline) {
-            self.integrity_unchecked = true;
+        if !c.spilled.restore(&mut c.rounds.baseline) {
+            self.verification.integrity_unchecked = true;
         }
-        self.verify_history = c.history;
-        self.last_verify_results = c.last_results;
-        self.last_verify_failed = c.last_failed;
-        self.checkpoint = c.checkpoint;
-        // What this run's writes find first stays theirs.
-        for (path, original) in c.baseline {
-            self.baseline.entry(path).or_insert(original);
-        }
-        self.integrity_open = c.integrity_open;
-        self.asked_integrity = c.asked_integrity;
-        self.rolled_back_attempts = c.rolled_back;
-        self.bonus_rounds = c.bonus_rounds;
-        self.groups = c.groups;
-        self.last_triage = c.last_triage;
-        self.test_writer_files = c.test_writer_files;
-        self.tests_changed = c.tests_changed;
-        self.worker_steps = c.worker_steps;
-        self.reviews_total = c.reviews_total;
-        self.review_findings = c.review_findings;
-        self.review_optional = c.review_optional;
+        self.verification.restore(c.rounds);
+        self.review.restore(c.review);
+        self.tests.restore(c.tests);
         self.seen = c.seen;
         self.ledger = c.ledger;
-        self.rechecks = c.rechecks;
-        self.round_commands = c.round_commands;
-        self.befores = c.befores;
     }
 
     /// P3.9: the carried state was lost (a restart): what each file was
@@ -747,7 +673,9 @@ impl Run {
         // Round 2: the rounds a review after green granted are the
         // record's too, so they outlast the carry.
         if let Some(max) = waiting.as_ref().and_then(|v| v["maxRounds"].as_u64()) {
-            self.bonus_rounds = self
+            self.verification.carry.bonus_rounds = self
+                .verification
+                .carry
                 .bonus_rounds
                 .max((max as u32).saturating_sub(MAX_VERIFY_ROUNDS));
         }
@@ -755,7 +683,7 @@ impl Run {
             .as_ref()
             .and_then(|v| v.get("baselineHashes")?.as_array().cloned());
         let Some(entries) = entries else {
-            self.integrity_unchecked = true;
+            self.verification.integrity_unchecked = true;
             return;
         };
         let root = self.root.clone().unwrap_or_default();
@@ -790,9 +718,13 @@ impl Run {
             };
             match rebuilt {
                 Some(o) => {
-                    self.baseline.entry(path.to_string()).or_insert(o);
+                    self.verification
+                        .carry
+                        .baseline
+                        .entry(path.to_string())
+                        .or_insert(o);
                 }
-                None => self.integrity_unchecked = true,
+                None => self.verification.integrity_unchecked = true,
             }
         }
     }
@@ -822,7 +754,7 @@ impl Run {
         } else {
             MAX_VERIFY_ROUNDS
         };
-        base + self.bonus_rounds
+        base + self.verification.carry.bonus_rounds
     }
 
     /// The limit the agent is told of: none in Autopilot (V03).
@@ -846,16 +778,18 @@ impl Run {
         }
         let changed = self.changed_files.clone();
 
-        if !self.writes_since_verify {
+        if !self.verification.needs_checks() {
             // Asked about changes that weaken the checks, and it kept them:
             // not verified; the user reviews them (R05).
-            if !self.integrity_open.is_empty() && !self.last_verify_failed {
-                let flags = self.integrity_open.clone();
+            if !self.verification.carry.integrity_open.is_empty()
+                && !self.verification.carry.last_verify_failed
+            {
+                let flags = self.verification.carry.integrity_open.clone();
                 self.add_record(with(
                     record(
                         "flagged",
-                        self.verify_rounds,
-                        &self.last_verify_results,
+                        self.verification.verify_rounds,
+                        &self.verification.carry.last_verify_results,
                         &changed,
                         None,
                     ),
@@ -866,10 +800,10 @@ impl Run {
             }
             // Failures were sent back, and the model finished without touching
             // anything: it decided not to (or couldn't). Say so; don't loop.
-            if self.last_verify_failed {
+            if self.verification.carry.last_verify_failed {
                 self.add_record(record(
                     "unresolved",
-                    self.verify_rounds,
+                    self.verification.verify_rounds,
                     &[],
                     &changed,
                     None,
@@ -879,14 +813,21 @@ impl Run {
             }
             // P3.6: the last round passed and nothing changed since (the
             // agent answered a review after green without a fix): verified.
-            let passed = self.verify_rounds > 0
-                && !self.last_verify_results.is_empty()
+            let passed = self.verification.verify_rounds > 0
+                && !self.verification.carry.last_verify_results.is_empty()
                 && self
+                    .verification
+                    .carry
                     .last_verify_results
                     .iter()
                     .all(|r| r.status != "failed")
-                && self.last_verify_results.iter().any(clear);
-            return Ok(match (passed, self.integrity_unchecked) {
+                && self
+                    .verification
+                    .carry
+                    .last_verify_results
+                    .iter()
+                    .any(clear);
+            return Ok(match (passed, self.verification.integrity_unchecked) {
                 (true, true) => "verify-unchecked",
                 (true, false) => "verified",
                 _ => "done",
@@ -898,13 +839,13 @@ impl Run {
         if checks.is_empty() {
             self.add_record(record(
                 "unverified",
-                self.verify_rounds,
+                self.verification.verify_rounds,
                 &[],
                 &changed,
                 Some("no checks are set up for this project"),
             ))
             .await?;
-            self.writes_since_verify = false;
+            self.verification.writes_since_verify = false;
             return Ok("unverified".into());
         }
 
@@ -916,6 +857,8 @@ impl Run {
             // P3.9: what each file was, by hash, kept with the record: after
             // a restart the checks rebuild what they can from it.
             let hashes: Vec<Value> = self
+                .verification
+                .carry
                 .baseline
                 .iter()
                 .map(|(path, o)| json!({ "path": path, "hash": o.bytes.as_deref().map(hex_hash) }))
@@ -924,7 +867,7 @@ impl Run {
                 .add_record(with(
                     record(
                         "needs-approval",
-                        self.verify_rounds,
+                        self.verification.verify_rounds,
                         &pending,
                         &changed,
                         None,
@@ -936,17 +879,16 @@ impl Run {
             // run that starts the checks.
             if self.sub().is_none() {
                 let mut carry = self.take_verify_state(record_id);
-                carry.spilled = spill(&self.dialog_id, &mut carry.baseline);
+                carry.spilled = spill(&self.dialog_id, &mut carry.rounds.baseline);
                 self.core.agents.put_carry(&self.dialog_id, carry);
             }
             return Ok("verify-needs-approval".into());
         }
 
-        self.verify_rounds += 1;
-        self.writes_since_verify = false;
+        self.verification.checks_started();
         // The checks run: the next change review isn't "in a row".
-        self.reviews_in_row = 0;
-        let round = self.verify_rounds;
+        self.review.checks_started();
+        let round = self.verification.verify_rounds;
         let record_id = match record_id {
             Some(id) => {
                 self.update_meta(&id, record("running", round, &[], &changed, None))
@@ -978,11 +920,11 @@ impl Run {
         // program or a package that isn't installed): in Autopilot, once a
         // run, the round isn't counted and Prepare runs again first.
         let autopilot = self.in_autopilot();
-        if failed && autopilot && !self.prepared_again && !self.stopped() {
+        if failed && autopilot && !self.verification.prepared_again && !self.stopped() {
             if let Some(check) = results.iter().find(|r| r.environment.is_some()) {
                 let failure = check.environment.clone().unwrap_or_default();
                 let command = check.command.clone();
-                self.prepared_again = true;
+                self.verification.prepared_again = true;
                 return self
                     .environment_round(
                         &root, &record_id, round, &results, &changed, failure, command,
@@ -993,23 +935,23 @@ impl Run {
         // R01: how this round compares with the earlier ones.
         let mut now = round_failures(&results);
         now.own_tests = Some(self.own_test_count());
-        let mut judgement = repair::judge(&self.verify_history, &now);
+        let mut judgement = repair::judge(&self.verification.carry.verify_history, &now);
         // T04: the adversarial tester's tests, run for the first time: what
         // fails is what they found, not a fix that broke something.
-        if self.breaker_round.is_some() {
+        if self.tests.has_breaker_round() {
             judgement = judgement.as_first();
         }
         // R05: asked to put back a weakened test, the agent did, and it
         // fails: that's what was asked for, not a fix that broke something.
-        if std::mem::take(&mut self.asked_integrity) {
-            judgement = judgement.without_regression_in(&self.integrity_open);
+        if std::mem::take(&mut self.verification.carry.asked_integrity) {
+            judgement = judgement.without_regression_in(&self.verification.carry.integrity_open);
         }
         // P3.2: an error in what the round wrote is a slip, not a regression.
         // This round's: the checkpoint's files that differ from it now (it
         // also holds what earlier rounds changed).
         let project = self.project_root.clone().unwrap_or_default();
         let mut written: Vec<String> = Vec::new();
-        if let Some(cp) = &self.checkpoint {
+        if let Some(cp) = &self.verification.carry.checkpoint {
             written = cp
                 .files
                 .iter()
@@ -1022,21 +964,14 @@ impl Run {
         }
         // V05: the checks of what a partial rollback kept (below): the same
         // round's, counted once.
-        let after_partial = std::mem::take(&mut self.after_partial_rollback);
+        let after_partial = std::mem::take(&mut self.verification.after_partial_rollback);
         // V03 (D12): Autopilot's rounds end after STALLED_ROUNDS in a row
         // without progress (a rolled-back regression is none), or at the
         // budget, not at a count. A round that only shows failures the last
         // one hid is progress: what hid them was fixed.
-        if autopilot {
-            match judgement.verdict {
-                _ if !failed => self.stalled_rounds = 0,
-                Progress::Progress => self.stalled_rounds = 0,
-                _ if after_partial => {}
-                Progress::NoProgress | Progress::Regression => self.stalled_rounds += 1,
-                Progress::First => {}
-            }
-        }
-        let stalled = autopilot && self.stalled_rounds >= STALLED_ROUNDS;
+        let stalled =
+            self.verification
+                .progress_judged(autopilot, failed, judgement.verdict, after_partial);
         // R05: what weakens the checks, and fewer tests than last round.
         let mut flags = if ran {
             self.integrity_flags()
@@ -1046,14 +981,20 @@ impl Run {
         // P3.7: fewer tests than an earlier round, the run's own test files
         // aside (round 2: a test file a command deleted counts too, and a
         // run whose first write is a test file still has a reference).
-        if let Some(flag) = repair::fewer_tests_flag(&self.verify_history, &now) {
+        if let Some(flag) = repair::fewer_tests_flag(&self.verification.carry.verify_history, &now)
+        {
             flags.push(flag);
         }
         // Nothing weakens the checks any more: an earlier question is settled.
         if ran && flags.is_empty() {
-            self.integrity_open.clear();
+            self.verification.carry.integrity_open.clear();
         }
-        let tests_before = self.verify_history.last().and_then(|r| r.tests_ran);
+        let tests_before = self
+            .verification
+            .carry
+            .verify_history
+            .last()
+            .and_then(|r| r.tests_ran);
         let max_rounds = self.max_rounds();
         let extra = |rolled_back: Option<&repair::Rollback>| {
             json!({
@@ -1068,7 +1009,7 @@ impl Run {
         };
 
         // Why a regression can't be undone, if it can't (no rollback below).
-        let cant_undo = match &self.checkpoint {
+        let cant_undo = match &self.verification.carry.checkpoint {
             Some(cp) if cp.too_big => "the files it changed were too large to keep a copy of",
             Some(_) => "",
             None => "there's no copy of the files from before it",
@@ -1087,7 +1028,10 @@ impl Run {
                 .roll_back(judgement.broke.clone(), only.as_deref())
                 .await
             {
-                self.rolled_back_attempts.push(rb.clone());
+                self.verification
+                    .carry
+                    .rolled_back_attempts
+                    .push(rb.clone());
                 if !rb.kept.is_empty() {
                     // The rest of the fix stays: the checks run again on it
                     // now. Theirs is this round's result: it counts once.
@@ -1098,10 +1042,11 @@ impl Run {
                     );
                     self.update_meta(&record_id, meta).await?;
                     self.log_round(round, "rolled-back", &results, &judgement, &flags);
-                    self.after_partial_rollback = true;
-                    self.last_verify_failed = true;
-                    self.writes_since_verify = true;
-                    self.verify_rounds = self.verify_rounds.saturating_sub(1);
+                    self.verification.after_partial_rollback = true;
+                    self.verification.round_failed();
+                    self.verification.changes_made();
+                    self.verification.verify_rounds =
+                        self.verification.verify_rounds.saturating_sub(1);
                     return Ok("repaired".into());
                 }
                 let status = if round >= max_rounds || stalled {
@@ -1117,6 +1062,8 @@ impl Run {
                 if status == "gave-up" {
                     // What's left: the failures of the round it went back to.
                     let left: Vec<String> = self
+                        .verification
+                        .carry
                         .verify_history
                         .last()
                         .map(|r| r.keys.iter().cloned().collect())
@@ -1128,16 +1075,16 @@ impl Run {
                 }
                 self.update_meta(&record_id, meta).await?;
                 self.log_round(round, status, &results, &judgement, &flags);
-                self.last_verify_failed = true;
+                self.verification.round_failed();
                 if status == "gave-up" {
                     return Ok("verify-gave-up".into());
                 }
                 // The code is back where the last round left it: its
                 // failures stand, and the round's history stays as it was.
-                let earlier = if self.last_verify_results.is_empty() {
+                let earlier = if self.verification.carry.last_verify_results.is_empty() {
                     results.clone()
                 } else {
-                    self.last_verify_results.clone()
+                    self.verification.carry.last_verify_results.clone()
                 };
                 let report = failure_report(
                     &earlier,
@@ -1149,19 +1096,22 @@ impl Run {
                 );
                 self.add_harness(report, "verification").await?;
                 // Not all of it went back: the code is new, check it again.
-                self.writes_since_verify = !rb.skipped.is_empty() || !rb.commands.is_empty();
+                self.verification.writes_since_verify =
+                    !rb.skipped.is_empty() || !rb.commands.is_empty();
                 self.take_checkpoint();
                 return Ok("continue".into());
             }
         }
-        self.verify_history.push(now.clone());
-        let previous = std::mem::replace(&mut self.last_verify_results, results.clone());
+        let previous = self
+            .verification
+            .results_received(now.clone(), results.clone());
 
         let status = if self.stopped() {
             "stopped"
         } else if !ran {
             "unverified"
-        } else if !failed && !flags.is_empty() && !self.integrity_open.is_empty() {
+        } else if !failed && !flags.is_empty() && !self.verification.carry.integrity_open.is_empty()
+        {
             // Asked about them once already, and they're still there.
             "flagged"
         } else if !failed {
@@ -1201,21 +1151,21 @@ impl Run {
         // found, for its record and the lead.
         let breaker_note = self.breaker_round_judged(failed).await?;
 
-        self.last_verify_failed = failed;
+        self.verification.round_finished(failed);
         if status == "passed" && !flags.is_empty() {
             // R05: the checks pass, but maybe only because the tests or what
             // the checks run were weakened. Asked once; kept: the run isn't
             // verified, and the user decides.
-            self.integrity_open = flags.clone();
-            self.asked_integrity = true;
+            self.verification.integrity_questioned(flags.clone());
             self.take_checkpoint();
             self.add_harness(repair::integrity_note(&flags, true), "integrity")
                 .await?;
             return Ok("continue".into());
         }
         // R08: green after a fix round: a fresh review of the whole change.
-        let repaired = self.verify_history.len() > 1
-            && self.verify_history[..self.verify_history.len() - 1]
+        let repaired = self.verification.carry.verify_history.len() > 1
+            && self.verification.carry.verify_history
+                [..self.verification.carry.verify_history.len() - 1]
                 .iter()
                 .any(|r| !r.keys.is_empty());
         if status == "passed"
@@ -1229,8 +1179,8 @@ impl Run {
             return Ok("continue".into());
         }
         // S06: that review left a finding open, and it was the last.
-        if self.review_blocked {
-            self.checkpoint = None;
+        if self.review.blocked() {
+            self.verification.checkpoint_discarded();
             return Ok("review-open".into());
         }
         // S07: green on a change with code and no test: the test writer
@@ -1251,8 +1201,8 @@ impl Run {
             self.take_checkpoint();
             return Ok("continue".into());
         }
-        if self.acceptance_unmet {
-            self.checkpoint = None;
+        if self.tests.acceptance_unmet() {
+            self.verification.checkpoint_discarded();
             return Ok("unmet".into());
         }
         // before.rs: nothing the change did fails, but some checks fail as
@@ -1270,11 +1220,11 @@ impl Run {
             }
         }
         if status != "failed" {
-            self.checkpoint = None;
+            self.verification.checkpoint_discarded();
             return Ok(match status {
                 // P3.9: what the files were before was lost (a restart):
                 // passed, but whether tests were weakened isn't known.
-                "passed" if self.integrity_unchecked => "verify-unchecked".into(),
+                "passed" if self.verification.integrity_unchecked => "verify-unchecked".into(),
                 "passed" => "verified".into(),
                 _ => format!("verify-{status}"),
             });
@@ -1287,7 +1237,9 @@ impl Run {
         if let Some(note) = breaker_note {
             notes.push(note);
         }
-        if self.carry_lost.is_some() && !std::mem::replace(&mut self.carry_lost_told, true) {
+        if self.verification.carry_lost.is_some()
+            && !std::mem::replace(&mut self.verification.carry_lost_told, true)
+        {
             notes.push(
                 "What the earlier rounds of checks knew (their failures, what each file was before) didn't carry over to these, so they start afresh: nothing is compared with or rolled back to before them.".into(),
             );
@@ -1308,7 +1260,7 @@ impl Run {
         // V03: still the environment, the dependencies installed once: the
         // agent may need a package the project doesn't have.
         if let Some(line) = results.iter().find_map(|r| r.environment.as_deref()) {
-            if self.prepared_again {
+            if self.verification.prepared_again {
                 notes.push(format!(
                     "A check still fails on the environment (`{line}`), and the IDE already installed the project's dependencies. \
                      If your change needs a package the project doesn't have, add it to the project's manifest and lockfile; \
@@ -1371,7 +1323,7 @@ impl Run {
             &notes,
             self.profile.no_tools,
         );
-        if let Some(files) = &self.merged_from_project {
+        if let Some(files) = self.landing.merged_files() {
             let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
             let root = self.root.clone().unwrap_or_default();
             let diffs = project_changes(files, &root, &self.restricted);
@@ -1398,8 +1350,8 @@ impl Run {
     fn gave_up_facts(&self, remaining: &[String]) -> Value {
         json!({
             "remaining": remaining,
-            "attempts": (!self.rolled_back_attempts.is_empty()).then_some(&self.rolled_back_attempts),
-            "triageSummary": self.last_triage.as_ref().map(|t| t.root_cause.clone()),
+            "attempts": (!self.verification.carry.rolled_back_attempts.is_empty()).then_some(&self.verification.carry.rolled_back_attempts),
+            "triageSummary": self.verification.carry.last_triage.as_ref().map(|t| t.root_cause.clone()),
         })
     }
 
@@ -1412,7 +1364,7 @@ impl Run {
             return Ok(false);
         }
         let cap = self.change_review_cap();
-        if self.reviews_total >= cap {
+        if self.review.total() >= cap {
             self.update_meta(
                 record_id,
                 with(
@@ -1427,10 +1379,9 @@ impl Run {
             return Ok(false);
         }
         // The fixes are new to the reviewer, whatever came before.
-        self.writes_since_review = true;
-        self.review_outcome = None;
+        self.review.after_green();
         let sent = self.review_change_as(true).await?;
-        let outcome = self.review_outcome.take();
+        let outcome = self.review.take_outcome();
         // Optional findings alone went to the agent: nothing serious, and
         // its fix, if it makes one, still gets a check round.
         let serious = sent && !matches!(&outcome, Some((status, _)) if status == "clean");
@@ -1454,12 +1405,12 @@ impl Run {
         .await?;
         if sent {
             // The fix gets its own check round, past the usual limit if need be.
-            if self.verify_rounds >= self.max_rounds() {
-                self.bonus_rounds += 1;
+            if self.verification.verify_rounds >= self.max_rounds() {
+                self.verification.carry.bonus_rounds += 1;
             }
-            self.writes_since_verify = false;
+            self.verification.writes_since_verify = false;
             // The fix goes to the checks next, not to another review.
-            self.reviews_in_row = super::change_review::MAX_REVIEWS_IN_ROW;
+            self.review.exhausted();
         }
         Ok(sent)
     }
@@ -1487,7 +1438,7 @@ impl Run {
             return Some("The checks didn't run on the merged result yet: command approval is on, so they run when you finish.".into());
         }
         let changed = self.changed_files.clone();
-        let round = self.verify_rounds;
+        let round = self.verification.verify_rounds;
         let record_id = self
             .add_record(with(
                 record("running", round, &[], &changed, None),
@@ -1564,7 +1515,7 @@ impl Run {
             );
         }
         // The checks run again when the run finishes.
-        self.writes_since_verify = true;
+        self.verification.recheck(Recheck::VerificationRerun);
         Some(match status {
             "passed" => "The project's checks ran on the merged result and pass.".to_string(),
             "failed" => format!(
@@ -1616,8 +1567,8 @@ impl Run {
     /// stage's record links it, and the implement run may read it. The
     /// stage starts afresh.
     pub(super) fn clean_earlier_output(&mut self) {
-        if !self.cleaned_this_run {
-            self.cleaned_this_run = true;
+        if !self.verification.cleaned_this_run {
+            self.verification.cleaned_this_run = true;
             if self.in_autopilot() && !self.harness_stage() {
                 super::check_output::clean_except(&self.dialog_id, "prepare-");
             } else {
@@ -1814,7 +1765,7 @@ impl Run {
                 // change's: the check runs there, once a run (before.rs).
                 if let (Some(output), Some(project)) = (compare, self.code_before()) {
                     let command = results[i].command.clone();
-                    if self.befores.get(&command).is_none() {
+                    if self.verification.carry.befores.get(&command).is_none() {
                         let note = results[i]
                             .note
                             .replace(super::before::RUNNING_BEFORE.into());
@@ -1823,14 +1774,14 @@ impl Run {
                         let before = self.check_before(&results[i], &project, &mut copy).await;
                         // Stopped, it's asked again next time.
                         if !self.stopped() {
-                            self.befores.insert(&command, before);
+                            self.verification.carry.befores.insert(&command, before);
                         }
                         results[i].status = "failed";
                         results[i].note = note;
                     }
                     super::before::set_apart(
                         &mut results[i],
-                        self.befores.get(&command),
+                        self.verification.carry.befores.get(&command),
                         &output,
                         &roots,
                     );
@@ -2115,5 +2066,400 @@ mod tests {
                 "preexisting": ["lint|src/a.ts|no-unused-vars|'x' is unused"]
             })
         );
+    }
+}
+
+/// Verification data that crosses check-approval pauses as a whole.
+#[derive(Default, Debug, Clone, PartialEq)]
+pub(super) struct FixRounds {
+    /// Each verification round's failures, oldest first (repair.rs, R01):
+    /// a rolled-back round isn't among them.
+    verify_history: Vec<repair::RoundFailures>,
+    /// The last round's results, reported again after a rollback.
+    last_verify_results: Vec<super::verify::CheckResult>,
+    /// The last round failed and was sent back to the agent.
+    last_verify_failed: bool,
+    /// The files as they were before the current fix round (R02).
+    checkpoint: Option<repair::Checkpoint>,
+    /// Each file as it was when the run first wrote it (R05), by path
+    /// relative to the root; None: it didn't exist.
+    baseline: std::collections::HashMap<String, super::subagent::Original>,
+    /// Changes that weaken the checks, which the agent was asked about (R05).
+    integrity_open: Vec<String>,
+    /// The last round asked the agent about changes that weaken the checks
+    /// (R05): the next round's new failures aren't a regression.
+    asked_integrity: bool,
+    /// Fix attempts rolled back in this run, for a gave-up record (R06).
+    rolled_back_attempts: Vec<super::repair::Rollback>,
+    /// Fix rounds beyond MAX_VERIFY_ROUNDS a review after green granted (R08).
+    bonus_rounds: u32,
+    /// Parallel groups joined in this run, for the repair loop (R03).
+    groups: Vec<super::repair_run::GroupRecord>,
+    /// What the last failure triage found, for the next one (triage.rs).
+    last_triage: Option<super::triage::Triage>,
+    /// Plan steps step workers finished in this run (worker.rs, D03).
+    worker_steps: Vec<super::worker::DoneStep>,
+    /// Rounds checked again at once after fixers (P3.10, `MAX_RECHECKS`).
+    rechecks: u32,
+    /// Commands that may have changed files since the round's checkpoint
+    /// (P3.5): a rollback can't undo them, and says so.
+    round_commands: Vec<String>,
+    /// How the checks that failed went on the code before the change, by
+    /// command: each runs there once a run (before.rs).
+    befores: super::before::Befores,
+}
+/// Verification progress local to a run, apart from its carried fix rounds.
+#[derive(Default)]
+pub(super) struct VerificationState {
+    carry: FixRounds,
+    /// Files changed since the gate last ran: there is something to check.
+    writes_since_verify: bool,
+    verify_rounds: u32,
+    /// Autopilot's rounds in a row that made no progress: two end them
+    /// (V03, D12).
+    stalled_rounds: u32,
+    /// A check failed on its environment and Prepare ran again: once a
+    /// run (V03).
+    prepared_again: bool,
+    /// The last round put back only the files behind what it broke, and
+    /// its checks run again: should they still break it, everything goes
+    /// back (V05).
+    after_partial_rollback: bool,
+    /// The checks were started from `record` with no carried state for it
+    /// (P1.7): its record says so, and the agent is told once.
+    carry_lost: Option<String>,
+    /// What files were before the run couldn't all be rebuilt after a
+    /// restart (P3.9): checks that pass aren't "verified".
+    integrity_unchecked: bool,
+    carry_lost_told: bool,
+    /// P4.7: earlier runs' saved check output was removed.
+    cleaned_this_run: bool,
+}
+/// Why checks must run again when no file has changed.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Recheck {
+    Acceptance,
+    PreparedEnvironment,
+    VerificationRerun,
+}
+impl VerificationState {
+    fn checks_started(&mut self) {
+        self.verify_rounds += 1;
+        self.writes_since_verify = false;
+    }
+    fn results_received(
+        &mut self,
+        failures: RoundFailures,
+        results: Vec<CheckResult>,
+    ) -> Vec<CheckResult> {
+        self.carry.verify_history.push(failures);
+        std::mem::replace(&mut self.carry.last_verify_results, results)
+    }
+    fn progress_judged(
+        &mut self,
+        autopilot: bool,
+        failed: bool,
+        verdict: Progress,
+        after_partial: bool,
+    ) -> bool {
+        if autopilot {
+            match verdict {
+                _ if !failed => self.stalled_rounds = 0,
+                Progress::Progress => self.stalled_rounds = 0,
+                _ if after_partial => {}
+                Progress::NoProgress | Progress::Regression => self.stalled_rounds += 1,
+                Progress::First => {}
+            }
+        }
+        autopilot && self.stalled_rounds >= STALLED_ROUNDS
+    }
+    fn integrity_questioned(&mut self, flags: Vec<String>) {
+        self.carry.integrity_open = flags;
+        self.carry.asked_integrity = true;
+    }
+    fn round_finished(&mut self, failed: bool) {
+        self.carry.last_verify_failed = failed;
+    }
+
+    pub(super) fn last_results(&self) -> &[CheckResult] {
+        &self.carry.last_verify_results
+    }
+    pub(super) fn new(rounds: u32) -> Self {
+        Self {
+            verify_rounds: rounds,
+            ..Self::default()
+        }
+    }
+    pub(super) fn rounds(&self) -> u32 {
+        self.verify_rounds
+    }
+    pub(super) fn last_failed(&self) -> bool {
+        self.carry.last_verify_failed
+    }
+    pub(super) fn round_failed(&mut self) {
+        self.carry.last_verify_failed = true;
+    }
+    pub(super) fn round_refunded(&mut self) {
+        self.verify_rounds = self.verify_rounds.saturating_sub(1);
+    }
+    pub(super) fn carry_lost(&self) -> Option<&str> {
+        self.carry_lost.as_deref()
+    }
+    pub(super) fn integrity_unchecked(&self) -> bool {
+        self.integrity_unchecked
+    }
+    pub(super) fn baseline(&self) -> &std::collections::HashMap<String, super::subagent::Original> {
+        &self.carry.baseline
+    }
+    pub(super) fn original_found(&mut self, path: String, original: super::subagent::Original) {
+        self.carry.baseline.entry(path).or_insert(original);
+    }
+    pub(super) fn needs_original(&self, path: &str) -> bool {
+        !self.carry.baseline.contains_key(path)
+            || self
+                .carry
+                .checkpoint
+                .as_ref()
+                .is_some_and(|c| !c.too_big && !c.files.contains_key(path))
+    }
+    pub(super) fn checkpoint_file(&mut self, path: &str, before: Option<Vec<u8>>) {
+        if let Some(cp) = self.carry.checkpoint.as_mut().filter(|c| !c.too_big) {
+            cp.files.entry(path.into()).or_insert(before);
+        }
+    }
+    pub(super) fn child_wrote(&mut self, write: &super::subagent::ChildWrite) {
+        self.original_found(write.path.clone(), write.original.clone());
+        if let Some(cp) = self.carry.checkpoint.as_mut() {
+            super::subagent_run::note_round_start(cp, write);
+        }
+    }
+    pub(super) fn checkpoint_taken(&mut self, checkpoint: repair::Checkpoint) {
+        self.carry.checkpoint = Some(checkpoint);
+    }
+    pub(super) fn checkpoint_discarded(&mut self) {
+        self.carry.checkpoint = None;
+    }
+    pub(super) fn take_checkpoint(&mut self) -> Option<repair::Checkpoint> {
+        self.carry.checkpoint.take().filter(|c| !c.too_big)
+    }
+    pub(super) fn round_started(&mut self) {
+        self.carry.round_commands.clear();
+    }
+    pub(super) fn command_ran(&mut self, command: &str, isolated: bool) {
+        if self.carry.checkpoint.is_some() && !isolated {
+            self.carry
+                .round_commands
+                .push(crate::chat_db::store::char_prefix(command, 120).to_string());
+        }
+    }
+    pub(super) fn take_commands(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.carry.round_commands)
+    }
+    pub(super) fn groups(&self) -> &[super::repair_run::GroupRecord] {
+        &self.carry.groups
+    }
+    pub(super) fn group_joined(&mut self, group: super::repair_run::GroupRecord) {
+        self.carry.groups.push(group);
+    }
+    pub(super) fn worker_steps(&self) -> &[super::worker::DoneStep] {
+        &self.carry.worker_steps
+    }
+    pub(super) fn worker_finished(&mut self, step: super::worker::DoneStep) {
+        self.carry.worker_steps.retain(|d| d.number != step.number);
+        self.carry.worker_steps.push(step);
+        self.carry.worker_steps.sort_by_key(|d| d.number);
+    }
+    pub(super) fn triage(&self) -> Option<&super::triage::Triage> {
+        self.carry.last_triage.as_ref()
+    }
+    pub(super) fn triaged(&mut self, found: Option<super::triage::Triage>) {
+        self.carry.last_triage = found;
+    }
+    pub(super) fn rechecks(&self) -> u32 {
+        self.carry.rechecks
+    }
+    pub(super) fn rechecked(&mut self) {
+        self.carry.rechecks += 1;
+    }
+
+    pub(super) fn changes_made(&mut self) {
+        self.writes_since_verify = true;
+    }
+    pub(super) fn recheck(&mut self, _why: Recheck) {
+        self.writes_since_verify = true;
+    }
+    pub(super) fn needs_checks(&self) -> bool {
+        self.writes_since_verify
+    }
+    fn take_carry(&mut self) -> FixRounds {
+        std::mem::take(&mut self.carry)
+    }
+    fn restore(&mut self, mut carry: FixRounds) {
+        // Originals found by this run take precedence over the earlier run's.
+        carry
+            .baseline
+            .extend(std::mem::take(&mut self.carry.baseline));
+        self.carry = carry;
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::super::{
+        before::{Before, Befores},
+        subagent::{Original, Source},
+        worker::DoneStep,
+    };
+    use super::*;
+
+    fn fresh_run(core: &crate::core::Core) -> Run {
+        let id = uuid::Uuid::new_v4().to_string();
+        let controls = core.agents.register(&id, "test", None).unwrap();
+        let _registered = core.agents.registered(&id, &controls.run_id);
+        let profile = serde_json::from_value(json!({
+            "id":"test", "label":"Test", "model":"test", "baseUrl":"http://localhost"
+        }))
+        .unwrap();
+        Run::blank(
+            core.clone(),
+            crate::file_guard::Seen::new(&id),
+            id,
+            profile,
+            None,
+            controls,
+            super::super::run::Role::Lead,
+        )
+    }
+
+    #[tokio::test]
+    async fn every_part_of_a_fix_round_survives_waiting_for_approval() {
+        let host = crate::testing::TestCore::new();
+        let mut run = fresh_run(&host.core);
+        let original = Original::new(Some(b"before".to_vec()), Source::ViewAtRunStart);
+        let mut befores = Befores::default();
+        befores.insert("cargo test", Before::Passed);
+        // No struct update: a new carried field must be supplied by this test too.
+        run.verification.carry = FixRounds {
+            verify_history: vec![RoundFailures {
+                keys: ["failure".into()].into(),
+                ran: ["test".into()].into(),
+                tests_ran: Some(4),
+                own_tests: Some(2),
+            }],
+            last_verify_results: vec![CheckResult {
+                status: "failed",
+                ..CheckResult::pending(&ProjectCheck {
+                    kind: "test".into(),
+                    command: "cargo test".into(),
+                    enabled: true,
+                })
+            }],
+            last_verify_failed: true,
+            checkpoint: Some(repair::Checkpoint {
+                files: [("a.rs".into(), Some(b"round start".to_vec()))].into(),
+                changed_files: vec!["a.rs".into()],
+                too_big: false,
+            }),
+            baseline: [
+                ("a.rs".into(), original.clone()),
+                (
+                    "large.bin".into(),
+                    Original::new(Some(vec![7; CARRY_MEMORY_BYTES + 1]), Source::ProjectCopy),
+                ),
+            ]
+            .into(),
+            integrity_open: vec!["test removed".into()],
+            asked_integrity: true,
+            rolled_back_attempts: vec![repair::Rollback {
+                restored: vec!["a.rs".into()],
+                ..Default::default()
+            }],
+            bonus_rounds: 2,
+            groups: vec![super::super::repair_run::GroupRecord {
+                name: "group".into(),
+                owners: vec![("worker".into(), 1, Default::default())],
+                children: vec![("worker".into(), 1, "child".into())],
+                contract: vec!["contract".into()],
+            }],
+            last_triage: Some(super::super::triage::Triage {
+                check: "test".into(),
+                root_cause: "error".into(),
+                files: vec!["a.rs".into()],
+                next_step: "fix".into(),
+                confidence: "high".into(),
+                confidence_note: "trace".into(),
+                other_causes: vec![],
+            }),
+            worker_steps: vec![DoneStep {
+                number: 1,
+                title: "step".into(),
+                summary: "done".into(),
+                decisions: vec!["decision".into()],
+                light: Some("passed".into()),
+            }],
+            rechecks: 1,
+            round_commands: vec!["cargo fmt".into()],
+            befores,
+        };
+        let expected = run.verification.carry.clone();
+        run.verification.verify_rounds = 8;
+        run.verification.stalled_rounds = 2;
+        run.review
+            .restore(super::super::change_review::ReviewCarry::for_test());
+        run.tests = super::super::test_writer::TestsState::new(vec!["test.rs".into()]);
+        run.tests.lead_changed("test.rs");
+        run.ledger.started = 3;
+        run.ledger.tokens = 123;
+        run.ledger.workers = 2;
+        run.ledger.briefs.insert("brief".into(), 4);
+        let ledger = format!("{:?}", run.ledger);
+        let seen = run.seen.clone();
+        let mut carry = run.take_verify_state("record".into());
+        let review = carry.review.clone();
+        let tests = carry.tests.clone();
+        carry.spilled = spill(&run.dialog_id, &mut carry.rounds.baseline);
+        assert!(!carry.spilled.0.is_empty());
+        host.core.agents.put_carry(&run.dialog_id, carry);
+        let mut fresh = fresh_run(&host.core);
+        fresh.dialog_id = run.dialog_id.clone();
+        // The newly loaded record's round count and this run's originals win.
+        fresh.verification.verify_rounds = 9;
+        fresh
+            .verification
+            .original_found("new.rs".into(), original.clone());
+        let newer = Original::new(Some(b"new baseline".to_vec()), Source::ViewAtRunStart);
+        fresh
+            .verification
+            .original_found("a.rs".into(), newer.clone());
+        fresh.restore_verify_state("record");
+        let mut expected = expected;
+        expected.baseline.insert("new.rs".into(), original);
+        expected.baseline.insert("a.rs".into(), newer);
+        assert_eq!(fresh.verification.carry, expected);
+        assert_eq!(fresh.verification.verify_rounds, 9);
+        assert_eq!(fresh.verification.stalled_rounds, 0);
+        assert!(!fresh.verification.integrity_unchecked);
+        assert_eq!(fresh.review.take_carry(), review);
+        assert_eq!(fresh.tests.take_carry(), tests);
+        assert!(std::sync::Arc::ptr_eq(&fresh.seen, &seen));
+        assert_eq!(format!("{:?}", fresh.ledger), ledger);
+        assert!(!fresh.review.has_held_findings());
+        let _ =
+            std::fs::remove_dir_all(super::super::check_output::carry_dir(&run.dialog_id).unwrap());
+    }
+
+    #[test]
+    fn a_recheck_runs_the_checks_even_with_no_file_changed() {
+        for why in [
+            Recheck::Acceptance,
+            Recheck::PreparedEnvironment,
+            Recheck::VerificationRerun,
+        ] {
+            let mut state = VerificationState::default();
+            assert!(!state.needs_checks());
+            state.recheck(why);
+            assert!(state.needs_checks(), "{why:?}");
+            assert!(state.baseline().is_empty());
+        }
     }
 }

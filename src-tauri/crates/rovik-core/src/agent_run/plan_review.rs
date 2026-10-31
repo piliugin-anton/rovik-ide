@@ -1273,22 +1273,21 @@ pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
             .find(|v| v.finding == n)
             .or_else(|| facts.verdicts.iter().find(|v| v.finding == 0));
         // Resolved, why, and whether the review said it.
-        let (resolved, reason, said, repeated) = if let Some((_, evidence)) =
-            reopened.iter().find(|(k, _)| *k == n)
-        {
-            (false, evidence.clone(), true, true)
-        } else if facts.unchanged_and_silent {
-            match verdict {
-                Some(v) if !v.resolved && !v.reason.is_empty() => {
-                    (false, v.reason.clone(), true, false)
+        let (resolved, reason, said, repeated) =
+            if let Some((_, evidence)) = reopened.iter().find(|(k, _)| *k == n) {
+                (false, evidence.clone(), true, true)
+            } else if facts.unchanged_and_silent {
+                match verdict {
+                    Some(v) if !v.resolved && !v.reason.is_empty() => {
+                        (false, v.reason.clone(), true, false)
+                    }
+                    _ => (false, UNCHANGED_REASON.to_string(), false, false),
                 }
-                _ => (false, UNCHANGED_REASON.to_string(), false, false),
-            }
-        } else if let Some(v) = verdict {
-            (v.resolved, v.reason.clone(), true, false)
-        } else {
-            (true, NOT_CHECKED_REASON.to_string(), false, false)
-        };
+            } else if let Some(v) = verdict {
+                (v.resolved, v.reason.clone(), true, false)
+            } else {
+                (true, NOT_CHECKED_REASON.to_string(), false, false)
+            };
         if !resolved {
             let mut f = e.clone();
             if said && !reason.is_empty() {
@@ -1635,8 +1634,9 @@ pub fn without_label(title: &str) -> String {
     LEDGER_LABEL.replace(title, "").into_owned()
 }
 
-static CITED_PATH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[A-Za-z0-9_./@-]*[A-Za-z0-9_-]\.[A-Za-z0-9]+(?::\d+(?:[-:]\d+)?)?").unwrap());
+static CITED_PATH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Za-z0-9_./@-]*[A-Za-z0-9_-]\.[A-Za-z0-9]+(?::\d+(?:[-:]\d+)?)?").unwrap()
+});
 static CITED_SYMBOL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"`([A-Za-z_][A-Za-z0-9_:.]*)(?:\(\))?`").unwrap());
 
@@ -1722,7 +1722,7 @@ impl Run {
         if self.thorough() {
             super::loops::MAX_ROUNDS
         } else if self.balanced_autopilot() {
-            self.plan_review_progress.cap()
+            self.plan.plan_review_progress.cap()
         } else {
             MAX_PLAN_REVIEW_ROUNDS
         }
@@ -1734,9 +1734,13 @@ impl Run {
     /// leave less weight open, within the plan-fix limits.
     fn another_plan_review(&mut self, round: u32, max: u32, open: &[Finding]) -> bool {
         if self.thorough() {
-            self.plan_review_progress.another_round(open.len(), round)
+            self.plan
+                .plan_review_progress
+                .another_round(open.len(), round)
         } else if self.balanced_autopilot() {
-            self.plan_review_progress.another_round(weight(open), round)
+            self.plan
+                .plan_review_progress
+                .another_round(weight(open), round)
         } else {
             round < max
         }
@@ -1747,8 +1751,10 @@ impl Run {
     /// Autopilot stage.
     pub(super) async fn plan_spent(&self) -> Option<super::budget::Spent> {
         let stage = self.stage.as_ref()?;
-        let all = super::autopilot::load(&self.core, &self.dialog_id).await.ok()?;
-        let plan = plan_records(&all, &stage.task, self.plan_spent_from);
+        let all = super::autopilot::load(&self.core, &self.dialog_id)
+            .await
+            .ok()?;
+        let plan = plan_records(&all, &stage.task, self.plan.plan_spent_from);
         Some(super::autopilot::total_spent(plan))
     }
 
@@ -1812,9 +1818,9 @@ impl Run {
     /// (`stop`): never saved unreviewed. Its record is kept as a review's,
     /// so the block is restored and never retried.
     fn blocked_before_review(&mut self, stop: &str) -> Outcome {
-        let rounds = self.plan_reviews;
-        let open = self.plan_findings.clone();
-        self.plan_blocked = true;
+        let rounds = self.plan.plan_reviews;
+        let open = self.plan.plan_findings.clone();
+        self.plan.blocked_by_findings();
         let result = if open.is_empty() {
             unreviewed_blocked_result(stop, rounds)
         } else {
@@ -1849,19 +1855,11 @@ impl Run {
     /// uses no review, at most MAX_ANSWER_NUDGES times a hold; past that,
     /// the submit is reviewed with the answers it has.
     pub(super) fn unanswered(&mut self, responses: &[Response]) -> Option<String> {
-        if self.plan_findings.is_empty()
-            || self.plan_answer_nudges >= MAX_ANSWER_NUDGES
-            || !self.plan_reviewer_on()
-        {
-            return None;
-        }
-        let problem = if self.balanced_autopilot() {
-            unanswered_of(&open_numbers(&self.plan_ledger), "F", responses)?
-        } else {
-            unanswered_problem(self.plan_findings.len(), responses)?
-        };
-        self.plan_answer_nudges += 1;
-        Some(problem)
+        self.plan.unanswered(
+            responses,
+            self.plan_reviewer_on(),
+            self.balanced_autopilot(),
+        )
     }
 
     /// B09: reviews a submitted plan that passed the checker, before it's
@@ -1877,15 +1875,10 @@ impl Run {
     ) -> Result<Outcome, String> {
         let mut outcome = self.plan_review(call_id, plan, saved, responses).await?;
         if matches!(outcome.decision, Decision::Save { .. }) {
-            for e in &mut self.plan_ledger {
-                e.status = Status::Resolved;
-            }
-            self.plan_findings.clear();
-            self.plan_held = None;
-            self.plan_review_call = None;
+            self.plan.saved();
         }
         // The last plan submitted, held or saved: what `edits` apply to.
-        self.plan_draft = Some(plan.to_string());
+        self.plan.draft_received(Some(plan.to_string()));
         // Balanced Autopilot: every review's record, held, saved or
         // blocked, keeps the plan stage's state for an automatic retry.
         if self.balanced_autopilot() {
@@ -1921,7 +1914,7 @@ impl Run {
         // one is sent back at a limit, and the reviewed plan stays (no
         // block: the task goes on with it).
         if self.balanced_autopilot() {
-            let before = match self.plan_findings.is_empty() {
+            let before = match self.plan.plan_findings.is_empty() {
                 true => saved.and_then(|p| std::fs::read_to_string(p).ok()),
                 false => None,
             };
@@ -1933,7 +1926,7 @@ impl Run {
             }
             let limit = match self.over_plan_share().await {
                 Some((stop, _)) => Some(stop),
-                None if self.plan_reviews >= max => Some("rounds"),
+                None if self.plan.plan_reviews >= max => Some("rounds"),
                 None => None,
             };
             if let Some(stop) = limit {
@@ -1954,7 +1947,7 @@ impl Run {
             }
         }
         // P4.6: a save past the budget says so, in the result and its record.
-        if self.plan_reviews >= max {
+        if self.plan.plan_reviews >= max {
             let reason = format!("this run's {max} plan reviews are used");
             return Ok(Outcome {
                 record: Some(json!({
@@ -1968,24 +1961,24 @@ impl Run {
         }
         // P4.6: while held findings are open, a revision of any size is
         // reviewed (a small revert must not slip past them).
-        if self.plan_findings.is_empty() {
+        if self.plan.plan_findings.is_empty() {
             if let Some(before) = saved.and_then(|p| std::fs::read_to_string(p).ok()) {
                 if changed_lines(&before, plan) < MIN_REVISION_LINES {
                     return Ok(save(None));
                 }
             }
         }
-        self.plan_reviews += 1;
-        let round = self.plan_reviews;
+        self.plan.review_started();
+        let round = self.plan.plan_reviews;
         let recent = self.recent().await?;
         let request = self.latest_user_request().await;
         let answers = answers_in(&recent);
-        let earlier = self.plan_findings.clone();
+        let earlier = self.plan.plan_findings.clone();
         // Balanced Autopilot: the finding list's numbers, and the answers
         // (by F-number) by the brief's positions.
         let ledger_on = self.balanced_autopilot();
         let numbers = match ledger_on {
-            true => open_numbers(&self.plan_ledger),
+            true => open_numbers(&self.plan.plan_ledger),
             false => Vec::new(),
         };
         let positional = match ledger_on {
@@ -1993,17 +1986,17 @@ impl Run {
             false => responses.to_vec(),
         };
         let responses = positional.as_slice();
-        let dropped_before = std::mem::take(&mut self.plan_dropped);
-        let held = self.plan_held.clone().unwrap_or_default();
+        let dropped_before = self.plan.take_dropped();
+        let held = self.plan.plan_held.clone().unwrap_or_default();
         // B12: the answers come with the submit; what the agent wrote since
         // the hold stands in for them only when it sent none.
-        let replies = match &self.plan_review_call {
+        let replies = match &self.plan.plan_review_call {
             Some(id) if responses.is_empty() => replies_after(&recent, id),
             _ => String::new(),
         };
         // Round 3: the plan sent again as it was, with nothing said, keeps
         // every earlier finding open.
-        let unchanged = self.plan_held.is_some() && changed_lines(&held, plan) == 0;
+        let unchanged = self.plan.plan_held.is_some() && changed_lines(&held, plan) == 0;
         let silent = responses.is_empty() && replies.trim().is_empty();
         let changes = if earlier.is_empty() {
             String::new()
@@ -2055,7 +2048,7 @@ impl Run {
                 // Stopped meanwhile: no block, the plan is held below.
                 Some(STOPPED_WAITING) => break outcome,
                 Some(stop) => {
-                    self.plan_reviews -= 1;
+                    self.plan.review_cancelled();
                     return Ok(self.blocked_before_review(stop));
                 }
                 None => {}
@@ -2132,7 +2125,7 @@ impl Run {
                 // Step 8: a finding disputed twice gets an arbiter's ruling.
                 self.arbitrate(call_id, &request, plan, &mut review, &numbers, responses)
                     .await;
-                open_findings(&self.plan_ledger)
+                open_findings(&self.plan.plan_ledger)
             } else if earlier.is_empty() {
                 found
             } else {
@@ -2179,10 +2172,10 @@ impl Run {
                 "earlierOpen": still_open,
                 "ms": review["ms"],
                 "weight": weight(&serious),
-                "stalled": self.plan_review_progress.stalled(),
+                "stalled": self.plan.plan_review_progress.stalled(),
                 "dropped": review["dropped"].as_array().map_or(0, Vec::len),
                 "reopened": review["reopened"].as_array().map_or(0, Vec::len),
-                "disputes": self.plan_ledger.iter().map(|e| e.disputes).sum::<u32>(),
+                "disputes": self.plan.plan_ledger.iter().map(|e| e.disputes).sum::<u32>(),
                 "ruling": review.pointer("/rulings/0/ruling").cloned().unwrap_or(Value::Null),
                 "stop": review["stop"],
             }),
@@ -2200,7 +2193,7 @@ impl Run {
         // Stopped with the plan's findings open, or before its review said
         // anything: what the review found stays open.
         let open = match serious.is_empty() {
-            true => self.plan_findings.clone(),
+            true => self.plan.plan_findings.clone(),
             false => serious.clone(),
         };
         let stopped = self.stopped() || status == "stopped";
@@ -2208,10 +2201,7 @@ impl Run {
             // An Autopilot task never saves a plan a review didn't pass:
             // it's held with what's open, not blocked, for a Continue to go
             // on with.
-            self.plan_review_call = Some(call_id.to_string());
-            self.plan_findings = open.clone();
-            self.plan_held = Some(plan.to_string());
-            self.plan_answer_nudges = 0;
+            self.plan.held(call_id, plan, open.clone());
             review["held"] = json!(true);
             review["open"] = json!(open.len());
             Decision::Hold {
@@ -2238,7 +2228,7 @@ impl Run {
             review["open"] = json!(0);
             review["blocked"] = json!(true);
             review["stop"] = json!("reviewer-unavailable");
-            self.plan_blocked = true;
+            self.plan.blocked_by_findings();
             Decision::Hold {
                 result: unreviewed_blocked_result("reviewer-unavailable", round),
             }
@@ -2258,10 +2248,7 @@ impl Run {
         } else if self.another_plan_review(round, max, &serious) {
             // B13: what's still open is what the next review checks, by the
             // numbers the agent answers to.
-            self.plan_review_call = Some(call_id.to_string());
-            self.plan_findings = serious.clone();
-            self.plan_held = Some(plan.to_string());
-            self.plan_answer_nudges = 0;
+            self.plan.held(call_id, plan, serious.clone());
             review["held"] = json!(true);
             // Balanced Autopilot: past the plan's share, the hold is the
             // final block.
@@ -2274,18 +2261,26 @@ impl Run {
                 review["open"] = json!(serious.len());
                 review["blocked"] = json!(true);
                 review["stop"] = json!(stop);
-                self.plan_blocked = true;
+                self.plan.blocked_by_findings();
                 Decision::Hold {
                     result: blocked_result(&serious, round),
                 }
             } else {
                 let result = if self.thorough() {
-                    findings_result_by_progress(&serious, round, self.plan_review_progress.stalled())
+                    findings_result_by_progress(
+                        &serious,
+                        round,
+                        self.plan.plan_review_progress.stalled(),
+                    )
                 } else if self.balanced_autopilot() {
                     let minutes = self.plan_minutes_left().await;
-                    let open: Vec<&LedgerEntry> =
-                        self.plan_ledger.iter().filter(|e| e.is_open()).collect();
-                    ledger_result(&open, round, max, &self.plan_review_progress, minutes)
+                    let open: Vec<&LedgerEntry> = self
+                        .plan
+                        .plan_ledger
+                        .iter()
+                        .filter(|e| e.is_open())
+                        .collect();
+                    ledger_result(&open, round, max, &self.plan.plan_review_progress, minutes)
                 } else {
                     findings_result(&serious, round, max, self.in_autopilot(), None)
                 };
@@ -2298,7 +2293,7 @@ impl Run {
             review["open"] = json!(serious.len());
             review["blocked"] = json!(true);
             if self.balanced_autopilot() {
-                let p = &self.plan_review_progress;
+                let p = &self.plan.plan_review_progress;
                 let stop = if round >= p.cap() || p.stalled() < p.stall() {
                     "rounds"
                 } else {
@@ -2306,7 +2301,7 @@ impl Run {
                 };
                 review["stop"] = json!(stop);
             }
-            self.plan_blocked = true;
+            self.plan.blocked_by_findings();
             Decision::Hold {
                 result: blocked_result(&serious, round),
             }
@@ -2334,14 +2329,14 @@ impl Run {
     /// plan stage's state, which an automatic retry restores. `held`: the
     /// plan as it stands, the draft a retry goes on from.
     pub(super) fn keep_plan_state(&self, review: &mut Value, plan: &str) {
-        review["ledger"] = json!(self.plan_ledger);
+        review["ledger"] = json!(self.plan.plan_ledger);
         review["planState"] = json!({
-            "round": self.plan_reviews,
-            "best": self.plan_review_progress.best(),
-            "stalled": self.plan_review_progress.stalled(),
+            "round": self.plan.plan_reviews,
+            "best": self.plan.plan_review_progress.best(),
+            "stalled": self.plan.plan_review_progress.stalled(),
             "held": plan,
-            "blocked": self.plan_blocked,
-            "formatRejections": self.plan_format_rejections,
+            "blocked": self.plan.plan_blocked,
+            "formatRejections": self.plan.plan_format_rejections,
         });
     }
 
@@ -2375,14 +2370,14 @@ impl Run {
         let mut new = kept.split_off(follow.kept);
         let root = self.root.clone();
         for f in follow.unproven {
-            if undoes_a_fix(&self.plan_ledger, &f) {
+            if undoes_a_fix(&self.plan.plan_ledger, &f) {
                 new.push(f);
                 continue;
             }
             match evidence_problem(root.as_deref(), &f).await {
                 None => new.push(f),
                 Some(reason) => {
-                    self.plan_dropped.push(f.headline());
+                    self.plan.plan_dropped.push(f.headline());
                     dropped.push(json!({ "finding": f, "reason": reason }));
                 }
             }
@@ -2390,12 +2385,18 @@ impl Run {
         if !dropped.is_empty() {
             review["dropped"] = json!(dropped);
         }
-        let reopened =
-            update_ledger(&mut self.plan_ledger, numbers, &resolved, kept, responses, new);
+        let reopened = update_ledger(
+            &mut self.plan.plan_ledger,
+            numbers,
+            &resolved,
+            kept,
+            responses,
+            new,
+        );
         if !reopened.is_empty() {
             review["reopened"] = json!(reopened);
         }
-        open_findings(&self.plan_ledger)
+        open_findings(&self.plan.plan_ledger)
     }
 
     /// Step 8, Balanced Autopilot: after a follow-up review, disputes are
@@ -2413,14 +2414,20 @@ impl Run {
         responses: &[Response],
     ) {
         let records: Vec<Value> = review["earlier"].as_array().cloned().unwrap_or_default();
-        let due = count_disputes(&mut self.plan_ledger, numbers, &records, responses);
+        let due = count_disputes(&mut self.plan.plan_ledger, numbers, &records, responses);
         let Some(&number) = due.first() else {
             return;
         };
         if self.stopped() {
             return;
         }
-        let Some(entry) = self.plan_ledger.iter().find(|e| e.number == number).cloned() else {
+        let Some(entry) = self
+            .plan
+            .plan_ledger
+            .iter()
+            .find(|e| e.number == number)
+            .cloned()
+        else {
             return;
         };
         let at = numbers.iter().position(|n| *n == number);
@@ -2451,7 +2458,12 @@ impl Run {
             _ => None,
         };
         let ruling = ruling_of(text.as_deref(), &entry);
-        let Some(e) = self.plan_ledger.iter_mut().find(|e| e.number == number) else {
+        let Some(e) = self
+            .plan
+            .plan_ledger
+            .iter_mut()
+            .find(|e| e.number == number)
+        else {
             return;
         };
         let ruled = apply_ruling(e, &ruling);
@@ -2507,7 +2519,7 @@ impl Run {
         // A person's Retry starts the plan's time and budget share again;
         // an automatic one goes on counting them.
         if !automatic {
-            self.plan_spent_from = Some(upto);
+            self.plan.plan_spent_from = Some(upto);
         }
         let id = self.dialog_id.clone();
         let rows = self
@@ -2525,26 +2537,27 @@ impl Run {
         else {
             return Ok(());
         };
-        self.plan_ledger = serde_json::from_value(review["ledger"].clone()).unwrap_or_default();
+        self.plan.plan_ledger =
+            serde_json::from_value(review["ledger"].clone()).unwrap_or_default();
         let state = &review["planState"];
         let held = state["held"].as_str().map(str::to_string);
-        self.plan_findings = open_findings(&self.plan_ledger);
-        if !self.plan_findings.is_empty() {
-            self.plan_held = held.clone();
+        self.plan.plan_findings = open_findings(&self.plan.plan_ledger);
+        if !self.plan.plan_findings.is_empty() {
+            self.plan.plan_held = held.clone();
         }
-        self.plan_draft = held;
+        self.plan.plan_draft = held;
         if automatic {
             let fix = self.plan_fix();
             let n = |k: &str| state[k].as_u64().unwrap_or(0) as u32;
-            self.plan_reviews = n("round");
-            self.plan_review_progress = super::loops::Progress::restored(
+            self.plan.plan_reviews = n("round");
+            self.plan.plan_review_progress = super::loops::Progress::restored(
                 fix.stall_rounds,
                 fix.max_rounds,
                 state["best"].as_u64().map(|b| b as usize),
                 n("stalled"),
             );
-            self.plan_blocked = state["blocked"] == true;
-            self.plan_format_rejections = n("formatRejections");
+            self.plan.plan_blocked = state["blocked"] == true;
+            self.plan.plan_format_rejections = n("formatRejections");
         }
         Ok(())
     }
@@ -3244,11 +3257,16 @@ mod tests {
             check(with(Some("`load_rows` takes no argument, but step 4 passes one"))).await,
             None
         );
-        assert!(check(with(Some("src/gone.rs:3 — the call breaks the build there")))
+        assert!(check(with(Some(
+            "src/gone.rs:3 — the call breaks the build there"
+        )))
+        .await
+        .unwrap()
+        .contains("isn't in the project"));
+        assert!(check(with(Some("src/db.rs:1")))
             .await
             .unwrap()
-            .contains("isn't in the project"));
-        assert!(check(with(Some("src/db.rs:1"))).await.unwrap().contains("what breaks"));
+            .contains("what breaks"));
         assert!(check(with(Some("it would break things in many places")))
             .await
             .unwrap()
@@ -3586,11 +3604,21 @@ mod tests {
     }
 
     fn entry(number: usize, f: Finding) -> LedgerEntry {
-        LedgerEntry { number, finding: f, status: Status::Disputed, disputes: 0, ruled: false }
+        LedgerEntry {
+            number,
+            finding: f,
+            status: Status::Disputed,
+            disputes: 0,
+            ruled: false,
+        }
     }
 
     fn answer(finding: usize, action: Action) -> Response {
-        Response { finding, action, note: "the code already does it".into() }
+        Response {
+            finding,
+            action,
+            note: "the code already does it".into(),
+        }
     }
 
     /// Step 8: only "not a problem" against a bare "not resolved" counts,
@@ -3678,5 +3706,162 @@ mod tests {
             assert!(!e.ruled && e.is_open());
             assert_eq!(rec["ruling"], "unreadable");
         }
+    }
+}
+
+/// A run's submitted plan, review progress, and submission limits.
+#[derive(Default)]
+pub(super) struct PlanState {
+    /// ask_user calls so far (at most `questions::MAX_QUESTIONS_PER_RUN` a run).
+    questions_asked: u32,
+    /// Plan mode: the current plan, shown to the model so it revises it.
+    plan_context: String,
+    /// A plan written in a reply instead of submitted was pointed out once.
+    plan_nudged: bool,
+    /// Balanced Autopilot: plans written in a reply that the IDE submitted
+    /// for the model this run (at most `MAX_REPLY_SUBMITS`).
+    reply_submits: u32,
+    /// T07: a Thorough task's loops, by their progress so far.
+    plan_review_progress: super::loops::Progress,
+    /// Plan reviews in this run, the findings that hold a plan back (until
+    /// a plan is saved), and the `submit_plan` call they answered
+    /// (plan_review.rs).
+    plan_reviews: u32,
+    /// S02: an Autopilot task's last plan review blocked the plan: it's
+    /// never saved in this run.
+    plan_blocked: bool,
+    plan_findings: Vec<super::change_review::Finding>,
+    /// The plan as it was held with those findings (round 3): sent again
+    /// unchanged with nothing said, every one stays open; the follow-up
+    /// review is shown what a revision changed (B13).
+    plan_held: Option<String>,
+    plan_review_call: Option<String>,
+    /// Submits sent back since the hold for leaving a held finding
+    /// unanswered (B12, at most `MAX_ANSWER_NUDGES`).
+    plan_answer_nudges: u32,
+    /// Balanced Autopilot: the plan's finding list, kept across reviews and
+    /// automatic retries, resolved entries included (plan_review.rs).
+    plan_ledger: Vec<super::plan_review::LedgerEntry>,
+    /// Balanced Autopilot: the titles the last review reported without the
+    /// evidence they needed, for the next review's brief.
+    plan_dropped: Vec<String>,
+    /// Balanced Autopilot: submits the checker sent back for format
+    /// problems alone (`plan::skeleton` after two).
+    plan_format_rejections: u32,
+    /// A person's Retry or Continue of the plan stage: the `seq` of the
+    /// Plan record it started. The stage's time and budget share count
+    /// from there, so the Retry gets a review (plan_review.rs `plan_spent`).
+    plan_spent_from: Option<i64>,
+    /// The last plan submitted, held or saved: what `edits` apply to.
+    plan_draft: Option<String>,
+    /// The last plan as the agent sent it, before the IDE fixed its form
+    /// (Balanced Autopilot): what an edit copied from its own submission
+    /// matches when the fixed draft doesn't.
+    plan_sent: Option<String>,
+}
+impl PlanState {
+    fn unanswered(
+        &mut self,
+        responses: &[Response],
+        reviewer_on: bool,
+        balanced: bool,
+    ) -> Option<String> {
+        if self.plan_findings.is_empty()
+            || self.plan_answer_nudges >= MAX_ANSWER_NUDGES
+            || !reviewer_on
+        {
+            return None;
+        }
+        let problem = if balanced {
+            unanswered_of(&open_numbers(&self.plan_ledger), "F", responses)?
+        } else {
+            unanswered_problem(self.plan_findings.len(), responses)?
+        };
+        self.plan_answer_nudges += 1;
+        Some(problem)
+    }
+    fn saved(&mut self) {
+        for entry in &mut self.plan_ledger {
+            entry.status = Status::Resolved;
+        }
+        self.plan_findings.clear();
+        self.plan_held = None;
+        self.plan_review_call = None;
+    }
+    fn held(&mut self, call: &str, plan: &str, findings: Vec<Finding>) {
+        self.plan_review_call = Some(call.into());
+        self.plan_findings = findings;
+        self.plan_held = Some(plan.into());
+        self.plan_answer_nudges = 0;
+    }
+    fn review_started(&mut self) {
+        self.plan_reviews += 1;
+    }
+    fn review_cancelled(&mut self) {
+        self.plan_reviews -= 1;
+    }
+    fn blocked_by_findings(&mut self) {
+        self.plan_blocked = true;
+    }
+    fn take_dropped(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.plan_dropped)
+    }
+
+    pub(super) fn new(context: String) -> Self {
+        Self {
+            plan_context: context,
+            ..Self::default()
+        }
+    }
+    pub(super) fn review_limits(&mut self, stall: u32, max: u32) {
+        self.plan_review_progress = super::loops::Progress::with(stall, max);
+    }
+    pub(super) fn context(&self) -> &str {
+        &self.plan_context
+    }
+    pub(super) fn blocked(&self) -> bool {
+        self.plan_blocked
+    }
+    pub(super) fn reply_submits(&self) -> u32 {
+        self.reply_submits
+    }
+    pub(super) fn reply_submitted(&mut self) {
+        self.reply_submits += 1;
+    }
+    pub(super) fn open_numbers(&self) -> Vec<usize> {
+        open_numbers(&self.plan_ledger)
+    }
+    pub(super) fn has_findings(&self) -> bool {
+        !self.plan_findings.is_empty()
+    }
+    pub(super) fn nudged(&self) -> bool {
+        self.plan_nudged
+    }
+    pub(super) fn reply_reminded(&mut self) {
+        self.plan_nudged = true;
+    }
+    pub(super) fn questions_asked(&self) -> u32 {
+        self.questions_asked
+    }
+    pub(super) fn question_asked(&mut self) {
+        self.questions_asked += 1;
+    }
+    pub(super) fn draft(&self) -> &Option<String> {
+        &self.plan_draft
+    }
+    pub(super) fn draft_received(&mut self, draft: Option<String>) {
+        self.plan_draft = draft;
+    }
+    pub(super) fn sent(&self) -> Option<&str> {
+        self.plan_sent.as_deref()
+    }
+    pub(super) fn submitted(&mut self, sent: String) {
+        self.plan_sent = Some(sent);
+    }
+    pub(super) fn format_rejections(&self) -> u32 {
+        self.plan_format_rejections
+    }
+    pub(super) fn format_rejected(&mut self) {
+        self.plan_format_rejections += 1;
     }
 }

@@ -264,7 +264,7 @@ impl Run {
         } else {
             MAX_ACCEPTANCE_CHECKS
         };
-        if self.acceptance_checks >= cap || self.root.is_none() {
+        if self.tests.acceptance_checks() >= cap || self.root.is_none() {
             return Ok(false);
         }
         let config = self.config().subagents;
@@ -280,8 +280,8 @@ impl Run {
             .and_then(|text| plan::criteria(&text))
             .map(|c| c.items)
             .unwrap_or_default();
-        self.acceptance_checks += 1;
-        let check = self.acceptance_checks;
+        self.tests.acceptance_started();
+        let check = self.tests.acceptance_checks();
         let mut record = json!({
             "status": "running",
             "round": check,
@@ -310,13 +310,14 @@ impl Run {
             .clamp(8_000, 400_000);
         let rendered = render_diff(&self.change_set(), budget);
         let checks: Vec<(String, String)> = self
-            .last_verify_results
+            .verification
+            .last_results()
             .iter()
             .map(|r| (r.command.clone(), r.status.to_string()))
             .collect();
         let tests = self.tests_report().await;
         let request = self.latest_user_request().await;
-        let earlier = std::mem::take(&mut self.acceptance_unsatisfied);
+        let earlier = self.tests.take_unsatisfied();
         let message = brief(&BriefParts {
             request: &request,
             criteria: &criteria,
@@ -378,13 +379,13 @@ impl Run {
         let last = if unconfirmed {
             true
         } else if thorough {
-            !self.acceptance_progress.another_round(unmet.len(), check)
+            !self.tests.acceptance_progressed(unmet.len(), check)
         } else {
             check >= MAX_ACCEPTANCE_CHECKS
         };
         if !unmet.is_empty() && last && !self.stopped() {
             record["unmet"] = json!(true);
-            self.acceptance_unmet = true;
+            self.tests.acceptance_failed();
         }
         self.update_meta(&record_id, json!({ "acceptance": record.clone() }))
             .await?;
@@ -410,15 +411,16 @@ impl Run {
                 &unmet,
                 advice.as_deref(),
                 check,
-                thorough.then(|| self.acceptance_progress.stalled()),
+                thorough.then(|| self.tests.acceptance_stalled()),
             ),
         );
         note.meta = Some(json!({ "harness": "acceptance" }));
-        self.acceptance_unsatisfied = unmet;
+        self.tests.acceptance_returned(unmet);
         self.append(vec![note]).await?;
         // The round ends with the checks and a new check, whatever the
         // agent changes (or says without changing anything).
-        self.writes_since_verify = true;
+        self.verification
+            .recheck(super::verify::Recheck::Acceptance);
         Ok(true)
     }
 

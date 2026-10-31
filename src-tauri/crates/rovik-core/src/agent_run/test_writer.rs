@@ -738,8 +738,8 @@ impl super::run::Run {
         if !self.in_autopilot()
             || self.sub().is_some()
             || self.plan_mode
-            || self.tests_after_change
-            || !self.test_writer_files.is_empty()
+            || self.tests.tests_after_change
+            || !self.tests.carry.test_writer_files.is_empty()
             || self.stopped()
         {
             return Ok(false);
@@ -752,7 +752,7 @@ impl super::run::Run {
         if !code || tested || self.config().subagents.kind(Kind::TestWriter).is_none() {
             return Ok(false);
         }
-        self.tests_after_change = true;
+        self.tests.tests_after_change = true;
         let Some(root) = self.root.clone() else {
             return Ok(false);
         };
@@ -802,8 +802,8 @@ impl super::run::Run {
         if files.is_empty() || self.stopped() {
             return Ok(false);
         }
-        self.test_writer_files.extend(files);
-        self.writes_since_verify = true;
+        self.tests.carry.test_writer_files.extend(files);
+        self.verification.changes_made();
         Ok(true)
     }
 
@@ -990,5 +990,114 @@ mod tests {
             changed_tests_line(&["src/x.test.ts".into()]),
             "\n\n*Tests written by the test writer that I changed: `src/x.test.ts`.*"
         );
+    }
+}
+
+/// Test files and edits that survive a check approval pause.
+#[derive(Default, Debug, Clone, PartialEq)]
+pub(super) struct TestsCarry {
+    /// Files the test writer wrote, those the lead changed after it, and
+    /// how many of those the final message listed already (E03).
+    test_writer_files: Vec<String>,
+    tests_changed: Vec<String>,
+}
+/// The test writer, breaker, and acceptance progress of a run.
+#[derive(Default)]
+pub(super) struct TestsState {
+    carry: TestsCarry,
+    /// S07: the test writer ran for a change that had no test (once).
+    tests_after_change: bool,
+    /// T04: the adversarial tester ran in this run (once a run).
+    breaker_ran: bool,
+    acceptance_progress: super::loops::Progress,
+    /// T04: its tests, until the gate's round that runs them is judged.
+    breaker_round: Option<super::breaker::BreakerRound>,
+    /// S08: the acceptance checks this run had; the criteria the last
+    /// found unsatisfied, for the next; and whether the last check left
+    /// one unmet: the run ends `unmet`.
+    acceptance_checks: u32,
+    acceptance_unsatisfied: Vec<super::acceptance::Verdict>,
+    acceptance_unmet: bool,
+    tests_changed_listed: usize,
+}
+impl TestsState {
+    pub(super) fn new(files: Vec<String>) -> Self {
+        Self {
+            carry: TestsCarry {
+                test_writer_files: files,
+                ..Default::default()
+            },
+            ..Self::default()
+        }
+    }
+    pub(super) fn files(&self) -> &[String] {
+        &self.carry.test_writer_files
+    }
+    pub(super) fn test_added(&mut self, path: String) {
+        if !self.carry.test_writer_files.contains(&path) {
+            self.carry.test_writer_files.push(path);
+        }
+    }
+    pub(super) fn test_removed(&mut self, path: &str) {
+        self.carry.test_writer_files.retain(|f| f != path);
+    }
+    pub(super) fn lead_changed(&mut self, path: &str) {
+        if self.carry.test_writer_files.iter().any(|p| p == path)
+            && !self.carry.tests_changed.iter().any(|p| p == path)
+        {
+            self.carry.tests_changed.push(path.to_string());
+        }
+    }
+    pub(super) fn unlisted_changes(&self) -> bool {
+        self.carry.tests_changed.len() > self.tests_changed_listed
+    }
+    pub(super) fn changes_reported(&mut self) -> String {
+        self.tests_changed_listed = self.carry.tests_changed.len();
+        changed_tests_line(&self.carry.tests_changed)
+    }
+    pub(super) fn breaker_ran(&self) -> bool {
+        self.breaker_ran
+    }
+    pub(super) fn breaker_started(&mut self) {
+        self.breaker_ran = true;
+    }
+    pub(super) fn breaker_finished(&mut self, round: super::breaker::BreakerRound) {
+        self.breaker_round = Some(round);
+    }
+    pub(super) fn take_breaker_round(&mut self) -> Option<super::breaker::BreakerRound> {
+        self.breaker_round.take()
+    }
+    pub(super) fn has_breaker_round(&self) -> bool {
+        self.breaker_round.is_some()
+    }
+    pub(super) fn acceptance_checks(&self) -> u32 {
+        self.acceptance_checks
+    }
+    pub(super) fn acceptance_started(&mut self) {
+        self.acceptance_checks += 1;
+    }
+    pub(super) fn take_unsatisfied(&mut self) -> Vec<super::acceptance::Verdict> {
+        std::mem::take(&mut self.acceptance_unsatisfied)
+    }
+    pub(super) fn acceptance_progressed(&mut self, unmet: usize, check: u32) -> bool {
+        self.acceptance_progress.another_round(unmet, check)
+    }
+    pub(super) fn acceptance_failed(&mut self) {
+        self.acceptance_unmet = true;
+    }
+    pub(super) fn acceptance_unmet(&self) -> bool {
+        self.acceptance_unmet
+    }
+    pub(super) fn acceptance_stalled(&self) -> u32 {
+        self.acceptance_progress.stalled()
+    }
+    pub(super) fn acceptance_returned(&mut self, unmet: Vec<super::acceptance::Verdict>) {
+        self.acceptance_unsatisfied = unmet;
+    }
+    pub(super) fn take_carry(&mut self) -> TestsCarry {
+        std::mem::take(&mut self.carry)
+    }
+    pub(super) fn restore(&mut self, carry: TestsCarry) {
+        self.carry = carry;
     }
 }

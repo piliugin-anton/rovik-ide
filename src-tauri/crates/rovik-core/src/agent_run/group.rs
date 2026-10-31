@@ -520,12 +520,13 @@ impl Run {
         // R03/R06: who owns what, for the repair loop; what the files were
         // before, for Redo sequentially.
         if landed_any {
-            self.groups.push(super::repair_run::GroupRecord {
-                name: group.to_string(),
-                owners: owners.clone(),
-                children: joins.children.clone(),
-                contract: contract.clone(),
-            });
+            self.verification
+                .group_joined(super::repair_run::GroupRecord {
+                    name: group.to_string(),
+                    owners: owners.clone(),
+                    children: joins.children.clone(),
+                    contract: contract.clone(),
+                });
             let saved = chats::SavedGroup {
                 name: group.to_string(),
                 plan_path: plan_path.clone(),
@@ -640,7 +641,7 @@ impl Run {
             plan_path,
             plan,
             step: &member.step,
-            done: &self.worker_steps,
+            done: self.verification.worker_steps(),
             diff: &self.step_diff(&member.step),
             scope: &scope,
             note: Some(&note),
@@ -671,7 +672,7 @@ impl Run {
         let mut child = self.launch_child(member.child_id.clone(), &call_id, &goal, sub)?;
         // It works in its own copy, which is discarded if it fails.
         child.root = Some(overlay.view.to_string_lossy().into_owned());
-        child.checkpoint = None;
+        child.verification.checkpoint_discarded();
         Ok(child)
     }
 

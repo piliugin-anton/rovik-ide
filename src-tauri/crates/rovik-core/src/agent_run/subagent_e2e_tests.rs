@@ -11418,7 +11418,7 @@ async fn a_conflicts_saved_versions_outlive_the_runs_checks() {
         .unwrap()
         .unwrap();
     run.changed_files = vec!["a.txt".into()];
-    run.writes_since_verify = true;
+    run.verification.changes_made();
 
     let said = run.save_conflict(
         "w2",

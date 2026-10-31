@@ -603,7 +603,7 @@ impl Run {
             .map(|(_, w)| w)
             .unwrap_or_else(|| check.output.clone().unwrap_or_default());
         let changed = self.changed_files.clone();
-        let earlier = self.last_triage.clone();
+        let earlier = self.verification.triage().cloned();
         let message = brief(&BriefParts {
             round,
             check,
@@ -666,7 +666,7 @@ impl Run {
             .as_ref()
             .map(|t| for_agent(t, &whole, saved.as_deref()));
         if found.is_some() {
-            self.last_triage = found;
+            self.verification.triaged(found);
         }
         Ok(Some(Outcome {
             index,

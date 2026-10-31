@@ -6,111 +6,6 @@ use regex::Regex;
 use serde::Serialize;
 use std::sync::LazyLock;
 
-static STEPS_HEADING: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?im)^##\s+.*\bsteps?\b.*$").unwrap());
-
-/// `## Steps` itself, taken before any other heading with "step" in it
-/// (P4.4: a "## Next steps" note before it isn't the steps).
-static STEPS_HEADING_EXACT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?im)^##\s+(?:the\s+)?steps\s*:?\s*$").unwrap());
-
-/// Then one that starts with "Steps" (`## Steps (ordered)`, `## 3. Steps`),
-/// still before one that only mentions them.
-static STEPS_HEADING_LEADING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?im)^##[ \t]+(?:\d+[.)][ \t]*)?(?:the[ \t]+)?steps\b[^\n]*$").unwrap()
-});
-
-/// The steps section's heading (P4.4).
-pub(super) fn steps_heading(text: &str) -> Option<regex::Match<'_>> {
-    STEPS_HEADING_EXACT
-        .find(text)
-        .or_else(|| STEPS_HEADING_LEADING.find(text))
-        .or_else(|| STEPS_HEADING.find(text))
-}
-
-pub(super) static NEXT_HEADING: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^##\s").unwrap());
-
-static NUMBERED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*\d+[.)]\s+\S").unwrap());
-
-/// A step written as a heading or a bold line instead of a list item:
-/// `### Step 1: Title`, `### 1. Title`, `**Step 1: Title**` (some models
-/// write steps so).
-static HEADING_STEP: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?im)^\s*(?:#{2,6}\s+|\*\*)\s*(?:step\s*)?(\d+)[.):]?\s*\S").unwrap()
-});
-
-pub(super) static CODE_BLOCK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)```.*?```").unwrap());
-
-/// Whether a line opens or closes a fenced code block.
-pub(super) fn is_fence(line: &str) -> bool {
-    let t = line.trim_start();
-    // A span closed on its own line (```ts x = 1```) opens nothing (round 3).
-    ["```", "~~~"]
-        .iter()
-        .any(|m| t.starts_with(m) && !t[m.len()..].contains(m))
-}
-
-/// The lines of `text` with their byte offsets and whether each is inside
-/// a fenced code block (fence lines count as inside).
-pub(super) fn lines_with_fences(text: &str) -> Vec<(usize, &str, bool)> {
-    let mut out = Vec::new();
-    let mut at = 0;
-    let mut fence = false;
-    for line in text.split_inclusive('\n') {
-        let opens = is_fence(line);
-        out.push((at, line, fence || opens));
-        if opens {
-            fence = !fence;
-        }
-        at += line.len();
-    }
-    out
-}
-
-/// The text of the `## ...` section that starts at `heading_end`: up to
-/// the next `## ` heading outside a code block.
-pub(super) fn section_after(text: &str, heading_end: usize) -> &str {
-    let after = &text[heading_end..];
-    let end = lines_with_fences(after)
-        .into_iter()
-        .find(|(_, line, fenced)| !fenced && NEXT_HEADING.is_match(line))
-        .map_or(after.len(), |(at, _, _)| at);
-    &after[..end]
-}
-
-/// The numbered items of a steps section, each with its sub-lines: the
-/// least indented numbered lines outside code blocks (a numbered list
-/// nested in a step is part of that step).
-pub(super) fn split_steps(section: &str) -> Vec<&str> {
-    let lines = lines_with_fences(section);
-    let numbered: Vec<(usize, usize)> = lines
-        .iter()
-        .filter(|(_, line, fenced)| !fenced && NUMBERED.is_match(line) && !line.trim().is_empty())
-        .map(|(at, line, _)| (*at, line.len() - line.trim_start().len()))
-        .collect();
-    let indent = numbered.iter().map(|(_, i)| *i).min().unwrap_or(0);
-    let mut starts: Vec<usize> = numbered
-        .into_iter()
-        .filter(|(_, i)| *i == indent)
-        .map(|(at, _)| at)
-        .collect();
-    // No list: steps written as headings or bold lines.
-    if starts.is_empty() {
-        starts = lines
-            .iter()
-            .filter(|(_, line, fenced)| !fenced && HEADING_STEP.is_match(line))
-            .map(|(at, _, _)| *at)
-            .collect();
-    }
-    starts
-        .iter()
-        .enumerate()
-        .map(|(i, &start)| &section[start..starts.get(i + 1).copied().unwrap_or(section.len())])
-        .collect()
-}
-
 /// P4.4: each step's number, as written when the plan's numbers go up one
 /// by one, else its place (`1. 1. 1.`, as some editors number lists), and
 /// the number the plan shows when that's another.
@@ -389,7 +284,11 @@ pub struct StepFiles {
 /// blocks), with the list lines indented under it. Paths anywhere else in
 /// the step are prose.
 pub fn step_files(raw: &str) -> StepFiles {
-    let lines = lines_with_fences(raw);
+    let doc = super::PlanDoc::parse(raw);
+    step_files_in(&doc.lines_in(0..doc.text().len()))
+}
+
+fn step_files_in(lines: &[(usize, &str, bool)]) -> StepFiles {
     let indent = |line: &str| line.len() - line.trim_start().len();
     let Some(at) = lines
         .iter()
@@ -427,73 +326,61 @@ pub fn step_files(raw: &str) -> StepFiles {
 
 /// D01: the plan's steps, in order (empty when it has no steps section).
 pub fn steps(markdown: &str) -> Vec<PlanStep> {
-    // P4.4: one kind of line ending.
-    let markdown = markdown.replace("\r\n", "\n");
-    let text = markdown.trim();
-    let Some(heading) = steps_heading(text) else {
-        return Vec::new();
-    };
-    // Code blocks stay in a step's body (an exact signature, a schema).
-    let section = section_after(text, heading.end());
-    let raws: Vec<&str> = split_steps(section)
-        .into_iter()
-        // NUMBERED's `^\s*` can start at the blank line before a step.
-        .map(str::trim_start)
-        .collect();
+    super::PlanDoc::parse(markdown).steps()
+}
+
+impl super::PlanDoc {
+    /// The indexed steps, preserving each body as written.
+    pub fn steps(&self) -> Vec<PlanStep> {
+        self.raw_steps().iter().map(|s| s.step.clone()).collect()
+    }
+
+    /// The body of the first section whose title starts with `name`.
+    pub fn section(&self, name: &str) -> Option<String> {
+        self.named_section(name)
+            .map(|s| self.text()[s.body.clone()].trim().to_string())
+    }
+}
+
+/// The text of a named section, without its heading.
+pub fn section(markdown: &str, name: &str) -> Option<String> {
+    super::PlanDoc::parse(markdown).section(name)
+}
+
+pub(super) fn parse_steps(
+    doc: &super::PlanDoc,
+    ranges: Vec<std::ops::Range<usize>>,
+) -> Vec<super::doc::RawStep> {
+    let raws: Vec<_> = ranges.iter().map(|r| &doc.text()[r.clone()]).collect();
     let numbers = step_numbers(&raws);
-    raws.into_iter()
-        .enumerate()
-        .map(|(i, raw)| {
-            let first = raw.lines().next().unwrap_or("");
+    ranges
+        .into_iter()
+        .zip(numbers)
+        .map(|(range, (number, written))| {
+            let raw = &doc.text()[range.clone()];
+            let first = raw.trim_start().lines().next().unwrap_or("");
             let rest = STEP_NUMBER
                 .captures(first)
                 .map_or_else(|| first.to_string(), |c| c[2].to_string());
-            let (number, written) = numbers[i];
-            let files = step_files(raw).files;
-            PlanStep {
+            let lines = doc.lines_in(range.clone());
+            let files = step_files_in(&lines);
+            let group = lines
+                .iter()
+                .filter(|(_, _, fenced)| !fenced)
+                .find_map(|(_, line, _)| GROUP_LINE.captures(line))
+                .map(|c| group_name(&c[1]))
+                .filter(|g| !g.is_empty() && !matches!(g.as_str(), "none" | "-" | "n/a"));
+            let step = PlanStep {
                 number,
                 written,
                 title: step_title(&rest),
-                files,
-                body: raw.trim_end().to_string(),
-                // P4.4: outside code blocks; one name, any case; "none" isn't.
-                group: lines_with_fences(raw)
-                    .into_iter()
-                    .filter(|(_, _, fenced)| !fenced)
-                    .find_map(|(_, line, _)| GROUP_LINE.captures(line))
-                    .map(|c| group_name(&c[1]))
-                    .filter(|g| !g.is_empty() && !matches!(g.as_str(), "none" | "-" | "n/a")),
-            }
+                files: files.files.clone(),
+                body: raw.trim().to_string(),
+                group,
+            };
+            super::doc::RawStep { range, step, files }
         })
         .collect()
-}
-
-#[allow(dead_code)] // D03's worker brief reads "## Decisions" with it.
-/// D01: the text of the plan's `## <name>` section (a heading that starts
-/// with the name, case aside), without its heading.
-pub fn section(markdown: &str, name: &str) -> Option<String> {
-    let markdown = markdown.replace("\r\n", "\n");
-    let markdown = markdown.as_str();
-    let lower = name.to_lowercase();
-    let mut at = 0;
-    while let Some(h) = NEXT_HEADING.find(&markdown[at..]) {
-        let start = at + h.start();
-        let line_end = markdown[start..]
-            .find('\n')
-            .map_or(markdown.len(), |e| start + e);
-        let title = markdown[start + 2..line_end].trim().to_lowercase();
-        // `## 5. Decisions` is the Decisions section, as `## 3. Steps` is the steps.
-        let title = title
-            .trim_start_matches(|c: char| c.is_ascii_digit())
-            .strip_prefix(['.', ')'])
-            .filter(|_| title.starts_with(|c: char| c.is_ascii_digit()))
-            .map_or(title.as_str(), str::trim_start);
-        if title.starts_with(&lower) {
-            return Some(section_after(markdown, line_end).trim().to_string());
-        }
-        at = line_end;
-    }
-    None
 }
 
 /// A title's words alone: lower case, letters and digits, one space
@@ -506,4 +393,13 @@ pub fn simple_words(text: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+// Kept for the existing fence regression test; parsing lives in PlanDoc.
+#[cfg(test)]
+pub(super) fn is_fence(line: &str) -> bool {
+    super::PlanDoc::parse(line)
+        .lines()
+        .first()
+        .is_some_and(|l| l.delimiter)
 }

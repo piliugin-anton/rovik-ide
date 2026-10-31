@@ -255,7 +255,7 @@ impl Run {
             || !self.in_autopilot()
             || self.sub().is_some()
             || self.plan_mode
-            || self.breaker_ran
+            || self.tests.breaker_ran()
             || self.stopped()
         {
             return Ok(false);
@@ -267,7 +267,7 @@ impl Run {
         let Some(root) = self.root.clone() else {
             return Ok(false);
         };
-        self.breaker_ran = true;
+        self.tests.breaker_started();
         let plan_text = self.implementing_plan().await;
         let criteria = plan_text
             .as_ref()
@@ -417,16 +417,14 @@ impl Run {
             return Ok(false);
         }
         for (file, _) in &files {
-            if !self.test_writer_files.contains(file) {
-                self.test_writer_files.push(file.clone());
-            }
+            self.tests.test_added(file.clone());
         }
-        self.breaker_round = Some(BreakerRound {
+        self.tests.breaker_finished(BreakerRound {
             row: row_id,
             record,
             files,
         });
-        self.writes_since_verify = true;
+        self.verification.changes_made();
         Ok(true)
     }
 
@@ -437,7 +435,7 @@ impl Run {
         &mut self,
         failed: bool,
     ) -> Result<Option<String>, String> {
-        let Some(mut round) = self.breaker_round.take() else {
+        let Some(mut round) = self.tests.take_breaker_round() else {
             return Ok(None);
         };
         round.record["found"] = json!(failed);
@@ -502,7 +500,7 @@ impl Run {
         // A file it made is no test writer's now; one it changed is still
         // whoever's it was (the Tests stage's, S04).
         if original.is_none() {
-            self.test_writer_files.retain(|f| f != key);
+            self.tests.test_removed(key);
         }
         self.core.emit(super::events::AgentEvent::FileWritten {
             dialog_id: Some(self.dialog_id.clone()),
