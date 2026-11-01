@@ -12,8 +12,8 @@
 //! the earlier findings with the agent's answers and what the revision
 //! changed, says of each earlier finding whether it's resolved, and adds
 //! new findings wherever they are (with evidence when about a step the
-//! revision didn't change). At
-//! most MAX_PLAN_REVIEW_ROUNDS reviews a run; after the last, the plan is
+//! revision didn't change). At most as many reviews as the settings' "Plan
+//! reviews per request" allows a run; after the last, the plan is
 //! saved and what's still open is added at its end for the user. A
 //! reviewer that fails is recorded as skipped and the plan is saved with a
 //! note (layer 7).
@@ -34,11 +34,17 @@ use serde_json::{json, Value};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-/// Plan reviews in one run; past them, a plan is saved as it is.
-pub const MAX_PLAN_REVIEW_ROUNDS: u32 = 2;
+/// Plan reviews in one run, when the settings say nothing; past them, a plan
+/// is saved as it is.
+pub const DEFAULT_PLAN_REVIEWS: u32 = 5;
+/// The fewest plan reviews a run may be set to.
+pub const MIN_PLAN_REVIEWS: u32 = 1;
+/// The most plan reviews a run may be set to.
+pub const MAX_PLAN_REVIEWS: u32 = 20;
 /// B12: after a hold, a submit that leaves a held finding unanswered goes
 /// back, without a review, at most this many times; then it's reviewed
-/// with the answers it has.
+/// with the answers it has — unless it sends the plan back as it was with
+/// nothing said, which saves the plan with its open findings instead.
 pub const MAX_ANSWER_NUDGES: u32 = 2;
 /// A revision changing fewer lines than this from the saved plan is saved
 /// without a review.
@@ -558,6 +564,19 @@ pub fn with_open_findings(plan: &str, open: &[Finding]) -> String {
     } else {
         saved
     }
+}
+
+/// What `submit_plan` answers when the reviews end because the plan came
+/// back as it was with nothing said: no review was spent, and the open
+/// findings are at the end of the plan.
+pub fn unchanged_end_note(open: usize) -> String {
+    format!(
+        "The reviews ended without another review: the plan was sent back as it was, with nothing said. \
+         {open} open finding{} {} at the end of the plan, under \"{}\", for the user.",
+        if open == 1 { "" } else { "s" },
+        if open == 1 { "is" } else { "are" },
+        OPEN_FINDINGS_HEADING.trim_start_matches("## ")
+    )
 }
 
 /// Lines a revision changes from the saved plan.
@@ -1717,14 +1736,14 @@ pub struct Outcome {
 impl Run {
     /// The plan reviews a run has: Balanced Autopilot's plan-fix limit, a
     /// total for the stage across automatic retries; a Thorough task's go
-    /// on by progress (T07), to a backstop; else two.
+    /// on by progress (T07), to a backstop; else the settings' count.
     pub(super) fn plan_review_rounds(&self) -> u32 {
         if self.thorough() {
             super::loops::MAX_ROUNDS
         } else if self.balanced_autopilot() {
             self.plan.plan_review_progress.cap()
         } else {
-            MAX_PLAN_REVIEW_ROUNDS
+            self.config().subagents.plan_reviews()
         }
     }
 
@@ -1853,7 +1872,9 @@ impl Run {
     /// B12: after a hold, what a submit is missing when it leaves a held
     /// finding unanswered. It goes back with the checker's problems and
     /// uses no review, at most MAX_ANSWER_NUDGES times a hold; past that,
-    /// the submit is reviewed with the answers it has.
+    /// the submit is reviewed with the answers it has — unless it sends
+    /// the plan back as it was with nothing said: then the reviews end and
+    /// the plan is saved with its open findings.
     pub(super) fn unanswered(&mut self, responses: &[Response]) -> Option<String> {
         self.plan.unanswered(
             responses,
@@ -1968,9 +1989,31 @@ impl Run {
                 }
             }
         }
+        // Round 3: the plan sent again as it was, with nothing said, keeps
+        // every earlier finding open; past the answer nudges (B12) it ends
+        // the reviews without spending one.
+        let recent = self.recent().await?;
+        let held = self.plan.plan_held.clone().unwrap_or_default();
+        let unchanged = self.plan.plan_held.is_some() && changed_lines(&held, plan) == 0;
+        // B12: the answers come with the submit; what the agent wrote since
+        // the hold stands in for them only when it sent none.
+        let replies = match &self.plan.plan_review_call {
+            Some(id) if responses.is_empty() => replies_after(&recent, id),
+            _ => String::new(),
+        };
+        let silent = responses.is_empty() && replies.trim().is_empty();
+        if !self.in_autopilot() && self.plan.plan_held.is_some() && unchanged && silent {
+            let open = self.plan.plan_findings.clone();
+            return Ok(Outcome {
+                decision: Decision::Save {
+                    plan: with_open_findings(plan, &open),
+                    note: Some(unchanged_end_note(open.len())),
+                },
+                record: None,
+            });
+        }
         self.plan.review_started();
         let round = self.plan.plan_reviews;
-        let recent = self.recent().await?;
         let request = self.latest_user_request().await;
         let answers = answers_in(&recent);
         let earlier = self.plan.plan_findings.clone();
@@ -1987,17 +2030,6 @@ impl Run {
         };
         let responses = positional.as_slice();
         let dropped_before = self.plan.take_dropped();
-        let held = self.plan.plan_held.clone().unwrap_or_default();
-        // B12: the answers come with the submit; what the agent wrote since
-        // the hold stands in for them only when it sent none.
-        let replies = match &self.plan.plan_review_call {
-            Some(id) if responses.is_empty() => replies_after(&recent, id),
-            _ => String::new(),
-        };
-        // Round 3: the plan sent again as it was, with nothing said, keeps
-        // every earlier finding open.
-        let unchanged = self.plan.plan_held.is_some() && changed_lines(&held, plan) == 0;
-        let silent = responses.is_empty() && replies.trim().is_empty();
         let changes = if earlier.is_empty() {
             String::new()
         } else {
@@ -2726,7 +2758,13 @@ mod tests {
     #[test]
     fn the_hold_asks_for_checked_fixes_and_answers() {
         let f = parse_findings(STEP_FINDINGS).unwrap();
-        let result = findings_result(&f, 1, MAX_PLAN_REVIEW_ROUNDS, false, None);
+        let result = findings_result(
+            &f,
+            DEFAULT_PLAN_REVIEWS - 1,
+            DEFAULT_PLAN_REVIEWS,
+            false,
+            None,
+        );
         assert!(result.starts_with("The plan wasn't saved yet"), "{result}");
         assert!(result.contains("1. [high] Step 2 — `list_users` is called"));
         assert!(result.contains("look for the same kind of problem in the other steps"));
@@ -3534,8 +3572,28 @@ mod tests {
         );
         let rewritten = plan.replace("line", "row");
         assert_eq!(changed_lines(&plan, &rewritten), 20);
+        assert!(findings_result(&f, 1, DEFAULT_PLAN_REVIEWS, false, None)
+            .contains("review 1 of at most 5"));
+    }
+
+    /// Round 3: the plan sent back as it was, with nothing said, past the
+    /// nudges: no review is spent, and the note says where the open
+    /// findings are.
+    #[test]
+    fn the_unchanged_end_note_says_no_review_was_spent_and_where_the_findings_are() {
+        let one = unchanged_end_note(1);
         assert!(
-            findings_result(&f, 1, MAX_PLAN_REVIEW_ROUNDS, false, None).contains("review 1 of at most 2")
+            one.contains("without another review")
+                && one.contains("sent back as it was, with nothing said")
+                && one.contains(
+                    "1 open finding is at the end of the plan, under \"Open review findings\""
+                ),
+            "{one}"
+        );
+        let several = unchanged_end_note(3);
+        assert!(
+            several.contains("3 open findings are at the end of the plan"),
+            "{several}"
         );
     }
 

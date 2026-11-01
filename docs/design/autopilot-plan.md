@@ -88,9 +88,12 @@ or a thing to change in a named task.
   and `verify-gave-up` park the result. `ask_user` exists in Plan mode only;
   in Agent mode a question in plain text ends the run as `done`.
 - **Plan mode** ends at `submit_plan`; the plan reviewer holds a plan for at
-  most `MAX_PLAN_REVIEW_ROUNDS = 2` (`agent_run/plan_review.rs`) and then
-  saves it with an "## Open review findings" section. Implementation
-  starts from a new user message built by `implementationRequest` in
+  most the "Plan reviews per request" the settings give it (5 by default,
+  1–20: `DEFAULT_/MAX_PLAN_REVIEWS` in `agent_run/plan_review.rs`) and then
+  saves it with an "## Open review findings" section. A plan sent back
+  unchanged and unanswered past the answer nudges spends no review and is
+  saved the same way. Implementation starts from a new user message built
+  by `implementationRequest` in
   `src/lib/chatMode.ts`, with `meta.implementsPlan`. Plans are parsed from
   Markdown by `agent_run/plan.rs` (`plan_problems`, the steps' "Files:"
   lines, the "## Decisions" section).
@@ -338,7 +341,7 @@ request.
 
 The plan reviewer as today (`plan_review.rs`), with the prompt extended:
 criteria that aren't testable, that miss part of the request or that go
-beyond it are findings. Autopilot's cap replaces `MAX_PLAN_REVIEW_ROUNDS`:
+beyond it are findings. Autopilot's cap replaces the Limit's count:
 3 rounds in Balanced, "two rounds without progress" in Thorough, where
 progress means the set of open high and medium findings shrank. At the
 cap with a high finding open, the plan isn't saved for implementation:

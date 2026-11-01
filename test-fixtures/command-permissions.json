@@ -276,6 +276,42 @@
     },
     { "command": "cat a | tee b", "allowAny": true, "expect": { "modifiesFiles": true } },
     { "command": "make test", "allowAny": true, "expect": { "modifiesFiles": false } },
-    { "command": "make", "allowAny": true, "expect": { "modifiesFiles": true } }
+    { "command": "make", "allowAny": true, "expect": { "modifiesFiles": true } },
+    {
+      "command": "sed -n '1,60p' src/main.rs",
+      "allowAny": true,
+      "expect": {
+        "segments": [["sed", "-n", "1,60p", "src/main.rs"]],
+        "permitted": true,
+        "modifiesFiles": false
+      }
+    },
+    { "command": "sed -i 's/a/b/' f", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "sed --in-p s/a/b/ f", "allowAny": true, "expect": { "modifiesFiles": true } },
+    {
+      "command": "sed -n 'w out.txt' src/a.rs",
+      "allowAny": true,
+      "expect": { "modifiesFiles": true }
+    },
+    {
+      "command": "sed 's/.*/rm -rf src/e' f",
+      "allowAny": true,
+      "expect": { "modifiesFiles": true }
+    },
+    {
+      "command": "sed --line-length 70 'w out.txt' f",
+      "allowAny": true,
+      "expect": { "modifiesFiles": true }
+    },
+    {
+      "command": "cargo nextest run -p rovik-core",
+      "allowAny": true,
+      "expect": { "permitted": true, "modifiesFiles": false }
+    },
+    {
+      "command": "sed -- s/a/b/ f -i",
+      "allowAny": true,
+      "expect": { "permitted": true, "modifiesFiles": false }
+    }
   ]
 }

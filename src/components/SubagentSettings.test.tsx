@@ -94,6 +94,11 @@ test('subagent settings: mounted, the isolated options are on offer; no token li
     .querySelector('input') as HTMLInputElement;
   assert.equal(tokens.placeholder, 'no limit');
   assert.equal(tokens.value, '');
+  // Limits: the plan review's count, at its default.
+  const reviews = [...root.querySelectorAll('label.setting-number-field')]
+    .find((l) => l.textContent?.includes('Plan reviews per request'))!
+    .querySelector('input') as HTMLInputElement;
+  assert.equal(reviews.value, '5');
 });
 
 test('subagent settings: the page is the master switch, the default model, the kinds and the limits', () => {

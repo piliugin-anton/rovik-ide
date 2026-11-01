@@ -2753,6 +2753,13 @@ fn plan_reviewer_on(extra: Value) -> subagent::SubagentConfig {
     serde_json::from_value(json!({ "enabled": true, "kinds": { "planReviewer": kind } })).unwrap()
 }
 
+/// A plan reviewer config with the run's plan reviews set, for the tests
+/// written when two were all a run got.
+fn with_plan_reviews(mut config: subagent::SubagentConfig, n: u32) -> subagent::SubagentConfig {
+    config.max_plan_reviews = Some(n);
+    config
+}
+
 /// A plan the checker accepts in `plan_project()`; `extra` adds steps.
 fn users_plan(title: &str, extra: usize) -> String {
     let mut steps = String::from(
@@ -2843,9 +2850,12 @@ async fn plan_findings_hold_the_plan_until_the_agent_fixes_it() {
     assert!(first
         .content
         .contains("1. [high] Step 2 — `list_users` is also called"));
-    // B11: how to answer, and that the next review is the last.
+    // B11: how to answer, and how many reviews are left.
     assert!(
-        first.content.contains("`responses`") && first.content.contains("this run's last review"),
+        first.content.contains("`responses`")
+            && first
+                .content
+                .contains("4 more reviews are left in this run"),
         "{}",
         first.content
     );
@@ -2938,7 +2948,7 @@ async fn after_the_last_round_open_findings_go_in_the_plan_and_no_third_review()
         ],
     )
     .await;
-    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+    h.start(h.plan_request(&url, with_plan_reviews(plan_reviewer_on(json!({})), 2)))
         .await;
     assert_eq!(h.run_end().await, "done");
     let messages = h.messages().await;
@@ -3001,7 +3011,7 @@ async fn the_open_findings_section_is_in_the_saved_plan() {
         ],
     )
     .await;
-    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+    h.start(h.plan_request(&url, with_plan_reviews(plan_reviewer_on(json!({})), 2)))
         .await;
     assert_eq!(h.run_end().await, "done");
     let files = h.plan_files();
@@ -3034,7 +3044,7 @@ async fn a_follow_up_holds_new_findings_even_where_the_revision_changed_nothing(
         ],
     )
     .await;
-    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+    h.start(h.plan_request(&url, with_plan_reviews(plan_reviewer_on(json!({})), 2)))
         .await;
     assert_eq!(h.run_end().await, "done");
     let messages = h.messages().await;
@@ -3100,7 +3110,7 @@ async fn a_follow_up_without_verdicts_is_asked_for_them() {
             ],
         )
         .await;
-        h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        h.start(h.plan_request(&url, with_plan_reviews(plan_reviewer_on(json!({})), 2)))
             .await;
         assert_eq!(h.run_end().await, "done");
         assert_eq!(
@@ -3335,16 +3345,13 @@ async fn an_unanswered_hold_goes_back_without_a_review() {
 }
 
 /// B12: the answers are owed MAX_ANSWER_NUDGES times a hold; past that, the
-/// plan sent again as it was, with nothing said, is reviewed, and the held
-/// finding stays open whatever the review says (round 3).
+/// plan sent again as it was, with nothing said, ends the reviews without
+/// spending one: it's saved with its open findings and no review record.
 #[tokio::test]
-async fn hold_then_identical_resubmits_are_nudged_then_reviewed() {
+async fn identical_resubmits_are_nudged_twice_then_no_review_is_spent() {
     let h = plan_project().await;
     let (url, seen) = model_routed(
-        vec![(
-            PLAN_REVIEW,
-            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_RESOLVED)],
-        )],
+        vec![(PLAN_REVIEW, vec![Reply::Text(PLAN_FINDING)])],
         vec![
             submit("p1", users_plan("Users", 0)),
             submit("p2", users_plan("Users", 0)),
@@ -3366,45 +3373,181 @@ async fn hold_then_identical_resubmits_are_nudged_then_reviewed() {
             r.content
         );
     }
-    let briefs: Vec<String> = requests_with(&seen, PLAN_REVIEW)
-        .iter()
-        .map(|b| {
-            b["messages"][1]["content"]
-                .as_str()
-                .unwrap_or("")
-                .to_string()
-        })
-        .collect();
-    assert_eq!(briefs.len(), 2, "p4 was reviewed, p2 and p3 weren't");
-    assert!(
-        briefs[1].contains("   - The agent's answer: none")
-            && briefs[1].contains(
-                "## What the revision changed\n\nNothing: the agent sent the plan again as it was."
-            ),
-        "{}",
-        briefs[1]
+    assert_eq!(
+        requests_with(&seen, PLAN_REVIEW).len(),
+        1,
+        "p4 spent no review"
     );
     let fourth = result_of(&messages, "p4");
     assert!(
         fourth.content.starts_with("Saved the plan to")
+            && fourth.content.contains("without another review")
             && fourth
                 .content
-                .contains("still reported 1 finding after its last round"),
+                .contains("1 open finding is at the end of the plan"),
         "{}",
         fourth.content
     );
-    let review = &fourth.meta.as_ref().unwrap()["review"];
-    assert_eq!(
-        (&review["round"], &review["status"], &review["open"]),
-        (&json!(2), &json!("findings"), &json!(1)),
-        "{review}"
-    );
-    assert_eq!(review["earlier"][0]["resolved"], false, "{review}");
-    assert_eq!(
-        review["earlier"][0]["reason"],
-        "the plan was sent again unchanged, with no answer"
+    assert!(
+        fourth
+            .meta
+            .as_ref()
+            .is_none_or(|m| m.get("review").is_none()),
+        "no review record: {:?}",
+        fourth.meta
     );
     assert!(h.plan_files()[0].contains("## Open review findings"));
+}
+
+/// The count is the run's, the first submit's included: the default five
+/// reviews go to the first submit and four resubmits, and the fifth
+/// resubmit is saved without a review.
+#[tokio::test]
+async fn the_default_cap_reviews_four_resubmits_and_skips_the_fifth() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![
+                Reply::Text(PLAN_FINDING),
+                Reply::Text(PLAN_UNRESOLVED),
+                Reply::Text(PLAN_UNRESOLVED),
+                Reply::Text(PLAN_UNRESOLVED),
+                Reply::Text(PLAN_UNRESOLVED),
+            ],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
+            submit_with("p3", users_plan("Users", 2), added_the_step()),
+            submit_with("p4", users_plan("Users", 3), added_the_step()),
+            submit_with("p5", users_plan("Users", 4), added_the_step()),
+            submit("p6", users_plan("Users v6", 6)),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let first = result_of(&messages, "p1");
+    assert!(
+        first.content.contains("(review 1 of at most 5)")
+            && first
+                .content
+                .contains("4 more reviews are left in this run"),
+        "{}",
+        first.content
+    );
+    // The fourth resubmit is round 5 of 5: the last, so the plan is saved
+    // with its open findings.
+    let fifth = result_of(&messages, "p5");
+    assert!(
+        fifth.content.starts_with("Saved the plan to")
+            && fifth
+                .content
+                .contains("still reported 1 finding after its last round"),
+        "{}",
+        fifth.content
+    );
+    let review = &fifth.meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (&review["round"], &review["maxRounds"], &review["open"]),
+        (&json!(5), &json!(5), &json!(1)),
+        "{review}"
+    );
+    // The fifth resubmit, a real revision, is saved without a review.
+    let sixth = result_of(&messages, "p6");
+    assert!(
+        sixth.content.starts_with("Saved the plan to")
+            && sixth
+                .content
+                .contains("Review skipped: this run's 5 plan reviews are used."),
+        "{}",
+        sixth.content
+    );
+    let skipped = &sixth.meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (skipped["status"].as_str(), skipped["maxRounds"].as_u64()),
+        (Some("skipped"), Some(5)),
+        "{skipped}"
+    );
+    assert!(skipped.get("round").is_none(), "{skipped}");
+    assert_eq!(
+        requests_with(&seen, PLAN_REVIEW).len(),
+        5,
+        "five reviews: p1's and four resubmits'"
+    );
+    let files = h.plan_files();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].starts_with("# Users v6"), "{}", files[0]);
+}
+
+/// The setting bounds the run's reviews: three here, so the third review
+/// is the last and the fourth submit is saved without one.
+#[tokio::test]
+async fn a_configured_cap_ends_the_reviews_after_three() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![
+                Reply::Text(PLAN_FINDING),
+                Reply::Text(PLAN_UNRESOLVED),
+                Reply::Text(PLAN_UNRESOLVED),
+            ],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
+            submit_with("p3", users_plan("Users", 2), added_the_step()),
+            submit("p4", users_plan("Users v4", 6)),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, with_plan_reviews(plan_reviewer_on(json!({})), 3)))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let third = result_of(&messages, "p3");
+    assert!(
+        third.content.starts_with("Saved the plan to")
+            && third
+                .content
+                .contains("still reported 1 finding after its last round"),
+        "{}",
+        third.content
+    );
+    let review = &third.meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (&review["round"], &review["maxRounds"], &review["open"]),
+        (&json!(3), &json!(3), &json!(1)),
+        "{review}"
+    );
+    let fourth = result_of(&messages, "p4");
+    assert!(
+        fourth
+            .content
+            .contains("Review skipped: this run's 3 plan reviews are used."),
+        "{}",
+        fourth.content
+    );
+    let skipped = &fourth.meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (skipped["status"].as_str(), skipped["maxRounds"].as_u64()),
+        (Some("skipped"), Some(3)),
+        "{skipped}"
+    );
+    assert_eq!(
+        requests_with(&seen, PLAN_REVIEW).len(),
+        3,
+        "three reviews: p1's and two resubmits'"
+    );
+    let files = h.plan_files();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].starts_with("# Users v4"), "{}", files[0]);
 }
 
 #[tokio::test]
@@ -3697,7 +3840,7 @@ async fn a_small_revert_after_a_hold_is_still_reviewed() {
     )
     .await;
     h.events.lock().unwrap().clear();
-    h.start(h.plan_request(&url2, plan_reviewer_on(json!({}))))
+    h.start(h.plan_request(&url2, with_plan_reviews(plan_reviewer_on(json!({})), 2)))
         .await;
     assert_eq!(h.run_end().await, "done");
     let briefs = requests_with(&seen2, PLAN_REVIEW);
@@ -11072,7 +11215,7 @@ async fn budget_used_record_shape() {
         ],
     )
     .await;
-    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+    h.start(h.plan_request(&url, with_plan_reviews(plan_reviewer_on(json!({})), 2)))
         .await;
     assert_eq!(h.run_end().await, "done");
     assert_eq!(requests_with(&seen, PLAN_REVIEW).len(), 2);
@@ -11126,7 +11269,7 @@ async fn plan_review_across_a_second_run() {
         ],
     )
     .await;
-    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+    h.start(h.plan_request(&url, with_plan_reviews(plan_reviewer_on(json!({})), 2)))
         .await;
     assert_eq!(h.run_end().await, "done");
     assert_eq!(requests_with(&seen, PLAN_REVIEW).len(), 2);

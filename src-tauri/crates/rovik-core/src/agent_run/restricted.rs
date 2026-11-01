@@ -3367,9 +3367,9 @@ fn values_of(args: &[String], key: &str) -> Vec<String> {
 /// A program's arguments: its options, each short one apart (`-rn` is `-r`
 /// and `-n`), with their values, and its other words.
 #[derive(Default)]
-struct Args<'a> {
-    options: Vec<(String, Option<&'a str>)>,
-    words: Vec<&'a str>,
+pub(super) struct Args<'a> {
+    pub(super) options: Vec<(String, Option<&'a str>)>,
+    pub(super) words: Vec<&'a str>,
     /// For each word, how many options come before it.
     before: Vec<usize>,
 }
@@ -3378,7 +3378,7 @@ impl<'a> Args<'a> {
     /// `args` split, the options in `valued` taking a value: attached
     /// (`-A3`, `--glob=*.rs`) or the next word. With `slash`, Windows'
     /// options too: `/s`, `/c:text`.
-    fn split(args: &'a [String], valued: &[&str], slash: bool) -> Args<'a> {
+    pub(super) fn split(args: &'a [String], valued: &[&str], slash: bool) -> Args<'a> {
         let mut out = Args::default();
         let mut words = args.iter().map(String::as_str);
         let mut options_end = false;
@@ -3430,7 +3430,7 @@ impl<'a> Args<'a> {
         self.before.push(self.options.len());
     }
 
-    fn has(&self, names: &[&str]) -> bool {
+    pub(super) fn has(&self, names: &[&str]) -> bool {
         self.options
             .iter()
             .any(|(n, _)| names.contains(&n.as_str()))
@@ -3440,7 +3440,7 @@ impl<'a> Args<'a> {
         self.options.iter().filter(|(n, _)| n == name).count()
     }
 
-    fn values<'b>(&'b self, names: &'b [&str]) -> impl Iterator<Item = &'a str> + 'b {
+    pub(super) fn values<'b>(&'b self, names: &'b [&str]) -> impl Iterator<Item = &'a str> + 'b {
         self.options
             .iter()
             .filter(move |(n, _)| names.contains(&n.as_str()))

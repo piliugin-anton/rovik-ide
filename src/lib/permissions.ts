@@ -579,6 +579,7 @@ const CHECK_COMMANDS: string[][] = [
   ['cargo', 'check'],
   ['cargo', 'test'],
   ['cargo', 'clippy'],
+  ['cargo', 'nextest'],
   ['cargo', 'build'],
   ['cargo', 'tree'],
   ['cargo', 'metadata'],
@@ -612,6 +613,119 @@ const CHECK_COMMANDS: string[][] = [
   ['make', 'test'],
   ['make', 'check'],
 ];
+/** The `sed` options that take a value: their word's rest, or the next one. */
+const SED_VALUED = ['-e', '--expression', '-f', '--file', '-l', '--line-length'];
+
+/**
+ * Whether a `sed` option name asks it to rewrite its files in place: `-i`,
+ * `-I` (BSD sed's), and `--in-place` as short as GNU sed takes it (`--in-p`).
+ * Mirrors `rewrites_in_place` in permissions.rs.
+ */
+function rewritesInPlace(option: string): boolean {
+  if (option.startsWith('--')) return option.length > 2 && '--in-place'.startsWith(option);
+  return option === '-i' || option === '-I';
+}
+
+/** Where `from` continues once the delimiter it is in is closed, an escaped one not counting; the end of the script when it is not closed. */
+function pastDelimiter(chars: string[], from: number, delimiter: string): number {
+  let at = from;
+  while (at < chars.length) {
+    if (chars[at] === delimiter) return at + 1;
+    at += chars[at] === '\\' ? 2 : 1;
+  }
+  return chars.length;
+}
+
+/** Where a command's words end: at the `;`, the newline or the `}` closing its block, or the end of the script. */
+function separatorAfter(chars: string[], from: number): number {
+  let at = from;
+  while (at < chars.length) {
+    const c = chars[at];
+    if (c === ';' || c === '\n' || c === '}') return at + 1;
+    at += c === '\\' && chars[at + 1] === '\n' ? 2 : 1;
+  }
+  return chars.length;
+}
+
+/**
+ * Whether a sed script writes a file or runs a program: its `w`/`W` and `e`
+ * commands, and an `s` (or `y`) command flagged `w`, `W` or `e`. Every other
+ * command, and an address, only reads. Mirrors `sed_script_may_write`.
+ */
+function sedScriptMayWrite(script: string): boolean {
+  const chars = [...script];
+  let at = 0;
+  while (at < chars.length) {
+    const c = chars[at]!;
+    if (/\s/.test(c) || ';,{}!0123456789$+~'.includes(c)) {
+      at += 1;
+    } else if (c === '/') {
+      at = pastDelimiter(chars, at + 1, '/');
+    } else if (c === '\\') {
+      at = pastDelimiter(chars, at + 1, chars[at + 1] ?? '/');
+    } else if (c === 'w' || c === 'W' || c === 'e') {
+      return true;
+    } else if (c === 's' || c === 'y') {
+      const delimiter = chars[at + 1];
+      if (delimiter === undefined) return true;
+      const flags = pastDelimiter(chars, pastDelimiter(chars, at + 2, delimiter), delimiter);
+      const to = separatorAfter(chars, flags);
+      if (chars.slice(flags, to).some((f) => f === 'w' || f === 'W' || f === 'e')) return true;
+      at = to;
+    } else {
+      at = separatorAfter(chars, at + 1);
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a `sed` invocation may change a file: `-i` rewrites the files it
+ * reads, a script file (`-f`) could hold anything, and a script itself may
+ * write one or run a program. Only an option asks for `-i`: a word after
+ * `--`, or a value, doesn't. Mirrors `sed_may_write` in permissions.rs.
+ */
+function sedMayWrite(rest: string[]): boolean {
+  const options: string[] = [];
+  const scripts: string[] = [];
+  const words: string[] = [];
+  let optionsEnd = false;
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i]!;
+    if (optionsEnd || word === '-' || !word.startsWith('-')) {
+      words.push(word);
+      continue;
+    }
+    if (word === '--') {
+      optionsEnd = true;
+      continue;
+    }
+    if (word.startsWith('--')) {
+      const eq = word.indexOf('=');
+      const name = eq < 0 ? word : word.slice(0, eq);
+      options.push(name);
+      let value: string | undefined;
+      if (eq >= 0) value = word.slice(eq + 1);
+      else if (SED_VALUED.includes(name)) value = rest[++i];
+      if (name === '--expression' && value !== undefined) scripts.push(value);
+      continue;
+    }
+    // `-ne 'p'`: an `e`, `f` or `l` in a cluster ends it and takes a value.
+    for (let k = 1; k < word.length; k++) {
+      const name = `-${word[k]}`;
+      options.push(name);
+      if (!SED_VALUED.includes(name)) continue;
+      const rest_of = word.slice(k + 1);
+      const value = rest_of === '' ? rest[++i] : rest_of;
+      if (name === '-e' && value !== undefined) scripts.push(value);
+      break;
+    }
+  }
+  if (options.some(rewritesInPlace)) return true;
+  if (options.includes('-f') || options.includes('--file')) return true;
+  const read = scripts.length > 0 ? scripts : words.slice(0, 1);
+  return read.some(sedScriptMayWrite);
+}
 
 function segmentIsReadOnly(seg: string[]): boolean {
   const [cmd, ...rest] = seg;
@@ -626,6 +740,7 @@ function segmentIsReadOnly(seg: string[]): boolean {
   }
   if (cmd === 'sort') return !rest.some((a) => a === '-o' || a.startsWith('--output'));
   if (cmd === 'awk') return !rest.some((a) => /system\(|>\s*"/.test(a));
+  if (cmd === 'sed' || cmd === 'gsed') return !sedMayWrite(rest);
   if (READ_ONLY_COMMANDS.has(cmd)) return true;
 
   if (cmd === 'git') {
