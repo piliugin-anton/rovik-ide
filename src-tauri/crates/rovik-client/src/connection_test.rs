@@ -554,6 +554,7 @@ async fn daemon(connector: &dyn Connector) -> Step {
 mod tests {
     use super::*;
     use crate::ssh::Ssh;
+    use rovik_core::testing::NOTHING_LISTENS;
 
     #[tokio::test]
     async fn an_address_that_takes_no_connection_ends_the_test() {
@@ -570,18 +571,10 @@ mod tests {
             named.message
         );
         drop(listener);
-        // A port let go is free for any test running meanwhile to take
-        // (macOS gave one to another): one of a few let go stays free.
-        let mut closed = reach("127.0.0.1", port).await;
-        for _ in 0..4 {
-            if closed.outcome == Outcome::Failed {
-                break;
-            }
-            let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = other.local_addr().unwrap().port();
-            drop(other);
-            closed = reach("127.0.0.1", port).await;
-        }
+        // A port nothing listens on, and nothing this computer runs can be
+        // given — not a port just let go, which any test running meanwhile
+        // may take (macOS gave one to another).
+        let closed = reach("127.0.0.1", NOTHING_LISTENS).await;
         assert_eq!(closed.outcome, Outcome::Failed, "{}", closed.message);
         assert!(!closed.lets_through());
         let unknown = reach("no-such-host.invalid", 22).await;

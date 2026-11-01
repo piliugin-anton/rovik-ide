@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::connectors::mcp::{McpReply, McpServer as RovikServer};
-use crate::testing::temp_dir;
+use crate::testing::{temp_dir, NOTHING_LISTENS};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -553,9 +553,7 @@ async fn a_server_starts_again_with_its_new_secrets_once_forgotten() {
 #[tokio::test]
 async fn the_keychain_is_read_off_the_async_threads() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
-    drop(listener);
+    let url = format!("http://127.0.0.1:{NOTHING_LISTENS}/mcp");
     let slow = server(
         "slow",
         McpTransport::Url {
@@ -842,9 +840,7 @@ async fn a_modern_http_server_is_spoken_to_statelessly() {
 /// tried again by the next run right away (Q04).
 #[tokio::test]
 async fn a_server_that_cant_be_reached_waits_before_it_is_tried_again() {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
-    drop(listener);
+    let url = format!("http://127.0.0.1:{NOTHING_LISTENS}/mcp");
     let gone = server(
         "gone",
         McpTransport::Url {

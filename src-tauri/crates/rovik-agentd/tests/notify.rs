@@ -9,12 +9,12 @@ mod common;
 use common::project::CHAT;
 use common::task::*;
 use common::{listening, until, Daemon, Session};
-use rovik_core::testing::Reply;
+use rovik_core::testing::{Reply, NOTHING_LISTENS};
 use rovik_protocol::autopilot::{AutonomyConfig, Delivery};
 use rovik_protocol::{Request, Response};
 use serde_json::json;
 use std::time::Duration;
-use tokio::net::{TcpListener, UnixStream};
+use tokio::net::UnixStream;
 
 /// This computer has the server keep its results, and call `url` when a
 /// task ends or is blocked.
@@ -145,9 +145,7 @@ async fn a_notice_that_never_goes_never_stops_the_task() {
     // Nothing listens there: the task goes on all the same.
     let daemon = Daemon::start(&["--same-machine"]).await;
     let mut session = daemon.session().await;
-    let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let gone = format!("http://{}/hook?token=s3cret", closed.local_addr().unwrap());
-    drop(closed);
+    let gone = format!("http://127.0.0.1:{NOTHING_LISTENS}/hook?token=s3cret");
     notifying(&mut session, &gone).await;
     started(&daemon, look()).await;
     assert_eq!(until_delivered(&daemon).await, delivered_whole());
