@@ -31,6 +31,59 @@ fn autopilots_plan_stage_asks_nothing() {
     assert!(!PLAN_MODE_INSTRUCTIONS.contains("## Criteria"));
 }
 
+/// Step 3: one whole example plan, inside `plan_form` so a planner copies
+/// its shape; it carries no criteria (Autopilot's own line says where those
+/// go) and no questions.
+#[test]
+fn the_form_carries_one_whole_example_plan() {
+    let form = plan_form();
+    assert!(form.contains("For example, a whole plan:"), "{form}");
+    for line in [
+        "# Page the users list",
+        "1. Page the query",
+        "Files: `src/db/users.rs`",
+        "## Decisions",
+        "## Validation",
+        "## Risks",
+    ] {
+        assert!(form.contains(line), "{line}");
+    }
+    assert!(form.contains("(new)") && form.contains("(read)"));
+    // Exactly one: the inline step example it replaced is gone.
+    assert!(!form.contains("List users in the API"), "{form}");
+    // The form is Autopilot's, so its criteria line is there; the example
+    // adds no second one (it is criteria-free on purpose).
+    assert_eq!(form.matches("## Criteria").count(), 1, "{form}");
+    assert!(!form.contains("ask_user"), "the form, not the questions");
+}
+
+/// Step 2: the plan is settled before the form is filled in, so the form
+/// is a record and not a place to decide; `plan_form` still slices the form
+/// alone, from the summary line to the line before `submit_plan`'s checks.
+#[test]
+fn the_design_is_settled_before_the_form() {
+    let decide = PLAN_MODE_INSTRUCTIONS
+        .find("3. Decide before you write")
+        .expect("the decide item");
+    let form = PLAN_MODE_INSTRUCTIONS
+        .find("4. Save the plan with the submit_plan tool")
+        .expect("the form item");
+    assert!(decide < form, "the design is settled first");
+    // Every line `plan_mode_instructions` replaces is still Plan mode's.
+    for line in [PLAN_MODE_CHOSEN, PLAN_MODE_QUESTIONS, PLAN_SUMMARY_LINE] {
+        assert!(PLAN_MODE_INSTRUCTIONS.contains(line), "{line}");
+    }
+    // Autopilot settles the design too, and nothing replaces that line.
+    assert!(plan_mode_instructions(true).contains("3. Decide before you write"));
+    let form = plan_form();
+    assert!(
+        form.starts_with("- a \"# \" title and a one-paragraph summary"),
+        "{form}"
+    );
+    assert!(!form.contains("Before you submit"), "{form}");
+    assert!(!form.contains("Decide before you write"), "the form alone");
+}
+
 const CRITERIA_PLAN: &str = "# Add users\n\nUsers can sign up.\n\n## Criteria\n\n\
     1. `POST /users` with a new email creates a user and answers 201.\n\
     2. The same email again answers 409\n   and creates nothing.\n\
@@ -1559,22 +1612,34 @@ fn normalize_fixes_only_mechanical_problems() {
     assert_eq!(normalize(fine, None, None), (fine.to_string(), Vec::new()));
 }
 
-/// `skeleton` keeps the title, the steps' files, and marks what's missing.
+/// `skeleton` keeps the title, the steps' files, and marks what's missing:
+/// a plan-mode frame is Decisions, Validation and Risks, an Autopilot one
+/// Validation and Criteria (S01).
 #[test]
 fn a_skeleton_keeps_the_frame_and_marks_what_is_missing() {
     let plan = "# Users\n\n## Steps\n1. Load the users\n   Files: `src/a.rs`, `src/b.rs` (new), `../x`\n2. Show them\n   no files here\n";
-    let s = skeleton(plan);
+    let s = skeleton(plan, false);
     assert!(s.starts_with("# Users\n"), "{s}");
     assert!(
         s.contains("1. Load the users\n   Files: `src/a.rs`, `src/b.rs` (new), TODO: fix `../x`"),
         "{s}"
     );
     assert!(s.contains("2. Show them\n   Files: TODO:"), "{s}");
+    assert!(s.contains("## Decisions\n\nTODO:"), "{s}");
     assert!(s.contains("## Validation\n\nTODO:"));
-    assert!(s.contains("## Criteria\n\n1. TODO:"));
-    let s = skeleton("just text");
+    assert!(s.contains("## Risks\n\nTODO:"), "{s}");
+    assert!(!s.contains("## Criteria"), "{s}");
+    // Autopilot's frame is what it was: what done means, and no Risks.
+    let a = skeleton(plan, true);
+    assert!(a.contains("## Criteria\n\n1. TODO:"), "{a}");
+    assert!(
+        !a.contains("## Decisions") && !a.contains("## Risks"),
+        "{a}"
+    );
+    let s = skeleton("just text", false);
     assert!(s.starts_with("# TODO: title"));
     assert!(s.contains("1. TODO: step title"));
+    assert!(s.contains("## Risks\n\nTODO:"));
 }
 
 /// The checker and execution agree on the steps, including tolerant forms.

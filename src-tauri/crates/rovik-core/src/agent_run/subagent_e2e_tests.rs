@@ -2801,6 +2801,19 @@ fn added_the_step() -> Value {
     json!([{ "finding": 1, "action": "fixed", "note": "Added step 3, which updates `src/cli.rs`." }])
 }
 
+/// The revised plan a follow-up review reads: step 3 added, and step 2
+/// rewritten when the finding's own step is the one the revision changed.
+fn revised_plan(rewrote_step_two: bool) -> String {
+    let plan = users_plan("Users", 1);
+    match rewrote_step_two {
+        false => plan,
+        true => plan.replace(
+            "Add `fn list_users()` returning every user.",
+            "Add `fn list_users()` returning every user, newest first.",
+        ),
+    }
+}
+
 impl Harness {
     fn plan_request(&self, url: &str, subagents: subagent::SubagentConfig) -> StartRequest {
         let mut request = self.request(url, plan_send("Add users"), quiet_permissions());
@@ -3073,24 +3086,32 @@ async fn a_follow_up_holds_new_findings_even_where_the_revision_changed_nothing(
     assert!(files[0].contains("## Open review findings"), "{}", files[0]);
 }
 
-/// B13: a follow-up review whose report gives an earlier finding no
-/// verdict is asked once, in a turn without tools, for it; its answer, in
-/// a shape of its own, is the verdict. One that never gives it leaves the
-/// finding settled but not checked.
+/// B13: a follow-up review whose report gives an earlier finding no verdict
+/// is asked once, in a turn without tools, for it when the revision touched
+/// that finding's step; its answer, in a shape of its own, is the verdict.
+/// A verdict the revision can't change anything about — its step untouched —
+/// isn't asked for: the finding settles, recorded as not checked.
 #[tokio::test]
 async fn a_follow_up_without_verdicts_is_asked_for_them() {
-    for (answer, resolved, checked, reason) in [
+    // `rewrote`: the revision rewrites step 2, the finding's own step, so a
+    // verdict can still change the plan and is asked for; otherwise it only
+    // adds step 3 and no turn is spent asking.
+    for (rewrote, answer, resolved, checked, reason, requests) in [
         (
-            "1: not resolved — `src/cli.rs` calls `list_users` twice.",
             false,
-            true,
-            "`src/cli.rs` calls `list_users` twice.",
-        ),
-        (
             "## Findings\n\nNone.",
             true,
             false,
             "the reviewer gave no verdict on it; taken as settled",
+            2,
+        ),
+        (
+            true,
+            "1: not resolved — `src/cli.rs` calls `list_users` twice.",
+            false,
+            true,
+            "`src/cli.rs` calls `list_users` twice.",
+            3,
         ),
     ] {
         let h = plan_project().await;
@@ -3105,7 +3126,7 @@ async fn a_follow_up_without_verdicts_is_asked_for_them() {
             )],
             vec![
                 submit("p1", users_plan("Users", 0)),
-                submit_with("p2", users_plan("Users", 1), added_the_step()),
+                submit_with("p2", revised_plan(rewrote), added_the_step()),
                 Reply::Text("Saved."),
             ],
         )
@@ -3115,8 +3136,8 @@ async fn a_follow_up_without_verdicts_is_asked_for_them() {
         assert_eq!(h.run_end().await, "done");
         assert_eq!(
             requests_with(&seen, PLAN_REVIEW).len(),
-            3,
-            "the review, the follow-up and its ask"
+            requests,
+            "the review, the follow-up, and its ask only where it can change something"
         );
         let messages = h.messages().await;
         let review = &result_of(&messages, "p2").meta.as_ref().unwrap()["review"];
@@ -3146,14 +3167,15 @@ async fn a_follow_up_without_verdicts_is_asked_for_them() {
                     .is_some_and(|m| m["harness"] == "subagentFormat")
             })
             .collect();
-        assert_eq!(asks.len(), 1);
-        assert!(
-            asks[0]
-                .content
-                .contains("Your report gives no verdict on Earlier 1. Don't call any tools."),
-            "{}",
-            asks[0].content
-        );
+        assert_eq!(asks.len(), requests - 2, "{work:#?}");
+        if let Some(ask) = asks.first() {
+            assert!(
+                ask.content
+                    .contains("Your report gives no verdict on Earlier 1. Don't call any tools."),
+                "{}",
+                ask.content
+            );
+        }
     }
 }
 
@@ -8885,7 +8907,12 @@ async fn plan_checks_see_the_chats_view_in_an_isolated_chat() {
         first.contains("`src/missing.rs`, which isn't in the project"),
         "{first}"
     );
-    assert!(!first.contains("only_here"), "{first}");
+    // The repair frame repeats valid paths too; only a missing-file
+    // diagnostic would mean the checks lost the chat's view.
+    assert!(
+        !first.contains("`src/only_here.rs`, which isn't in the project"),
+        "{first}"
+    );
     let second = result_of(&messages, "p2").content.clone();
     assert!(second.starts_with("Saved the plan"), "{second}");
 }

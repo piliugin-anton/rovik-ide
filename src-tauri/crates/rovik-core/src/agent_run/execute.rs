@@ -2256,17 +2256,19 @@ impl Run {
             if !fixes.is_empty() {
                 content.push_str(&format!("\n\nThe IDE fixed: {}.", fixes.join("; ")));
             }
-            // Balanced Autopilot: after repeated format rejections, the
-            // plan's frame to fill in. They never use a review round.
-            if self.balanced_autopilot() && format_problems && !answers_only {
+            // A plan sent back for its form gets its frame to fill in, the
+            // first time: mechanical problems never use a review round.
+            if format_problems && !answers_only {
                 self.plan.format_rejected();
-                if self.plan.format_rejections() >= 2 {
-                    content.push_str(&format!(
-                        "\n\nThe plan was sent back {} times for its form. Here is its frame, with TODO where you must write; fill it in with your content and send the complete plan:\n\n{}",
-                        self.plan.format_rejections(),
-                        doc.skeleton()
-                    ));
-                }
+                let times = self.plan.format_rejections();
+                let lead = match times {
+                    1 => "The plan was sent back for its form.".to_string(),
+                    n => format!("The plan was sent back {n} times for its form."),
+                };
+                content.push_str(&format!(
+                    "\n\n{lead} Here is its frame, with TODO where you must write; fill it in with your content and send the complete plan:\n\n{}",
+                    doc.skeleton(self.in_autopilot())
+                ));
             }
             // The plan sent back is the last one submitted: what `edits`
             // apply to next.

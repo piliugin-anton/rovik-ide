@@ -254,16 +254,18 @@ impl PlanDoc {
     }
 }
 
-/// Balanced Autopilot, after repeated format rejections: the plan's frame
-/// to fill in. Its "# " title, its steps with their `Files:` lines, and
-/// every section it lacks, with `TODO:` where the model must write.
-pub fn skeleton(markdown: &str) -> String {
-    PlanDoc::parse(markdown).skeleton()
+/// A plan sent back for its form: the plan's frame to fill in. Its "# "
+/// title, its steps with their `Files:` lines, and every section it lacks,
+/// with `TODO:` where the model must write. A plan-mode plan's sections are
+/// Decisions, Validation and Risks; an Autopilot task's are Validation and
+/// Criteria (S01).
+pub fn skeleton(markdown: &str, autopilot: bool) -> String {
+    PlanDoc::parse(markdown).skeleton(autopilot)
 }
 
 impl PlanDoc {
-    /// A repair frame built from the same steps and criteria as validation.
-    pub fn skeleton(&self) -> String {
+    /// A repair frame built from the same steps and sections as validation.
+    pub fn skeleton(&self, autopilot: bool) -> String {
         let mut out = String::new();
         out.push_str(self.title().unwrap_or("# TODO: title"));
         out.push_str("\n\nTODO: a one-paragraph summary of the approach.\n\n## Steps\n\n");
@@ -308,12 +310,19 @@ impl PlanDoc {
             s.number
         ));
         }
+        if !autopilot {
+            out.push_str("\n## Decisions\n\nTODO: the user's answers and what you decided yourself, with why.\n");
+        }
         let has_validation = self.validation().is_some_and(|s| !s.is_empty());
         out.push_str("\n## Validation\n\n");
         if has_validation {
             out.push_str("(as you wrote it)\n");
         } else {
             out.push_str("TODO: the commands to run (build, typecheck, tests, lint), the tests to add or update, and what to check by hand.\n");
+        }
+        if !autopilot {
+            out.push_str("\n## Risks\n\nTODO: open points, or None.\n");
+            return out;
         }
         out.push_str("\n## Criteria\n\n");
         match self.criteria() {
