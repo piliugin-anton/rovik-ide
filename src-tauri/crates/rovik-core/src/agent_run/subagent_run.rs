@@ -113,6 +113,10 @@ pub(super) struct SubCtx {
     /// Its report turns keep the "## Earlier findings" section, and a
     /// report that gives some of them no verdict is asked once for those.
     pub earlier_findings: Vec<super::change_review::Finding>,
+    /// The steps the revision changed, for a follow-up plan review: a
+    /// missing verdict is only asked for on one of them, or on a finding
+    /// about the plan as a whole. Empty: no such filter.
+    pub earlier_changed: Vec<usize>,
     /// T08: one turn without tools in its chat as it was, its words the
     /// result, in no format (a change reviewer's view of the task's end).
     pub view_only: bool,
@@ -155,6 +159,7 @@ impl SubCtx {
             kept_copy: false,
             other_steps: Vec::new(),
             earlier_findings: Vec::new(),
+            earlier_changed: Vec::new(),
             view_only: false,
         }
     }
@@ -1548,7 +1553,15 @@ impl Run {
             .sub()
             .map(|s| s.earlier_findings.clone())
             .unwrap_or_default();
-        let missing = super::plan_review::missing_verdicts(&text, &earlier);
+        let changed = self
+            .sub()
+            .map(|s| s.earlier_changed.clone())
+            .unwrap_or_default();
+        let missing = super::plan_review::verdicts_worth_asking(
+            &super::plan_review::missing_verdicts(&text, &earlier),
+            &earlier,
+            &changed,
+        );
         if missing.is_empty() || subagent::is_blocked(&text) {
             return Ok((status_of(&text, status), text, None));
         }

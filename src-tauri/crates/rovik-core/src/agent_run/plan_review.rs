@@ -146,8 +146,8 @@ const CRITERIA_REVIEW: &str = "## The criteria\n\n\
      - an assumption under **Assumptions** that the request or the code contradicts.\n\
      Report them as findings about \"Plan\".";
 
-/// An Autopilot task's first plan review: complete, so later reviews
-/// have little new to find.
+/// A plan's first review, in every mode: complete, so later reviews have
+/// little new to find.
 const FIRST_REVIEW_CHECKLIST: &str = "## A complete first review
 
 \
@@ -156,9 +156,15 @@ const FIRST_REVIEW_CHECKLIST: &str = "## A complete first review
      - names exist: each function, type, field, setting and file the plan names exists under that name;\n\
      - order: no step needs something a later step makes;\n\
      - scope: nothing beyond the request, nothing of it left out;\n\
-     - validation: new behaviour has a test to add or update;\n\
-     - criteria: as above.\n\
-     When one step has a problem, list every step with the same problem.";
+     - validation: new behaviour has a test to add or update;";
+
+/// S01: Autopilot's first review checks the plan's criteria too.
+const FIRST_REVIEW_CRITERIA: &str = "\n- criteria: as above.";
+
+/// The first review's last line, after `FIRST_REVIEW_CRITERIA` when the
+/// plan is an Autopilot task's.
+const FIRST_REVIEW_CLOSING: &str =
+    "\nWhen one step has a problem, list every step with the same problem.";
 
 /// B13: what a follow-up review is told of the hold before it.
 pub struct Earlier<'a> {
@@ -200,10 +206,16 @@ pub fn brief(p: &BriefParts) -> String {
     if p.autopilot {
         out.push_str("\n\n");
         out.push_str(CRITERIA_REVIEW);
-        if p.earlier.is_none() {
-            out.push_str("\n\n");
-            out.push_str(FIRST_REVIEW_CHECKLIST);
+    }
+    // A plan's first review, in every mode: later reviews look at what
+    // changed, so the first one says everything now.
+    if p.earlier.is_none() {
+        out.push_str("\n\n");
+        out.push_str(FIRST_REVIEW_CHECKLIST);
+        if p.autopilot {
+            out.push_str(FIRST_REVIEW_CRITERIA);
         }
+        out.push_str(FIRST_REVIEW_CLOSING);
     }
     if let Some(e) = &p.earlier {
         let list = e
@@ -287,18 +299,51 @@ pub fn weight(findings: &[Finding]) -> usize {
         .sum()
 }
 
+/// How a hold result names the findings its answers go by, and the two
+/// numbers its two answer shapes show: the review's own numbering, or
+/// Balanced Autopilot's F-numbers, which the finding list keeps.
+#[derive(Clone, Copy)]
+pub struct AnswerStyle {
+    /// "number", or "F-number".
+    pub label: &'static str,
+    /// The number the fixed answer shows.
+    pub first: usize,
+    /// The number the not-a-problem answer shows.
+    pub second: usize,
+}
+
+impl AnswerStyle {
+    /// A plan review's: by its number, as the findings are listed.
+    pub const NUMBER: Self = Self {
+        label: "number",
+        first: 1,
+        second: 2,
+    };
+
+    /// Balanced Autopilot's: the F-number, the same in both shapes.
+    pub fn f_number(n: usize) -> Self {
+        Self {
+            label: "F-number",
+            first: n,
+            second: n,
+        }
+    }
+}
+
 /// The `submit_plan` result when findings keep the plan from being saved:
 /// with how to check, fix and answer them, and what the next review is
 /// (B11). `max`: the run's reviews; `autopilot`: an Autopilot task's,
 /// whose last review blocks the plan on any open finding (S02). `limits`:
 /// in Balanced Autopilot, the reviews' progress and the plan stage's
-/// minutes left, which the text states the rule with.
+/// minutes left, which the text states the rule with. `style`: how it
+/// names the findings the answers go by.
 pub fn findings_result(
     findings: &[Finding],
     round: u32,
     max: u32,
     autopilot: bool,
     limits: Option<(&super::loops::Progress, f64)>,
+    style: AnswerStyle,
 ) -> String {
     let left = max.saturating_sub(round);
     if let Some((progress, minutes)) = limits {
@@ -320,7 +365,12 @@ pub fn findings_result(
             if left == 1 { "" } else { "s" },
             if minutes == 1 { "" } else { "s" },
         );
-        return findings_result_with(findings, &format!("review {round} of at most {max}"), &next);
+        return findings_result_with(
+            findings,
+            &format!("review {round} of at most {max}"),
+            &next,
+            style,
+        );
     }
     let next = if left <= 1 && autopilot {
         "Your next submit gets the last review: a finding it still finds, whatever its severity, ends the task, and the plan isn't implemented.".to_string()
@@ -329,13 +379,23 @@ pub fn findings_result(
     } else {
         format!("{left} more reviews are left in this run.")
     };
-    findings_result_with(findings, &format!("review {round} of at most {max}"), &next)
+    findings_result_with(
+        findings,
+        &format!("review {round} of at most {max}"),
+        &next,
+        style,
+    )
 }
 
 /// T07: `findings_result` in a Thorough task, whose reviews go on by
 /// progress: `stalled`, the reviews in a row so far that left no fewer
 /// findings open than an earlier one.
-pub fn findings_result_by_progress(findings: &[Finding], round: u32, stalled: u32) -> String {
+pub fn findings_result_by_progress(
+    findings: &[Finding],
+    round: u32,
+    stalled: u32,
+    style: AnswerStyle,
+) -> String {
     let next = if stalled > 0 {
         "This review left no fewer findings open than an earlier one: if your next submit's review doesn't either, the reviews end, and a finding still open then, whatever its severity, ends the task."
     } else {
@@ -345,6 +405,7 @@ pub fn findings_result_by_progress(findings: &[Finding], round: u32, stalled: u3
         findings,
         &format!("review {round}; the reviews go on while they find fewer problems"),
         next,
+        style,
     )
 }
 
@@ -359,7 +420,15 @@ pub fn ledger_result(
     minutes: f64,
 ) -> String {
     let findings: Vec<Finding> = entries.iter().map(|e| e.finding.clone()).collect();
-    let numbered = findings_result(&findings, round, max, true, Some((progress, minutes)));
+    let example = entries.first().map_or(1, |e| e.number);
+    let numbered = findings_result(
+        &findings,
+        round,
+        max,
+        true,
+        Some((progress, minutes)),
+        AnswerStyle::f_number(example),
+    );
     let list = entries
         .iter()
         .enumerate()
@@ -368,7 +437,12 @@ pub fn ledger_result(
             let first = shown.find('\n').unwrap_or(shown.len());
             let head = &shown[..first];
             let lead = format!("{}. ", i + 1);
-            format!("F{}. {}{}", e.number, head.strip_prefix(&lead).unwrap_or(head), &shown[first..])
+            format!(
+                "F{}. {}{}",
+                e.number,
+                head.strip_prefix(&lead).unwrap_or(head),
+                &shown[first..]
+            )
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -378,24 +452,15 @@ pub fn ledger_result(
         .map(|(i, f)| describe(f, i + 1))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let example = entries.first().map_or(1, |e| e.number);
-    numbered
-        .replacen(&old_list, &list, 1)
-        .replacen(
-            "Then call submit_plan again with the complete plan and `responses`, one answer for each finding by its number: \
-             {\"finding\": 1, \"action\": \"fixed\", \"note\": \"what you changed\"} or \
-             {\"finding\": 2, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}.",
-            &format!(
-                "Then call submit_plan again with `edits` (exact text replacements in your last plan: \
-                 [{{\"old_text\": \"…\", \"new_text\": \"…\"}}]) or the complete plan, and `responses`, one answer for each finding by its F-number: \
-                 {{\"finding\": {example}, \"action\": \"fixed\", \"note\": \"what you changed\"}} or \
-                 {{\"finding\": {example}, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}}."
-            ),
-            1,
-        )
+    numbered.replacen(&old_list, &list, 1)
 }
 
-fn findings_result_with(findings: &[Finding], which: &str, next: &str) -> String {
+fn findings_result_with(
+    findings: &[Finding],
+    which: &str,
+    next: &str,
+    style: AnswerStyle,
+) -> String {
     let list = findings
         .iter()
         .enumerate()
@@ -410,9 +475,13 @@ fn findings_result_with(findings: &[Finding], which: &str, next: &str) -> String
          - Where a finding is right, fix it in the plan, and look for the same kind of problem in the other steps: a caller missed in one step is often missed in others.\n\
          - Where it's wrong, leave that part of the plan as it is.\n\
          - Change only what the findings need: anything else you change is reviewed as new.\n\n\
-         Then call submit_plan again with the complete plan and `responses`, one answer for each finding by its number: \
-         {{\"finding\": 1, \"action\": \"fixed\", \"note\": \"what you changed\"}} or \
-         {{\"finding\": 2, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}}. {next}"
+         Then call submit_plan again with `edits` (exact text replacements in your last plan: \
+         [{{\"old_text\": \"…\", \"new_text\": \"…\"}}]) or the complete plan, and `responses`, one answer for each finding by its {label}: \
+         {{\"finding\": {first}, \"action\": \"fixed\", \"note\": \"what you changed\"}} or \
+         {{\"finding\": {second}, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}}. {next}",
+        label = style.label,
+        first = style.first,
+        second = style.second,
     )
 }
 
@@ -1091,6 +1160,29 @@ pub fn missing_verdicts(text: &str, earlier: &[Finding]) -> Vec<usize> {
     (1..=earlier.len())
         .filter(|n| !verdicts.iter().any(|v| v.finding == *n))
         .filter(|n| !found.iter().any(|f| same_finding(f, &earlier[n - 1])))
+        .collect()
+}
+
+/// B13: the missing verdicts worth another turn in the reviewer's chat: the
+/// one about a step the revision changed, or about the plan as a whole, where
+/// an answer can still change what happens. `changed`: the steps the revision
+/// changed (`changed_steps`); empty when they aren't known, which asks for
+/// every one of them.
+pub fn verdicts_worth_asking(
+    missing: &[usize],
+    earlier: &[Finding],
+    changed: &[usize],
+) -> Vec<usize> {
+    if changed.is_empty() {
+        return missing.to_vec();
+    }
+    missing
+        .iter()
+        .copied()
+        .filter(|n| {
+            let steps = earlier.get(n - 1).map(steps_of).unwrap_or_default();
+            steps.is_empty() || steps.iter().any(|s| changed.contains(s))
+        })
         .collect()
 }
 
@@ -2035,6 +2127,13 @@ impl Run {
         } else {
             revision_changes(&held, plan)
         };
+        // B13: the steps the revision changed, known before the review runs:
+        // a missing verdict is only asked for where it can change something.
+        let changed = if earlier.is_empty() {
+            Vec::new()
+        } else {
+            changed_steps(&held, plan)
+        };
         let message = brief(&BriefParts {
             request: &request,
             answers: &answers,
@@ -2065,12 +2164,17 @@ impl Run {
         let (mut attempt, mut waited) = (0u32, Duration::ZERO);
         let outcome = loop {
             let outcome = self
-                .run_ide_subagent_on(
+                .run_ide_subagent_with(
                     Kind::PlanReviewer,
                     call_id,
                     "Review the plan",
                     message.clone(),
-                    owed.clone(),
+                    |sub| {
+                        // The findings it answers to, and the steps the
+                        // revision changed (B13).
+                        sub.earlier_findings = owed.clone();
+                        sub.earlier_changed = changed.clone();
+                    },
                 )
                 .await;
             if !(reviewer_unusable(&outcome) && self.balanced_autopilot()) {
@@ -2129,10 +2233,6 @@ impl Run {
         };
         let mut serious: Vec<Finding> = Vec::new();
         let mut still_open = 0;
-        let changed = match ledger_on && !earlier.is_empty() {
-            true => changed_steps(&held, plan),
-            false => Vec::new(),
-        };
         if let Some((mut found, text)) = report {
             // A "(F3)" copied from the brief isn't part of a title.
             for f in &mut found {
@@ -2303,6 +2403,7 @@ impl Run {
                         &serious,
                         round,
                         self.plan.plan_review_progress.stalled(),
+                        AnswerStyle::NUMBER,
                     )
                 } else if self.balanced_autopilot() {
                     let minutes = self.plan_minutes_left().await;
@@ -2314,7 +2415,14 @@ impl Run {
                         .collect();
                     ledger_result(&open, round, max, &self.plan.plan_review_progress, minutes)
                 } else {
-                    findings_result(&serious, round, max, self.in_autopilot(), None)
+                    findings_result(
+                        &serious,
+                        round,
+                        max,
+                        self.in_autopilot(),
+                        None,
+                        AnswerStyle::NUMBER,
+                    )
                 };
                 Decision::Hold { result }
             }
@@ -2666,10 +2774,14 @@ mod tests {
             .unwrap();
         assert!(at > autopilot.find("## The plan").unwrap());
         assert!(autopilot.contains("a part of the request no criterion covers"));
-        // Autopilot's first review is told to be complete; Plan mode's isn't.
+        // A plan's first review is told to be complete, in every mode; only
+        // an Autopilot task's checks the criteria (S01).
         assert!(autopilot.contains("## A complete first review"));
         assert!(autopilot.contains("list every step with the same problem"));
-        assert!(!text.contains("## A complete first review"));
+        assert!(autopilot.contains("- criteria: as above."));
+        assert!(text.contains("## A complete first review"));
+        assert!(text.contains("list every step with the same problem"));
+        assert!(!text.contains("- criteria: as above."), "not Autopilot's");
         // Every mode: what a finding is, and its Fix as replacement text.
         assert!(PLAN_REVIEWER_PROMPT.contains("never findings, at any severity"));
         assert!(PLAN_REVIEWER_PROMPT.contains("Fix: the replacement text for the plan"));
@@ -2764,11 +2876,18 @@ mod tests {
             DEFAULT_PLAN_REVIEWS,
             false,
             None,
+            AnswerStyle::NUMBER,
         );
         assert!(result.starts_with("The plan wasn't saved yet"), "{result}");
         assert!(result.contains("1. [high] Step 2 — `list_users` is called"));
         assert!(result.contains("look for the same kind of problem in the other steps"));
         assert!(result.contains("Change only what the findings need"));
+        // Step 6: a revision may come as `edits`, in every mode.
+        assert!(
+            result.contains("`edits` (exact text replacements"),
+            "{result}"
+        );
+        assert!(result.contains("by its number: {\"finding\": 1, \"action\": \"fixed\""));
         assert!(result.contains(
             "{\"finding\": 2, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}"
         ));
@@ -2778,15 +2897,15 @@ mod tests {
         );
         // S02: an Autopilot task's last review blocks the plan on a high one.
         // T07: by progress, no count.
-        let thorough = findings_result_by_progress(&f, 4, 0);
+        let thorough = findings_result_by_progress(&f, 4, 0, AnswerStyle::NUMBER);
         assert!(thorough.contains("(review 4; the reviews go on while they find fewer problems)"));
         assert!(
             thorough.contains("two in a row that don't end them"),
             "{thorough}"
         );
-        assert!(findings_result_by_progress(&f, 4, 1)
+        assert!(findings_result_by_progress(&f, 4, 1, AnswerStyle::NUMBER)
             .contains("if your next submit's review doesn't either"));
-        let autopilot = findings_result(&f, 2, 3, true, None);
+        let autopilot = findings_result(&f, 2, 3, true, None, AnswerStyle::NUMBER);
         assert!(autopilot.contains("review 2 of at most 3"), "{autopilot}");
         assert!(
             autopilot.ends_with(
@@ -2794,17 +2913,18 @@ mod tests {
             ),
             "{autopilot}"
         );
-        assert!(findings_result(&f, 1, 3, true, None).ends_with("2 more reviews are left in this run."));
+        assert!(findings_result(&f, 1, 3, true, None, AnswerStyle::NUMBER)
+            .ends_with("2 more reviews are left in this run."));
         // Balanced Autopilot: the real rule, with the reviews and minutes left.
         let mut p = crate::agent_run::loops::Progress::with(2, 8);
         assert!(p.another_round(weight(&f), 2));
-        let balanced = findings_result(&f, 2, 8, true, Some((&p, 21.4)));
+        let balanced = findings_result(&f, 2, 8, true, Some((&p, 21.4)), AnswerStyle::NUMBER);
         assert!(balanced.contains("(review 2 of at most 8)"), "{balanced}");
         assert!(balanced.contains("Reviews continue while each leaves less open"), "{balanced}");
         assert!(balanced.contains("at most 6 more reviews, about 21 minutes left."), "{balanced}");
         assert!(!balanced.contains("no less open"), "{balanced}");
         assert!(p.another_round(weight(&f), 3));
-        let stalled = findings_result(&f, 3, 8, true, Some((&p, 1.0)));
+        let stalled = findings_result(&f, 3, 8, true, Some((&p, 1.0)), AnswerStyle::NUMBER);
         assert!(stalled.contains("1 more without progress ends the reviews."), "{stalled}");
         assert!(stalled.contains("about 1 minute left"), "{stalled}");
         let blocked = blocked_result(&f, 3);
@@ -3083,6 +3203,24 @@ mod tests {
         );
     }
 
+    /// Step 5: a missing verdict is worth a turn on a step the revision
+    /// changed, or on a finding about the plan as a whole; not on a step the
+    /// revision left alone. With no changed steps known, every one is.
+    #[test]
+    fn a_verdict_is_asked_for_only_where_it_can_change_something() {
+        let earlier = vec![
+            finding("high", "Step 2", "CLI not updated"),
+            finding("medium", "Step 1", "No index"),
+            finding("medium", "Plan", "Scope is wrong"),
+        ];
+        // Steps 1 and 3 changed: Earlier 1 (step 2) can't be settled by an
+        // answer, Earlier 2 and the plan-wide Earlier 3 can.
+        assert_eq!(verdicts_worth_asking(&[1, 2, 3], &earlier, &[1, 3]), [2, 3]);
+        // No changed steps known (a change review's follow-up): ask for all.
+        assert_eq!(verdicts_worth_asking(&[1, 2, 3], &earlier, &[]), [1, 2, 3]);
+        assert!(verdicts_worth_asking(&[1], &earlier, &[1]).is_empty());
+    }
+
     /// B13: a step inserted before others doesn't make them changed.
     #[test]
     fn changed_steps_are_new_or_rewritten_not_moved() {
@@ -3203,6 +3341,9 @@ mod tests {
         assert!(result.contains("F4. [high] Step 5 — d"), "{result}");
         assert!(result.contains("send `edits`") || result.contains("with `edits`"), "{result}");
         assert!(result.contains("{\"finding\": 2, \"action\": \"fixed\""), "{result}");
+        // Step 6: the sentence is Balanced's own, by F-number, so no
+        // hand-written replacement of it is needed.
+        assert!(result.contains("by its F-number"), "{result}");
     }
 
     #[test]
@@ -3572,8 +3713,15 @@ mod tests {
         );
         let rewritten = plan.replace("line", "row");
         assert_eq!(changed_lines(&plan, &rewritten), 20);
-        assert!(findings_result(&f, 1, DEFAULT_PLAN_REVIEWS, false, None)
-            .contains("review 1 of at most 5"));
+        assert!(findings_result(
+            &f,
+            1,
+            DEFAULT_PLAN_REVIEWS,
+            false,
+            None,
+            AnswerStyle::NUMBER
+        )
+        .contains("review 1 of at most 5"));
     }
 
     /// Round 3: the plan sent back as it was, with nothing said, past the
@@ -3803,8 +3951,8 @@ pub(super) struct PlanState {
     /// Balanced Autopilot: the titles the last review reported without the
     /// evidence they needed, for the next review's brief.
     plan_dropped: Vec<String>,
-    /// Balanced Autopilot: submits the checker sent back for format
-    /// problems alone (`plan::skeleton` after two).
+    /// Submits the checker sent back for format problems alone, which
+    /// carry the plan's frame (`plan::skeleton`) with the first one.
     plan_format_rejections: u32,
     /// A person's Retry or Continue of the plan stage: the `seq` of the
     /// Plan record it started. The stage's time and budget share count

@@ -2854,6 +2854,16 @@ async fn a_bad_plan_is_sent_back_and_a_written_out_plan_nudged_once() {
         rejected.starts_with("Error: the plan wasn't saved.") && rejected.contains("\"# \" title"),
         "{rejected}"
     );
+    // The first rejection carries the plan's frame, with the TODO where the
+    // model writes; a plan-mode frame has no criteria (Autopilot's alone).
+    assert!(
+        rejected.contains("The plan was sent back for its form.")
+            && rejected.contains("TODO:")
+            && rejected.contains("## Validation")
+            && rejected.contains("## Risks")
+            && !rejected.contains("## Criteria"),
+        "{rejected}"
+    );
     assert!(!h.project.join(".rovik/plans").exists());
     // Written in the reply instead: pointed out once, then the run ends.
     let notes = harness_notes(&messages);
