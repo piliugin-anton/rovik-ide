@@ -8907,7 +8907,12 @@ async fn plan_checks_see_the_chats_view_in_an_isolated_chat() {
         first.contains("`src/missing.rs`, which isn't in the project"),
         "{first}"
     );
-    assert!(!first.contains("only_here"), "{first}");
+    // The repair frame repeats valid paths too; only a missing-file
+    // diagnostic would mean the checks lost the chat's view.
+    assert!(
+        !first.contains("`src/only_here.rs`, which isn't in the project"),
+        "{first}"
+    );
     let second = result_of(&messages, "p2").content.clone();
     assert!(second.starts_with("Saved the plan"), "{second}");
 }
