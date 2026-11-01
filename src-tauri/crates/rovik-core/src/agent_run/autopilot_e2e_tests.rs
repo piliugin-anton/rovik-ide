@@ -382,6 +382,9 @@ async fn stages_until(
         if done(&records) {
             if delivered(&records) {
                 quiet(h).await;
+                // The run can settle its spend while quiet waits. Return
+                // the records after those final writes, not this snapshot.
+                return stages(h).await;
             }
             return records;
         }
@@ -2812,6 +2815,42 @@ async fn a_token_limit_ends_the_task_where_the_provider_reports_no_cost() {
         Some("Over the task's budget: it used 330 tokens, past its limit of 300")
     );
     assert_eq!(records[5].outcome.as_deref(), Some("budget"));
+}
+
+/// A delivered stage can still be settling its spend while the driver
+/// finishes. The awaited records must include that last write.
+#[tokio::test]
+async fn delivered_stages_include_spend_settled_while_waiting_for_quiet() {
+    use super::autopilot::{add_stage, settle_spent};
+    let h = harness(&[]).await;
+    let total = Spent {
+        cost: 0.02,
+        ..Default::default()
+    };
+    let mut delivery =
+        StageRecord::ended("task", Stage::Deliver, 1, Effort::Balanced, Status::Done);
+    delivery.spending = Some(total);
+    let id = add_stage(&h.core, &h.dialog_id, &delivery).await.unwrap();
+    let finish = std::sync::Mutex::new(None);
+    let records = stages_until(&h, "the settled delivery", |records| {
+        assert!(delivered(records));
+        // Start settling only after stages_until has read its snapshot,
+        // and keep quiet waiting until the write has completed.
+        let core = h.core.clone();
+        let dialog = h.dialog_id.clone();
+        let id = id.clone();
+        core.agents.turn_driving(&dialog, true);
+        *finish.lock().unwrap() = Some(tokio::spawn(async move {
+            let result = settle_spent(&core, &dialog, &id, total).await;
+            core.agents.turn_driving(&dialog, false);
+            result
+        }));
+        true
+    })
+    .await;
+    finish.into_inner().unwrap().unwrap().await.unwrap().unwrap();
+    assert_eq!(records[0].spending, None, "{records:#?}");
+    assert_eq!(records[0].spent, Some(total), "{records:#?}");
 }
 
 /// U04: a run keeps what it spent so far in its stage's record as it goes,
