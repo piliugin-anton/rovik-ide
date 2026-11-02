@@ -3,9 +3,11 @@
 // while listing or when listing failed, and picks a row on a click without
 // taking focus from the input. Run with: npm test
 import { container } from '../test/dom';
+import { recordScrollIntoView } from '../test/scroll';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
+import { createSignal } from 'solid-js';
 import CommandSuggestions from './CommandSuggestions';
 import type { ConnectorCommand } from '../lib/connectorCommands';
 
@@ -68,6 +70,33 @@ test('a command’s aliases come right after its name, before what it takes', ()
     ]
   );
   dispose();
+});
+
+test('the picked command is scrolled into view, past the box’s bottom', () => {
+  // The list is a scroll box a few rows tall: the keys move the pick, and
+  // the list has to follow it (suggestionList.ts). happy-dom has no layout,
+  // so what the component asked for is recorded, not measured.
+  const many: ConnectorCommand[] = Array.from({ length: 15 }, (_, i) => ({
+    name: `command-${i + 1}`,
+    description: `Does thing ${i + 1}`,
+  }));
+  const scrolls = recordScrollIntoView();
+  const [selected, setSelected] = createSignal(0);
+  const root = container();
+  const dispose = render(
+    () => <CommandSuggestions commands={many} selected={selected()} onPick={() => {}} />,
+    root
+  );
+  try {
+    const rows = [...root.querySelectorAll<HTMLElement>('[role="option"]')];
+    assert.equal(scrolls.revealed.at(-1), rows[0], 'the picked row starts in view');
+    setSelected(12);
+    assert.ok(rows[12].classList.contains('selected'), 'the twelfth row is picked');
+    assert.equal(scrolls.revealed.at(-1), rows[12], 'and it is scrolled into view');
+  } finally {
+    dispose();
+    scrolls.restore();
+  }
 });
 
 test('a line says the commands are being listed, or why they couldn’t be', () => {

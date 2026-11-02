@@ -32,6 +32,7 @@ import {
   selectionReference,
 } from '../lib/fileReferences';
 import { onAddToChat, takeChatReferences } from '../lib/editorBridge';
+import { revealSuggestionRow } from '../lib/suggestionList';
 import {
   createAiSettingsHolder,
   loadAiSettings,
@@ -349,6 +350,8 @@ export default function ChatPanel(props: ChatProps) {
   const [fileQuery, setFileQuery] = createSignal('');
   const [fileTriggerStart, setFileTriggerStart] = createSignal<number | null>(null);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = createSignal(0);
+  /** The `@` list's box, so the pick can be kept in view (suggestionList.ts). */
+  let fileSuggestionsEl: HTMLDivElement | undefined;
 
   /*
    * Files explicitly referenced by the current message.
@@ -1690,6 +1693,19 @@ export default function ChatPanel(props: ChatProps) {
       }
     });
   }
+
+  /*
+   * Keeps the picked row of the `@` list in view: the box shows a handful
+   * of rows (styles.css), and the keys move the pick down past its bottom
+   * without the list following, so the arrows look dead. Reads the rows
+   * too: a new query or the project's files arriving after "@" resets the
+   * pick to the first row, and the list goes back to it.
+   */
+  createEffect(() => {
+    if (!fileSuggestionsOpen()) return;
+    const rows = fileSuggestions().length;
+    revealSuggestionRow(fileSuggestionsEl, Math.min(selectedSuggestionIndex(), rows - 1));
+  });
 
   onMount(() => {
     const el = inputTextareaRef;
@@ -4738,7 +4754,7 @@ export default function ChatPanel(props: ChatProps) {
           </Show>
 
           <Show when={fileSuggestionsOpen() && fileSuggestions().length > 0}>
-            <div class="file-suggestions" role="listbox">
+            <div ref={fileSuggestionsEl} class="file-suggestions" role="listbox">
               {/* By position: the list is worked out again with new
                   objects when the project's files are read (just after
                   "@") or a folder changes, and new rows under a click lost
