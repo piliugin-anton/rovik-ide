@@ -756,13 +756,21 @@ const NOTE_KEYS: &[&str] = &[
 const ACTION_KEYS: &[&str] = &["action", "status", "verdict", "resolution"];
 
 static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+").unwrap());
-/// An answer written as one line: "2: not a problem — the CLI is gone".
-static NUMBERED_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)^\D*?(\d+)\s*[:.)—–-]*\s*(.*)$").unwrap());
-/// An action at the start of a text, and what follows it.
+/// An answer written as one line: "2: not a problem — the CLI is gone",
+/// as models bullet them: "- 1: fixed — added step 3", "• 2: …",
+/// "Response 2: …". A digit further in the line ("moved the check in step
+/// 3") isn't the answer's number, so no letters may come before it.
+static NUMBERED_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?is)^[\s*#>+|•~+-]*(?:(?:finding|response|answer|item)\s*#?\s*)?(\d+)\s*[:.)—–-]*\s*(.*)$",
+    )
+    .unwrap()
+});
+/// An action at the start of a text, and what follows it: after a bullet
+/// or a mark, as an answer's line may open.
 static ACTION_LEAD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?is)^[\s*_`]*(fixed|resolved|addressed|done|not\s+a\s+problem|not\s+an\s+issue|no\s+problem|not\s+a\s+bug|won'?t\s+fix|false\s+positive)\b[\s*_:;,.—–-]*(.*)$",
+        r"(?is)^[\s*_`#>+|•~-]*(fixed|resolved|addressed|done|not\s+a\s+problem|not\s+an\s+issue|no\s+problem|not\s+a\s+bug|won'?t\s+fix|false\s+positive)\b[\s*_:;,.—–-]*(.*)$",
     )
     .unwrap()
 });
@@ -797,16 +805,17 @@ fn action_of(text: &str) -> Option<Action> {
     }
 }
 
-/// One answer: an object, or a "2: fixed — …" line. `number`: the key it
-/// was under, in an object of answers by number.
-fn response_of(number: Option<usize>, item: &Value) -> Option<Response> {
+/// One answer before it's numbered: the finding it names (None when it
+/// names none), its action and note. `number`: the key it was under, in an
+/// object of answers by number.
+fn answer_of(number: Option<usize>, item: &Value) -> Option<(Option<usize>, Action, String)> {
     match item {
         Value::Object(o) => {
             let finding = number.or_else(|| {
                 NUMBER_KEYS
                     .iter()
                     .find_map(|k| o.get(*k).and_then(number_of))
-            })?;
+            });
             let note = NOTE_KEYS
                 .iter()
                 .find_map(|k| trimmed_str(o.get(*k)))
@@ -817,27 +826,22 @@ fn response_of(number: Option<usize>, item: &Value) -> Option<Response> {
                 .iter()
                 .find_map(|k| o.get(*k).and_then(Value::as_str).and_then(action_of))
                 .or_else(|| ACTION_LEAD.captures(&note).and_then(|c| action_of(&c[1])))?;
-            Some(Response {
-                finding,
-                action,
-                note,
-            })
+            Some((finding, action, note))
         }
         Value::String(s) => {
-            let (finding, rest) = match number {
-                Some(n) => (n, s.as_str()),
-                None => {
-                    let c = NUMBERED_LINE.captures(s)?;
-                    let n = c[1].parse::<usize>().ok().filter(|n| *n >= 1)?;
-                    (n, c.get(2).map_or("", |m| m.as_str()))
-                }
+            let numbered = NUMBERED_LINE.captures(s).and_then(|c| {
+                let n = c[1].parse::<usize>().ok().filter(|n| *n >= 1)?;
+                Some((n, c.get(2).map_or("", |m| m.as_str()).to_owned()))
+            });
+            let (finding, rest) = match (number, numbered) {
+                (Some(n), _) => (Some(n), s.clone()),
+                (None, Some((n, rest))) => (Some(n), rest),
+                // A line without a number ("fixed — moved the check"): its
+                // place in the list is its number.
+                (None, None) => (None, s.clone()),
             };
-            let c = ACTION_LEAD.captures(rest)?;
-            Some(Response {
-                finding,
-                action: action_of(&c[1])?,
-                note: c[2].trim().to_string(),
-            })
+            let c = ACTION_LEAD.captures(&rest)?;
+            Some((finding, action_of(&c[1])?, c[2].trim().to_string()))
         }
         _ => None,
     }
@@ -846,8 +850,10 @@ fn response_of(number: Option<usize>, item: &Value) -> Option<Response> {
 /// B12: the agent's answers in `submit_plan`'s `responses`, tolerating the
 /// shapes models produce: a list of objects or of "2: fixed — …" lines, the
 /// list as its JSON text, one object, or an object of answers by number;
-/// the action in any spelling, or opening the note when it's left out. The
-/// first answer to a number counts.
+/// the action in any spelling, or opening the note when it's left out. An
+/// answer that names no finding, or repeats one already answered, takes the
+/// lowest number still free: models send one answer per finding, in the
+/// review's order, without saying which is which.
 pub fn parse_responses(value: Option<&Value>) -> Vec<Response> {
     let decoded;
     let value = match value {
@@ -864,26 +870,40 @@ pub fn parse_responses(value: Option<&Value>) -> Vec<Response> {
         Some(v) => v,
         None => return Vec::new(),
     };
-    let found: Vec<Response> = match value {
-        Value::Array(items) => items.iter().filter_map(|v| response_of(None, v)).collect(),
-        Value::Object(o) if NUMBER_KEYS.iter().any(|k| o.contains_key(*k)) => {
-            response_of(None, value).into_iter().collect()
-        }
+    // A single object: one answer when it has a field an answer has, else
+    // answers by number.
+    let single = matches!(value, Value::Object(o)
+        if NUMBER_KEYS
+            .iter()
+            .chain(NOTE_KEYS.iter())
+            .chain(ACTION_KEYS.iter())
+            .any(|k| o.contains_key(*k)));
+    let found: Vec<(Option<usize>, Action, String)> = match value {
+        Value::Array(items) => items.iter().filter_map(|v| answer_of(None, v)).collect(),
+        Value::Object(_) if single => answer_of(None, value).into_iter().collect(),
         Value::Object(o) => o
             .iter()
-            .filter_map(|(k, v)| response_of(Some(number_of(&Value::String(k.clone()))?), v))
+            .filter_map(|(k, v)| answer_of(Some(number_of(&Value::String(k.clone()))?), v))
             .collect(),
         Value::String(s) => s
             .lines()
-            .filter_map(|l| response_of(None, &Value::String(l.to_string())))
+            .filter_map(|l| answer_of(None, &Value::String(l.to_string())))
             .collect(),
         _ => Vec::new(),
     };
     let mut out: Vec<Response> = Vec::new();
-    for r in found {
-        if !out.iter().any(|o| o.finding == r.finding) {
-            out.push(r);
+    for (named, action, note) in found {
+        let mut finding = named
+            .filter(|n| !out.iter().any(|o| o.finding == *n))
+            .unwrap_or(1);
+        while out.iter().any(|o| o.finding == finding) {
+            finding += 1;
         }
+        out.push(Response {
+            finding,
+            action,
+            note,
+        });
     }
     out
 }
@@ -899,24 +919,30 @@ pub fn unanswered_problem(held: usize, responses: &[Response]) -> Option<String>
 /// `unanswered_problem` for findings by their numbers (Balanced
 /// Autopilot's finding list: `numbers` the open ones, named "F3").
 pub fn unanswered_of(numbers: &[usize], prefix: &str, responses: &[Response]) -> Option<String> {
-    let missing: Vec<String> = numbers
+    let missing: Vec<usize> = numbers
         .iter()
-        .filter(|n| !responses.iter().any(|r| r.finding == **n && r.usable()))
-        .map(|n| format!("{prefix}{n}"))
+        .copied()
+        .filter(|n| !responses.iter().any(|r| r.finding == *n && r.usable()))
         .collect();
-    if missing.is_empty() {
-        return None;
-    }
-    let names: Vec<&str> = missing.iter().map(String::as_str).collect();
+    let first = *missing.first()?;
+    let names: Vec<String> = missing.iter().map(|n| format!("{prefix}{n}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let why = if responses.iter().any(|r| !r.usable()) {
         " (a not_a_problem answer needs a note saying why)"
     } else {
         ""
     };
+    // By the name the review gave it, and with one still missing as the
+    // example: copied as it is, the answer isn't to one already answered.
+    let label = if prefix.is_empty() {
+        "number"
+    } else {
+        "F-number"
+    };
     Some(format!(
-        "Answer the review's findings in `responses`, one entry for each, by its number: \
-         {{\"finding\": 1, \"action\": \"fixed\", \"note\": \"what you changed in the plan\"}} or \
-         {{\"finding\": 1, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}}. \
+        "Answer the review's findings in `responses`, one entry for each, by its {label}: \
+         {{\"finding\": {first}, \"action\": \"fixed\", \"note\": \"what you changed in the plan\"}} or \
+         {{\"finding\": {first}, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}}. \
          {} {} {} no answer yet{why}.",
         if missing.len() == 1 {
             "Finding"
@@ -2955,15 +2981,15 @@ mod tests {
             ])),
             vec![fixed(1, "Added step 3."), not(2, "The CLI is gone.")]
         );
-        // As JSON text, with numbers in words, other keys and spellings;
-        // the first answer to a number counts.
+        // As JSON text, with numbers in words, other keys and spellings; a
+        // number already answered gives way to the lowest free one.
         assert_eq!(
             read(json!(
                 "[{\"finding\": \"#1\", \"status\": \"Fixed\", \"reason\": \"x\"}, \
                   {\"id\": \"Finding 2\", \"action\": \"Not a problem\", \"explanation\": \"y\"}, \
                   {\"finding\": 1, \"action\": \"not_a_problem\", \"note\": \"z\"}]"
             )),
-            vec![fixed(1, "x"), not(2, "y")]
+            vec![fixed(1, "x"), not(2, "y"), not(3, "z")]
         );
         // No action: the note's start says it.
         assert_eq!(
@@ -2978,18 +3004,68 @@ mod tests {
             ])),
             vec![fixed(1, "added step 3"), not(2, "out of scope")]
         );
+        // As models bullet them, with a word before the number, or neither.
+        assert_eq!(
+            read(json!(
+                "- 1: fixed — added step 3\n- 2: not a problem — the CLI is gone"
+            )),
+            vec![fixed(1, "added step 3"), not(2, "the CLI is gone")]
+        );
+        assert_eq!(
+            read(json!(
+                "• Response 2: not a problem — the CLI is gone\n> 3) fixed — moved it"
+            )),
+            vec![not(2, "the CLI is gone"), fixed(3, "moved it")]
+        );
+        // A line with no number is numbered by its place, behind a bullet
+        // too, and a number in its note isn't read as its own.
+        assert_eq!(
+            read(json!(["fixed — moved the check in step 3"])),
+            vec![fixed(1, "moved the check in step 3")]
+        );
+        assert_eq!(
+            read(json!(["- fixed — moved the check in step 3"])),
+            vec![fixed(1, "moved the check in step 3")]
+        );
         assert_eq!(
             read(json!({ "finding": 2, "action": "notAProblem", "note": "n" })),
             vec![not(2, "n")]
+        );
+        // One object, numbered or not.
+        assert_eq!(
+            read(json!({ "action": "fixed", "note": "Moved the check out." })),
+            vec![fixed(1, "Moved the check out.")]
         );
         assert_eq!(
             read(json!({ "1": "fixed: added the step", "2": { "action": "fixed", "note": "" } })),
             vec![fixed(1, "added the step"), fixed(2, "")]
         );
-        // Nothing to take.
+        // Answers that name no finding, as models send them: one for each
+        // finding, in the review's order.
+        assert_eq!(
+            read(json!([{ "action": "fixed", "note": "Moved the check out." }])),
+            vec![fixed(1, "Moved the check out.")]
+        );
+        assert_eq!(
+            read(json!([
+                { "action": "fixed", "note": "One." },
+                { "action": "not_a_problem", "note": "Two." }
+            ])),
+            vec![fixed(1, "One."), not(2, "Two.")]
+        );
+        // A number sent twice: the second answer takes the lowest free one.
+        assert_eq!(
+            read(json!([
+                { "finding": 2, "action": "fixed", "note": "One." },
+                { "finding": 2, "action": "fixed", "note": "Two." }
+            ])),
+            vec![fixed(2, "One."), fixed(1, "Two.")]
+        );
+        // Nothing to take: no action anywhere in the answer, or a number on
+        // its own. An answer with an action counts, numbered by the lowest
+        // number still free when it names none.
         assert!(read(json!([
-            { "finding": 0, "action": "fixed" },
-            { "action": "fixed", "note": "which?" },
+            { "note": "which?" },
             { "finding": 1, "action": "maybe" },
             7
         ]))
