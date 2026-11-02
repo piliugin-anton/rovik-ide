@@ -6,8 +6,9 @@
 // is what the user picks, so it stays whole: the hint after it is cut
 // short first, then the aliases (styles.css). The composer keeps focus
 // and handles the keys; a click picks a row.
-import { Index, Show } from 'solid-js';
+import { Index, Show, createEffect } from 'solid-js';
 import type { ConnectorCommand } from '../lib/connectorCommands';
+import { revealSuggestionRow } from '../lib/suggestionList';
 
 export interface CommandSuggestionsProps {
   /** The commands matching what's typed, best first. */
@@ -20,8 +21,22 @@ export interface CommandSuggestionsProps {
 }
 
 export default function CommandSuggestions(props: CommandSuggestionsProps) {
+  /** The list's box, so the picked row can be kept in view (suggestionList.ts). */
+  let listEl: HTMLDivElement | undefined;
+  // The keys move the pick down past the box's bottom (styles.css shows a
+  // handful of rows), so the list follows it; a shorter list with a new
+  // query brings the picked row back too.
+  createEffect(() =>
+    revealSuggestionRow(listEl, Math.min(props.selected, props.commands.length - 1))
+  );
+
   return (
-    <div class="file-suggestions command-suggestions" role="listbox" aria-label="Commands">
+    <div
+      ref={listEl}
+      class="file-suggestions command-suggestions"
+      role="listbox"
+      aria-label="Commands"
+    >
       <Show when={props.status}>
         <div class="command-suggestions-status" role="status">
           {props.status}
