@@ -98,10 +98,10 @@ async fn fill_select_and_navigation_verify_intrinsic_results() {
 #[tokio::test]
 #[ignore = "requires Chrome; local closed port"]
 async fn a_navigation_chrome_cannot_complete_reports_chromes_reason() {
-    // A port nothing listens on, once this listener is gone.
-    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/", closed.local_addr().unwrap());
-    drop(closed);
+    // A port nothing listens on, and nothing this computer runs can be
+    // given: not one this test freed, which another test's server may have
+    // taken.
+    let url = format!("http://127.0.0.1:{}/", support::NOTHING_LISTENS);
     let browser = support::browser().await;
     let page = browser.new_blank_page().await.unwrap();
     let err = page.goto(&url).await.unwrap_err();

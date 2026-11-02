@@ -6,6 +6,15 @@ use tokio::{
     sync::Semaphore,
 };
 
+/// A port nothing listens on, for a navigation that must be refused: below
+/// every platform's ephemeral range (32768-60999 on Linux, 49152-65535
+/// elsewhere), so no test of the run can ever be handed it — unlike a port
+/// a test frees, which another test's server may take and answer on.
+/// Not port 9, nor 1: Chrome refuses a navigation to a restricted port
+/// with `net::ERR_UNSAFE_PORT` before it connects, and the test here wants
+/// `net::ERR_CONNECTION_REFUSED`.
+pub const NOTHING_LISTENS: u16 = 23119;
+
 #[derive(Clone, Debug)]
 pub struct Request {
     pub target: String,

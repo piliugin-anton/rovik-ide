@@ -12,6 +12,22 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /*
+ * A port nothing listens on
+ */
+
+/// A port nothing can be listening on, for a URL a test needs to be
+/// refused: below the range every platform hands out for
+/// `bind("127.0.0.1:0")` (32768-60999 on Linux, 49152-65535 elsewhere), so
+/// no test of the run can be given it. A port a test *frees* can be: it's
+/// how a "nothing listens there" address comes alive, answering as another
+/// test's server (a run that ends "done" on a reply nobody scripted) — and
+/// how a scripted model spends a reply on a stranger's request
+/// (`model_routed`). Port 9 is `discard`, which only an inetd serves; the
+/// e2e script points the app's update check at it too
+/// (`scripts/e2e/run.mjs`).
+pub const NOTHING_LISTENS: u16 = 9;
+
+/*
  * The model
  */
 
@@ -1084,4 +1100,37 @@ fn oauth_mcp(shared: &OAuthShared, body: &Value, authorization: Option<&str>) ->
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
         answer.len()
     )
+}
+
+/// The whole point of the constant: nothing answers there, and nothing the
+/// run starts can be handed the port, as it is below the range
+/// `bind("127.0.0.1:0")` picks from.
+#[cfg(test)]
+mod tests {
+    use super::NOTHING_LISTENS;
+    use std::time::Duration;
+
+    #[test]
+    fn nothing_listens_is_a_port_nothing_can_take() {
+        let address = format!("127.0.0.1:{NOTHING_LISTENS}");
+        let connected = std::net::TcpStream::connect_timeout(
+            &address.parse().expect("an address"),
+            Duration::from_secs(5),
+        );
+        assert!(
+            connected.is_err(),
+            "something listens on {address}: {}",
+            connected.err().map(|e| e.to_string()).unwrap_or_default()
+        );
+        // Linux says where its ephemeral range starts; elsewhere it's
+        // 49152 at the lowest (RFC 6335), above which nothing here goes.
+        let first = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .ok()
+            .and_then(|range| range.split_whitespace().next()?.parse::<u16>().ok())
+            .unwrap_or(49152);
+        assert!(
+            NOTHING_LISTENS < first,
+            "{NOTHING_LISTENS} is in the ephemeral range, from {first}"
+        );
+    }
 }

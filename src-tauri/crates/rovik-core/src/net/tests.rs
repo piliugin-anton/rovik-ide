@@ -277,10 +277,10 @@ async fn echo_server(first: &'static str) -> u16 {
     port
 }
 
-/// A port nothing listens on.
-async fn closed_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    listener.local_addr().unwrap().port()
+/// A port nothing listens on: one nothing the run starts can be handed
+/// either (`testing::NOTHING_LISTENS`), not one just freed.
+fn closed_port() -> u16 {
+    crate::testing::NOTHING_LISTENS
 }
 
 async fn get(net: &Net, url: &str) -> Result<String, String> {
@@ -596,7 +596,7 @@ async fn the_shared_client_keeps_its_connection() {
     let (port, connections) = server("ok").await;
     // Through a saved proxy, which this computer's server goes around:
     // whatever proxy this machine has set doesn't count.
-    let unused = closed_port().await;
+    let unused = closed_port();
     let net = Net::default();
     net.save(
         through(vec![proxy("p", ProxyKind::Http, "127.0.0.1", unused, None)]),
@@ -1330,7 +1330,7 @@ async fn a_proxy_that_refuses_says_why() {
         "build.example.com:22 refused the proxy's connection."
     );
 
-    let nobody = closed_port().await;
+    let nobody = closed_port();
     let unreachable = open(Hop::http("127.0.0.1", nobody, None, "")).await;
     assert!(
         unreachable.starts_with(&format!(

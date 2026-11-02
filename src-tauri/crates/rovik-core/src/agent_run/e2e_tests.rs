@@ -5,7 +5,9 @@
 use super::permissions::{ChecklistMode, Permissions};
 use super::*;
 use crate::chat_db::store::{self, MessageRow, NewDialog};
-use crate::testing::{effort, model, model_routed, route_of, Reply, TempDir, TestCore};
+use crate::testing::{
+    effort, model, model_routed, route_of, Reply, TempDir, TestCore, NOTHING_LISTENS,
+};
 use rovik_protocol::{Fail, Request, Response};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -2010,11 +2012,8 @@ async fn a_resumed_chat_asks_again_then_continues() {
 #[tokio::test]
 async fn a_failed_first_reply_marks_the_message_failed() {
     let h = harness(&[]).await;
-    // Nobody listens there.
-    let url = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        format!("http://{}/v1", l.local_addr().unwrap())
-    };
+    // Nobody listens there, and nothing can: not a port another test freed.
+    let url = format!("http://127.0.0.1:{NOTHING_LISTENS}/v1");
     let mut request = h.request(&url, Harness::send("Hi"), quiet_permissions());
     request.profile.first_byte_timeout_ms = Some(5_000);
     h.start(request).await;
@@ -3797,7 +3796,14 @@ async fn a_loop_is_noted_then_paused() {
     .await;
     h.start(h.request(&url, Harness::send("Read"), quiet_permissions()))
         .await;
-    assert_eq!(h.run_end().await, "paused-loop");
+    let outcome = h.run_end().await;
+    // A request that isn't this run's own spends one of the script's
+    // replies, and the shift shows here as an end the loop never made.
+    let reached = seen.lock().unwrap().len();
+    assert_eq!(
+        outcome, "paused-loop",
+        "{reached} requests reached the scripted model; its script has 7 replies"
+    );
     let messages = h.messages().await;
     assert!(result_of(&messages, "r3")
         .content
