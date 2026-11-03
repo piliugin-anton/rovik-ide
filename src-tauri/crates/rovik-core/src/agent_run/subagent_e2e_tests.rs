@@ -2796,6 +2796,17 @@ fn submit_with(id: &'static str, plan: String, responses: Value) -> Reply {
     }
 }
 
+/// The agent opening the code a finding is about: what a revision needs
+/// since the check (plan_review.rs `unverified_revision_problem`), and one
+/// call of its turn.
+fn reads_the_caller(id: &'static str) -> Reply {
+    Reply::Call {
+        id,
+        name: "read",
+        args: json!({ "path": "src/cli.rs" }),
+    }
+}
+
 /// The agent's answer to PLAN_FINDING.
 fn added_the_step() -> Value {
     json!([{ "finding": 1, "action": "fixed", "note": "Added step 3, which updates `src/cli.rs`." }])
@@ -2959,6 +2970,7 @@ async fn after_the_last_round_open_findings_go_in_the_plan_and_no_third_review()
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g2"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             // A third submit in the run: saved without a review, and with
             // no answers owed (the save ended the hold).
@@ -3025,6 +3037,7 @@ async fn the_open_findings_section_is_in_the_saved_plan() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g3"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved."),
         ],
@@ -3058,6 +3071,7 @@ async fn a_follow_up_holds_new_findings_even_where_the_revision_changed_nothing(
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g4"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved."),
         ],
@@ -3132,6 +3146,7 @@ async fn a_follow_up_without_verdicts_is_asked_for_them() {
             )],
             vec![
                 submit("p1", users_plan("Users", 0)),
+                reads_the_caller("g5"),
                 submit_with("p2", revised_plan(rewrote), added_the_step()),
                 Reply::Text("Saved."),
             ],
@@ -3203,6 +3218,7 @@ async fn a_follow_ups_report_turns_keep_its_verdicts() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g6"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved."),
         ],
@@ -3253,6 +3269,7 @@ async fn a_follow_ups_report_turns_keep_its_verdicts() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g7"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved."),
         ],
@@ -3312,11 +3329,13 @@ async fn an_unanswered_hold_goes_back_without_a_review() {
             // Revised, but no answers.
             submit("p2", users_plan("Users", 1)),
             // Answers that don't say why, under other names.
+            reads_the_caller("g8"),
             submit_with(
                 "p3",
                 users_plan("Users", 1),
                 json!([{ "id": "1", "status": "not a problem" }]),
             ),
+            reads_the_caller("g9"),
             submit_with(
                 "p4",
                 users_plan("Users", 1),
@@ -3446,9 +3465,13 @@ async fn the_default_cap_reviews_four_resubmits_and_skips_the_fifth() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g10"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
+            reads_the_caller("g11"),
             submit_with("p3", users_plan("Users", 2), added_the_step()),
+            reads_the_caller("g12"),
             submit_with("p4", users_plan("Users", 3), added_the_step()),
+            reads_the_caller("g13"),
             submit_with("p5", users_plan("Users", 4), added_the_step()),
             submit("p6", users_plan("Users v6", 6)),
             Reply::Text("Saved."),
@@ -3528,7 +3551,9 @@ async fn a_configured_cap_ends_the_reviews_after_three() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g14"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
+            reads_the_caller("g15"),
             submit_with("p3", users_plan("Users", 2), added_the_step()),
             submit("p4", users_plan("Users v4", 6)),
             Reply::Text("Saved."),
@@ -3720,6 +3745,7 @@ async fn a_plan_reviewer_out_of_budget_still_reports_findings() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g16"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved the plan."),
         ],
@@ -3858,6 +3884,7 @@ async fn a_small_revert_after_a_hold_is_still_reviewed() {
         vec![
             submit("p1", users_plan("Users", 6)),
             // Held; the agent reverts to (nearly) the saved plan.
+            reads_the_caller("g17"),
             submit_with(
                 "p2",
                 users_plan("Users (again)", 0),
@@ -11302,6 +11329,7 @@ async fn budget_used_record_shape() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g20"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             submit("p3", users_plan("Users v3", 3)),
             Reply::Text("Saved."),
@@ -11357,6 +11385,7 @@ async fn plan_review_across_a_second_run() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g21"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved, with one finding open."),
         ],
