@@ -279,7 +279,7 @@ pub fn brief(p: &BriefParts) -> String {
              A finding the agent answered as not a problem is resolved unless the code shows the answer is wrong; then say what shows it. \
              Then look for new findings: every new finding counts, wherever it is in the plan. \
              A new finding about a step the revision didn't change adds a line \"- Evidence:\" with a `path:line` or a symbol name, and what breaks there; without it, it's dropped. \
-             Style, naming and a design you'd prefer are never findings, and each finding's Fix is the replacement text for the plan, not advice. \
+             Style, naming and a design you'd prefer are never findings, and each finding's Fix says what the plan should say instead and the `path:line` or symbol that shows why: the agent repairs from evidence, not from a patch. \
              An earlier finding isn't a new one: don't report it again under \"## Findings\".\n\n\
              Start your report with your verdict on each earlier finding, one line each: \"resolved\" or \"not resolved\", then why.\n\n\
              ## Earlier findings\n\n{lines}\n\n\
@@ -2926,9 +2926,9 @@ mod tests {
         assert!(text.contains("## A complete first review"));
         assert!(text.contains("list every step with the same problem"));
         assert!(!text.contains("- criteria: as above."), "not Autopilot's");
-        // Every mode: what a finding is, and its Fix as replacement text.
+        // Every mode: what a finding is. Its Fix is evidence, not a patch
+        // (the_reviewers_report_wants_evidence_not_a_patch holds the prompt's rule).
         assert!(PLAN_REVIEWER_PROMPT.contains("never findings, at any severity"));
-        assert!(PLAN_REVIEWER_PROMPT.contains("Fix: the replacement text for the plan"));
         assert!(PLAN_REVIEWER_PROMPT.contains("Every new finding counts, wherever it is"));
         assert!(PLAN_REVIEWER_PROMPT.contains("\"- Evidence:\""));
         assert!(!PLAN_REVIEWER_PROMPT.contains("high ones anywhere"));
@@ -2983,6 +2983,12 @@ mod tests {
         assert!(parse_verdicts(&later).is_empty(), "{later}");
         assert!(later.contains("every new finding counts, wherever it is in the plan"));
         assert!(later.contains("\"- Evidence:\" with a `path:line` or a symbol name"));
+        // The Fix is the plan's wording plus the evidence, never a patch.
+        assert!(
+            later.contains("each finding's Fix says what the plan should say instead and the `path:line` or symbol that shows why"),
+            "{later}"
+        );
+        assert!(!later.contains("replacement text"), "{later}");
         assert!(!later.contains("high ones anywhere"));
         assert!(!later.contains("## A complete first review"), "a follow-up");
         assert!(!later.contains("answers to the agent's questions"));
