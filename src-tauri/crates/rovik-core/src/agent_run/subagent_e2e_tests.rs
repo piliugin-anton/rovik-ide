@@ -2796,6 +2796,17 @@ fn submit_with(id: &'static str, plan: String, responses: Value) -> Reply {
     }
 }
 
+/// The agent opening the code a finding is about: what a revision needs
+/// since the check (plan_review.rs `unverified_revision_problem`), and one
+/// call of its turn.
+fn reads_the_caller(id: &'static str) -> Reply {
+    Reply::Call {
+        id,
+        name: "read",
+        args: json!({ "path": "src/cli.rs" }),
+    }
+}
+
 /// The agent's answer to PLAN_FINDING.
 fn added_the_step() -> Value {
     json!([{ "finding": 1, "action": "fixed", "note": "Added step 3, which updates `src/cli.rs`." }])
@@ -2842,7 +2853,13 @@ async fn plan_findings_hold_the_plan_until_the_agent_fixes_it() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
-            // Held: the agent adds the missing step, says so, and submits again.
+            // Held: the agent opens the caller the finding is about, then
+            // adds the missing step, says so, and submits again.
+            Reply::Call {
+                id: "r1",
+                name: "read",
+                args: json!({ "path": "src/cli.rs" }),
+            },
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved the plan."),
         ],
@@ -2953,6 +2970,7 @@ async fn after_the_last_round_open_findings_go_in_the_plan_and_no_third_review()
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g2"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             // A third submit in the run: saved without a review, and with
             // no answers owed (the save ended the hold).
@@ -3019,6 +3037,7 @@ async fn the_open_findings_section_is_in_the_saved_plan() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g3"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved."),
         ],
@@ -3052,6 +3071,7 @@ async fn a_follow_up_holds_new_findings_even_where_the_revision_changed_nothing(
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g4"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved."),
         ],
@@ -3126,6 +3146,7 @@ async fn a_follow_up_without_verdicts_is_asked_for_them() {
             )],
             vec![
                 submit("p1", users_plan("Users", 0)),
+                reads_the_caller("g5"),
                 submit_with("p2", revised_plan(rewrote), added_the_step()),
                 Reply::Text("Saved."),
             ],
@@ -3197,6 +3218,7 @@ async fn a_follow_ups_report_turns_keep_its_verdicts() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g6"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved."),
         ],
@@ -3247,6 +3269,7 @@ async fn a_follow_ups_report_turns_keep_its_verdicts() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g7"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved."),
         ],
@@ -3306,11 +3329,13 @@ async fn an_unanswered_hold_goes_back_without_a_review() {
             // Revised, but no answers.
             submit("p2", users_plan("Users", 1)),
             // Answers that don't say why, under other names.
+            reads_the_caller("g8"),
             submit_with(
                 "p3",
                 users_plan("Users", 1),
                 json!([{ "id": "1", "status": "not a problem" }]),
             ),
+            reads_the_caller("g9"),
             submit_with(
                 "p4",
                 users_plan("Users", 1),
@@ -3440,9 +3465,13 @@ async fn the_default_cap_reviews_four_resubmits_and_skips_the_fifth() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g10"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
+            reads_the_caller("g11"),
             submit_with("p3", users_plan("Users", 2), added_the_step()),
+            reads_the_caller("g12"),
             submit_with("p4", users_plan("Users", 3), added_the_step()),
+            reads_the_caller("g13"),
             submit_with("p5", users_plan("Users", 4), added_the_step()),
             submit("p6", users_plan("Users v6", 6)),
             Reply::Text("Saved."),
@@ -3522,7 +3551,9 @@ async fn a_configured_cap_ends_the_reviews_after_three() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g14"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
+            reads_the_caller("g15"),
             submit_with("p3", users_plan("Users", 2), added_the_step()),
             submit("p4", users_plan("Users v4", 6)),
             Reply::Text("Saved."),
@@ -3714,6 +3745,7 @@ async fn a_plan_reviewer_out_of_budget_still_reports_findings() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g16"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved the plan."),
         ],
@@ -3852,6 +3884,7 @@ async fn a_small_revert_after_a_hold_is_still_reviewed() {
         vec![
             submit("p1", users_plan("Users", 6)),
             // Held; the agent reverts to (nearly) the saved plan.
+            reads_the_caller("g17"),
             submit_with(
                 "p2",
                 users_plan("Users (again)", 0),
@@ -8966,8 +8999,68 @@ async fn a_plan_review_waits_for_its_approval_and_goes_on() {
     assert_eq!(h.plan_files().len(), 1);
 }
 
-/// A plan held by its review, and the run ends: the next run's revision
-/// is reviewed afresh (its own rounds), not saved unreviewed.
+/// The check: a revision that answers a held finding with a fix, without
+/// having read the code since the hold, goes back for the read — spending
+/// no review — and the plan it resends after the read is reviewed and
+/// saved.
+#[tokio::test]
+async fn a_held_plan_edited_without_a_read_is_sent_back_before_its_review() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_RESOLVED)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            // Held: it answers the finding with a fixed plan at once, never
+            // opening the caller the finding is about.
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
+            // Told to look, it does, and sends the same revision again.
+            Reply::Call {
+                id: "r1",
+                name: "read",
+                args: json!({ "path": "src/cli.rs" }),
+            },
+            submit_with("p3", users_plan("Users", 1), added_the_step()),
+            Reply::Text("Saved the plan."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let unread = result_of(&messages, "p2");
+    assert!(
+        unread.content.starts_with(
+            "Error: the plan wasn't saved: its answers fix a finding the code wasn't checked for since the review."
+        ),
+        "{}",
+        unread.content
+    );
+    assert!(unread
+        .content
+        .contains("Read the code each finding is about"));
+    assert!(unread.meta.as_ref().unwrap().get("plan").is_some());
+    // The send-back spent no review, and saved nothing.
+    assert_eq!(
+        requests_with(&seen, PLAN_REVIEW).len(),
+        2,
+        "the hold and the last"
+    );
+    let after = result_of(&messages, "p3");
+    assert!(
+        after
+            .content
+            .starts_with(&format!("Saved the plan to {}", shown(".rovik/plans/"))),
+        "{}",
+        after.content
+    );
+    let files = h.plan_files();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].contains("**Caller 0**"));
+}
 #[tokio::test]
 async fn a_plan_held_in_one_run_is_reviewed_in_the_next() {
     let h = plan_project().await;
@@ -11236,6 +11329,7 @@ async fn budget_used_record_shape() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g20"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             submit("p3", users_plan("Users v3", 3)),
             Reply::Text("Saved."),
@@ -11291,6 +11385,7 @@ async fn plan_review_across_a_second_run() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
+            reads_the_caller("g21"),
             submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved, with one finding open."),
         ],

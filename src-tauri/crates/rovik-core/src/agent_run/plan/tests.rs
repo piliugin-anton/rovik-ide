@@ -84,6 +84,47 @@ fn the_design_is_settled_before_the_form() {
     assert!(!form.contains("Decide before you write"), "the form alone");
 }
 
+/// The standing rule, in Plan mode and Autopilot's plan stage alike: a
+/// finding is checked against the code before the plan is revised.
+#[test]
+fn the_plan_instructions_say_to_check_a_finding_against_the_code_first() {
+    for instructions in [
+        PLAN_MODE_INSTRUCTIONS.to_string(),
+        plan_mode_instructions(true),
+    ] {
+        assert!(
+            instructions.contains("read the code each finding is about first"),
+            "{instructions}"
+        );
+        assert!(
+            instructions.contains("a plan revised without a single read is sent back"),
+            "{instructions}"
+        );
+    }
+    // It comes with `responses`, after the line the form ends at: a plan is
+    // revised by the one answer, not by a second round of instructions.
+    let tail = PLAN_MODE_INSTRUCTIONS
+        .split("   Before you submit")
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(!tail.contains("read the code each finding is about first"));
+}
+
+/// The rule is Plan mode's alone: the form Thorough's planners and the
+/// judge write against still ends before it, so their briefs don't change.
+#[test]
+fn the_plan_form_keeps_the_rule_out_of_the_planners_brief() {
+    let rule = "read the code each finding is about first";
+    assert!(!plan_form().contains(rule));
+    let planner = crate::agent_run::planning::planner_brief("Do the thing", None);
+    assert!(!planner.contains(rule), "{planner}");
+    let judge = crate::agent_run::judge::plans_brief("Do the thing", &[]);
+    assert!(!judge.contains(rule), "{judge}");
+}
+
+/// S01: a plan's criteria, its parts, a criterion over two lines, the
+/// numbered list's two spellings.
 const CRITERIA_PLAN: &str = "# Add users\n\nUsers can sign up.\n\n## Criteria\n\n\
     1. `POST /users` with a new email creates a user and answers 201.\n\
     2. The same email again answers 409\n   and creates nothing.\n\

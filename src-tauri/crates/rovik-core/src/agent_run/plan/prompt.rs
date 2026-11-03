@@ -89,7 +89,7 @@ A question (why something happens, how the code works, what an error means) gets
    - no step uses what a later step creates;
    - it does the whole request, and nothing beyond it;
    - each new behavior has a test to add or update under "## Validation".
-   submit_plan checks the plan, and a reviewer may check it against the code; either sends it back with what to fix. Fix it and submit the complete plan again; when a reviewer held it back, answer each of its findings in `responses`. The plan goes in submit_plan, never in your reply; after submitting, reply in a few sentences.
+   submit_plan checks the plan, and a reviewer may check it against the code; either sends it back with what to fix. When a reviewer held it back: read the code each finding is about first (its `path:line`, its symbol with `callers`, the callers a step changes), then fix that part of the plan and submit the complete plan again, answering each finding in `responses` with a note that says what the code showed. A finding accepted without looking is a guess, not a fix; a plan revised without a single read is sent back. The plan goes in submit_plan, never in your reply; after submitting, reply in a few sentences.
 5. When a plan exists (shown below), the user's message is about it: revise the plan with the new information, keeping what still holds, and submit it complete; don't replace it with a summary of what they said. A question about it is answered without submitting."###;
 
 /// Plan mode's lines that Autopilot's plan stage says otherwise: the user
