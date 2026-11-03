@@ -46,6 +46,10 @@ pub const MAX_PLAN_REVIEWS: u32 = 20;
 /// with the answers it has — unless it sends the plan back as it was with
 /// nothing said, which saves the plan with its open findings instead.
 pub const MAX_ANSWER_NUDGES: u32 = 2;
+/// A submit that answers a review's finding with a fixed plan, without
+/// having read the code the finding is about, goes back at most this many
+/// times a hold; past it, the plan goes on to its review as it is.
+pub const MAX_UNREAD_REVISIONS: u32 = 2;
 /// A revision changing fewer lines than this from the saved plan is saved
 /// without a review.
 pub const MIN_REVISION_LINES: usize = 10;
@@ -61,7 +65,7 @@ const PLAN_REVIEWER_PROMPT: &str = r###"You are a plan reviewer: a read-only hel
 
 ## What to look for
 
-- Callers and dependents a step changes but the plan doesn't update: check with callers, neighbours and search_code.
+- Callers and dependents a step changes but the plan doesn't update: check with callers, neighbours and search_code. A finding about a step's files names the caller or the file it is about, so the agent can look at the same code.
 - Functions, types, fields, settings or files the plan names that don't exist, or exist under other names.
 - Steps in the wrong order: a step that needs something a later step makes.
 - Scope: work beyond the request, or parts of the request the plan leaves out.
@@ -85,7 +89,7 @@ Reply with exactly this, most severe first, and nothing else (don't repeat the p
 
 1. [high] Step 3 — One-line title
    - Scenario: what goes wrong when the plan is built as written.
-   - Fix: the replacement text for the plan (a step's line, a Files entry, a criterion), not advice.
+   - Fix: what the plan should say instead (a step's line, a Files entry, a criterion), and the `path:line` or symbol that shows why: the agent checks each finding against that code itself, so it needs to see what you saw. Not a whole rewritten step.
    - Confidence: confirmed or plausible.
 
 Use "Step N" for the step a finding is about, or "Plan" for the plan as a whole. Severity: high (the plan can't work or misses part of the request), medium (it would need rework), low (minor). With nothing to report, reply "## Findings" and then "None.".
@@ -471,7 +475,10 @@ fn findings_result_with(
         "The plan wasn't saved yet: a reviewer checked it against the code ({which}) and found problems. \
          It saw the request, the user's answers and the plan, not this conversation; its findings are another model's opinion.\n\n{list}\n\n\
          Before you submit again:\n\
-         - Check each finding against the code with your tools (read, search_code, callers) before you change the plan.\n\
+         - Check each finding against the code first, before you change the plan: read the file its `path:line` names, \
+         open the symbol with `outline` or `read`, and follow a call with `callers`. The note in each answer says what \
+         that showed (the file and line, the symbol, the caller); a note with no code behind it is sent back, and so is \
+         a revision that fixes a finding without reading anything.\n\
          - Where a finding is right, fix it in the plan, and look for the same kind of problem in the other steps: a caller missed in one step is often missed in others.\n\
          - Where it's wrong, leave that part of the plan as it is.\n\
          - Change only what the findings need: anything else you change is reviewed as new.\n\n\
@@ -660,6 +667,68 @@ pub fn changed_lines(before: &str, after: &str) -> usize {
         .iter()
         .map(|h| h.added.len().max(h.deleted.len()))
         .sum()
+}
+
+/// Whether a revision that answers a review must read the code first: it
+/// changes the plan, at least one answer says "fixed", every held finding
+/// has an answer, the hold's budget isn't spent, and no read happened since
+/// the hold (`read`: None only when neither the hold nor a retried run's
+/// start is in the history, which asks nothing).
+fn needs_the_code(
+    nudges: u32,
+    changed: bool,
+    responses: &[Response],
+    answers_complete: bool,
+    read: Option<bool>,
+) -> bool {
+    changed
+        && read == Some(false)
+        && nudges < MAX_UNREAD_REVISIONS
+        && answers_complete
+        && responses.iter().any(|r| r.action == Action::Fixed)
+}
+
+/// Where a revision's read must come after: the row of the `submit_plan`
+/// call the review answered. A hold restored into a new run (an automatic
+/// retry) names a call the new run's history may not hold, or holds with
+/// the previous run's reads behind it: then the window is the note that run
+/// started with (`PLAN_RETRY`), so this run's own reads count and the last
+/// run's investigation doesn't. None when neither is in `recent`: nothing
+/// can be told from it, and nothing is asked.
+fn read_window(recent: &[MessageRow], held: Option<&str>) -> Option<usize> {
+    if let Some(at) = held.and_then(|call| {
+        recent.iter().position(|m| {
+            m.tool_calls
+                .as_ref()
+                .is_some_and(|calls| calls.iter().any(|c| c.id == call))
+        })
+    }) {
+        return Some(at);
+    }
+    recent.iter().rposition(|m| {
+        m.meta
+            .as_ref()
+            .and_then(|v| v.get("harness"))
+            .and_then(Value::as_str)
+            == Some(PLAN_RETRY)
+    })
+}
+
+/// Whether a reading tool ran after row `at`: the seven that read the
+/// project, or a subagent (a scout reads with them). A `submit_plan` call
+/// never counts, so a submit can't be the read that lets itself through.
+fn reads_after(recent: &[MessageRow], at: usize) -> bool {
+    let reads = |name: &str| {
+        BuiltinTool::READS
+            .iter()
+            .chain(std::iter::once(&BuiltinTool::Task))
+            .any(|t| t.spec().name == name)
+    };
+    recent[at + 1..]
+        .iter()
+        .filter_map(|m| m.tool_calls.as_ref())
+        .flatten()
+        .any(|c| c.name != "submit_plan" && reads(&c.name))
 }
 
 /// The user's answers to `ask_user` in the chat, as the agent got them.
@@ -2001,6 +2070,51 @@ impl Run {
         )
     }
 
+    /// Whether a revision answers a review with a fix it never looked at:
+    /// since the plan was held, a `fixed` answer and a changed plan, but no
+    /// reading tool called in between — the code the finding is about was
+    /// never opened, so the fix is a guess at text. It goes back without a
+    /// review, at most `MAX_UNREAD_REVISIONS` times a hold. `None` when
+    /// nothing was fixed, the plan didn't change (its answers' check is the
+    /// next one), a read happened since the hold, or a held finding is
+    /// still unanswered (that is what goes back first).
+    pub(super) fn unverified_revision_problem(
+        &mut self,
+        recent: &[MessageRow],
+        responses: &[Response],
+        sent: &str,
+    ) -> Option<String> {
+        // The plan the reviewer held, and whether this submit changes it.
+        let held = self.plan.plan_held.clone()?;
+        let changed = changed_lines(&held, sent) > 0;
+        // A read after the hold lets the revision through; a restored hold
+        // (an automatic retry) counts the reads of the run it went into.
+        let read = read_window(recent, self.plan.plan_review_call.as_deref())
+            .map(|at| reads_after(recent, at));
+        let answers = self.plan.answers_complete(
+            responses,
+            self.plan_reviewer_on(),
+            self.balanced_autopilot(),
+        );
+        if !needs_the_code(
+            self.plan.plan_unread_nudges,
+            changed,
+            responses,
+            answers,
+            read,
+        ) {
+            return None;
+        }
+        self.plan.plan_unread_nudges += 1;
+        Some(
+            "Error: the plan wasn't saved: its answers fix a finding the code wasn't checked for since the review. \
+             Read the code each finding is about first (the file its `path:line` names, the symbol, the caller), \
+             then submit the plan again with the same `edits` and `responses` and a note saying what the code showed. \
+             A finding accepted without looking is a guess, not a fix."
+                .to_string(),
+        )
+    }
+
     /// B09: reviews a submitted plan that passed the checker, before it's
     /// saved. `saved`: the chat's plan file as it is now; `responses`: the
     /// agent's answers to the held findings (B12). A saved plan ends the
@@ -2503,6 +2617,8 @@ impl Run {
             "held": plan,
             "blocked": self.plan.plan_blocked,
             "formatRejections": self.plan.plan_format_rejections,
+            "unreadNudges": self.plan.plan_unread_nudges,
+            "reviewCall": self.plan.plan_review_call,
         });
     }
 
@@ -2724,6 +2840,8 @@ impl Run {
             );
             self.plan.plan_blocked = state["blocked"] == true;
             self.plan.plan_format_rejections = n("formatRejections");
+            self.plan.plan_unread_nudges = n("unreadNudges");
+            self.plan.plan_review_call = state["reviewCall"].as_str().map(str::to_string);
         }
         Ok(())
     }
@@ -2959,7 +3077,289 @@ mod tests {
         assert!(blocked.ends_with("reply in a sentence that the plan is blocked, and why."));
     }
 
-    /// B12: the shapes models send `responses` in.
+    /// The hold's first bullet is the check against the code, and it says
+    /// what the answer's note must show: the finding is not a patch to
+    /// paste, it's a claim to look at.
+    #[test]
+    fn a_hold_asks_for_the_code_before_a_revision() {
+        let f = parse_findings(STEP_FINDINGS).unwrap();
+        let result = findings_result(
+            &f,
+            1,
+            DEFAULT_PLAN_REVIEWS,
+            false,
+            None,
+            AnswerStyle::NUMBER,
+        );
+        let after = result
+            .split("Before you submit again:")
+            .nth(1)
+            .expect("the list");
+        assert!(
+            after.trim_start().starts_with(
+                "- Check each finding against the code first, before you change the plan"
+            ),
+            "{after}"
+        );
+        assert!(
+            after.contains("read the file its `path:line` names"),
+            "{after}"
+        );
+        assert!(after.contains("follow a call with `callers`"), "{after}");
+        assert!(
+            after.contains("a note with no code behind it is sent back"),
+            "{after}"
+        );
+        assert!(
+            after.contains("a revision that fixes a finding without reading anything"),
+            "{after}"
+        );
+        // Once, not twice: the old bullet is replaced, not preceded.
+        assert_eq!(
+            result
+                .matches("Check each finding against the code")
+                .count(),
+            1,
+            "{result}"
+        );
+    }
+
+    /// A row of the conversation with the calls it made.
+    fn calls_row(calls: &[(&str, &str)]) -> MessageRow {
+        MessageRow {
+            id: "m".into(),
+            dialog_id: "d".into(),
+            seq: 0,
+            role: "assistant".into(),
+            content: String::new(),
+            body_external: false,
+            body_bytes: 0,
+            tool_calls: Some(
+                calls
+                    .iter()
+                    .map(|(id, name)| crate::chat_db::store::ToolCall {
+                        id: (*id).into(),
+                        name: (*name).into(),
+                        arguments: "{}".into(),
+                        extra_content: None,
+                    })
+                    .collect(),
+            ),
+            tool_call_id: None,
+            meta: None,
+            error: None,
+            failed: false,
+            finalized: true,
+            attachments: Vec::new(),
+            created_at: 0,
+        }
+    }
+
+    /// A harness note the app wrote, such as the one a retried plan stage
+    /// starts with.
+    fn note_row(harness: &str) -> MessageRow {
+        MessageRow {
+            meta: Some(json!({ "harness": harness })),
+            ..calls_row(&[])
+        }
+    }
+
+    /// The read a revision needs is one made after the hold; a submit, a
+    /// command, or a read from before the hold doesn't count.
+    #[test]
+    fn a_read_counts_only_after_the_hold_and_never_a_submit() {
+        let held = calls_row(&[("c1", "submit_plan")]);
+        let opened = calls_row(&[("c2", "read")]);
+        let shell = calls_row(&[("c3", "bash")]);
+        let again = calls_row(&[("c4", "submit_plan")]);
+        let scout = calls_row(&[("c5", "task")]);
+        let read_after =
+            |rows: &[MessageRow]| read_window(rows, Some("c1")).map(|at| reads_after(rows, at));
+        assert_eq!(read_after(&[held.clone(), opened.clone()]), Some(true));
+        // A command is not the file's code, and sending the plan again is
+        // certainly not reading it.
+        assert_eq!(read_after(&[held.clone(), shell]), Some(false));
+        assert_eq!(read_after(&[held.clone(), again]), Some(false));
+        // A read before the hold says nothing about the revision after it.
+        assert_eq!(read_after(&[opened.clone(), held.clone()]), Some(false));
+        // A scout reads with the same tools.
+        assert_eq!(read_after(&[held, scout]), Some(true));
+        // Neither the hold nor a retried run's start: nothing to ask.
+        assert_eq!(read_window(&[opened], Some("gone")), None);
+    }
+
+    /// A hold restored into a new run (an automatic retry) names a call the
+    /// new run's history may not hold: the window is then the note that run
+    /// started with, so the previous run's reads don't pass the revision.
+    #[test]
+    fn a_restored_hold_reads_its_own_run() {
+        let old_read = calls_row(&[("c0", "read")]);
+        let retry = note_row(PLAN_RETRY);
+        let opened = calls_row(&[("c2", "read")]);
+        let held_elsewhere = Some("gone");
+        // The last run's investigation was a read, and it doesn't count.
+        let rows = [old_read.clone(), retry.clone()];
+        let at = read_window(&rows, held_elsewhere).expect("the retry note");
+        assert_eq!(at, 1);
+        assert!(!reads_after(&rows, at));
+        // This run's own read does.
+        let rows = [old_read, retry, opened];
+        let at = read_window(&rows, held_elsewhere).expect("the retry note");
+        assert!(reads_after(&rows, at));
+        // A hold the history does hold wins over the retry note: the read
+        // must come after the submit the review answered.
+        let held = calls_row(&[("c1", "submit_plan")]);
+        let rows = [held, note_row(PLAN_RETRY)];
+        assert_eq!(read_window(&rows, Some("c1")), Some(0));
+    }
+
+    /// Balanced Autopilot's answers go by F-number, as its brief asks
+    /// (`AnswerStyle::f_number`): the answers check reads them the same way
+    /// the answer nudge does, so the read check is reached there too.
+    #[test]
+    fn balanced_answers_are_read_by_their_f_numbers() {
+        let mut plan = PlanState::default();
+        plan.held("c1", "the plan", Vec::new());
+        plan.plan_ledger = vec![
+            LedgerEntry {
+                number: 1,
+                finding: finding("high", "Step 2", "A caller missed"),
+                status: Status::Open,
+                disputes: 0,
+                ruled: false,
+            },
+            LedgerEntry {
+                number: 3,
+                finding: finding("medium", "Step 3", "Wrong order"),
+                status: Status::Open,
+                disputes: 0,
+                ruled: false,
+            },
+        ];
+        plan.plan_findings = open_findings(&plan.plan_ledger);
+        let by_f = parse_responses(Some(&json!([
+            { "finding": 1, "action": "fixed", "note": "`src/cli.rs:12` calls it too." },
+            { "finding": 3, "action": "fixed", "note": "Step 3 moved before step 2." }
+        ])));
+        assert!(plan.answers_complete(&by_f, true, true));
+        // One of the two, or by position where F-numbers were asked for: the
+        // answers' own check says what is missing, not the read's.
+        assert!(!plan.answers_complete(&by_f[..1], true, true));
+        assert!(!plan.answers_complete(&by_f, true, false));
+    }
+
+    /// finding has one, and never with the reviewer off.
+    #[test]
+    fn the_read_check_waits_for_every_answer() {
+        let findings = parse_findings(STEP_FINDINGS).unwrap();
+        let mut plan = PlanState::default();
+        plan.held("c1", "the plan", findings.clone());
+        let all = parse_responses(Some(&json!([
+            { "finding": 1, "action": "fixed", "note": "src/cli.rs:12 calls it too, so step 3 fixes it." },
+            { "finding": 2, "action": "not_a_problem", "note": "The CLI is gone." }
+        ])));
+        assert_eq!(all.len(), findings.len().max(1));
+        assert!(plan.answers_complete(&all, true, false));
+        assert!(
+            !plan.answers_complete(&all[..1], true, false),
+            "one missing"
+        );
+        // Nothing to answer, or nobody to answer: not the read's business.
+        assert!(!plan.answers_complete(&all, false, false));
+        // Nothing is held: nothing to answer.
+        assert!(!PlanState::default().answers_complete(&all, true, false));
+    }
+
+    /// Each hold gets its own budget of send-backs: a run that used them on
+    /// an earlier plan is still held to a read for the next one.
+    #[test]
+    fn a_new_hold_gets_a_fresh_unread_budget() {
+        let findings = parse_findings(STEP_FINDINGS).unwrap();
+        let mut plan = PlanState::default();
+        plan.held("c1", "first", findings.clone());
+        plan.plan_unread_nudges = MAX_UNREAD_REVISIONS;
+        plan.held("c2", "second", findings);
+        assert_eq!(plan.plan_unread_nudges, 0);
+        assert_eq!(plan.plan_review_call.as_deref(), Some("c2"));
+        assert_eq!(plan.plan_held.as_deref(), Some("second"));
+    }
+
+    /// The four cases the check turns on, with no run around them.
+    fn fixed_answer() -> Vec<Response> {
+        parse_responses(Some(&json!([
+            { "finding": 1, "action": "fixed", "note": "`src/cli.rs:12` calls it too." }
+        ])))
+    }
+
+    #[test]
+    fn a_read_after_the_hold_lets_the_revision_through() {
+        let answers = fixed_answer();
+        assert!(!needs_the_code(0, true, &answers, true, Some(true)));
+        // With nothing known about the hold, nothing is asked.
+        assert!(!needs_the_code(0, true, &answers, true, None));
+        assert!(needs_the_code(0, true, &answers, true, Some(false)));
+    }
+
+    #[test]
+    fn a_not_a_problem_answer_needs_no_fresh_read() {
+        let answers = parse_responses(Some(&json!([
+            { "finding": 1, "action": "not_a_problem", "note": "The CLI is gone: `src/cli.rs` has no call." }
+        ])));
+        assert!(!needs_the_code(0, true, &answers, true, Some(false)));
+    }
+
+    #[test]
+    fn a_plan_unchanged_from_the_held_one_goes_to_the_answers_check() {
+        let answers = fixed_answer();
+        assert!(!needs_the_code(0, false, &answers, true, Some(false)));
+    }
+
+    #[test]
+    fn a_revision_with_no_answer_and_no_read_is_sent_back_for_the_answer_first() {
+        let answers = fixed_answer();
+        assert!(!needs_the_code(0, true, &answers, false, Some(false)));
+    }
+
+    #[test]
+    fn an_unread_revision_is_sent_back_at_most_twice() {
+        let answers = fixed_answer();
+        assert!(needs_the_code(0, true, &answers, true, Some(false)));
+        assert!(needs_the_code(
+            MAX_UNREAD_REVISIONS - 1,
+            true,
+            &answers,
+            true,
+            Some(false)
+        ));
+        // Past the budget, the plan goes on to its review as it is.
+        assert!(!needs_the_code(
+            MAX_UNREAD_REVISIONS,
+            true,
+            &answers,
+            true,
+            Some(false)
+        ));
+    }
+
+    #[test]
+    fn the_reviewers_report_wants_evidence_not_a_patch() {
+        assert!(
+            !PLAN_REVIEWER_PROMPT.contains("the replacement text for the plan"),
+            "the agent repairs from evidence, not from a patch"
+        );
+        let fix = PLAN_REVIEWER_PROMPT
+            .split("- Fix:")
+            .nth(1)
+            .expect("the report's Fix line");
+        assert!(fix.contains("`path:line` or symbol"), "{fix}");
+        assert!(fix.contains("Not a whole rewritten step"), "{fix}");
+        // A finding about a step's files names the caller or the file.
+        assert!(
+            PLAN_REVIEWER_PROMPT.contains("names the caller or the file it is about"),
+            "what to look for"
+        );
+    }
+
     #[test]
     fn responses_are_read_in_the_shapes_models_send() {
         let read = |v: Value| parse_responses(Some(&v));
@@ -4021,6 +4421,9 @@ pub(super) struct PlanState {
     /// Submits sent back since the hold for leaving a held finding
     /// unanswered (B12, at most `MAX_ANSWER_NUDGES`).
     plan_answer_nudges: u32,
+    /// Submits sent back since the hold for fixing a finding without
+    /// reading the code it is about (at most `MAX_UNREAD_REVISIONS`).
+    plan_unread_nudges: u32,
     /// Balanced Autopilot: the plan's finding list, kept across reviews and
     /// automatic retries, resolved entries included (plan_review.rs).
     plan_ledger: Vec<super::plan_review::LedgerEntry>,
@@ -4062,6 +4465,20 @@ impl PlanState {
         self.plan_answer_nudges += 1;
         Some(problem)
     }
+
+    /// Whether every held finding has an answer the hold takes: the answer
+    /// check's question, asked without spending one of its nudges, so the
+    /// check against the code can wait for the answers.
+    fn answers_complete(&self, responses: &[Response], reviewer_on: bool, balanced: bool) -> bool {
+        if self.plan_findings.is_empty() || !reviewer_on {
+            return false;
+        }
+        if balanced {
+            unanswered_of(&open_numbers(&self.plan_ledger), "F", responses).is_none()
+        } else {
+            unanswered_problem(self.plan_findings.len(), responses).is_none()
+        }
+    }
     fn saved(&mut self) {
         for entry in &mut self.plan_ledger {
             entry.status = Status::Resolved;
@@ -4075,6 +4492,7 @@ impl PlanState {
         self.plan_findings = findings;
         self.plan_held = Some(plan.into());
         self.plan_answer_nudges = 0;
+        self.plan_unread_nudges = 0;
     }
     fn review_started(&mut self) {
         self.plan_reviews += 1;

@@ -2221,6 +2221,23 @@ impl Run {
             self.in_autopilot(),
         );
         let format_problems = !problems.is_empty();
+        // A revision that answers the review with fixes it never checked
+        // against the code goes back for the check first: before the form
+        // problems' frame, and before the answers' own turn, so it spends
+        // neither a review nor one of their nudges.
+        if let Some(problem) = self.unverified_revision_problem(&recent, &responses, &given) {
+            // What `edits` apply to next: the plan just sent back.
+            self.plan.draft_received(Some(plan_text.to_string()));
+            return self
+                .add_tool_result(
+                    &tc.id,
+                    problem,
+                    Outcome::Failed,
+                    Some(json!({ "plan": plan_text })),
+                    Vec::new(),
+                )
+                .await;
+        }
         // B12: a held finding left unanswered sends the plan back with the
         // checker's problems, before a review is spent on it.
         let unanswered = self.unanswered(&responses);
@@ -2473,6 +2490,115 @@ mod tests {
         assert_eq!(err, apply_plan_edits(draft, &neither).unwrap_err());
         // Nothing sent apart from the draft: its error alone.
         assert!(edit_last_plan(draft, None, &from_sent).is_err());
+    }
+
+    /// A plan whose form passes the checks: what a revision starts from.
+    const HELD_PLAN: &str = "# Page the users list\n\n\
+        The users API answers every user at once, so a large table is slow to open.\n\n\
+        ## Steps\n\n\
+        1. Page the query\n   - Files: `src/db/users.rs`\n   - Add `users_page` beside `list_users`, ordered by `users.id`.\n\n\
+        2. Serve the page\n   - Files: `src/api/users.rs`\n   - Read `page` from the query and answer the users with a total.\n\n\
+        ## Validation\n\n\
+        - `cargo test`: `users_page` on the first page.\n";
+
+    /// Step 7: `edits` applied in order leave the whole corrected plan —
+    /// each finding's fix in place, everything the findings don't name as
+    /// it was — and that text is what the next check, review and save see.
+    #[test]
+    fn plan_edits_accumulate_into_the_whole_corrected_plan() {
+        use crate::agent_run::plan::{plan_problems, steps};
+        assert_eq!(plan_problems(HELD_PLAN), Vec::<String>::new());
+        let edits = vec![
+            json!({ "old_text": "Files: `src/db/users.rs`",
+                    "new_text": "Files: `src/db/users.rs`, `src/db/mod.rs`" }),
+            json!({ "old_text": "Add `users_page` beside `list_users`, ordered by `users.id`.",
+                    "new_text": "Add `users_page` beside `list_users`, ordered by `users.id`, and re-export it from `src/db/mod.rs`." }),
+            json!({ "old_text": "- `cargo test`: `users_page` on the first page.",
+                    "new_text": "- `cargo test`: `users_page` on the first page and on the last one." }),
+        ];
+        let edited = apply_plan_edits(HELD_PLAN, &edits).unwrap();
+        // Each fix is in, and what it replaced is gone.
+        assert!(
+            edited.contains("Files: `src/db/users.rs`, `src/db/mod.rs`"),
+            "{edited}"
+        );
+        assert!(
+            edited.contains("and re-export it from `src/db/mod.rs`"),
+            "{edited}"
+        );
+        assert!(
+            edited.contains("- `cargo test`: `users_page` on the first page and on the last one."),
+            "{edited}"
+        );
+        // The rest of the plan is there, untouched and in order.
+        assert!(edited.starts_with("# Page the users list\n\n"), "{edited}");
+        assert!(
+            edited.contains(
+                "2. Serve the page\n   - Files: `src/api/users.rs`\n   - Read `page` from the query \
+                 and answer the users with a total."
+            ),
+            "the step no finding named is as it was: {edited}"
+        );
+        // The whole plan, not the edits: two steps, the first now naming
+        // both files, and the corrected plan still passes the checks.
+        let steps = steps(&edited);
+        assert_eq!(steps.len(), 2, "{edited}");
+        let files: Vec<&str> = steps[0].files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(files, ["src/db/users.rs", "src/db/mod.rs"], "{edited}");
+        assert!(steps[0].files.iter().all(|f| !f.new && !f.read_only));
+        assert_eq!(plan_problems(&edited), Vec::<String>::new());
+        // And it counts as a changed revision against the plan it was held
+        // with, which is what sends an unread one back.
+        assert!(crate::agent_run::plan_review::changed_lines(HELD_PLAN, &edited) > 0);
+    }
+
+    /// Step 7: a second round's `edits` apply to the plan the first round
+    /// left, so a revision builds on the corrections already made instead
+    /// of on the plan the reviewer held.
+    #[test]
+    fn a_second_round_of_edits_builds_on_the_plan_the_first_one_left() {
+        let held = "1. Page\n   - Files: `src/db/users.rs`\n   - Add `users_page`.\n";
+        let first = apply_plan_edits(
+            held,
+            &[json!({ "old_text": "Files: `src/db/users.rs`",
+                      "new_text": "Files: `src/db/users.rs`, `src/db/mod.rs`" })],
+        )
+        .unwrap();
+        let second = apply_plan_edits(
+            &first,
+            &[json!({ "old_text": "`src/db/mod.rs`", "new_text": "`src/db/mod.rs` (read)" })],
+        )
+        .unwrap();
+        assert_eq!(
+            second,
+            "1. Page\n   - Files: `src/db/users.rs`, `src/db/mod.rs` (read)\n   - Add `users_page`.\n"
+        );
+    }
+
+    /// Step 7: an edit that matches nothing stops the batch, so the run
+    /// keeps the plan it had rather than a half corrected one; the error
+    /// names the edit that failed.
+    #[test]
+    fn a_batch_with_an_edit_that_matches_nothing_applies_none_of_it() {
+        let edits = vec![
+            json!({ "old_text": "Files: `src/db/users.rs`",
+                    "new_text": "Files: `src/db/users.rs`, `src/db/mod.rs`" }),
+            json!({ "old_text": "Files: `src/api/users.rs` (new)", "new_text": "x" }),
+        ];
+        let err = apply_plan_edits(HELD_PLAN, &edits).unwrap_err();
+        assert!(err.starts_with("Edit 2: "), "{err}");
+        assert!(err.contains("old_text was not found"), "{err}");
+    }
+
+    /// Step 7: a fix for one step can't land in another: an `old_text` that
+    /// matches twice is refused rather than guessed at, so the corrected
+    /// plan is never the wrong step's text.
+    #[test]
+    fn an_edit_that_matches_two_places_is_refused() {
+        let edits = vec![json!({ "old_text": "   - Files: `src/",
+                                  "new_text": "   - Files: `app/" })];
+        let err = apply_plan_edits(HELD_PLAN, &edits).unwrap_err();
+        assert!(err.contains("matches 2 places"), "{err}");
     }
 
     /// Round 2 (section 4.2): a subagent's command timeout is cut to the

@@ -427,14 +427,14 @@ fn submit_plan_schema() -> Value {
         "type": "function",
         "function": {
             "name": "submit_plan",
-            "description": "Save the plan, when the user asked for a change or a plan (a question is answered in the reply, without one). Pass the complete plan as Markdown in the format your instructions give: a \"# \" title and summary, \"## Steps\" with a \"Files:\" line per step, \"## Decisions\", \"## Validation\", \"## Risks\". It is checked and saved to the project, where the user edits and implements it; after a review, send `edits` (exact text replacements in your last plan) instead of the whole plan. The plan goes here, not in your reply. When a review held the plan back, pass `responses` too: an answer to each of its findings.",
+            "description": "Save the plan, when the user asked for a change or a plan (a question is answered in the reply, without one). Pass the complete plan as Markdown in the format your instructions give: a \"# \" title and summary, \"## Steps\" with a \"Files:\" line per step, \"## Decisions\", \"## Validation\", \"## Risks\". It is checked and saved to the project, where the user edits and implements it; after a review, once you have read the code each finding is about, send `edits` (exact text replacements in your last plan) instead of the whole plan. The plan goes here, not in your reply. When a review held the plan back, pass `responses` too: an answer to each of its findings, its note saying what the code showed.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "plan": { "type": "string", "description": "The complete plan in Markdown; rejected, with what to fix, when it doesn't follow the format." },
                     "edits": {
                         "type": "array",
-                        "description": "Instead of `plan`, after a review: exact text replacements in the last plan you submitted, applied in order. Each old_text must match that plan exactly once.",
+                        "description": "Instead of `plan`, after a review and only once you have read the code each finding is about: exact text replacements in the last plan you submitted, applied in order. Each old_text must match that plan exactly once.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -2394,6 +2394,28 @@ mod tests {
         assert!(
             !names(tools_for(true, false, false, &none, false, false, false))
                 .contains(&"bash".to_string())
+        );
+    }
+
+    /// The plan tool says the findings are checked against the code before a
+    /// revision goes in, in both places it offers `edits`.
+    #[test]
+    fn the_plan_tool_says_to_check_the_code_before_editing() {
+        let schema = submit_plan_schema();
+        let description = schema["function"]["description"].as_str().unwrap();
+        let edits = schema["function"]["parameters"]["properties"]["edits"]["description"]
+            .as_str()
+            .unwrap();
+        for text in [description, edits] {
+            assert!(text.contains("read the code"), "{text}");
+        }
+        assert!(
+            !description.contains("after a review, send `edits`"),
+            "{description}"
+        );
+        assert!(
+            !edits.contains("Instead of `plan`, after a review:"),
+            "{edits}"
         );
     }
 
