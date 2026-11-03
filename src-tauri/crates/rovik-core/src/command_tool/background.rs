@@ -734,10 +734,20 @@ mod tests {
         let first = started(
             chat,
             &root,
-            "(while :; do echo . >> beat; sleep 0.05; done) > /dev/null 2>&1 & echo up",
+            "(while :; do echo . >> beat; sleep 0.05; done) > /dev/null 2>&1 & \
+             echo up; while [ ! -e go ]; do sleep 0.05; done",
         );
-        assert_eq!(first.status.end, Some(End::Exited(Some(0))), "{first:?}");
-        assert_eq!(first.output.trim(), "up");
+        // Let the shell exit after start has answered. Its startup window
+        // may pass before a busy CI runner even reaches `echo up`.
+        assert!(until(|| std::fs::metadata(Path::new(&root).join("beat"))
+            .is_ok_and(|m| m.len() > 0)));
+        std::fs::write(Path::new(&root).join("go"), "").unwrap();
+        assert!(until(|| list(chat)
+            .first()
+            .is_some_and(|s| s.end.is_some())));
+        let last = output(chat, &first.status.id).unwrap();
+        assert_eq!(last.status.end, Some(End::Exited(Some(0))), "{last:?}");
+        assert_eq!(format!("{}{}", first.output, last.output).trim(), "up");
         assert!(!beats(&root), "it was left behind");
         assert!(list(chat).is_empty());
     }
