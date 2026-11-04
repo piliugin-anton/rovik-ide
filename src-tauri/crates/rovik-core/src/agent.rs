@@ -887,13 +887,33 @@ const AUTOPILOT_SWAPS: [(&str, &str); 7] = [
     ),
 ];
 
+/// The lead's two lines of the coding agent's prompt that would have it
+/// write tests itself, and what they say when the test writer has the
+/// change's tests (`test_writer.rs`' LEAD_RULE): the goal stands, who
+/// reaches it changes, so the request holds one instruction about tests
+/// rather than two opposing ones (E03). Only a lead that is offered the
+/// test writer gets them: without one (a connector's own tools, a turn
+/// restricted to context tools) it writes the tests itself.
+pub(crate) const TEST_WRITER_SWAPS: [(&str, &str); 2] = [
+    (
+        "- \"Add validation\" → \"Write tests for invalid inputs, then make them pass\"",
+        "- \"Add validation\" → \"Delegate the invalid-input tests to the test writer, then make them pass\"",
+    ),
+    (
+        "- \"Fix the bug\" → \"Write a test that reproduces it, then make it pass\"",
+        "- \"Fix the bug\" → \"Delegate a test that reproduces the bug to the test writer, then make it pass\"",
+    ),
+];
+
 /// A lead's system prompt: the coding agent's (without its tool rules when
 /// it's offered no tools), then the project's section. In Autopilot it
-/// decides what it would otherwise ask.
+/// decides what it would otherwise ask; when the test writer has the
+/// change's tests, its two test lines say so.
 pub fn lead_system_prompt(
     has_tools: bool,
     project_context: Option<&str>,
     autopilot: bool,
+    test_writer: bool,
 ) -> String {
     let mut base = if has_tools {
         CODING_AGENT_SYSTEM_PROMPT.to_string()
@@ -902,6 +922,11 @@ pub fn lead_system_prompt(
     };
     if autopilot {
         for (line, instead) in AUTOPILOT_SWAPS {
+            base = base.replace(line, instead);
+        }
+    }
+    if test_writer {
+        for (line, instead) in TEST_WRITER_SWAPS {
             base = base.replace(line, instead);
         }
     }
@@ -956,6 +981,10 @@ pub struct ChatParams {
     // About the open project (stack, check commands, its agent instructions),
     // appended to the default system prompt.
     pub project_context: Option<String>,
+    // The run's tests are the test writer's (its rule is in the subagent
+    // section of `project_context`): the default prompt's two test lines
+    // say so too, instead of ordering the model to write the tests itself.
+    pub delegated_tests: bool,
     // What the IDE made for the request a run is for (the repository map),
     // for a stored chat (`dialog_id`). It goes on that request's message,
     // before its text, on every step of the run
@@ -1080,6 +1109,7 @@ pub async fn run_chat(
         tools,
         system_prompt,
         project_context,
+        delegated_tests,
         request_context,
         options,
         context_mode,
@@ -1109,8 +1139,14 @@ pub async fn run_chat(
     let chars_per_token = calibration::chars_per_token(&calibration_key);
 
     let has_tools = tools.as_ref().is_some_and(|t| !t.is_empty());
-    let system_prompt = system_prompt
-        .unwrap_or_else(|| lead_system_prompt(has_tools, project_context.as_deref(), false));
+    let system_prompt = system_prompt.unwrap_or_else(|| {
+        lead_system_prompt(
+            has_tools,
+            project_context.as_deref(),
+            false,
+            delegated_tests,
+        )
+    });
     let reasoning_effort = options.as_ref().and_then(|o| o.reasoning_effort);
     // Room kept for the reply (its reasoning included): learned per model
     // and effort from what providers report, see `reply_reserve`.
@@ -3279,9 +3315,9 @@ mod context_mode_tests {
     #[test]
     fn autopilots_system_prompt_decides_instead_of_asking() {
         use super::{lead_system_prompt, AUTOPILOT_SWAPS};
-        let plain = lead_system_prompt(true, Some("## Project"), false);
+        let plain = lead_system_prompt(true, Some("## Project"), false, false);
         assert!(plain.ends_with("\n\n## Project"));
-        let autopilot = lead_system_prompt(true, Some("## Project"), true);
+        let autopilot = lead_system_prompt(true, Some("## Project"), true, false);
         // Each asking line is in the plain prompt once, and Autopilot's has
         // its own in its place: the two differ by those lines only.
         let mut back = autopilot.clone();
@@ -3317,7 +3353,7 @@ mod context_mode_tests {
             "{:#?}",
             telling_to_ask(&plain)
         );
-        assert!(!lead_system_prompt(false, None, false).contains("## Tool use rules"));
+        assert!(!lead_system_prompt(false, None, false, false).contains("## Tool use rules"));
     }
 
     /// The four principles are in the prompt word for word, after the core
@@ -3328,7 +3364,7 @@ mod context_mode_tests {
     fn the_prompt_holds_the_principles_with_tools_and_without() {
         use super::{lead_system_prompt, PRINCIPLES};
         for has_tools in [true, false] {
-            let prompt = lead_system_prompt(has_tools, None, false);
+            let prompt = lead_system_prompt(has_tools, None, false, false);
             let at = prompt.find(PRINCIPLES).expect("the principles");
             assert!(prompt[..at].contains("## Core behavior\n"));
             assert!(!prompt[..at].contains("## Tool use rules"));
@@ -3342,6 +3378,41 @@ mod context_mode_tests {
         ] {
             assert!(PRINCIPLES.contains(&format!("{heading}\n")), "{heading}");
         }
+    }
+
+    /// E03: when the test writer has the change's tests, the two lines that
+    /// would have the lead write them say so instead: the same two lines,
+    /// their goal kept, and a lead without a writer keeps the plain ones.
+    #[test]
+    fn a_lead_whose_tests_are_the_test_writers_says_so_in_its_principles() {
+        use super::{lead_system_prompt, TEST_WRITER_SWAPS};
+        let plain = lead_system_prompt(true, Some("## Project"), false, false);
+        let delegated = lead_system_prompt(true, Some("## Project"), false, true);
+        let mut back = delegated.clone();
+        for (line, instead) in TEST_WRITER_SWAPS {
+            assert_eq!(plain.matches(line).count(), 1, "{line}");
+            assert!(!delegated.contains(line), "{line}");
+            assert_eq!(delegated.matches(instead).count(), 1, "{instead}");
+            back = back.replace(instead, line);
+        }
+        assert_eq!(back, plain, "only the test lines");
+        // Nothing left in it has the lead write a test itself.
+        let writes_tests = |prompt: &str| -> Vec<String> {
+            prompt
+                .lines()
+                .filter(|l| l.contains("\"Write a test") || l.contains("\"Write tests"))
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(writes_tests(&delegated), Vec::<String>::new());
+        assert_eq!(writes_tests(&plain).len(), 2, "{:#?}", writes_tests(&plain));
+        // Both hold in Autopilot, where the two sets of swaps meet.
+        let both = lead_system_prompt(true, None, true, true);
+        assert!(both.contains(TEST_WRITER_SWAPS[1].1), "{both}");
+        assert!(
+            both.contains("Nobody is there to answer questions"),
+            "{both}"
+        );
     }
 
     #[test]

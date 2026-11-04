@@ -193,7 +193,7 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
       state: 'Pauses every 50 tool calls · checklist when needed · no checks after a run',
       warning: false,
     },
-    { label: 'Subagents', state: 'Off: the agent works alone', warning: false },
+    { label: 'Subagents', state: 'Test writer always on; optional helpers off', warning: false },
     {
       label: 'Autopilot',
       state:

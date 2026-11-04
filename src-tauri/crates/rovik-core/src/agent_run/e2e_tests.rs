@@ -302,7 +302,27 @@ impl Harness {
         }
     }
 
-    async fn start(&self, request: StartRequest) -> Option<String> {
+    async fn start(&self, mut request: StartRequest) -> Option<String> {
+        // Single-lead scripts must not be consumed by the mandatory helper.
+        // Tests exercising test writing configure its kind explicitly.
+        if request.mode.as_deref() != Some("autopilot") {
+            if let Some(config) = request.config.as_mut() {
+                if !config.subagents.kinds.contains_key("testWriter") {
+                    let (url, _) = model(vec![Reply::Text(
+                        "## Summary\nNo tests provided by this fixture.\n\n## Blocked\nThis fixture scripts only the implementation.",
+                    )]).await;
+                    let mut profile = request.profile.clone();
+                    profile.base_url = url;
+                    config.subagents.kinds.insert(
+                        "testWriter".into(),
+                        subagent::KindConfig {
+                            models: vec![subagent::ModelChoice::Profile(Box::new(profile))],
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+        }
         agent_start(&self.core, request).await.unwrap()
     }
 
@@ -2684,7 +2704,17 @@ async fn the_system_prompt_holds_the_four_principles() {
             assert_eq!(h.run_end().await, "done", "{case}");
             let body = seen.lock().unwrap()[0].clone();
             let system = body["messages"][0]["content"].as_str().unwrap();
-            assert!(system.contains(crate::agent::PRINCIPLES), "{case}");
+            // E03: Agent mode with tools offers the test writer, so
+            // principle 4's two test lines say the tests are its; the rest
+            // is word for word. Plan mode and a model without tools have no
+            // writer, and the lines as written.
+            let mut expected = crate::agent::PRINCIPLES.to_string();
+            if !plan_mode && !no_tools {
+                for (line, instead) in crate::agent::TEST_WRITER_SWAPS {
+                    expected = expected.replace(line, instead);
+                }
+            }
+            assert!(system.contains(&expected), "{case}");
             assert_eq!(
                 system.contains("## Plan mode"),
                 plan_mode && !no_tools,

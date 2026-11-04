@@ -218,12 +218,32 @@ impl Reply {
 pub const NO_RESPONSES_API: &str =
     "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
+/// The test writer's briefs (`agent_run::test_writer`): S07's, after a
+/// change, and S04's, before it (Autopilot's Tests stage). Either asks for
+/// tests of its own, which a fixture that scripts one run's replies isn't
+/// scripting: answered from the run's script, it would take a reply the run
+/// needs. Both are answered with a block instead, so a fixture's script
+/// stays the run's own — the same guard `Harness::start` makes for a run it
+/// starts. A test that wants the tests written routes the brief itself
+/// (`model_routed`).
+const WRITER_BRIEFS: [&str; 2] = [
+    "# Write tests for this change",
+    crate::agent_run::test_writer::FIRST_HEADING,
+];
+const WRITER_BLOCKED: &str = "## Summary\n\nNo tests from this fixture.\n\n## Blocked\n\n\
+     This fixture scripts one run's replies, not the test writer's.";
+
 /// A local server answering each chat completions request with the next
 /// scripted reply (the last one again once they run out). It has no
 /// Responses API (`NO_RESPONSES_API`). Returns its base URL and the chat
-/// completions request bodies it saw.
+/// completions request bodies it saw. The test writer's own briefs are
+/// answered for it (`WRITER_BRIEFS`): a fixture scripts a run, not its tests.
 pub async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
-    model_routed(Vec::new(), replies).await
+    let routes = WRITER_BRIEFS
+        .iter()
+        .map(|brief| (*brief, vec![Reply::Text(WRITER_BLOCKED)]))
+        .collect();
+    model_routed(routes, replies).await
 }
 
 /// The script a request is answered from: the first route whose marker is

@@ -4,6 +4,47 @@
 
 use super::*;
 
+/// Integrity checks still examine edits made by the test writer. Route
+/// test-file mutations through that role; keep every existing assertion
+/// about weakening, rollback, and restoration.
+async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let mut routes = Vec::new();
+    let replies = replies.into_iter().map(|reply| {
+        if let Reply::Call { id, name: "write", ref args } = reply {
+            if args["path"].as_str().is_some_and(crate::agent_run::project::is_test_path) {
+                let marker: &'static str = Box::leak(
+                    format!("Repair fixture delegated test edit {id}").into_boxed_str(),
+                );
+                routes.push((marker, vec![reply, Reply::Text(
+                    "## Summary\nEdited the requested test.\n\n## Test files\nSee the write.\n\n## Assumptions\nNone.",
+                )]));
+                return Reply::Call { id, name: "task", args: json!({
+                    "kind": "testWriter", "goal": marker,
+                }) };
+            }
+        }
+        reply
+    }).collect();
+    routes.push(("# Write tests for this change", vec![Reply::Text(
+        "## Summary\nNo additional tests scripted.\n\n## Blocked\nThis fixture only scripts the specified test edits.",
+    )]));
+    model_routed(routes, replies).await
+}
+
+impl Harness {
+    async fn start_with_scripted_tests(&self, mut request: StartRequest) -> Option<String> {
+        request
+            .config
+            .as_mut()
+            .unwrap()
+            .subagents
+            .kinds
+            .entry("testWriter".into())
+            .or_default();
+        self.start(request).await
+    }
+}
+
 /// A test runner in miniature: `test(name, fn)` cases from tests/*.test.js,
 /// reported as cargo does ("test t::name ... FAILED", then a summary).
 pub(super) const RUNNER: &str = r#"
@@ -93,7 +134,7 @@ async fn the_same_failures_twice_is_no_progress() {
         Reply::Text("Done."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix the tests"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix the tests"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verified");
     let messages = h.messages().await;
@@ -169,7 +210,7 @@ async fn a_fix_that_breaks_a_passing_test_is_rolled_back() {
         Reply::Text("Done."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix the tests"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix the tests"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verified");
 
@@ -270,7 +311,7 @@ process.exitCode = 1;
         Reply::Text("I'll leave it."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Go"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Go"), checks_on()))
         .await;
     h.run_end().await;
     let rounds = records(&h.messages().await);
@@ -321,7 +362,7 @@ async fn rollback_of_create_delete_modify_direct() {
         Reply::Text("Done."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix the tests"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix the tests"), checks_on()))
         .await;
     // The user creates u.txt again after the round deleted it.
     let u = h.project.join("u.txt");
@@ -392,7 +433,7 @@ async fn commands_are_counted_per_round() {
         Reply::Text("Done."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix the tests"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix the tests"), checks_on()))
         .await;
     let end = h.run_end().await;
     let rounds = records(&h.messages().await);
@@ -440,15 +481,19 @@ async fn a_rounds_commands_survive_waiting_for_approval() {
         },
         ..checks_on()
     };
-    h.start(h.request(&url, Harness::send("Fix the tests"), permissions.clone()))
-        .await;
+    h.start_with_scripted_tests(h.request(
+        &url,
+        Harness::send("Fix the tests"),
+        permissions.clone(),
+    ))
+    .await;
     let mut outcome = h.run_end().await;
     let mut runs = 0;
     while outcome == "verify-needs-approval" && runs < 4 {
         runs += 1;
         let record = h.messages().await.last().unwrap().id.clone();
         h.events.lock().unwrap().clear();
-        h.start(h.request(
+        h.start_with_scripted_tests(h.request(
             &url,
             StartKind::RunChecks { record_id: record },
             permissions.clone(),
@@ -524,7 +569,7 @@ async fn rollback_of_create_delete_modify_isolated() {
     .await;
     let mut request = h.request(&url, Harness::send("Fix the tests"), checks_on());
     request.isolate = Some(true);
-    h.start(request).await;
+    h.start_with_scripted_tests(request).await;
     let end = h.run_end().await;
     let rounds = records(&h.messages().await);
     assert_eq!(end, "verified", "{rounds:#?}");
@@ -592,7 +637,7 @@ async fn a_rollback_never_writes_a_file_outside_the_project() {
     .await;
     let mut request = h.request(&url, Harness::send("Fix the tests"), checks_on());
     request.isolate = Some(true);
-    h.start(request).await;
+    h.start_with_scripted_tests(request).await;
     // The user changes the file while the round is still going.
     for _ in 0..500 {
         let written = h.events_of("fileWritten");
@@ -651,7 +696,7 @@ async fn rebuild_from_hashes_isolated_matches_project_copy() {
     };
     let mut request = h.request(&url, Harness::send("Fix add"), permissions.clone());
     request.isolate = Some(true);
-    h.start(request).await;
+    h.start_with_scripted_tests(request).await;
     assert_eq!(h.run_end().await, "verify-needs-approval");
     let waiting = h.messages().await.last().unwrap().id.clone();
     // The restart: what the run carried is gone.
@@ -665,7 +710,7 @@ async fn rebuild_from_hashes_isolated_matches_project_copy() {
         permissions.clone(),
     );
     request.isolate = Some(true);
-    h.start(request).await;
+    h.start_with_scripted_tests(request).await;
     let mut outcome = h.run_end().await;
     // The fix's checks wait for approval too.
     if outcome == "verify-needs-approval" {
@@ -673,7 +718,7 @@ async fn rebuild_from_hashes_isolated_matches_project_copy() {
         h.events.lock().unwrap().clear();
         let mut request = h.request(&url, StartKind::RunChecks { record_id: next }, permissions);
         request.isolate = Some(true);
-        h.start(request).await;
+        h.start_with_scripted_tests(request).await;
         outcome = h.run_end().await;
     }
     let messages = h.messages().await;
@@ -719,7 +764,7 @@ async fn a_timeout_round_doesnt_say_resolved_e2e() {
         Reply::Text("Fixed."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix a"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix a"), checks_on()))
         .await;
     let end = h.run_end().await;
     verify::CHECK_TIMEOUTS.lock().unwrap().remove(&h.dialog_id);
@@ -769,7 +814,7 @@ async fn a_test_skipped_to_pass_is_not_reported_as_verified() {
         Reply::Text("The test was wrong, so I skipped it."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix add"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix add"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verify-flagged");
 
@@ -819,7 +864,7 @@ async fn removing_a_test_the_run_added_isnt_flagged() {
         Reply::Text("Fixed, and dropped a redundant test of mine."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix add"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix add"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verified");
     let rounds = records(&h.messages().await);
@@ -857,14 +902,14 @@ async fn after_a_restart_lost_state_is_never_verified() {
         },
         ..checks_on()
     };
-    h.start(h.request(&url, Harness::send("Fix add"), permissions.clone()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix add"), permissions.clone()))
         .await;
     assert_eq!(h.run_end().await, "verify-needs-approval");
     let waiting = h.messages().await.last().unwrap().id.clone();
     // The restart: what the run carried is gone.
     h.core.agents.drop_carry(&h.dialog_id);
     h.events.lock().unwrap().clear();
-    h.start(h.request(
+    h.start_with_scripted_tests(h.request(
         &url,
         StartKind::RunChecks {
             record_id: waiting.clone(),
@@ -909,7 +954,7 @@ async fn undoing_a_flagged_change_verifies_the_run() {
         Reply::Text("Fixed properly."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix add"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix add"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verified");
     let rounds = records(&h.messages().await);
@@ -965,7 +1010,7 @@ async fn a_fix_that_breaks_one_check_keeps_its_other_fixes() {
         Reply::Text("Unexpected."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix the checks"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix the checks"), checks_on()))
         .await;
     // Three rounds of three checks each: a busy runner takes past 15 s.
     assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
@@ -1016,7 +1061,7 @@ async fn when_the_rest_still_breaks_it_everything_goes_back() {
         Reply::Text("I'll leave it."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix the checks"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix the checks"), checks_on()))
         .await;
     // Four rounds of three checks each: a busy runner takes past 15 s.
     h.run_end_within(Duration::from_secs(60)).await;
@@ -1092,7 +1137,7 @@ async fn a_fix_that_lets_the_tests_run_is_not_rolled_back() {
         Reply::Text("Done."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix it"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix it"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verified");
     assert_eq!(h.file("build.txt").as_deref(), Some("ok\n"), "kept");
@@ -1145,7 +1190,7 @@ test('runs', () => assert(true));
         Reply::Text("Fixed."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix add"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix add"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verified");
     // The test it put back stays put back.
@@ -1200,8 +1245,12 @@ async fn with_approval_on_a_fix_that_breaks_a_test_is_still_rolled_back() {
         },
         ..Permissions::default()
     };
-    h.start(h.request(&url, Harness::send("Fix the tests"), permissions.clone()))
-        .await;
+    h.start_with_scripted_tests(h.request(
+        &url,
+        Harness::send("Fix the tests"),
+        permissions.clone(),
+    ))
+    .await;
     assert_eq!(h.run_end().await, "verify-needs-approval");
     for _ in 0..2 {
         let waiting = h
@@ -1216,7 +1265,7 @@ async fn with_approval_on_a_fix_that_breaks_a_test_is_still_rolled_back() {
             })
             .expect("checks waiting");
         h.events.lock().unwrap().clear();
-        h.start(h.request(
+        h.start_with_scripted_tests(h.request(
             &url,
             StartKind::RunChecks {
                 record_id: waiting.id.clone(),
@@ -1272,7 +1321,7 @@ async fn a_regression_past_the_checkpoint_limit_is_reported_not_rolled_back() {
         Reply::Text("Done."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix the tests"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix the tests"), checks_on()))
         .await;
     let end = h.run_end().await;
     *crate::agent_run::repair::CHECKPOINT_LIMIT_IN
@@ -1346,7 +1395,7 @@ if (fs.readFileSync('a.js', 'utf8').includes('require')) {
         Reply::Text("Done."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Fix the tests"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix the tests"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verified");
     let rounds = records(&h.messages().await);
@@ -1392,7 +1441,7 @@ async fn fewer_tests_run(lead: Vec<Reply>) -> (Harness, String) {
     ])
     .await;
     let (url, _) = model(lead).await;
-    h.start(h.request(&url, Harness::send("Fix add"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Fix add"), checks_on()))
         .await;
     let end = h.run_end().await;
     (h, end)
@@ -1470,7 +1519,7 @@ async fn a_new_suppression_is_asked_about_and_flagged_if_kept() {
         Reply::Text("The lint rule is wrong here."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Tidy add"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Tidy add"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verify-flagged");
     let messages = h.messages().await;
@@ -1503,7 +1552,7 @@ async fn a_new_suppression_is_asked_about_and_flagged_if_kept() {
         Reply::Text("Took the suppression out."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Tidy add"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Tidy add"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verified");
 }
@@ -1533,7 +1582,7 @@ async fn integrity_e2e_unsupported_language() {
         Reply::Text("The spec had to change."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Tidy the spec"), checks_on()))
+    h.start_with_scripted_tests(h.request(&url, Harness::send("Tidy the spec"), checks_on()))
         .await;
     assert_eq!(h.run_end().await, "verify-flagged");
     let messages = h.messages().await;

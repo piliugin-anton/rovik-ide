@@ -4178,18 +4178,13 @@ async fn the_tests_come_first_and_the_implementation_is_told_to_make_them_pass()
     );
     assert_eq!(log_lines(&h, "testsFirst").await.len(), 1);
 
-    // E03: a change to the test writer's test is said, for the user.
-    let last = messages
+    // Test edits are delegated even in Autopilot.
+    let refused = messages
         .iter()
-        .rev()
-        .find(|m| m.role == "assistant" && m.content.starts_with("Done"))
-        .expect("the implementation's last reply");
-    assert!(
-        last.content
-            .contains("Tests written by the test writer that I changed: `test/ok.test.js`"),
-        "{}",
-        last.content
-    );
+        .find(|m| m.tool_call_id.as_deref() == Some("w2"))
+        .expect("the attempted test edit");
+    assert!(refused.content.contains("Delegate test creation"));
+    assert_eq!(h.file(OK_TEST).as_deref(), Some(OK_TEST_CODE));
     assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
 }
 
@@ -4818,7 +4813,11 @@ async fn a_change_without_tests_gets_the_test_writer_once_its_checks_pass() {
         .map(|r| r["messages"].to_string())
         .collect();
     assert!(!briefs.is_empty());
-    assert!(briefs[0].contains("came with no tests"), "{}", briefs[0]);
+    assert!(
+        briefs[0].contains("Independently check its behaviour"),
+        "{}",
+        briefs[0]
+    );
     assert!(
         briefs[0].contains("### `src/util.js`"),
         "hidden: {}",

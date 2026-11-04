@@ -2,9 +2,9 @@
 //
 // Settings → Subagents (docs/design/subagents-plan.md, section 2): the
 // master switch, the default subagent model, one row per kind (on/off,
-// model, fallbacks, reasoning effort) and the limits. Everything is off by
-// default; with the master switch off, chats work exactly as without
-// subagents and the rows keep their choices, greyed out, except those
+// model, fallbacks, reasoning effort) and the limits. Optional helpers
+// default off; the test writer always runs for code changes. Rows keep
+// their choices, greyed out when optional helpers are off, except those
 // Autopilot uses for its own chats (Settings → Autopilot, D17): their
 // model and effort stay to set. The kinds Thorough adds have no Default:
 // their models are chosen here, or Thorough tasks don't start (T09).
@@ -73,8 +73,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           <span>
             Use subagents
             <span class="setting-checkbox-sub">
-              Off: chats work exactly as without subagents, and the kinds below keep their choices
-              for later. Autopilot’s chats still use the kinds marked for them.
+              Off: optional helpers are disabled. The test writer always runs for code changes in
+              Agent and Autopilot modes. Autopilot also uses the kinds marked for it.
             </span>
           </span>
         </label>
@@ -118,7 +118,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             const k = () => s().kinds[kind.id];
             const others = () => otherProviders(props.providers, s(), kind.id, props.chatModel);
             const autopilot = AUTOPILOT_KINDS.includes(kind.id);
-            const tag = autopilotKindTag(kind.id);
+            const mandatory = kind.id === 'testWriter';
+            const tag = mandatory ? 'Always on' : autopilotKindTag(kind.id);
             // Thorough's kinds: no Default, a model of the user's choosing (T09).
             const chosenOnly = THOROUGH_KINDS.includes(kind.id);
             const unchosen = () =>
@@ -130,8 +131,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                 <label class="setting-checkbox">
                   <input
                     type="checkbox"
-                    checked={k().enabled}
-                    disabled={off()}
+                    checked={mandatory || k().enabled}
+                    disabled={mandatory || off()}
                     onChange={(e) => patchKind(kind.id, { enabled: e.currentTarget.checked })}
                   />
                   <span>
@@ -190,8 +191,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                   </Show>
                   <Show when={(k().enabled || autopilot) && others().length > 0}>
                     <p class="settings-hint setting-explain warning">
-                      {k().enabled ? 'Code' : 'In Autopilot, code'} will also be sent to{' '}
-                      {others().join(', ')}.
+                      {mandatory || k().enabled ? 'Code' : 'In Autopilot, code'} will also be sent
+                      to {others().join(', ')}.
                     </p>
                   </Show>
                 </div>

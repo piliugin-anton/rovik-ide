@@ -192,7 +192,7 @@ async fn a_scout_explores_and_reports_to_the_lead() {
 }
 
 #[tokio::test]
-async fn with_subagents_off_nothing_changes() {
+async fn with_optional_subagents_off_only_the_test_writer_is_offered() {
     let h = harness(&[("a.txt", "x\n")]).await;
     let (url, seen) = model(vec![task("t1", "Where?"), Reply::Text("Done.")]).await;
     // Kinds on, master switch off.
@@ -202,16 +202,10 @@ async fn with_subagents_off_nothing_changes() {
         .await;
     assert_eq!(h.run_end().await, "done");
     let first = seen.lock().unwrap()[0].clone();
-    assert!(!tool_names(&first).contains(&"task".to_string()));
-    assert!(!system_prompt(&first).contains("## Subagents"));
+    assert!(tool_names(&first).contains(&"task".to_string()));
+    assert!(system_prompt(&first).contains("### The test writer"));
     let result = h.task_result("t1").await;
-    assert!(
-        result
-            .content
-            .starts_with("Error: subagents are turned off"),
-        "{}",
-        result.content
-    );
+    assert!(result.content.contains("scout"), "{}", result.content);
     assert!(h.events_of("subagentStarted").is_empty());
 }
 
@@ -824,12 +818,10 @@ fn record_order(messages: &[MessageRow]) -> Vec<String> {
 #[tokio::test]
 async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
     let h = harness(&[("a.txt", "old\n")]).await;
-    let resolved = "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\nNone.";
+    let resolved =
+        "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\nNone.";
     let (url, seen) = model_routed(
-        vec![(
-            REVIEW,
-            vec![Reply::Text(FINDING_A), Reply::Text(resolved)],
-        )],
+        vec![(REVIEW, vec![Reply::Text(FINDING_A), Reply::Text(resolved)])],
         vec![
             write_call("w1", "a.txt", "helo\n"),
             Reply::Text("Done."),
@@ -895,7 +887,11 @@ async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
     // Round 2, a follow-up: the earlier findings and the lead's answer.
     assert!(briefs[1].contains("## The earlier review"));
     assert!(briefs[1].contains("The greeting is wrong"));
-    assert!(briefs[1].contains("The agent's answer: fixed — it says hello now."), "{}", briefs[1]);
+    assert!(
+        briefs[1].contains("The agent's answer: fixed — it says hello now."),
+        "{}",
+        briefs[1]
+    );
     assert!(briefs[1].contains("+hello"));
     let tools = tool_names(&requests_with(&seen, REVIEW)[0]);
     assert!(tools.contains(&"read".to_string()) && tools.contains(&"callers".to_string()));
@@ -906,9 +902,17 @@ async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
         );
     }
     assert!(system_prompt(&requests_with(&seen, REVIEW)[0]).starts_with("You are a code reviewer"));
-    // The lead isn't offered `task` for the reviewer: it's the IDE's.
+    // The task tool offers the mandatory test writer, never the IDE's reviewer.
     let first = seen.lock().unwrap()[0].clone();
-    assert!(!tool_names(&first).contains(&"task".to_string()));
+    let task = first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["function"]["name"] == "task")
+        .unwrap()
+        .to_string();
+    assert!(task.contains("testWriter"));
+    assert!(!task.contains("\"reviewer\""));
 }
 
 #[tokio::test]
@@ -4905,7 +4909,7 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
                 args: json!({ "items": [{ "title": "Greeter", "status": "done" }, { "title": "Use it", "status": "done" }] }),
             },
             test_task("tw"),
-            // E03: the lead changes the test writer's test.
+            // The lead cannot change the test writer's test.
             write_call("w9", "src/greet.test.ts", "test('greets politely', () => {});\n"),
             Reply::Text("Implemented; the greeting test now follows the plan's wording."),
         ],
@@ -5019,24 +5023,28 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
         "where tests go: {brief}"
     );
 
-    // E03: the lead's final message lists the test-writer test it changed.
-    let last = h
-        .messages()
+    assert!(h
+        .task_result("w9")
         .await
-        .into_iter()
-        .rev()
-        .find(|m| m.role == "assistant" && !m.content.is_empty())
-        .unwrap();
-    assert!(
-        last.content
-            .contains("Tests written by the test writer that I changed: `src/greet.test.ts`."),
-        "{}",
-        last.content
+        .content
+        .contains("Delegate test creation"));
+    assert_eq!(
+        h.file("src/greet.test.ts").as_deref(),
+        Some("test('greets', () => {});\n")
     );
-    // The lead's prompt has the rule.
     let lead = seen.lock().unwrap()[0].clone();
-    assert!(system_prompt(&lead)
-        .contains("Change a test-writer test only when it contradicts the request or the plan"));
+    let prompt = system_prompt(&lead);
+    assert!(prompt.contains("Delegate all test creation and test changes"));
+    // E03: the lead's own principle about a bug's test sends it to the
+    // writer too: one instruction about tests, not two opposing ones.
+    assert!(
+        !prompt.contains("Write a test that reproduces it"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("Delegate a test that reproduces the bug to the test writer"),
+        "{prompt}"
+    );
 }
 
 /*
@@ -5462,8 +5470,9 @@ async fn retried_workers_count_against_the_limit() {
     .await;
     h.start(h.implement_isolated(&url, false)).await;
     h.run_end().await;
-    let started = h.events_of("subagentStarted").len();
-    assert_eq!(started, 8, "six, and two retries");
+    let started = h.events_of("subagentStarted").iter()
+        .filter(|event| event["kind"] == "worker").count();
+    assert_eq!(started, 8, "six workers, and two retries");
     let result = result_of(&h.messages().await, "g1").content.clone();
     assert!(
         result.contains("wasn't retried: this run has already started 8 workers, the plan's 6 steps plus 2 retries"),
@@ -12003,4 +12012,151 @@ async fn a_lead_that_panics_stops_its_subagents() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+/// Independent tests are mandatory even with old settings disabling every
+/// helper and with tests already written by the lead.
+#[tokio::test]
+async fn agent_code_changes_get_independent_tests_with_subagents_disabled() {
+    let h = harness(&[("src/value.js", "module.exports = 0;\n")]).await;
+    let (url, seen) = model_routed(
+        vec![("# Write tests for this change", vec![
+            write_call("independent", "src/value.test.js", "require('assert').strictEqual(require('./value'), 1);\n"),
+            Reply::Text("## Summary\nChecks the requested value.\n\n## Test files\n- src/value.test.js\n\n## Assumptions\nNone."),
+        ])],
+        vec![
+            write_call("code", "src/value.js", "module.exports = 1;\n"),
+            write_call("selftest", "src/self.test.js", "// coder's test\n"),
+            Reply::Text("Done."),
+        ],
+    ).await;
+    h.start(with_disabled_test_writer(h.request(
+        &url,
+        Harness::send("Export 1 from src/value.js."),
+        quiet_permissions(),
+    )))
+    .await;
+    h.run_end().await;
+    assert!(
+        h.file("src/value.test.js").is_some(),
+        "the harness must invoke the independent writer"
+    );
+    assert!(h.file("src/self.test.js").is_none());
+    assert!(h
+        .task_result("selftest")
+        .await
+        .content
+        .contains("testWriter"));
+    let messages = h.messages().await;
+    let records: Vec<_> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("tests"))
+        .collect();
+    assert_eq!(records.len(), 1, "only one automatic attempt");
+    assert_eq!(records[0]["status"], "done");
+    let requests = seen.lock().unwrap();
+    let writer = requests
+        .iter()
+        .find(|r| {
+            r["messages"]
+                .to_string()
+                .contains("# Write tests for this change")
+        })
+        .unwrap();
+    let brief = writer["messages"].to_string();
+    assert!(brief.contains("Export 1 from src/value.js."));
+    assert!(
+        !brief.contains("module.exports = 1;"),
+        "no changed implementation in the brief"
+    );
+}
+
+#[tokio::test]
+async fn documentation_changes_do_not_start_the_mandatory_test_writer() {
+    let h = harness(&[("README.md", "Old\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![Reply::Text("## Blocked\nNo code")],
+        )],
+        vec![
+            write_call("docs", "README.md", "New\n"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(with_disabled_test_writer(h.request(
+        &url,
+        Harness::send("Update the readme."),
+        quiet_permissions(),
+    )))
+    .await;
+    h.run_end().await;
+    assert!(h.messages().await.iter().all(|m| m
+        .meta
+        .as_ref()
+        .and_then(|v| v.get("tests"))
+        .is_none()));
+}
+
+#[tokio::test]
+async fn the_lead_can_delegate_test_only_work_with_optional_subagents_off() {
+    let h = harness(&[("src/value.js", "module.exports = 1;\n")]).await;
+    let (url, _) = model_routed(
+        vec![("# Write tests for this change", vec![
+            write_call("independent", "src/value.test.js", "require('assert').strictEqual(require('./value'), 1);\n"),
+            Reply::Text("## Summary\nChecks the required value.\n\n## Test files\n- src/value.test.js\n\n## Assumptions\nNone."),
+        ])],
+        vec![test_task("delegate"), Reply::Text("Done.")],
+    ).await;
+    h.start(with_disabled_test_writer(h.request(
+        &url,
+        Harness::send("Add a test that value exports 1."),
+        quiet_permissions(),
+    )))
+    .await;
+    h.run_end().await;
+    assert!(h.file("src/value.test.js").is_some());
+    assert_eq!(h.child_of("delegate").await.kind, "testWriter");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_source_named_symlink_cannot_bypass_test_ownership() {
+    let h = harness(&[("tests/value.js", "original\n")]).await;
+    std::os::unix::fs::symlink("tests/value.js", h.project.join("alias.js")).unwrap();
+    let (url, _) = model_routed(
+        vec![],
+        vec![
+            write_call("alias", "alias.js", "weakened\n"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(with_disabled_test_writer(h.request(
+        &url,
+        Harness::send("Change alias.js."),
+        quiet_permissions(),
+    )))
+    .await;
+    h.run_end().await;
+    assert_eq!(h.file("tests/value.js").as_deref(), Some("original\n"));
+    assert!(h
+        .task_result("alias")
+        .await
+        .content
+        .contains("Delegate test creation"));
+}
+
+/// Keep the kind disabled and use the scripted chat model, so the fixture's
+/// default independent helper does not replace the test's writer script.
+fn with_disabled_test_writer(mut request: StartRequest) -> StartRequest {
+    request
+        .config
+        .as_mut()
+        .unwrap()
+        .subagents
+        .kinds
+        .insert("testWriter".into(), Default::default());
+    request
 }

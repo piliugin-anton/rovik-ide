@@ -354,9 +354,10 @@ async fn three_turns_on_a_small_window_are_trimmed_to_fit() {
         Reply::Text("Read b."),
     ])
     .await;
-    // The system prompt, the tools and the map take ~6 800 tokens and the
-    // reply 7 200: ~4 000 for the history, which the two reads outgrow.
-    let window = 18_000;
+    // The system prompt, the tools (the subagent one included: the test
+    // writer is always offered) and the map take ~8 000 tokens and the
+    // reply 8 000: ~4 000 for the history, which the two reads outgrow.
+    let window = 20_000;
     run_turns(
         &h,
         &url,
@@ -856,11 +857,20 @@ async fn three_clm_turns_keep_the_context_file_and_the_prompt_in_step() {
 
 #[tokio::test]
 async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
-    let notes = |c: char| format!("{}\n", c.to_string().repeat(74)).repeat(60); // 4 500 chars
+    // The last read is 7 500 chars (~2 500 tokens) and the first 4 500
+    // (~1 500): with the card and the reasoning sent back, the context is
+    // ~1 000 tokens over its budget by the last request, so the first read
+    // must give way there by arithmetic. The margin is the point: at 4 500
+    // chars each the context landed 27 tokens inside one machine's budget
+    // and 6 outside another's (`~3930/3951 tokens (99%)` against `~3924`),
+    // so one trimmed and the other didn't, and no assertion about the
+    // give-way held on both. The sizes stay well inside the window, so
+    // every request still leaves the reply its room (`assert_fits`).
+    let notes = |c: char, lines: usize| format!("{}\n", c.to_string().repeat(74)).repeat(lines);
     let h = harness(&[
         ("src/lib.rs", "pub fn alpha_one() {}\n"),
-        ("notes/a.txt", &notes('a')),
-        ("notes/b.txt", &notes('b')),
+        ("notes/a.txt", &notes('a', 60)),
+        ("notes/b.txt", &notes('b', 100)),
     ])
     .await;
     pretend_volume(&h);
@@ -903,10 +913,11 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
         Reply::Text("Read b."),
     ])
     .await;
-    // The system prompt with its CLM section, the tools and the map take
-    // ~7 700 tokens and the reply 8 000: a few thousand for the context,
-    // its task card and the reasoning sent back.
-    let window = 20_000;
+    // The system prompt with its CLM section, the tools (the subagent one
+    // included) and the map take ~10 000 tokens and the reply 8 000, which
+    // leaves ~3 000 for the context, its task card and the reasoning sent
+    // back: the context gives way, those and the reply's room don't.
+    let window = 21_000;
     run_turns(
         &h,
         &url,
@@ -925,10 +936,24 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
     assert_fits(&requests, window);
 
     let last = &requests[5];
-    // It was tight: the context gave way (outputs withheld, older turns
-    // cut) rather than the card, the reasoning or the reply's room.
     let tail = tail_text(last);
-    assert!(tail.contains("withheld"), "{tail}");
+    // This request is where the run gives way: the first read is no longer
+    // sent in full — its turn cut, its output withheld, or its result
+    // shortened to a head — while the card, the reasoning, the latest
+    // output and the reply's room all survive. Which of the three comes
+    // first is `clm/edge_tests.rs`'s business; that something must give way
+    // here is this fixture's arithmetic (its sizes, above), so asking for
+    // the effect rather than for a marker keeps the assertion about what
+    // the agent is actually sent.
+    let full = notes('a', 60);
+    let oldest = messages_of(last)
+        .iter()
+        .find(|m| m["tool_call_id"] == "r1")
+        .map(text_of);
+    assert!(
+        oldest.is_none_or(|text| !text.contains(&full)),
+        "the first read should have given way: {last}"
+    );
     assert!(
         tail.contains(card.as_str()),
         "the card goes with every request"
@@ -937,6 +962,9 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
         .iter()
         .filter(|m| m["role"] == "assistant" && m.get("tool_calls").is_some())
         .collect();
+    // A whole oldest step may go — that's the context giving way — but the
+    // reasoning of a step still sent never does. Never checked vacuously.
+    assert!(!steps.is_empty(), "no step left to check: {last}");
     assert!(
         steps.iter().all(|m| m["reasoning_content"] == thought),
         "every step sent keeps its reasoning: {steps:#?}"
@@ -946,7 +974,10 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
         .find(|m| m["tool_call_id"] == "r2")
         .map(text_of)
         .unwrap();
-    assert!(read.starts_with(&notes('b')), "the latest output is whole");
+    assert!(
+        read.starts_with(&notes('b', 100)),
+        "the latest output is whole"
+    );
 }
 
 #[tokio::test]

@@ -1198,6 +1198,8 @@ impl Run {
         let mut kinds = self.config().subagents.lead_kinds();
         if self.plan_mode {
             kinds.retain(|k| !k.writes());
+        } else if !kinds.contains(&subagent::Kind::TestWriter) {
+            kinds.push(subagent::Kind::TestWriter);
         }
         kinds
     }
@@ -1520,6 +1522,14 @@ impl Run {
                 // Conflicts handed to it: not done while their markers are left.
                 if self.remind_of_markers().await? {
                     continue;
+                }
+                // Ordinary Agent runs get independent tests before review.
+                // Autopilot already has a tests-first stage and a fallback.
+                if !self.in_autopilot() {
+                    self.tests_for_an_untested_change().await?;
+                    if self.stopped() {
+                        return Ok("stopped".into());
+                    }
                 }
                 // A fresh-context review of the change, before the checks.
                 self.steering
@@ -1964,12 +1974,17 @@ impl Run {
             Some(section) if self.sub().is_none() => format!("{project_context}\n\n{section}"),
             _ => project_context,
         };
+        // E03: the lead is offered the test writer (its rule is in the
+        // subagent section below), so the default prompt's two test lines
+        // send the tests to it instead of ordering the lead to write them.
+        let delegated_tests = !context_only && kinds.contains(&subagent::Kind::TestWriter);
         // D5: Autopilot's lead decides what it would otherwise ask.
         if self.autopilot && system_prompt.is_none() {
             system_prompt = Some(crate::agent::lead_system_prompt(
                 !tools.is_empty(),
                 Some(&project_context),
                 true,
+                delegated_tests,
             ));
         }
         let continue_reply = std::mem::take(&mut self.continue_reply);
@@ -2067,6 +2082,7 @@ impl Run {
                 tools: Some(tools.clone()),
                 system_prompt: system_prompt.clone(),
                 project_context: Some(project_context.clone()),
+                delegated_tests,
                 request_context: self.map.text().clone(),
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),

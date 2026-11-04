@@ -488,6 +488,26 @@ impl Run {
         let args = permissions::parse_args(&tc.arguments);
         let path_arg = args.get("path").and_then(|p| p.as_str());
 
+        // Test edits belong to an independent testing role. Resolve links
+        // too, so a source-looking alias cannot bypass ownership.
+        if tc.name == "write" && !self.plan_mode && !self.sub().is_some_and(|sub| sub.tests_only) {
+            if let (Some(path), Some(root)) = (path_arg, self.root.as_deref()) {
+                let key = super::repair::rel_key(root, path);
+                let real = super::repair::real_key(root, path);
+                if super::project::is_test_path(&key)
+                    || real.as_deref().is_some_and(super::project::is_test_path)
+                {
+                    return self.answer_unrun(
+                        tc,
+                        format!("Error: `{key}` is a test file. Delegate test creation and changes with task kind \"testWriter\" (or continue its existing task). Give it requirements and failure evidence; fix implementation failures yourself."),
+                        Outcome::Failed,
+                        true,
+                        None,
+                    ).await;
+                }
+            }
+        }
+
         // A writing subagent writes nothing outside its scope (D7).
         // The test writer writes test files only (E02).
         if let (true, Some(path), Some(root)) = (
