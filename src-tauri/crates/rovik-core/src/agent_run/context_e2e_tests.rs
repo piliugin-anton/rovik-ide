@@ -354,9 +354,10 @@ async fn three_turns_on_a_small_window_are_trimmed_to_fit() {
         Reply::Text("Read b."),
     ])
     .await;
-    // The system prompt, the tools and the map take ~6 800 tokens and the
-    // reply 7 200: ~4 000 for the history, which the two reads outgrow.
-    let window = 18_000;
+    // The system prompt, the tools (the subagent one included: the test
+    // writer is always offered) and the map take ~8 000 tokens and the
+    // reply 8 000: ~4 000 for the history, which the two reads outgrow.
+    let window = 20_000;
     run_turns(
         &h,
         &url,
@@ -903,10 +904,11 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
         Reply::Text("Read b."),
     ])
     .await;
-    // The system prompt with its CLM section, the tools and the map take
-    // ~7 700 tokens and the reply 8 000: a few thousand for the context,
-    // its task card and the reasoning sent back.
-    let window = 20_000;
+    // The system prompt with its CLM section, the tools (the subagent one
+    // included) and the map take ~10 000 tokens and the reply 8 000, which
+    // leaves ~3 000 for the context, its task card and the reasoning sent
+    // back: the context gives way, those and the reply's room don't.
+    let window = 21_000;
     run_turns(
         &h,
         &url,

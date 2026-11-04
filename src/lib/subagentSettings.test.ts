@@ -66,7 +66,7 @@ test('defaults: everything off, chats work as before', () => {
   assert.deepEqual(s, DEFAULT_SUBAGENT_SETTINGS);
   assert.equal(s.enabled, false);
   assert.equal(s.kinds.scout.enabled, false);
-  assert.equal(subagentSummary(s), 'Off: the agent works alone');
+  assert.equal(subagentSummary(s), 'Test writer always on; optional helpers off');
   const config = resolveSubagentConfig(s, providers, resolve);
   assert.equal(config.enabled, false);
   assert.deepEqual(ids(config.kinds.scout!.models), ['chat']);
@@ -221,7 +221,7 @@ test('models from other providers than the chat’s are named (K18)', () => {
   };
   assert.deepEqual(otherProviders(providers, s, 'scout', sel('a', 'strong')), ['Beta']);
   assert.deepEqual(otherProviders(providers, s, 'scout', sel('b', 'other')), ['Alpha']);
-  assert.equal(subagentSummary(s), 'On: Scout');
+  assert.equal(subagentSummary(s), 'On: Scout, Test writer');
 });
 
 test('parallel groups, the red check and parallel repair are off until turned on', () => {

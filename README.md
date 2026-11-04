@@ -166,7 +166,7 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   [Context management](#context-management)).
   Chats show “Roviking…” (or the connector's startup label) while preparing
   a run, including while waiting for MCP servers, before the first reply.
-- **Subagents (optional, off by default).** The agent can send scouts:
+- **Subagents (optional helpers off by default).** The agent can send scouts:
   read-only helpers that explore one question about the code in a fresh
   context and hand back a short report, so long explorations don't fill
   the agent's own context. A change reviewer can read each finished
@@ -189,9 +189,18 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   own copy, then merged and checked once. If those checks fail, each
   failure's cause goes back to the worker whose files it's in, the agent
   fixes the rest, and the checks run once more; if it still fails, you
-  can redo the group one step at a time. A test writer can write tests
-  from the request and the plan without reading the new code. Turn them
-  on, and pick their models, in Settings → Subagents.
+  can redo the group one step at a time. The test writer automatically writes independent tests
+  for code changes in Agent and Autopilot modes, even with optional
+  subagents switched off. The coder delegates test creation and changes
+  with `task` kind `testWriter`; direct writes to test files are refused. It works from
+  the request and plan without reading the changed implementation. Agent
+  runs invoke it before change review; Autopilot writes tests before
+  implementation, with a fallback if none were produced. If it cannot
+  write tests, the chat records the reason and continues. Pick its model
+  and configure optional helpers in Settings → Subagents. Test ownership
+  is enforced for Rovik's file-writing tool; inline tests, shell scripts,
+  MCP tools and native CLI tools are governed by instructions, not a
+  filesystem sandbox.
 - **Autopilot (optional).** A chat in Autopilot mode carries out a whole
   task from one message without asking: it plans, reviews, implements,
   checks and delivers, and writes down what it couldn't decide. How

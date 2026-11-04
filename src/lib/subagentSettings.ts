@@ -3,8 +3,8 @@
 // The Subagents settings (docs/design/subagents-plan.md, D14 and S08): a
 // master switch, a default subagent model with fallbacks, and for each kind
 // of subagent a switch, a model with fallbacks, a reasoning effort and a
-// budget. Saved with the AI settings (lib/aiSettings.ts), off by default:
-// with the master switch off, chats work exactly as without subagents.
+// budget. Optional helpers default off. The harness always uses the test
+// writer for code changes; its saved model and budget still apply.
 //
 // The backend gets them resolved (`resolveSubagentConfig`): for each kind,
 // the models to try in order (its model, its fallbacks, the default model
@@ -96,7 +96,7 @@ export const SUBAGENT_KINDS: {
     id: 'testWriter',
     label: 'Test writer',
     hint: 'Writes tests from the request and the plan, without reading the changed code. Writes test files only.',
-    when: 'The agent can call it after implementing a change; its tests run with the project’s checks.',
+    when: 'Always runs for code changes in Agent and Autopilot modes, even when optional subagents are off. Its tests run with the project’s checks.',
     toolCalls: 40,
     minutes: 10,
   },
@@ -540,7 +540,9 @@ export function numberFieldValue(
 
 /** One line for the Settings menu. */
 export function subagentSummary(settings: SubagentSettings): string {
-  if (!settings.enabled) return 'Off: the agent works alone';
-  const on = SUBAGENT_KINDS.filter((k) => settings.kinds[k.id].enabled).map((k) => k.label);
+  if (!settings.enabled) return 'Test writer always on; optional helpers off';
+  const on = SUBAGENT_KINDS.filter(
+    (k) => k.id === 'testWriter' || settings.kinds[k.id].enabled
+  ).map((k) => k.label);
   return on.length ? `On: ${on.join(', ')}` : 'On, but no kind is turned on';
 }

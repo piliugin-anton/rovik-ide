@@ -176,7 +176,7 @@ pub struct BriefParts<'a> {
 pub const FIRST_HEADING: &str = "# Write the tests before the change";
 
 /// S07: what the test writer is told when the change came without tests.
-const AFTER_NOTE: &str = "The change is made, and the project's checks pass on it, but it came with no tests. Write the tests that check it does what the request and the plan say: they run with the project's checks next.";
+const AFTER_NOTE: &str = "The change is made. Independently check its behaviour, even if the coding agent already wrote tests. Write the tests that check it does what the request and the plan say: they run with the project's checks next.";
 
 /// E02: the test writer's brief, written by the harness.
 pub fn brief(p: &BriefParts) -> String {
@@ -260,8 +260,9 @@ pub fn brief(p: &BriefParts) -> String {
 
 /// E03: the lead's prompt section on the test writer.
 pub const LEAD_RULE: &str = "### The test writer\n\n\
-     After you implement a change that adds or changes behaviour, you can have tests written for it with `task` kind \"testWriter\" (goal optional: what to focus on). It writes tests from the request and the plan, without reading your code, so they catch mistakes you'd repeat in your own tests. They run with the project's checks when you finish.\n\
-     - When one of its tests fails, fix your code. Change a test-writer test only when it contradicts the request or the plan, and say which part in your reply: the IDE lists every test-writer file you change in your final message, for the user.";
+     Delegate all test creation and test changes to `task` kind \"testWriter\". Do not write tests yourself, including inline tests in source files, or use shell commands to edit tests. The test writer is always available in Agent and Autopilot modes. Give it requirements and public contracts, never your implementation or proposed assertions. It writes independently from the request and plan. You may run its tests and fix implementation failures.\n\
+     - If a test contradicts the request, continue the test writer with the requirement and failure evidence; let it decide whether the assertion needs changing. Do not weaken tests to make your implementation pass.\n\
+     - Delegate before finishing. The harness also requests independent tests automatically for code changes if none were written.";
 
 /// E03: the line added to the lead's final message.
 pub fn changed_tests_line(files: &[String]) -> String {
@@ -724,19 +725,13 @@ impl super::run::Run {
         Ok("done".into())
     }
 
-    /// S07, the test-exists rule (no model): in Autopilot, a passing
-    /// round whose change has code and no test file
-    /// (`project::is_test_path`), with none written before the code
-    /// either (S04), gets the test writer once: it writes the change's
-    /// tests from the request and the plan, the change's files hidden
-    /// (E02), and E04's red check looks at them. True: it wrote some,
-    /// which are the test writer's to the run (E03), and the checks run
-    /// them now. Its record row is `meta.tests` with `after`.
+    /// Automatically request independent tests for code changes, even when
+    /// the lead wrote tests. Autopilot's tests-first stage already satisfies
+    /// this requirement. Each run attempts this once; failures stay visible
+    /// in the tests record. IDE-started helpers don't depend on opt-in switches.
     pub(super) async fn tests_for_an_untested_change(&mut self) -> Result<bool, String> {
-        use super::subagent::{Kind, SubagentSettings};
         use serde_json::json;
-        if !self.in_autopilot()
-            || self.sub().is_some()
+        if self.sub().is_some()
             || self.plan_mode
             || self.tests.tests_after_change
             || !self.tests.carry.test_writer_files.is_empty()
@@ -748,8 +743,7 @@ impl super::run::Run {
         let code = changed
             .iter()
             .any(|f| !project::is_test_path(f) && !project::test_paths_for(f).is_empty());
-        let tested = changed.iter().any(|f| project::is_test_path(f));
-        if !code || tested || self.config().subagents.kind(Kind::TestWriter).is_none() {
+        if !code {
             return Ok(false);
         }
         self.tests.tests_after_change = true;

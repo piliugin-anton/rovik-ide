@@ -183,11 +183,13 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
   assert.deepEqual(
     rows.map((r) => r.querySelector('.autopilot-kind-tag')?.textContent ?? null),
     SUBAGENT_KINDS.map((k) =>
-      ['planner', 'judge', 'breaker'].includes(k.id)
-        ? 'Used by Autopilot (Thorough)'
-        : AUTOPILOT_KINDS.includes(k.id)
-          ? 'Used by Autopilot'
-          : null
+      k.id === 'testWriter'
+        ? 'Always on'
+        : ['planner', 'judge', 'breaker'].includes(k.id)
+          ? 'Used by Autopilot (Thorough)'
+          : AUTOPILOT_KINDS.includes(k.id)
+            ? 'Used by Autopilot'
+            : null
     )
   );
   const warning = (id: string) =>
@@ -316,4 +318,29 @@ test('subagent settings: Thorough’s kinds have no Default, and say a model is 
     off.join(' | ')
   );
   assert.ok(choose('judge'), 'and a model is to choose again');
+});
+
+test('the test writer stays enabled with optional helpers both on and off', async () => {
+  for (const enabled of [false, true]) {
+    const root = container();
+    render(
+      () => (
+        <SubagentSettings
+          settings={{ ...DEFAULT_SUBAGENT_SETTINGS, enabled }}
+          providers={[]}
+          chatModel={null}
+          onChange={() => assert.fail('mandatory test writer cannot be switched off')}
+          onOpenPage={() => {}}
+        />
+      ),
+      root
+    );
+    const input = checkbox(root, 'Test writer');
+    assert.equal(input.checked, true);
+    assert.equal(input.disabled, true);
+    const effort = root.querySelector(
+      'select[aria-label="Test writer reasoning effort"]'
+    ) as HTMLSelectElement;
+    assert.equal(effort.disabled, false);
+  }
 });

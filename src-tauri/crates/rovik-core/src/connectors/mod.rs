@@ -573,7 +573,7 @@ pub async fn run_chat(
     let (system_prompt, system_context) = match (messages_system, params.system_prompt.clone()) {
         (Some(system), _) | (None, Some(system)) => (system, None),
         (None, None) => (
-            crate::agent::lead_system_prompt(rovik_tools, None, false),
+            crate::agent::lead_system_prompt(rovik_tools, None, false, params.delegated_tests),
             params
                 .project_context
                 .clone()
