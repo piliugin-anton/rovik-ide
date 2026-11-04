@@ -927,10 +927,27 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
     assert_fits(&requests, window);
 
     let last = &requests[5];
-    // It was tight: the context gave way (outputs withheld, older turns
-    // cut) rather than the card, the reasoning or the reply's room.
     let tail = tail_text(last);
-    assert!(tail.contains("withheld"), "{tail}");
+    // The context gave way in this request itself — the oldest turns cut
+    // here, or an output withheld here — rather than the card, the
+    // reasoning or the reply's room. Which of the two comes first is
+    // arithmetic on the prompt's own size (the project's tool schemas take
+    // ~10 000 tokens here) and the two run close, so either counts.
+    //
+    // Judged on this request's own messages: CLM renders a withheld output
+    // into the context file, so the marker of an earlier request stays in
+    // every later one, and a search of the whole body would pass on it.
+    // The cut note is added to the messages sent (`history::fit_keeping`),
+    // never rendered into the file, so it can only be this request's.
+    let before = messages_of(&requests[4]);
+    let cut = messages_of(last).iter().any(|m| {
+        m["role"] == "user" && text_of(m).contains("[Earlier messages in this chat were omitted")
+    });
+    let withheld_here = messages_of(last).iter().any(|m| {
+        let text = text_of(m);
+        text.starts_with("[Output withheld") && !before.iter().any(|b| text_of(b).contains(&text))
+    });
+    assert!(cut || withheld_here, "{tail}");
     assert!(
         tail.contains(card.as_str()),
         "the card goes with every request"
@@ -939,6 +956,9 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
         .iter()
         .filter(|m| m["role"] == "assistant" && m.get("tool_calls").is_some())
         .collect();
+    // A whole oldest step may go — that's the context giving way — but the
+    // reasoning of a step still sent never does. Never checked vacuously.
+    assert!(!steps.is_empty(), "no step left to check: {last}");
     assert!(
         steps.iter().all(|m| m["reasoning_content"] == thought),
         "every step sent keeps its reasoning: {steps:#?}"
