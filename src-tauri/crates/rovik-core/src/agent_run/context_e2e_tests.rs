@@ -857,11 +857,20 @@ async fn three_clm_turns_keep_the_context_file_and_the_prompt_in_step() {
 
 #[tokio::test]
 async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
-    let notes = |c: char| format!("{}\n", c.to_string().repeat(74)).repeat(60); // 4 500 chars
+    // The last read is 7 500 chars (~2 500 tokens) and the first 4 500
+    // (~1 500): with the card and the reasoning sent back, the context is
+    // ~1 000 tokens over its budget by the last request, so the first read
+    // must give way there by arithmetic. The margin is the point: at 4 500
+    // chars each the context landed 27 tokens inside one machine's budget
+    // and 6 outside another's (`~3930/3951 tokens (99%)` against `~3924`),
+    // so one trimmed and the other didn't, and no assertion about the
+    // give-way held on both. The sizes stay well inside the window, so
+    // every request still leaves the reply its room (`assert_fits`).
+    let notes = |c: char, lines: usize| format!("{}\n", c.to_string().repeat(74)).repeat(lines);
     let h = harness(&[
         ("src/lib.rs", "pub fn alpha_one() {}\n"),
-        ("notes/a.txt", &notes('a')),
-        ("notes/b.txt", &notes('b')),
+        ("notes/a.txt", &notes('a', 60)),
+        ("notes/b.txt", &notes('b', 100)),
     ])
     .await;
     pretend_volume(&h);
@@ -928,31 +937,22 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
 
     let last = &requests[5];
     let tail = tail_text(last);
-    // The context gave way in this request — the oldest turns cut, or an
-    // output withheld or shortened — rather than the card, the reasoning or
-    // the reply's room. Which of those comes first is arithmetic on the
-    // prompt's own size (the project's tool schemas take ~10 000 tokens
-    // here) and they run close, so any of them counts.
-    //
-    // Judged by the effect on this request's own messages, not by a marker:
-    // CLM renders a withheld output into its context file, so an earlier
-    // request's marker stays in every later one, and the cut's note goes
-    // only on a `user` message (`history::fit_keeping`), so a cut turn
-    // doesn't always leave one. The oldest read is what gives way first,
-    // whichever way it happens — its turn cut, its output withheld, or its
-    // result shortened to a head (`history::truncate_tool_result`) — so the
-    // one thing that must not happen is sending it whole. Asked by
-    // containment rather than a prefix: a complete result stays complete
-    // even if what's rendered around it changes, and a test that let that
-    // pass would prove nothing.
-    let full = notes('a');
+    // This request is where the run gives way: the first read is no longer
+    // sent in full — its turn cut, its output withheld, or its result
+    // shortened to a head — while the card, the reasoning, the latest
+    // output and the reply's room all survive. Which of the three comes
+    // first is `clm/edge_tests.rs`'s business; that something must give way
+    // here is this fixture's arithmetic (its sizes, above), so asking for
+    // the effect rather than for a marker keeps the assertion about what
+    // the agent is actually sent.
+    let full = notes('a', 60);
     let oldest = messages_of(last)
         .iter()
         .find(|m| m["tool_call_id"] == "r1")
         .map(text_of);
     assert!(
         oldest.is_none_or(|text| !text.contains(&full)),
-        "the first turn's read should have given way: {last}"
+        "the first read should have given way: {last}"
     );
     assert!(
         tail.contains(card.as_str()),
@@ -974,7 +974,10 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
         .find(|m| m["tool_call_id"] == "r2")
         .map(text_of)
         .unwrap();
-    assert!(read.starts_with(&notes('b')), "the latest output is whole");
+    assert!(
+        read.starts_with(&notes('b', 100)),
+        "the latest output is whole"
+    );
 }
 
 #[tokio::test]
