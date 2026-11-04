@@ -928,26 +928,32 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
 
     let last = &requests[5];
     let tail = tail_text(last);
-    // The context gave way in this request itself — the oldest turns cut
-    // here, or an output withheld here — rather than the card, the
-    // reasoning or the reply's room. Which of the two comes first is
-    // arithmetic on the prompt's own size (the project's tool schemas take
-    // ~10 000 tokens here) and the two run close, so either counts.
+    // The context gave way in this request — the oldest turns cut, or an
+    // output withheld or shortened — rather than the card, the reasoning or
+    // the reply's room. Which of those comes first is arithmetic on the
+    // prompt's own size (the project's tool schemas take ~10 000 tokens
+    // here) and they run close, so any of them counts.
     //
-    // Judged on this request's own messages: CLM renders a withheld output
-    // into the context file, so the marker of an earlier request stays in
-    // every later one, and a search of the whole body would pass on it.
-    // The cut note is added to the messages sent (`history::fit_keeping`),
-    // never rendered into the file, so it can only be this request's.
-    let before = messages_of(&requests[4]);
-    let cut = messages_of(last).iter().any(|m| {
-        m["role"] == "user" && text_of(m).contains("[Earlier messages in this chat were omitted")
-    });
-    let withheld_here = messages_of(last).iter().any(|m| {
-        let text = text_of(m);
-        text.starts_with("[Output withheld") && !before.iter().any(|b| text_of(b).contains(&text))
-    });
-    assert!(cut || withheld_here, "{tail}");
+    // Judged by the effect on this request's own messages, not by a marker:
+    // CLM renders a withheld output into its context file, so an earlier
+    // request's marker stays in every later one, and the cut's note goes
+    // only on a `user` message (`history::fit_keeping`), so a cut turn
+    // doesn't always leave one. The oldest read is what gives way first,
+    // whichever way it happens — its turn cut, its output withheld, or its
+    // result shortened to a head (`history::truncate_tool_result`) — so the
+    // one thing that must not happen is sending it whole. Asked by
+    // containment rather than a prefix: a complete result stays complete
+    // even if what's rendered around it changes, and a test that let that
+    // pass would prove nothing.
+    let full = notes('a');
+    let oldest = messages_of(last)
+        .iter()
+        .find(|m| m["tool_call_id"] == "r1")
+        .map(text_of);
+    assert!(
+        oldest.is_none_or(|text| !text.contains(&full)),
+        "the first turn's read should have given way: {last}"
+    );
     assert!(
         tail.contains(card.as_str()),
         "the card goes with every request"
