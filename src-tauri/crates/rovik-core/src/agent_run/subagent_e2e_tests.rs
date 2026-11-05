@@ -4953,12 +4953,15 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
         "outline works: {}",
         result("o1")
     );
+    // A writing test writer reads test files and fixtures only: the project's
+    // other implementation files are refused too, with their code withheld.
     assert!(
-        result("r2").contains("export const other"),
-        "other files can be read"
+        result("r2").starts_with("Error: `src/other.ts` isn't a test file or a fixture"),
+        "{}",
+        result("r2")
     );
+    assert!(!result("r2").contains("export const other"), "{}", result("r2"));
     let search = result("s1");
-    assert!(!search.contains("src/greet.ts"), "{search}");
     for id in ["r3", "r4", "d1", "n1"] {
         assert!(
             result(id).starts_with("Error: `src/greet.ts` is one of the files the change touches"),
@@ -4971,10 +4974,15 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
         !callers.contains("src/greet.ts") && callers.contains("src/helper.ts"),
         "{callers}"
     );
+    // A search is one rule for every file: the change's file is found, by
+    // its declaration, and its matched line isn't shown.
+    assert!(search.contains("src/greet.ts ("), "{search}");
+    assert!(search.contains("greet ["), "its declaration: {search}");
     assert!(
-        search.contains("in the files the change touches left out"),
-        "{search}"
+        !search.contains("export function greet"),
+        "no code's lines: {search}"
     );
+    assert!(!search.contains("left out"), "nothing is dropped: {search}");
     assert!(
         result("w1").starts_with("Error: `src/greet.ts` isn't a test file"),
         "{}",
@@ -10274,8 +10282,9 @@ async fn a_resumed_subagents_wall_starts_at_resume() {
 }
 
 /// The test writer can't see the code under test in any spelling, by any
-/// tool: reads, neighbours and diagnostics (with or without a path), and
-/// search_code says how many lines it left out.
+/// tool: reads, neighbours and diagnostics (with or without a path) refuse
+/// it. A search finds the change's file too: it names the file and the
+/// enclosing declaration and shows none of its lines.
 #[tokio::test]
 async fn hidden_paths_in_every_spelling_by_every_tool() {
     let h = test_writer_run(
@@ -10307,11 +10316,12 @@ async fn hidden_paths_in_every_spelling_by_every_tool() {
         );
     }
     assert!(results["r4"].starts_with("Error"), "{}", results["r4"]);
-    assert!(
-        results["s1"].contains("[1 match in the files the change touches left out"),
-        "{}",
-        results["s1"]
-    );
+    // A search is one rule for every file: the change's file is found, with
+    // its declaration in place of the line, and nothing is dropped.
+    let search = &results["s1"];
+    assert!(search.contains("src/greet.ts"), "{search}");
+    assert!(search.contains("greet ["), "its declaration: {search}");
+    assert!(!search.contains("left out"), "nothing is dropped: {search}");
 }
 
 /// extend_scope grants at most 8 paths beyond the step; a path granted
@@ -12159,4 +12169,1386 @@ fn with_disabled_test_writer(mut request: StartRequest) -> StartRequest {
         .kinds
         .insert("testWriter".into(), Default::default());
     request
+}
+
+/*
+ * The test writer reads no implementation source: test files and fixtures
+ * only, and search_code gives it locations and declarations, not lines.
+ */
+
+const GREETER_PROJECT: [(&str, &str); 3] = [
+    (
+        "src/greet.ts",
+        "export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n",
+    ),
+    ("src/main.ts", "console.log('hi');\n"),
+    (".rovik/plans/greeter.md", TEST_PLAN),
+];
+
+/// The greeter plan's run on `h`: `script` is the test writer's replies, and
+/// the lead delegates the tests to it.
+async fn test_writer_on_project(h: Harness, script: Vec<Reply>) -> Harness {
+    let (url, _) = model_routed(
+        vec![("# Write tests for this change", script)],
+        vec![test_task("tw"), Reply::Text("Tests are written.")],
+    )
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
+    };
+    let mut request = h.request(
+        &url,
+        StartKind::Send { message },
+        Permissions {
+            allow_any_command: true,
+            ..quiet_permissions()
+        },
+    );
+    request.config.as_mut().unwrap().subagents = test_writer_on();
+    h.start(request).await;
+    h.run_end().await;
+    h
+}
+
+/// The greeter plan's run in a project holding `files` too.
+async fn write_tests_in(files: &[(&str, &str)], script: Vec<Reply>) -> Harness {
+    let mut all: Vec<(&str, &str)> = GREETER_PROJECT.to_vec();
+    all.extend_from_slice(files);
+    let h = harness(&all).await;
+    h.checks_as_detected();
+    test_writer_on_project(h, script).await
+}
+
+/// The fixtures are the ones under a fixture folder or named like one, and
+/// the tests the ones the conventions call tests, whatever the case.
+#[test]
+fn only_test_files_and_fixtures_are_readable_spellings() {
+    for rel in [
+        "src/greet.test.ts",
+        "src/greet.spec.ts",
+        "src/Api.Test.TS",
+        "src/__tests__/a.ts",
+        "tests/unit.rs",
+        "test/unit.rs",
+        "spec/a.js",
+        "test_x.py",
+        "x_test.py",
+        "x_test.go",
+        "tests.rs",
+        "a_tests.rs",
+        "test-fixtures/data.json",
+        "tests/fixtures/data.json",
+        "src/__fixtures__/x.ts",
+        "pkg/testdata/x.json",
+        "pkg/test-data/x.json",
+        "pkg/test-fixtures/x.json",
+        "fixtures.rs",
+        "test_fixtures.ts",
+    ] {
+        assert!(test_writer::is_readable(rel), "{rel} is readable");
+    }
+    for rel in [
+        "src/greet.ts",
+        "src/main.ts",
+        "src/lib.rs",
+        "package.json",
+        "README.md",
+        "src/Api.TS",
+    ] {
+        assert!(!test_writer::is_readable(rel), "{rel} isn't readable");
+    }
+    assert!(test_writer::not_readable("src/greet.ts")
+        .starts_with("Error: `src/greet.ts` isn't a test file or a fixture"));
+}
+
+/// A test file and a fixture come back whole; an implementation file is
+/// refused, naming it and pointing at `outline`, with none of its content.
+#[tokio::test]
+async fn a_test_writer_reads_test_files_and_fixtures_but_no_implementation_file() {
+    let h = write_tests_in(
+        &[
+            (
+                "src/greet.test.ts",
+                "test('greets', () => { expect(greet('you')).toBe('Hello, you!'); });\n",
+            ),
+            ("tests/fixtures/data.json", "{ \"fixture_marker\": 7 }\n"),
+            ("fixtures.rs", "const FIXTURE_MARKER: u8 = 7;\n"),
+            ("src/lib.rs", "pub fn lib_marker() -> u8 {\n    42\n}\n"),
+            ("package.json", "{ \"pkg_only_marker\": 1 }\n"),
+            ("README.md", "# Notes\n\nreadme_only_marker\n"),
+        ],
+        vec![
+            Reply::Calls(vec![
+                ("r1", "read", json!({ "path": "src/greet.test.ts" })),
+                ("r2", "read", json!({ "path": "tests/fixtures/data.json" })),
+                ("r3", "read", json!({ "path": "fixtures.rs" })),
+                ("r4", "read", json!({ "path": "src/lib.rs" })),
+                ("r5", "read", json!({ "path": "package.json" })),
+                ("r6", "read", json!({ "path": "README.md" })),
+                ("r7", "read", json!({ "path": "./src/lib.rs" })),
+            ]),
+            Reply::Text(TEST_REPORT),
+        ],
+    )
+    .await;
+    let results = h.child_results("tw").await;
+
+    assert!(!results["r1"].starts_with("Error"), "{}", results["r1"]);
+    assert!(
+        results["r1"].contains("expect(greet('you'))"),
+        "{}",
+        results["r1"]
+    );
+    assert!(!results["r2"].starts_with("Error"), "{}", results["r2"]);
+    assert!(
+        results["r2"].contains("fixture_marker"),
+        "{}",
+        results["r2"]
+    );
+    assert!(!results["r3"].starts_with("Error"), "{}", results["r3"]);
+    assert!(
+        results["r3"].contains("FIXTURE_MARKER"),
+        "{}",
+        results["r3"]
+    );
+
+    for (id, path, content) in [
+        ("r4", "src/lib.rs", "lib_marker"),
+        ("r5", "package.json", "pkg_only_marker"),
+        ("r6", "README.md", "readme_only_marker"),
+    ] {
+        let refused = &results[id];
+        assert!(
+            refused.starts_with(&format!("Error: `{path}` isn't a test file or a fixture")),
+            "{id}: {refused}"
+        );
+        assert!(
+            refused.contains("specification"),
+            "{id} says tests come from the specification: {refused}"
+        );
+        assert!(
+            refused.contains("outline"),
+            "{id} sends it to outline: {refused}"
+        );
+        assert!(!refused.contains(content), "{id} shows the code: {refused}");
+    }
+    // Another spelling of the same path is refused too.
+    assert!(
+        results["r7"].starts_with("Error:")
+            && results["r7"].contains("isn't a test file or a fixture"),
+        "{}",
+        results["r7"]
+    );
+    assert!(!results["r7"].contains("lib_marker"), "{}", results["r7"]);
+}
+
+/// A test-looking path that is a link into the code is refused: the real
+/// path is what counts.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_test_path_that_leads_to_the_code_is_refused_to_the_test_writer() {
+    let mut files: Vec<(&str, &str)> = GREETER_PROJECT.to_vec();
+    files.push(("src/lib.rs", "pub fn lib_marker() -> u8 {\n    42\n}\n"));
+    files.push(("tests/fixtures/.keep", ""));
+    let h = harness(&files).await;
+    h.checks_as_detected();
+    std::os::unix::fs::symlink("../../src/lib.rs", h.project.join("tests/fixtures/lib.rs")).unwrap();
+    let h = test_writer_on_project(
+        h,
+        vec![
+            Reply::Calls(vec![
+                ("r1", "read", json!({ "path": "tests/fixtures/lib.rs" })),
+                ("r2", "read", json!({ "path": "src/lib.rs" })),
+            ]),
+            Reply::Text(TEST_REPORT),
+        ],
+    )
+    .await;
+    let results = h.child_results("tw").await;
+    for id in ["r1", "r2"] {
+        assert!(
+            results[id].starts_with("Error:")
+                && results[id].contains("isn't a test file or a fixture"),
+            "{id}: {}",
+            results[id]
+        );
+        assert!(
+            !results[id].contains("lib_marker"),
+            "{id} shows the code: {}",
+            results[id]
+        );
+    }
+}
+
+/// A search names the file, the line and the declaration each match is in,
+/// without the code's lines; a test file's and a fixture's lines it shows,
+/// and a closing note says so.
+#[tokio::test]
+async fn a_test_writers_search_shows_declarations_but_not_the_codes_lines() {
+    let h = write_tests_in(
+        &[
+            (
+                "src/parser.rs",
+                "pub struct Parser;\n\nimpl Parser {\n    pub fn parse(&self) {\n        build_tree();\n    }\n}\n\nfn build_tree() {}\n",
+            ),
+            ("src/parser.test.ts", "notes about build_tree\n"),
+            (
+                "tests/fixtures/tree.json",
+                "{ \"note\": \"a fixture mentioning build_tree\" }\n",
+            ),
+        ],
+        vec![
+            Reply::Calls(vec![("s1", "search_code", json!({ "query": "build_tree" }))]),
+            Reply::Text(TEST_REPORT),
+        ],
+    )
+    .await;
+    let results = h.child_results("tw").await;
+    let search = &results["s1"];
+
+    assert!(search.contains("src/parser.rs"), "{search}");
+    assert!(
+        search.contains("Parser > parse ["),
+        "the declaration and its range: {search}"
+    );
+    assert!(
+        search.contains("build_tree ["),
+        "the declaration and its range: {search}"
+    );
+    assert!(
+        !search.contains("build_tree();") && !search.contains("fn build_tree() {}"),
+        "no code's lines: {search}"
+    );
+    assert!(
+        search.contains("1: notes about build_tree"),
+        "a test file's lines: {search}"
+    );
+    assert!(
+        search.contains("a fixture mentioning build_tree"),
+        "a fixture's lines: {search}"
+    );
+    let lower = search.to_lowercase();
+    assert!(
+        lower
+            .lines()
+            .any(|line| line.contains("test file") && line.contains("fixture")),
+        "a closing note says lines are for test files and fixtures only: {search}"
+    );
+}
+
+/// A test writer's search is one rule for every file: a name found in the
+/// change's file, in an ordinary implementation file, in a test file and in
+/// a fixture yields all four, each implementation match with its enclosing
+/// declaration and no line, the test's and the fixture's with their lines,
+/// and nothing dropped; and bash still can't read a file.
+#[tokio::test]
+async fn a_test_writers_search_withholds_every_implementation_files_lines() {
+    let h = write_tests_in(
+        &[
+            (
+                "src/notes.rs",
+                "pub fn hello() -> &'static str {\n    let greeting = \"Hello\";\n    greeting\n}\n",
+            ),
+            ("src/labels.test.ts", "export const label = 'Hello';\n"),
+            (
+                "tests/fixtures/notes.json",
+                "{ \"note\": \"Hello from a fixture\" }\n",
+            ),
+        ],
+        vec![
+            Reply::Calls(vec![
+                ("s1", "search_code", json!({ "query": "Hello" })),
+                ("b1", "bash", json!({ "command": "cat src/notes.rs" })),
+            ]),
+            Reply::Text(TEST_REPORT),
+        ],
+    )
+    .await;
+    let results = h.child_results("tw").await;
+    let search = &results["s1"];
+
+    // Every file the name is in is listed, the change's included.
+    for path in [
+        "src/greet.ts",
+        "src/notes.rs",
+        "src/labels.test.ts",
+        "tests/fixtures/notes.json",
+    ] {
+        assert!(search.contains(path), "{path} in {search}");
+    }
+    // The implementation matches name their declarations; their lines aren't
+    // there.
+    assert!(search.contains("greet ["), "greet's declaration: {search}");
+    assert!(search.contains("hello ["), "hello's declaration: {search}");
+    assert!(!search.contains("Hello, ${name}"), "{search}");
+    assert!(
+        !search.contains("let greeting"),
+        "no code's lines: {search}"
+    );
+    // A test file's and a fixture's matched lines are shown.
+    assert!(
+        search.contains("export const label = 'Hello';"),
+        "a test file's lines: {search}"
+    );
+    assert!(
+        search.contains("Hello from a fixture"),
+        "a fixture's lines: {search}"
+    );
+    assert!(
+        !search.to_lowercase().contains("left out"),
+        "nothing is dropped: {search}"
+    );
+
+    assert!(results["b1"].starts_with("Error:"), "{}", results["b1"]);
+    assert!(!results["b1"].contains("let greeting"), "{}", results["b1"]);
+}
+
+/// The lead is no test writer: its reads come back whole and its searches
+/// show the lines they match.
+#[tokio::test]
+async fn the_lead_reads_any_file_and_sees_the_lines_its_search_finds() {
+    let h = harness(&[
+        (
+            "src/parser.rs",
+            "pub struct Parser;\n\nimpl Parser {\n    pub fn parse(&self) {\n        build_tree();\n    }\n}\n\nfn build_tree() {}\n",
+        ),
+        ("README.md", "# Notes\n\nbuild_tree is here.\n"),
+    ])
+    .await;
+    h.checks_as_detected();
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({ "path": "src/parser.rs" }),
+        },
+        Reply::Call {
+            id: "r2",
+            name: "read",
+            args: json!({ "path": "README.md" }),
+        },
+        Reply::Call {
+            id: "s1",
+            name: "search_code",
+            args: json!({ "query": "build_tree" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(
+        &url,
+        Harness::send("Where is build_tree?"),
+        quiet_permissions(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert!(
+        result_of(&messages, "r1")
+            .content
+            .contains("fn build_tree() {}"),
+        "{}",
+        result_of(&messages, "r1").content
+    );
+    assert!(
+        result_of(&messages, "r2")
+            .content
+            .contains("build_tree is here."),
+        "{}",
+        result_of(&messages, "r2").content
+    );
+    let search = result_of(&messages, "s1").content.clone();
+    assert!(search.contains("5: build_tree();"), "{search}");
+    assert!(search.contains("3: build_tree is here."), "{search}");
+}
+
+/// A scout is no test writer either: it reads the code as it is.
+#[tokio::test]
+async fn a_scout_still_reads_the_code_a_test_writer_may_not() {
+    let h = harness(&[("src/lib.rs", "pub fn lib_marker() -> u8 {\n    42\n}\n")]).await;
+    h.checks_as_detected();
+    let (url, _) = model_routed(
+        vec![(
+            "Where is lib_marker defined?",
+            vec![
+                Reply::Call {
+                    id: "s1",
+                    name: "read",
+                    args: json!({ "path": "src/lib.rs" }),
+                },
+                Reply::Text(REPORT),
+            ],
+        )],
+        vec![
+            task("t1", "Where is lib_marker defined?"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Find it", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    h.run_end().await;
+    let results = h.child_results("t1").await;
+    assert!(!results["s1"].starts_with("Error"), "{}", results["s1"]);
+    assert!(results["s1"].contains("lib_marker"), "{}", results["s1"]);
+}
+
+/*
+ * The lead can run the tests its test writer wrote, but not read or print
+ * them: a read is refused and sent to the test writer, a search lists the
+ * file without its line, and a command that would print it is refused, while
+ * the test runner commands still run. The test writer itself is exempt, and
+ * a chat whose test writer wrote nothing is as it was.
+ */
+
+/// The test the writer writes in these tests, with words no refusal may
+/// repeat.
+const SEALED_TEST: &str = "// sealed_marker_word\nimport { greet } from './greet';\n\n\
+    const sealed_marker_word = 4711;\n\n\
+    test('greets', () => {\n  expect(greet('you')).toBe('Hello, you!');\n});\n";
+
+/// A test file the chat's test writer never wrote: the lead reads it as any
+/// other file.
+const FREE_TEST: &str = "// free_marker_word\nexport const notes = 1;\n";
+
+/// The lead's refusal of a read of a test the test writer wrote: it names
+/// the file, says whose it is, sends the lead to make the tests pass and to
+/// the test writer for a change to a test, and shows nothing of the file.
+fn assert_sealed_read_refusal(what: &str, result: &str) {
+    assert!(result.starts_with("Error:"), "{what}: {result}");
+    assert!(
+        result.contains("src/greet.test.ts"),
+        "{what} names the file: {result}"
+    );
+    assert!(
+        result.contains("is a test file the test writer wrote"),
+        "{what}: {result}"
+    );
+    assert!(
+        result.to_lowercase().contains("make the tests pass"),
+        "{what} sends the lead to make the tests pass: {result}"
+    );
+    assert!(
+        result.contains("testWriter"),
+        "{what} points at `task` kind \"testWriter\": {result}"
+    );
+    assert!(
+        !result.contains("sealed_marker_word") && !result.contains("expect(greet("),
+        "{what} shows the file: {result}"
+    );
+}
+
+/// The lead's refusal of a command that would print a test the test writer
+/// wrote: it names the command as it was given and the file it would print,
+/// says what printing it would do, sends the lead to make the tests pass and
+/// to the test writer for a change to a test, and shows nothing of the file.
+fn assert_sealed_print_refusal(what: &str, command: &str, result: &str) {
+    assert!(result.starts_with("Error:"), "{what}: {result}");
+    assert!(
+        result.contains(&format!("`{command}`")),
+        "{what} names the command as it was given: {result}"
+    );
+    assert!(result.contains("would print"), "{what}: {result}");
+    assert!(
+        result.contains("greet.test.ts"),
+        "{what} names the file: {result}"
+    );
+    assert!(
+        result.contains("a test file the test writer wrote"),
+        "{what}: {result}"
+    );
+    assert!(
+        result.to_lowercase().contains("make the tests pass"),
+        "{what} sends the lead to make the tests pass: {result}"
+    );
+    assert!(
+        result.contains("testWriter"),
+        "{what} points at `task` kind \"testWriter\": {result}"
+    );
+    // The refusal quotes the command, which may name the word a search looks
+    // for: only content no command spells shows the file was read.
+    assert!(
+        !result.contains("4711") && !result.contains("expect(greet("),
+        "{what} shows the file: {result}"
+    );
+}
+
+/// The greeter plan's run on a project of `files` and the greeter project,
+/// in which the test writer writes `src/greet.test.ts`; the lead delegates
+/// to it and then makes `lead`'s calls.
+async fn lead_after_the_test_writer(files: &[(&str, &str)], lead: Vec<Reply>) -> Harness {
+    let mut all: Vec<(&str, &str)> = GREETER_PROJECT.to_vec();
+    all.extend_from_slice(files);
+    let h = harness(&all).await;
+    h.checks_as_detected();
+    let mut replies = vec![test_task("tw")];
+    replies.extend(lead);
+    replies.push(Reply::Text("Done."));
+    let (url, _) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![
+                write_call("w1", "src/greet.test.ts", SEALED_TEST),
+                Reply::Call {
+                    id: "r0",
+                    name: "read",
+                    args: json!({ "path": "src/greet.test.ts" }),
+                },
+                Reply::Text(TEST_REPORT),
+            ],
+        )],
+        replies,
+    )
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
+    };
+    let mut request = h.request(
+        &url,
+        StartKind::Send { message },
+        Permissions {
+            allow_any_command: true,
+            ..quiet_permissions()
+        },
+    );
+    request.config.as_mut().unwrap().subagents = test_writer_on();
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(
+        h.file("src/greet.test.ts").as_deref(),
+        Some(SEALED_TEST),
+        "the writer wrote its test"
+    );
+    h
+}
+
+/// A test file is the test writer's once it wrote it: the lead's read of it
+/// is refused, naming it and sending the lead to the test writer, with none
+/// of its content; any other file it still reads, and the test writer reads
+/// its own test.
+#[tokio::test]
+async fn the_lead_cannot_read_the_test_its_test_writer_wrote() {
+    let h = lead_after_the_test_writer(
+        &[],
+        vec![
+            Reply::Call {
+                id: "r1",
+                name: "read",
+                args: json!({ "path": "src/greet.test.ts" }),
+            },
+            Reply::Call {
+                id: "r2",
+                name: "read",
+                args: json!({ "path": "./src/greet.test.ts" }),
+            },
+            Reply::Call {
+                id: "r3",
+                name: "read",
+                args: json!({ "path": "src/greet.ts" }),
+            },
+        ],
+    )
+    .await;
+    let messages = h.messages().await;
+    assert_sealed_read_refusal("r1", &result_of(&messages, "r1").content);
+    // Another spelling of the same path is refused too.
+    assert_sealed_read_refusal("r2", &result_of(&messages, "r2").content);
+
+    // The lead is no test writer in any other way: the code reads whole.
+    let code = &result_of(&messages, "r3").content;
+    assert!(!code.starts_with("Error"), "{code}");
+    assert!(code.contains("return `Hello, ${name}!`"), "{code}");
+
+    // The test writer it sent the lead to reads its own test.
+    let writer = h.child_results("tw").await;
+    assert!(!writer["w1"].starts_with("Error"), "{}", writer["w1"]);
+    assert!(
+        !writer["r0"].starts_with("Error"),
+        "the writer reads its own test: {}",
+        writer["r0"]
+    );
+    assert!(
+        writer["r0"].contains("sealed_marker_word"),
+        "{}",
+        writer["r0"]
+    );
+}
+
+/// A search still finds the test the writer wrote, naming the file and the
+/// declaration each match is in, but never its matched lines' text; a test
+/// file the writer did not write shows its lines as any file's do.
+#[tokio::test]
+async fn the_leads_search_lists_a_sealed_test_file_without_its_line() {
+    let h = lead_after_the_test_writer(
+        &[("tests/notes.test.ts", FREE_TEST)],
+        vec![Reply::Call {
+            id: "s1",
+            name: "search_code",
+            args: json!({ "query": "marker_word" }),
+        }],
+    )
+    .await;
+    let messages = h.messages().await;
+    let search = &result_of(&messages, "s1").content;
+
+    // The file is listed, with the declaration the match is in: its name and
+    // line range.
+    assert!(search.contains("src/greet.test.ts"), "listed: {search}");
+    assert!(
+        search.contains("sealed_marker_word ["),
+        "the declaration and its range are shown: {search}"
+    );
+    // The matched lines' text is never printed: neither the declaration's
+    // own line nor a match outside any declaration.
+    assert!(
+        !search.contains("4711") && !search.contains("const sealed_marker_word"),
+        "the declaration's line isn't shown: {search}"
+    );
+    assert!(
+        !search.contains("// sealed_marker_word"),
+        "a matched line outside any declaration isn't shown: {search}"
+    );
+    // A test file it didn't write still shows its line.
+    assert!(search.contains("tests/notes.test.ts"), "{search}");
+    assert!(
+        search.contains("free_marker_word"),
+        "a test file it didn't write shows its line: {search}"
+    );
+}
+
+/// A command that would print the test the writer wrote is refused, while
+/// running the tests — which names the same file — still runs.
+#[tokio::test]
+async fn bash_that_prints_a_sealed_test_is_refused_but_running_the_tests_is_not() {
+    let h = lead_after_the_test_writer(
+        &[("tests/notes.test.ts", FREE_TEST)],
+        vec![
+            Reply::Call {
+                id: "c1",
+                name: "bash",
+                args: json!({ "command": "cat src/greet.test.ts" }),
+            },
+            Reply::Call {
+                id: "c2",
+                name: "bash",
+                args: json!({ "command": "head -n 5 src/greet.test.ts" }),
+            },
+            Reply::Call {
+                id: "c3",
+                name: "bash",
+                args: json!({ "command": "sed -n '1,5p' src/greet.test.ts" }),
+            },
+            Reply::Call {
+                id: "c4",
+                name: "bash",
+                args: json!({ "command": "grep marker_word src/greet.test.ts" }),
+            },
+            Reply::Call {
+                id: "c5",
+                name: "bash",
+                args: json!({ "command": "wc -l < src/greet.test.ts" }),
+            },
+            // An unsealed test file still prints, with the printer this
+            // platform's shell has.
+            bash_call("c6", sandbox_print("tests/notes.test.ts")),
+            // Running the tests names the sealed file and isn't refused.
+            Reply::Call {
+                id: "c7",
+                name: "bash",
+                args: json!({ "command": "cargo test src/greet.test.ts" }),
+            },
+        ],
+    )
+    .await;
+    let messages = h.messages().await;
+    for (id, command) in [
+        ("c1", "cat src/greet.test.ts"),
+        ("c2", "head -n 5 src/greet.test.ts"),
+        ("c3", "sed -n '1,5p' src/greet.test.ts"),
+        ("c4", "grep marker_word src/greet.test.ts"),
+        ("c5", "wc -l < src/greet.test.ts"),
+    ] {
+        assert_sealed_print_refusal(id, command, &result_of(&messages, id).content);
+    }
+    let free = &result_of(&messages, "c6").content;
+    assert!(!free.starts_with("Error"), "{free}");
+    assert!(free.contains("free_marker_word"), "{free}");
+    let run = &result_of(&messages, "c7").content;
+    assert!(
+        !run.contains("is a test file the test writer wrote"),
+        "running the tests isn't refused: {run}"
+    );
+    assert!(
+        !run.contains("would print"),
+        "running the tests isn't refused: {run}"
+    );
+}
+
+/// A `bash` call of the lead's script, running `command`.
+fn bash_call(id: &'static str, command: impl Into<String>) -> Reply {
+    let command: String = command.into();
+    Reply::Call {
+        id,
+        name: "bash",
+        args: json!({ "command": command }),
+    }
+}
+
+/// The lead reaches the test its test writer wrote by no way round the seal:
+/// a folder, a glob, a `cd`, an inner shell script, `eval` and a `$()` are
+/// all refused, naming the command and the file; running the tests, a search
+/// of a source file, a listing of the folder, `git status` and reading the
+/// README still run. The refused cases are refused before any shell sees
+/// them; a case that must actually print or list names the program this
+/// platform's shell has (`sandbox_print`, `sandbox_list`).
+///
+/// The calls are spread over two runs of the chat, each mixing in the
+/// commands that do run, and given in short replies: several refusals in a
+/// row are what the loop guard is for, and a paused run would hide the rest.
+#[tokio::test]
+async fn the_leads_bash_cannot_reach_a_sealed_test_round_the_seal() {
+    // Run one writes the test and makes the first calls: four refusals, a
+    // listing, one more, then the README.
+    let h = lead_after_the_test_writer(
+        &[
+            ("tests/notes.test.ts", FREE_TEST),
+            ("README.md", "# Greeter\n\nA greeter, with its tests.\n"),
+        ],
+        vec![
+            bash_call("c1", "grep -rn sealed_marker_word src"),
+            bash_call("c2", "cat src/*.test.ts"),
+            bash_call("c3", "head -20 src/g*.ts"),
+            // Every file in the folder: a folder given to `cat` prints an
+            // error, not its files.
+            bash_call("c4", "cat src/*"),
+            // A listing names the files, sealed or not, and prints none: the
+            // listing program this platform's shell has.
+            bash_call("k1", sandbox_list("src")),
+            bash_call("c5", "wc -l < src/*.test.ts"),
+            bash_call("k2", sandbox_print("README.md")),
+        ],
+    )
+    .await;
+
+    // The chat's next message: the seal holds, and the rest of the calls come
+    // in three short replies, each broken by commands that run.
+    let (url, _) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![Reply::Text(
+                "## Summary\n\nNo tests.\n\n## Blocked\n\nNothing to test.",
+            )],
+        )],
+        vec![
+            Reply::Calls(vec![
+                (
+                    "c6",
+                    "bash",
+                    json!({ "command": "bash -c 'cat src/greet.test.ts'" }),
+                ),
+                (
+                    "c7",
+                    "bash",
+                    json!({ "command": "sh -c \"head -3 src/greet.test.ts\"" }),
+                ),
+                // A test file the writer didn't write prints as any file,
+                // with this platform's printer.
+                (
+                    "k3",
+                    "bash",
+                    json!({ "command": sandbox_print("tests/notes.test.ts") }),
+                ),
+                (
+                    "c8",
+                    "bash",
+                    json!({ "command": "echo $(cat src/greet.test.ts)" }),
+                ),
+                (
+                    "c9",
+                    "bash",
+                    json!({ "command": "cd src && cat greet.test.ts" }),
+                ),
+                (
+                    "c10",
+                    "bash",
+                    json!({ "command": "cat ./src/../src/greet.test.ts" }),
+                ),
+            ]),
+            // Running the tests names the sealed file and still runs.
+            Reply::Calls(vec![
+                ("k4", "bash", json!({ "command": sandbox_list("src") })),
+                ("c11", "bash", json!({ "command": "cargo test" })),
+                (
+                    "c12",
+                    "bash",
+                    json!({ "command": "cargo test src/greet.test.ts" }),
+                ),
+                (
+                    "c13",
+                    "bash",
+                    json!({ "command": "cargo nextest run -p foo src/greet.test.ts" }),
+                ),
+            ]),
+            // A source file and the repo's state read as before, and a search
+            // whose pattern matches no line of the sealed file prints nothing
+            // of it.
+            Reply::Calls(vec![
+                (
+                    "k5",
+                    "bash",
+                    json!({ "command": sandbox_print("README.md") }),
+                ),
+                (
+                    "c14",
+                    "bash",
+                    json!({ "command": "grep -rn marker_word src/greet.ts" }),
+                ),
+                ("c15", "bash", json!({ "command": "git status" })),
+                (
+                    "c16",
+                    "bash",
+                    json!({ "command": "grep -rn nothing_matches_this_word src" }),
+                ),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    // The first run's events are spent: this run's end is the one waited for.
+    h.events.lock().unwrap().clear();
+    let mut request = h.request(
+        &url,
+        Harness::send("Go on: the rest of the round of the seal."),
+        Permissions {
+            allow_any_command: true,
+            ..quiet_permissions()
+        },
+    );
+    request.config.as_mut().unwrap().subagents = test_writer_on();
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+
+    for (id, command) in [
+        ("c1", "grep -rn sealed_marker_word src"),
+        ("c2", "cat src/*.test.ts"),
+        ("c3", "head -20 src/g*.ts"),
+        ("c4", "cat src/*"),
+        ("c5", "wc -l < src/*.test.ts"),
+        ("c6", "bash -c 'cat src/greet.test.ts'"),
+        ("c7", "sh -c \"head -3 src/greet.test.ts\""),
+        ("c8", "echo $(cat src/greet.test.ts)"),
+        ("c9", "cd src && cat greet.test.ts"),
+        ("c10", "cat ./src/../src/greet.test.ts"),
+    ] {
+        assert_sealed_print_refusal(id, command, &result_of(&messages, id).content);
+    }
+
+    for (id, command) in [
+        ("k1", sandbox_list("src")),
+        ("k2", sandbox_print("README.md")),
+        ("k3", sandbox_print("tests/notes.test.ts")),
+        ("k4", sandbox_list("src")),
+        ("k5", sandbox_print("README.md")),
+        ("c11", "cargo test".to_string()),
+        ("c12", "cargo test src/greet.test.ts".to_string()),
+        (
+            "c13",
+            "cargo nextest run -p foo src/greet.test.ts".to_string(),
+        ),
+        ("c14", "grep -rn marker_word src/greet.ts".to_string()),
+        ("c15", "git status".to_string()),
+        ("c16", "grep -rn nothing_matches_this_word src".to_string()),
+    ] {
+        let result = &result_of(&messages, id).content;
+        assert!(
+            !result.contains("would print")
+                && !result.contains(", a test file the test writer wrote"),
+            "`{command}` isn't refused: {result}"
+        );
+    }
+    // A listing names the sealed file without printing it, and a test file
+    // the writer didn't write prints as any other.
+    for (id, shown) in [("k1", "greet.test.ts"), ("k3", "free_marker_word")] {
+        let result = &result_of(&messages, id).content;
+        assert!(result.contains(shown), "{id} shows {shown}: {result}");
+    }
+}
+
+/// A chat whose test writer wrote no test file is as it was: the lead reads
+/// and prints test files, and its search shows their lines.
+#[tokio::test]
+async fn without_a_test_writer_file_the_lead_reads_tests_as_before() {
+    let h = harness(&[
+        (
+            "tests/x.test.ts",
+            "// lead_readable_marker\nexport const x = 1;\n",
+        ),
+        ("src/a.ts", "export const a = 'lead_readable_marker';\n"),
+    ])
+    .await;
+    h.checks_as_detected();
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({ "path": "tests/x.test.ts" }),
+        },
+        Reply::Call {
+            id: "s1",
+            name: "search_code",
+            args: json!({ "query": "lead_readable_marker" }),
+        },
+        // The test file prints with this platform's printer.
+        Reply::Call {
+            id: "c1",
+            name: "bash",
+            args: json!({ "command": sandbox_print("tests/x.test.ts") }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(
+        &url,
+        Harness::send("Look at the test."),
+        Permissions {
+            allow_any_command: true,
+            ..quiet_permissions()
+        },
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+
+    let read = &result_of(&messages, "r1").content;
+    assert!(!read.starts_with("Error"), "{read}");
+    assert!(read.contains("lead_readable_marker"), "{read}");
+    let search = &result_of(&messages, "s1").content;
+    assert!(
+        search.contains("lead_readable_marker"),
+        "its lines are shown: {search}"
+    );
+    let printed = &result_of(&messages, "c1").content;
+    assert!(!printed.starts_with("Error"), "{printed}");
+    assert!(printed.contains("lead_readable_marker"), "{printed}");
+}
+
+/// The seal is the chat's, not the run's: when the chat continues with a new
+/// message of its own, the lead still can't read the test its test writer
+/// wrote in the run before, and its search still withholds that file's line.
+#[tokio::test]
+async fn the_seal_holds_in_the_next_run_of_the_same_chat() {
+    // One run: the lead delegates the tests to its test writer, which writes
+    // `src/greet.test.ts`; nothing of the lead's own follows.
+    let h = lead_after_the_test_writer(&[("tests/notes.test.ts", FREE_TEST)], Vec::new()).await;
+
+    // The chat's next message, in a run of its own: the lead reads the test,
+    // reads the code around it and searches for its marker.
+    let (url, _) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![Reply::Text(
+                "## Summary\n\nNo tests.\n\n## Blocked\n\nNothing to test.",
+            )],
+        )],
+        vec![
+            Reply::Call {
+                id: "r1",
+                name: "read",
+                args: json!({ "path": "src/greet.test.ts" }),
+            },
+            Reply::Call {
+                id: "r2",
+                name: "read",
+                args: json!({ "path": "./src/greet.test.ts" }),
+            },
+            Reply::Call {
+                id: "r3",
+                name: "read",
+                args: json!({ "path": "src/greet.ts" }),
+            },
+            Reply::Call {
+                id: "s1",
+                name: "search_code",
+                args: json!({ "query": "marker_word" }),
+            },
+            Reply::Text("Time to make them pass."),
+        ],
+    )
+    .await;
+    // The first run's events are spent: this run's end is the one waited for.
+    h.events.lock().unwrap().clear();
+    let mut request = h.request(
+        &url,
+        Harness::send("Now make the tests pass."),
+        Permissions {
+            allow_any_command: true,
+            ..quiet_permissions()
+        },
+    );
+    request.config.as_mut().unwrap().subagents = test_writer_on();
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+
+    // The test is still the test writer's: refused as in the run that wrote
+    // it, by either spelling of its path, showing nothing of the file.
+    assert_sealed_read_refusal("r1", &result_of(&messages, "r1").content);
+    assert_sealed_read_refusal("r2", &result_of(&messages, "r2").content);
+
+    // The code reads whole, as it did before.
+    let code = &result_of(&messages, "r3").content;
+    assert!(!code.starts_with("Error"), "{code}");
+    assert!(code.contains("return `Hello, ${name}!`"), "{code}");
+
+    // The search still lists the file and the declaration a match is in, and
+    // still withholds the matched lines' text.
+    let search = &result_of(&messages, "s1").content;
+    assert!(search.contains("src/greet.test.ts"), "listed: {search}");
+    assert!(
+        search.contains("sealed_marker_word ["),
+        "the declaration and its range are shown: {search}"
+    );
+    assert!(
+        !search.contains("4711") && !search.contains("const sealed_marker_word"),
+        "the declaration's line isn't shown: {search}"
+    );
+    assert!(
+        !search.contains("// sealed_marker_word"),
+        "a matched line outside any declaration isn't shown: {search}"
+    );
+    // A test file the writer didn't write still shows its line.
+    assert!(search.contains("tests/notes.test.ts"), "{search}");
+    assert!(
+        search.contains("free_marker_word"),
+        "a test file it didn't write shows its line: {search}"
+    );
+}
+
+/// A sealed test file is known by any spelling of its repo-relative path —
+/// `.` parts and doubled slashes, which the tools pass on as written — and
+/// its refusal names it and says what to do instead.
+#[test]
+fn a_sealed_test_file_is_known_by_any_spelling() {
+    let sealed = vec!["src/greet.test.ts".to_string()];
+    for rel in [
+        "src/greet.test.ts",
+        "./src/greet.test.ts",
+        "src//greet.test.ts",
+    ] {
+        assert!(test_writer::is_sealed(&sealed, rel), "{rel} is sealed");
+    }
+    for rel in [
+        "src/greet.ts",
+        "tests/greet.test.ts",
+        "src/greet.test.tsx",
+        "src/greet.test",
+    ] {
+        assert!(!test_writer::is_sealed(&sealed, rel), "{rel} isn't sealed");
+    }
+    assert!(!test_writer::is_sealed(&[], "src/greet.test.ts"));
+
+    let refusal = test_writer::sealed_file("src/greet.test.ts");
+    assert!(
+        refusal.starts_with("Error: `src/greet.test.ts` is a test file the test writer wrote"),
+        "{refusal}"
+    );
+    assert!(
+        refusal.to_lowercase().contains("make the tests pass"),
+        "{refusal}"
+    );
+    assert!(refusal.contains("testWriter"), "{refusal}");
+}
+
+/// The refusal of a command that would print a sealed test: it names the
+/// command as it was given, says what printing it would do, names the file,
+/// says whose it is, and shows nothing of the file.
+fn assert_sealed_command_refusal(command: &str, refusal: &str) {
+    assert!(refusal.starts_with("Error:"), "`{command}`: {refusal}");
+    assert!(
+        refusal.contains(&format!("`{command}`")),
+        "`{command}` names the command as it was given: {refusal}"
+    );
+    assert!(refusal.contains("would print"), "`{command}`: {refusal}");
+    assert!(
+        refusal.contains("greet.test.ts"),
+        "`{command}` names the file: {refusal}"
+    );
+    assert!(
+        refusal.contains("a test file the test writer wrote"),
+        "`{command}`: {refusal}"
+    );
+    assert!(
+        refusal.to_lowercase().contains("make the tests pass") && refusal.contains("testWriter"),
+        "`{command}` says what to do instead: {refusal}"
+    );
+    // The refusal quotes the command, which may name the word a search looks
+    // for: only content no command spells shows the file was read.
+    assert!(
+        !refusal.contains("4711") && !refusal.contains("expect(greet("),
+        "`{command}` shows the file: {refusal}"
+    );
+}
+
+/// A project of `files` in a folder of its own: the gate's walk of a command
+/// expands globs, reads folders and follows a `cd` on the real files.
+fn sealed_project(files: &[(&str, &str)]) -> crate::testing::TempDir {
+    let dir = crate::testing::temp_dir();
+    for (rel, content) in files {
+        let path = dir.0.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, content).unwrap();
+    }
+    dir
+}
+
+/// A command that would print a sealed test file is refused — `cat`, `head`,
+/// `sed`, `grep` and input redirection alike — while running the tests is
+/// not, `cargo test`, `npm test`, `npx vitest run` and `cargo nextest run`
+/// though they name the sealed file.
+#[test]
+fn a_command_that_prints_a_sealed_test_is_refused_and_running_it_is_not() {
+    let sealed = vec!["src/greet.test.ts".to_string()];
+    // The files are real: a `grep` that names the sealed file is refused only
+    // where its pattern matches a line of it.
+    let dir = sealed_project(&[
+        ("src/greet.test.ts", SEALED_TEST),
+        ("src/greet.ts", GREETER_PROJECT[0].1),
+        ("tests/notes.test.ts", FREE_TEST),
+    ]);
+    let root = dir.0.to_string_lossy().into_owned();
+    for command in [
+        "cat src/greet.test.ts",
+        "head -n 5 src/greet.test.ts",
+        "sed -n '1,5p' src/greet.test.ts",
+        "grep sealed_marker_word src/greet.test.ts",
+        "wc -l < src/greet.test.ts",
+    ] {
+        let refusal = test_writer::sealed_command(command, &root, &sealed)
+            .unwrap_or_else(|| panic!("`{command}` must be refused"));
+        assert_sealed_command_refusal(command, &refusal);
+    }
+    // The same file by another spelling: the refusal names the command as it
+    // was given, not the file's spelling.
+    let written = "cat ./src/greet.test.ts";
+    let other = test_writer::sealed_command(written, &root, &sealed)
+        .unwrap_or_else(|| panic!("`{written}` must be refused"));
+    assert_sealed_command_refusal(written, &other);
+
+    for command in [
+        "cargo test",
+        "cargo test src/greet.test.ts",
+        "npm test",
+        "npx vitest run src/greet.test.ts",
+        "cargo nextest run -p foo src/greet.test.ts",
+        // A `grep` whose pattern matches no line of the sealed file prints
+        // nothing of it.
+        "grep nothing_matches_this_word src/greet.test.ts",
+        // A test file the writer did not write, and files that aren't tests.
+        "cat tests/notes.test.ts",
+        "cat src/greet.ts",
+    ] {
+        assert_eq!(
+            test_writer::sealed_command(command, &root, &sealed),
+            None,
+            "`{command}` isn't refused"
+        );
+    }
+    // With no sealed file nothing is refused.
+    assert_eq!(
+        test_writer::sealed_command("cat src/greet.test.ts", &root, &[]),
+        None
+    );
+}
+
+/// The gate asks what a command would read, not what words it spells: the
+/// sealed test is reached through its folder, a glob, a `cd`, an inner shell
+/// script, `eval` or a `$()` and refused each way, while running the tests, a
+/// search of a source file, `ls`, `git status` and reading a plain file are
+/// not.
+#[test]
+fn a_command_that_reaches_a_sealed_test_round_the_seal_is_refused() {
+    let dir = sealed_project(&[
+        ("src/greet.test.ts", SEALED_TEST),
+        ("src/greet.ts", GREETER_PROJECT[0].1),
+        ("tests/notes.test.ts", FREE_TEST),
+        ("README.md", "# Greeter\n\nA greeter, with its tests.\n"),
+    ]);
+    let root = dir.0.to_string_lossy().into_owned();
+    let sealed = vec!["src/greet.test.ts".to_string()];
+
+    // A search of the folder that holds it, for a word the sealed test's own
+    // lines hold: it would print one of them.
+    assert!(
+        SEALED_TEST.contains("sealed_marker_word"),
+        "the fixture holds the searched word"
+    );
+    for command in [
+        "grep -rn sealed_marker_word src",
+        // A glob, expanded to both files.
+        "cat src/*.test.ts",
+        "head -20 src/g*.ts",
+        // Every file in the folder: a folder given to `cat` prints an error,
+        // not its files.
+        "cat src/*",
+        // A glob read by input redirection.
+        "wc -l < src/*.test.ts",
+        // An inner shell script.
+        "bash -c 'cat src/greet.test.ts'",
+        "sh -c \"head -3 src/greet.test.ts\"",
+        // A `$()` and a backtick command, and `eval`.
+        "echo $(cat src/greet.test.ts)",
+        "echo `cat src/greet.test.ts`",
+        "eval cat src/greet.test.ts",
+        // A `cd`, then the test by its name in that folder.
+        "cd src && cat greet.test.ts",
+        // `..` and `.` parts that lead back to it.
+        "cat ./src/../src/greet.test.ts",
+    ] {
+        let refusal = test_writer::sealed_command(command, &root, &sealed)
+            .unwrap_or_else(|| panic!("`{command}` must be refused"));
+        assert_sealed_command_refusal(command, &refusal);
+    }
+
+    for command in [
+        // Running the tests names the sealed file and reads nothing of it.
+        "cargo test",
+        "cargo test src/greet.test.ts",
+        "cargo nextest run -p foo src/greet.test.ts",
+        "npm test",
+        "npx vitest run src/greet.test.ts",
+        "cargo test 2>&1 | tail -20",
+        // A source file, a test file the writer didn't write, and files and
+        // folders that hold no test.
+        "grep -rn marker_word src/greet.ts",
+        "cat tests/notes.test.ts",
+        "ls src",
+        "git status",
+        "cat README.md",
+        // A search of the sealed file's folder whose pattern matches no line
+        // of it: it would print nothing of the file.
+        "grep -rn nothing_matches_this_word src",
+    ] {
+        assert_eq!(
+            test_writer::sealed_command(command, &root, &sealed),
+            None,
+            "`{command}` isn't refused"
+        );
+    }
+}
+
+/*
+ * The sandbox's `bash` tool runs cmd.exe on Windows and a POSIX shell
+ * elsewhere, so a case that must actually print a file or list a folder has
+ * to name the program its own platform has: `type` and `dir`, or `cat` and
+ * `ls`. The assertions stay on what the command produced, never on its text.
+ */
+
+/// The command that prints the file at `path` in the sandbox's shell: cmd's
+/// `type`, which takes the path as [`shown`] spells it — a forward slash in
+/// an argument is a switch to it — or `cat` elsewhere.
+fn sandbox_print(path: &str) -> String {
+    let printer = if cfg!(windows) { "type" } else { "cat" };
+    format!("{printer} {}", shown(path))
+}
+
+/// The command that lists the folder at `path` in the sandbox's shell: the
+/// listing every other test of the lead's already uses ([`list`]).
+fn sandbox_list(path: &str) -> String {
+    list(path)
+}
+
+/// A sealed test is refused whichever program a platform prints a file with —
+/// `type` where the shell is cmd.exe, `cat` where it's POSIX — and the
+/// programs a permitted case names are not refused: printing a test the
+/// writer didn't write, and listing the folder that holds the sealed one.
+#[test]
+fn a_sealed_test_is_refused_whichever_printing_program_the_shell_has() {
+    let sealed = vec!["src/greet.test.ts".to_string()];
+    // The files are real: the gate's walk of a command reads the folders and
+    // files it names on disk.
+    let dir = sealed_project(&[
+        ("src/greet.test.ts", SEALED_TEST),
+        ("src/greet.ts", GREETER_PROJECT[0].1),
+        ("tests/notes.test.ts", FREE_TEST),
+        ("README.md", "# Greeter\n\nA greeter, with its tests.\n"),
+    ]);
+    let root = dir.0.to_string_lossy().into_owned();
+
+    for command in ["cat src/greet.test.ts", "type src/greet.test.ts"] {
+        let refusal = test_writer::sealed_command(command, &root, &sealed)
+            .unwrap_or_else(|| panic!("`{command}` must be refused"));
+        assert_sealed_command_refusal(command, &refusal);
+    }
+
+    for command in [
+        // The printer of either shell, on a test file the writer didn't
+        // write and on a source file.
+        "cat tests/notes.test.ts",
+        "type tests/notes.test.ts",
+        "type src/greet.ts",
+        // The listing of either shell: it names the folder's files and
+        // prints none of them.
+        "ls src",
+        "dir src",
+    ] {
+        assert_eq!(
+            test_writer::sealed_command(command, &root, &sealed),
+            None,
+            "`{command}` isn't refused"
+        );
+    }
+}
+
+/// The platform's own printer and lister do what the permitted `bash` cases
+/// need: printing a test the writer didn't write shows its marker, listing
+/// the folder that holds the sealed test names it and prints none of it, and
+/// printing the sealed test itself is still refused, showing nothing of it.
+#[tokio::test]
+async fn the_sandbox_prints_and_lists_what_the_lead_may_see_on_this_platform() {
+    let sealed_print = sandbox_print("src/greet.test.ts");
+    let free_print = sandbox_print("tests/notes.test.ts");
+    let listing = sandbox_list("src");
+    let h = lead_after_the_test_writer(
+        &[("tests/notes.test.ts", FREE_TEST)],
+        vec![
+            bash_call("c1", sealed_print.as_str()),
+            bash_call("k1", free_print.as_str()),
+            bash_call("k2", listing.as_str()),
+        ],
+    )
+    .await;
+    let messages = h.messages().await;
+
+    // The sealed test is refused whichever program the platform has.
+    assert_sealed_print_refusal("c1", &sealed_print, &result_of(&messages, "c1").content);
+
+    // A test file the writer didn't write prints its marker.
+    let printed = &result_of(&messages, "k1").content;
+    assert!(!printed.starts_with("Error"), "`{free_print}`: {printed}");
+    assert!(
+        printed.contains("free_marker_word"),
+        "`{free_print}` prints the file: {printed}"
+    );
+
+    // The sealed test's folder lists its name and prints nothing of either
+    // file.
+    let listed = &result_of(&messages, "k2").content;
+    assert!(!listed.starts_with("Error"), "`{listing}`: {listed}");
+    assert!(
+        listed.contains("greet.test.ts"),
+        "`{listing}` names the sealed file: {listed}"
+    );
+    assert!(
+        !listed.contains("sealed_marker_word") && !listed.contains("4711"),
+        "`{listing}` prints none of the sealed file: {listed}"
+    );
 }

@@ -1350,6 +1350,8 @@ mod tests {
                     owner: "kept-out".into(),
                     checks_owner: "kept-out".into(),
                     hidden: Vec::new(),
+                    tests_only: false,
+                    written_tests: Vec::new(),
                     note: Arc::new(|_| {}),
                     background_chat: None,
                     reply_cut_off: false,

@@ -218,7 +218,10 @@ Rovik already has most of the pieces a subagent system needs:
   what the code does, not what it should do. An independent writer finds
   spec mismatches.
 - **How it runs:** it works on test files only, in parallel with the
-  implementation or after it.
+  implementation or after it. It reads test files and fixtures; the rest of
+  the code reaches it as an outline, a `callers`/`neighbours` answer or the
+  place a search found a name, never as source. The tests it wrote are its
+  own: the lead may run them, not read them.
 
 ### Tier 3: only with clear conditions
 

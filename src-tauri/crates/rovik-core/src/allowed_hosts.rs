@@ -703,6 +703,8 @@ mod tests {
             owner: "held".into(),
             checks_owner: "held".into(),
             hidden: Vec::new(),
+            tests_only: false,
+            written_tests: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: Some("held".into()),
             reply_cut_off: false,

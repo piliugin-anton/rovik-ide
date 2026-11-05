@@ -113,13 +113,17 @@ impl Restricted {
     };
 }
 
-/// How a call keeps the test writer from the change's code (K11, P2.4).
+/// How a call keeps the test writer from the implementation's code
+/// (K11, P2.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hidden {
     /// Its `path` is refused when it's one of the hidden files.
     pub path: bool,
     /// What it shows of other files leaves the hidden ones out.
     pub results: bool,
+    /// It shows a file's own lines: for the test writer, refused for
+    /// anything that isn't a test file or a fixture.
+    pub source: bool,
 }
 
 impl Hidden {
@@ -128,6 +132,7 @@ impl Hidden {
     pub const NONE: Hidden = Hidden {
         path: false,
         results: false,
+        source: false,
     };
 }
 
@@ -247,6 +252,7 @@ impl BuiltinTool {
                 hidden: Hidden {
                     path: true,
                     results: false,
+                    source: true,
                 },
                 ..LOCAL_READ
             },
@@ -265,6 +271,7 @@ impl BuiltinTool {
                 hidden: Hidden {
                     path: false,
                     results: true,
+                    source: false,
                 },
                 ..LOCAL_READ
             },
@@ -277,6 +284,7 @@ impl BuiltinTool {
                 hidden: Hidden {
                     path: true,
                     results: true,
+                    source: false,
                 },
                 ..LOCAL_READ
             },
@@ -289,6 +297,7 @@ impl BuiltinTool {
                 hidden: Hidden {
                     path: false,
                     results: true,
+                    source: false,
                 },
                 ..LOCAL_READ
             },
@@ -303,6 +312,7 @@ impl BuiltinTool {
                 hidden: Hidden {
                     path: true,
                     results: true,
+                    source: false,
                 },
                 ..LOCAL_READ
             },

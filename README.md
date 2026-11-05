@@ -193,7 +193,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   for code changes in Agent and Autopilot modes, even with optional
   subagents switched off. The coder delegates test creation and changes
   with `task` kind `testWriter`; direct writes to test files are refused. It works from
-  the request and plan without reading the changed implementation. Agent
+  the request and plan, reading test files and fixtures only: the implementation
+  reaches it as outlines and as the places a search finds a name. The tests it writes
+  are then its own: the coder can run them but not read them, so they check what was
+  asked rather than what the code does. Agent
   runs invoke it before change review; Autopilot writes tests before
   implementation, with a fallback if none were produced. If it cannot
   write tests, the chat records the reason and continues. Pick its model

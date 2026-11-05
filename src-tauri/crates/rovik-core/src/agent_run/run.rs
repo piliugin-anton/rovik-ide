@@ -957,6 +957,19 @@ impl Run {
             }
             _ => Vec::new(),
         };
+        // E03: the tests an earlier run's test writer wrote are the lead's
+        // to make pass, not to read; it sealed them then, and this run
+        // seals them again, whether it writes tests or not.
+        let test_writer_files = {
+            let earlier = super::test_writer::written_in(&recent);
+            let mut files = test_writer_files;
+            for path in earlier {
+                if !files.contains(&path) {
+                    files.push(path);
+                }
+            }
+            files
+        };
 
         // D7: an Autopilot implementation taken up again (after a failure,
         // a wait for the provider's rate limit, a crash, a move) inherits
