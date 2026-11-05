@@ -66,6 +66,8 @@ export interface ProjectSettings {
   checks?: ProjectCheck[];
   restrictedFiles?: RestrictedFile[];
   mcpApprovals?: McpApproval[];
+  /** The project's long-term memory (memory.ts): absent means on. */
+  memory?: boolean;
 }
 
 export function detectProject(root: string): Promise<ProjectProfile> {
@@ -124,24 +126,27 @@ export function updateProjectSettings(
 
 function normalizeSettings(raw: unknown): ProjectSettings {
   if (!raw || typeof raw !== 'object') return {};
-  const checks = (raw as { checks?: unknown }).checks;
-  if (!Array.isArray(checks)) return {};
-  return {
-    checks: checks
-      .filter(
-        (c): c is ProjectCheck =>
-          !!c &&
-          typeof c === 'object' &&
-          CHECK_KINDS.includes((c as ProjectCheck).kind) &&
-          typeof (c as ProjectCheck).command === 'string'
-      )
-      .map((c) => ({
-        kind: c.kind,
-        command: c.command,
-        enabled: c.enabled !== false,
-        ...(typeof c.source === 'string' && c.source ? { source: c.source } : {}),
-      })),
-  };
+  const saved = raw as { checks?: unknown; memory?: unknown };
+  // Read before `checks` returns: a project that saved only `memory` has no
+  // checks list, and must still load with its memory off.
+  const settings: ProjectSettings = {};
+  if (typeof saved.memory === 'boolean') settings.memory = saved.memory;
+  if (!Array.isArray(saved.checks)) return settings;
+  settings.checks = saved.checks
+    .filter(
+      (c): c is ProjectCheck =>
+        !!c &&
+        typeof c === 'object' &&
+        CHECK_KINDS.includes((c as ProjectCheck).kind) &&
+        typeof (c as ProjectCheck).command === 'string'
+    )
+    .map((c) => ({
+      kind: c.kind,
+      command: c.command,
+      enabled: c.enabled !== false,
+      ...(typeof c.source === 'string' && c.source ? { source: c.source } : {}),
+    }));
+  return settings;
 }
 
 /**

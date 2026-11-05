@@ -32,6 +32,7 @@ import { onWindows, wslStatus, wslSummary } from '../lib/wsl';
 import { checkingForUpdates, updateInfo, updatesSummary, updateStatus } from '../lib/updates';
 import { countChecksThatRun, projectChecksSummary } from '../lib/projectProfile';
 import { loadRestrictedFiles, restrictedSummary } from '../lib/restrictedFiles';
+import { memoryStats, memorySummary } from '../lib/memory';
 
 interface SettingsMenuProps {
   /** The open project, for its group; none without a project. */
@@ -61,6 +62,11 @@ export default function SettingsMenu(props: SettingsMenuProps) {
   const [restricted] = createResource(
     () => props.rootPath,
     (root) => loadRestrictedFiles(root).catch(() => null)
+  );
+  // What the project's long-term memory holds.
+  const [memory] = createResource(
+    () => props.rootPath,
+    (root) => memoryStats(root).catch(() => null)
   );
   const vfsLine = () => {
     const status = vfs();
@@ -190,6 +196,12 @@ export default function SettingsMenu(props: SettingsMenuProps) {
               label="Restricted files"
               about="Files the agent may not read or change in this project: .env files, keys and other credentials, and any you add."
               state={restricted() ? restrictedSummary(restricted()!) : undefined}
+            />
+            <Item
+              page="memory"
+              label="Long-term memory"
+              about="What the agent's runs here learned and kept, and whether its chats use it: what fits a task comes back as prior work, and what a run made of it is recorded after its checks."
+              state={memory() ? memorySummary(memory()!) : undefined}
             />
           </Group>
         )}

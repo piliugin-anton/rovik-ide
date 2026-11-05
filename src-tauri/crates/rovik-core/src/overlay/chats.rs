@@ -315,7 +315,7 @@ pub fn enabled() -> bool {
 }
 
 /// A short, stable name for a project folder.
-fn project_key(project: &Path) -> String {
+pub(crate) fn project_key(project: &Path) -> String {
     let hash = crate::file_guard::hash(project.to_string_lossy().as_bytes());
     crate::file_guard::hex(&hash[..8])
 }

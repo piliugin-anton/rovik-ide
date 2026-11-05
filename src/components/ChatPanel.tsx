@@ -88,6 +88,7 @@ import {
   type Effort,
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
+import PriorWorkPanel from './PriorWorkPanel';
 import IsolationBar from './IsolationBar';
 import AutopilotStrip from './AutopilotStrip';
 import {
@@ -142,6 +143,7 @@ import {
   onSteerReturned,
   onSteersLeft,
   queuedMessage,
+  recalledMemories,
   setRunEffort,
   startRun,
   steer,
@@ -4600,6 +4602,10 @@ export default function ChatPanel(props: ChatProps) {
           onConnector() ? connectorTitle(connectorKindOf(activeProfile()!.baseUrl)) : undefined
         }
       />
+      {/* What the project's memory gave this run, above its checklist. */}
+      <Show when={recalledMemories(activeDialogId())} keyed>
+        {(memories) => <PriorWorkPanel memories={memories} />}
+      </Show>
       {/* The agent's checklist while it works (read-only). */}
       <Show when={sending() && !waitingQuestion() && runChecklist()}>
         {(items) => <TodoPanel items={items()} plan={runPlanFile()} dialogId={activeDialogId()} />}

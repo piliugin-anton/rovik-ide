@@ -425,6 +425,7 @@ pub fn run() {
             commands::project::load_project_settings,
             commands::project::save_project_settings,
             commands::project::restricted_files,
+            commands::memory::memory_stats,
             commands::agent::chat_context_estimate,
             commands::workload::workload_focus,
             commands::overlay::overlay_status,

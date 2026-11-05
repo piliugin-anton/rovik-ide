@@ -144,6 +144,9 @@ pub struct Run {
     pub(super) seen: Arc<crate::file_guard::Seen>,
     /// The request's user message as sent (with editor context).
     pub(super) current_user_content: Option<String>,
+    /// The project's long-term memory as this run uses it (memory.rs): what
+    /// it recalled, and what its checks and its end made of that.
+    pub(super) memory: super::memory::RunMemory,
     pub(super) local_date: String,
     pub(super) guard: Guard,
     /// The project's checks and the system-prompt section about it. Fixed
@@ -1034,6 +1037,11 @@ impl Run {
                 );
             }
         }
+        // The project's prior work, recalled for this request: the prompt's
+        // section, and the chat's panel (memory.rs).
+        if let Some(settings_root) = settings_root.as_deref() {
+            run.recall_memory(settings_root).await;
+        }
         Ok(Some((run, entry)))
     }
 
@@ -1072,6 +1080,7 @@ impl Run {
             project_root: None,
             mcp: None,
             current_user_content: None,
+            memory: Default::default(),
             local_date: String::new(),
             guard: Guard::new(None, 0),
             checks: Vec::new(),
@@ -1295,6 +1304,10 @@ impl Run {
         // Ended before the message got any answer.
         self.settle(false).await;
         self.log_clm_compliance(&outcome).await;
+        // The project's memory: whether what it used helped, the run's own
+        // account of itself, and the lesson a repaired failure taught
+        // (memory.rs).
+        self.memory_after_run(&outcome).await;
         let mut entry = json!({
             "event": "run",
             "dialogId": self.dialog_id,
@@ -2096,7 +2109,7 @@ impl Run {
                 system_prompt: system_prompt.clone(),
                 project_context: Some(project_context.clone()),
                 delegated_tests,
-                request_context: self.map.text().clone(),
+                request_context: self.request_context(),
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),
                 carried_notes: carried_notes.clone(),
@@ -2602,6 +2615,21 @@ impl Run {
             line["dialogId"] = json!(self.dialog_id);
             line["model"] = json!(self.profile.model);
             log::write(&self.core, line);
+        }
+    }
+
+    /// The request's own context, which goes on the request's message rather
+    /// than in the system prompt: what earlier runs of the project learned
+    /// (memory.rs), then the repository map. The system prompt stays the
+    /// same for the run's requests, so the provider's cached prefix holds;
+    /// this grows with the map, and a new map costs one cache miss from
+    /// there on (refresh_repo_map_if_needed).
+    fn request_context(&self) -> Option<String> {
+        let map = self.map.text().clone();
+        match (self.memory.context(), map) {
+            ("", map) => map,
+            (memory, Some(map)) => Some(format!("{memory}\n\n{map}")),
+            (memory, None) => Some(memory.to_string()),
         }
     }
 

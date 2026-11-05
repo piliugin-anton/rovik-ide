@@ -156,6 +156,9 @@ pub struct VerifyCarry {
     pub stored: std::time::Instant,
     /// Baseline contents past `CARRY_MEMORY_BYTES`, on disk until taken up.
     spilled: Spilled,
+    /// The project's memory as the run used it (memory.rs): the memories it
+    /// recalled, and what its rounds so far made of them.
+    memory: Option<super::memory::MemoryCarry>,
 }
 
 #[cfg(test)]
@@ -181,6 +184,7 @@ impl VerifyCarry {
                     .map(|f| ("k".to_string(), f, super::subagent::Source::ViewAtRunStart))
                     .collect(),
             ),
+            memory: None,
         }
     }
 }
@@ -632,6 +636,7 @@ impl Run {
             ledger: take(&mut self.ledger),
             stored: std::time::Instant::now(),
             spilled: Spilled::default(),
+            memory: self.memory.carry(),
         }
     }
 
@@ -653,6 +658,13 @@ impl Run {
         self.review.restore(c.review);
         self.tests.restore(c.tests);
         self.seen = c.seen;
+        // The memories the paused run used, and what its rounds made of
+        // them (memory.rs): the checks it starts are theirs to promote,
+        // invalidate and record the outcome of.
+        if let Some(memory) = c.memory.take() {
+            let core = self.core.clone();
+            self.memory = super::memory::RunMemory::restore(&core, memory);
+        }
         self.ledger = c.ledger;
     }
 
@@ -916,6 +928,9 @@ impl Run {
 
         let failed = results.iter().any(|r| r.status == "failed");
         let ran = results.iter().any(has_run);
+        // The project's memory: what this round confirms, and what it points
+        // a failure at (memory.rs).
+        self.memory_after_checks(&results).await;
         // V03 (D12): a check that failed on its environment, not the code (a
         // program or a package that isn't installed): in Autopilot, once a
         // run, the round isn't counted and Prepare runs again first.

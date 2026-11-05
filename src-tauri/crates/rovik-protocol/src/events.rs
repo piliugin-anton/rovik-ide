@@ -173,6 +173,35 @@ pub struct BackgroundTask {
     pub started_at: i64,
 }
 
+/// A memory a run recalled from the project's long-term memory
+/// (verified-code-memory), as the chat's "Relevant prior work" panel shows
+/// it: what an earlier run of the project learned.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecalledMemory {
+    /// The store's id for it.
+    pub id: String,
+    /// `episode`, `project_fact` or `procedure`.
+    pub kind: String,
+    /// One line: what it's about.
+    pub title: String,
+    /// What it says.
+    pub content: String,
+    /// The project files it's about.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+    /// `provisional`, `verified` or `deprecated`: its trust state, as the
+    /// run left it.
+    pub verification: String,
+    /// What promoted or invalidated it, when something did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+    /// Whether the run's outcome says it helped. Unset when the run ended
+    /// without a verdict: interrupted, or with no check of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helped: Option<bool>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(
     tag = "type",
@@ -311,6 +340,16 @@ pub enum AgentEvent {
         dialog_id: String,
         tasks: Vec<BackgroundTask>,
     },
+    /// The project's long-term memory as this run used it: the memories it
+    /// recalled before its first request, and — when the run has the
+    /// project's store — the same ones again at its end with what the run
+    /// made of them (their trust state, evidence, and whether they helped).
+    /// It replaces the chat's list, which the "Relevant prior work" panel
+    /// shows. A run with the project's memory off sends neither.
+    MemoryRecalled {
+        dialog_id: String,
+        memories: Vec<RecalledMemory>,
+    },
     Notice {
         /// The chat it's about, if it's about one (K02).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -381,6 +420,7 @@ impl AgentEvent {
             | AgentEvent::ContextUpdated { dialog_id, .. }
             | AgentEvent::Checklist { dialog_id, .. }
             | AgentEvent::BackgroundTasks { dialog_id, .. }
+            | AgentEvent::MemoryRecalled { dialog_id, .. }
             | AgentEvent::SubagentStarted { dialog_id, .. }
             | AgentEvent::SubagentProgress { dialog_id, .. }
             | AgentEvent::SubagentEnded { dialog_id, .. }

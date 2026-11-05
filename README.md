@@ -1285,6 +1285,39 @@ tell its hooks the folder its shell is in), each file a patch adds,
 changes or deletes, and the images it views. To teach it another name, add
 it to `SECRET_NAMES` or its kin in `restricted_files.rs`.
 
+### Long-term memory
+
+**Settings → Long-term memory** shows what the open project's memory holds —
+how many memories, and how many of them are verified — and switches it off for
+that project (on unless you turn it off). Each project's memory is a SQLite file
+of its own in the app's data folder (`memory/<project>.db`), so nothing is
+written into your repository. The store is the `verified-code-memory` crate in
+`src-tauri/crates/verified-code-memory`.
+
+A chat's run uses it at four points:
+
+- **When it starts**, it recalls up to eight memories that fit the request, by
+  its words, the files it is about and their trust, and sends them to the model
+  as the last section of its context. The chat shows them above the message box
+  as **Relevant prior work**.
+- **Before it edits a file** one of them is about, the call carries a note
+  saying what the project learned about that file.
+- **After the checks run**, a green round promotes the memories the run used,
+  their evidence the commands that passed; a failure invalidates only a memory
+  about a file the failure points at — a red check alone doesn't show a memory
+  was wrong, so the rest keep their state and only the outcome says the
+  approach fell short.
+- **When it ends**, the memories it used get the outcome: the panel says _This
+  approach helped_, _This approach did not help_, or nothing when the run was
+  interrupted or had nothing checked.
+
+The run also keeps an account of itself: the request's first line as its title,
+then its outcome, the files it changed and what the checks said, promoted when
+they passed. A run that made a failing check pass adds a procedure saying what
+failed and what fixed it, replacing an older one for the same check, so the
+memory revises instead of piling up. Those and the checks' promotions are what a
+later run finds as prior work; nothing else writes to a project's memory.
+
 ### Allowed hosts
 
 **Settings → Permissions & approval → Network** limits the hosts the
