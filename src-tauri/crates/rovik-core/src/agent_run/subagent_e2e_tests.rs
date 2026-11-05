@@ -12588,13 +12588,8 @@ async fn a_scout_still_reads_the_code_a_test_writer_may_not() {
         ],
     )
     .await;
-    h.start(h.with_subagents(
-        &url,
-        "Find it",
-        quiet_permissions(),
-        scouts_on(json!({})),
-    ))
-    .await;
+    h.start(h.with_subagents(&url, "Find it", quiet_permissions(), scouts_on(json!({}))))
+        .await;
     h.run_end().await;
     let results = h.child_results("t1").await;
     assert!(!results["s1"].starts_with("Error"), "{}", results["s1"]);
@@ -12859,12 +12854,9 @@ async fn bash_that_prints_a_sealed_test_is_refused_but_running_the_tests_is_not(
                 name: "bash",
                 args: json!({ "command": "wc -l < src/greet.test.ts" }),
             },
-            // An unsealed test file still prints.
-            Reply::Call {
-                id: "c6",
-                name: "bash",
-                args: json!({ "command": "cat tests/notes.test.ts" }),
-            },
+            // An unsealed test file still prints, with the printer this
+            // platform's shell has.
+            bash_call("c6", sandbox_print("tests/notes.test.ts")),
             // Running the tests names the sealed file and isn't refused.
             Reply::Call {
                 id: "c7",
@@ -12899,7 +12891,8 @@ async fn bash_that_prints_a_sealed_test_is_refused_but_running_the_tests_is_not(
 }
 
 /// A `bash` call of the lead's script, running `command`.
-fn bash_call(id: &'static str, command: &'static str) -> Reply {
+fn bash_call(id: &'static str, command: impl Into<String>) -> Reply {
+    let command: String = command.into();
     Reply::Call {
         id,
         name: "bash",
@@ -12910,7 +12903,10 @@ fn bash_call(id: &'static str, command: &'static str) -> Reply {
 /// The lead reaches the test its test writer wrote by no way round the seal:
 /// a folder, a glob, a `cd`, an inner shell script, `eval` and a `$()` are
 /// all refused, naming the command and the file; running the tests, a search
-/// of a source file, `ls`, `git status` and reading the README still run.
+/// of a source file, a listing of the folder, `git status` and reading the
+/// README still run. The refused cases are refused before any shell sees
+/// them; a case that must actually print or list names the program this
+/// platform's shell has (`sandbox_print`, `sandbox_list`).
 ///
 /// The calls are spread over two runs of the chat, each mixing in the
 /// commands that do run, and given in short replies: several refusals in a
@@ -12931,10 +12927,11 @@ async fn the_leads_bash_cannot_reach_a_sealed_test_round_the_seal() {
             // Every file in the folder: a folder given to `cat` prints an
             // error, not its files.
             bash_call("c4", "cat src/*"),
-            // A listing names the files, sealed or not, and prints none.
-            bash_call("k1", "ls src"),
+            // A listing names the files, sealed or not, and prints none: the
+            // listing program this platform's shell has.
+            bash_call("k1", sandbox_list("src")),
             bash_call("c5", "wc -l < src/*.test.ts"),
-            bash_call("k2", "cat README.md"),
+            bash_call("k2", sandbox_print("README.md")),
         ],
     )
     .await;
@@ -12944,19 +12941,34 @@ async fn the_leads_bash_cannot_reach_a_sealed_test_round_the_seal() {
     let (url, _) = model_routed(
         vec![(
             "# Write tests for this change",
-            vec![Reply::Text("## Summary\n\nNo tests.\n\n## Blocked\n\nNothing to test.")],
+            vec![Reply::Text(
+                "## Summary\n\nNo tests.\n\n## Blocked\n\nNothing to test.",
+            )],
         )],
         vec![
             Reply::Calls(vec![
-                ("c6", "bash", json!({ "command": "bash -c 'cat src/greet.test.ts'" })),
+                (
+                    "c6",
+                    "bash",
+                    json!({ "command": "bash -c 'cat src/greet.test.ts'" }),
+                ),
                 (
                     "c7",
                     "bash",
                     json!({ "command": "sh -c \"head -3 src/greet.test.ts\"" }),
                 ),
-                // A test file the writer didn't write prints as any file.
-                ("k3", "bash", json!({ "command": "cat tests/notes.test.ts" })),
-                ("c8", "bash", json!({ "command": "echo $(cat src/greet.test.ts)" })),
+                // A test file the writer didn't write prints as any file,
+                // with this platform's printer.
+                (
+                    "k3",
+                    "bash",
+                    json!({ "command": sandbox_print("tests/notes.test.ts") }),
+                ),
+                (
+                    "c8",
+                    "bash",
+                    json!({ "command": "echo $(cat src/greet.test.ts)" }),
+                ),
                 (
                     "c9",
                     "bash",
@@ -12970,7 +12982,7 @@ async fn the_leads_bash_cannot_reach_a_sealed_test_round_the_seal() {
             ]),
             // Running the tests names the sealed file and still runs.
             Reply::Calls(vec![
-                ("k4", "bash", json!({ "command": "ls src" })),
+                ("k4", "bash", json!({ "command": sandbox_list("src") })),
                 ("c11", "bash", json!({ "command": "cargo test" })),
                 (
                     "c12",
@@ -12987,7 +12999,11 @@ async fn the_leads_bash_cannot_reach_a_sealed_test_round_the_seal() {
             // whose pattern matches no line of the sealed file prints nothing
             // of it.
             Reply::Calls(vec![
-                ("k5", "bash", json!({ "command": "cat README.md" })),
+                (
+                    "k5",
+                    "bash",
+                    json!({ "command": sandbox_print("README.md") }),
+                ),
                 (
                     "c14",
                     "bash",
@@ -13035,17 +13051,20 @@ async fn the_leads_bash_cannot_reach_a_sealed_test_round_the_seal() {
     }
 
     for (id, command) in [
-        ("k1", "ls src"),
-        ("k2", "cat README.md"),
-        ("k3", "cat tests/notes.test.ts"),
-        ("k4", "ls src"),
-        ("k5", "cat README.md"),
-        ("c11", "cargo test"),
-        ("c12", "cargo test src/greet.test.ts"),
-        ("c13", "cargo nextest run -p foo src/greet.test.ts"),
-        ("c14", "grep -rn marker_word src/greet.ts"),
-        ("c15", "git status"),
-        ("c16", "grep -rn nothing_matches_this_word src"),
+        ("k1", sandbox_list("src")),
+        ("k2", sandbox_print("README.md")),
+        ("k3", sandbox_print("tests/notes.test.ts")),
+        ("k4", sandbox_list("src")),
+        ("k5", sandbox_print("README.md")),
+        ("c11", "cargo test".to_string()),
+        ("c12", "cargo test src/greet.test.ts".to_string()),
+        (
+            "c13",
+            "cargo nextest run -p foo src/greet.test.ts".to_string(),
+        ),
+        ("c14", "grep -rn marker_word src/greet.ts".to_string()),
+        ("c15", "git status".to_string()),
+        ("c16", "grep -rn nothing_matches_this_word src".to_string()),
     ] {
         let result = &result_of(&messages, id).content;
         assert!(
@@ -13086,10 +13105,11 @@ async fn without_a_test_writer_file_the_lead_reads_tests_as_before() {
             name: "search_code",
             args: json!({ "query": "lead_readable_marker" }),
         },
+        // The test file prints with this platform's printer.
         Reply::Call {
             id: "c1",
             name: "bash",
-            args: json!({ "command": "cat tests/x.test.ts" }),
+            args: json!({ "command": sandbox_print("tests/x.test.ts") }),
         },
         Reply::Text("Done."),
     ])
@@ -13133,7 +13153,9 @@ async fn the_seal_holds_in_the_next_run_of_the_same_chat() {
     let (url, _) = model_routed(
         vec![(
             "# Write tests for this change",
-            vec![Reply::Text("## Summary\n\nNo tests.\n\n## Blocked\n\nNothing to test.")],
+            vec![Reply::Text(
+                "## Summary\n\nNo tests.\n\n## Blocked\n\nNothing to test.",
+            )],
         )],
         vec![
             Reply::Call {
@@ -13263,8 +13285,7 @@ fn assert_sealed_command_refusal(command: &str, refusal: &str) {
         "`{command}`: {refusal}"
     );
     assert!(
-        refusal.to_lowercase().contains("make the tests pass")
-            && refusal.contains("testWriter"),
+        refusal.to_lowercase().contains("make the tests pass") && refusal.contains("testWriter"),
         "`{command}` says what to do instead: {refusal}"
     );
     // The refusal quotes the command, which may name the word a search looks
@@ -13422,4 +13443,122 @@ fn a_command_that_reaches_a_sealed_test_round_the_seal_is_refused() {
             "`{command}` isn't refused"
         );
     }
+}
+
+/*
+ * The sandbox's `bash` tool runs cmd.exe on Windows and a POSIX shell
+ * elsewhere, so a case that must actually print a file or list a folder has
+ * to name the program its own platform has: `type` and `dir`, or `cat` and
+ * `ls`. The assertions stay on what the command produced, never on its text.
+ */
+
+/// The command that prints the file at `path` in the sandbox's shell.
+#[cfg(windows)]
+fn sandbox_print(path: &str) -> String {
+    format!("type {path}")
+}
+
+/// The command that prints the file at `path` in the sandbox's shell.
+#[cfg(not(windows))]
+fn sandbox_print(path: &str) -> String {
+    format!("cat {path}")
+}
+
+/// The command that lists the folder at `path` in the sandbox's shell.
+#[cfg(windows)]
+fn sandbox_list(path: &str) -> String {
+    format!("dir {path}")
+}
+
+/// The command that lists the folder at `path` in the sandbox's shell.
+#[cfg(not(windows))]
+fn sandbox_list(path: &str) -> String {
+    format!("ls {path}")
+}
+
+/// A sealed test is refused whichever program a platform prints a file with —
+/// `type` where the shell is cmd.exe, `cat` where it's POSIX — and the
+/// programs a permitted case names are not refused: printing a test the
+/// writer didn't write, and listing the folder that holds the sealed one.
+#[test]
+fn a_sealed_test_is_refused_whichever_printing_program_the_shell_has() {
+    let sealed = vec!["src/greet.test.ts".to_string()];
+    // The files are real: the gate's walk of a command reads the folders and
+    // files it names on disk.
+    let dir = sealed_project(&[
+        ("src/greet.test.ts", SEALED_TEST),
+        ("src/greet.ts", GREETER_PROJECT[0].1),
+        ("tests/notes.test.ts", FREE_TEST),
+        ("README.md", "# Greeter\n\nA greeter, with its tests.\n"),
+    ]);
+    let root = dir.0.to_string_lossy().into_owned();
+
+    for command in ["cat src/greet.test.ts", "type src/greet.test.ts"] {
+        let refusal = test_writer::sealed_command(command, &root, &sealed)
+            .unwrap_or_else(|| panic!("`{command}` must be refused"));
+        assert_sealed_command_refusal(command, &refusal);
+    }
+
+    for command in [
+        // The printer of either shell, on a test file the writer didn't
+        // write and on a source file.
+        "cat tests/notes.test.ts",
+        "type tests/notes.test.ts",
+        "type src/greet.ts",
+        // The listing of either shell: it names the folder's files and
+        // prints none of them.
+        "ls src",
+        "dir src",
+    ] {
+        assert_eq!(
+            test_writer::sealed_command(command, &root, &sealed),
+            None,
+            "`{command}` isn't refused"
+        );
+    }
+}
+
+/// The platform's own printer and lister do what the permitted `bash` cases
+/// need: printing a test the writer didn't write shows its marker, listing
+/// the folder that holds the sealed test names it and prints none of it, and
+/// printing the sealed test itself is still refused, showing nothing of it.
+#[tokio::test]
+async fn the_sandbox_prints_and_lists_what_the_lead_may_see_on_this_platform() {
+    let sealed_print = sandbox_print("src/greet.test.ts");
+    let free_print = sandbox_print("tests/notes.test.ts");
+    let listing = sandbox_list("src");
+    let h = lead_after_the_test_writer(
+        &[("tests/notes.test.ts", FREE_TEST)],
+        vec![
+            bash_call("c1", sealed_print.as_str()),
+            bash_call("k1", free_print.as_str()),
+            bash_call("k2", listing.as_str()),
+        ],
+    )
+    .await;
+    let messages = h.messages().await;
+
+    // The sealed test is refused whichever program the platform has.
+    assert_sealed_print_refusal("c1", &sealed_print, &result_of(&messages, "c1").content);
+
+    // A test file the writer didn't write prints its marker.
+    let printed = &result_of(&messages, "k1").content;
+    assert!(!printed.starts_with("Error"), "`{free_print}`: {printed}");
+    assert!(
+        printed.contains("free_marker_word"),
+        "`{free_print}` prints the file: {printed}"
+    );
+
+    // The sealed test's folder lists its name and prints nothing of either
+    // file.
+    let listed = &result_of(&messages, "k2").content;
+    assert!(!listed.starts_with("Error"), "`{listing}`: {listed}");
+    assert!(
+        listed.contains("greet.test.ts"),
+        "`{listing}` names the sealed file: {listed}"
+    );
+    assert!(
+        !listed.contains("sealed_marker_word") && !listed.contains("4711"),
+        "`{listing}` prints none of the sealed file: {listed}"
+    );
 }
