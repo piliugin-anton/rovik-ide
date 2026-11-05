@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rovik_core::core::Paths;
-use rovik_core::memory::{self, MemorySettings, MemoryState};
+use rovik_core::memory::{self, MemoryState};
 use serde_json::json;
 use verified_code_memory::{NewMemory, RetrievalQuery};
 
@@ -83,7 +83,9 @@ fn the_memory_of_two_projects_is_in_two_files() {
         )
         .unwrap();
 
-    let same = state.open(&paths, &first).expect("the cached store returns");
+    let same = state
+        .open(&paths, &first)
+        .expect("the cached store returns");
     let found = same
         .retrieve(&RetrievalQuery::new(
             "first-project",
@@ -128,7 +130,7 @@ fn a_project_that_never_chose_keeps_memory_on() {
     let settings_root = root.to_string_lossy().into_owned();
 
     assert!(
-        MemorySettings::load(&config, &settings_root).enabled,
+        memory::load(&config, &settings_root).enabled,
         "a project with no saved settings has memory on"
     );
 
@@ -139,7 +141,7 @@ fn a_project_that_never_chose_keeps_memory_on() {
     )
     .unwrap();
     assert!(
-        MemorySettings::load(&config, &settings_root).enabled,
+        memory::load(&config, &settings_root).enabled,
         "a project that chose memory on keeps it on"
     );
 
@@ -150,13 +152,14 @@ fn a_project_that_never_chose_keeps_memory_on() {
     )
     .unwrap();
     assert!(
-        !MemorySettings::load(&config, &settings_root).enabled,
+        !memory::load(&config, &settings_root).enabled,
         "a project that switched memory off is off"
     );
 
-    rovik_core::project_profile::save_project_settings(&config, settings_root, json!({})).unwrap();
+    rovik_core::project_profile::save_project_settings(&config, settings_root.clone(), json!({}))
+        .unwrap();
     assert!(
-        MemorySettings::load(&config, &settings_root).enabled,
+        memory::load(&config, &settings_root).enabled,
         "settings saved without the key fall back to on"
     );
 }

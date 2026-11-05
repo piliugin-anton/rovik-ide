@@ -1307,8 +1307,8 @@ A chat's run uses it at four points:
   about a file the failure points at — a red check alone doesn't show a memory
   was wrong, so the rest keep their state and only the outcome says the
   approach fell short.
-- **When it ends**, the memories it used get the outcome: the panel says *This
-  approach helped*, *This approach did not help*, or nothing when the run was
+- **When it ends**, the memories it used get the outcome: the panel says _This
+  approach helped_, _This approach did not help_, or nothing when the run was
   interrupted or had nothing checked.
 
 The run also keeps an account of itself: the request's first line as its title,

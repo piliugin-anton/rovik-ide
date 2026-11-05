@@ -261,6 +261,12 @@ fn names_file(record: &MemoryRecord, path: &str) -> bool {
     })
 }
 
+/// The tag a run puts on what it writes, so the chat that wrote a memory
+/// doesn't recall it as prior work (its own history has it).
+fn chat_tag(dialog_id: &str) -> String {
+    format!("chat:{dialog_id}")
+}
+
 /// `text`'s first `chars` characters on one line, marked when cut.
 fn brief(text: &str, chars: usize) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -306,21 +312,25 @@ impl super::run::Run {
     ///
     /// Nothing is recalled and nothing is sent — no `memoryRecalled` at all —
     /// when the project's memory is turned off, when its store can't be
-    /// opened, or when the request has no text of its own (a Continue, a
-    /// Retry that sends nothing: with nothing to match, retrieval would offer
-    /// the project's newest memories, which aren't what the run is about).
-    /// The chat then keeps the list its last run showed, as it does after any
-    /// run that left one.
+    /// opened, or when there is no request to match at all (a chat with no
+    /// user message yet). The chat then keeps the list its last run showed,
+    /// as it does after any run that left one.
+    ///
+    /// What is matched is the message this run sends, or, for a run that
+    /// sends none (a Continue, a Retry, a task's stage), the chat's latest:
+    /// the same chat recalls the same prior work whichever way its run
+    /// started.
     ///
     /// With memory on and nothing relevant, the empty list is sent: the panel
     /// shows none, not an earlier run's.
     pub(super) async fn recall_memory(&mut self, settings_root: &str) {
-        let task = self
-            .current_user_content
-            .as_deref()
-            .map(|text| text.chars().take(TASK_CHARS).collect::<String>())
-            .unwrap_or_default();
+        let text = match self.current_user_content.as_deref() {
+            Some(text) if !text.trim().is_empty() => text.to_string(),
+            _ => self.latest_user_request().await,
+        };
+        let task = text.chars().take(TASK_CHARS).collect::<String>();
         let repo = settings_root.to_string();
+        let chat = self.dialog_id.clone();
 
         let found = if task.trim().is_empty() {
             None
@@ -329,6 +339,7 @@ impl super::run::Run {
             let project = Path::new(settings_root).to_path_buf();
             // Opening the store and querying it are disk work, as the
             // project's settings are: off the async threads.
+            let own = chat_tag(&chat);
             crate::rt::spawn_blocking(move || {
                 let settings = crate::memory::load(&core.paths.config_dir, &query_repo);
                 if !settings.enabled {
@@ -338,13 +349,29 @@ impl super::run::Run {
                 let query = RetrievalQuery::new(query_repo.as_str(), query_task.as_str())
                     .with_limit(RECALL_LIMIT);
                 let (memories, _telemetry) = store.retrieve_with_telemetry(&query).ok()?;
-                // Nothing relevant: no section at all, rather than a note
-                // that there is none (render_context always writes a
-                // heading).
-                let context = if memories.is_empty() {
+                // The chat's own work isn't prior work: it is in the chat
+                // already, and telling the model what it just did would move
+                // its prompt on every run of the same chat.
+                let memories: Vec<_> = memories
+                    .into_iter()
+                    .filter(|memory| !memory.record.tags.contains(&own))
+                    .collect();
+                // The prompt carries what evidence backs: a provisional
+                // memory shows in the chat's panel as a hint, but it doesn't
+                // steer the model (the crate's gate is evidence, and a
+                // memory it recalled untested is the one thing a run must
+                // not follow).
+                let proven: Vec<_> = memories
+                    .iter()
+                    .filter(|memory| memory.record.verification == Verification::Verified)
+                    .cloned()
+                    .collect();
+                // Nothing proven: no section at all, rather than a note that
+                // there is none (render_context always writes a heading).
+                let context = if proven.is_empty() {
                     String::new()
                 } else {
-                    store.render_context(&memories)
+                    store.render_context(&proven)
                 };
                 let records = memories.into_iter().map(|m| m.record).collect();
                 Some((store, records, context))
@@ -437,6 +464,7 @@ impl super::run::Run {
         };
         let helped = verdict(outcome, &self.memory);
         let (repo, task) = (self.memory.repo.clone(), self.memory.task.clone());
+        let chat = self.dialog_id.clone();
         let recalled = self.memory.recalled.clone();
         let failure = self.memory.first_failure.clone();
         let files = self.changed_files.clone();
@@ -449,12 +477,21 @@ impl super::run::Run {
                 touched = record_verdict(&store, &recalled, helped);
             }
             if !files.is_empty() && !task.trim().is_empty() {
-                keep_reflection(&store, &repo, &task, &outcome, &files, &results, helped);
+                keep_reflection(&Ending {
+                    store: &store,
+                    repo: &repo,
+                    chat: &chat,
+                    task: &task,
+                    outcome: &outcome,
+                    files: &files,
+                    results: &results,
+                    helped,
+                });
             }
             // A lesson only from a failure this run itself fixed.
             if let (Some(failure), Some(true)) = (&failure, helped) {
                 if !files.is_empty() {
-                    keep_lesson(&store, &repo, failure, &files, &results);
+                    keep_lesson(&store, &repo, &chat, failure, &files, &results);
                 }
             }
             touched
@@ -555,21 +592,30 @@ fn reflect(
     if !checks.is_empty() {
         content.push_str(&format!("\nChecks: {}", checks.join("; ")));
     }
-    NewMemory::episode(repo, brief(first, TITLE_CHARS), content)
-        .with_files(files.iter().cloned())
+    NewMemory::episode(repo, brief(first, TITLE_CHARS), content).with_files(files.iter().cloned())
+}
+
+/// What a run's end tells the project's memory about itself.
+struct Ending<'a> {
+    store: &'a SharedMemoryStore,
+    repo: &'a str,
+    /// The chat whose work it is: it doesn't recall its own.
+    chat: &'a str,
+    /// The request, as its reflection's title.
+    task: &'a str,
+    outcome: &'a str,
+    files: &'a [String],
+    results: &'a [CheckResult],
+    /// What the run's end said about the memories it used.
+    helped: Option<bool>,
 }
 
 /// Keeps the run's reflection, and confirms it when the checks passed.
-fn keep_reflection(
-    store: &SharedMemoryStore,
-    repo: &str,
-    task: &str,
-    outcome: &str,
-    files: &[String],
-    results: &[CheckResult],
-    helped: Option<bool>,
-) {
-    let reflection = reflect(repo, task, outcome, files, results);
+fn keep_reflection(end: &Ending<'_>) {
+    let (store, chat) = (end.store, end.chat);
+    let (repo, task, outcome) = (end.repo, end.task, end.outcome);
+    let (files, results, helped) = (end.files, end.results, end.helped);
+    let reflection = reflect(repo, task, outcome, files, results).with_tags([chat_tag(chat)]);
     let record = match store.remember(reflection) {
         Ok(record) => record,
         Err(e) => {
@@ -593,6 +639,7 @@ fn keep_reflection(
 fn keep_lesson(
     store: &SharedMemoryStore,
     repo: &str,
+    chat: &str,
     failure: &FailedRound,
     files: &[String],
     results: &[CheckResult],
@@ -609,7 +656,9 @@ fn keep_lesson(
     }
     content.push_str(&format!("\nChanged: {}", files.join(", ")));
     let title = format!("Making `{}` pass", failure.command);
-    let lesson = NewMemory::procedure(repo, title.clone(), content).with_files(files.iter().cloned());
+    let lesson = NewMemory::procedure(repo, title.clone(), content)
+        .with_files(files.iter().cloned())
+        .with_tags([chat_tag(chat)]);
     let record = match store.remember(lesson) {
         Ok(record) => record,
         Err(e) => {

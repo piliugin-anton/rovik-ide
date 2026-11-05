@@ -189,11 +189,14 @@ pub fn build_fts_query(inputs: &[&str]) -> String {
         }
     }
 
+    // Any term may match: a task's text rarely shares every word with the
+    // memory about it ("fix the retry race" against "Retry race"), and BM25
+    // ranks the rows that share more of them first.
     all_terms
         .iter()
         .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" OR ")
 }
 
 fn raw_terms(input: &str) -> Vec<String> {
@@ -235,7 +238,7 @@ mod tests {
     fn fts_query_is_safe_and_quoted() {
         assert_eq!(
             build_fts_query(&["retry \"race\" OR; drop"]),
-            "\"retry\" \"race\" \"drop\""
+            "\"retry\" OR \"race\" OR \"drop\""
         );
     }
 

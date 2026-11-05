@@ -76,8 +76,8 @@ export default function MemorySettings(props: { root: string }) {
         </SettingRow>
         <Show when={!enabled()}>
           <SettingStatus>
-            Off for this project: its chats start without prior work and record nothing new. What
-            it holds stays, and the count above still shows it.
+            Off for this project: its chats start without prior work and record nothing new. What it
+            holds stays, and the count above still shows it.
           </SettingStatus>
         </Show>
         <Show when={error()}>

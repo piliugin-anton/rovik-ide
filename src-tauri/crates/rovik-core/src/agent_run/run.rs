@@ -2000,12 +2000,6 @@ impl Run {
             Some(section) if self.sub().is_none() => format!("{project_context}\n\n{section}"),
             _ => project_context,
         };
-        // What earlier runs of this project learned that fits this request
-        // (memory.rs): the project's own section, so it comes last.
-        let project_context = match self.memory.context() {
-            "" => project_context,
-            memory => format!("{project_context}\n\n{memory}"),
-        };
         // E03: the lead is offered the test writer (its rule is in the
         // subagent section below), so the default prompt's two test lines
         // send the tests to it instead of ordering the lead to write them.
@@ -2115,7 +2109,7 @@ impl Run {
                 system_prompt: system_prompt.clone(),
                 project_context: Some(project_context.clone()),
                 delegated_tests,
-                request_context: self.map.text().clone(),
+                request_context: self.request_context(),
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),
                 carried_notes: carried_notes.clone(),
@@ -2621,6 +2615,21 @@ impl Run {
             line["dialogId"] = json!(self.dialog_id);
             line["model"] = json!(self.profile.model);
             log::write(&self.core, line);
+        }
+    }
+
+    /// The request's own context, which goes on the request's message rather
+    /// than in the system prompt: what earlier runs of the project learned
+    /// (memory.rs), then the repository map. The system prompt stays the
+    /// same for the run's requests, so the provider's cached prefix holds;
+    /// this grows with the map, and a new map costs one cache miss from
+    /// there on (refresh_repo_map_if_needed).
+    fn request_context(&self) -> Option<String> {
+        let map = self.map.text().clone();
+        match (self.memory.context(), map) {
+            ("", map) => map,
+            (memory, Some(map)) => Some(format!("{memory}\n\n{map}")),
+            (memory, None) => Some(memory.to_string()),
         }
     }
 

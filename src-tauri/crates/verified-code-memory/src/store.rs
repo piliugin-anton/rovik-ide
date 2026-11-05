@@ -1,6 +1,7 @@
-use crate::embedding::{MemoryEmbedder, VectorIndex};
 use crate::error::{Result, VcmError};
-use crate::model::{MemoryRecord, MemoryStats, NewMemory, RetrievalQuery, RetrievedMemory, Verification};
+use crate::model::{
+    MemoryRecord, MemoryStats, NewMemory, RetrievalQuery, RetrievedMemory, Verification,
+};
 use crate::retrieval::{build_fts_query, score_memory, RetrievalTelemetry, RetrievalWeights};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -154,7 +155,7 @@ impl MemoryStore {
                 serde_json::to_string(&record.files)?,
                 serde_json::to_string(&record.tags)?,
                 record.code_version,
-                record.source_episode.map(Uuid::to_string),
+                record.source_episode.map(|id| id.to_string()),
                 record.evidence,
                 record.confidence,
                 record.created_at.to_rfc3339(),
@@ -250,11 +251,11 @@ impl MemoryStore {
         let changed = self.connection.execute(
             r#"
             UPDATE memories
-            SET verification = 'deprecated', evidence = ?3, updated_at = ?4
+            SET verification = '"deprecated"', evidence = ?3, updated_at = ?4
             WHERE repo = ?1
               AND code_version IS NOT NULL
               AND code_version != ?2
-              AND verification != 'deprecated'
+              AND verification != '"deprecated"'
             "#,
             params![repo, current_version, reason, now],
         )?;
@@ -309,9 +310,8 @@ impl MemoryStore {
 
     /// Counts one project's memories, by trust state.
     ///
-    /// The column holds the state as JSON writes it (`"verified"`); a state
-    /// written by a plain `UPDATE` (`invalidate_stale_for_version`) has no
-    /// quotes, so both forms count.
+    /// The column holds the state as JSON writes it (`"verified"`); a row a
+    /// still older store wrote bare counts too.
     ///
     /// # Errors
     /// Returns [`VcmError::EmptyField`] for an empty repository, or database
@@ -378,7 +378,7 @@ impl MemoryStore {
                 JOIN memories m ON m.rowid = memories_fts.rowid
                 WHERE memories_fts MATCH ?1
                   AND m.repo = ?2
-                  AND m.verification != 'deprecated'
+                  AND m.verification != '"deprecated"'
                 ORDER BY lexical_rank
                 LIMIT ?3
                 "#,
@@ -417,7 +417,7 @@ impl MemoryStore {
             let mut statement = self.connection.prepare(
                 r#"
                 SELECT * FROM memories
-                WHERE repo = ?1 AND verification != 'deprecated'
+                WHERE repo = ?1 AND verification != '"deprecated"'
                 ORDER BY updated_at DESC LIMIT ?2
                 "#,
             )?;
@@ -509,7 +509,7 @@ impl MemoryStore {
                 serde_json::to_string(&record.files)?,
                 serde_json::to_string(&record.tags)?,
                 record.code_version,
-                record.source_episode.map(Uuid::to_string),
+                record.source_episode.map(|id| id.to_string()),
                 record.evidence,
                 record.confidence,
                 record.updated_at.to_rfc3339(),
@@ -732,7 +732,7 @@ fn parse_timestamp(value: &str) -> rusqlite::Result<chrono::DateTime<chrono::Utc
 
 fn rusqlite_conversion_error<E>(error: E) -> rusqlite::Error
 where
-    E: std::fmt::Display + Send + Sync + 'static,
+    E: std::fmt::Display + std::error::Error + Send + Sync + 'static,
 {
     rusqlite::Error::FromSqlConversionFailure(
         0,

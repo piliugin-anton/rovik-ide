@@ -42,14 +42,21 @@ const flush = async () => {
   for (let i = 0; i < 8; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-async function page(options: { stored?: unknown; counts?: unknown } = {}): Promise<HTMLElement> {
-  stored = options.stored ?? null;
-  counts = options.counts ?? { total: 0, verified: 0, provisional: 0, deprecated: 0 };
+/** Back to a project that never chose, with nothing held and no failure. */
+function reset() {
+  stored = null;
+  counts = { total: 0, verified: 0, provisional: 0, deprecated: 0 };
   countingFails = false;
   savesFail = false;
   counted = [];
   saves = 0;
   held = null;
+}
+
+async function page(options: { stored?: unknown; counts?: unknown } = {}): Promise<HTMLElement> {
+  reset();
+  stored = options.stored ?? null;
+  counts = options.counts ?? { total: 0, verified: 0, provisional: 0, deprecated: 0 };
   const root = container();
   render(() => <MemorySettings root="/home/me/demo" />, root);
   await flush();
@@ -86,18 +93,24 @@ test('long-term memory: none yet says so, and a count that can’t be read says 
   await flush();
   assert.match(count(root).textContent!, /(couldn't|could not|can't|cannot)/i);
   assert.doesNotMatch(count(root).textContent!, /No memories yet/);
+  // The next render starts from a backend that answers again.
+  reset();
 });
 
 test('long-term memory: Counting… until the count comes back', async () => {
+  reset();
   held = [];
-  counts = { total: 2, verified: 2, provisional: 0, deprecated: 0 };
+  counts = { total: 2, verified: 1, provisional: 1, deprecated: 0 };
   const root = container();
   render(() => <MemorySettings root="/home/me/demo" />, root);
   await flush();
+  assert.ok(held.length > 0, 'the count is asked for, and still on its way');
   assert.match(count(root).textContent!, /counting/i);
-  held.shift()!();
+  // It comes back now.
+  while (held.length > 0) held.shift()!();
   await flush();
-  assert.equal(count(root).textContent, '2 memories: 2 verified');
+  assert.equal(count(root).textContent, '2 memories: 1 verified, 1 provisional');
+  reset();
 });
 
 test('long-term memory: unticking switches the project off, and ticking again removes the setting', async () => {

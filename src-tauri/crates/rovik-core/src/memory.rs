@@ -47,10 +47,10 @@ pub fn load(config_dir: &Path, settings_root: &str) -> MemorySettings {
 /// (`overlay::chats::project_key`), so a project is the same file whichever
 /// chat, isolated or not, asks.
 pub fn store_path(paths: &Paths, project: &Path) -> PathBuf {
-    paths
-        .data_dir
-        .join("memory")
-        .join(format!("{}.db", crate::overlay::chats::project_key(project)))
+    paths.data_dir.join("memory").join(format!(
+        "{}.db",
+        crate::overlay::chats::project_key(project)
+    ))
 }
 
 /// The memory stores open in this process, one per project file: a store is

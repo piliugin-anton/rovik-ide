@@ -26,10 +26,15 @@
 //! # }
 //! ```
 
+/// Pluggable embeddings, for ranking memories by meaning (optional).
 pub mod embedding;
+/// The crate's error type.
 pub mod error;
+/// What a memory is: its record, its input, and a retrieval request.
 pub mod model;
+/// Ranking retrieved memories, and the telemetry of a retrieval.
 pub mod retrieval;
+/// The SQLite store: records, evidence, retrieval and counts.
 pub mod store;
 
 pub use embedding::{MemoryEmbedder, VectorIndex};
