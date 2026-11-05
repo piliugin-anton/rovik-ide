@@ -1397,7 +1397,8 @@ if (fs.readFileSync('a.js', 'utf8').includes('require')) {
     .await;
     h.start_with_scripted_tests(h.request(&url, Harness::send("Fix the tests"), checks_on()))
         .await;
-    assert_eq!(h.run_end().await, "verified");
+    // Three rounds of two real `npm` checks each: a busy runner takes past 15 s.
+    assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
     let rounds = records(&h.messages().await);
     let statuses: Vec<&Value> = rounds.iter().map(|r| &r["status"]).collect();
     assert_eq!(
