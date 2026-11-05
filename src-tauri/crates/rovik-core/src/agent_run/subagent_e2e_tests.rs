@@ -13452,28 +13452,18 @@ fn a_command_that_reaches_a_sealed_test_round_the_seal_is_refused() {
  * `ls`. The assertions stay on what the command produced, never on its text.
  */
 
-/// The command that prints the file at `path` in the sandbox's shell.
-#[cfg(windows)]
+/// The command that prints the file at `path` in the sandbox's shell: cmd's
+/// `type`, which takes the path as [`shown`] spells it — a forward slash in
+/// an argument is a switch to it — or `cat` elsewhere.
 fn sandbox_print(path: &str) -> String {
-    format!("type {path}")
+    let printer = if cfg!(windows) { "type" } else { "cat" };
+    format!("{printer} {}", shown(path))
 }
 
-/// The command that prints the file at `path` in the sandbox's shell.
-#[cfg(not(windows))]
-fn sandbox_print(path: &str) -> String {
-    format!("cat {path}")
-}
-
-/// The command that lists the folder at `path` in the sandbox's shell.
-#[cfg(windows)]
+/// The command that lists the folder at `path` in the sandbox's shell: the
+/// listing every other test of the lead's already uses ([`list`]).
 fn sandbox_list(path: &str) -> String {
-    format!("dir {path}")
-}
-
-/// The command that lists the folder at `path` in the sandbox's shell.
-#[cfg(not(windows))]
-fn sandbox_list(path: &str) -> String {
-    format!("ls {path}")
+    list(path)
 }
 
 /// A sealed test is refused whichever program a platform prints a file with —
