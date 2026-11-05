@@ -986,6 +986,11 @@ pub struct CallContext {
     pub checks_owner: String,
     /// Files this call may not read or search (the test writer's, K11).
     pub hidden: Vec<String>,
+    /// A test writer's call: it reads test files and fixtures only, and
+    /// sees where its search finds things, not the code there.
+    pub tests_only: bool,
+    /// The test files the test writer wrote: only it reads them (K11).
+    pub written_tests: Vec<String>,
     /// A note on the call while it runs ("Waiting for a CPU slot: …");
     /// `None` clears it.
     pub note: Arc<dyn Fn(Option<String>) + Send + Sync>,
@@ -1237,6 +1242,35 @@ async fn run(
                 || real.is_some_and(|real| super::test_writer::is_hidden(&ctx.hidden, &real))
             {
                 return Ok(ToolResult::error(super::test_writer::hidden_file(&key)));
+            }
+        }
+    }
+    // A test writer reads test files and fixtures only: the implementation
+    // reaches it as outlines, and as the locations a search finds. By the
+    // path's name, and by where it really leads, as above.
+    if ctx.tests_only && tool.spec().hidden.source {
+        if let (Some(path), Some(root)) = (text(args, "path"), root) {
+            let key = super::repair::rel_key(root, path);
+            let real = super::repair::real_key(root, path);
+            if !super::test_writer::is_readable(&key)
+                || real.is_some_and(|real| !super::test_writer::is_readable(&real))
+            {
+                return Ok(ToolResult::error(super::test_writer::not_readable(&key)));
+            }
+        }
+    }
+    // The lead reads no test file the test writer wrote: what the tests
+    // check is the writer's to change, and the lead's job is to make them
+    // pass.
+    if !ctx.tests_only && tool.spec().hidden.source && !ctx.written_tests.is_empty() {
+        if let (Some(path), Some(root)) = (text(args, "path"), root) {
+            let key = super::repair::rel_key(root, path);
+            let real = super::repair::real_key(root, path);
+            let sealed = &ctx.written_tests;
+            if super::test_writer::is_sealed(sealed, &key)
+                || real.is_some_and(|real| super::test_writer::is_sealed(sealed, &real))
+            {
+                return Ok(ToolResult::error(super::test_writer::sealed_file(&key)));
             }
         }
     }
@@ -1537,10 +1571,6 @@ async fn run(
                     result = retried;
                 }
             }
-            // The test writer doesn't see the files the change touches.
-            let (left_out, _) = leave_out(&mut result, |path| {
-                super::test_writer::is_hidden(&ctx.hidden, path)
-            });
             // Nor does the agent see what's in the files it may not read:
             // only that they matched.
             let (restricted_out, restricted_files) = leave_out(&mut result, |path| {
@@ -1549,6 +1579,7 @@ async fn run(
                     .blocks_file(path, std::path::Path::new(&abs), Op::Read)
             });
             // The declaration each line is in: the files' outlines, briefly.
+            let paths_root = root_owned.clone();
             let root = root_owned;
             let outlines = crate::rt::spawn_blocking(move || {
                 let deadline = std::time::Instant::now() + SEARCH_OUTLINE_TIME;
@@ -1557,7 +1588,19 @@ async fn run(
             })
             .await
             .map_err(|e| e.to_string())?;
-            let shown = format_search_result(&outlines.0, &outlines.1);
+            // Where a search may show only names: the test writer, outside
+            // the tests and fixtures it may read, and the lead, for the
+            // tests the test writer wrote.
+            let show_code = |path: &str| {
+                let key = super::repair::rel_key(&paths_root, path);
+                if ctx.tests_only {
+                    super::test_writer::is_readable(&key)
+                } else {
+                    !super::test_writer::is_sealed(&ctx.written_tests, &key)
+                }
+            };
+            let names_only = !ctx.written_tests.is_empty();
+            let shown = format_found(&outlines.0, &outlines.1, show_code);
             let shown = match as_regex {
                 Some(true) => format!(
                     "{shown}\n[The literal text had no matches, so the query was searched as a regular expression. \
@@ -1565,14 +1608,6 @@ async fn run(
                 ),
                 Some(false) => format!("{shown}\n[No matches as a regular expression either.]"),
                 None => shown,
-            };
-            let shown = if left_out > 0 {
-                format!(
-                    "{shown}\n[{left_out} match{} in the files the change touches left out: you write tests from the specification. Use outline on those files.]",
-                    if left_out == 1 { "" } else { "es" }
-                )
-            } else {
-                shown
             };
             let shown = if restricted_out > 0 {
                 format!(
@@ -1583,7 +1618,17 @@ async fn run(
             } else {
                 shown
             };
-            // Its matches in hidden files are left out above, by file.
+            let shown = if ctx.tests_only {
+                format!(
+                    "{shown}\n[The lines themselves are shown for test files and fixtures only: elsewhere you get where they are, and the declaration they're in. Use outline for a file's interfaces.]"
+                )
+            } else if names_only {
+                format!(
+                    "{shown}\n[A match in a test the test writer wrote gives its place and declaration, not its line: make the tests pass, and ask the test writer to change one.]"
+                )
+            } else {
+                shown
+            };
             return Ok(ToolResult::ok(shown));
         }
         BuiltinTool::Neighbours => {
@@ -1925,6 +1970,18 @@ pub fn format_search_result(
     result: &SearchResult,
     outlines: &HashMap<String, Arc<Vec<Symbol>>>,
 ) -> String {
+    format_found(result, outlines, |_| true)
+}
+
+/// `format_search_result` with `show_code` saying, by file, whether its
+/// lines are shown: a file it says no for gives where a match is, and the
+/// declaration it's in, without the line itself (the test writer's view of
+/// the code it may not read).
+fn format_found(
+    result: &SearchResult,
+    outlines: &HashMap<String, Arc<Vec<Symbol>>>,
+    show_code: impl Fn(&str) -> bool,
+) -> String {
     if result.match_count == 0 {
         return "No matches.".into();
     }
@@ -1970,10 +2027,16 @@ pub fn format_search_result(
         let file_lines = &result.lines[start..end];
         let count = file_lines.iter().filter(|l| l.is_match).count();
         out.push(format!("{path} ({count} {})", matches(count)));
+        let code = show_code(path);
         let symbols = outlines.get(path).filter(|s| !s.is_empty());
         let mut group: Option<Option<usize>> = None; // the current declaration, once one is open
         let mut prev_line: Option<u64> = None;
         for l in file_lines {
+            // Without the file's code, a context line shows nothing but a
+            // number: a match's line is enough.
+            if !code && !l.is_match {
+                continue;
+            }
             if let Some(symbols) = symbols {
                 let here = crate::read_symbol::enclosing(symbols, l.line as usize);
                 if group != Some(here) {
@@ -2001,15 +2064,13 @@ pub fn format_search_result(
             let declares = symbols
                 .zip(group.flatten())
                 .is_some_and(|(s, i)| s[i].start_line == l.line as usize);
-            out.push(if l.is_match {
-                format!(
-                    "{indent}{}: {}{}",
-                    l.line,
-                    l.text,
-                    if declares { "   (declaration)" } else { "" }
-                )
-            } else {
+            let declared = if declares { "   (declaration)" } else { "" };
+            out.push(if !l.is_match {
                 format!("{indent}{}- {}", l.line, l.text)
+            } else if code {
+                format!("{indent}{}: {}{declared}", l.line, l.text)
+            } else {
+                format!("{indent}{}{declared}", l.line)
             });
             prev_line = Some(l.line);
         }
@@ -2255,6 +2316,8 @@ mod tests {
             owner: "syntax-test".into(),
             checks_owner: "syntax-test".into(),
             hidden: Vec::new(),
+            tests_only: false,
+            written_tests: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: None,
             reply_cut_off: false,
@@ -3668,6 +3731,8 @@ a.rs (3 matches)
             owner: "sub-test".into(),
             checks_owner: "lead-test".into(),
             hidden: Vec::new(),
+            tests_only: false,
+            written_tests: Vec::new(),
             note: Arc::new(|_| {}),
             background_chat: None,
             reply_cut_off: false,

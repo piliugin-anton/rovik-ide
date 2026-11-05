@@ -309,10 +309,24 @@ fn judged_by(
     readings: &[Shell],
     deadline: Instant,
 ) -> Option<String> {
+    sealed_by(command, root, cwd, restricted, &[], readings, deadline)
+}
+
+/// [`judged_by`], where the command may also not print one of `sealed`: the
+/// tests a chat's test writer wrote (K11).
+fn sealed_by(
+    command: &str,
+    root: &str,
+    cwd: &str,
+    restricted: &RestrictedFiles,
+    sealed: &[String],
+    readings: &[Shell],
+    deadline: Instant,
+) -> Option<String> {
     let check = Check {
         whole: command,
         root,
-        restricted,
+        restricted: Refuses { restricted, sealed },
         rg_config: ripgrep_config(),
         deadline,
         vague_found: RefCell::default(),
@@ -323,12 +337,79 @@ fn judged_by(
         .find_map(|&shell| check.command(command, shell, Path::new(cwd), 0))
 }
 
+/// Why `command` may not run for a lead whose test writer wrote `sealed`: it
+/// would print one of them, by any program, folder, glob or shell script it
+/// reads them through. Running the tests is the lead's to do (`cargo test
+/// tests/x.test.ts` reads no file). The user's restricted files are none:
+/// their own check is [`command_problem`].
+pub fn sealed_command_problem(command: &str, root: &str, sealed: &[String]) -> Option<String> {
+    if sealed.is_empty() {
+        return None;
+    }
+    let deadline = Instant::now() + CHECK_TIME;
+    sealed_by(
+        command,
+        root,
+        root,
+        &RestrictedFiles::default(),
+        sealed,
+        Shell::readings(),
+        deadline,
+    )
+}
+
+/// What a command may not read or change: the user's restricted files, and
+/// the tests a chat's test writer wrote, which the writer alone reads (K11).
+/// The check asks this everywhere it asked [`RestrictedFiles`], so a sealed
+/// test is found by whatever a program, folder, glob or shell script reads
+/// it through.
+#[derive(Clone, Copy)]
+struct Refuses<'a> {
+    restricted: &'a RestrictedFiles,
+    /// The sealed tests' project-relative paths; empty for a check that
+    /// only asks about restricted files.
+    sealed: &'a [String],
+}
+
+impl Refuses<'_> {
+    fn blocked(&self, root: &str, path: &str, op: Op) -> Option<String> {
+        self.restricted
+            .blocked(root, path, op)
+            .or_else(|| self.sealed_at(root, path, op))
+    }
+
+    fn blocks_file(&self, key: &str, file: &Path, op: Op) -> bool {
+        self.restricted.blocks_file(key, file, op) || Refuses::is_sealed(self.sealed, key, op)
+    }
+
+    fn skips(&self, key: &str, op: Op) -> bool {
+        self.restricted.skips(key, op)
+    }
+
+    fn files(&self) -> &RestrictedFiles {
+        self.restricted
+    }
+
+    /// `path` (a project-relative key, or an absolute one from `root`) as
+    /// the sealed test it names, for `op`.
+    fn sealed_at(&self, root: &str, path: &str, op: Op) -> Option<String> {
+        let key = paths::key(path).or_else(|| paths::key(&super::repair::rel_key(root, path)))?;
+        Refuses::is_sealed(self.sealed, &key, op).then_some(key)
+    }
+
+    fn is_sealed(sealed: &[String], key: &str, op: Op) -> bool {
+        op == Op::Read && super::test_writer::is_sealed(sealed, key)
+    }
+}
+
 struct Check<'a> {
     /// The command as the agent gave it: the one its refusal names, for a
     /// script it runs too.
     whole: &'a str,
     root: &'a str,
-    restricted: &'a RestrictedFiles,
+    /// What it may not read or change: the user's restricted files, and
+    /// the tests the chat's test writer wrote.
+    restricted: Refuses<'a>,
     /// ripgrep's options from its config file ([`ripgrep_config`]).
     rg_config: Vec<String>,
     /// Past it, the check stops, refusing the command ([`CHECK_TIME`]).
@@ -480,7 +561,7 @@ impl Check<'_> {
     fn files_problem<S: AsRef<str>>(&self, cwd: &Path, files: &[S], op: Op) -> Option<String> {
         let files = files.iter().map(AsRef::as_ref);
         if let Some(file) = files.clone().find_map(|f| self.blocked(cwd, f, op)) {
-            return Some(refused(self.whole, op, &file));
+            return Some(self.says_plain(op, &file));
         }
         if files.clone().any(unknown) {
             return self.vague(cwd, op, None, false);
@@ -515,7 +596,7 @@ impl Check<'_> {
                 .find_map(|f| self.blocked(cwd, f, op))
         };
         if let Some(file) = named(&effects.reads, Op::Read) {
-            return Some(refused(self.whole, Op::Read, &file));
+            return Some(self.says_plain(Op::Read, &file));
         }
         if let Some(search) = &effects.search {
             if let Some(problem) = self.searched(cwd, search, Op::Read, None) {
@@ -523,7 +604,7 @@ impl Check<'_> {
             }
         }
         if let Some(file) = named(&effects.writes, Op::Write) {
-            return Some(refused(self.whole, Op::Write, &file));
+            return Some(self.says_plain(Op::Write, &file));
         }
         if let Some(finder) = &effects.finds {
             let reads = (Op::Read, finder.reads, finder.lines.as_ref());
@@ -657,7 +738,7 @@ impl Check<'_> {
                     .as_ref()
                     .is_none_or(|r| prints_from(at, r.as_deref()));
                 if let Some(file) = self.reached(file, op).filter(|_| prints) {
-                    return Some(self.refusal(op, &file, Reading::of(lines.is_some())));
+                    return Some(self.says(op, &file, Reading::of(lines.is_some())));
                 }
             }
         }
@@ -726,11 +807,29 @@ impl Check<'_> {
                 let file = self.restricted.blocked(self.root, &path, op);
                 let file = file.filter(|_| at.exists() && prints(at));
                 if let Some(file) = file.and_then(|file| self.reached(file, op)) {
-                    return Some(self.refusal(op, &file, Reading::of(lines.is_some())));
+                    return Some(self.says(op, &file, Reading::of(lines.is_some())));
                 }
             }
         }
         None
+    }
+
+    /// The refusal of `op` on `file`, a sealed test read as `how`: what the
+    /// test writer wrote reads differently from a restricted file.
+    fn says(&self, op: Op, file: &str, how: Reading) -> String {
+        match self.restricted.sealed_at(self.root, file, op) {
+            Some(file) => super::test_writer::sealed_command_file(self.whole, &file),
+            None => self.refusal(op, file, how),
+        }
+    }
+
+    /// [`Check::says`] for a file whose reading is its own (a program that
+    /// prints, copies or searches it), not a way.
+    fn says_plain(&self, op: Op, file: &str) -> String {
+        match self.restricted.sealed_at(self.root, file, op) {
+            Some(file) => super::test_writer::sealed_command_file(self.whole, &file),
+            None => refused(self.whole, op, file),
+        }
     }
 
     /// The refusal of `op` on `file`, a restricted file, read as `how`.
@@ -749,7 +848,7 @@ impl Check<'_> {
                     reason(Op::Read)
                 )
             }
-            _ => refused(self.whole, op, file),
+            _ => self.says_plain(op, file),
         }
     }
 
@@ -761,7 +860,7 @@ impl Check<'_> {
             Walked::Clean => None,
             Walked::Found(file) => {
                 let file = self.reached(file, op)?;
-                Some(self.refusal(op, &file, how))
+                Some(self.says(op, &file, how))
             }
             Walked::TooLarge => Some(self.too_large()),
         }
@@ -944,7 +1043,7 @@ impl Check<'_> {
                     .blocked(self.root, &path, op)
                     .filter(|file| prints(Path::new(&tools::to_absolute_path(file, self.root))));
                 if let Some(file) = file.and_then(|file| self.reached(file, op)) {
-                    return Some(self.refusal(op, &file, Reading::of(lines.is_some())));
+                    return Some(self.says(op, &file, Reading::of(lines.is_some())));
                 }
             }
         }
@@ -1263,7 +1362,8 @@ impl Check<'_> {
         let key_at = std::sync::Arc::new(key_at);
         let mut walk = WalkBuilder::new(start);
         let ignores = picks.ignore_files;
-        let (restricted, key_of) = (self.restricted.clone(), key_at.clone());
+        // An owned copy: a walk's filter outlives this check.
+        let (restricted, key_of) = (self.restricted.files().clone(), key_at.clone());
         // In name order: the same file is the one found everywhere.
         walk.sort_by_file_name(|a, b| a.cmp(b));
         walk.hidden(!picks.hidden)

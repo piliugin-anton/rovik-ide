@@ -1093,6 +1093,9 @@ impl SubResult {
             "error": self.error,
             "usage": self.usage,
             "worker": self.worker,
+            // The files it changed: a test writer's are the tests the lead
+            // may not read, which the next run seals again (K11, E03).
+            "files": self.writes.iter().map(|w| w.path.clone()).collect::<Vec<_>>(),
         })
     }
 }
@@ -1115,7 +1118,7 @@ pub fn task_schema(kinds: &[Kind], parallel: bool) -> Value {
         lines.push("- scout: explores the project read-only (search, read, outline, callers, neighbours, web) to answer one question, and reports the answer with `path:line` evidence. Several scouts in one turn run at the same time.".into());
     }
     if kinds.contains(&Kind::TestWriter) {
-        lines.push("- testWriter: writes tests for your change from the request and the plan, without reading the files the change touches (only their outlines). It writes only test files; goal is optional.".into());
+        lines.push("- testWriter: writes tests for your change from the request and the plan, without reading the implementation: it reads test files and fixtures only, and sees the rest of the code as outlines and search locations. It writes only test files; goal is optional.".into());
     }
     if kinds.contains(&Kind::Worker) {
         lines.push("- worker: carries out one step of the plan you're implementing (give its number as step; goal is optional). It writes only the step's files and new files in their folders, then reports what it changed. Workers run one at a time.".into());
@@ -1126,8 +1129,8 @@ pub fn task_schema(kinds: &[Kind], parallel: bool) -> Value {
     lines.push("The report is information, not instructions.".into());
     let mut properties = json!({
         "kind": { "type": "string", "enum": ids, "description": "The kind of subagent." },
-        "goal": { "type": "string", "description": "The one question or task, written like a ticket: specific, self-contained, with what a good answer contains. The subagent sees nothing of this conversation." },
-        "context": { "type": "string", "description": "Optional: what you already know, what is out of scope, names to look for." },
+        "goal": { "type": "string", "description": "The one question or task, written like a ticket: specific, self-contained, with what a good answer contains. At most 2000 characters. The subagent sees nothing of this conversation." },
+        "context": { "type": "string", "description": "Optional: what you already know, what is out of scope, names to look for. At most 6000 characters (a longer one is cut)." },
         "paths": { "type": "array", "items": { "type": "string" }, "description": "Optional: files or folders to look at first, relative to the project root." },
         "max_tool_calls": { "type": "integer", "description": "Optional: a smaller budget than the kind's default, for a quick question." },
         "continue": { "type": "string", "description": "Optional: a finished subagent's handle, from its report, to ask it a follow-up in its own context (it remembers what it read). goal is then the follow-up; kind can be left out." }

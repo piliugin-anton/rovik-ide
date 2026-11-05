@@ -4066,6 +4066,140 @@ async fn a_test_file_the_tests_stage_changed_isnt_said_to_fail_on_purpose() {
     );
 }
 
+/// The test the Tests stage's writer writes here, with words no refusal may
+/// repeat.
+const STAGE_TEST: &str = "// sealed_marker_word\nexport const sealed_marker_word = 4711;\n\n\
+    test('greets', () => {\n  expect(greet('you')).toBe('Hello, you!');\n});\n";
+
+/// The project's source the implementation still reads whole: no test file,
+/// so not the test writer's.
+const STAGE_CODE: &str = "export const greet = (name: string) => `Hello, ${name}!`;\n";
+
+/// A refusal of a read of a test the run's test writer wrote: it names the
+/// file, says whose it is, sends the reader to make the tests pass and to the
+/// test writer for a change to a test, and shows nothing of the file.
+fn assert_writers_test_read_refused(what: &str, result: &str) {
+    assert!(result.starts_with("Error:"), "{what}: {result}");
+    assert!(
+        result.contains("src/greet.test.ts"),
+        "{what} names the file: {result}"
+    );
+    assert!(
+        result.contains("a test file the test writer wrote"),
+        "{what} says whose it is: {result}"
+    );
+    assert!(
+        result.to_lowercase().contains("make the tests pass"),
+        "{what} sends the reader to make the tests pass: {result}"
+    );
+    assert!(
+        result.contains("testWriter"),
+        "{what} points at `task` kind \"testWriter\": {result}"
+    );
+    assert!(
+        !result.contains("sealed_marker_word") && !result.contains("expect(greet("),
+        "{what} shows the file: {result}"
+    );
+}
+
+/// S04 (E01): the Tests stage's own test writer seals the test it writes for
+/// the rest of the task. The next stage's run is told to make that test pass,
+/// and its read of it is refused with none of the file's content, while a
+/// source file of the project still reads whole — the seal is the test's, not
+/// every read's.
+#[tokio::test]
+async fn an_implementation_run_cannot_read_the_test_the_tests_stage_wrote() {
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+        (
+            "check.js",
+            "const fs = require('fs'); if (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') { console.error('ok.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("ok.txt", "no"),
+        ("src/greet.ts", STAGE_CODE),
+    ])
+    .await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // The implementation reads the test it must make pass, then the code it
+    // changes: the test is the test writer's, the code its own to read.
+    let mut script = task_script();
+    script.splice(
+        4..4,
+        [
+            Reply::Call {
+                id: "ir1",
+                name: "read",
+                args: json!({ "path": "src/greet.test.ts" }),
+            },
+            Reply::Call {
+                id: "ir2",
+                name: "read",
+                args: json!({ "path": "src/greet.ts" }),
+            },
+        ],
+    );
+    let report = "## Summary\n\nChecks that ok.txt says ok (criterion 1).\n\n\
+        ## Test files\n\n- `src/greet.test.ts`: the greeting\n\n## Assumptions\n\nNone.";
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                TESTS_FIRST,
+                vec![
+                    Reply::Call {
+                        id: "tw1",
+                        name: "write",
+                        args: json!({ "path": "src/greet.test.ts", "content": STAGE_TEST }),
+                    },
+                    Reply::Text(report),
+                ],
+            ),
+        ],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let tests = records
+        .iter()
+        .find(|r| r.name == Stage::Tests)
+        .unwrap_or_else(|| panic!("no Tests stage: {records:#?}"));
+    assert_eq!(tests.status, Status::Done, "{records:#?}");
+    assert_eq!(tests.files, ["src/greet.test.ts"], "{records:#?}");
+    assert_eq!(
+        h.file("src/greet.test.ts").as_deref(),
+        Some(STAGE_TEST),
+        "the writer wrote its test"
+    );
+
+    let messages = h.messages().await;
+    // The run that reads it is the implementation, told to make it pass.
+    let started = implement_messages(&messages);
+    assert_eq!(started.len(), 1, "{records:#?}");
+    assert!(
+        started[0].content.contains("`src/greet.test.ts`"),
+        "{}",
+        started[0].content
+    );
+
+    // Its read of the test is refused, and shows nothing of the file.
+    assert_writers_test_read_refused("ir1", &result_of(&messages, "ir1").content);
+
+    // The project's source reads as it did: the seal is the test's alone.
+    let code = &result_of(&messages, "ir2").content;
+    assert!(!code.starts_with("Error"), "{code}");
+    assert!(
+        code.contains("Hello, ${name}!"),
+        "the file reads whole: {code}"
+    );
+}
+
 /// S04, T05 (R03): a candidate's acceptance check is told of the tests its
 /// task's Tests stage wrote first, though the candidate's chat holds none
 /// of its task's rows.

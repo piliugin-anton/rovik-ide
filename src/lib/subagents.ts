@@ -29,6 +29,8 @@ export interface SubagentMeta {
   error?: string | null;
   /** Tokens its providers reported, and the cost when they said (S17). */
   usage?: SubagentUsage | null;
+  /** The files it changed (a test writer's are its tests). */
+  files?: string[];
 }
 
 export interface SubagentUsage {

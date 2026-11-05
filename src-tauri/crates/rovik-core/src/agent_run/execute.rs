@@ -544,6 +544,21 @@ impl Run {
                 }
             }
         }
+        // No test file the test writer wrote is read by bash either, by the
+        // lead or a subagent: printing one is refused, running the tests
+        // that make them pass isn't.
+        if tc.name == "bash" {
+            let command = args.get("command").and_then(|c| c.as_str()).unwrap_or("");
+            if let Some(root) = self.root.as_deref() {
+                if let Some(content) =
+                    super::test_writer::sealed_command(command, root, &self.sealed_tests())
+                {
+                    return self
+                        .answer_unrun(tc, content, Outcome::Failed, true, None)
+                        .await;
+                }
+            }
+        }
         // Light commands only: builds and test runs are the lead's (E02, F05).
         // Only what's known to be light runs: a command that can't be told
         // (a wrapper, a script, a subshell) is refused too.
@@ -1919,6 +1934,13 @@ impl Run {
         }
     }
 
+    /// The test files the test writer wrote in this run, and the ones an
+    /// earlier run wrote (E03): the lead reads them not at all, so only the
+    /// test writer changes what its tests check (K11).
+    pub(super) fn sealed_tests(&self) -> Vec<String> {
+        self.tests.files().to_vec()
+    }
+
     /// What a call runs with: the run's record of files it has seen, and
     /// its note on the tool block (a wait for a CPU slot shows there).
     fn call_context(&self, tool_call_id: &str) -> tools::CallContext {
@@ -1933,6 +1955,8 @@ impl Run {
             owner: self.overlay_owner(),
             checks_owner: self.checks_owner(),
             hidden: self.sub().map(|s| s.hidden.clone()).unwrap_or_default(),
+            tests_only: self.sub().is_some_and(|s| s.tests_only),
+            written_tests: self.sealed_tests(),
             background_chat: self.sub().is_none().then(|| self.dialog_id.clone()),
             reply_cut_off: self.reply_cut_off,
             note: std::sync::Arc::new(move |note| {

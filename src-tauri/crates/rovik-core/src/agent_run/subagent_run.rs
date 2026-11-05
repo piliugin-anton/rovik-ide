@@ -89,8 +89,8 @@ pub(super) struct SubCtx {
     pub step: Option<usize>,
     /// A worker in a parallel group (F04): what the group's other steps own.
     pub group: Option<super::group::GroupCtx>,
-    /// The test writer: it writes only test files, and can't read or
-    /// search these (the files the change touches, K11).
+    /// The test writer: it writes only test files, and reads test files
+    /// and fixtures only (K11).
     pub tests_only: bool,
     pub hidden: Vec<String>,
     /// Only light commands: no builds or test runs (E02, F05).
@@ -1839,7 +1839,7 @@ impl Run {
 
     /// E02: a `task{kind:"testWriter"}` call: the brief has the request,
     /// the plan, and the outlines of the files the change touches, which it
-    /// can't read or search.
+    /// reads only as outlines.
     async fn start_test_writer(
         &mut self,
         tc: &ToolCall,
