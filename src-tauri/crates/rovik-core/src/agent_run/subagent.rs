@@ -35,7 +35,8 @@ pub const DEFAULT_MAX_PER_RUN: usize = 12;
 /// The same brief (normalised) at most this many times in one run.
 pub const MAX_SAME_BRIEF: usize = 2;
 pub const MAX_GOAL_CHARS: usize = 2_000;
-const MAX_CONTEXT_CHARS: usize = 6_000;
+/// The longest `context` a brief carries: a longer one is cut, not refused.
+pub const MAX_CONTEXT_CHARS: usize = 6_000;
 const MAX_PATHS: usize = 20;
 /// The least time budget the settings give a subagent, in minutes: less
 /// leaves it no time to work. This crate's tests go down to a second, so a
@@ -1214,7 +1215,19 @@ pub fn lead_prompt(kinds: &[Kind], worker_min_steps: usize, parallel: bool) -> O
     if parts.is_empty() {
         return None;
     }
-    Some(format!("## Subagents\n\n{}", parts.join("\n\n")))
+    // How long a brief may be, from the checks that enforce it (parse_brief):
+    // said here so the lead writes one that runs on its first call, instead
+    // of a goal refused as too long, which costs a turn.
+    let limits = format!(
+        "Write each brief to fit: the `goal` is at most {MAX_GOAL_CHARS} characters and the `context` \
+         at most {MAX_CONTEXT_CHARS} (a longer context is cut). A goal over the limit is refused and \
+         costs you a turn, so ask one question in `goal`, put the background in `context`, and the \
+         first files in `paths`."
+    );
+    Some(format!(
+        "## Subagents\n\n{limits}\n\n{}",
+        parts.join("\n\n")
+    ))
 }
 
 /// What the lead's run counts (D11): subagents started and briefs seen;
