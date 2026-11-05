@@ -2000,6 +2000,12 @@ impl Run {
             Some(section) if self.sub().is_none() => format!("{project_context}\n\n{section}"),
             _ => project_context,
         };
+        // What earlier runs of this project learned that fits this request
+        // (memory.rs): the project's own section, so it comes last.
+        let project_context = match self.memory.context() {
+            "" => project_context,
+            memory => format!("{project_context}\n\n{memory}"),
+        };
         // E03: the lead is offered the test writer (its rule is in the
         // subagent section below), so the default prompt's two test lines
         // send the tests to it instead of ordering the lead to write them.
