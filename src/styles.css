@@ -7242,6 +7242,109 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--diff-deleted-strong);
 }
 
+/* The project's prior work above the input (PriorWorkPanel.tsx): what the
+   agent's long-term memory gave this run, and what became of it. */
+
+.prior-work {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  max-height: 30%;
+  overflow-y: auto;
+  margin: 0 10px 8px;
+  padding: 8px 12px 10px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.prior-work-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.prior-work-title {
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.prior-work-verdict {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.prior-work-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.prior-work-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 0;
+  border-top: 1px solid var(--border-subtle);
+  overflow-wrap: anywhere;
+}
+
+.prior-work-state {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.prior-work-state.verified {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.prior-work-state.provisional {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.prior-work-state.deprecated {
+  color: var(--error);
+  border-color: var(--error);
+  text-decoration: line-through;
+}
+
+.prior-work-kind {
+  flex-shrink: 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.prior-work-memory-title {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.prior-work-content {
+  color: var(--fg-muted);
+}
+
+.prior-work-files {
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 /* The agent's checklist above the input (TodoPanel.tsx), the same docked
    card as the question panel. */
 

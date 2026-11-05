@@ -58,6 +58,7 @@ mod landing;
 pub mod log;
 pub mod loops;
 pub mod mcp_tool;
+pub mod memory;
 pub mod messages;
 mod parallel;
 pub mod paths;

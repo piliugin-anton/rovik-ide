@@ -82,6 +82,7 @@ import {
 } from './subagents';
 import type { SubagentConfig } from './subagentSettings';
 import type { AutopilotConfig } from './autopilotSettings';
+import type { RecalledMemory } from './memory';
 
 /** Settings runs follow (agent_run::AgentConfig). */
 export interface AgentConfig {
@@ -183,6 +184,12 @@ type AgentEvent =
   | { type: 'questionsSettled'; dialogId: string; toolCallId: string }
   | { type: 'toolNote'; dialogId: string; toolCallId: string; note: string | null }
   | { type: 'checklist'; dialogId: string; items: import('./todo').TodoItem[] }
+  | {
+      /** The project's memory as this run used it (lib/memory.ts). */
+      type: 'memoryRecalled';
+      dialogId: string;
+      memories: RecalledMemory[];
+    }
   | { type: 'backgroundTasks'; dialogId: string; tasks: BackgroundTask[] }
   | {
       type: 'fileWritten';
@@ -217,11 +224,21 @@ const [state, setState] = createStore<{
    * call id (two chats can have calls with the same id).
    */
   toolNotes: Record<string, Record<string, string>>;
-}>({ toolNotes: {} });
+  /**
+   * The memories each chat's run used, by chat (lib/memory.ts): the
+   * project's prior work, which the run sends when it starts and again with
+   * what its checks and its end made of it.
+   */
+  priorWork: Record<string, RecalledMemory[]>;
+}>({ toolNotes: {}, priorWork: {} });
 
 /** The chat's live tool call notes. */
 export const toolNotes = (dialogId: string | null): Record<string, string> | undefined =>
   dialogId ? state.toolNotes[dialogId] : undefined;
+
+/** The project's memories the chat's run used, for its "prior work" panel. */
+export const recalledMemories = (dialogId: string | null): RecalledMemory[] | undefined =>
+  dialogId ? state.priorWork[dialogId] : undefined;
 
 /*
  * ---------------------------------------------------------------------------
@@ -594,6 +611,17 @@ function handle(event: AgentEvent) {
       // Live source while the run goes: the panel reads this, not the
       // messages loaded here (which may be a window around a search hit).
       noteChecklist(event.dialogId, event.items);
+      break;
+    case 'memoryRecalled':
+      // What the project's memory gave this run, then what its checks and its
+      // end made of it: each event replaces the chat's list.
+      setState(
+        'priorWork',
+        produce((lists) => {
+          if (event.memories.length > 0) lists[event.dialogId] = event.memories;
+          else delete lists[event.dialogId];
+        })
+      );
       break;
     case 'backgroundTasks':
       noteBackgroundTasks(event.dialogId, event.tasks);

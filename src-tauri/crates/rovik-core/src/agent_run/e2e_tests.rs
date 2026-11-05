@@ -50,6 +50,10 @@ mod restricted_tests;
 #[path = "mcp_e2e_tests.rs"]
 mod mcp_tests;
 
+#[cfg(test)]
+#[path = "memory_e2e_tests.rs"]
+mod memory_tests;
+
 // Their server is a shell loop.
 #[cfg(all(test, unix))]
 #[path = "background_e2e_tests.rs"]

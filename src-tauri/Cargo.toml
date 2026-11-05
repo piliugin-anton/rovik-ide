@@ -11,6 +11,7 @@ members = [
     "crates/rovik-agentd",
     "crates/rovik-headless",
     "crates/eoka",
+    "crates/verified-code-memory",
 ]
 # A dependency kept here as published, but for its fixes (its FORK.md):
 # built as one, not as a member, so its own tests and examples, and what
@@ -27,6 +28,9 @@ edition = "2021"
 rovik-protocol = { path = "crates/rovik-protocol" }
 rovik-core = { path = "crates/rovik-core" }
 rovik-client = { path = "crates/rovik-client" }
+# The agent's long-term memory (rovik-core/src/memory.rs): one SQLite file per
+# project, holding what earlier runs learned, gated by evidence.
+verified-code-memory = { path = "crates/verified-code-memory" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # SOCKS: a SOCKS5 proxy set in Settings → Network (rovik-core/src/net).

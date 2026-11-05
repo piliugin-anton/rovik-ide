@@ -13,6 +13,7 @@ import {
   onReasoningLearned,
   onSteerReturned,
   queuedMessage,
+  recalledMemories,
   toolNotes,
 } from './agentRuns';
 import { agentChangesFor, recordAgentEdit } from './agentChanges';
@@ -272,6 +273,8 @@ test("the backend's events, as the shared fixtures have them, reach their stores
       assert.deepEqual(message(e.messageId)?.status, e.patch.status ?? undefined);
     },
     toolNote: (e) => assert.equal(toolNotes(e.dialogId)?.[e.toolCallId], e.note ?? undefined),
+    // What the run remembered, replacing the chat's list.
+    memoryRecalled: (e) => assert.deepEqual(recalledMemories(e.dialogId), e.memories),
     approvalRequested: (e) =>
       assert.equal(
         pendingApproval(e.request.dialogId, e.request.toolCallId)?.edit?.absPath,
@@ -332,6 +335,40 @@ test("the backend's events, as the shared fixtures have them, reach their stores
     for (const stop of stops) stop();
     stopReturned();
   }
+});
+
+test('a chat’s prior work is what its run last recalled, until it recalls nothing', async () => {
+  await initAgentRuns();
+  const chat = 'recall-chat';
+  const memory = (verification: string, helped?: boolean) => ({
+    id: `fx-${verification}`,
+    kind: 'episode',
+    title: 'Rename the helper',
+    content: 'Outcome: done',
+    ...(helped === undefined ? {} : { helped }),
+    verification,
+  });
+  assert.equal(recalledMemories(chat), undefined, 'nothing yet');
+  // Recalled while the run is prepared, before it starts.
+  emit({ type: 'memoryRecalled', dialogId: chat, memories: [memory('provisional')] });
+  assert.equal(recalledMemories(chat)?.length, 1);
+  assert.equal(recalledMemories(chat)?.[0].title, 'Rename the helper');
+  // The run's start keeps them: the recall comes before it.
+  emit({ type: 'runStarted', dialogId: chat, runId: 'r', steerable: false });
+  assert.equal(recalledMemories(chat)?.[0].verification, 'provisional');
+  // Its end replaces them, the same memory now with the run's verdict.
+  emit({ type: 'memoryRecalled', dialogId: chat, memories: [memory('verified', true)] });
+  assert.equal(recalledMemories(chat)?.length, 1);
+  assert.equal(recalledMemories(chat)?.[0].verification, 'verified');
+  assert.equal(recalledMemories(chat)?.[0].helped, true);
+  // A chat with nothing remembered has no list at all.
+  emit({ type: 'memoryRecalled', dialogId: chat, memories: [] });
+  assert.ok(!recalledMemories(chat)?.length);
+  // Each chat has its own.
+  emit({ type: 'memoryRecalled', dialogId: 'other-chat', memories: [memory('verified')] });
+  assert.equal(recalledMemories('other-chat')?.length, 1);
+  assert.ok(!recalledMemories(chat)?.length);
+  assert.equal(recalledMemories(null), undefined);
 });
 
 test('a page loaded mid-run shows the messages its run hasn’t read, and which runs take them', async () => {

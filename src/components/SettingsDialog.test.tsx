@@ -9,6 +9,7 @@ import SettingsDialog from './SettingsDialog';
 import { DEFAULT_PERMISSIONS } from '../lib/permissions';
 import { DEFAULT_SUBAGENT_SETTINGS } from '../lib/subagentSettings';
 import type { PersistedAiSettings } from '../lib/aiSettings';
+import { memorySummary } from '../lib/memory';
 
 /** The saved AI settings, as the backend keeps them. */
 let saved: PersistedAiSettings = {
@@ -130,6 +131,7 @@ const COMPUTER: typeof backend = {
   restricted_files: () => [
     { path: '.env', blockRead: true, blockWrite: true, detected: true, listed: false },
   ],
+  memory_stats: () => ({ total: 5, verified: 3, provisional: 2, deprecated: 0 }),
 };
 
 let dispose = () => {};
@@ -202,6 +204,11 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
     },
     { label: 'Project checks', state: 'Not run: checking is off in Agent runs', warning: true },
     { label: 'Restricted files', state: '1 file kept from the agent', warning: false },
+    {
+      label: 'Long-term memory',
+      state: memorySummary({ total: 5, verified: 3, provisional: 2, deprecated: 0 }),
+      warning: false,
+    },
     { label: 'Heavy commands', state: 'Auto: 1 slot on this machine', warning: false },
     {
       label: 'Virtual files',

@@ -144,6 +144,9 @@ pub struct Run {
     pub(super) seen: Arc<crate::file_guard::Seen>,
     /// The request's user message as sent (with editor context).
     pub(super) current_user_content: Option<String>,
+    /// The project's long-term memory as this run uses it (memory.rs): what
+    /// it recalled, and what its checks and its end made of that.
+    pub(super) memory: super::memory::RunMemory,
     pub(super) local_date: String,
     pub(super) guard: Guard,
     /// The project's checks and the system-prompt section about it. Fixed
@@ -1034,6 +1037,11 @@ impl Run {
                 );
             }
         }
+        // The project's prior work, recalled for this request: the prompt's
+        // section, and the chat's panel (memory.rs).
+        if let Some(settings_root) = settings_root.as_deref() {
+            run.recall_memory(settings_root).await;
+        }
         Ok(Some((run, entry)))
     }
 
@@ -1072,6 +1080,7 @@ impl Run {
             project_root: None,
             mcp: None,
             current_user_content: None,
+            memory: Default::default(),
             local_date: String::new(),
             guard: Guard::new(None, 0),
             checks: Vec::new(),
@@ -1295,6 +1304,10 @@ impl Run {
         // Ended before the message got any answer.
         self.settle(false).await;
         self.log_clm_compliance(&outcome).await;
+        // The project's memory: whether what it used helped, the run's own
+        // account of itself, and the lesson a repaired failure taught
+        // (memory.rs).
+        self.memory_after_run(&outcome).await;
         let mut entry = json!({
             "event": "run",
             "dialogId": self.dialog_id,
@@ -1986,6 +1999,12 @@ impl Run {
         let project_context = match &mcp_section {
             Some(section) if self.sub().is_none() => format!("{project_context}\n\n{section}"),
             _ => project_context,
+        };
+        // What earlier runs of this project learned that fits this request
+        // (memory.rs): the project's own section, so it comes last.
+        let project_context = match self.memory.context() {
+            "" => project_context,
+            memory => format!("{project_context}\n\n{memory}"),
         };
         // E03: the lead is offered the test writer (its rule is in the
         // subagent section below), so the default prompt's two test lines

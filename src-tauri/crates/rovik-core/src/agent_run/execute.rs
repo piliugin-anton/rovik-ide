@@ -865,6 +865,17 @@ impl Run {
         self.denied_by_user = auth.by_user && self.sub().is_none();
         // G02: its time is its own from here, not its approval's wait.
         self.calls.start(&tc.id);
+        // A write's file: what the project's memory says about it, on the
+        // call while it runs (memory.rs). Set here, not before the approval,
+        // because the reviewer's "Reviewing with …" holds the same note.
+        if tc.name == "write" {
+            if let (Some(path), Some(root)) = (path_arg, self.root.clone()) {
+                let key = super::repair::rel_key(&root, path);
+                if let Some(note) = self.memory.hint(&tc.id, &key).await {
+                    self.tool_note(&tc.id, Some(note));
+                }
+            }
+        }
         let mut args_json = auth
             .args_override
             .clone()
@@ -1143,6 +1154,10 @@ impl Run {
         if let Some(approval) = auth.approval {
             meta.get_or_insert_with(Map::new)
                 .insert("approval".into(), approval);
+        }
+        // The memory's note about this call's file goes with its result.
+        if self.memory.take_note(&tc.id) {
+            self.tool_note(&tc.id, None);
         }
         self.add_tool_result(
             &tc.id,

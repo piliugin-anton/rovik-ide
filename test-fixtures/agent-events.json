@@ -215,6 +215,29 @@
       ],
       "leftOut": ["time (.vscode/mcp.json) isn't used: one of the user's MCP servers has its name"]
     },
+    {
+      "type": "memoryRecalled",
+      "dialogId": "fx-chat",
+      "memories": [
+        {
+          "id": "3f4e5d6c-7b8a-4c1d-9e2f-0a1b2c3d4e5f",
+          "kind": "procedure",
+          "title": "Cargo tests run after the change",
+          "content": "Outcome: done. Changed: src/lib.rs. Checks: cargo test passed.",
+          "files": ["src/lib.rs"],
+          "verification": "verified",
+          "evidence": "the checks passed: cargo test",
+          "helped": true
+        },
+        {
+          "id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+          "kind": "episode",
+          "title": "Retry race",
+          "content": "Serialize retries by order ID.",
+          "verification": "provisional"
+        }
+      ]
+    },
     { "type": "runEnded", "dialogId": "fx-chat", "runId": "fx-run", "outcome": "done" }
   ]
 }

@@ -8,6 +8,7 @@ use crate::agent_run::AgentState;
 use crate::browser_tools::BrowserState;
 use crate::chat_db::DbState;
 use crate::mcp::McpState;
+use crate::memory::MemoryState;
 use crate::vfs::VfsState;
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -51,6 +52,8 @@ pub struct Parts {
     pub browser: BrowserState,
     /// The user's MCP servers (crate::mcp).
     pub mcp: McpState,
+    /// The projects' long-term memory, one store per project (crate::memory).
+    pub memory: MemoryState,
     pub events: Arc<dyn EventSink>,
 }
 
@@ -89,6 +92,7 @@ impl Core {
             vfs: VfsState::default(),
             browser: BrowserState::default(),
             mcp: McpState::default(),
+            memory: MemoryState::default(),
             events,
         })))
     }

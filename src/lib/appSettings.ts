@@ -23,6 +23,7 @@ export type SettingsPage =
   | 'autopilot'
   | 'project'
   | 'files'
+  | 'memory'
   | 'workload'
   | 'vfs'
   | 'network'
@@ -42,6 +43,7 @@ export const PAGE_TITLE: Record<SettingsPage, string> = {
   autopilot: 'Autopilot',
   project: 'Project checks',
   files: 'Restricted files',
+  memory: 'Long-term memory',
   workload: 'Heavy commands',
   vfs: 'Virtual files',
   network: 'Network',
