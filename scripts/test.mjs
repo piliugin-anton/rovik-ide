@@ -77,7 +77,20 @@ const browserOnly = {
   },
 };
 
+/**
+ * `--test-force-exit` where the runner has it (Node 18.19 and 20.4 on): a test
+ * file that leaves a component's `window.setInterval` running — one whose
+ * assertion threw before the render was disposed — would keep its child
+ * process alive, and the run would hang instead of printing the failure.
+ */
+function testRunnerFlags() {
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  const supported = major > 20 || (major === 20 && minor >= 4) || (major === 18 && minor >= 19);
+  return supported ? ['--test-force-exit'] : [];
+}
+
 const files = testFiles('src');
+
 const out = mkdtempSync(join(tmpdir(), 'rovik-tests-'));
 try {
   const bundles = [];
@@ -111,7 +124,10 @@ try {
     });
     bundles.push(outfile);
   }
-  const run = spawnSync(process.execPath, ['--test', ...bundles], { stdio: 'inherit' });
+  const run = spawnSync(process.execPath, ['--test', ...testRunnerFlags(), ...bundles], {
+    stdio: 'inherit',
+  });
+
   process.exitCode = run.status ?? 1;
 } finally {
   rmSync(out, { recursive: true, force: true });

@@ -1289,7 +1289,11 @@ it to `SECRET_NAMES` or its kin in `restricted_files.rs`.
 
 **Settings → Long-term memory** shows what the open project's memory holds —
 how many memories, and how many of them are verified — and switches it off for
-that project (on unless you turn it off). Each project's memory is a SQLite file
+that project (on unless you turn it off). **Manage memories…** opens them: a
+search box that finds a memory by a word of its title or text, a tag or a file
+name; **Edit** rewrites a memory's title and text; **Delete** removes one, and
+**Clear all memories…** removes every memory the project keeps, both after
+asking. Each project's memory is a SQLite file
 of its own in the app's data folder (`memory/<project>.db`), so nothing is
 written into your repository. The store is the `verified-code-memory` crate in
 `src-tauri/crates/verified-code-memory`.
@@ -1316,7 +1320,9 @@ then its outcome, the files it changed and what the checks said, promoted when
 they passed. A run that made a failing check pass adds a procedure saying what
 failed and what fixed it, replacing an older one for the same check, so the
 memory revises instead of piling up. Those and the checks' promotions are what a
-later run finds as prior work; nothing else writes to a project's memory.
+later run finds as prior work, and so is what you change in **Manage
+memories…**: a corrected title or text, a memory you deleted, or a memory
+cleared altogether.
 
 ### Allowed hosts
 

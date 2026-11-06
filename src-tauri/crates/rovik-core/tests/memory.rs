@@ -1,7 +1,8 @@
 //! The project's long-term memory: one store per project, and the project's own switch.
 //!
 //! These use only what `rovik_core::memory` makes public: `load`, `store_path`,
-//! `MemoryState` and `stats`.
+//! `MemoryState`, `stats`, the `MemoryEntry` a page reads, and `list`, `edit`, `remove`
+//! and `clear`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -9,7 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use rovik_core::core::Paths;
 use rovik_core::memory::{self, MemoryState};
 use serde_json::json;
-use verified_code_memory::{NewMemory, RetrievalQuery};
+use verified_code_memory::{NewMemory, RetrievalQuery, SharedMemoryStore};
 
 /// A folder of its own, removed when the test ends.
 struct TempDir(PathBuf);
@@ -176,5 +177,374 @@ fn a_store_that_cannot_be_opened_yields_nothing() {
     assert!(
         state.open(&paths, &project).is_none(),
         "a store that can't be opened yields nothing instead of stopping the run"
+    );
+}
+
+// Reading a project's memories back, correcting one, dropping one, clearing them.
+
+fn entry_ids(entries: &[memory::MemoryEntry]) -> Vec<String> {
+    entries.iter().map(|entry| entry.id.clone()).collect()
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
+#[test]
+fn an_entry_names_its_kind_and_state_as_the_chats_panel_does() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let before = now_millis();
+    let episode = store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Checkout retry race condition",
+            "Serialize retries by order ID.",
+        ))
+        .unwrap();
+    store.verify(episode.id, "12/12 tests passed").unwrap();
+    let fact = store
+        .remember(NewMemory::project_fact(
+            "payments-service",
+            "Retries run in the worker",
+            "Retries are queued, not done inline.",
+        ))
+        .unwrap();
+    let after = now_millis();
+
+    let entries = memory::list(&store, "payments-service", "").unwrap();
+    assert_eq!(entries.len(), 2, "both memories are listed");
+    let verified = entries
+        .iter()
+        .find(|entry| entry.id == episode.id.to_string())
+        .expect("the verified episode is listed");
+    let provisional = entries
+        .iter()
+        .find(|entry| entry.id == fact.id.to_string())
+        .expect("the project fact is listed");
+
+    assert_eq!(verified.kind, "episode", "the kind reads as a word");
+    assert_eq!(
+        provisional.kind, "project fact",
+        "the kind reads as a word"
+    );
+    assert_eq!(verified.verification, "verified");
+    assert_eq!(provisional.verification, "provisional");
+    assert_eq!(
+        verified.evidence.as_deref(),
+        Some("12/12 tests passed"),
+        "the evidence the agent gave travels with the entry"
+    );
+    assert!(
+        (before..=after).contains(&verified.updated_at),
+        "updatedAt is milliseconds since the Unix epoch, as the protocol's stamps are: {}",
+        verified.updated_at
+    );
+    assert!((before..=after).contains(&provisional.updated_at));
+
+    let json = serde_json::to_value(verified).unwrap();
+    assert!(
+        json.get("updatedAt").is_some(),
+        "the page reads camelCase keys: {json}"
+    );
+    assert!(json.get("updated_at").is_none());
+    assert_eq!(
+        json.get("verification").and_then(|value| value.as_str()),
+        Some("verified")
+    );
+    assert_eq!(
+        json.get("kind").and_then(|value| value.as_str()),
+        Some("episode")
+    );
+}
+
+#[test]
+fn the_list_is_this_projects_memories_newest_first() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let first = store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Serialize retries",
+            "Serialize retries by order ID.",
+        ))
+        .unwrap();
+    let second = store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Retry tests",
+            "The retries are covered twice.",
+        ))
+        .unwrap();
+    let elsewhere = store
+        .remember(NewMemory::episode(
+            "billing-service",
+            "Billing retry",
+            "The billing worker retries at night.",
+        ))
+        .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    memory::edit(
+        &store,
+        &first.id.to_string(),
+        "Serialize retries",
+        "Serialize every retry by order ID.",
+    )
+    .unwrap();
+
+    let listed = memory::list(&store, "payments-service", "").unwrap();
+    assert_eq!(
+        entry_ids(&listed),
+        vec![first.id.to_string(), second.id.to_string()],
+        "the memory edited last is the newest, so it is listed first"
+    );
+    assert!(
+        listed[0].updated_at >= listed[1].updated_at,
+        "the newest memory has the latest timestamp"
+    );
+    assert_eq!(listed.len(), 2, "another project's memory is left out");
+    assert!(
+        listed.iter().all(|entry| entry.title != "Billing retry"),
+        "every listed entry belongs to the project asked about"
+    );
+
+    let other = memory::list(&store, "billing-service", "").unwrap();
+    assert_eq!(entry_ids(&other), vec![elsewhere.id.to_string()]);
+    assert!(
+        memory::list(&store, "no-such-project", "").unwrap().is_empty(),
+        "a project that remembers nothing lists nothing"
+    );
+}
+
+#[test]
+fn a_search_matches_part_of_a_title_the_text_or_a_file() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let retry = store
+        .remember(
+            NewMemory::episode(
+                "payments-service",
+                "Checkout retry race condition",
+                "Serialize retries by order ID; the count did not fix the race.",
+            )
+            .with_files(["src/checkout/retry.py", "tests/test_retry.py"])
+            .with_tags(["checkout"]),
+        )
+        .unwrap();
+    let billing = store
+        .remember(
+            NewMemory::episode(
+                "payments-service",
+                "Nightly billing run",
+                "The billing worker runs at night.",
+            )
+            .with_files(["src/billing/worker.py"])
+            .with_tags(["after-hours"]),
+        )
+        .unwrap();
+
+    let found = |query: &str| entry_ids(&memory::list(&store, "payments-service", query).unwrap());
+
+    assert_eq!(
+        found("retry race"),
+        vec![retry.id.to_string()],
+        "part of a title finds it"
+    );
+    assert_eq!(
+        found("did not fix"),
+        vec![retry.id.to_string()],
+        "part of the text finds it"
+    );
+    assert_eq!(
+        found("billing/worker.py"),
+        vec![billing.id.to_string()],
+        "a file the memory names finds it"
+    );
+    assert_eq!(
+        found("after-hours"),
+        vec![billing.id.to_string()],
+        "a tag finds it"
+    );
+    assert_eq!(found("").len(), 2, "an empty search asks for every memory");
+    assert!(found("nothing mentions this").is_empty());
+}
+
+#[test]
+fn an_edited_memory_is_listed_with_its_new_title() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let memory = store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Retry race",
+            "Increasing the retry count did not fix it.",
+        ))
+        .unwrap();
+    store.verify(memory.id, "12/12 tests passed").unwrap();
+
+    memory::edit(
+        &store,
+        &memory.id.to_string(),
+        "  Retry race, serialized  ",
+        "  Serialize every retry by order ID.  ",
+    )
+    .unwrap();
+
+    let listed = memory::list(&store, "payments-service", "").unwrap();
+    assert_eq!(listed.len(), 1, "the same memory, corrected");
+    assert_eq!(listed[0].id, memory.id.to_string());
+    assert_eq!(
+        listed[0].title, "Retry race, serialized",
+        "the title is kept, trimmed"
+    );
+    assert_eq!(
+        listed[0].content, "Serialize every retry by order ID.",
+        "the text is kept, trimmed"
+    );
+    assert_eq!(
+        listed[0].verification, "verified",
+        "the trust state stays as the agent left it"
+    );
+    assert_eq!(
+        entry_ids(&memory::list(&store, "payments-service", "serialized").unwrap()),
+        vec![memory.id.to_string()],
+        "the new title can be searched for"
+    );
+}
+
+#[test]
+fn an_edit_that_would_empty_the_title_or_the_text_is_refused() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let memory = store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Retry race",
+            "Increasing the retry count did not fix it.",
+        ))
+        .unwrap();
+
+    assert!(
+        memory::edit(&store, &memory.id.to_string(), "   ", "Some text").is_err(),
+        "an edit with no title is refused"
+    );
+    assert!(
+        memory::edit(&store, &memory.id.to_string(), "A title", "  \n ").is_err(),
+        "an edit with no text is refused"
+    );
+
+    let listed = memory::list(&store, "payments-service", "").unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].title, "Retry race", "the memory is unchanged");
+    assert_eq!(
+        listed[0].content, "Increasing the retry count did not fix it.",
+        "the memory is unchanged"
+    );
+}
+
+#[test]
+fn a_memory_id_that_is_not_one_is_an_error() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let memory = store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Retry race",
+            "Increasing the retry count did not fix it.",
+        ))
+        .unwrap();
+
+    let refused = memory::remove(&store, "not-a-uuid").unwrap_err();
+    assert!(
+        refused.contains("not-a-uuid"),
+        "the error names the id it refused: {refused}"
+    );
+    let refused = memory::edit(&store, "still-not-a-uuid", "A title", "Some text").unwrap_err();
+    assert!(
+        refused.contains("still-not-a-uuid"),
+        "the error names the id it refused: {refused}"
+    );
+    assert!(
+        memory::remove(&store, "00000000-0000-4000-8000-000000000000").is_err(),
+        "an id no memory has is an error too"
+    );
+
+    let listed = memory::list(&store, "payments-service", "").unwrap();
+    assert_eq!(listed.len(), 1, "nothing was removed");
+    assert_eq!(listed[0].title, memory.title, "nothing was changed");
+}
+
+#[test]
+fn removing_a_memory_takes_it_out_of_the_list() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let kept = store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Serialize retries",
+            "Serialize retries by order ID.",
+        ))
+        .unwrap();
+    let dropped = store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Retry tests",
+            "The retries are covered twice.",
+        ))
+        .unwrap();
+
+    memory::remove(&store, &dropped.id.to_string()).unwrap();
+
+    assert_eq!(
+        entry_ids(&memory::list(&store, "payments-service", "").unwrap()),
+        vec![kept.id.to_string()],
+        "only the memory that was kept is listed"
+    );
+    assert!(
+        memory::remove(&store, &dropped.id.to_string()).is_err(),
+        "removing a memory twice is an error"
+    );
+}
+
+#[test]
+fn clearing_says_how_many_memories_went() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Serialize retries",
+            "Serialize retries by order ID.",
+        ))
+        .unwrap();
+    store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Retry tests",
+            "The retries are covered twice.",
+        ))
+        .unwrap();
+    store
+        .remember(NewMemory::episode(
+            "billing-service",
+            "Billing retry",
+            "The billing worker retries at night.",
+        ))
+        .unwrap();
+
+    assert_eq!(
+        memory::clear(&store, "payments-service").unwrap(),
+        2,
+        "the count says how many memories went"
+    );
+    assert!(
+        memory::list(&store, "payments-service", "").unwrap().is_empty(),
+        "the project has no memories left"
+    );
+    assert_eq!(
+        memory::list(&store, "billing-service", "").unwrap().len(),
+        1,
+        "another project's memory stays"
+    );
+    assert_eq!(
+        memory::clear(&store, "payments-service").unwrap(),
+        0,
+        "clearing a project that remembers nothing clears nothing"
     );
 }

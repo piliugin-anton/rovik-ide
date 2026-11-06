@@ -3,7 +3,7 @@
 // for the looks every 30 minutes, kept for every window. The app is
 // answered here, command by command. Run with: npm test
 import { container } from '../test/dom';
-import { after, test } from 'node:test';
+import { test as nodeTest } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import UpdatesSettings from './UpdatesSettings';
@@ -30,8 +30,23 @@ const flush = async () => {
   for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
+/** The page rendered last: gone when the next one renders. */
 let dispose = () => {};
-after(() => dispose());
+
+/**
+ * A test that unmounts the page it rendered before it returns, whether it
+ * passed or threw: the page looks for updates every 30 s, and a timer left
+ * running would keep the file's process from exiting.
+ */
+function test(name: string, body: () => Promise<void>) {
+  nodeTest(name, async () => {
+    try {
+      await body();
+    } finally {
+      dispose();
+    }
+  });
+}
 
 const opened: SettingsPage[] = [];
 async function page() {

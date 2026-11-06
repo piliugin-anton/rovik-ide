@@ -1,13 +1,15 @@
 // MemorySettings.tsx
 //
-// Settings → Long-term memory: how many memories the open project has, and
-// the switch that turns its memory off for the project's chats (lib/memory.ts).
-// The count comes from the project's store (`memory_stats`); the switch is
-// the project's own setting, saved with its other settings at once
-// (projectProfile.ts `memory`: absent means on).
+// Settings → Long-term memory: how many memories the open project has, the
+// switch that turns its memory off for the project's chats (lib/memory.ts)
+// and the way into the manager that lists, corrects and removes them
+// (components/MemoryManager.tsx). The count comes from the project's store
+// (`memory_stats`); the switch is the project's own setting, saved with its
+// other settings at once (projectProfile.ts `memory`: absent means on).
 import { createEffect, createResource, createSignal, on, Show } from 'solid-js';
 import { memoryStats, memorySummary } from '../lib/memory';
 import { loadProjectSettings, updateProjectSettings } from '../lib/projectProfile';
+import MemoryManager from './MemoryManager';
 import { SettingRow, SettingStatus } from './SettingsControls';
 
 export default function MemorySettings(props: { root: string }) {
@@ -18,6 +20,8 @@ export default function MemorySettings(props: { root: string }) {
   const [enabled, setEnabled] = createSignal(true);
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  /** The manager is on top: it lists and changes what the project kept. */
+  const [managing, setManaging] = createSignal(false);
 
   // The open project's choice, read again when another project opens.
   createEffect(
@@ -63,6 +67,9 @@ export default function MemorySettings(props: { root: string }) {
               {stats() ? memorySummary(stats()!) : 'The memory could not be counted.'}
             </Show>
           </span>
+          <button class="link-button" onClick={() => setManaging(true)}>
+            Manage memories…
+          </button>
         </SettingRow>
         <SettingRow label="Use in chats">
           <input
@@ -87,6 +94,16 @@ export default function MemorySettings(props: { root: string }) {
           Count again
         </button>
       </section>
+      <Show when={managing()}>
+        <MemoryManager
+          root={props.root}
+          onClose={() => {
+            setManaging(false);
+            // What the manager changed shows in the count above.
+            void refetch();
+          }}
+        />
+      </Show>
     </div>
   );
 }

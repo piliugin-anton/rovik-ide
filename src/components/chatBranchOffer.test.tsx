@@ -86,12 +86,18 @@ function button(label: string): HTMLButtonElement {
 /**
  * The panel on a project of its own, with `text` sent: the test before's
  * send, never answered, isn't recovered into its input.
+ *
+ * The panel's message list ticks every 500 ms and stops only when the panel
+ * is unmounted, so the caller must call the returned dispose before its test
+ * returns or the file's process never exits. A send that throws (no `crypto`
+ * in this node) unmounts the panel itself before the error is passed on, so
+ * that a failed test leaves nothing running either.
  */
 async function mountAndSend(projectId: string, text: string) {
   calls = [];
   localStorage.clear();
   const root = container();
-  const dispose = render(
+  const tree = render(
     () => (
       <>
         <ChatPanel
@@ -105,48 +111,72 @@ async function mountAndSend(projectId: string, text: string) {
     ),
     root
   );
-  await flush();
-  const input = root.querySelector('.chat-input-contenteditable') as HTMLElement;
-  input.textContent = text;
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  await flush();
-  (root.querySelector('.chat-send-button') as HTMLButtonElement).click();
-  await flush();
+  let mounted = true;
+  /** Idempotent: a test's `finally` and its own last line may both call it. */
+  const dispose = () => {
+    if (!mounted) return;
+    mounted = false;
+    tree();
+  };
+  try {
+    await flush();
+    const input = root.querySelector('.chat-input-contenteditable') as HTMLElement;
+    input.textContent = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    (root.querySelector('.chat-send-button') as HTMLButtonElement).click();
+    await flush();
+  } catch (cause) {
+    dispose();
+    throw cause;
+  }
   return dispose;
 }
 
 test('a new chat’s first message waits for the answer, and Yes starts its run on the new branch', async () => {
   head = { branch: 'main', main_branch: 'main' };
-  const dispose = await mountAndSend('project-yes', 'Fix the build');
-  assert.ok(dialog(), 'asked');
-  assert.deepEqual(sent('agent_start'), [], 'the run waits');
-  const name = (dialog()!.querySelector('input.new-project-input') as HTMLInputElement).value;
-  button('Yes').click();
-  await flush();
-  assert.deepEqual(sent('git_create_branch'), [{ path: '/p', name, checkout: true, from: null }]);
-  assert.equal(sent('agent_start').length, 1, 'then it starts');
-  const at = (cmd: string) => calls.findIndex((c) => c.cmd === cmd);
-  assert.ok(at('git_create_branch') < at('agent_start'), 'on the new branch');
-  dispose();
+  let dispose = () => {};
+  try {
+    dispose = await mountAndSend('project-yes', 'Fix the build');
+    assert.ok(dialog(), 'asked');
+    assert.deepEqual(sent('agent_start'), [], 'the run waits');
+    const name = (dialog()!.querySelector('input.new-project-input') as HTMLInputElement).value;
+    button('Yes').click();
+    await flush();
+    assert.deepEqual(sent('git_create_branch'), [{ path: '/p', name, checkout: true, from: null }]);
+    assert.equal(sent('agent_start').length, 1, 'then it starts');
+    const at = (cmd: string) => calls.findIndex((c) => c.cmd === cmd);
+    assert.ok(at('git_create_branch') < at('agent_start'), 'on the new branch');
+  } finally {
+    dispose();
+  }
 });
 
 test('No starts the run where the project is', async () => {
   head = { branch: 'main', main_branch: 'main' };
-  const dispose = await mountAndSend('project-no', 'Fix the build');
-  button('No').click();
-  await flush();
-  assert.deepEqual(sent('git_create_branch'), []);
-  assert.equal(sent('agent_start').length, 1);
-  dispose();
+  let dispose = () => {};
+  try {
+    dispose = await mountAndSend('project-no', 'Fix the build');
+    button('No').click();
+    await flush();
+    assert.deepEqual(sent('git_create_branch'), []);
+    assert.equal(sent('agent_start').length, 1);
+  } finally {
+    dispose();
+  }
 });
 
 test('a project on another branch than its main one starts the run at once', async () => {
   head = { branch: 'feature', main_branch: 'main' };
-  const dispose = await mountAndSend('project-feature', 'Fix the build');
-  assert.equal(dialog(), null, 'not asked');
-  assert.deepEqual(sent('git_head'), [{ path: '/p' }]);
-  assert.equal(sent('agent_start').length, 1);
-  dispose();
+  let dispose = () => {};
+  try {
+    dispose = await mountAndSend('project-feature', 'Fix the build');
+    assert.equal(dialog(), null, 'not asked');
+    assert.deepEqual(sent('git_head'), [{ path: '/p' }]);
+    assert.equal(sent('agent_start').length, 1);
+  } finally {
+    dispose();
+  }
 });
 
 test('a message to a chat that has messages already starts its run at once', async () => {
@@ -180,13 +210,14 @@ test('a message to a chat that has messages already starts its run at once', asy
     createdAt: now,
   });
   rows = [row('m1', 1, 'user', 'Add a test'), row('m2', 2, 'assistant', 'Done.')];
+  let dispose = () => {};
   try {
-    const dispose = await mountAndSend('project-earlier', 'And another');
+    dispose = await mountAndSend('project-earlier', 'And another');
     assert.equal(dialog(), null, 'not asked');
     assert.deepEqual(sent('git_head'), [], 'git isn’t even read');
     assert.equal(sent('agent_start').length, 1);
-    dispose();
   } finally {
+    dispose();
     dialogs = [];
     rows = [];
   }

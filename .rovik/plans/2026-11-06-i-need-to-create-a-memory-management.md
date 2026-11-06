@@ -15,8 +15,8 @@ through `confirmDialog`.
    - In `impl MemoryStore`, beside `stats`:
      - `pub fn list(&self, repo: &str, query: &str) -> Result<Vec<MemoryRecord>>`: one prepared
        statement, `WHERE repo = ?1 AND (title LIKE ?2 ESCAPE '\' OR content LIKE ?2 ESCAPE '\'
-       OR tags_json LIKE ?2 ESCAPE '\' OR files_json LIKE ?2 ESCAPE '\') ORDER BY updated_at
-       DESC`, the pattern `%query%` with `\`, `%` and `_` escaped so a typed `%` is a `%`; an empty
+OR tags_json LIKE ?2 ESCAPE '\' OR files_json LIKE ?2 ESCAPE '\') ORDER BY updated_at
+DESC`, the pattern `%query%` with `\`, `%` and `_` escaped so a typed `%` is a `%`; an empty
        query matches every row. Every trust state is listed, deprecated ones included.
      - `pub fn edit(&self, id: Uuid, title: &str, content: &str) -> Result<MemoryRecord>`: trims
        both, `VcmError::EmptyField { field: "title" }` / `"content"` when empty (the checks
@@ -141,14 +141,14 @@ through `confirmDialog`.
        Save trims both, refuses either empty with a message, calls `memoryEdit`, then closes the
        form and refetches; a failure keeps the form with its values and says so.
      - Delete: `confirmDialog({ title: 'Delete this memory?', message: <the title>,
-       confirmLabel: 'Delete', danger: true })`, then `memoryDelete` and a refetch.
+confirmLabel: 'Delete', danger: true })`, then `memoryDelete` and a refetch.
      - Clear: `confirmDialog({ title: 'Clear this project's memory?', message: 'Every memory this
-       project keeps is deleted, not only the ones shown here.', confirmLabel: 'Clear memory',
-       danger: true })`, then `memoryClear`, a notice `Cleared N memories.` (steps 6 and
+project keeps is deleted, not only the ones shown here.', confirmLabel: 'Clear memory',
+danger: true })`, then `memoryClear`, a notice `Cleared N memories.` (steps 6 and
        `plural`) and a refetch.
      - Lines for: reading (`Reading the memories…`), a failed read (`The memories couldn't be
-       read.`), nothing yet (`No memories yet: the agent adds them as it works.`), no match
-       (``No memories match “…”``), and any failed save/delete/clear (`role="alert"`).
+read.`), nothing yet (`No memories yet: the agent adds them as it works.`), no match
+       (`No memories match “…”`), and any failed save/delete/clear (`role="alert"`).
 
 9. Styles for the manager
    - Files: `src/styles.css`

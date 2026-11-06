@@ -16,7 +16,7 @@ a brief that runs on its first call.
      6,000 (a longer context is cut, a longer goal comes back as an error and costs a turn), so write
      the goal as one question, the background under `context`, and the first files under `paths`. It
      is prepended inside the last expression, `Some(format!("## Subagents\n\n{rule}\n\n{}",
-     parts.join("\n\n")))`, leaving `if parts.is_empty() { return None; }` and the per-kind `parts`
+parts.join("\n\n")))`, leaving `if parts.is_empty() { return None; }` and the per-kind `parts`
      as they are, so `lead_prompt(&[], …)` still returns `None` and a chat with no subagent kind on
      gets no section. The section keeps its `## Subagents` heading first, so the existing check that
      the lead's prompt has it still holds, and `parse_brief`'s refusal plus the schema's field
@@ -49,7 +49,7 @@ a brief that runs on its first call.
 ## Validation
 
 - From `src-tauri/`: `cargo nextest run -p rovik-core subagent` (or `cargo test -p rovik-core
-  subagent`): the new test plus `prompts_carry_the_budget`,
+subagent`): the new test plus `prompts_carry_the_budget`,
   `the_prompts_offer_groups_only_when_parallel_workers_can_run`,
   `a_brief_needs_an_enabled_kind_and_a_goal`, and the e2e
   `a_scout_explores_and_reports_to_the_lead` (which asserts the lead's prompt contains

@@ -345,6 +345,92 @@ impl MemoryStore {
         Ok(stats)
     }
 
+    /// Lists one project's memories, newest first.
+    ///
+    /// `query` is found in part of a title, the text, a tag or a file name;
+    /// empty, it matches every memory. Every trust state is listed, deprecated
+    /// ones included: the page that shows them is where stale ones go.
+    ///
+    /// # Errors
+    /// Returns [`VcmError::EmptyField`] for an empty repository, or database
+    /// errors.
+    pub fn list(&self, repo: &str, query: &str) -> Result<Vec<MemoryRecord>> {
+        if repo.trim().is_empty() {
+            return Err(VcmError::EmptyField { field: "repo" });
+        }
+
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT * FROM memories
+            WHERE repo = ?1
+              AND (title LIKE ?2 ESCAPE '\'
+                OR content LIKE ?2 ESCAPE '\'
+                OR tags_json LIKE ?2 ESCAPE '\'
+                OR files_json LIKE ?2 ESCAPE '\')
+            ORDER BY updated_at DESC
+            "#,
+        )?;
+
+        let rows = statement.query_map(params![repo, containing(query)], Self::row_to_record)?;
+
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Replaces a memory's title and text: the two its user corrects.
+    ///
+    /// Its trust state and the evidence for it, its tags and its files stay as
+    /// the agent left them. The update trigger reindexes the row for search.
+    ///
+    /// # Errors
+    /// Returns [`VcmError::EmptyField`] for a blank title or text, or
+    /// [`VcmError::NotFound`] for an unknown ID.
+    pub fn edit(&self, id: Uuid, title: &str, content: &str) -> Result<MemoryRecord> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(VcmError::EmptyField { field: "title" });
+        }
+        let content = content.trim();
+        if content.is_empty() {
+            return Err(VcmError::EmptyField { field: "content" });
+        }
+
+        let mut record = self.get(id)?;
+        record.title = title.to_string();
+        record.content = content.to_string();
+        record.updated_at = Utc::now();
+        self.update(&record)?;
+        Ok(record)
+    }
+
+    /// Removes a memory for good.
+    ///
+    /// # Errors
+    /// Returns [`VcmError::NotFound`] for an unknown ID, or database errors.
+    pub fn delete(&self, id: Uuid) -> Result<()> {
+        let removed = self.connection.execute(
+            "DELETE FROM memories WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        if removed == 0 {
+            return Err(VcmError::NotFound(id));
+        }
+        Ok(())
+    }
+
+    /// Removes every memory of one project, and says how many went.
+    ///
+    /// # Errors
+    /// Returns [`VcmError::EmptyField`] for an empty repository, or database
+    /// errors.
+    pub fn clear(&self, repo: &str) -> Result<usize> {
+        if repo.trim().is_empty() {
+            return Err(VcmError::EmptyField { field: "repo" });
+        }
+        Ok(self
+            .connection
+            .execute("DELETE FROM memories WHERE repo = ?1", params![repo])?)
+    }
+
     /// Retrieves a ranked context bundle with telemetry.
     ///
     /// # Errors
@@ -639,6 +725,38 @@ impl SharedMemoryStore {
         self.lock()?.stats(repo)
     }
 
+    /// See [`MemoryStore::list`].
+    ///
+    /// # Errors
+    /// See [`MemoryStore::list`].
+    pub fn list(&self, repo: &str, query: &str) -> Result<Vec<MemoryRecord>> {
+        self.lock()?.list(repo, query)
+    }
+
+    /// See [`MemoryStore::edit`].
+    ///
+    /// # Errors
+    /// See [`MemoryStore::edit`].
+    pub fn edit(&self, id: Uuid, title: &str, content: &str) -> Result<MemoryRecord> {
+        self.lock()?.edit(id, title, content)
+    }
+
+    /// See [`MemoryStore::delete`].
+    ///
+    /// # Errors
+    /// See [`MemoryStore::delete`].
+    pub fn delete(&self, id: Uuid) -> Result<()> {
+        self.lock()?.delete(id)
+    }
+
+    /// See [`MemoryStore::clear`].
+    ///
+    /// # Errors
+    /// See [`MemoryStore::clear`].
+    pub fn clear(&self, repo: &str) -> Result<usize> {
+        self.lock()?.clear(repo)
+    }
+
     /// See [`MemoryStore::record_outcome`].
     ///
     /// # Errors
@@ -702,6 +820,17 @@ fn validate_new_memory(memory: &NewMemory) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// The pattern `LIKE` finds `query` by: `%…%`, with the characters `LIKE`
+/// keeps for itself (`\`, `%`, `_`) escaped, so a memory that really holds a
+/// `%` is the one a `%` finds.
+fn containing(query: &str) -> String {
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
 }
 
 fn normalize_bm25(rank: f64) -> f32 {
