@@ -19,16 +19,24 @@ export interface RecalledMemory {
   content: string;
   /** The project files it's about; absent: none. */
   files?: string[];
-  /** `provisional`, `verified` or `deprecated`: its trust state. */
+  /** `provisional`, `verified` or `deprecated`: what evidence supports it. */
   verification: MemoryState;
+  /** `current`, `needs_revalidation` or `unknown`: whether that still holds. */
+  applicability?: Applicability;
   /** What promoted or invalidated it; absent: nothing did. */
   evidence?: string;
-  /** Whether the run's outcome says it helped; absent: it never got a verdict. */
-  helped?: boolean;
+  /** How the run that carried it ended; absent: the run checked nothing. */
+  association?: Association;
 }
 
 /** A memory's trust state (rovik-protocol sends it as `verification`). */
 export type MemoryState = 'provisional' | 'verified' | 'deprecated';
+
+/** Whether a memory's claim is expected to hold for the code as it is now. */
+export type Applicability = 'current' | 'needs_revalidation' | 'unknown';
+
+/** How the run that had a memory in hand ended: an association, not a verdict. */
+export type Association = 'checksPassed' | 'checksFailed';
 
 /** How many memories one project has, by trust state. */
 export interface MemoryStats {
@@ -68,17 +76,34 @@ export interface MemoryEntry {
   files: string[];
   /** The tags retrieval matches it by. */
   tags: string[];
-  /** Its trust state. */
+  /** What evidence supports it. */
   verification: MemoryState;
+  /** Whether that still holds for the code as it is now. */
+  applicability: Applicability;
+  /** What kind of source asserted it: `user assertion`, `test result`, … */
+  sourceKind: string;
   /** What promoted or invalidated it; absent: nothing did. */
   evidence?: string;
-  /** When it last changed, in milliseconds since the Unix epoch. */
+  /** When evidence last confirmed the claim, in milliseconds; absent: never. */
+  lastValidatedAt?: number;
+  /** When its title or text last changed, in milliseconds since the epoch. */
   updatedAt: number;
 }
 
 /** How a trust state reads to the user: the panel and the manager say it alike. */
 export function memoryStateLabel(state: string): string {
   return state === 'deprecated' ? 'invalidated' : state;
+}
+
+/**
+ * Whether a memory still applies, in the words the panel and the manager use.
+ * Nothing for `current`: it is the ordinary case, and saying so on every row
+ * would bury the ones that need attention.
+ */
+export function memoryApplicabilityLabel(state: string | undefined): string | undefined {
+  if (state === 'needs_revalidation') return 'check again';
+  if (state === 'unknown') return 'unchecked';
+  return undefined;
 }
 
 /**
@@ -90,8 +115,10 @@ export function memoryList(root: string, query: string): Promise<MemoryEntry[]> 
 }
 
 /**
- * Replaces a memory's title and text, the two its user can correct. Its trust
- * state and the evidence for it, its tags and its files stay as they are.
+ * Replaces a memory's title and text, the two its user can correct. The
+ * correction is the user's own assertion and carries no evidence, so the memory
+ * is marked to be checked again and stops being one a run may rely on; its
+ * tags, its files and its kind stay as they are.
  */
 export function memoryEdit(
   root: string,

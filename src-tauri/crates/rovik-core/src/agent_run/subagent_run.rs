@@ -1115,6 +1115,9 @@ impl Run {
         // Its time starts now, not when it was prepared (it may have waited
         // for a free place).
         self.started_at = Instant::now();
+        // What the project already knows, scoped to this child's brief and read
+        // only: it never validates or associates the lead's memory (memory.rs).
+        self.recall_child_memory().await;
         // A harness waiting on its tool calls ends with it (connectors).
         let _harness = super::run::HarnessGuard::new(&self.dialog_id);
         #[cfg(test)]
@@ -1347,7 +1350,7 @@ impl Run {
                     turn_meta(turn.reasoning, turn.connector),
                     &error,
                 )
-                    .await?;
+                .await?;
                 if !turn.text.trim().is_empty() {
                     last_text = turn.text.clone();
                 }
@@ -1633,7 +1636,7 @@ impl Run {
                 turn_meta(turn.reasoning.clone(), turn.connector.clone()),
                 error,
             )
-                .await?;
+            .await?;
             return Ok(turn.text);
         }
         let text = text_before_cut(&turn.text, turn.repetition_cut).to_string();

@@ -340,12 +340,12 @@ test("the backend's events, as the shared fixtures have them, reach their stores
 test('a chat’s prior work is what its run last recalled, until it recalls nothing', async () => {
   await initAgentRuns();
   const chat = 'recall-chat';
-  const memory = (verification: string, helped?: boolean) => ({
+  const memory = (verification: string, association?: 'checksPassed' | 'checksFailed') => ({
     id: `fx-${verification}`,
     kind: 'episode',
     title: 'Rename the helper',
     content: 'Outcome: done',
-    ...(helped === undefined ? {} : { helped }),
+    ...(association === undefined ? {} : { association }),
     verification,
   });
   assert.equal(recalledMemories(chat), undefined, 'nothing yet');
@@ -356,11 +356,11 @@ test('a chat’s prior work is what its run last recalled, until it recalls noth
   // The run's start keeps them: the recall comes before it.
   emit({ type: 'runStarted', dialogId: chat, runId: 'r', steerable: false });
   assert.equal(recalledMemories(chat)?.[0].verification, 'provisional');
-  // Its end replaces them, the same memory now with the run's verdict.
-  emit({ type: 'memoryRecalled', dialogId: chat, memories: [memory('verified', true)] });
+  // Its end replaces them, the same memory now with how the run ended after it.
+  emit({ type: 'memoryRecalled', dialogId: chat, memories: [memory('verified', 'checksPassed')] });
   assert.equal(recalledMemories(chat)?.length, 1);
   assert.equal(recalledMemories(chat)?.[0].verification, 'verified');
-  assert.equal(recalledMemories(chat)?.[0].helped, true);
+  assert.equal(recalledMemories(chat)?.[0].association, 'checksPassed');
   // A chat with nothing remembered has no list at all.
   emit({ type: 'memoryRecalled', dialogId: chat, memories: [] });
   assert.ok(!recalledMemories(chat)?.length);

@@ -27,6 +27,8 @@ pub enum BuiltinTool {
     Callers,
     Outline,
     Diagnostics,
+    MemorySearch,
+    MemoryGet,
     WebSearch,
     BrowseUrl,
     BrowserScreenshot,
@@ -205,7 +207,7 @@ const READ_PATH: Restricted = Restricted {
 };
 
 impl BuiltinTool {
-    pub const ALL: [BuiltinTool; 21] = [
+    pub const ALL: [BuiltinTool; 23] = [
         BuiltinTool::Read,
         BuiltinTool::Write,
         BuiltinTool::ListDir,
@@ -214,6 +216,8 @@ impl BuiltinTool {
         BuiltinTool::Callers,
         BuiltinTool::Outline,
         BuiltinTool::Diagnostics,
+        BuiltinTool::MemorySearch,
+        BuiltinTool::MemoryGet,
         BuiltinTool::WebSearch,
         BuiltinTool::BrowseUrl,
         BuiltinTool::BrowserScreenshot,
@@ -315,6 +319,20 @@ impl BuiltinTool {
                     source: false,
                 },
                 ..LOCAL_READ
+            },
+            // The project's long-term memory (agent_run/memory.rs): a lookup
+            // the model makes when its prompt's packet isn't enough. It reads
+            // the run's own store, so it dispatches with the run, and it
+            // changes nothing — no model tool may verify a memory.
+            MemorySearch => ToolSpec {
+                name: "memory_search",
+                needs_project: true,
+                ..BASE
+            },
+            MemoryGet => ToolSpec {
+                name: "memory_get",
+                needs_project: true,
+                ..BASE
             },
             Write => ToolSpec {
                 name: "write",

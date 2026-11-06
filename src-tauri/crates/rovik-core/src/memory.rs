@@ -99,8 +99,8 @@ pub fn stats(store: &SharedMemoryStore, repo: &str) -> Result<MemoryStats, Strin
     store.stats(repo).map_err(|e| e.to_string())
 }
 
-/// A memory as Settings' manager lists it: what it says, and how much the
-/// project's chats can trust it.
+/// A memory as Settings' manager lists it: what it says, how much the project's
+/// chats can trust it, and whether that still applies.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryEntry {
@@ -116,11 +116,20 @@ pub struct MemoryEntry {
     pub files: Vec<String>,
     /// The tags retrieval matches it by.
     pub tags: Vec<String>,
-    /// `provisional`, `verified` or `deprecated`: its trust state.
+    /// `provisional`, `verified` or `deprecated`: what evidence supports it.
     pub verification: String,
+    /// `current`, `needs_revalidation` or `unknown`: whether that holds now.
+    pub applicability: String,
+    /// What kind of source asserted it: the user, an observation, a test, a
+    /// deduction, or unknown.
+    pub source_kind: String,
     /// What promoted or invalidated it; absent: nothing did.
     pub evidence: Option<String>,
-    /// When it last changed, in milliseconds since the Unix epoch.
+    /// When the claim was last confirmed by evidence, in milliseconds since
+    /// the Unix epoch; absent: never.
+    pub last_validated_at: Option<i64>,
+    /// When its title or text last changed, in milliseconds since the Unix
+    /// epoch.
     pub updated_at: i64,
 }
 
@@ -134,8 +143,11 @@ impl From<&MemoryRecord> for MemoryEntry {
             files: record.files.clone(),
             tags: record.tags.clone(),
             verification: record.verification.to_string(),
+            applicability: record.applicability.to_string(),
+            source_kind: record.source_kind.to_string(),
             evidence: record.evidence.clone(),
-            updated_at: record.updated_at.timestamp_millis(),
+            last_validated_at: record.last_validated_at.map(|at| at.timestamp_millis()),
+            updated_at: record.content_updated_at.timestamp_millis(),
         }
     }
 }
@@ -157,8 +169,13 @@ pub fn list(
         .map_err(|e| e.to_string())
 }
 
-/// Replaces a memory's title and text: what its user can correct. Its trust
-/// state and the evidence for it, its tags and its files stay as they are.
+/// Replaces a memory's title and text: what its user can correct.
+///
+/// The correction is the user's own assertion, and it carries no evidence: the
+/// memory keeps the evidence it had, for the record, but that evidence spoke
+/// about the text it replaced, so the memory is marked to be checked again and
+/// is no longer one a run may rely on. Its tags, its files and its kind stay as
+/// the agent left them.
 ///
 /// # Errors
 /// Returns an error when `id` isn't a memory's, the title or text is blank,

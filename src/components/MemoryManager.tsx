@@ -10,6 +10,7 @@
 import { createResource, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { confirmDialog, type ConfirmOptions } from './ConfirmDialog';
 import {
+  memoryApplicabilityLabel,
   memoryClear,
   memoryDelete,
   memoryEdit,
@@ -310,6 +311,21 @@ export default function MemoryManager(props: { root: string; onClose: () => void
                           >
                             {memoryStateLabel(entry.verification)}
                           </span>
+                          <Show when={memoryApplicabilityLabel(entry.applicability)}>
+                            {(label) => (
+                              <span
+                                class="prior-work-applicability"
+                                classList={{ [entry.applicability]: true }}
+                                title={
+                                  entry.lastValidatedAt
+                                    ? `Last confirmed ${new Date(entry.lastValidatedAt).toLocaleDateString()}`
+                                    : 'Never confirmed by evidence'
+                                }
+                              >
+                                {label()}
+                              </span>
+                            )}
+                          </Show>
                           <span class="prior-work-kind">{entry.kind}</span>
                           <span class="memory-entry-title">{entry.title}</span>
                           <span class="memory-entry-date">

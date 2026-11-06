@@ -63,22 +63,37 @@ impl MemoryScore {
     }
 }
 
-/// Retrieval telemetry.
+/// Retrieval telemetry: what the query looked at, and what it did with it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub struct RetrievalTelemetry {
-    /// Candidate records considered.
+    /// Candidate records considered, from every pool.
     pub candidates_scanned: usize,
-    /// FTS5 matches before reranking.
+    /// Full-text candidates before reranking.
     pub fts_matches: usize,
-    /// Whether FTS5 was used.
+    /// File candidates before reranking.
+    pub file_matches: usize,
+    /// Whether full-text search found anything.
     pub used_full_text_search: bool,
+    /// Candidates the relevance gate turned down.
+    pub rejected: usize,
     /// Records returned.
     pub returned: usize,
     /// Latency in milliseconds.
     pub elapsed_ms: u128,
 }
 
-/// Scores a memory.
+/// Scores a memory, and decides whether the task is about it at all.
+///
+/// Relevance is what admits a memory: it shares the task's words, names one of
+/// its files, or shares the failure's words. Trust, kind, recency and a past
+/// success only order the memories that already belong to the task — they
+/// cannot make an unrelated record a weak match, which is how a query that
+/// matches nothing used to return the project's most trusted memory.
+///
+/// `lexical_score` is the strength of the record's full-text match, larger for
+/// a better match ([`bm25_relevance`]); `None` when the record came from
+/// another candidate pool. A caller offering a record with no relevance signal
+/// at all gets `None` back.
 #[must_use]
 pub fn score_memory(
     record: &MemoryRecord,
@@ -108,7 +123,11 @@ pub fn score_memory(
 
     let text_hits = task_terms
         .iter()
-        .filter(|term| content_terms.iter().any(|candidate| candidate.contains(*term)))
+        .filter(|term| {
+            content_terms
+                .iter()
+                .any(|candidate| candidate.contains(*term))
+        })
         .count();
 
     if text_hits > 0 {
@@ -127,17 +146,29 @@ pub fn score_memory(
         reasons.push(format!("{file_hits} file matches"));
     }
 
-    if let Some(failure) = failure {
-        let failure_terms = terms(failure);
-        let hits = failure_terms
-            .iter()
-            .filter(|term| content_terms.iter().any(|candidate| candidate.contains(*term)))
-            .count();
+    let failure_hits = failure
+        .map(|failure| {
+            terms(failure)
+                .into_iter()
+                .filter(|term| is_distinctive(term))
+                .filter(|term| {
+                    content_terms
+                        .iter()
+                        .any(|candidate| candidate.contains(term))
+                })
+                .count()
+        })
+        .unwrap_or(0);
 
-        if hits > 0 {
-            components.failure = (hits as f32).min(3.0) * weights.failure_match;
-            reasons.push(format!("{hits} failure-term matches"));
-        }
+    if failure_hits > 0 {
+        components.failure = (failure_hits as f32).min(3.0) * weights.failure_match;
+        reasons.push(format!("{failure_hits} failure-term matches"));
+    }
+
+    // The gate: no shared words, no file, no failure term — no relevance, so
+    // no result, whatever the record's trust and however recent it is.
+    if lexical_score.is_none() && file_hits == 0 && failure_hits == 0 {
+        return None;
     }
 
     let verification_bonus = match record.verification {
@@ -154,15 +185,15 @@ pub fn score_memory(
 
     components.trust = verification_bonus + kind_bonus;
 
-    let age_days = (now - record.updated_at).num_days().max(0) as f32;
+    // Recency reads when the claim last changed, not when the record was last
+    // touched: being retrieved, linked or counted says nothing about how new
+    // what it says is.
+    let age_days = (now - record.content_updated_at).num_days().max(0) as f32;
     components.recency = (1.0 / (1.0 + age_days / 30.0)) * weights.recency;
     components.outcome =
         (record.success_count as f32 / record.use_count.max(1) as f32) * weights.success_rate;
 
     let score = components.total();
-    if score <= 0.05 {
-        return None;
-    }
 
     Some(RetrievedMemory {
         record: record.clone(),
@@ -176,22 +207,73 @@ pub fn score_memory(
     })
 }
 
-/// Builds a safe FTS5 query from free text.
+/// Turns SQLite's `bm25()` rank into a relevance in `0..1`, larger for a
+/// better match.
+///
+/// SQLite's rank is negative, and the better a row matches the more negative
+/// it is (`-4.0` beats `-0.5`). Ranking on its magnitude, as this crate once
+/// did, orders the weaker match first: `1 / (1 + |rank|)` gives the worse row
+/// the larger number. The relevance keeps the direction and the bound.
+#[must_use]
+pub fn bm25_relevance(rank: f64) -> f32 {
+    let matched = (-rank).max(0.0);
+    (matched / (1.0 + matched)) as f32
+}
+
+/// Words that name no particular subject: the ones that appear in most task
+/// sentences and in memories about something else entirely.
+///
+/// They are left out of the full-text query ([`build_fts_query`]), which makes
+/// a full-text hit itself evidence that the memory shares something specific
+/// with the task, rather than a fact that both texts contain "the". Words of
+/// two letters or fewer are dropped earlier, by [`raw_terms`].
+const GENERIC_TERMS: &[&str] = &[
+    "add", "added", "adds", "after", "again", "all", "also", "and", "any", "are", "before", "but",
+    "can", "change", "changed", "changes", "code", "codebase", "could", "did", "does", "done",
+    "each", "every", "file", "files", "fix", "fixed", "fixes", "for", "from", "get", "gets", "got",
+    "had", "has", "have", "help", "helps", "here", "how", "into", "its", "just", "keep", "keeps",
+    "like", "line", "lines", "make", "makes", "making", "more", "most", "need", "needs", "not",
+    "now", "off", "only", "other", "our", "out", "same", "should", "some", "still", "task",
+    "tasks", "test", "tests", "than", "that", "the", "their", "them", "then", "there", "these",
+    "they", "thing", "things", "this", "those", "too", "update", "updated", "updates", "use",
+    "used", "using", "very", "want", "wants", "was", "way", "ways", "were", "what", "when",
+    "where", "which", "while", "why", "will", "with", "work", "works", "would", "you", "your",
+];
+
+/// Whether `term` names something a memory and a task can share.
+#[must_use]
+pub fn is_distinctive(term: &str) -> bool {
+    term.len() > 2 && !GENERIC_TERMS.contains(&term)
+}
+
+/// A rough token count of `text`: four characters to a token, rounded up,
+/// which is the estimate a prompt budget can be planned with without running
+/// the model's own tokenizer.
+#[must_use]
+pub fn estimate_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(4)
+}
+
+/// Builds a safe FTS5 query from free text: every distinctive term quoted, the
+/// terms joined by `OR`, or the empty string when the text holds none.
+///
+/// Any term may match: a task's text rarely shares every word with the memory
+/// about it ("fix the retry race" against "Retry race"), and BM25 ranks the
+/// rows that share more of them first. An empty query matches nothing, which
+/// is what a request of only generic words deserves — it names no subject to
+/// look a memory up by.
 #[must_use]
 pub fn build_fts_query(inputs: &[&str]) -> String {
     let mut all_terms = Vec::new();
 
     for input in inputs {
         for term in raw_terms(input) {
-            if !all_terms.contains(&term) {
+            if is_distinctive(&term) && !all_terms.contains(&term) {
                 all_terms.push(term);
             }
         }
     }
 
-    // Any term may match: a task's text rarely shares every word with the
-    // memory about it ("fix the retry race" against "Retry race"), and BM25
-    // ranks the rows that share more of them first.
     all_terms
         .iter()
         .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
@@ -220,14 +302,39 @@ pub(crate) fn terms(input: &str) -> Vec<String> {
     raw_terms(input)
 }
 
+/// A path as both this crate and the run compare them: `/` separators, no
+/// `.` or `..` segments, no leading or trailing separator.
 pub(crate) fn normalize_path(path: &str) -> String {
-    path.replace('\\', "/").trim_matches('/').to_string()
+    let path = path.replace('\\', "/");
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            segment => segments.push(segment),
+        }
+    }
+    segments.join("/")
 }
 
-pub(crate) fn path_overlap(left: &str, right: &str) -> bool {
+/// Whether two paths name the same file, or one names the other as seen from a
+/// repository root: `src/queue.rs` and `queue.rs` are the same file to a
+/// memory, `src/notfoo.rs` and `foo.rs` are not.
+///
+/// Whole segments only. Comparing the ends of the strings, as this crate once
+/// did, made every `foo.rs` match every `notfoo.rs`, and gave the memory a file
+/// bonus for a file it says nothing about. Both sides are normalized first, so
+/// the separators and the `./` a tool prints don't decide it.
+#[must_use]
+pub fn path_overlap(left: &str, right: &str) -> bool {
     let left = normalize_path(left);
     let right = normalize_path(right);
-    left == right || left.ends_with(&right) || right.ends_with(&left)
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    left == right || left.ends_with(&format!("/{right}")) || right.ends_with(&format!("/{left}"))
 }
 
 #[cfg(test)]

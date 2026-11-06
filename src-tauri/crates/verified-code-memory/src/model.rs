@@ -47,7 +47,114 @@ impl fmt::Display for Verification {
     }
 }
 
+/// Whether a memory's claim is still expected to hold for the code as it is
+/// now — a question apart from [`Verification`], which says what evidence once
+/// supported the claim.
+///
+/// A record can be verified and no longer current (the code it is about
+/// changed), or provisional and current (the user just said so). Neither
+/// follows from the other, so neither is derived from the other.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Applicability {
+    /// Nothing suggests the claim changed since someone checked it.
+    Current,
+    /// The claim's text, or the code it names, changed after the evidence was
+    /// gathered: it may well still be true, and it is to be checked again
+    /// before it is relied on.
+    NeedsRevalidation,
+    /// No one can say: a record without the metadata to tell, or one whose
+    /// claim was never checked in the first place.
+    #[default]
+    Unknown,
+}
+
+impl fmt::Display for Applicability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Current => write!(f, "current"),
+            Self::NeedsRevalidation => write!(f, "needs_revalidation"),
+            Self::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+/// Where a memory's claim came from: what kind of source asserted it, which is
+/// what makes "the user said so" weigh differently from "an agent inferred it".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// The user said so: a correction of a memory, or a convention they stated.
+    UserAssertion,
+    /// An agent's reading of the code.
+    CodeObservation,
+    /// A check's result.
+    TestResult,
+    /// An agent's deduction from other evidence.
+    GeneratedDeduction,
+    /// An older record that did not say, or one written before this was kept.
+    #[default]
+    Unknown,
+}
+
+impl fmt::Display for SourceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UserAssertion => write!(f, "user assertion"),
+            Self::CodeObservation => write!(f, "code observation"),
+            Self::TestResult => write!(f, "test result"),
+            Self::GeneratedDeduction => write!(f, "generated deduction"),
+            Self::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+/// The identity of a claim's text: its title and content, each with its runs of
+/// whitespace collapsed, hashed with FNV-1a.
+///
+/// Stored when a claim is validated, so that a later edit can tell that the
+/// text the evidence was about is not the text that is stored now. Two records
+/// with the same claim share it, which is what makes deduplication and
+/// supersession decidable without another model call.
+///
+/// The two fields are hashed with a separator between them, because where the
+/// title ends is part of what a claim says: a word moved from the title into
+/// the body is a different claim, and hashing the words of both as one run of
+/// text — as this once did — made `"Retry race"` over `"seed the queue"` and
+/// `"Retry"` over `"race seed the queue"` the same claim, so an edit that moved
+/// words across the boundary kept the trust earned by the old wording.
+#[must_use]
+pub fn claim_hash(title: &str, content: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    feed(&mut hash, title);
+    // A newline, which the collapsed text of a field cannot contain.
+    hash ^= u64::from(b'\n');
+    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    feed(&mut hash, content);
+    format!("{hash:016x}")
+}
+
+/// Adds `text`'s words, whitespace collapsed, to the hash being built.
+fn feed(hash: &mut u64, text: &str) {
+    for byte in text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .bytes()
+    {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+}
+
 /// Persistent memory record.
+///
+/// Two questions are kept apart, because they have different answers: what
+/// evidence once supported what it says ([`Verification`]), and whether that is
+/// expected to hold for the code now ([`Applicability`]). A record can be
+/// verified and out of date, or unproven and current.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct MemoryRecord {
@@ -55,14 +162,25 @@ pub struct MemoryRecord {
     pub id: Uuid,
     /// Memory category.
     pub kind: MemoryKind,
-    /// Trust state.
+    /// Trust state: what evidence once supported the claim.
     pub verification: Verification,
+    /// Whether the claim is expected to hold for the code as it is now.
+    pub applicability: Applicability,
+    /// What kind of source asserted the claim.
+    pub source_kind: SourceKind,
     /// Repository identifier.
     pub repo: String,
     /// Short title.
     pub title: String,
     /// Reusable content.
     pub content: String,
+    /// The claim's identity as text ([`claim_hash`] of the title and content):
+    /// recomputed when either changes.
+    pub claim_hash: String,
+    /// The claim hash the evidence in [`Self::evidence`] was gathered about.
+    /// Different from `claim_hash` means the text was edited afterwards, and
+    /// the evidence no longer speaks about what is stored now.
+    pub validated_claim_hash: Option<String>,
     /// Associated files.
     pub files: Vec<String>,
     /// Searchable tags.
@@ -77,12 +195,40 @@ pub struct MemoryRecord {
     pub confidence: f32,
     /// Creation time.
     pub created_at: DateTime<Utc>,
-    /// Last update time.
+    /// When the title or text last changed. Recency is read from this: what a
+    /// claim says is what goes stale, not how often it was looked at.
+    pub content_updated_at: DateTime<Utc>,
+    /// When anything about the record last changed.
     pub updated_at: DateTime<Utc>,
+    /// When evidence last confirmed the claim; unset: never.
+    pub last_validated_at: Option<DateTime<Utc>>,
+    /// When a run last had it in hand; unset: never.
+    pub last_retrieved_at: Option<DateTime<Utc>>,
     /// Observed uses.
     pub use_count: u32,
     /// Successful observed uses.
     pub success_count: u32,
+}
+
+impl MemoryRecord {
+    /// Whether the evidence a record carries speaks about the claim it says
+    /// now: only when the claim was not edited after it was validated.
+    ///
+    /// A record never validated, or validated before the claim was edited, has
+    /// no such evidence — which is why an edit cannot inherit trust.
+    #[must_use]
+    pub fn evidence_matches_claim(&self) -> bool {
+        self.validated_claim_hash.as_deref() == Some(self.claim_hash.as_str())
+    }
+
+    /// Whether a run should rely on it as it is: verified, and about the claim
+    /// and code as they are now.
+    #[must_use]
+    pub fn is_reliable(&self) -> bool {
+        self.verification == Verification::Verified
+            && self.applicability == Applicability::Current
+            && self.evidence_matches_claim()
+    }
 }
 
 /// How many memories one project has, by trust state.
@@ -121,27 +267,46 @@ pub struct NewMemory {
     pub source_episode: Option<Uuid>,
     /// Evidence.
     pub evidence: Option<String>,
+    /// What kind of source asserts the claim.
+    pub source_kind: SourceKind,
     /// Confidence.
     pub confidence: f32,
 }
 
 impl NewMemory {
     /// Creates an episode.
-    pub fn episode(repo: impl Into<String>, title: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn episode(
+        repo: impl Into<String>,
+        title: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self::new(MemoryKind::Episode, repo, title, content)
     }
 
     /// Creates a project fact.
-    pub fn project_fact(repo: impl Into<String>, title: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn project_fact(
+        repo: impl Into<String>,
+        title: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self::new(MemoryKind::ProjectFact, repo, title, content)
     }
 
     /// Creates a procedure.
-    pub fn procedure(repo: impl Into<String>, title: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn procedure(
+        repo: impl Into<String>,
+        title: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self::new(MemoryKind::Procedure, repo, title, content)
     }
 
-    fn new(kind: MemoryKind, repo: impl Into<String>, title: impl Into<String>, content: impl Into<String>) -> Self {
+    fn new(
+        kind: MemoryKind,
+        repo: impl Into<String>,
+        title: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             kind,
             repo: repo.into(),
@@ -152,6 +317,7 @@ impl NewMemory {
             code_version: None,
             source_episode: None,
             evidence: None,
+            source_kind: SourceKind::Unknown,
             confidence: 0.5,
         }
     }
@@ -184,6 +350,14 @@ impl NewMemory {
         self
     }
 
+    /// Says what kind of source asserts the claim: the user, an observation of
+    /// the code, a check's result, or the agent's own deduction.
+    #[must_use]
+    pub fn with_source_kind(mut self, source: SourceKind) -> Self {
+        self.source_kind = source;
+        self
+    }
+
     /// Adds evidence.
     #[must_use]
     pub fn with_evidence(mut self, evidence: impl Into<String>) -> Self {
@@ -213,6 +387,10 @@ pub struct RetrievedMemory {
 }
 
 /// Retrieval request.
+///
+/// The filters are part of the query, not of the ranking: a memory the caller
+/// may not see (another chat's own work, a state it doesn't want) is never a
+/// candidate, so it can't take a slot from one the caller may see.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct RetrievalQuery {
@@ -226,6 +404,13 @@ pub struct RetrievalQuery {
     pub failure: Option<String>,
     /// Maximum results.
     pub limit: usize,
+    /// Trust states the caller accepts; empty means every usable state.
+    /// [`Verification::Deprecated`] is never retrieved, whichever states are
+    /// listed: a deprecated memory is history, and `list` is where it shows.
+    pub verifications: Vec<Verification>,
+    /// Tags a record must not carry: a chat's own work is in the chat
+    /// already, so it isn't prior work to that chat.
+    pub excluded_tags: Vec<String>,
 }
 
 impl RetrievalQuery {
@@ -237,6 +422,8 @@ impl RetrievalQuery {
             files: Vec::new(),
             failure: None,
             limit: 8,
+            verifications: Vec::new(),
+            excluded_tags: Vec::new(),
         }
     }
 
@@ -258,6 +445,23 @@ impl RetrievalQuery {
     #[must_use]
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit;
+        self
+    }
+
+    /// Accepts only these trust states.
+    #[must_use]
+    pub fn with_verifications(
+        mut self,
+        verifications: impl IntoIterator<Item = Verification>,
+    ) -> Self {
+        self.verifications = verifications.into_iter().collect();
+        self
+    }
+
+    /// Leaves out the records carrying any of these tags.
+    #[must_use]
+    pub fn without_tags(mut self, tags: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.excluded_tags = tags.into_iter().map(Into::into).collect();
         self
     }
 }

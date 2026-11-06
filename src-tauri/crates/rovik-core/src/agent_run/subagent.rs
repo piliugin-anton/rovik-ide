@@ -449,6 +449,10 @@ static SCOUT: KindSpec = KindSpec {
         BuiltinTool::Callers,
         BuiltinTool::Outline,
         BuiltinTool::Diagnostics,
+        // What the project's chats already learned, since a scout's answer is
+        // often better for knowing it (agent_run/memory.rs).
+        BuiltinTool::MemorySearch,
+        BuiltinTool::MemoryGet,
         BuiltinTool::WebSearch,
         BuiltinTool::BrowseUrl,
         BuiltinTool::Mcp,

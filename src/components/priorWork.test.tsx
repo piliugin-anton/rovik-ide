@@ -1,6 +1,6 @@
 // Component tests: the "Relevant prior work" panel a chat shows what the run
-// remembered: one row per memory, its state and evidence, and whether this
-// approach helped. Run with: npm test
+// remembered: one row per memory, its state and evidence, and which checks the
+// run reported after them. Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -94,26 +94,40 @@ test('prior work: a provisional memory reads provisional, with nothing said abou
   assert.equal(verdict(root), undefined, 'no verdict before the run has one');
 });
 
-test('prior work: the run’s verdict says whether the approach helped', () => {
-  const helped = panel([
-    memory({
-      verification: 'verified',
-      evidence: 'the checks passed: cargo test',
-      helped: true,
-    }),
-  ]);
-  assert.equal(verdict(helped), 'This approach helped');
+test('prior work: the run reports which checks came after the memories', () => {
+  const passed = panel([memory({ verification: 'provisional', association: 'checksPassed' })]);
+  assert.equal(verdict(passed), 'The checks passed after this');
 
-  const notHelped = panel([
-    memory({
-      verification: 'deprecated',
-      evidence: 'cargo test failed in src/a.ts, which this memory is about',
-      helped: false,
-    }),
-  ]);
-  assert.equal(verdict(notHelped), 'This approach did not help');
+  const failed = panel([memory({ verification: 'provisional', association: 'checksFailed' })]);
+  const failing = verdict(failed) ?? '';
+  assert.notEqual(
+    failing,
+    'The checks passed after this',
+    'a run whose checks failed does not say they passed'
+  );
+  assert.ok(!/helped/i.test(failing), `the panel calls no memory helpful: ${failing}`);
+  assert.match(failing, /checks failed/i, `the panel says the checks failed: ${failing}`);
 
-  // A memory whose outcome gave no verdict says none.
-  const unverified = panel([memory({ verification: 'provisional' })]);
-  assert.equal(unverified.querySelector('.prior-work-verdict'), null);
+  // A run that checked nothing says nothing.
+  const unchecked = panel([memory({ verification: 'provisional' })]);
+  assert.equal(unchecked.querySelector('.prior-work-verdict'), null);
+});
+
+test('prior work: a row says whether the memory still holds for the code', () => {
+  const root = panel([
+    memory({ title: 'The retry needs a lock', applicability: 'needs_revalidation' }),
+    memory({ id: 'fx-current', title: 'The queue is bounded', applicability: 'current' }),
+  ]);
+  const listed = [...root.querySelectorAll('.prior-work-item')];
+  assert.equal(listed.length, 2, 'one row per memory');
+  assert.match(
+    listed[0].textContent ?? '',
+    /revalidat|check again|stale/i,
+    `the row says the claim has to be checked again: "${listed[0].textContent}"`
+  );
+  assert.doesNotMatch(
+    listed[1].textContent ?? '',
+    /revalidat|check again|stale/i,
+    `a claim expected to hold is not marked stale: "${listed[1].textContent}"`
+  );
 });

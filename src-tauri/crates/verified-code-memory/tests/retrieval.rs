@@ -14,9 +14,11 @@ fn fts_query_joins_its_terms_with_or() {
     // FTS5's space is an implicit AND: joining with it made a multi-word task
     // miss a memory whose title holds only some of its words.
     assert_eq!(build_fts_query(&["retry race"]), "\"retry\" OR \"race\"");
+    // `fix` is a word that names nothing, so it is no longer a term: the
+    // inputs here are words that name something.
     assert_eq!(
-        build_fts_query(&["fix", "retry race"]),
-        "\"fix\" OR \"retry\" OR \"race\"",
+        build_fts_query(&["webhook", "retry race"]),
+        "\"webhook\" OR \"retry\" OR \"race\"",
         "several inputs are one list of OR-ed terms"
     );
 }

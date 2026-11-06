@@ -1,3 +1,4 @@
+use verified_code_memory::model::Applicability;
 use verified_code_memory::{
     MemoryRecord, MemoryStats, MemoryStore, NewMemory, RetrievalQuery, SharedMemoryStore,
     Verification,
@@ -36,9 +37,10 @@ fn fts_retrieval_finds_verified_memory() {
 }
 
 #[test]
-fn stale_versions_are_deprecated() {
+fn a_new_commit_asks_for_revalidation_and_deprecates_nothing() {
     let store = MemoryStore::open_in_memory().unwrap();
     let old = store.remember(sample()).unwrap();
+    store.verify(old.id, "12/12 tests passed").unwrap();
     let current = store
         .remember(
             NewMemory::episode(
@@ -51,17 +53,47 @@ fn stale_versions_are_deprecated() {
         .unwrap();
 
     let changed = store
-        .invalidate_stale_for_version("payments-service", "def456", "Repository moved")
+        .mark_stale_for_version("payments-service", "def456")
         .unwrap();
 
-    assert_eq!(changed, 1);
     assert_eq!(
-        store.get(old.id).unwrap().verification,
-        Verification::Deprecated
+        changed, 1,
+        "only the memory of another revision of the project is marked"
+    );
+    let marked = store.get(old.id).unwrap();
+    assert_eq!(
+        marked.applicability,
+        Applicability::NeedsRevalidation,
+        "the claim must be checked against the new commit"
+    );
+    assert_eq!(
+        marked.verification,
+        Verification::Verified,
+        "a new commit is not a contradiction of the claim, so the trust stays"
+    );
+    assert_eq!(
+        marked.evidence.as_deref(),
+        Some("12/12 tests passed"),
+        "the evidence the agent gave is kept"
+    );
+    assert!(
+        !marked.is_reliable(),
+        "a verified claim that is no longer expected to hold is not reliable"
     );
     assert_eq!(
         store.get(current.id).unwrap().verification,
-        Verification::Provisional
+        Verification::Provisional,
+        "the memory of the current revision is not promoted"
+    );
+    assert_eq!(
+        store.get(current.id).unwrap().applicability,
+        Applicability::Unknown,
+        "and the memory of the current revision is left alone"
+    );
+    assert_eq!(
+        store.stats("payments-service").unwrap().deprecated,
+        0,
+        "nothing was deprecated by the new commit"
     );
 }
 
@@ -225,9 +257,11 @@ fn the_shared_store_passes_stats_and_conflict_resolution_through() {
     let store = SharedMemoryStore::open_in_memory().unwrap();
     let keeper = store.remember(sample()).unwrap();
     let loser = store
-        .remember(
-            NewMemory::project_fact("payments-service", "Retry approach", "Retry the whole order."),
-        )
+        .remember(NewMemory::project_fact(
+            "payments-service",
+            "Retry approach",
+            "Retry the whole order.",
+        ))
         .unwrap();
     store.verify(keeper.id, "12/12 tests passed").unwrap();
 
@@ -259,7 +293,10 @@ fn the_shared_store_passes_stats_and_conflict_resolution_through() {
 }
 
 fn ids(memories: &[MemoryRecord]) -> Vec<String> {
-    memories.iter().map(|memory| memory.id.to_string()).collect()
+    memories
+        .iter()
+        .map(|memory| memory.id.to_string())
+        .collect()
 }
 
 fn webhook_memory() -> NewMemory {
@@ -371,7 +408,9 @@ fn the_list_narrows_to_what_the_query_mentions() {
         "a word of the text matches"
     );
     assert_eq!(
-        ids(&store.list("payments-service", "src/checkout/retry.py").unwrap()),
+        ids(&store
+            .list("payments-service", "src/checkout/retry.py")
+            .unwrap()),
         vec![retry.id.to_string()],
         "a file path a memory names matches"
     );
@@ -412,7 +451,7 @@ fn the_list_narrows_to_what_the_query_mentions() {
 }
 
 #[test]
-fn an_edit_rewrites_a_memorys_title_and_text_and_leaves_its_trust_state_alone() {
+fn an_edit_rewrites_a_memorys_title_and_text_and_the_evidence_stops_matching_the_claim() {
     let store = MemoryStore::open_in_memory().unwrap();
     let memory = store.remember(sample()).unwrap();
     store.verify(memory.id, "12/12 tests passed").unwrap();
@@ -437,19 +476,38 @@ fn an_edit_rewrites_a_memorys_title_and_text_and_leaves_its_trust_state_alone() 
     assert_eq!(
         edited.verification,
         Verification::Verified,
-        "the trust state the agent gave it stays"
+        "what the evidence once supported stays on the record"
+    );
+    assert_eq!(
+        edited.evidence.as_deref(),
+        Some("12/12 tests passed"),
+        "the evidence is kept, though it now speaks about other words"
+    );
+    assert_eq!(
+        edited.applicability,
+        Applicability::NeedsRevalidation,
+        "the corrected claim is expected not to hold until it is checked again"
+    );
+    assert!(
+        !edited.evidence_matches_claim(),
+        "the evidence was about the old title and text, not the new ones"
+    );
+    assert!(
+        !edited.is_reliable(),
+        "a verified memory whose evidence is about other words is not reliable"
     );
     assert_eq!(edited.files, before.files, "the files stay as they were");
     assert_eq!(edited.tags, before.tags, "the tags stay as they were");
-    assert!(
-        edited.updated_at >= before.updated_at,
-        "the edit marks the memory as changed"
-    );
 
     let stored = store.get(memory.id).unwrap();
     assert_eq!(stored.title, "Checkout retry serialization");
     assert_eq!(stored.content, edited_text);
     assert_eq!(stored.verification, Verification::Verified);
+    assert!(
+        !stored.evidence_matches_claim(),
+        "the record reads back the same rule"
+    );
+    assert!(!stored.is_reliable());
 
     let found = store
         .retrieve(&RetrievalQuery::new("payments-service", "retryqueue"))
@@ -622,4 +680,3 @@ fn the_shared_store_lists_edits_deletes_and_clears_through_its_lock() {
     );
     assert!(store.list("payments-service", "").unwrap().is_empty());
 }
-

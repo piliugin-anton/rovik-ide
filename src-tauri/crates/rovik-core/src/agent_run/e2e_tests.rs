@@ -3772,7 +3772,7 @@ fn context_only_turns_on_at_90_and_lifts_after_an_edit() {
     // lift threshold, and the restricted toolset itself.
     assert_eq!(crate::clm::prompt::URGENT, 90);
     assert_eq!(super::run::CLM_RESTRICT_LIFT_BELOW, 75);
-    let only = super::tools::tools_for(true, false, false, &quiet_permissions(), false, true, true);
+    let only = super::tools::tools_for(true, false, false, false, &quiet_permissions(), false, true, true);
     let names: Vec<&str> = only
         .iter()
         .map(|t| {

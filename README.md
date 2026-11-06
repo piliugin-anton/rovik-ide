@@ -1300,20 +1300,51 @@ written into your repository. The store is the `verified-code-memory` crate in
 
 A chat's run uses it at four points:
 
-- **When it starts**, it recalls up to eight memories that fit the request, by
-  its words, the files it is about and their trust, and sends them to the model
-  as the last section of its context. The chat shows them above the message box
-  as **Relevant prior work**.
+- **When it starts**, it recalls up to eight memories that fit the request: the
+  ones that share a word that names something with it, or name a file it is
+  about — which is also all a memory needs to share to be recalled at all, so a
+  request the project has no memory of recalls nothing rather than its most
+  recent notes. The ones evidence backs go to the model as the last section of
+  its context; the chat shows all of them above the message box as **Relevant
+  prior work**.
 - **Before it edits a file** one of them is about, the call carries a note
   saying what the project learned about that file.
-- **After the checks run**, a green round promotes the memories the run used,
-  their evidence the commands that passed; a failure invalidates only a memory
-  about a file the failure points at — a red check alone doesn't show a memory
-  was wrong, so the rest keep their state and only the outcome says the
-  approach fell short.
-- **When it ends**, the memories it used get the outcome: the panel says _This
-  approach helped_, _This approach did not help_, or nothing when the run was
-  interrupted or had nothing checked.
+- **After the checks run**, a round changes nothing about the memories the run
+  used. A green suite says the project's checks are happy, not that a particular
+  remembered claim is true, so nothing is promoted; a failure in a file a memory
+  names marks that memory to be **checked again** (it keeps its claim, its trust
+  and its evidence) rather than invalidating it — a red check nearby doesn't show
+  the claim was wrong.
+- **When it ends**, the panel says how the run itself ended: _The checks passed
+  after this_, _The checks failed after this_, or nothing when the run was
+  interrupted or had nothing checked. That is an association, not a verdict: it
+  does not claim any memory helped, and it does not make one look newer.
+
+**Retrieval happens at the decisions, not only at the start.** The prompt's
+memory section has an allowance of its own (about 2,000 tokens) and every record
+in it carries its id, whether it still applies, its evidence and its files. The
+section is rebuilt whenever what the run holds changes, so the next request is
+never a rendering of an older state. When a round of checks fails, what the
+project learned about that failure lands in front of the model before it chooses
+a fix — once per failure, and only records evidence backs. A subagent starts with
+a small packet scoped to its brief and never writes memory back; the read-only
+**scout** can also search it.
+
+The agent can look deeper itself, with two read-only tools: **`memory_search`**
+(by words or by the files it is about, at most eight records, four by default) and
+**`memory_get`** (one record in full, by the id the packet or a search shows).
+Neither can mark a memory verified. When the project's memory is off, or its file
+couldn't be opened, they answer so — never with an empty result, which would read
+as "the project knows nothing about that".
+
+A memory keeps two questions apart: its **trust** — what evidence once supported
+what it says — and whether it still **applies** — nothing suggests the claim or
+the code it names changed. Correcting a memory's title or text is your
+assertion: the memory keeps its old evidence for the record, but it stops being
+one a run may rely on until something confirms the new wording, so an edit can't
+launder an unverified claim into a trusted one. **Manage memories…** shows rows
+that need another look as _check again_, and those nobody ever checked as
+_unchecked_.
 
 The run also keeps an account of itself: the request's first line as its title,
 then its outcome, the files it changed and what the checks said, promoted when
