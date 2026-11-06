@@ -1257,3 +1257,593 @@ async fn a_repair_about_a_restricted_file_never_reaches_the_model() {
         bodies[0]
     );
 }
+
+// PR 4: what a run writes back into the project's memory when it ends, and
+// the tool a model may record with.
+
+/// A check that reads two files and fails on the first one that is wrong,
+/// naming it, so a failure on one is told from a failure on the other.
+const TWO_FILES_CHECK: &str = "const fs = require('fs');\n\
+for (const [path, want] of [['src/checkout.txt', 'checkout'], ['src/queue.txt', 'queue']]) {\n\
+  if (fs.readFileSync(path, 'utf8').trim() !== want) {\n\
+    console.error(`${path}:1: error: ${path} does not say ${want}`);\n\
+    process.exit(1);\n\
+  }\n\
+}\n";
+
+/// The memories of the project titled `title`.
+fn records_titled(h: &Harness, title: &str) -> Vec<MemoryRecord> {
+    recent(h)
+        .into_iter()
+        .filter(|memory| memory.title == title)
+        .collect()
+}
+
+/// A command that runs until the test lets it end: it writes `started` in the
+/// project, then waits for `go` there — e2e_tests's own helper, for the same
+/// reason (on Windows, in cmd alone, a PowerShell started for the wait could
+/// take longer to start than the test waits for the run).
+fn until_go() -> &'static str {
+    if cfg!(windows) {
+        "echo ran> started && for /L %i in (0,0,1) do @if exist go exit 0"
+    } else {
+        "echo ran > started; while [ ! -e go ]; do sleep 0.05; done"
+    }
+}
+
+/// Waits until the `until_go` command runs in `root`.
+async fn command_started(root: &std::path::Path) {
+    for _ in 0..400 {
+        if root.join("started").exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the command never started");
+}
+
+#[tokio::test]
+async fn two_failures_of_the_same_check_leave_two_lessons_that_both_stay() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PASSING),
+        ("check.js", TWO_FILES_CHECK),
+        ("src/checkout.txt", "no\n"),
+        ("src/queue.txt", "queue\n"),
+        ("notes.txt", "start\n"),
+    ])
+    .await;
+
+    // A run whose check fails on the checkout file, and that fixes that file.
+    let (url, _) = model(vec![
+        write("w1", "notes.txt", "a change that leaves the check alone\n"),
+        Reply::Text("Not fixed yet."),
+        write("w2", "src/checkout.txt", "checkout\n"),
+        Reply::Text("Fixed the checkout."),
+        Reply::Text("Done."),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(
+        &url,
+        Harness::send("Make the checkout check pass"),
+        checks_on(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verified");
+    assert_eq!(
+        procedures(&h).len(),
+        1,
+        "the repaired check became one lesson: {:#?}",
+        procedures(&h)
+    );
+
+    // A later run whose check fails on the queue file, and that fixes that one.
+    let (url, _) = model(vec![
+        write("w3", "src/queue.txt", "not the word the check wants\n"),
+        Reply::Text("Not fixed yet."),
+        write("w4", "src/queue.txt", "queue\n"),
+        Reply::Text("Fixed the queue."),
+        Reply::Text("Done."),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(
+        &url,
+        Harness::send("Make the queue check pass"),
+        checks_on(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verified");
+
+    let lessons = procedures(&h);
+    assert_eq!(
+        lessons.len(),
+        2,
+        "one command failing on two different files is two lessons: {lessons:#?}"
+    );
+    for lesson in &lessons {
+        assert_ne!(
+            lesson.verification,
+            Verification::Deprecated,
+            "neither failure's lesson replaced the other's: {lesson:#?}"
+        );
+    }
+    let about = |file: &str| lessons.iter().filter(|l| l.content.contains(file)).count();
+    assert_eq!(
+        about("src/checkout.txt"),
+        1,
+        "one lesson is the checkout failure's: {lessons:#?}"
+    );
+    assert_eq!(
+        about("src/queue.txt"),
+        1,
+        "and one is the queue failure's: {lessons:#?}"
+    );
+    assert_ne!(
+        lessons[0].identity, lessons[1].identity,
+        "two failures are two identities: {lessons:#?}"
+    );
+    assert_eq!(
+        recent(&h)
+            .into_iter()
+            .filter(|memory| memory.kind.to_string() == "procedure")
+            .count(),
+        2,
+        "both stay in the project's memory: {:#?}",
+        recent(&h)
+    );
+}
+
+#[tokio::test]
+async fn replaying_the_same_run_end_writes_no_second_lesson_and_no_second_reflection() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PASSING),
+        ("check.js", CHECK),
+        ("src/ok.txt", "no\n"),
+    ])
+    .await;
+
+    // A run whose first round fails on what the check reads, and whose second
+    // round passes because the model wrote it.
+    let (url, _) = model(vec![
+        write("w1", "src/ok.txt", "still not what the check wants\n"),
+        Reply::Text("Not fixed yet."),
+        write("w2", "src/ok.txt", "ok\n"),
+        Reply::Text("Fixed."),
+        Reply::Text("Done."),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Make the check pass"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+
+    let lessons = procedures(&h);
+    assert_eq!(
+        lessons.len(),
+        1,
+        "the repaired check became one lesson: {lessons:#?}"
+    );
+    let lesson_id = lessons[0].id;
+    let lesson_stamp = lessons[0].content_updated_at;
+    let after_first = store(&h).stats(&repo(&h)).unwrap().total;
+    assert!(
+        after_first > 1,
+        "the run left its lesson and its account of what it did: {after_first}"
+    );
+
+    // The very same run again, in the same chat: the same failure, the same
+    // fix, so the end has nothing new to say.
+    let (url, _) = model(vec![
+        write("w3", "src/ok.txt", "still not what the check wants\n"),
+        Reply::Text("Not fixed yet."),
+        write("w4", "src/ok.txt", "ok\n"),
+        Reply::Text("Fixed."),
+        Reply::Text("Done."),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Make the check pass"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+
+    let lessons = procedures(&h);
+    assert_eq!(
+        lessons.len(),
+        1,
+        "the same failure fixed the same way is one lesson, however often the run \
+         ends: {lessons:#?}"
+    );
+    let same = record(&h, lesson_id);
+    assert_eq!(
+        same.content_updated_at, lesson_stamp,
+        "and the lesson it already had was not revised"
+    );
+    assert_ne!(
+        same.verification,
+        Verification::Deprecated,
+        "nor superseded by itself"
+    );
+    assert_eq!(
+        store(&h).stats(&repo(&h)).unwrap().total,
+        after_first,
+        "nothing was written the second time: no lesson and no second account of \
+         the run ({:#?})",
+        recent(&h)
+    );
+}
+
+#[tokio::test]
+async fn a_newer_repair_supersedes_the_older_account_of_that_failure_only() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PASSING),
+        ("check.js", CHECK),
+        ("src/ok.txt", "no\n"),
+    ])
+    .await;
+
+    // A run that repairs the check: the lesson it writes carries the identity
+    // a later repair of the same failure is recognised by.
+    let (url, _) = model(vec![
+        write("w1", "src/ok.txt", "still not what the check wants\n"),
+        Reply::Text("Not fixed yet."),
+        write("w2", "src/ok.txt", "ok\n"),
+        Reply::Text("Fixed."),
+        Reply::Text("Done."),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Make the check pass"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+
+    let first = procedures(&h);
+    assert_eq!(first.len(), 1, "one lesson: {first:#?}");
+    let identity = first[0].identity.clone();
+    assert!(
+        identity.starts_with("repair:"),
+        "a lesson says which repair it is: {identity}"
+    );
+    let written = first[0].id;
+
+    // The project's memory, as an earlier run worded it: one older account of
+    // this same failure, and one of a failure of its own.
+    let (older, elsewhere) = {
+        let now = store(&h);
+        now.delete(written).unwrap();
+        let older = now
+            .remember(
+                NewMemory::procedure(
+                    repo(&h),
+                    "npm test fails on src/ok.txt",
+                    "Write back the text the check asks for.",
+                )
+                .with_files(["src/ok.txt"])
+                .with_identity(identity.clone()),
+            )
+            .unwrap()
+            .id;
+        let elsewhere = now
+            .remember(
+                NewMemory::procedure(
+                    repo(&h),
+                    "npm run lint fails on src/notes.txt",
+                    "Drop the trailing spaces the linter named.",
+                )
+                .with_files(["src/notes.txt"])
+                .with_identity("repair:npm run lint|src/notes.txt|src/notes.txt"),
+            )
+            .unwrap()
+            .id;
+        (older, elsewhere)
+    };
+    let untouched_before = record(&h, elsewhere);
+
+    // The same failure, repaired and proved again.
+    let (url, _) = model(vec![
+        write("w3", "src/ok.txt", "no\n"),
+        Reply::Text("Not fixed yet."),
+        write("w4", "src/ok.txt", "ok\n"),
+        Reply::Text("Fixed."),
+        Reply::Text("Done."),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Make the check pass"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+
+    let superseded = record(&h, older);
+    assert_eq!(
+        superseded.verification,
+        Verification::Deprecated,
+        "the older account of this failure is superseded by the newer one: \
+         {superseded:#?}"
+    );
+    let of_this_identity = store(&h).find_by_identity(&repo(&h), &identity).unwrap();
+    assert_eq!(
+        of_this_identity.len(),
+        2,
+        "the superseded account is kept beside the one that replaced it: \
+        {of_this_identity:#?}"
+    );
+    assert_eq!(
+        of_this_identity[0].verification,
+        Verification::Verified,
+        "the repair the run just made is the one the project relies on: \
+         {:#?}",
+        of_this_identity[0]
+    );
+    assert_eq!(
+        of_this_identity[1].id, older,
+        "and the older one is the record it replaced: {of_this_identity:#?}"
+    );
+
+    let untouched_after = record(&h, elsewhere);
+    assert_eq!(
+        untouched_after.verification, untouched_before.verification,
+        "a repair of another failure is no part of this one's supersession: \
+         {untouched_after:#?}"
+    );
+    assert_eq!(
+        untouched_after.content_updated_at, untouched_before.content_updated_at,
+        "and its claim is as it was"
+    );
+}
+
+#[tokio::test]
+async fn a_run_whose_memory_was_cleared_before_its_end_writes_nothing_back() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PASSING),
+        ("check.js", CHECK),
+        ("src/ok.txt", "no\n"),
+        ("notes.txt", "start\n"),
+    ])
+    .await;
+    // The project's memory holds something before the run starts, so a clear
+    // during the run is the clear of something.
+    remember(
+        &h,
+        "src/ok.txt is the file the check reads",
+        "The check reads src/ok.txt.",
+        &["src/ok.txt"],
+    );
+
+    let (url, _) = model(vec![
+        // A command that keeps the run at work while the memory is cleared.
+        Reply::Call {
+            id: "r1",
+            name: "bash",
+            args: json!({ "command": until_go() }),
+        },
+        write("w1", "notes.txt", "a change that leaves the check alone\n"),
+        Reply::Text("Not fixed yet."),
+        write("w2", "src/ok.txt", "ok\n"),
+        Reply::Text("Fixed."),
+        Reply::Text("Done."),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Make the check pass"), checks_on()))
+        .await;
+
+    // The run is at work, its memory in hand: Settings → Clear memory.
+    command_started(&h.project).await;
+    let cleared = store(&h).clear(&repo(&h)).unwrap();
+    assert_eq!(cleared, 1, "the memory the project had was cut down");
+    std::fs::write(h.project.join("go"), "").unwrap();
+
+    let outcome = h.run_end().await;
+    assert!(
+        ["verified", "repaired"].contains(&outcome.as_str()),
+        "the run went on to fix the check: {outcome}"
+    );
+    assert_eq!(
+        store(&h).stats(&repo(&h)).unwrap().total,
+        0,
+        "a run whose memory was cleared before its end writes nothing back \
+         ({:#?})",
+        recent(&h)
+    );
+    assert!(
+        recent(&h).is_empty(),
+        "no lesson and no account of the run came back from what was deleted: \
+         {:#?}",
+        recent(&h)
+    );
+}
+
+#[tokio::test]
+async fn memory_remember_records_a_provisional_fact_with_its_evidence() {
+    let h = harness(&[("src/a.rs", "fn a() {}\n")]).await;
+    let title = "The retry table is guarded";
+    let claim = "The retry table is guarded by the zanzibar lock.";
+
+    let bodies = run_calling(
+        &h,
+        "Tidy the notes",
+        quiet_permissions(),
+        "m1",
+        "memory_remember",
+        json!({
+            "kind": "fact",
+            "title": title,
+            "claim": claim,
+            "applies_to": ["src/a.rs"],
+            "evidence": "src/a.rs:3 shows the lock around the table",
+        }),
+    )
+    .await;
+    assert_eq!(
+        bodies.len(),
+        2,
+        "the model was asked once more, with the tool's answer"
+    );
+
+    let found = records_titled(&h, title);
+    assert_eq!(
+        found.len(),
+        1,
+        "the tool recorded one memory of the project: {found:#?}"
+    );
+    let memory = &found[0];
+    assert_eq!(memory.content, claim, "it says what the model claimed");
+    assert_eq!(
+        memory.verification,
+        Verification::Provisional,
+        "a model's tool may not verify, so what it records is provisional: \
+         {memory:#?}"
+    );
+    assert_eq!(
+        memory.source_kind.to_string(),
+        "code observation",
+        "the model gave evidence, so the memory is what the run observed: \
+         {memory:#?}"
+    );
+    assert!(
+        memory.kind.to_string().contains("fact"),
+        "a fact, not a lesson: {}",
+        memory.kind
+    );
+    assert!(
+        format!("{:?}", memory.files).contains("src/a.rs"),
+        "it applies to the file the model named: {:?}",
+        memory.files
+    );
+    assert_eq!(
+        memory.identity,
+        format!("fact:{}", verified_code_memory::model::claim_hash(title, claim)),
+        "a fact the tool recorded is the claim it says, once"
+    );
+
+    // Without evidence the same claim is the run's own deduction, not
+    // something it saw.
+    let other = "The queue is drained once a turn.";
+    let other_title = "The queue is drained once a turn";
+    run_calling(
+        &h,
+        "Tidy the notes",
+        quiet_permissions(),
+        "m2",
+        "memory_remember",
+        json!({ "kind": "fact", "title": other_title, "claim": other }),
+    )
+    .await;
+    let deduced = records_titled(&h, other_title);
+    assert_eq!(deduced.len(), 1, "{deduced:#?}");
+    assert_eq!(
+        deduced[0].source_kind.to_string(),
+        "generated deduction",
+        "with no evidence the memory is the run's own deduction: {:#?}",
+        deduced[0]
+    );
+    assert_eq!(
+        deduced[0].verification,
+        Verification::Provisional,
+        "and it is provisional too"
+    );
+}
+
+#[tokio::test]
+async fn memory_remember_records_the_same_claim_once() {
+    let h = harness(&[("src/a.rs", "fn a() {}\n")]).await;
+    let title = "The retry table is guarded";
+    let args = json!({
+        "kind": "fact",
+        "title": title,
+        "claim": "The retry table is guarded by the zanzibar lock.",
+        "applies_to": ["src/a.rs"],
+    });
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("m1", "memory_remember", args.clone()),
+            ("m2", "memory_remember", args.clone()),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Tidy the notes"), quiet_permissions()))
+        .await;
+    h.run_end().await;
+
+    let found = records_titled(&h, title);
+    assert_eq!(
+        found.len(),
+        1,
+        "the same claim is one memory, however often the model says it: {found:#?}"
+    );
+}
+
+#[tokio::test]
+async fn memory_remember_refuses_a_claim_it_cannot_write() {
+    let h = harness(&[("src/a.rs", "fn a() {}\n"), ("src/ok.txt", "ok\n")]).await;
+    // Settings → Restricted files: the run may not read what it would record.
+    restrict(&h, json!([{ "path": "src/ok.txt" }]));
+
+    // A blank claim, a kind the tool does not know, and a file the run may not
+    // read: none of them is a memory.
+    let refusals = [
+        (
+            "A fact with no claim",
+            json!({ "kind": "fact", "title": "A fact with no claim", "claim": "   " }),
+        ),
+        (
+            "A rumour about the queue",
+            json!({
+                "kind": "rumour",
+                "title": "A rumour about the queue",
+                "claim": "The queue is drained once a turn.",
+            }),
+        ),
+        (
+            "A fact about a file the user restricted",
+            json!({
+                "kind": "fact",
+                "title": "A fact about a file the user restricted",
+                "claim": "src/ok.txt holds the word the check wants.",
+                "applies_to": ["src/ok.txt"],
+                "evidence": "src/ok.txt:1 says ok",
+            }),
+        ),
+    ];
+    for (n, (title, args)) in refusals.iter().enumerate() {
+        let id = ["m1", "m2", "m3"][n];
+        run_calling(
+            &h,
+            "Tidy the notes",
+            quiet_permissions(),
+            id,
+            "memory_remember",
+            args.clone(),
+        )
+        .await;
+        assert!(
+            records_titled(&h, title).is_empty(),
+            "the tool refused {title:?}, so the project's memory kept nothing of it: {:#?}",
+            records_titled(&h, title)
+        );
+    }
+    let written: Vec<String> = recent(&h).into_iter().map(|memory| memory.title).collect();
+    assert!(
+        written.iter().all(|title| title == "Tidy the notes"),
+        "the project's memory holds the runs' own accounts and nothing the tool \
+         refused: {written:?}"
+    );
+}
+

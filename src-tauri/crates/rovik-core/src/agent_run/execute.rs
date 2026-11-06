@@ -835,6 +835,17 @@ impl Run {
                     .add_tool_result(&tc.id, result.content, result.outcome, None, Vec::new())
                     .await;
             }
+            Some(BuiltinTool::MemoryRemember) => {
+                let result = match super::tools::RememberArgs::parse(&args) {
+                    Some(remember) => self.memory_remember(&remember).await,
+                    None => super::tools::ToolResult::error(
+                        "Error: memory_remember takes kind (\"fact\" or \"procedure\"), a title and a claim. Nothing was recorded.",
+                    ),
+                };
+                return self
+                    .add_tool_result(&tc.id, result.content, result.outcome, None, Vec::new())
+                    .await;
+            }
             Some(BuiltinTool::MemoryGet) => {
                 let id = args
                     .get("id")

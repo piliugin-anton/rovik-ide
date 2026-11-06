@@ -497,6 +497,52 @@ fn on_context_folder(t: &Value) -> bool {
 /// off, or a store that couldn't be opened, offers neither rather than a tool
 /// whose every call fails. Neither tool can make a memory verified: only
 /// evidence the harness gathers does that.
+/// What `memory_remember` was given, parsed: the claim the model wants kept for
+/// later runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RememberArgs {
+    /// A durable statement about the project, or how to do something here.
+    pub procedure: bool,
+    pub title: String,
+    pub claim: String,
+    /// The project files or folders it is about.
+    pub applies_to: Vec<String>,
+    /// Why, for a procedure, when the model established it.
+    pub cause: Option<String>,
+    /// What showed it.
+    pub evidence: Option<String>,
+}
+
+impl RememberArgs {
+    /// Reads the call's arguments. `None` when they aren't the shape the tool
+    /// takes at all: the kind is one of the two it knows.
+    #[must_use]
+    pub fn parse(args: &Map<String, Value>) -> Option<RememberArgs> {
+        let procedure = match text(args, "kind")? {
+            "procedure" => true,
+            "fact" => false,
+            _ => return None,
+        };
+        Some(RememberArgs {
+            procedure,
+            title: text(args, "title").unwrap_or_default().to_string(),
+            claim: text(args, "claim").unwrap_or_default().to_string(),
+            applies_to: args
+                .get("applies_to")
+                .and_then(Value::as_array)
+                .map(|files| {
+                    files
+                        .iter()
+                        .filter_map(|file| file.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            cause: text(args, "cause").map(str::to_string),
+            evidence: text(args, "evidence").map(str::to_string),
+        })
+    }
+}
+
 fn memory_tool_schemas() -> Vec<Value> {
     vec![
         json!({
@@ -530,6 +576,45 @@ fn memory_tool_schemas() -> Vec<Value> {
                         }
                     },
                     "required": ["query"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "memory_remember",
+                "description": "Record something for the project's later runs: a convention or a fact about how this project works, or what you established about the code. Use it for what a future run would otherwise have to rediscover — a rule the project keeps to, why a non-obvious decision was made, what a failure really was. Not for what this run did (that is recorded automatically), not for guesses: say what you saw, in `evidence`. The record starts provisional — nothing you write here is confirmed memory, and the project's next runs treat it as a hint to check.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["fact", "procedure"],
+                            "description": "\"fact\": a durable statement about the project. \"procedure\": how to do something here."
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "One line naming it, under 80 characters."
+                        },
+                        "claim": {
+                            "type": "string",
+                            "description": "What is true, in one to three sentences, without hedging."
+                        },
+                        "applies_to": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "The project files or folders it is about, if any: later runs find it by them."
+                        },
+                        "cause": {
+                            "type": "string",
+                            "description": "For a procedure: why the problem happens, only if you established it (not a guess)."
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "description": "What showed it: a path and line, a command and its result. A record without this is only as good as its word."
+                        }
+                    },
+                    "required": ["kind", "title", "claim"]
                 }
             }
         }),

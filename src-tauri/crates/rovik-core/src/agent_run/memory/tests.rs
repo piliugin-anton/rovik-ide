@@ -776,3 +776,121 @@ fn a_read_only_run_never_plans_a_memory_to_be_checked_again() {
         plan.revalidate
     );
 }
+
+// PR 4: the repair a run writes down — what it says when it has no cause to
+// give, and how the memory tells one repair of a failure from another.
+
+/// A repair of `npm test` failing on `failing`, made by changing `fixed`, and
+/// proved by a round that passed.
+fn repair(failing: &[&str], fixed: &[&str]) -> super::claim::Repair {
+    super::claim::Repair::of(
+        "npm test",
+        &failing.iter().map(|key| key.to_string()).collect::<Vec<_>>(),
+        &fixed.iter().map(|file| file.to_string()).collect::<Vec<_>>(),
+        "npm test passed".to_string(),
+    )
+}
+
+#[test]
+fn a_repair_given_no_cause_says_the_cause_was_not_established() {
+    let rendered = repair(&["src/a.rs"], &["src/a.rs"]).render();
+    let lines: Vec<&str> = rendered.lines().collect();
+
+    assert!(
+        lines[0].starts_with("Problem: "),
+        "the repair says what went wrong first: {rendered}"
+    );
+    assert_eq!(
+        lines[1],
+        "Cause: not established by this run — check the code before relying on a cause.",
+        "a repair that was given no cause says so rather than inventing one: {rendered}"
+    );
+    assert!(
+        lines[2].starts_with("Fix: "),
+        "then what fixed it: {rendered}"
+    );
+    assert!(
+        lines[3].starts_with("Applies to: "),
+        "then the files it is about: {rendered}"
+    );
+    assert!(
+        lines[4].starts_with("Validated by: npm test passed"),
+        "and last what proved it: {rendered}"
+    );
+}
+
+#[test]
+fn a_repair_that_changed_no_file_says_nothing_about_what_it_applies_to() {
+    let rendered = repair(&["src/a.rs"], &[]).render();
+
+    assert!(
+        !rendered.contains("Applies to:"),
+        "a repair that names no file has nothing to say about what it applies to: {rendered}"
+    );
+    assert!(
+        rendered.contains("Validated by: npm test passed"),
+        "it still says what proved it: {rendered}"
+    );
+}
+
+#[test]
+fn two_failures_of_one_command_are_told_apart_by_what_failed() {
+    let checkout = super::claim::failure_signature("npm test", &["src/checkout.txt".to_string()]);
+    assert_eq!(
+        checkout, "npm test|src/checkout.txt",
+        "the command first, then what failed"
+    );
+    assert_eq!(
+        super::claim::failure_signature("npm   test ", &[" src/checkout.txt ".to_string()]),
+        checkout,
+        "spacing is not part of the failure, so the same failure keeps one signature"
+    );
+    assert_ne!(
+        super::claim::failure_signature("npm test", &["src/queue.txt".to_string()]),
+        checkout,
+        "the same command failing on another file is another failure"
+    );
+
+    let unordered = [
+        "src/b.rs".to_string(),
+        "src/a.rs".to_string(),
+        "src/a.rs".to_string(),
+    ];
+    let sorted = ["src/a.rs".to_string(), "src/b.rs".to_string()];
+    assert_eq!(
+        super::claim::failure_signature("npm test", &unordered),
+        super::claim::failure_signature("npm test", &sorted),
+        "the order and the repeats of what failed do not make a second failure"
+    );
+}
+
+#[test]
+fn a_repairs_identity_is_the_failure_and_the_files_it_applies_to() {
+    let signature = super::claim::failure_signature("npm test", &["src/a.rs".to_string()]);
+    let both = repair(&["src/a.rs"], &["src/b.rs", "src/a.rs"]).identity(&signature);
+
+    assert_eq!(
+        both,
+        repair(&["src/a.rs"], &["src/a.rs", "src/b.rs", "src/a.rs"]).identity(&signature),
+        "the order and the repeats of the files do not make a second repair"
+    );
+    assert_eq!(
+        both,
+        format!("repair:{signature}|src/a.rs,src/b.rs"),
+        "a repair is the failure it answers and the files it changes, sorted"
+    );
+    assert_ne!(
+        both,
+        repair(&["src/a.rs"], &["src/a.rs"]).identity(&signature),
+        "a repair that changed another set of files is another repair"
+    );
+    assert_ne!(
+        both,
+        repair(&["src/a.rs"], &["src/a.rs"])
+            .identity(&super::claim::failure_signature(
+                "npm test",
+                &["src/b.rs".to_string()]
+            )),
+        "and so is a repair of another failure that changed the same files"
+    );
+}

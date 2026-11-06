@@ -29,6 +29,7 @@ pub enum BuiltinTool {
     Diagnostics,
     MemorySearch,
     MemoryGet,
+    MemoryRemember,
     WebSearch,
     BrowseUrl,
     BrowserScreenshot,
@@ -207,7 +208,7 @@ const READ_PATH: Restricted = Restricted {
 };
 
 impl BuiltinTool {
-    pub const ALL: [BuiltinTool; 23] = [
+    pub const ALL: [BuiltinTool; 24] = [
         BuiltinTool::Read,
         BuiltinTool::Write,
         BuiltinTool::ListDir,
@@ -218,6 +219,7 @@ impl BuiltinTool {
         BuiltinTool::Diagnostics,
         BuiltinTool::MemorySearch,
         BuiltinTool::MemoryGet,
+        BuiltinTool::MemoryRemember,
         BuiltinTool::WebSearch,
         BuiltinTool::BrowseUrl,
         BuiltinTool::BrowserScreenshot,
@@ -331,6 +333,16 @@ impl BuiltinTool {
             },
             MemoryGet => ToolSpec {
                 name: "memory_get",
+                needs_project: true,
+                ..BASE
+            },
+            // Recording something for later runs: the project's memory, not its
+            // files, and Agent mode only — a plan is not the place to write it.
+            // The record it makes is provisional: no model tool may confirm a
+            // memory (agent_run/memory.rs).
+            MemoryRemember => ToolSpec {
+                name: "memory_remember",
+                modes: Modes::AgentOnly,
                 needs_project: true,
                 ..BASE
             },

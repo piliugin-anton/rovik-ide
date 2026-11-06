@@ -14,8 +14,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 use verified_code_memory::retrieval::path_overlap;
 use verified_code_memory::{
-    MemoryKind, MemoryRecord, NewMemory, RetrievalQuery, RetrievedMemory, SharedMemoryStore,
-    SourceKind, Verification,
+    MemoryRecord, NewMemory, RetrievalQuery, RetrievedMemory, SharedMemoryStore, SourceKind,
+    Verification,
 };
 
 /// How many memories a run recalls: enough to be useful in the prompt, few
@@ -41,6 +41,10 @@ const MEMORY_TOKENS: usize = 2_000;
 /// How many memories a failure's lookup offers: a repair and maybe its
 /// neighbour, not a reading list.
 const REPAIR_LIMIT: usize = 3;
+
+/// How many episodes one project keeps: what a run *did* is provenance, worth
+/// keeping a while and not forever. Procedures and facts are never pruned.
+const EPISODE_RETENTION: usize = 500;
 
 /// How many memories a child agent starts with: what its brief is about, and no
 /// more — a child's job is narrower than the lead's.
@@ -72,10 +76,11 @@ pub(super) struct RunMemory {
     /// The calls a note was put on, cleared when their result is stored —
     /// only those, so no other part's note is taken from its call.
     noted: HashSet<String>,
-    /// The rounds of checks that failed in this run, and the first of them
-    /// as the lesson at the run's end needs it.
+    /// The rounds of checks that failed in this run, and each failure among
+    /// them, as the lessons at the run's end need them: one command failing in
+    /// two places is two lessons.
     failed_rounds: u32,
-    first_failure: Option<FailedRound>,
+    failures: Vec<FailedRound>,
     /// Whether the last round of checks passed; unset: no round ran. What a
     /// `done` end says about the memories the run used.
     last_round_passed: Option<bool>,
@@ -92,6 +97,10 @@ pub(super) struct RunMemory {
     /// Why each record was retrieved, kept across re-renderings so the packet's
     /// `Match:` line still says what made it relevant.
     reasons: HashMap<Uuid, String>,
+    /// The project's memory generation when this run recalled it (0 when it
+    /// never did): what the run's end writes against, so a memory cleared
+    /// meanwhile is not written back.
+    generation: i64,
     /// What this run may be shown: the files it may not read, the project root
     /// to read them against, and the files a child of it is sealed from. Held
     /// here so that admission is a property of the memory, not something each
@@ -279,31 +288,49 @@ impl RunMemory {
         plan
     }
 
-    /// What this round of checks was, for the lesson the run's end may keep:
-    /// whether it passed, and — the first time one fails — what failed and
-    /// where.
+    /// What this round of checks was, for the lessons the run's end may keep:
+    /// whether it passed, and — every time one fails — what failed and where.
+    ///
+    /// Every failure is kept, not only the first: `npm test` failing on one file
+    /// early in a run and on another later is two things the project learned.
+    /// The same failure twice is one: a later round about the same failure, in
+    /// the same place, replaces the earlier account of it.
     fn note_round(&mut self, results: &[CheckResult]) {
         if results.is_empty() {
             return;
         }
         let failed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "failed").collect();
         self.last_round_passed = Some(failed.is_empty());
-        let Some(check) = failed.first() else {
-            return;
-        };
-        self.failed_rounds = self.failed_rounds.saturating_add(1);
-        if self.first_failure.is_some() {
+        if failed.is_empty() {
             return;
         }
-        self.first_failure = Some(FailedRound {
-            command: check.command.clone(),
-            failures: check.failures.clone().unwrap_or_default(),
-            files: check
-                .error_files
-                .as_ref()
-                .map(|files| files.changed.clone())
-                .unwrap_or_default(),
-        });
+        self.failed_rounds = self.failed_rounds.saturating_add(1);
+        for check in failed {
+            let round = FailedRound {
+                command: check.command.clone(),
+                failures: check.failures.clone().unwrap_or_default(),
+                files: check
+                    .error_files
+                    .as_ref()
+                    .map(|files| files.changed.clone())
+                    .unwrap_or_default(),
+            };
+            let signature = claim::failure_signature(&round.command, &round.failures);
+            eprintln!(
+                "debug note_round: sig={signature:?} files={:?} known={}",
+                round.files,
+                self.failures.len()
+            );
+            match self
+                .failures
+                .iter_mut()
+                .find(|known| claim::failure_signature(&known.command, &known.failures) == signature
+                    && known.files == round.files)
+            {
+                Some(known) => *known = round,
+                None => self.failures.push(round),
+            }
+        }
     }
 
     /// The memory as the wait for the checks' approval carries it (verify.rs
@@ -315,7 +342,7 @@ impl RunMemory {
             repo: self.repo.clone(),
             recalled: self.recalled.clone(),
             failed_rounds: self.failed_rounds,
-            first_failure: self.first_failure.clone(),
+            failures: self.failures.clone(),
             last_round_passed: self.last_round_passed,
             reasons: self.reasons.clone(),
             shown: self.shown.clone(),
@@ -332,8 +359,16 @@ impl RunMemory {
         root: Option<String>,
         sealed: Vec<String>,
     ) -> RunMemory {
+        let store = core.memory.open(&core.paths, Path::new(&carry.repo));
+        // The resumed run works from the memory as it is now: a memory cleared
+        // while the run waited for the checks is not written back by its end.
+        let generation = store
+            .as_ref()
+            .and_then(|store| store.generation(&carry.repo).ok())
+            .unwrap_or_default();
         let mut memory = RunMemory {
-            store: core.memory.open(&core.paths, Path::new(&carry.repo)),
+            store,
+            generation,
             restricted,
             root,
             sealed,
@@ -347,7 +382,7 @@ impl RunMemory {
             asked: HashSet::new(),
             noted: HashSet::new(),
             failed_rounds: carry.failed_rounds,
-            first_failure: carry.first_failure,
+            failures: carry.failures,
             last_round_passed: carry.last_round_passed,
             unavailable: None,
             read: HashSet::new(),
@@ -373,7 +408,8 @@ pub(super) struct CheckPlan {
     pub(super) revalidate: Vec<(Uuid, String)>,
 }
 
-/// The first round of checks a run failed, as its end's lesson needs it.
+/// One failure of a round of checks, as the run's end needs it to say what was
+/// repaired.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct FailedRound {
     /// The command that failed.
@@ -393,7 +429,7 @@ pub(super) struct MemoryCarry {
     pub(super) repo: String,
     pub(super) recalled: Vec<MemoryRecord>,
     pub(super) failed_rounds: u32,
-    pub(super) first_failure: Option<FailedRound>,
+    pub(super) failures: Vec<FailedRound>,
     pub(super) last_round_passed: Option<bool>,
     /// Why each record was retrieved, and what the prompt's section actually
     /// carried: the resumed run has the same memories in hand, and says so the
@@ -423,6 +459,28 @@ type RecallAnswer = Result<
 /// a test writer K11 keeps independent of it — the prompt is as good a way
 /// through as a `read` call, so the packet, the tools and a child's brief all
 /// ask this.
+/// `visible`, for a record that doesn't exist yet: what a new memory may name.
+fn visible_to(
+    record: &NewMemory,
+    restricted: &RestrictedFiles,
+    root: Option<&str>,
+    hidden: &[String],
+) -> bool {
+    if let Some(root) = root {
+        if record
+            .files
+            .iter()
+            .any(|file| restricted.blocked(root, file, Op::Read).is_some())
+        {
+            return false;
+        }
+    }
+    !record
+        .files
+        .iter()
+        .any(|file| hidden.iter().any(|sealed| path_overlap(sealed, file)))
+}
+
 fn visible(
     record: &MemoryRecord,
     restricted: &crate::restricted_files::RestrictedFiles,
@@ -645,6 +703,151 @@ impl super::run::Run {
             )),
             Err(error) => super::tools::ToolResult::error(format!(
                 "Error: the memory read didn't finish ({error})."
+            )),
+        }
+    }
+
+    /// `memory_remember`: the model records something for the project's later
+    /// runs — a convention, a fact about how the project works, or what it
+    /// established about the code.
+    ///
+    /// What a run did is recorded by the harness at its end; this is for what
+    /// the harness cannot see. The record is **provisional** whatever it says:
+    /// a tool of the model's cannot confirm a memory, or a run could make its
+    /// own claim trusted. A cause is kept only as the model's assertion, with
+    /// the evidence it gave beside it, and the next run reads both as a hint.
+    pub(super) async fn memory_remember(
+        &self,
+        args: &super::tools::RememberArgs,
+    ) -> super::tools::ToolResult {
+        let Some(store) = self.memory.store.clone() else {
+            return super::tools::ToolResult::error(self.memory.unavailable());
+        };
+        if self.memory.read_only {
+            return super::tools::ToolResult::error(
+                "Error: only the lead writes the project's memory. Report what you found; the lead records it.",
+            );
+        }
+        if self.memory.repo.is_empty() {
+            return super::tools::ToolResult::error(
+                "Error: there is no project here to keep a memory for.",
+            );
+        }
+
+        let claim = args.claim.trim();
+        let title = args.title.trim();
+        if title.is_empty() || claim.is_empty() {
+            return super::tools::ToolResult::error(
+                "Error: a memory needs a title and a claim: what it is about, and what is true.",
+            );
+        }
+
+        // The claim itself. What it applies to and what showed it are the
+        // record's own fields, so the text a later run reads is the assertion,
+        // not a transcript of the call. A cause the model gives is kept as its
+        // assertion — the claim is provisional either way.
+        let mut content = claim.to_string();
+        if let Some(cause) = args.cause.as_deref().map(str::trim) {
+            if !cause.is_empty() {
+                content.push_str(&format!("\nCause: {cause}"));
+            }
+        }
+
+        let base = if args.procedure {
+            NewMemory::procedure(self.memory.repo.clone(), title, content.clone())
+        } else {
+            NewMemory::project_fact(self.memory.repo.clone(), title, content.clone())
+        };
+        let mut record = base
+            .with_files(args.applies_to.iter().cloned())
+            .with_tags([chat_tag(&self.dialog_id)])
+            .with_source_kind(if args.evidence.is_some() {
+                SourceKind::CodeObservation
+            } else {
+                SourceKind::GeneratedDeduction
+            })
+            .with_identity(format!(
+                "{}:{}",
+                if args.procedure { "procedure" } else { "fact" },
+                verified_code_memory::claim_hash(title, &content)
+            ));
+        if let Some(evidence) = args.evidence.as_deref().map(str::trim) {
+            if !evidence.is_empty() {
+                record = record.with_evidence(evidence);
+            }
+        }
+
+        // A record must not name a file this run may not see: the restriction
+        // would be recorded, then handed to every later run as a memory.
+        let probe = record.clone();
+        let sealed = self
+            .sub()
+            .map(|sub| sub.hidden.clone())
+            .unwrap_or_default();
+        let allowed = visible_to(
+            &probe,
+            &self.restricted,
+            self.root.as_deref(),
+            &sealed,
+        );
+        if !allowed {
+            return super::tools::ToolResult::error(
+                "Error: a memory can't be about a file this run may not read. Record it without that file, or say it in your report.",
+            );
+        }
+
+        let identity = record.identity.clone();
+        let repo = self.memory.repo.clone();
+        let generation = self.memory.generation;
+
+        // Saying the same thing twice is not news: what the project already has
+        // with this identity is what a second call would write.
+        let looked_up = {
+            let store = store.clone();
+            let repo = repo.clone();
+            let identity = identity.clone();
+            crate::rt::spawn_blocking(move || store.find_by_identity(&repo, &identity)).await
+        };
+        match looked_up {
+            Ok(Ok(found))
+                if found
+                    .iter()
+                    .any(|record| record.verification != Verification::Deprecated) =>
+            {
+                return super::tools::ToolResult::ok(
+                    "That's already remembered for this project; nothing was added.",
+                )
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                return super::tools::ToolResult::error(format!(
+                    "Error: the project's memory couldn't be read ({error})."
+                ))
+            }
+            Err(error) => {
+                return super::tools::ToolResult::error(format!(
+                    "Error: the memory lookup didn't finish ({error})."
+                ))
+            }
+        }
+
+        let stored = crate::rt::spawn_blocking(move || store.remember_if_current(record, generation))
+            .await;
+        match stored {
+            Ok(Ok(Some(record))) => super::tools::ToolResult::ok(format!(
+                "Remembered for later runs (provisional, {}): {} — {}\nIt is a hint until evidence confirms it: later runs are told to check it against the code.",
+                record.id, record.title, claim
+            )),
+            // The project's memory was cut down while this run worked: what it
+            // would write is about work whose record is gone.
+            Ok(Ok(None)) => super::tools::ToolResult::ok(
+                "Not recorded: this project's memory was cleared while the run was working, so there is nothing left to add to.",
+            ),
+            Ok(Err(error)) => super::tools::ToolResult::error(format!(
+                "Error: the memory wasn't kept ({error})."
+            )),
+            Err(error) => super::tools::ToolResult::error(format!(
+                "Error: the memory write didn't finish ({error})."
             )),
         }
     }
@@ -1133,6 +1336,7 @@ impl super::run::Run {
     /// a repaired failure taught. Called once the outcome is final (`go`).
     pub(super) async fn memory_after_run(&mut self, outcome: &str) {
         let ended = association(outcome, &self.memory);
+        let generation = self.memory.generation;
         // What the run's memory was, for the agent log, before any store work:
         // retrieved, shown and read on request are three different things, and a
         // run whose store couldn't be opened is exactly the one whose log has to
@@ -1157,7 +1361,7 @@ impl super::run::Run {
         let (repo, task) = (self.memory.repo.clone(), self.memory.task.clone());
         let chat = self.dialog_id.clone();
         let recalled = self.memory.recalled.clone();
-        let failure = self.memory.first_failure.clone();
+        let failures = self.memory.failures.clone();
         let files = self.changed_files.clone();
         let results = self.verification.last_results().to_vec();
         let outcome = outcome.to_string();
@@ -1167,8 +1371,9 @@ impl super::run::Run {
             if let Some(ended) = ended {
                 touched = record_association(&store, &recalled, ended);
             }
+            let mut episode = None;
             if !files.is_empty() && !task.trim().is_empty() {
-                keep_reflection(&Ending {
+                episode = keep_reflection(&Ending {
                     store: &store,
                     repo: &repo,
                     chat: &chat,
@@ -1177,13 +1382,31 @@ impl super::run::Run {
                     files: &files,
                     results: &results,
                     ended,
+                    generation,
                 });
             }
-            // A lesson only from a failure this run itself fixed.
-            if let (Some(failure), Some(MemoryAssociation::ChecksPassed)) = (&failure, ended) {
+            // A repair only from a failure this run itself fixed, and one
+            // lesson for each: two failures repaired in a run are two things
+            // the project learned.
+            if let Some(MemoryAssociation::ChecksPassed) = ended {
+                eprintln!(
+                    "debug after_run: files={} failures={} results={}",
+                    files.len(),
+                    failures.len(),
+                    results.len()
+                );
                 if !files.is_empty() {
-                    keep_lesson(&store, &repo, &chat, failure, &files, &results);
+                    for failure in &failures {
+                        keep_lesson(
+                            &store, &repo, &chat, failure, &files, &results, episode, generation,
+                        );
+                    }
                 }
+            }
+            // What a run did is provenance, not knowledge: the newest episodes
+            // stay, older ones go.
+            if let Err(e) = store.prune_episodes(&repo, EPISODE_RETENTION) {
+                eprintln!("memory: the project's older episodes weren't pruned: {e}");
             }
             touched
         })
@@ -1307,6 +1530,10 @@ struct Ending<'a> {
     results: &'a [CheckResult],
     /// How the run ended.
     ended: Option<MemoryAssociation>,
+    /// The project's memory generation as the run recalled it: a write from a
+    /// run whose memory was cut down since then is refused, so clearing or
+    /// deleting during a run is not undone by its end.
+    generation: i64,
 }
 
 /// Keeps the run's reflection, and confirms it when the checks passed.
@@ -1314,27 +1541,52 @@ struct Ending<'a> {
 /// This is the one thing a green round does confirm, because the claim is the
 /// run's own: the record says which checks ran and how they ended, and the
 /// evidence is those checks. It says nothing about any other memory.
-fn keep_reflection(end: &Ending<'_>) {
+fn keep_reflection(end: &Ending<'_>) -> Option<Uuid> {
     let (store, chat) = (end.store, end.chat);
     let (repo, task, outcome) = (end.repo, end.task, end.outcome);
     let (files, results, ended) = (end.files, end.results, end.ended);
-    let reflection = reflect(repo, task, outcome, files, results)
+    let mut reflection = reflect(repo, task, outcome, files, results)
         .with_tags([chat_tag(chat)])
         .with_source_kind(SourceKind::GeneratedDeduction);
-    let record = match store.remember(reflection) {
-        Ok(record) => record,
+    // The same run says the same thing however often its end is replayed: the
+    // identity is the claim itself, so a second pass finds it and writes
+    // nothing.
+    let identity = format!(
+        "episode:{chat}:{}",
+        verified_code_memory::claim_hash(&reflection.title, &reflection.content)
+    );
+    reflection.identity = identity.clone();
+    if let Ok(found) = store.find_by_identity(repo, &identity) {
+        if let Some(kept) = found
+            .iter()
+            .find(|record| record.verification != Verification::Deprecated)
+        {
+            return Some(kept.id);
+        }
+    }
+
+    let record = match store.remember_if_current(reflection, end.generation) {
+        Ok(Some(record)) => record,
+        // The project's memory was cut down after this run recalled it: what
+        // the run would write is about work whose record is gone.
+        Ok(None) => {
+            eprintln!("memory: the run's reflection wasn't kept: the memory was cleared during the run");
+            return None;
+        }
         Err(e) => {
             eprintln!("memory: the run's reflection wasn't kept: {e}");
-            return;
+            return None;
         }
     };
     let evidence = match (ended, passed_evidence(results)) {
         (Some(MemoryAssociation::ChecksPassed), Some(evidence)) => evidence,
-        _ => return,
+        _ => return Some(record.id),
     };
-    if let Err(e) = store.verify(record.id, evidence) {
-        eprintln!("memory: the run's reflection wasn't confirmed: {e}");
+    match store.verify_if_current(record.id, evidence, end.generation) {
+        Ok(Some(_)) | Ok(None) => {}
+        Err(e) => eprintln!("memory: the run's reflection wasn't confirmed: {e}"),
     }
+    Some(record.id)
 }
 
 /// The lesson of a failure this run repaired: the check that failed, what it
@@ -1348,66 +1600,109 @@ fn keep_lesson(
     failure: &FailedRound,
     files: &[String],
     results: &[CheckResult],
+    episode: Option<Uuid>,
+    generation: i64,
 ) {
     let Some(evidence) = passed_evidence(results) else {
         return;
     };
-    let mut content = format!("A fix made `{}` pass after it failed.", failure.command);
-    if !failure.failures.is_empty() {
-        content.push_str(&format!("\nFailed on: {}", failure.failures.join("; ")));
-    }
-    if !failure.files.is_empty() {
-        content.push_str(&format!("\nPointed at: {}", failure.files.join(", ")));
-    }
-    content.push_str(&format!("\nChanged: {}", files.join(", ")));
-    let title = format!("Making `{}` pass", failure.command);
-    let lesson = NewMemory::procedure(repo, title.clone(), content)
-        .with_files(files.iter().cloned())
-        .with_tags([chat_tag(chat)])
-        .with_source_kind(SourceKind::TestResult);
-    let record = match store.remember(lesson) {
-        Ok(record) => record,
+    // The repair as the memory says it: what failed on (the keys, not only the
+    // command), what changed, where, and what showed it worked. No cause: this
+    // run established the failure and its fix, not why the code was broken.
+    let signature = claim::failure_signature(&failure.command, &failure.failures);
+    // What the claim is about: the files the failure points at. A run that also
+    // edited something else has not repaired a different failure, so the scope
+    // is not every file the run touched — otherwise the same failure repaired
+    // twice would read as two unrelated lessons.
+    let scope: &[String] = if failure.files.is_empty() {
+        files
+    } else {
+        &failure.files
+    };
+    let repair = claim::Repair::of(&failure.command, &failure.failures, files, evidence.clone())
+        .scoped_to(scope);
+    let identity = repair.identity(&signature);
+    let content = repair.render();
+    let claim_hash = verified_code_memory::claim_hash(&repair.title, &content);
+
+    // What the project already has for this failure and these files.
+    let same: Vec<MemoryRecord> = match store.find_by_identity(repo, &identity) {
+        Ok(found) => found,
         Err(e) => {
-            eprintln!("memory: the lesson wasn't kept: {e}");
+            eprintln!("memory: the project's repairs couldn't be read: {e}");
             return;
         }
     };
-    if let Err(e) = store.verify(record.id, evidence) {
-        eprintln!("memory: the lesson wasn't confirmed: {e}");
+    // Saying exactly the same thing again is not news: a replayed run end, a
+    // retried step, writes nothing.
+    if same
+        .iter()
+        .any(|record| record.verification != Verification::Deprecated
+            && record.claim_hash == claim_hash)
+    {
         return;
     }
-    // An older lesson for the same check is what this one replaces: the same
-    // title, the same kind, the same trust. The query reaches it by the files
-    // the fix changed and by the words of its title — a memory is retrieved
-    // for what it shares, never merely for being recent — and the filter
-    // below is what makes it the same lesson.
-    let query = RetrievalQuery::new(repo, title.as_str())
-        .with_files(files.iter().cloned())
-        .with_limit(RECALL_LIMIT);
-    let older: Vec<Uuid> = match store.retrieve(&query) {
-        Ok(found) => found
-            .into_iter()
-            .map(|memory| memory.record)
-            .filter(|memory| {
-                memory.id != record.id
-                    && memory.title == title
-                    && memory.kind == MemoryKind::Procedure
-                    && memory.verification == Verification::Verified
-            })
-            .map(|memory| memory.id)
-            .collect(),
+
+    eprintln!(
+        "debug keep_lesson: identity={identity:?} claim={claim_hash} same={} scope={scope:?} files={files:?}",
+        same.len()
+    );
+
+    let mut lesson = NewMemory::procedure(repo, repair.title.clone(), content)
+        .with_files(scope.iter().cloned())
+        .with_tags([chat_tag(chat)])
+        .with_source_kind(SourceKind::TestResult)
+        .with_identity(identity);
+    // The episode this repair grew out of, so the record keeps its provenance
+    // rather than standing alone.
+    if let Some(episode) = episode {
+        lesson = lesson.with_source_episode(episode);
+    }
+    let record = match store.remember_if_current(lesson, generation) {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            eprintln!("memory: the repair wasn't kept: the memory was cleared during the run");
+            return;
+        }
         Err(e) => {
-            eprintln!("memory: the project's lessons couldn't be read: {e}");
+            eprintln!("memory: the repair wasn't kept: {e}");
             return;
         }
     };
+    match store.verify_if_current(record.id, evidence, generation) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            eprintln!("memory: the repair wasn't confirmed: the memory was cleared during the run");
+            return;
+        }
+        Err(e) => {
+            eprintln!("memory: the repair wasn't confirmed: {e}");
+            return;
+        }
+    }
+
+    // This repair supersedes the ones it revises — the same failure, the same
+    // files — and nothing else: a different failure of the same command is a
+    // lesson of its own.
+    let fresh = record.id;
+    let older: Vec<Uuid> = same
+        .iter()
+        .filter(|earlier| {
+            earlier.id != fresh
+                && earlier.verification != Verification::Deprecated
+                && earlier.claim_hash != claim_hash
+        })
+        .map(|earlier| earlier.id)
+        .collect();
     if older.is_empty() {
         return;
     }
-    if let Err(e) = store.resolve_conflict(record.id, &older, "a newer run's fix replaced it") {
-        eprintln!("memory: an older lesson wasn't replaced: {e}");
+    match store.supersede(record.id, &older, "a newer run's repair replaced it") {
+        Ok(_) => {}
+        Err(e) => eprintln!("memory: an older repair wasn't replaced: {e}"),
     }
 }
 
+mod claim;
 #[cfg(test)]
 mod tests;

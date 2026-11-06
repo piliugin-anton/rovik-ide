@@ -1,6 +1,6 @@
 use crate::error::{Result, VcmError};
 use crate::model::{
-    claim_hash, Applicability, MemoryRecord, MemoryStats, NewMemory, RetrievalQuery,
+    claim_hash, Applicability, MemoryKind, MemoryRecord, MemoryStats, NewMemory, RetrievalQuery,
     RetrievedMemory, SourceKind, Verification,
 };
 use crate::retrieval::{
@@ -73,6 +73,7 @@ impl MemoryStore {
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
                 claim_hash TEXT NOT NULL DEFAULT '',
+                identity TEXT NOT NULL DEFAULT '',
                 validated_claim_hash TEXT,
                 files_json TEXT NOT NULL,
                 tags_json TEXT NOT NULL,
@@ -94,6 +95,15 @@ impl MemoryStore {
             CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
             CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at);
             CREATE INDEX IF NOT EXISTS idx_memories_repo_version ON memories(repo, code_version);
+            -- One counter per project, moved whenever its memory is cut down
+            -- (a record deleted, or the lot cleared). A write that read the
+            -- counter before that — a queued job, a retried step, a run that
+            -- started earlier — is refused, so deletion cannot be undone by a
+            -- late writer.
+            CREATE TABLE IF NOT EXISTS memory_generations (
+                repo TEXT PRIMARY KEY,
+                generation INTEGER NOT NULL
+            ) WITHOUT ROWID;
 
             -- Every file a memory names, one row each, as `normalize_path`
             -- writes it: asking which memories are about a path is then a
@@ -115,6 +125,12 @@ impl MemoryStore {
         )?;
 
         add_missing_columns(&connection)?;
+        // After the columns: an older file gains `identity` there, and an index
+        // over a column that isn't there yet is an error, not a no-op.
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_identity ON memories(repo, identity)",
+            [],
+        )?;
         backfill_claim_hashes(&connection)?;
         backfill_files(&connection)?;
         create_full_text(&connection)?;
@@ -149,6 +165,7 @@ impl MemoryStore {
             source_kind: memory.source_kind,
             repo: memory.repo,
             claim_hash: claim_hash(&memory.title, &memory.content),
+            identity: memory.identity,
             validated_claim_hash: None,
             title: memory.title,
             content: memory.content,
@@ -174,7 +191,7 @@ impl MemoryStore {
     fn insert(&self, record: &MemoryRecord) -> Result<()> {
         let transaction = self.connection.unchecked_transaction()?;
         self.connection.execute(
-            r#"INSERT INTO memories (id,kind,verification,applicability,source_kind,repo,title,content,claim_hash,validated_claim_hash,files_json,tags_json,code_version,source_episode,evidence,confidence,created_at,content_updated_at,updated_at,last_validated_at,last_retrieved_at,use_count,success_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)"#,
+            r#"INSERT INTO memories (id,kind,verification,applicability,source_kind,repo,title,content,claim_hash,identity,validated_claim_hash,files_json,tags_json,code_version,source_episode,evidence,confidence,created_at,content_updated_at,updated_at,last_validated_at,last_retrieved_at,use_count,success_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)"#,
             params![
                 record.id.to_string(),
                 serde_json::to_string(&record.kind)?,
@@ -185,6 +202,7 @@ impl MemoryStore {
                 record.title,
                 record.content,
                 record.claim_hash,
+                record.identity,
                 record.validated_claim_hash,
                 serde_json::to_string(&record.files)?,
                 serde_json::to_string(&record.tags)?,
@@ -365,6 +383,181 @@ impl MemoryStore {
         )?;
 
         Ok(changed)
+    }
+
+    /// The project's records with this identity, newest first: what a later
+    /// record with the same identity revises.
+    ///
+    /// A lookup, not a search: identity is exact, and a claim is
+    /// consolidated against all of it however old the records are.
+    ///
+    /// # Errors
+    /// Returns [`VcmError::EmptyField`] for an empty repository or identity, or
+    /// database errors.
+    pub fn find_by_identity(&self, repo: &str, identity: &str) -> Result<Vec<MemoryRecord>> {
+        if repo.trim().is_empty() {
+            return Err(VcmError::EmptyField { field: "repo" });
+        }
+        if identity.trim().is_empty() {
+            return Err(VcmError::EmptyField {
+                field: "identity",
+            });
+        }
+
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT * FROM memories
+            WHERE repo = ?1 AND identity = ?2
+            ORDER BY content_updated_at DESC, id
+            "#,
+        )?;
+        let rows = statement.query_map(params![repo, identity], Self::row_to_record)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Replaces one record with another: the older ones are deprecated in the
+    /// same transaction that leaves the newer one as it is, so no reader sees a
+    /// project where both the old and the new say the same thing.
+    ///
+    /// Only records of `kept`'s kind that a later record actually supersedes are
+    /// touched; a contradiction is [`Self::resolve_conflict`]'s business.
+    ///
+    /// # Errors
+    /// Returns [`VcmError::NotFound`] for an unknown `kept` id, or database
+    /// errors.
+    pub fn supersede(
+        &self,
+        kept: Uuid,
+        older: &[Uuid],
+        reason: impl Into<String>,
+    ) -> Result<usize> {
+        let reason = reason.into();
+        if reason.trim().is_empty() {
+            return Err(VcmError::EmptyField { field: "reason" });
+        }
+        // The kept record is read first, so an unknown id fails before anything
+        // is written, and its project with it.
+        let repo = self.get(kept)?.repo;
+
+        let transaction = self.connection.unchecked_transaction()?;
+        let now = Utc::now().to_rfc3339();
+        let mut deprecated = 0;
+        for id in older {
+            if *id == kept {
+                continue;
+            }
+            deprecated += self.connection.execute(
+                r#"
+                UPDATE memories
+                SET verification = ?3, applicability = ?4, evidence = ?5, updated_at = ?6
+                WHERE id = ?1 AND repo = ?2 AND verification != ?3
+                "#,
+                params![
+                    id.to_string(),
+                    repo,
+                    serde_json::to_string(&Verification::Deprecated)?,
+                    serde_json::to_string(&Applicability::NeedsRevalidation)?,
+                    reason.as_str(),
+                    now,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(deprecated)
+    }
+
+    /// The project's counter of how much its memory has been cut down: it moves
+    /// when a record is deleted or the project is cleared, so a write that read
+    /// it earlier can tell that what it was written from is gone.
+    ///
+    /// # Errors
+    /// Returns database errors.
+    pub fn generation(&self, repo: &str) -> Result<i64> {
+        let generation: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT generation FROM memory_generations WHERE repo = ?1",
+                params![repo],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(generation.unwrap_or(0))
+    }
+
+    /// Records a memory only if the project's memory has not been cut down since
+    /// `generation` was read: `Ok(None)` when it has.
+    ///
+    /// This is what keeps a late or retried writer — a queued job, a run that
+    /// started before the user deleted its record — from putting back what was
+    /// deleted.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::remember`].
+    pub fn remember_if_current(
+        &self,
+        memory: NewMemory,
+        generation: i64,
+    ) -> Result<Option<MemoryRecord>> {
+        let repo = memory.repo.clone();
+        if self.generation(&repo)? != generation {
+            return Ok(None);
+        }
+        self.remember(memory).map(Some)
+    }
+
+    /// Confirms a record only if the project's memory has not been cut down
+    /// since `generation` was read. `Ok(None)` when it has: the record the
+    /// caller meant may be a different one by now.
+    ///
+    /// # Errors
+    /// See [`Self::verify`].
+    pub fn verify_if_current(
+        &self,
+        id: Uuid,
+        evidence: impl Into<String>,
+        generation: i64,
+    ) -> Result<Option<MemoryRecord>> {
+        if self.generation(&self.repo_of(id)?)? != generation {
+            return Ok(None);
+        }
+        self.verify(id, evidence).map(Some)
+    }
+
+    /// Keeps the project's memory bounded: the newest `keep` episodes stay, and
+    /// older ones go.
+    ///
+    /// What a run *did* is provenance, worth keeping for a while and not
+    /// forever; what the project *knows* — its procedures and facts — is never
+    /// pruned. Says how many went.
+    ///
+    /// # Errors
+    /// Returns [`VcmError::EmptyField`] for an empty repository, or database
+    /// errors.
+    pub fn prune_episodes(&self, repo: &str, keep: usize) -> Result<usize> {
+        if repo.trim().is_empty() {
+            return Err(VcmError::EmptyField { field: "repo" });
+        }
+        let kind = serde_json::to_string(&MemoryKind::Episode)?;
+        let removed = self.connection.execute(
+            r#"
+            DELETE FROM memories
+            WHERE repo = ?1
+              AND kind = ?2
+              AND id NOT IN (
+                SELECT id FROM memories
+                WHERE repo = ?1 AND kind = ?2
+                ORDER BY content_updated_at DESC, id
+                LIMIT ?3
+              )
+            "#,
+            params![repo, kind, i64::try_from(keep).unwrap_or(i64::MAX)],
+        )?;
+        Ok(removed)
+    }
+
+    /// The project whose record this is.
+    fn repo_of(&self, id: Uuid) -> Result<String> {
+        Ok(self.get(id)?.repo)
     }
 
     /// Keeps one verified memory and deprecates contradictory records.
@@ -557,14 +750,28 @@ impl MemoryStore {
     /// # Errors
     /// Returns [`VcmError::NotFound`] for an unknown ID, or database errors.
     pub fn delete(&self, id: Uuid) -> Result<()> {
-        let removed = self.connection.execute(
+        let repo = self.get(id)?.repo;
+        let transaction = self.connection.unchecked_transaction()?;
+        self.connection.execute(
             "DELETE FROM memories WHERE id = ?1",
             params![id.to_string()],
         )?;
-        if removed == 0 {
-            return Err(VcmError::NotFound(id));
-        }
+        self.bump_generation(&repo)?;
+        transaction.commit()?;
         Ok(())
+    }
+
+    /// Moves the project's generation: what was read of its memory before this
+    /// may not be written back ([`Self::remember_if_current`]).
+    fn bump_generation(&self, repo: &str) -> Result<i64> {
+        self.connection.execute(
+            r#"
+            INSERT INTO memory_generations (repo, generation) VALUES (?1, 1)
+            ON CONFLICT(repo) DO UPDATE SET generation = generation + 1
+            "#,
+            params![repo],
+        )?;
+        self.generation(repo)
     }
 
     /// Removes every memory of one project, and says how many went.
@@ -576,9 +783,15 @@ impl MemoryStore {
         if repo.trim().is_empty() {
             return Err(VcmError::EmptyField { field: "repo" });
         }
-        Ok(self
+        let transaction = self.connection.unchecked_transaction()?;
+        let removed = self
             .connection
-            .execute("DELETE FROM memories WHERE repo = ?1", params![repo])?)
+            .execute("DELETE FROM memories WHERE repo = ?1", params![repo])?;
+        // Whatever was read of this project's memory is gone: what was queued
+        // from it must not come back.
+        self.bump_generation(repo)?;
+        transaction.commit()?;
+        Ok(removed)
     }
 
     /// Retrieves a ranked context bundle with telemetry.
@@ -883,7 +1096,7 @@ impl MemoryStore {
     fn update(&self, record: &MemoryRecord) -> Result<()> {
         let transaction = self.connection.unchecked_transaction()?;
         let changed = self.connection.execute(
-            r#"UPDATE memories SET kind=?2,verification=?3,applicability=?4,source_kind=?5,repo=?6,title=?7,content=?8,claim_hash=?9,validated_claim_hash=?10,files_json=?11,tags_json=?12,code_version=?13,source_episode=?14,evidence=?15,confidence=?16,content_updated_at=?17,updated_at=?18,last_validated_at=?19,last_retrieved_at=?20,use_count=?21,success_count=?22 WHERE id=?1"#,
+            r#"UPDATE memories SET kind=?2,verification=?3,applicability=?4,source_kind=?5,repo=?6,title=?7,content=?8,claim_hash=?9,identity=?10,validated_claim_hash=?11,files_json=?12,tags_json=?13,code_version=?14,source_episode=?15,evidence=?16,confidence=?17,content_updated_at=?18,updated_at=?19,last_validated_at=?20,last_retrieved_at=?21,use_count=?22,success_count=?23 WHERE id=?1"#,
             params![
                 record.id.to_string(),
                 serde_json::to_string(&record.kind)?,
@@ -894,6 +1107,7 @@ impl MemoryStore {
                 record.title,
                 record.content,
                 record.claim_hash,
+                record.identity,
                 record.validated_claim_hash,
                 serde_json::to_string(&record.files)?,
                 serde_json::to_string(&record.tags)?,
@@ -945,6 +1159,7 @@ impl MemoryStore {
             title: row.get("title")?,
             content: row.get("content")?,
             claim_hash,
+            identity: row.get("identity")?,
             validated_claim_hash: row.get("validated_claim_hash")?,
             files: serde_json::from_str(&files).map_err(rusqlite_conversion_error)?,
             tags: serde_json::from_str(&tags).map_err(rusqlite_conversion_error)?,
@@ -1032,6 +1247,63 @@ impl SharedMemoryStore {
     /// See [`MemoryStore::deprecate`].
     pub fn deprecate(&self, id: Uuid, reason: impl Into<String>) -> Result<MemoryRecord> {
         self.lock()?.deprecate(id, reason)
+    }
+
+    /// See [`MemoryStore::find_by_identity`].
+    ///
+    /// # Errors
+    /// See [`MemoryStore::find_by_identity`].
+    pub fn find_by_identity(&self, repo: &str, identity: &str) -> Result<Vec<MemoryRecord>> {
+        self.lock()?.find_by_identity(repo, identity)
+    }
+
+    /// See [`MemoryStore::supersede`].
+    ///
+    /// # Errors
+    /// See [`MemoryStore::supersede`].
+    pub fn supersede(&self, kept: Uuid, older: &[Uuid], reason: impl Into<String>) -> Result<usize> {
+        self.lock()?.supersede(kept, older, reason)
+    }
+
+    /// See [`MemoryStore::generation`].
+    ///
+    /// # Errors
+    /// See [`MemoryStore::generation`].
+    pub fn generation(&self, repo: &str) -> Result<i64> {
+        self.lock()?.generation(repo)
+    }
+
+    /// See [`MemoryStore::remember_if_current`].
+    ///
+    /// # Errors
+    /// See [`MemoryStore::remember_if_current`].
+    pub fn remember_if_current(
+        &self,
+        memory: NewMemory,
+        generation: i64,
+    ) -> Result<Option<MemoryRecord>> {
+        self.lock()?.remember_if_current(memory, generation)
+    }
+
+    /// See [`MemoryStore::verify_if_current`].
+    ///
+    /// # Errors
+    /// See [`MemoryStore::verify_if_current`].
+    pub fn verify_if_current(
+        &self,
+        id: Uuid,
+        evidence: impl Into<String>,
+        generation: i64,
+    ) -> Result<Option<MemoryRecord>> {
+        self.lock()?.verify_if_current(id, evidence, generation)
+    }
+
+    /// See [`MemoryStore::prune_episodes`].
+    ///
+    /// # Errors
+    /// See [`MemoryStore::prune_episodes`].
+    pub fn prune_episodes(&self, repo: &str, keep: usize) -> Result<usize> {
+        self.lock()?.prune_episodes(repo, keep)
     }
 
     /// See [`MemoryStore::resolve_conflict`].
@@ -1224,6 +1496,7 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("applicability", "TEXT NOT NULL DEFAULT '\"unknown\"'"),
     ("source_kind", "TEXT NOT NULL DEFAULT '\"unknown\"'"),
     ("claim_hash", "TEXT NOT NULL DEFAULT ''"),
+    ("identity", "TEXT NOT NULL DEFAULT ''"),
     ("validated_claim_hash", "TEXT"),
     ("content_updated_at", "TEXT"),
     ("last_validated_at", "TEXT"),

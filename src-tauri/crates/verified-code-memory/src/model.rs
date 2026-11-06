@@ -177,6 +177,14 @@ pub struct MemoryRecord {
     /// The claim's identity as text ([`claim_hash`] of the title and content):
     /// recomputed when either changes.
     pub claim_hash: String,
+    /// What this record *is*, within its project: the same identity means the
+    /// same thing said again — a later run's fix for the same failure, a
+    /// restatement of the same convention — so a newer one revises the older
+    /// instead of piling up beside it.
+    ///
+    /// Empty when nobody can say (a record written before identities were kept),
+    /// and such a record is never treated as a duplicate of anything.
+    pub identity: String,
     /// The claim hash the evidence in [`Self::evidence`] was gathered about.
     /// Different from `claim_hash` means the text was edited afterwards, and
     /// the evidence no longer speaks about what is stored now.
@@ -269,6 +277,10 @@ pub struct NewMemory {
     pub evidence: Option<String>,
     /// What kind of source asserts the claim.
     pub source_kind: SourceKind,
+    /// What the record is, within its project (see
+    /// [`MemoryRecord::identity`]): what a newer record with the same value
+    /// revises.
+    pub identity: String,
     /// Confidence.
     pub confidence: f32,
 }
@@ -318,6 +330,7 @@ impl NewMemory {
             source_episode: None,
             evidence: None,
             source_kind: SourceKind::Unknown,
+            identity: String::new(),
             confidence: 0.5,
         }
     }
@@ -355,6 +368,14 @@ impl NewMemory {
     #[must_use]
     pub fn with_source_kind(mut self, source: SourceKind) -> Self {
         self.source_kind = source;
+        self
+    }
+
+    /// Says what this record is within its project: a later record with the same
+    /// identity revises it ([`MemoryRecord::identity`]).
+    #[must_use]
+    pub fn with_identity(mut self, identity: impl Into<String>) -> Self {
+        self.identity = identity.into();
         self
     }
 
