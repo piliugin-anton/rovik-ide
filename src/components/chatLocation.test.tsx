@@ -4,7 +4,7 @@
 // (MessageList, read-only). The app is answered here, command by command.
 // Run with: npm test
 import { container } from '../test/dom';
-import { after, test } from 'node:test';
+import { test as nodeTest } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import { createStore } from 'solid-js/store';
@@ -62,8 +62,23 @@ const HOSTS: HostSummary[] = [
 
 /** What rendered last: gone when the next one renders, its dialogs with it. */
 let disposeLast = () => {};
-// The list's clock would keep the test running.
-after(() => disposeLast());
+
+/**
+ * A test that unmounts what it rendered before it returns, whether it passed
+ * or threw: a message list ticks every 500 ms, and a timer left running would
+ * keep the file's process from exiting. The last tree is the one `disposeLast`
+ * names, since each helper unmounts the tree before it.
+ */
+function test(name: string, body: () => Promise<void>) {
+  nodeTest(name, async () => {
+    try {
+      await body();
+    } finally {
+      disposeLast();
+      disposeLast = () => {};
+    }
+  });
+}
 
 /** The app's hosts are `hosts`, and the app answers as `answers` says. */
 async function app(hosts: HostSummary[], answers: typeof backend = {}) {

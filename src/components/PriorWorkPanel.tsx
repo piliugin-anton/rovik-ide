@@ -6,14 +6,7 @@
 // run's outcome says the approach helped. Read-only: the agent writes the
 // memory, the user reads it here.
 import { For, Show } from 'solid-js';
-import type { RecalledMemory } from '../lib/memory';
-
-/** How each trust state reads here (the protocol's `verification`). */
-const STATE_LABEL: Record<string, string> = {
-  verified: 'verified',
-  provisional: 'provisional',
-  deprecated: 'invalidated',
-};
+import { memoryStateLabel, type RecalledMemory } from '../lib/memory';
 
 export default function PriorWorkPanel(props: { memories: RecalledMemory[] }) {
   /** What the run's outcome said of the memories it used; absent: no verdict. */
@@ -39,7 +32,7 @@ export default function PriorWorkPanel(props: { memories: RecalledMemory[] }) {
                 classList={{ [memory.verification]: true }}
                 title={memory.evidence}
               >
-                {STATE_LABEL[memory.verification] ?? memory.verification}
+                {memoryStateLabel(memory.verification)}
               </span>
               <span class="prior-work-kind">{memory.kind}</span>
               <span class="prior-work-memory-title">{memory.title}</span>

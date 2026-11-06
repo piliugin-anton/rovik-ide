@@ -2067,6 +2067,175 @@ body.tree-dragging {
   background: var(--error-strong);
 }
 
+/* Memory manager (components/MemoryManager.tsx): Settings → Long-term memory
+   → "Manage memories…". Roomier than a settings page: a memory says a few
+   lines, and its form holds both of its fields. */
+
+.modal.memory-manager {
+  width: min(720px, calc(100vw - 48px));
+}
+
+.memory-manager-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.memory-manager-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 0 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.memory-manager-search:focus-within {
+  border-color: var(--accent);
+}
+
+.memory-manager-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.memory-manager-search-clear {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  background: none;
+  border: 0;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.memory-manager-search-clear:hover {
+  color: var(--fg);
+}
+
+/* The one action here that removes memories the user isn't looking at. */
+.memory-manager .danger-link {
+  color: var(--error);
+}
+
+.memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.memory-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
+.memory-entry-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.memory-entry-title {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.memory-entry-date {
+  margin-left: auto;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.memory-entry-content {
+  color: var(--fg-muted);
+  white-space: pre-line;
+}
+
+.memory-entry-files {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.memory-entry-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.memory-entry-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.memory-entry-edit input,
+.memory-entry-edit textarea {
+  width: 100%;
+  padding: 4px 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.memory-entry-edit textarea {
+  resize: vertical;
+}
+
+.memory-entry-edit input:focus-visible,
+.memory-entry-edit textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.memory-entry-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.memory-manager .memory-entry-edit-actions .primary {
+  padding: 4px 10px;
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.memory-manager .memory-entry-edit-actions .primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.memory-manager .memory-entry-edit-actions .primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .profile-row {
   display: flex;
   align-items: center;

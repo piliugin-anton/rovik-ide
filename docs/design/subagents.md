@@ -349,6 +349,10 @@ sets each kind's tools and budget: `max_tool_calls` can only lower it.
 The reviewer, the guide, triage and the plan reviewer are started by the
 harness, not through `task`.
 
+A `goal` over `MAX_GOAL_CHARS` (2,000 characters) is refused, and `context`
+is cut at `MAX_CONTEXT_CHARS` (6,000), so the lead's prompt states both
+limits and a brief normally fits on its first call.
+
 **Result** (returned as the tool's output). Each kind has its own `## `
 sections (`subagent.rs` `KindSpec`); a report must have the first ones
 (`required`), and the rest are optional:

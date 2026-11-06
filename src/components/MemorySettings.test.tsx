@@ -1,7 +1,8 @@
-// Component tests: Settings → Long-term memory: the project's count, and the
-// checkbox that switches this project's memory off. The backend is answered
-// here: `load_project_settings`, `save_project_settings` and `memory_stats`.
-// Run with: npm test
+// Component tests: Settings → Long-term memory: the project's count, the
+// checkbox that switches this project's memory off, and the way into
+// "Manage memories…". The backend is answered here:
+// `load_project_settings`, `save_project_settings`, `memory_stats` and the
+// manager's `memory_list`. Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,10 +17,38 @@ let savesFail = false;
 /** The projects whose memory was counted, and how many times a change was saved. */
 let counted: string[] = [];
 let saves = 0;
+/** Every search the manager asked the store for. */
+let listed: { root: string; query: string }[] = [];
 /** Set: the count waits here until the test lets it go. */
 let held: (() => void)[] | null = null;
 
+/** What the manager lists as it opens: a small memory or two. */
+const memories = () => [
+  {
+    id: 'm-1',
+    kind: 'project fact',
+    title: 'Tests run with npm test',
+    content: 'The repo’s tests are node:test files.',
+    files: ['package.json'],
+    tags: ['checks'],
+    verification: 'verified',
+    evidence: 'CI run 42',
+    updatedAt: Date.UTC(2026, 10, 6, 9),
+  },
+  {
+    id: 'm-2',
+    kind: 'procedure',
+    title: 'Format with prettier',
+    content: 'npx prettier --write <files>.',
+    files: [],
+    tags: ['style'],
+    verification: 'provisional',
+    updatedAt: Date.UTC(2026, 10, 5, 9),
+  },
+];
+
 (window as any).__TAURI_INTERNALS__ = {
+  transformCallback: () => 1,
   invoke: async (cmd: string, args: any) => {
     if (cmd === 'load_project_settings') return stored;
     if (cmd === 'save_project_settings') {
@@ -33,6 +62,10 @@ let held: (() => void)[] | null = null;
       if (countingFails) throw new Error('the memory file is gone');
       if (held) return new Promise((resolve) => held!.push(() => resolve(counts)));
       return counts;
+    }
+    if (cmd === 'memory_list') {
+      listed.push({ root: args.root, query: args.query });
+      return memories();
     }
     throw new Error(`no app: ${cmd}`);
   },
@@ -50,11 +83,18 @@ function reset() {
   savesFail = false;
   counted = [];
   saves = 0;
+  listed = [];
   held = null;
+}
+
+/** Nothing an earlier test rendered is left over, portals included. */
+function emptyBody() {
+  while (document.body.firstChild) document.body.removeChild(document.body.firstChild);
 }
 
 async function page(options: { stored?: unknown; counts?: unknown } = {}): Promise<HTMLElement> {
   reset();
+  emptyBody();
   stored = options.stored ?? null;
   counts = options.counts ?? { total: 0, verified: 0, provisional: 0, deprecated: 0 };
   const root = container();
@@ -153,4 +193,82 @@ test('long-term memory: a switch that can’t be saved says so, and stays where 
   assert.match(root.textContent!, /(couldn't save|failed)/i);
   assert.equal(box(root).checked, true, 'shown as saved: still on');
   assert.equal(stored, null);
+});
+
+/** The manager's dialog, wherever it was portalled (the newest one). */
+function manager(): HTMLElement | null {
+  const dialogs = [...document.querySelectorAll('.modal.memory-manager')] as HTMLElement[];
+  return dialogs.length === 0 ? null : dialogs[dialogs.length - 1];
+}
+
+/** The page's way in: "Manage memories…" (either ellipsis). */
+function manageButton(root: HTMLElement): HTMLElement {
+  const button = [...root.querySelectorAll('button')].find((one) =>
+    /^Manage memories/.test((one.textContent ?? '').trim())
+  ) as HTMLElement | undefined;
+  assert.ok(button, 'the page offers to manage this project’s memories');
+  return button;
+}
+
+/** The manager's search box. */
+const searchBox = () =>
+  manager()?.querySelector(
+    'input[aria-label="Search this project\'s memories"]'
+  ) as HTMLInputElement | null;
+
+/** The manager's × close button. */
+function closeButton(): HTMLElement {
+  const button = manager()?.querySelector('button[aria-label="Close"]') as HTMLElement | null;
+  assert.ok(button, 'the manager can be closed');
+  return button;
+}
+
+test('long-term memory: Manage memories… opens the manager for the open project', async () => {
+  const root = await page({ counts: { total: 2, verified: 1, provisional: 1, deprecated: 0 } });
+  assert.equal(manager(), null, 'the manager is closed to begin with');
+
+  manageButton(root).click();
+  await flush();
+
+  const dialog = manager();
+  assert.ok(dialog, 'the manager opens over the page');
+  assert.equal(dialog.getAttribute('aria-modal'), 'true', 'it is a modal dialog');
+  assert.equal(dialog.getAttribute('aria-label'), 'Memories in this project');
+  assert.ok(searchBox(), 'the search box is there');
+  assert.ok(listed.length > 0, 'the manager asks for the memories as it opens');
+  for (const asked of listed) {
+    assert.deepEqual(asked, { root: '/home/me/demo', query: '' }, 'this project, nothing searched');
+  }
+  assert.equal(
+    dialog.querySelectorAll('li.memory-entry').length,
+    2,
+    'the memories it was given are on screen'
+  );
+
+  // Closed again, so nothing is left open for the test after this one.
+  closeButton().click();
+  await flush();
+  assert.equal(manager(), null);
+});
+
+test('long-term memory: closing the manager counts again', async () => {
+  const root = await page({ counts: { total: 2, verified: 1, provisional: 1, deprecated: 0 } });
+  assert.deepEqual(counted, ['/home/me/demo'], 'counted once as the page opens');
+
+  manageButton(root).click();
+  await flush();
+  const dialog = manager();
+  assert.ok(dialog, 'the manager is open');
+  assert.equal(counted.length, 1, 'opening the manager costs no count');
+
+  closeButton().click();
+  await flush();
+
+  assert.equal(manager(), null, 'the manager is gone');
+  assert.equal(document.body.contains(dialog), false, 'and its dialog left the page');
+  assert.deepEqual(
+    counted,
+    ['/home/me/demo', '/home/me/demo'],
+    'the count is asked for again, for the same project'
+  );
 });
