@@ -1,0 +1,58 @@
+[
+  {
+    "name": "an oversized first record leaves room for both later claims",
+    "budget": 220,
+    "corpus": [
+      { "title": "Investigation", "content": "Long source observation. ", "repeat": 400 },
+      { "title": "Lock", "content": "Serialize retry attempts." },
+      { "title": "Deadline", "content": "Bound subprocess execution." }
+    ],
+    "required": ["Lock", "Deadline"]
+  },
+  {
+    "name": "an oversized middle record preserves earlier and later claims",
+    "budget": 220,
+    "corpus": [
+      { "title": "Lock", "content": "Serialize retry attempts." },
+      { "title": "Investigation", "content": "Long source observation. ", "repeat": 400 },
+      { "title": "Deadline", "content": "Bound subprocess execution." }
+    ],
+    "required": ["Lock", "Deadline"]
+  },
+  {
+    "name": "a fetch hint cannot displace a complete short claim",
+    "budget": 100,
+    "corpus": [
+      { "title": "Investigation", "content": "Long source observation. ", "repeat": 400 },
+      { "title": "Lock", "content": "Serialize retry attempts." }
+    ],
+    "required": ["Lock"]
+  },
+  {
+    "name": "complete packets retain their existing order and contents",
+    "budget": 220,
+    "corpus": [
+      { "title": "Lock", "content": "Serialize retry attempts." },
+      { "title": "Deadline", "content": "Bound subprocess execution." }
+    ],
+    "required": ["Lock", "Deadline"]
+  },
+  {
+    "name": "a zero allowance emits nothing",
+    "budget": 0,
+    "corpus": [{ "title": "Lock", "content": "Serialize retry attempts." }],
+    "required": []
+  },
+  {
+    "name": "an empty packet obeys a tiny allowance",
+    "budget": 1,
+    "corpus": [],
+    "required": []
+  },
+  {
+    "name": "a header without room for any claim remains bounded",
+    "budget": 8,
+    "corpus": [{ "title": "Lock", "content": "Serialize retry attempts." }],
+    "required": []
+  }
+]

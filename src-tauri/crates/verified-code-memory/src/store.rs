@@ -1097,7 +1097,7 @@ impl MemoryStore {
         self.render_packet(memories, usize::MAX)
     }
 
-    /// Renders the prompt's memory packet, within no bound.
+    /// Renders the prompt's memory packet within the token allowance.
     #[must_use]
     pub fn render_packet(&self, memories: &[RetrievedMemory], tokens: usize) -> String {
         self.render_packet_traced(memories, tokens).0
@@ -1113,16 +1113,22 @@ impl MemoryStore {
         tokens: usize,
     ) -> (String, Vec<Uuid>) {
         let mut output = String::from("## Relevant prior work\n\n");
+        if estimate_tokens(&output) > tokens {
+            return (String::new(), Vec::new());
+        }
 
         if memories.is_empty() {
-            output.push_str("No sufficiently relevant prior memory.\n");
+            let empty = "No sufficiently relevant prior memory.\n";
+            if estimate_tokens(&output) + estimate_tokens(empty) <= tokens {
+                output.push_str(empty);
+            }
             return (output, Vec::new());
         }
 
         let mut emitted = Vec::new();
         let mut seen: Vec<&MemoryRecord> = Vec::new();
         let mut used = estimate_tokens(&output);
-        let mut cut = false;
+        let mut omitted = Vec::new();
         for memory in memories {
             if seen
                 .iter()
@@ -1139,22 +1145,26 @@ impl MemoryStore {
                 emitted.push(memory.record.id);
                 continue;
             }
-            // What is left of the allowance goes to this record's first line
-            // and its id, so the model knows it exists and can ask for it.
+            // A long source episode must not hide shorter claims later in the
+            // ranked pool. Complete claims get space before any fetch hints.
+            omitted.push(memory);
+        }
+
+        for memory in &omitted {
             let head = format!(
                 "- [{}] {} — (cut to fit the memory allowance; `memory_get` {} for the rest)\n",
                 memory.record.verification, memory.record.title, memory.record.id
             );
             if used + estimate_tokens(&head) <= tokens {
                 output.push_str(&head);
+                used += estimate_tokens(&head);
                 emitted.push(memory.record.id);
             }
-            cut = true;
-            break;
         }
 
-        if cut {
-            output.push_str("(The memory packet was cut to its allowance.)\n");
+        let footer = "(The memory packet was cut to its allowance.)\n";
+        if !omitted.is_empty() && used + estimate_tokens(footer) <= tokens {
+            output.push_str(footer);
         }
         (output, emitted)
     }

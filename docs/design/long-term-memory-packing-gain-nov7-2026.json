@@ -1,0 +1,210 @@
+{
+  "experiment": "packet capacity",
+  "baseline_commit": "dcb50fec8bf9423501620a0d444c9334391f4fcf",
+  "fixture_sha256": "a56223f41a813cb30e1626fd7e63a57c257013b92084ddf8f786de44e3d559c5",
+  "scope": "Constructed delivery mechanism; no blind holdout or agent task-success claim",
+  "capacity_before": {
+    "cases": [
+      {
+        "budget": 220,
+        "delivered": 0,
+        "name": "an oversized first record leaves room for both later claims",
+        "required": 2,
+        "titles": [],
+        "tokens": 50,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 220,
+        "delivered": 1,
+        "name": "an oversized middle record preserves earlier and later claims",
+        "required": 2,
+        "titles": ["Lock"],
+        "tokens": 96,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 100,
+        "delivered": 0,
+        "name": "a fetch hint cannot displace a complete short claim",
+        "required": 1,
+        "titles": [],
+        "tokens": 50,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 220,
+        "delivered": 2,
+        "name": "complete packets retain their existing order and contents",
+        "required": 2,
+        "titles": ["Lock", "Deadline"],
+        "tokens": 100,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 0,
+        "delivered": 0,
+        "name": "a zero allowance emits nothing",
+        "required": 0,
+        "titles": [],
+        "tokens": 18,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 1,
+        "delivered": 0,
+        "name": "an empty packet obeys a tiny allowance",
+        "required": 0,
+        "titles": [],
+        "tokens": 16,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 8,
+        "delivered": 0,
+        "name": "a header without room for any claim remains bounded",
+        "required": 0,
+        "titles": [],
+        "tokens": 18,
+        "traced_ids_visible": true
+      }
+    ],
+    "delivered": 3,
+    "delivered_recall": 0.42857142857142855,
+    "description": "Constructed packet capacity mechanisms; not a blind recall or agent-quality evaluation",
+    "required": 7
+  },
+  "capacity_after": {
+    "cases": [
+      {
+        "budget": 220,
+        "delivered": 2,
+        "expected_titles": ["Lock", "Deadline"],
+        "name": "an oversized first record leaves room for both later claims",
+        "required": 2,
+        "titles": ["Lock", "Deadline"],
+        "tokens": 144,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 220,
+        "delivered": 2,
+        "expected_titles": ["Lock", "Deadline"],
+        "name": "an oversized middle record preserves earlier and later claims",
+        "required": 2,
+        "titles": ["Lock", "Deadline"],
+        "tokens": 144,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 100,
+        "delivered": 1,
+        "expected_titles": ["Lock"],
+        "name": "a fetch hint cannot displace a complete short claim",
+        "required": 1,
+        "titles": ["Lock"],
+        "tokens": 96,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 220,
+        "delivered": 2,
+        "expected_titles": ["Lock", "Deadline"],
+        "name": "complete packets retain their existing order and contents",
+        "required": 2,
+        "titles": ["Lock", "Deadline"],
+        "tokens": 100,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 0,
+        "delivered": 0,
+        "expected_titles": [],
+        "name": "a zero allowance emits nothing",
+        "required": 0,
+        "titles": [],
+        "tokens": 0,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 1,
+        "delivered": 0,
+        "expected_titles": [],
+        "name": "an empty packet obeys a tiny allowance",
+        "required": 0,
+        "titles": [],
+        "tokens": 0,
+        "traced_ids_visible": true
+      },
+      {
+        "budget": 8,
+        "delivered": 0,
+        "expected_titles": [],
+        "name": "a header without room for any claim remains bounded",
+        "required": 0,
+        "titles": [],
+        "tokens": 6,
+        "traced_ids_visible": true
+      }
+    ],
+    "delivered": 7,
+    "delivered_recall": 1.0,
+    "description": "Constructed packet capacity mechanisms; not a blind recall or agent-quality evaluation",
+    "required": 7
+  },
+  "original_control": {
+    "dataset_fingerprint": "80aea60d70404953",
+    "controls_sha256": "f81c592e35c1ff0dbbca684be958a408b14ba0c4f854401fc988c565a298364d",
+    "before": {
+      "development": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 92,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "heldout": {
+        "candidate_recall": 0.8,
+        "cases": 40,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.3,
+        "recall_at_8": 0.8
+      }
+    },
+    "after": {
+      "development": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 92,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "heldout": {
+        "candidate_recall": 0.8,
+        "cases": 40,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.3,
+        "recall_at_8": 0.8
+      }
+    },
+    "cases_compared": 132,
+    "fields_compared": [
+      "id",
+      "rank",
+      "candidate_rank",
+      "answer_delivered",
+      "returned",
+      "packet_tokens",
+      "prohibited"
+    ],
+    "changed_cases": []
+  }
+}

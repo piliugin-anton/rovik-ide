@@ -44,9 +44,11 @@ and bounds it to `0..1` before the contextual reranker adds its components.
 `render_packet(memories, tokens)` renders what a prompt or a tool answer shows: at
 most `tokens`' worth (`estimate_tokens`, four characters to a token), each record
 with its id — what `memory_get` takes — its applicability, its evidence and its
-files. A record that would not fit ends the packet with a line saying so and a
-pointer to fetch it, rather than being dropped silently; `render_context` is the
-same rendering with no bound.
+files. A record that would not fit leaves room for later complete claims. Any
+remaining allowance goes to fetch pointers for omitted records, in rank order,
+and a truncation notice if it fits. The header, pointers and notice all count
+toward the allowance; very small allowances can produce an empty packet.
+`render_context` is the same rendering with no bound.
 
 ## Evidence, applicability and freshness
 
