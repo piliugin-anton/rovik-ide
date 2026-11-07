@@ -14,6 +14,7 @@ use verified_code_memory::{
 struct Config {
     directory: PathBuf,
     threshold: f32,
+    short_scale: f32,
     active: bool,
 }
 
@@ -54,6 +55,12 @@ fn settings_config(config_dir: &Path, value: &serde_json::Value) -> Option<Confi
     if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
         return None;
     }
+    let short_scale = value
+        .get("shortQueryScale")
+        .map_or(Some(11.0 / 12.0), |value| value.as_f64())? as f32;
+    if !short_scale.is_finite() || !(0.0..=1.0).contains(&short_scale) {
+        return None;
+    }
     let directory = match value.get("modelPath") {
         Some(path) => PathBuf::from(path.as_str()?),
         None => config_dir.join("memory-models").join(MINILM_REVISION),
@@ -64,6 +71,7 @@ fn settings_config(config_dir: &Path, value: &serde_json::Value) -> Option<Confi
     Some(Config {
         directory,
         threshold,
+        short_scale,
         active: mode == "hybrid",
     })
 }
@@ -102,8 +110,9 @@ pub(crate) fn retrieve(
         schedule(store.clone(), query.repo.clone(), config_dir.to_path_buf());
         return Ok(baseline);
     };
-    let proposed =
-        SemanticIndex::new(store.clone(), MINILM_REVISION, MINILM_DIMENSIONS).and_then(|index| {
+    let proposed = SemanticIndex::new(store.clone(), MINILM_REVISION, MINILM_DIMENSIONS)
+        .and_then(|index| index.with_short_query_scale(2, config.short_scale))
+        .and_then(|index| {
             index.retrieve_filtered(query, embedder.as_ref(), config.threshold, &accept)
         });
     match proposed {
@@ -227,12 +236,22 @@ mod tests {
             dir.0.join("memory-models").join(MINILM_REVISION)
         );
         assert_eq!(config.threshold, 0.3);
+        assert_eq!(config.short_scale, 11.0 / 12.0);
         assert!(!config.active);
         assert!(
             settings_config(&dir.0, &json!({"mode":"hybrid"}))
                 .unwrap()
                 .active
         );
+    }
+
+    #[test]
+    fn projects_can_keep_a_strict_cutoff_for_short_queries() {
+        let dir = crate::testing::temp_dir();
+        let config =
+            settings_config(&dir.0, &json!({"mode":"hybrid","shortQueryScale":1.0})).unwrap();
+        assert_eq!(config.short_scale, 1.0);
+        assert!(settings_config(&dir.0, &json!({"mode":"hybrid","shortQueryScale":1.1})).is_none());
     }
 
     #[test]

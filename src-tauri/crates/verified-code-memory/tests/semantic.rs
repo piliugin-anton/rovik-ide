@@ -18,6 +18,71 @@ impl MemoryEmbedder for Embed {
 }
 
 #[test]
+fn short_query_calibration_recovers_topic_queries_without_relaxing_long_or_generic_requests() {
+    struct Topic;
+    impl MemoryEmbedder for Topic {
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+            Ok(if text.contains("migration") {
+                vec![0.28, 0.96]
+            } else {
+                vec![1.0, 0.0]
+            })
+        }
+    }
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let wanted = store
+        .remember(NewMemory::procedure(
+            "a",
+            "migration",
+            "Apply migrations in sequence within a transaction.",
+        ))
+        .unwrap();
+    let index = SemanticIndex::new(store, "fixture", 2).unwrap();
+    index.backfill("a", &Topic).unwrap();
+    let query = RetrievalQuery::new("a", "database upgrade");
+    assert!(index.retrieve(&query, &Topic, 0.3).unwrap().is_empty());
+    let calibrated = index
+        .clone()
+        .with_short_query_scale(2, 11.0 / 12.0)
+        .unwrap();
+    let hits = calibrated.retrieve(&query, &Topic, 0.3).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].record.id, wanted.id);
+    assert!(calibrated
+        .search(&query, &[1.0, 0.0], 0.3)
+        .unwrap()
+        .is_empty());
+    for task in ["database upgrade safely", "do this"] {
+        assert!(calibrated
+            .retrieve(&RetrievalQuery::new("a", task), &Topic, 0.3)
+            .unwrap()
+            .is_empty());
+    }
+    assert!(index
+        .with_short_query_scale(2, 1.0)
+        .unwrap()
+        .retrieve(&query, &Topic, 0.3)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn invalid_short_query_calibration_is_rejected() {
+    let index =
+        SemanticIndex::new(SharedMemoryStore::open_in_memory().unwrap(), "fixture", 2).unwrap();
+    for (words, scale) in [(0, 0.9), (17, 0.9), (2, -0.1), (2, 1.1), (2, f32::NAN)] {
+        assert!(index.clone().with_short_query_scale(words, scale).is_err());
+    }
+    let calibrated = index.with_short_query_scale(2, 0.5).unwrap();
+    assert!(calibrated
+        .retrieve(&RetrievalQuery::new("a", "serialize"), &Embed, 1.1)
+        .is_err());
+}
+
+#[test]
 fn semantic_candidates_find_paraphrases_without_crossing_scope_or_filters() {
     let store = SharedMemoryStore::open_in_memory().unwrap();
     let wanted = store

@@ -54,15 +54,16 @@ impl OnnxMiniLm {
             }))
             .map_err(onnx_error)?;
         tokenizer.with_padding(Some(tokenizers::PaddingParams {
-            strategy: tokenizers::PaddingStrategy::Fixed(TOKENS),
+            strategy: tokenizers::PaddingStrategy::BatchLongest,
             ..Default::default()
         }));
         let mut model = tract_onnx::onnx()
             .model_for_path(directory.join("model.onnx"))
             .map_err(onnx_error)?;
+        let sequence = model.symbols.sym("sequence_length");
         for input in 0..3 {
             model = model
-                .with_input_fact(input, i64::fact([1, TOKENS]).into())
+                .with_input_fact(input, i64::fact([1.to_dim(), sequence.to_dim()]).into())
                 .map_err(onnx_error)?;
         }
         let model = model
@@ -89,9 +90,10 @@ impl MemoryEmbedder for OnnxMiniLm {
         })?;
         let text: String = text.chars().take(500).collect();
         let tokens = self.tokenizer.encode(text, true).map_err(onnx_error)?;
+        let length = tokens.len();
         let tensor = |values: &[u32]| {
             Tensor::from_shape(
-                &[1, TOKENS],
+                &[1, length],
                 &values.iter().map(|v| i64::from(*v)).collect::<Vec<_>>(),
             )
             .map(TValue::from)
@@ -109,9 +111,9 @@ impl MemoryEmbedder for OnnxMiniLm {
             .ok_or_else(|| onnx_error("model returned no output"))?
             .to_array_view::<f32>()
             .map_err(onnx_error)?;
-        if hidden.shape() != [1, TOKENS, MINILM_DIMENSIONS] {
+        if hidden.shape() != [1, length, MINILM_DIMENSIONS] {
             return Err(onnx_error(
-                "MiniLM must return [1, 256, 384] token embeddings",
+                "MiniLM must return one 384-dimensional embedding per input token",
             ));
         }
         let values: Vec<f32> = hidden.iter().copied().collect();
@@ -221,5 +223,20 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.id, wanted.id);
+    }
+
+    #[test]
+    #[ignore = "requires ROVIK_MEMORY_EVAL_MODEL pointing to the pinned local ONNX files"]
+    fn native_minilm_reuses_one_model_across_empty_and_maximum_length_unicode_inputs() {
+        let model = std::env::var_os("ROVIK_MEMORY_EVAL_MODEL").unwrap();
+        let backend = OnnxMiniLm::new(std::path::Path::new(&model)).unwrap();
+        let empty = backend.embed("").unwrap();
+        let long = backend.embed(&"界".repeat(600)).unwrap();
+        for vector in [&empty, &long] {
+            assert_eq!(vector.len(), MINILM_DIMENSIONS);
+            assert!(vector.iter().all(|value| value.is_finite()));
+            assert!((vector.iter().map(|value| value * value).sum::<f32>() - 1.0).abs() < 1e-5);
+        }
+        assert_eq!(backend.embed("").unwrap(), empty);
     }
 }

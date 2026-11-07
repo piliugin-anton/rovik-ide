@@ -1980,6 +1980,14 @@ on development cases for this exact model; calibrate for your own corpus before
 using hybrid. Existing false matches and live-agent quality remain rollout
 limitations; see [the evaluation](docs/design/long-term-memory-minilm-nov8-2026.md).
 
+For distinctive queries of at most two words, `shortQueryScale` multiplies the
+normal threshold (default `11/12`, giving 0.275 when the normal threshold is
+0.30). Longer or generic requests keep the normal threshold. Set
+`shortQueryScale: 1` in `memorySemantic` to keep a strict cutoff for every query.
+This small calibration recovered one additional development answer without
+losing existing answers or increasing false matches; validation recall stayed
+unchanged. See [the follow-up](docs/design/long-term-memory-recall-iterations-nov8-2026.md).
+
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
 setup. An existing incomplete or corrupt directory is reported and left intact;

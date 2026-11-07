@@ -13,6 +13,7 @@ pub struct SemanticIndex {
     store: SharedMemoryStore,
     model: String,
     dimensions: usize,
+    short_query: Option<(usize, f32)>,
 }
 
 impl SemanticIndex {
@@ -37,7 +38,31 @@ impl SemanticIndex {
             store,
             model: model.to_owned(),
             dimensions,
+            short_query: None,
         })
+    }
+
+    /// Calibrates similarity separately for short, distinctive queries. `scale`
+    /// multiplies the normal cutoff; strict vector searches remain unchanged.
+    pub fn with_short_query_scale(mut self, words: usize, scale: f32) -> Result<Self> {
+        if words == 0 || words > 16 {
+            return Err(VcmError::OutOfRange {
+                field: "short_query_words",
+                minimum: 1.0,
+                maximum: 16.0,
+                actual: words as f64,
+            });
+        }
+        if !scale.is_finite() || !(0.0..=1.0).contains(&scale) {
+            return Err(VcmError::OutOfRange {
+                field: "short_query_scale",
+                minimum: 0.0,
+                maximum: 1.0,
+                actual: scale as f64,
+            });
+        }
+        self.short_query = Some((words, scale));
+        Ok(self)
     }
 
     /// Embeds missing or changed records without holding the store lock.
@@ -108,14 +133,7 @@ impl SemanticIndex {
         accept: impl Fn(&MemoryRecord) -> bool,
     ) -> Result<Vec<(MemoryRecord, f32)>> {
         validate(vector, self.dimensions)?;
-        if !minimum.is_finite() || !(0.0..=1.0).contains(&minimum) {
-            return Err(VcmError::OutOfRange {
-                field: "similarity",
-                minimum: 0.0,
-                maximum: 1.0,
-                actual: minimum as f64,
-            });
-        }
+        validate_threshold(minimum)?;
         if query.limit == 0 || query.limit > 32 {
             return Err(VcmError::InvalidLimit(query.limit));
         }
@@ -172,13 +190,21 @@ impl SemanticIndex {
         minimum: f32,
         accept: impl Fn(&MemoryRecord) -> bool,
     ) -> Result<Vec<RetrievedMemory>> {
+        validate_threshold(minimum)?;
         let lexical = self.store.retrieve_filtered(query, &accept)?;
         let vector = embedder.embed(&format!(
             "{}\n{}",
             query.task,
             query.failure.as_deref().unwrap_or("")
         ))?;
-        let semantic = self.search_filtered(query, &vector, minimum, &accept)?;
+        let text = format!("{} {}", query.task, query.failure.as_deref().unwrap_or(""));
+        let words = text.split_whitespace().count();
+        let admission = self
+            .short_query
+            .filter(|(limit, _)| words > 0 && words <= *limit)
+            .filter(|_| !crate::retrieval::build_fts_query(&[&text]).is_empty())
+            .map_or(minimum, |(_, scale)| minimum * scale);
+        let semantic = self.search_filtered(query, &vector, admission, &accept)?;
         let mut fused = HashMap::new();
         for (rank, mut hit) in lexical.into_iter().enumerate() {
             hit.score = 1.0 / (61 + rank) as f32;
@@ -216,6 +242,18 @@ impl SemanticIndex {
         found.truncate(query.limit);
         Ok(found)
     }
+}
+
+fn validate_threshold(minimum: f32) -> Result<()> {
+    if !minimum.is_finite() || !(0.0..=1.0).contains(&minimum) {
+        return Err(VcmError::OutOfRange {
+            field: "similarity",
+            minimum: 0.0,
+            maximum: 1.0,
+            actual: minimum as f64,
+        });
+    }
+    Ok(())
 }
 
 fn validate(vector: &[f32], expected: usize) -> Result<()> {
