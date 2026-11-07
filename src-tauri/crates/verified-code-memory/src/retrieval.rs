@@ -1,6 +1,69 @@
 use crate::model::{MemoryKind, MemoryRecord, RetrievedMemory, Verification};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::cmp::Ordering;
+
+pub(crate) fn compare_memories(left: &RetrievedMemory, right: &RetrievedMemory) -> Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| {
+            right
+                .record
+                .content_updated_at
+                .cmp(&left.record.content_updated_at)
+        })
+        .then_with(|| left.record.id.cmp(&right.record.id))
+}
+
+/// Fills a bounded pool with admissible, distinct claims rather than raw rows.
+/// The index still controls scan order; rejected rows and exact copies cannot
+/// hide the next independent claim. Keep the best representative of a copy.
+pub(crate) fn collect_ranked_candidates(
+    rows: impl Iterator<Item = crate::Result<(MemoryRecord, Option<f32>)>>,
+    query: &crate::RetrievalQuery,
+    accept: &impl Fn(&MemoryRecord) -> bool,
+    now: DateTime<Utc>,
+    weights: &RetrievalWeights,
+    limit: usize,
+    telemetry: &mut RetrievalTelemetry,
+) -> crate::Result<Vec<RetrievedMemory>> {
+    let mut found: Vec<RetrievedMemory> = Vec::new();
+    for row in rows {
+        let (record, lexical) = row?;
+        telemetry.candidates_scanned += 1;
+        if !accept(&record) {
+            telemetry.rejected += 1;
+            continue;
+        }
+        let Some(hit) = score_memory(
+            &record,
+            &query.task,
+            &query.files,
+            query.failure.as_deref(),
+            lexical,
+            now,
+            weights,
+        ) else {
+            telemetry.rejected += 1;
+            continue;
+        };
+        if let Some(copy) = found
+            .iter_mut()
+            .find(|seen| seen.record.same_context_claim(&hit.record))
+        {
+            if compare_memories(&hit, copy).is_lt() {
+                *copy = hit;
+            }
+        } else {
+            found.push(hit);
+            if found.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(found)
+}
 
 /// Removes interchangeable copies from ranked results, retaining the first
 /// (highest-ranked) representative. Stored records and their evidence remain
@@ -374,5 +437,36 @@ mod tests {
     #[test]
     fn paths_overlap_across_separators() {
         assert!(path_overlap("src\\a\\b.py", "src/a/b.py"));
+    }
+
+    #[test]
+    fn a_pool_keeps_the_highest_ranked_copy_including_custom_outcome_weights() {
+        let store = crate::MemoryStore::open_in_memory().unwrap();
+        let record = store
+            .remember(crate::NewMemory::procedure("p", "Retry", "Bound retries."))
+            .unwrap();
+        let mut better = record.clone();
+        better.id = uuid::Uuid::new_v4();
+        better.use_count = 1;
+        better.success_count = 1;
+        let query = crate::RetrievalQuery::new("p", "retry");
+        let mut telemetry = RetrievalTelemetry::default();
+        let weights = RetrievalWeights {
+            success_rate: 3.0,
+            ..Default::default()
+        };
+        let found = collect_ranked_candidates(
+            [Ok((record, Some(1.0))), Ok((better.clone(), Some(1.0)))].into_iter(),
+            &query,
+            &|_| true,
+            Utc::now(),
+            &weights,
+            80,
+            &mut telemetry,
+        )
+        .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].record.id, better.id);
+        assert_eq!(telemetry.candidates_scanned, 2);
     }
 }

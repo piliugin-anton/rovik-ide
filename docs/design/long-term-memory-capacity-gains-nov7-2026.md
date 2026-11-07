@@ -51,3 +51,51 @@ and verifying Go 1.25.4. All 20 core integration tests passed, and the core
 doctest command passed with its existing ignored example. Command-execution tests
 ran outside the nested agent sandbox after an isolated comparison established
 that the sandbox itself blocked their child commands. No tests were weakened.
+
+## Experiment 2: fill candidate pools after visibility and exact deduplication
+
+The first fix was committed and pushed as `b7bfd26` before this implementation.
+The previous SQLite queries cut off at 80 lexical rows and 40 file rows before
+the caller could reject inaccessible/stale records or collapse exact copies.
+Thus a hundred copies of one incident could exclude an independent answer even
+though the final result list had spare slots. Raising the final result limit
+cannot recover a record absent from those pools.
+
+Seventeen new fixtures measure this at 100, 1,000 and 10,000 crowding records,
+for both lexical and explicit-file retrieval. They include exact duplicates,
+records hidden by a caller predicate, another project, excluded tags, deprecated
+records, abstention and whole-file-segment boundaries. The initial implementation
+recalled and delivered **9/21 required claims**; the revised implementation
+recalls and delivers **21/21**, with no extra returned claims in any fixture.
+The full stored history remains byte-for-byte equivalent as serialized records,
+and repeat queries preserve their order.
+
+The indexed scan now fills pools of 80/40 **distinct admissible claims** rather
+than raw rows. Scoring and the existing score/time/ID tie-break choose the best
+copy, including with custom outcome weights. Final ranking and the result limit
+remain in place. There is no new keyword, synonym, semantic or incident-family
+admission rule. Source and evidence differences still keep records distinct.
+
+This trades more scanning for correct recall in heavily restricted or repetitive
+histories. The constructed 10,000-row lookups took approximately 0.2–0.3 seconds
+on this machine, excluding fixture insertion. These are individual local replay
+timings, not a latency distribution or production benchmark. Retained pools stay
+bounded, but an all-hidden or all-duplicate history can require scanning every
+matching row. Telemetry now counts rows inspected, including overlaps between
+the two pools.
+
+Reproduce with:
+
+```sh
+cd src-tauri
+cargo run --locked -p verified-code-memory --example evaluate_memory_pools
+cargo test --locked -p verified-code-memory --all-targets
+```
+
+The [machine-readable comparison](long-term-memory-pool-gain-nov7-2026.json)
+records all capacity cases, timings, safety checks and the frozen control rerun.
+All 132 original outcomes are unchanged again, including delivered recall,
+ranking, returned counts, packing sizes and prohibited-project checks. Before
+the second commit, all 90 memory tests, the memory doctest and all 83 core tests
+selected by the memory filter passed. Clippy passed with warnings denied; all
+1,044 frontend tests, type checking and format checking passed again.

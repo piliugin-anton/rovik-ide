@@ -37,6 +37,13 @@ are applied before the result limit, so a record the caller may not see can't
 take a slot from one it may. Deprecated memories are never retrieved; `list` is
 where they show.
 
+The lexical and file pools retain at most 80 and 40 distinct admissible claims.
+The indexed scan continues past rejected rows and exact copies to fill those
+pools. Copies keep their highest-ranked representative and remain stored for
+audit. Scan telemetry counts rows inspected in both pools, including rejected
+rows and overlaps; a heavily restricted or repetitive history can require more
+reads without increasing the retained pool or the final result limit.
+
 SQLite's `bm25()` is negative and the better a row matches the more negative it
 is. `bm25_relevance` keeps that direction (`rank = -4.0` scores above `-0.5`)
 and bounds it to `0..1` before the contextual reranker adds its components.
