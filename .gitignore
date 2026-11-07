@@ -1,4 +1,5 @@
 node_modules
+__pycache__/
 dist
 src-tauri/target
 rovik-ide.zip*.tsbuildinfo

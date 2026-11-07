@@ -297,21 +297,27 @@ fn the_same_query_answers_in_the_same_order_twice() {
 fn of_two_equally_relevant_memories_the_newer_one_is_recalled_first() {
     let store = MemoryStore::open_in_memory().unwrap();
     let older = store
-        .remember(episode(
-            "Webhook signature check",
-            "Compare the HMAC in constant time.",
-            &[],
-        ))
+        .remember(
+            episode(
+                "Webhook signature check",
+                "Compare the HMAC in constant time.",
+                &[],
+            )
+            .with_evidence("first source observation"),
+        )
         .unwrap();
-    // The two memories are the same text, so only their age tells them
-    // apart.
+    // Distinct source observations keep both records eligible. Evidence does
+    // not affect their equal relevance, so age still determines the order.
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let newer = store
-        .remember(episode(
-            "Webhook signature check",
-            "Compare the HMAC in constant time.",
-            &[],
-        ))
+        .remember(
+            episode(
+                "Webhook signature check",
+                "Compare the HMAC in constant time.",
+                &[],
+            )
+            .with_evidence("second source observation"),
+        )
         .unwrap();
 
     let found = ids(

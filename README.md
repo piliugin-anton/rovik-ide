@@ -1923,6 +1923,14 @@ while a changed or missing source prevents it from steering a new run. Historica
 verification is retained for audit. Structured findings recorded with
 `memory_remember` stay provisional; a run can record at most three concise claims.
 
+Successful source reads and code-search hits can fill unused memory slots with
+verified, current memories about those files before the next model decision.
+File lookups are cached across repeated reads and paused verification. Exact
+copies share one retrieval/context slot; records with different evidence,
+source links, scopes or applicability remain distinct, and all stored history
+stays available in the manager. Repeating a claim with a new source observation
+preserves that observation as a provisional record.
+
 Run `node scripts/eval/memory.mjs` to evaluate the SQLite retriever on the 120-case
 synthetic set. Development and held-out cases are separated by incident. The
 JSON report includes Recall@8, MRR, nDCG, no-match injections and per-case timing.
