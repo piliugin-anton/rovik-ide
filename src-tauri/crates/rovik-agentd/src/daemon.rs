@@ -478,12 +478,20 @@ impl Daemon {
             {
                 let core = self.core.clone();
                 let folder = root.clone();
-                rovik_core::rt::spawn_blocking(move || {
+                let prepared = rovik_core::rt::spawn_blocking(move || {
                     core.memory.bind_project(&core.paths, &folder, &project)
                 })
                 .await
-                .map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?
-                .map_err(|e| Fail::new(FailCode::Internal, e))?;
+                .map_err(|error| error.to_string())
+                .and_then(|result| result);
+                if let Err(error) = prepared {
+                    self.core.emit(rovik_protocol::events::AgentEvent::Notice {
+                        dialog_id: Some(start.dialog_id.clone()),
+                        kind: "warning".into(),
+                        title: "Project memory".into(),
+                        message: format!("Shared project memory couldn't be prepared: {error}. The run will continue with available memory and synchronization will retry later."),
+                    });
+                }
             }
             start.root = Some(work::text(&root));
         }

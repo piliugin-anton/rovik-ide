@@ -16,6 +16,9 @@ use std::time::Instant;
 use uuid::Uuid;
 
 const MAX_RETRIEVAL_LIMIT: usize = 32;
+// Older writers do not advance replication epochs when clearing history.
+// They must refuse to reopen a database that now participates in sync.
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 
 /// How many full-text matches one query reads before reranking: enough that
 /// the best of them survive the relevance gate and the cut to `limit`, few
@@ -51,10 +54,10 @@ impl MemoryStore {
 
     fn initialize(connection: Connection) -> Result<Self> {
         let schema: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if schema > 3 {
+        if schema > SCHEMA_VERSION {
             return Err(VcmError::UnsupportedSchema {
                 actual: schema,
-                supported: 3,
+                supported: SCHEMA_VERSION,
             });
         }
         // The records and the file index first, the full-text index after the
@@ -142,7 +145,6 @@ impl MemoryStore {
         backfill_files(&connection)?;
         create_full_text(&connection)?;
         rebuild_full_text(&connection)?;
-        connection.pragma_update(None, "user_version", 3)?;
         crate::sync::initialize(&connection)?;
 
         Ok(Self {

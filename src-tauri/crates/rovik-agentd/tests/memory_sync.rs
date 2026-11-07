@@ -368,3 +368,32 @@ async fn remembered_hosts_still_receive_changes_without_any_loaded_remote_chats(
         "After desktop restart"
     );
 }
+
+#[tokio::test]
+async fn an_unavailable_memory_folder_does_not_block_a_cloud_start() {
+    let mut setup = Setup::new().await;
+    setup.ensure().await;
+    // A real I/O failure at the optional store: creating memory databases
+    // cannot succeed while a regular file occupies their directory.
+    std::fs::write(setup.daemon.data.join("data/memory"), "unavailable").unwrap();
+    let app = App::new(&mut setup).await;
+    app.connect(&setup).await;
+    let (url, seen) = model(vec![Reply::Text("Done.")]).await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    ended(&setup.client).await;
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(setup
+        .daemon
+        .rows(CHAT)
+        .iter()
+        .any(|row| row.role == "assistant" && row.content == "Done."));
+    assert!(app.test.events.lock().unwrap().iter().any(|event| {
+        event["type"] == "notice"
+            && event["message"].as_str().is_some_and(|message| {
+                message.contains("Shared project memory couldn't be prepared")
+            })
+    }));
+}

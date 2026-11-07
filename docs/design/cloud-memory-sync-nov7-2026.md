@@ -47,6 +47,11 @@ exchange. Different observations are not collapsed into one claim. Embeddings
 and other derived indexes stay local and rebuild from the receiving records.
 Usage counts are not a globally summed measure across machines.
 
+Database schema 4 publishes replication metadata and its version atomically.
+Older binaries refuse to reopen these stores, since their clear operation does
+not advance a synchronization epoch. Schema 3 records migrate with IDs, text and
+evidence preserved.
+
 ## Scope, settings and existing histories
 
 The daemon resolves project IDs through its own registered state and rejects
@@ -103,3 +108,21 @@ not started after the instruction to stop building. The final durable-host
 rediscovery changes, sixth daemon regression and byte-boundary regression still
 need validation, along with the corrected protocol samples. Native Windows,
 macOS and the Landlock matrix have not been run for this feature.
+
+## Follow-up code review with builds stopped
+
+The user confirmed that further builds should remain stopped. The review adds
+schema 4 so older binaries cannot reopen synchronized stores and clear history
+without advancing its epoch. The schema version is committed in the same SQLite
+transaction as replication metadata. A schema-3 upgrade regression preserves the
+original record, evidence and ID.
+
+The review also corrects cloud start handling: a shared-memory preparation or
+migration failure emits a warning and allows the run to continue with available
+memory. A real-daemon regression places a regular file at the memory-directory
+path to exercise this failure. Both new regressions are added but have not been
+executed under the no-build instruction.
+
+GitHub reported no pull-request workflow runs and no commit status checks for
+implementation commit `c7d023c` at review time. No CI runs were triggered during
+this review.

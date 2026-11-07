@@ -335,3 +335,40 @@ fn pages_are_bounded_by_encoded_bytes_and_oversized_records_are_reported_without
     assert!(b.sync_apply("another", &malformed).is_err());
     assert!(b.list("another", "").unwrap().is_empty());
 }
+
+#[test]
+fn upgrading_a_schema_three_store_preserves_history_and_blocks_old_writers_on_reopen() {
+    let path =
+        std::env::temp_dir().join(format!("memory-sync-upgrade-{}.db", uuid::Uuid::new_v4()));
+    let original;
+    {
+        let store = MemoryStore::open(&path).unwrap();
+        let record = store
+            .remember(NewMemory::project_fact("repo", "Queue", "Serial queue"))
+            .unwrap();
+        original = store.verify(record.id, "source review passed").unwrap();
+    }
+    {
+        // Schema 3 had the same claim table, without replication metadata.
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("DROP TRIGGER memory_sync_insert; DROP TRIGGER memory_sync_update; DROP TRIGGER memory_sync_delete; DROP TABLE memory_sync_changes; DROP TABLE memory_sync_projects; DROP TABLE memory_sync_peers; DROP TABLE memory_sync_clock; PRAGMA user_version=3;").unwrap();
+    }
+    {
+        let upgraded = MemoryStore::open(&path).unwrap();
+        assert_eq!(upgraded.get(original.id).unwrap(), original);
+        assert_eq!(
+            upgraded.sync_export("repo", 0).unwrap().changes[0].id,
+            original.id
+        );
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        assert!(
+            version > 3,
+            "the previous binary's schema guard must reject reopening it"
+        );
+    }
+    std::fs::remove_file(path).unwrap();
+}

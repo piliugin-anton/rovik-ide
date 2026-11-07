@@ -155,6 +155,9 @@ pub(crate) fn initialize(c: &Connection) -> Result<()> {
         )?;
         c.execute("INSERT INTO memory_sync_changes SELECT ?1,?2,sequence,counter,replica,0,counter,replica FROM memory_sync_clock WHERE singleton=1", params![repo,id])?;
     }
+    // Publish the replication schema and its version atomically. Old binaries
+    // must not reopen this store and clear it without advancing its epoch.
+    c.pragma_update(None, "user_version", crate::store::SCHEMA_VERSION)?;
     transaction.commit()?;
     Ok(())
 }
