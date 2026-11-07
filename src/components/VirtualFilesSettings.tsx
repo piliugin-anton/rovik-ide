@@ -10,6 +10,7 @@
 // retried every few seconds and whenever the app is focused again, so the
 // page turns to "Mounted" by itself once the user has done it.
 import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { SettingsLoadError } from './SettingsControls';
 import {
   installVfsDriver,
   mountVfs,
@@ -31,12 +32,18 @@ export default function VirtualFilesSettings() {
   const [busy, setBusy] = createSignal<string | null>(null);
   const [outcome, setOutcome] = createSignal<InstallOutcome | null>(null);
   const [error, setError] = createSignal<string | null>(null);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
+  const [loading, setLoading] = createSignal(false);
 
   async function refresh() {
+    setLoading(true);
     try {
       setStatus(await vfsStatus());
+      setLoadError(null);
     } catch (err) {
-      setError(String(err));
+      setLoadError(String(err));
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -111,7 +118,19 @@ export default function VirtualFilesSettings() {
 
       <section class="settings-section">
         <div class="settings-section-title">Driver</div>
-        <Show when={driver()} fallback={<p class="settings-hint">Checking…</p>}>
+        <Show when={loadError()}>
+          <SettingsLoadError retry={refresh} loading={loading()}>
+            Virtual files couldn’t be read: {loadError()}
+          </SettingsLoadError>
+        </Show>
+        <Show
+          when={driver()}
+          fallback={
+            <Show when={!loadError()}>
+              <p class="settings-hint">Checking…</p>
+            </Show>
+          }
+        >
           {(d) => (
             <>
               <p class="settings-hint">

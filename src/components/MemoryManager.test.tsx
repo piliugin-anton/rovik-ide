@@ -180,9 +180,18 @@ test('the manager follows page cursors and resets them for a new search', async 
   const view = await mount();
   try {
     assert.equal(rows().length, 50);
+    const panel = dialog()!;
+    const list = panel.querySelector('.modal-body') as HTMLElement;
+    const navigation = panel.querySelector('nav[aria-label="Memory pages"]')!;
+    assert.equal(list.contains(navigation), false, 'navigation stays outside the scrolling list');
+    assert.equal(list.contains(searchBox()), false, 'search stays outside the scrolling list');
+    assert.match(navigation.textContent!, /Page 1/);
+    list.scrollTop = 500;
     buttonIn(dialog()!, 'Next memories')!.click();
     await flush();
     assert.deepEqual(titles(), ['Last page']);
+    assert.match(navigation.textContent!, /Page 2/);
+    assert.equal(list.scrollTop, 0, 'the next page starts at its first memory');
     assert.equal(calls.at(-1)?.args.before, 'page-49');
     buttonIn(dialog()!, 'Previous memories')!.click();
     await flush();
@@ -804,4 +813,52 @@ test('the manager: Escape drops the correction being typed before it closes the 
   await flush();
   assert.deepEqual(view.closes, [1], 'a second Escape closes the manager');
   view.dispose();
+});
+
+test('the manager hides pagination when all memories fit on one page', async () => {
+  backend = { memory_list: () => project() };
+  const view = await mount();
+  try {
+    assert.equal(dialog()!.querySelector('nav[aria-label="Memory pages"]'), null);
+  } finally {
+    view.dispose();
+  }
+});
+
+test('the manager retries a failed read without closing the dialog', async () => {
+  backend = {
+    memory_list: () => {
+      throw new Error('temporarily locked');
+    },
+  };
+  const view = await mount();
+  try {
+    assert.equal(rows().length, 0);
+    backend = { memory_list: () => project() };
+    buttonIn(dialog()!, 'Try again')!.click();
+    await flush();
+    assert.equal(rows().length, 3);
+    assert.equal(buttonIn(dialog()!, 'Try again'), undefined);
+    assert.deepEqual(view.closes, []);
+  } finally {
+    view.dispose();
+  }
+});
+
+test('the manager returns focus to the search field after clearing a search', async () => {
+  backend = { memory_list: () => [] };
+  const view = await mount();
+  try {
+    typeInto(searchBox(), 'nothing');
+    fireTimers();
+    await flush();
+    const clear = buttonIn(dialog()!, 'Clear search')!;
+    clear.focus();
+    clear.click();
+    await flush();
+    assert.equal(document.activeElement, searchBox());
+    assert.equal(searchBox().value, '');
+  } finally {
+    view.dispose();
+  }
 });

@@ -7,7 +7,18 @@
 // Both removals ask first (components/ConfirmDialog.tsx) — they can't be
 // undone. Everything else a memory carries (its trust state and evidence,
 // its tags and files) stays as the agent left it.
-import { batch, createResource, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import {
+  batch,
+  createEffect,
+  createResource,
+  createSignal,
+  For,
+  on,
+  onCleanup,
+  onMount,
+  Show,
+} from 'solid-js';
+import { Portal } from 'solid-js/web';
 import { confirmDialog, type ConfirmOptions } from './ConfirmDialog';
 import {
   memoryApplicabilityLabel,
@@ -46,10 +57,22 @@ export default function MemoryManager(props: { root: string; onClose: () => void
   let pending: number | undefined;
   let dialogRef: HTMLDivElement | undefined;
   let searchRef: HTMLInputElement | undefined;
+  let listRef: HTMLDivElement | undefined;
+  const previouslyFocused = document.activeElement as HTMLElement | null;
 
   const [rows, { refetch }] = createResource(
     () => ({ query: search(), before: cursors()[cursors().length - 1] }),
     ({ query, before }) => memoryList(props.root, query, before).catch(() => null)
+  );
+
+  // Each page or search starts at the top of its results; the controls stay put.
+  createEffect(
+    on(
+      () => rows(),
+      () => {
+        if (listRef) listRef.scrollTop = 0;
+      }
+    )
   );
 
   /** What the list shows: the last answer, which stays while a new one comes. */
@@ -81,9 +104,13 @@ export default function MemoryManager(props: { root: string; onClose: () => void
     setTyped('');
     setCursors([]);
     setSearch('');
+    searchRef?.focus();
   }
 
-  onCleanup(() => window.clearTimeout(pending));
+  onCleanup(() => {
+    window.clearTimeout(pending);
+    if (previouslyFocused?.isConnected) previouslyFocused.focus();
+  });
 
   /** Asks a question on top, while this dialog leaves the keys to it. */
   async function ask(options: ConfirmOptions): Promise<boolean> {
@@ -242,23 +269,23 @@ export default function MemoryManager(props: { root: string; onClose: () => void
   }
 
   return (
-    <div class="modal-overlay">
-      <div
-        ref={dialogRef}
-        class="modal memory-manager"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Memories in this project"
-        onKeyDown={onDialogKeyDown}
-      >
-        <div class="modal-header">
-          <span class="modal-title">Memories in this project</span>
-          <button class="icon-button" onClick={() => props.onClose()} aria-label="Close">
-            ×
-          </button>
-        </div>
+    <Portal>
+      <div class="modal-overlay">
+        <div
+          ref={dialogRef}
+          class="modal memory-manager"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Memories in this project"
+          onKeyDown={onDialogKeyDown}
+        >
+          <div class="modal-header">
+            <span class="modal-title">Memories in this project</span>
+            <button class="icon-button" onClick={() => props.onClose()} aria-label="Close">
+              ×
+            </button>
+          </div>
 
-        <div class="modal-body">
           <div class="memory-manager-tools">
             <div class="memory-manager-search">
               <input
@@ -285,133 +312,148 @@ export default function MemoryManager(props: { root: string; onClose: () => void
             </button>
           </div>
 
-          <Show when={notice()}>
-            <p class="settings-hint memory-manager-notice" role="status">
-              {notice()}
-            </p>
-          </Show>
-          <Show when={failure()}>
-            <p class="settings-status warning" role="alert">
-              {failure()}
-            </p>
-          </Show>
+          <div ref={listRef} class="modal-body">
+            <Show when={notice()}>
+              <p class="settings-hint memory-manager-notice" role="status">
+                {notice()}
+              </p>
+            </Show>
+            <Show when={failure()}>
+              <p class="settings-status warning" role="alert">
+                {failure()}
+              </p>
+            </Show>
 
-          <Show when={rows.loading && rows.latest === undefined}>
-            <p class="settings-hint" role="status">
-              Reading the memories…
-            </p>
-          </Show>
-          <Show when={unreadable()}>
-            <p class="settings-status warning" role="alert">
-              The memories couldn't be read.
-            </p>
-          </Show>
+            <Show when={rows.loading && rows.latest === undefined}>
+              <p class="settings-hint" role="status">
+                Reading the memories…
+              </p>
+            </Show>
+            <Show when={unreadable()}>
+              <p class="settings-status warning" role="alert">
+                The memories couldn't be read.{' '}
+                <button class="link-button" disabled={rows.loading} onClick={() => void refetch()}>
+                  Try again
+                </button>
+              </p>
+            </Show>
 
-          <div class="memory-manager-pagination">
-            <button
-              disabled={rows.loading || cursors().length === 0}
-              onClick={() => setCursors((previous) => previous.slice(0, -1))}
-            >
-              Previous memories
-            </button>
-            <button
-              disabled={rows.loading || listed().length < 50}
-              onClick={() => {
-                const last = listed()[listed().length - 1];
-                if (last) setCursors((previous) => [...previous, last.cursor ?? last.id]);
-              }}
-            >
-              Next memories
-            </button>
-          </div>
-          <Show when={rows.latest !== undefined && !unreadable()}>
-            <Show when={listed().length > 0} fallback={<p class="settings-hint">{emptyText()}</p>}>
-              <ul class="memory-list">
-                <For each={listed()}>
-                  {(entry) => (
-                    <li class="memory-entry">
-                      <Show when={draft()?.id !== entry.id}>
-                        <div class="memory-entry-head">
-                          <span
-                            class="prior-work-state"
-                            classList={{ [entry.verification]: true }}
-                            title={entry.evidence}
-                          >
-                            {memoryStateLabel(entry.verification)}
-                          </span>
-                          <Show when={memoryApplicabilityLabel(entry.applicability)}>
-                            {(label) => (
-                              <span
-                                class="prior-work-applicability"
-                                classList={{ [entry.applicability]: true }}
-                                title={
-                                  entry.lastValidatedAt
-                                    ? `Last confirmed ${new Date(entry.lastValidatedAt).toLocaleDateString()}`
-                                    : 'Never confirmed by evidence'
-                                }
-                              >
-                                {label()}
-                              </span>
-                            )}
+            <Show when={rows.latest !== undefined && !unreadable()}>
+              <Show
+                when={listed().length > 0}
+                fallback={<p class="settings-hint">{emptyText()}</p>}
+              >
+                <ul class="memory-list">
+                  <For each={listed()}>
+                    {(entry) => (
+                      <li class="memory-entry">
+                        <Show when={draft()?.id !== entry.id}>
+                          <div class="memory-entry-head">
+                            <span
+                              class="prior-work-state"
+                              classList={{ [entry.verification]: true }}
+                              title={entry.evidence}
+                            >
+                              {memoryStateLabel(entry.verification)}
+                            </span>
+                            <Show when={memoryApplicabilityLabel(entry.applicability)}>
+                              {(label) => (
+                                <span
+                                  class="prior-work-applicability"
+                                  classList={{ [entry.applicability]: true }}
+                                  title={
+                                    entry.lastValidatedAt
+                                      ? `Last confirmed ${new Date(entry.lastValidatedAt).toLocaleDateString()}`
+                                      : 'Never confirmed by evidence'
+                                  }
+                                >
+                                  {label()}
+                                </span>
+                              )}
+                            </Show>
+                            <span class="prior-work-kind">{entry.kind}</span>
+                            <span class="memory-entry-title">{entry.title}</span>
+                            <span class="memory-entry-date">
+                              {new Date(entry.updatedAt).toLocaleDateString()}
+                            </span>
+                          </div>
+                          <div class="memory-entry-content">{entry.content}</div>
+                          <Show when={entry.files.length > 0}>
+                            <div class="memory-entry-files">{entry.files.join(', ')}</div>
                           </Show>
-                          <span class="prior-work-kind">{entry.kind}</span>
-                          <span class="memory-entry-title">{entry.title}</span>
-                          <span class="memory-entry-date">
-                            {new Date(entry.updatedAt).toLocaleDateString()}
-                          </span>
-                        </div>
-                        <div class="memory-entry-content">{entry.content}</div>
-                        <Show when={entry.files.length > 0}>
-                          <div class="memory-entry-files">{entry.files.join(', ')}</div>
-                        </Show>
-                        <div class="memory-entry-actions">
-                          <button class="link-button" onClick={() => startEdit(entry)}>
-                            Edit
-                          </button>
-                          <button class="link-button" onClick={() => void remove(entry)}>
-                            Delete
-                          </button>
-                        </div>
-                      </Show>
-
-                      <Show when={draft()?.id === entry.id}>
-                        <div class="memory-entry-edit">
-                          <input
-                            ref={(el) => queueMicrotask(() => el.focus())}
-                            aria-label="Memory title"
-                            value={draft()?.title ?? ''}
-                            onInput={(e) => changeDraft('title', e.currentTarget.value)}
-                            spellcheck={false}
-                          />
-                          <textarea
-                            aria-label="Memory text"
-                            rows={3}
-                            value={draft()?.content ?? ''}
-                            onInput={(e) => changeDraft('content', e.currentTarget.value)}
-                          />
-                          <Show when={editError()}>
-                            <p class="settings-status warning" role="alert">
-                              {editError()}
-                            </p>
-                          </Show>
-                          <div class="memory-entry-edit-actions">
-                            <button class="link-button" onClick={() => cancelEdit()}>
-                              Cancel
+                          <div class="memory-entry-actions">
+                            <button class="link-button" onClick={() => startEdit(entry)}>
+                              Edit
                             </button>
-                            <button class="primary" disabled={saving()} onClick={() => void save()}>
-                              Save
+                            <button class="link-button" onClick={() => void remove(entry)}>
+                              Delete
                             </button>
                           </div>
-                        </div>
-                      </Show>
-                    </li>
-                  )}
-                </For>
-              </ul>
+                        </Show>
+
+                        <Show when={draft()?.id === entry.id}>
+                          <div class="memory-entry-edit">
+                            <input
+                              ref={(el) => queueMicrotask(() => el.focus())}
+                              aria-label="Memory title"
+                              value={draft()?.title ?? ''}
+                              onInput={(e) => changeDraft('title', e.currentTarget.value)}
+                              spellcheck={false}
+                            />
+                            <textarea
+                              aria-label="Memory text"
+                              rows={3}
+                              value={draft()?.content ?? ''}
+                              onInput={(e) => changeDraft('content', e.currentTarget.value)}
+                            />
+                            <Show when={editError()}>
+                              <p class="settings-status warning" role="alert">
+                                {editError()}
+                              </p>
+                            </Show>
+                            <div class="memory-entry-edit-actions">
+                              <button class="link-button" onClick={() => cancelEdit()}>
+                                Cancel
+                              </button>
+                              <button
+                                class="primary"
+                                disabled={saving()}
+                                onClick={() => void save()}
+                              >
+                                Save
+                              </button>
+                            </div>
+                          </div>
+                        </Show>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
             </Show>
+          </div>
+          <Show when={cursors().length > 0 || listed().length >= 50}>
+            <nav class="memory-manager-pagination" aria-label="Memory pages">
+              <button
+                disabled={rows.loading || cursors().length === 0}
+                onClick={() => setCursors((previous) => previous.slice(0, -1))}
+              >
+                Previous memories
+              </button>
+              <span role="status">Page {cursors().length + 1}</span>
+              <button
+                disabled={rows.loading || unreadable() || listed().length < 50}
+                onClick={() => {
+                  const last = listed()[listed().length - 1];
+                  if (last) setCursors((previous) => [...previous, last.cursor ?? last.id]);
+                }}
+              >
+                Next memories
+              </button>
+            </nav>
           </Show>
         </div>
       </div>
-    </div>
+    </Portal>
   );
 }

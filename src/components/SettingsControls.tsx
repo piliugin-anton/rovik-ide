@@ -107,6 +107,22 @@ export function SettingStatus(props: { warning?: boolean; children: JSX.Element 
   );
 }
 
+/** A failed settings read, with a way to retry it without leaving the page. */
+export function SettingsLoadError(props: {
+  children: JSX.Element;
+  retry: () => unknown;
+  loading?: boolean;
+}) {
+  return (
+    <p class="settings-status settings-load-failed warning" role="alert">
+      {props.children}{' '}
+      <button class="link-button" disabled={props.loading} onClick={() => void props.retry()}>
+        Try again
+      </button>
+    </p>
+  );
+}
+
 /**
  * The passphrase of the file that keeps secrets where there's no keychain,
  * locked until it's given (Cloud hosts' `hosts_unlock`): Unlock opens it
