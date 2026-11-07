@@ -37,11 +37,11 @@ its model picker, effort and budget, and the page says why.
    - Files: `src-tauri/crates/rovik-core/src/agent_run/change_review.rs`
    - In `review_change_as` (change_review.rs:1189), move the run's-budget early return
      (`!(writes_since_review || follow_up)`, `reviews_total >= cap`, `reviews_in_row >=
-     MAX_REVIEWS_IN_ROW`) above the `follow_up && … unanswered_review()` nudge at 1206 — nothing
+MAX_REVIEWS_IN_ROW`) above the `follow_up && … unanswered_review()` nudge at 1206 — nothing
      changes for the nudge, which already needs `follow_up` and `total < cap` — and put the new
      check before that nudge too: `let changes = self.change_set();`, and when it is empty,
      `self.review.change_gone()`, `self.review.finished("skipped".into(), Some("the run has no
-     unlanded changes".into()))` and `return Ok(false)`. A run whose change was put back is thus
+unlanded changes".into()))` and `return Ok(false)`. A run whose change was put back is thus
      neither reviewed nor asked again for answers about it, and `render_diff` renders that same
      `changes`.
    - Add `ReviewState::change_gone(&mut self)`: clears `review_held`, `review_answers` and the
@@ -59,7 +59,7 @@ its model picker, effort and budget, and the page says why.
 3. e2e tests, and a stub reviewer for tests that aren't about it
    - Files: `src-tauri/crates/rovik-core/src/agent_run/e2e_tests.rs`, `src-tauri/crates/rovik-core/src/agent_run/subagent_e2e_tests.rs`
    - `Harness::start` (e2e_tests.rs:308): inside the existing `if request.mode.as_deref() !=
-     Some("autopilot")` block, beside the `testWriter` stub, when the config has no `"reviewer"`
+Some("autopilot")` block, beside the `testWriter` stub, when the config has no `"reviewer"`
      row, insert one on a stub model that answers `## Findings\n\nNone.`, so a test that isn't about
      the review doesn't spend its scripted replies on it. It stays out of Autopilot requests, whose
      tests route the reviewer's replies themselves (`reviewed_task_request`,
@@ -98,7 +98,7 @@ its model picker, effort and budget, and the page says why.
    - `subagentSettings.ts`: the reviewer's `when` becomes "Always runs when the run has unlanded
      changes of at least the size set in Limits, at most 3 times a run."; the page's module comment
      says which kinds are always on; `export const ALWAYS_ON_KINDS: SubagentKindId[] =
-     ['testWriter', 'reviewer']` is the list the tag and the summary read; `subagentSummary` names
+['testWriter', 'reviewer']` is the list the tag and the summary read; `subagentSummary` names
      the change reviewer in both branches — "Change reviewer and test writer always on; optional
      helpers off" with subagents off, and the always-on kinds in its `On: …` list otherwise, which
      is never empty now, so `'On, but no kind is turned on'` goes.

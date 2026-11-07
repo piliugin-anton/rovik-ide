@@ -433,7 +433,13 @@ test('the change reviewer has no switch and runs with optional helpers off', asy
     return found;
   };
   for (const text of ['Tokens per run', 'Review changes from', 'Tool calls', 'Minutes'])
-    assert.ok(fields(text).some((i) => !i.disabled), `${text} stays set with subagents off`);
+    assert.ok(
+      fields(text).some((i) => !i.disabled),
+      `${text} stays set with subagents off`
+    );
   for (const text of ['Tool calls', 'Minutes', 'Plan reviews per request'])
-    assert.ok(fields(text).some((i) => i.disabled), `${text} stays off for other kinds`);
+    assert.ok(
+      fields(text).some((i) => i.disabled),
+      `${text} stays off for other kinds`
+    );
 });

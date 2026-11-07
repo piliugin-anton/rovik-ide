@@ -200,8 +200,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                   </Show>
                   <Show when={(alwaysOn || k().enabled || autopilot) && others().length > 0}>
                     <p class="settings-hint setting-explain warning">
-                      {alwaysOn || k().enabled ? 'Code' : 'In Autopilot, code'} will also be sent
-                      to {others().join(', ')}.
+                      {alwaysOn || k().enabled ? 'Code' : 'In Autopilot, code'} will also be sent to{' '}
+                      {others().join(', ')}.
                     </p>
                   </Show>
                 </div>
