@@ -1,0 +1,50 @@
+{
+  "version": 2,
+  "base_commit": "7e140c9",
+  "dataset_sha256": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+  "selection_split": "development",
+  "primary_metric": "recall_at_8",
+  "maximum_no_match_injection_rate": 0.05,
+  "selection_no_match_rule": "Do not exceed max(5%, baseline no-match injection on the same split). The 5% production release target is reported separately.",
+  "amendment": "The baseline itself injects on 2 of 22 development negatives after adding hard controls. An initial absolute-5% selection rule made every additive hybrid variant inadmissible by construction; that pilot selected no candidate and automatically re-scored the baseline heldout set. No heldout outcomes informed the correction. Keep every control and require no false-positive regression for research selection. Subsequent runs replay the frozen policies to check reproducibility; they do not introduce new hypotheses after the third non-improvement.",
+  "maximum_scope_violations": 0,
+  "stop_after_distinct_non_improvements": 3,
+  "thresholds": [
+    0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9
+  ],
+  "threshold_tie_break": "highest threshold",
+  "hypotheses": [
+    {
+      "id": "mean_vectors",
+      "description": "Learned word-vector means recover conceptual matches absent from lexical candidates."
+    },
+    {
+      "id": "idf_vectors",
+      "description": "Corpus IDF weighting gives informative words more influence than common wording."
+    },
+    {
+      "id": "remove_common_component",
+      "description": "Removing the leading corpus component separates generic similarity from useful subject similarity."
+    },
+    {
+      "id": "character_ngrams",
+      "description": "Character n-gram similarity recovers morphology and partial identifiers missed by lexical admission."
+    },
+    {
+      "id": "title_weighted",
+      "description": "Giving the canonical title four times its normal influence improves retrieval over verbose claim wording."
+    },
+    {
+      "id": "title_only",
+      "description": "Routing through concise titles avoids dilution by procedural detail."
+    }
+  ],
+  "model": {
+    "package": "en_core_web_md",
+    "version": "3.8.0",
+    "runtime": "spacy==3.8.11",
+    "source": "https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl"
+  },
+  "heldout_policy": "Evaluate only the baseline and selected candidate after stopping; do not retune from held-out outcomes.",
+  "limitations": "The existing held-out baseline was published previously. These are synthetic retrieval trials, not evidence of real agent task success or a production rollout authorization. Corpus documents are visible; held-out queries and labels are not used for selection."
+}

@@ -1,0 +1,2562 @@
+{
+  "protocol": {
+    "version": 2,
+    "base_commit": "7e140c9",
+    "dataset_sha256": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "selection_split": "development",
+    "primary_metric": "recall_at_8",
+    "maximum_no_match_injection_rate": 0.05,
+    "selection_no_match_rule": "Do not exceed max(5%, baseline no-match injection on the same split). The 5% production release target is reported separately.",
+    "amendment": "The baseline itself injects on 2 of 22 development negatives after adding hard controls. An initial absolute-5% selection rule made every additive hybrid variant inadmissible by construction; that pilot selected no candidate and automatically re-scored the baseline heldout set. No heldout outcomes informed the correction. Keep every control and require no false-positive regression for research selection. Subsequent runs replay the frozen policies to check reproducibility; they do not introduce new hypotheses after the third non-improvement.",
+    "maximum_scope_violations": 0,
+    "stop_after_distinct_non_improvements": 3,
+    "thresholds": [
+      0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9
+    ],
+    "threshold_tie_break": "highest threshold",
+    "hypotheses": [
+      {
+        "id": "mean_vectors",
+        "description": "Learned word-vector means recover conceptual matches absent from lexical candidates."
+      },
+      {
+        "id": "idf_vectors",
+        "description": "Corpus IDF weighting gives informative words more influence than common wording."
+      },
+      {
+        "id": "remove_common_component",
+        "description": "Removing the leading corpus component separates generic similarity from useful subject similarity."
+      },
+      {
+        "id": "character_ngrams",
+        "description": "Character n-gram similarity recovers morphology and partial identifiers missed by lexical admission."
+      },
+      {
+        "id": "title_weighted",
+        "description": "Giving the canonical title four times its normal influence improves retrieval over verbose claim wording."
+      },
+      {
+        "id": "title_only",
+        "description": "Routing through concise titles avoids dilution by procedural detail."
+      }
+    ],
+    "model": {
+      "package": "en_core_web_md",
+      "version": "3.8.0",
+      "runtime": "spacy==3.8.11",
+      "source": "https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl"
+    },
+    "heldout_policy": "Evaluate only the baseline and selected candidate after stopping; do not retune from held-out outcomes.",
+    "limitations": "The existing held-out baseline was published previously. These are synthetic retrieval trials, not evidence of real agent task success or a production rollout authorization. Corpus documents are visible; held-out queries and labels are not used for selection."
+  },
+  "protocol_sha256": "2afbf1fcbf5d2943049f947a35acdf0b1cfcd0556cc9c73b9ffb959d2c5e2d89",
+  "runner_sha256": "2ccd398b00feac1fa6e7e03733b284e3d9e429548c4752cfcf0bab68747caf97",
+  "controls_sha256": "f81c592e35c1ff0dbbca684be958a408b14ba0c4f854401fc988c565a298364d",
+  "evaluator_sha256": "7a5661ce4cc5128ac09dcba148766fd6ed16f0de8b0da460372cfc899b437ae1",
+  "evaluator_source_sha256": "d14ad08c7a0aacf5a80290243093fe7663079ee281e45565f12f010b10cf4d5e",
+  "base_commit": "7e140c9732031a5e0989086f261b2d3ad2adb156",
+  "model_vectors_sha256": "22d102290ba09bb681c5a2e6063e9b4cea4c41dec9517565181a907b6ba6a830",
+  "versions": {
+    "spacy": "3.8.11",
+    "en-core-web-md": "3.8.0",
+    "numpy": "2.3.5",
+    "scikit-learn": "1.8.0"
+  },
+  "model_load_seconds": 0.5741038069973001,
+  "baseline_development": {
+    "cases": 92,
+    "mrr": 0.8285714285714286,
+    "ndcg_at_8": 0.8285714285714286,
+    "no_match_injection_rate": 0.09090909090909091,
+    "recall_at_8": 0.8285714285714286
+  },
+  "selection_no_match_ceiling": 0.09090909090909091,
+  "trials": [
+    {
+      "id": "mean_vectors",
+      "description": "Learned word-vector means recover conceptual matches absent from lexical candidates.",
+      "improved": true,
+      "threshold": 0.8,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      }
+    },
+    {
+      "id": "idf_vectors",
+      "description": "Corpus IDF weighting gives informative words more influence than common wording.",
+      "improved": false,
+      "threshold": 0.8,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      }
+    },
+    {
+      "id": "remove_common_component",
+      "description": "Removing the leading corpus component separates generic similarity from useful subject similarity.",
+      "improved": false,
+      "threshold": 0.6,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      }
+    },
+    {
+      "id": "character_ngrams",
+      "description": "Character n-gram similarity recovers morphology and partial identifiers missed by lexical admission.",
+      "improved": false,
+      "threshold": 0.9,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      }
+    }
+  ],
+  "distinct_non_improvements": 3,
+  "selected": ["mean_vectors", 0.8],
+  "baseline_heldout": {
+    "cases": 40,
+    "mrr": 0.8,
+    "ndcg_at_8": 0.8,
+    "no_match_injection_rate": 0.3,
+    "recall_at_8": 0.8
+  },
+  "selected_heldout": {
+    "cases": 40,
+    "mrr": 0.8,
+    "ndcg_at_8": 0.8,
+    "no_match_injection_rate": 0.3,
+    "recall_at_8": 0.8
+  },
+  "heldout_improved_under_guardrails": false,
+  "agent_answer_quality_evaluated": false,
+  "production_policy_changed": false,
+  "threshold_trials": [
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.1,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7531122448979591,
+        "ndcg_at_8": 0.8001966514856951,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.15,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7531122448979591,
+        "ndcg_at_8": 0.8001966514856951,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.2,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7531122448979591,
+        "ndcg_at_8": 0.8001966514856951,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.25,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7531122448979591,
+        "ndcg_at_8": 0.8001966514856951,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.3,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7531122448979591,
+        "ndcg_at_8": 0.8001966514856951,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.35,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7531122448979591,
+        "ndcg_at_8": 0.8001966514856951,
+        "no_match_injection_rate": 0.36363636363636365,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.4,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7510714285714286,
+        "ndcg_at_8": 0.7954347467237903,
+        "no_match_injection_rate": 0.36363636363636365,
+        "recall_at_8": 0.9285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.45,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7510714285714286,
+        "ndcg_at_8": 0.7954347467237903,
+        "no_match_injection_rate": 0.36363636363636365,
+        "recall_at_8": 0.9285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.5,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7492857142857143,
+        "ndcg_at_8": 0.7909281056268513,
+        "no_match_injection_rate": 0.2727272727272727,
+        "recall_at_8": 0.9142857142857143
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.55,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7333333333333334,
+        "ndcg_at_8": 0.7683654074489821,
+        "no_match_injection_rate": 0.18181818181818182,
+        "recall_at_8": 0.8714285714285714
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.6,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7142857142857144,
+        "ndcg_at_8": 0.7540796931632678,
+        "no_match_injection_rate": 0.18181818181818182,
+        "recall_at_8": 0.8714285714285714
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.65,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8323122786734702,
+        "no_match_injection_rate": 0.13636363636363635,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.7,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.75,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8357142857142857,
+        "ndcg_at_8": 0.8375847107653065,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.8,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.85,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "mean_vectors",
+      "threshold": 0.9,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.1,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7514455782312925,
+        "ndcg_at_8": 0.7989522800180865,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.15,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7514455782312925,
+        "ndcg_at_8": 0.7989522800180865,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.2,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7514455782312925,
+        "ndcg_at_8": 0.7989522800180865,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.25,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7514455782312925,
+        "ndcg_at_8": 0.7989522800180865,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.3,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7514455782312925,
+        "ndcg_at_8": 0.7989522800180865,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.35,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7514455782312925,
+        "ndcg_at_8": 0.7989522800180865,
+        "no_match_injection_rate": 0.36363636363636365,
+        "recall_at_8": 0.9428571428571428
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.4,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7494047619047619,
+        "ndcg_at_8": 0.7941903752561816,
+        "no_match_injection_rate": 0.36363636363636365,
+        "recall_at_8": 0.9285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.45,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7494047619047619,
+        "ndcg_at_8": 0.7941903752561816,
+        "no_match_injection_rate": 0.36363636363636365,
+        "recall_at_8": 0.9285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.5,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7476190476190476,
+        "ndcg_at_8": 0.7896837341592428,
+        "no_match_injection_rate": 0.2727272727272727,
+        "recall_at_8": 0.9142857142857143
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.55,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7238095238095239,
+        "ndcg_at_8": 0.761222550306125,
+        "no_match_injection_rate": 0.18181818181818182,
+        "recall_at_8": 0.8714285714285714
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.6,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7047619047619049,
+        "ndcg_at_8": 0.7469368360204106,
+        "no_match_injection_rate": 0.18181818181818182,
+        "recall_at_8": 0.8714285714285714
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.65,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8190476190476191,
+        "ndcg_at_8": 0.8289102716326547,
+        "no_match_injection_rate": 0.13636363636363635,
+        "recall_at_8": 0.8571428571428571
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.7,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.75,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8357142857142857,
+        "ndcg_at_8": 0.8375847107653065,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.8,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.85,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "idf_vectors",
+      "threshold": 0.9,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.1,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7409523809523811,
+        "ndcg_at_8": 0.7881775904094755,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.9285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.15,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7190476190476192,
+        "ndcg_at_8": 0.761222550306125,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.8857142857142857
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.2,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7000000000000001,
+        "ndcg_at_8": 0.7360531287755119,
+        "no_match_injection_rate": 0.9090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.25,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7357142857142858,
+        "ndcg_at_8": 0.763770661479598,
+        "no_match_injection_rate": 0.2727272727272727,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.3,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8142857142857143,
+        "ndcg_at_8": 0.8217674144897976,
+        "no_match_injection_rate": 0.2727272727272727,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.35,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8142857142857143,
+        "ndcg_at_8": 0.8217674144897976,
+        "no_match_injection_rate": 0.18181818181818182,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.4,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8323122786734702,
+        "no_match_injection_rate": 0.13636363636363635,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.45,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8323122786734702,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.5,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.55,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.6,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.65,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.7,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.75,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.8,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.85,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "remove_common_component",
+      "threshold": 0.9,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.1,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7357142857142858,
+        "ndcg_at_8": 0.763770661479598,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.15,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7142857142857143,
+        "ndcg_at_8": 0.7442125151020474,
+        "no_match_injection_rate": 1.0,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.2,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7142857142857143,
+        "ndcg_at_8": 0.7442125151020474,
+        "no_match_injection_rate": 0.3181818181818182,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.25,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7142857142857143,
+        "ndcg_at_8": 0.7442125151020474,
+        "no_match_injection_rate": 0.22727272727272727,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.3,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7214285714285714,
+        "ndcg_at_8": 0.7494849471938838,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.35,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7214285714285714,
+        "ndcg_at_8": 0.7494849471938838,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.4,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.7214285714285714,
+        "ndcg_at_8": 0.7494849471938838,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.45,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8214285714285714,
+        "ndcg_at_8": 0.8232989964795923,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.5,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8214285714285714,
+        "ndcg_at_8": 0.8232989964795923,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.55,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.6,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.65,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.7,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.75,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.8,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.85,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    },
+    {
+      "hypothesis": "character_ngrams",
+      "threshold": 0.9,
+      "metrics": {
+        "cases": 92,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0
+    }
+  ],
+  "paired_cases": {
+    "development": [
+      {
+        "id": "retry-identifier",
+        "incident": "retry",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "retry-implicit",
+        "incident": "retry",
+        "category": "implicit",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "retry-file",
+        "incident": "retry",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "retry-update",
+        "incident": "retry",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "retry-abstention",
+        "incident": "retry",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "retry-composition",
+        "incident": "retry",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "migration-identifier",
+        "incident": "migration",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "migration-implicit",
+        "incident": "migration",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "migration-file",
+        "incident": "migration",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "migration-update",
+        "incident": "migration",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "migration-abstention",
+        "incident": "migration",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "migration-composition",
+        "incident": "migration",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "credentials-identifier",
+        "incident": "credentials",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "credentials-implicit",
+        "incident": "credentials",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "credentials-file",
+        "incident": "credentials",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "credentials-update",
+        "incident": "credentials",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "credentials-abstention",
+        "incident": "credentials",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "credentials-composition",
+        "incident": "credentials",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "pagination-identifier",
+        "incident": "pagination",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "pagination-implicit",
+        "incident": "pagination",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "pagination-file",
+        "incident": "pagination",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "pagination-update",
+        "incident": "pagination",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "pagination-abstention",
+        "incident": "pagination",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "pagination-composition",
+        "incident": "pagination",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "deletion-identifier",
+        "incident": "deletion",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "deletion-implicit",
+        "incident": "deletion",
+        "category": "implicit",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "deletion-file",
+        "incident": "deletion",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "deletion-update",
+        "incident": "deletion",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "deletion-abstention",
+        "incident": "deletion",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "deletion-composition",
+        "incident": "deletion",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "timeout-identifier",
+        "incident": "timeout",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "timeout-implicit",
+        "incident": "timeout",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "timeout-file",
+        "incident": "timeout",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "timeout-update",
+        "incident": "timeout",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "timeout-abstention",
+        "incident": "timeout",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "timeout-composition",
+        "incident": "timeout",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "formatting-identifier",
+        "incident": "formatting",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "formatting-implicit",
+        "incident": "formatting",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "formatting-file",
+        "incident": "formatting",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "formatting-update",
+        "incident": "formatting",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "formatting-abstention",
+        "incident": "formatting",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "formatting-composition",
+        "incident": "formatting",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "cache-identifier",
+        "incident": "cache",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "cache-implicit",
+        "incident": "cache",
+        "category": "implicit",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 1
+      },
+      {
+        "id": "cache-file",
+        "incident": "cache",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "cache-update",
+        "incident": "cache",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "cache-abstention",
+        "incident": "cache",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "cache-composition",
+        "incident": "cache",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "worktree-identifier",
+        "incident": "worktree",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": true,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "worktree-implicit",
+        "incident": "worktree",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "worktree-file",
+        "incident": "worktree",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "worktree-update",
+        "incident": "worktree",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": true,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "worktree-abstention",
+        "incident": "worktree",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "worktree-composition",
+        "incident": "worktree",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "provenance-identifier",
+        "incident": "provenance",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "provenance-implicit",
+        "incident": "provenance",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 1
+      },
+      {
+        "id": "provenance-file",
+        "incident": "provenance",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "provenance-update",
+        "incident": "provenance",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "provenance-abstention",
+        "incident": "provenance",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "provenance-composition",
+        "incident": "provenance",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "privacy-identifier",
+        "incident": "privacy",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "privacy-implicit",
+        "incident": "privacy",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "privacy-file",
+        "incident": "privacy",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "privacy-update",
+        "incident": "privacy",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "privacy-abstention",
+        "incident": "privacy",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "privacy-composition",
+        "incident": "privacy",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "verification-identifier",
+        "incident": "verification",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "verification-implicit",
+        "incident": "verification",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "verification-file",
+        "incident": "verification",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "verification-update",
+        "incident": "verification",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "verification-abstention",
+        "incident": "verification",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "verification-composition",
+        "incident": "verification",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "fallback-identifier",
+        "incident": "fallback",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "fallback-implicit",
+        "incident": "fallback",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 1
+      },
+      {
+        "id": "fallback-file",
+        "incident": "fallback",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "fallback-update",
+        "incident": "fallback",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "fallback-abstention",
+        "incident": "fallback",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "fallback-composition",
+        "incident": "fallback",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "generation-identifier",
+        "incident": "generation",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "generation-implicit",
+        "incident": "generation",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "generation-file",
+        "incident": "generation",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "generation-update",
+        "incident": "generation",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "generation-abstention",
+        "incident": "generation",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "generation-composition",
+        "incident": "generation",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "control-tls",
+        "incident": "tls-renewal",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "control-charts",
+        "incident": "chart-legend",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 1
+      },
+      {
+        "id": "control-kafka",
+        "incident": "kafka-partitions",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "control-images",
+        "incident": "image-conversion",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "control-ipv6",
+        "incident": "ipv6-expression",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "control-indexes",
+        "incident": "database-index-design",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 2
+      },
+      {
+        "id": "control-audio",
+        "incident": "audio-resampling",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "control-fonts",
+        "incident": "font-shaping",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      }
+    ],
+    "heldout": [
+      {
+        "id": "locking-identifier",
+        "incident": "locking",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "locking-implicit",
+        "incident": "locking",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 1
+      },
+      {
+        "id": "locking-file",
+        "incident": "locking",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "locking-update",
+        "incident": "locking",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "locking-abstention",
+        "incident": "locking",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "locking-composition",
+        "incident": "locking",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 3,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 3
+      },
+      {
+        "id": "ranking-identifier",
+        "incident": "ranking",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "ranking-implicit",
+        "incident": "ranking",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 1
+      },
+      {
+        "id": "ranking-file",
+        "incident": "ranking",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "ranking-update",
+        "incident": "ranking",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "ranking-abstention",
+        "incident": "ranking",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "ranking-composition",
+        "incident": "ranking",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "retention-identifier",
+        "incident": "retention",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "retention-implicit",
+        "incident": "retention",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 2
+      },
+      {
+        "id": "retention-file",
+        "incident": "retention",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "retention-update",
+        "incident": "retention",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "retention-abstention",
+        "incident": "retention",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "retention-composition",
+        "incident": "retention",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 3,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 3
+      },
+      {
+        "id": "deduplication-identifier",
+        "incident": "deduplication",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "deduplication-implicit",
+        "incident": "deduplication",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "deduplication-file",
+        "incident": "deduplication",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "deduplication-update",
+        "incident": "deduplication",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "deduplication-abstention",
+        "incident": "deduplication",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "deduplication-composition",
+        "incident": "deduplication",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "compaction-identifier",
+        "incident": "compaction",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "compaction-implicit",
+        "incident": "compaction",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "compaction-file",
+        "incident": "compaction",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "compaction-update",
+        "incident": "compaction",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "compaction-abstention",
+        "incident": "compaction",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "compaction-composition",
+        "incident": "compaction",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "isolation-identifier",
+        "incident": "isolation",
+        "category": "identifier",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "isolation-implicit",
+        "incident": "isolation",
+        "category": "implicit",
+        "answerable": true,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "isolation-file",
+        "incident": "isolation",
+        "category": "file",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "isolation-update",
+        "incident": "isolation",
+        "category": "update",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "isolation-abstention",
+        "incident": "isolation",
+        "category": "abstention",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "isolation-composition",
+        "incident": "isolation",
+        "category": "composition",
+        "answerable": true,
+        "rank": 1,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 1
+      },
+      {
+        "id": "control-geography",
+        "incident": "geo-projection",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 1
+      },
+      {
+        "id": "control-compression",
+        "incident": "compression-ratio",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 0,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 0
+      },
+      {
+        "id": "control-payments",
+        "incident": "tax-calculation",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": 1,
+        "returned": 2,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": 1,
+        "baseline_returned": 2
+      },
+      {
+        "id": "control-routing",
+        "incident": "bgp-route-selection",
+        "category": "hard-negative",
+        "answerable": false,
+        "rank": null,
+        "returned": 1,
+        "prohibited": false,
+        "embedding_fallback": false,
+        "baseline_rank": null,
+        "baseline_returned": 1
+      }
+    ]
+  },
+  "stable_replay_verified": true,
+  "notes": [
+    "Only the first four predeclared hypotheses ran; title experiments were not executed after three non-improvements.",
+    "No real agent/model task success measured. Model embeddings are pretrained word-vector means, not transformer sentence encodings.",
+    "The same 120 cases were supplemented by 12 hard no-match controls. Overall false-positive rates and zero scope violations are measured separately from original-set recall.",
+    "The protocol correction and discarded initial runs are documented in the protocol amendment. Ranking ties were stabilized before the retained replay."
+  ]
+}
