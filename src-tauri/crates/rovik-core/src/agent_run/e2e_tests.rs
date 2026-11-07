@@ -6903,11 +6903,29 @@ async fn a_run_that_panics_before_answering_settles_the_message_failed() {
 #[tokio::test]
 async fn a_successful_test_summary_saves_output_that_read_can_retrieve() {
     let h = harness(&[("check.test.mjs", "import { test } from 'node:test';\ntest('passes', () => { for (let i = 1; i <= 1000; i++) console.log('detail ' + i); });\n")]).await;
+    // Windows command shells may not inherit the runner's Node installation.
+    // This fixture tests output persistence, so a local batch test runner
+    // emits the same kind of report without an external runtime there.
+    let (command, allowed) = if cfg!(windows) {
+        let mut report = (1..=1000)
+            .map(|i| format!("detail {i}\n"))
+            .collect::<String>();
+        report.push_str("Tests: 1 passed, 1 total\n");
+        std::fs::write(h.project.join("report.txt"), report).unwrap();
+        std::fs::write(
+            h.project.join("npm.cmd"),
+            "@echo off\r\ntype report.txt\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        ("npm test", "npm")
+    } else {
+        ("node --test check.test.mjs", "node")
+    };
     let (url, _) = model(vec![
         Reply::Call {
             id: "b1",
             name: "bash",
-            args: json!({ "command": "node --test check.test.mjs" }),
+            args: json!({ "command": command }),
         },
         Reply::Call {
             id: "r1",
@@ -6918,7 +6936,7 @@ async fn a_successful_test_summary_saves_output_that_read_can_retrieve() {
     ])
     .await;
     let permissions = Permissions {
-        allowed_commands: vec!["node".into()],
+        allowed_commands: vec![allowed.into()],
         checklist: ChecklistMode::Off,
         ..quiet_permissions()
     };
@@ -6931,6 +6949,7 @@ async fn a_successful_test_summary_saves_output_that_read_can_retrieve() {
     assert!(shown.contains("successful check summarized"), "{shown}");
     assert!(shown.contains("saved as `@checks/bash-b1.log`"), "{shown}");
     assert!(!shown.contains("detail 500"));
-    assert!(result_of(&messages, "r1").content.contains("detail 500"));
+    let saved = &result_of(&messages, "r1").content;
+    assert!(saved.contains("detail 500"), "{saved}");
     crate::agent_run::check_output::clean(&h.dialog_id);
 }
