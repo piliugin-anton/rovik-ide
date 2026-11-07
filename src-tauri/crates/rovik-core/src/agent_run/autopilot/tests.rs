@@ -575,12 +575,11 @@ fn a_reviews_record_is_its_last_review_of_its_kind() {
     assert_eq!(r.summary.as_deref(), Some("2 findings, 1 high"));
     assert_eq!(r.reference.as_deref(), Some("c1"));
 
+    // The change reviewer is started by the IDE: no switch turns it off, so
+    // with no review row its record never blames a switch.
     let r = review_record(change.clone(), &[], &config);
     assert_eq!(r.status, Status::Skipped);
-    assert_eq!(
-        r.summary.as_deref(),
-        Some("Not reviewed: the change reviewer is off")
-    );
+    assert_eq!(r.summary.as_deref(), Some("Not reviewed"));
     let mut on = config.clone();
     on.subagents = serde_json::from_value(
         json!({ "enabled": true, "kinds": { "reviewer": { "enabled": true } } }),
@@ -588,6 +587,14 @@ fn a_reviews_record_is_its_last_review_of_its_kind() {
     .unwrap();
     let r = review_record(change, &[], &on);
     assert_eq!(r.summary.as_deref(), Some("Not reviewed"));
+
+    // A kind that can be off still says which switch kept it from running.
+    let r = review_record(rec(Stage::PlanReview, Status::Skipped), &[], &config);
+    assert_eq!(r.status, Status::Skipped);
+    assert_eq!(
+        r.summary.as_deref(),
+        Some("Not reviewed: the plan reviewer is off")
+    );
 
     let skipped = vec![row(
         "p1",

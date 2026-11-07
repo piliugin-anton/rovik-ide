@@ -307,8 +307,10 @@ impl Harness {
     }
 
     async fn start(&self, mut request: StartRequest) -> Option<String> {
-        // Single-lead scripts must not be consumed by the mandatory helper.
-        // Tests exercising test writing configure its kind explicitly.
+        // Single-lead scripts must not be consumed by the helpers the IDE
+        // starts itself (the test writer and the change reviewer): a test
+        // about either configures its kind explicitly. Autopilot's runs
+        // route the reviewer's replies themselves, so they're left alone.
         if request.mode.as_deref() != Some("autopilot") {
             if let Some(config) = request.config.as_mut() {
                 if !config.subagents.kinds.contains_key("testWriter") {
@@ -319,6 +321,22 @@ impl Harness {
                     profile.base_url = url;
                     config.subagents.kinds.insert(
                         "testWriter".into(),
+                        subagent::KindConfig {
+                            models: vec![subagent::ModelChoice::Profile(Box::new(profile))],
+                            ..Default::default()
+                        },
+                    );
+                }
+                // The change reviewer runs whatever the switches say, so a
+                // test that isn't about it would otherwise spend its
+                // scripted replies on a review: it gets a stub that finds
+                // nothing, on the run's own model's shape.
+                if !config.subagents.kinds.contains_key("reviewer") {
+                    let (url, _) = model(vec![Reply::Text("## Findings\n\nNone.")]).await;
+                    let mut profile = request.profile.clone();
+                    profile.base_url = url;
+                    config.subagents.kinds.insert(
+                        "reviewer".into(),
                         subagent::KindConfig {
                             models: vec![subagent::ModelChoice::Profile(Box::new(profile))],
                             ..Default::default()

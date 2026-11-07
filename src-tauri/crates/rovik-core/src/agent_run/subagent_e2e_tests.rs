@@ -1559,34 +1559,23 @@ async fn an_unreadable_review_is_skipped_never_clean() {
 }
 
 #[tokio::test]
-async fn small_changes_and_runs_with_the_reviewer_off_get_no_review() {
+async fn small_changes_get_no_review() {
     let h = harness(&[("a.txt", "old\n")]).await;
     let (url, _) = model(vec![
         write_call("w1", "a.txt", "new\n"),
         Reply::Text("Done."),
     ])
     .await;
-    // The default threshold is 10 changed lines; this is 2.
+    // The default threshold is 10 changed lines; this is 2. The switches
+    // don't keep a review from running, only the size of the change does.
     let mut config = reviewer_on(json!({}));
     config.review_min_lines = None;
     h.start(h.with_subagents(&url, "Change it", checks_on(), config))
         .await;
     assert_eq!(h.run_end().await, "unverified");
     assert!(reviews(&h.messages().await).is_empty());
-
-    let h = harness(&[("a.txt", "old\n")]).await;
-    let (url, _) = model(vec![
-        write_call("w1", "a.txt", "new\n"),
-        Reply::Text("Done."),
-    ])
-    .await;
-    let mut off = reviewer_on(json!({}));
-    off.enabled = false;
-    h.start(h.with_subagents(&url, "Change it", checks_on(), off))
-        .await;
-    assert_eq!(h.run_end().await, "unverified");
-    assert!(reviews(&h.messages().await).is_empty());
 }
+
 
 #[tokio::test]
 async fn the_review_goes_to_the_reviewers_model_and_its_fallback() {
@@ -1671,6 +1660,76 @@ async fn no_run_gets_more_than_three_reviews() {
             "verification:gave-up",
         ]
     );
+}
+
+/// The change reviewer is a kind the IDE starts itself: "Use subagents" and
+/// its own row's switch are ignored, as they are for the test writer. With
+/// no model of its own it falls back to the chat's.
+#[tokio::test]
+async fn the_reviewer_runs_with_the_subagents_off() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, _) = model(vec![
+        write_call("w1", "a.txt", "new\n"),
+        Reply::Text("Done."),
+        Reply::Text(NO_FINDINGS),
+    ])
+    .await;
+    // Both switches off; the row stays only for its model, fallbacks,
+    // effort and budget.
+    let off: subagent::SubagentConfig = serde_json::from_value(json!({
+        "enabled": false,
+        "kinds": { "reviewer": { "enabled": false } },
+        "reviewMinLines": 1,
+    }))
+    .unwrap();
+    h.start(h.with_subagents(&url, "Change it", checks_on(), off))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let found = reviews(&h.messages().await);
+    assert_eq!(found.len(), 1, "one review, with the subagents off: {found:#?}");
+    assert_eq!(found[0]["status"], "clean", "{}", found[0]);
+}
+
+/// The review reads the run's unlanded change. A run that puts its change
+/// back has nothing left to review: the finding it holds isn't followed up
+/// (no nudge for an answer) and no second review reads an empty diff.
+#[tokio::test]
+async fn a_change_that_is_gone_is_neither_reviewed_nor_asked_about() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            // The reviewer's second reply: only a follow-up review would
+            // spend it, and it would come back clean.
+            vec![Reply::Text(FINDING_A), Reply::Text(NO_FINDINGS)],
+        )],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            Reply::Text("Done."),
+            // The finding goes unanswered: the agent puts the file back
+            // as it was instead.
+            write_call("w2", "a.txt", "old\n"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    let end = h.run_end().await;
+    let messages = h.messages().await;
+    let order = record_order(&messages);
+    let reviewed: Vec<&str> = order
+        .iter()
+        .map(String::as_str)
+        .filter(|record| *record == "note" || record.starts_with("review:"))
+        .collect();
+    assert_eq!(
+        reviewed,
+        ["review:findings", "note"],
+        "the one review and its findings; no nudge to answer them, no \
+         second review of an empty diff: {order:?}"
+    );
+    assert_eq!(end, "unverified", "not review-open: {order:?}");
 }
 
 /*
@@ -7605,6 +7664,81 @@ async fn review_after_green_fix_that_passes_ends_verified_with_round_4_of_4() {
         .collect();
     assert!(notes[0].contains("(attempt 1 of 3)"), "{}", notes[0]);
     assert!(notes[1].contains("(attempt 2 of 3)"), "{}", notes[1]);
+}
+
+/// R08 with the switches off: the review once the checks pass after a fix
+/// is as mandatory as the one before them. The reviewer is given the chat's
+/// model so it reads the same mock's `REVIEW` route; both switches are then
+/// turned off, and the fix that makes the checks pass is still reviewed.
+#[tokio::test]
+async fn the_review_after_green_runs_with_the_subagents_off() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+        (
+            "check.js",
+            "const fs = require('fs'); if (!fs.readFileSync('a.txt', 'utf8').includes('ok')) { console.error('a.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("a.txt", "no\n"),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            vec![
+                Reply::Text(NO_FINDINGS),
+                Reply::Text(FINDING_A),
+                Reply::Text(NO_FINDINGS),
+            ],
+        )],
+        vec![
+            write_call("w1", "a.txt", "nope\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "still no\n"),
+            Reply::Text("Fixed."),
+            write_call("w3", "a.txt", "ok\n"),
+            Reply::Text("Fixed."),
+            write_call("w4", "a.txt", "ok hello\n"),
+            Reply::Text("1: fixed."),
+        ],
+    )
+    .await;
+    let off: subagent::SubagentConfig = serde_json::from_value(json!({
+        "enabled": false,
+        "kinds": { "reviewer": { "enabled": false, "models": [profile("chat", &url)] } },
+        "reviewMinLines": 1,
+    }))
+    .unwrap();
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    h.start(h.with_subagents(&url, "Greet", permissions, off))
+        .await;
+    let end = h.run_end().await;
+    let messages = h.messages().await;
+    assert_eq!(end, "verified", "{:?}", record_order(&messages));
+    let records: Vec<Value> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .collect();
+    assert_eq!(
+        records.len(),
+        4,
+        "three failing rounds and the fix's, round 4: {records:#?}"
+    );
+    assert_eq!(records[2]["reviewAfterGreen"]["status"], "findings");
+    assert_eq!(records[3]["maxRounds"], 4);
 }
 
 #[tokio::test]

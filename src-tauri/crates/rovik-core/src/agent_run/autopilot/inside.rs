@@ -257,12 +257,12 @@ pub(super) fn review_record(
         (review["kind"] == wanted).then_some((m, review))
     });
     let Some((row, review)) = last else {
-        let why = match config.subagents.kind(kind) {
-            None => format!(
+        let why = match config.subagents.may_run(kind) {
+            false => format!(
                 "Not reviewed: the {} is off",
                 kind.spec().label.to_lowercase()
             ),
-            Some(_) => "Not reviewed".to_string(),
+            true => "Not reviewed".to_string(),
         };
         return base.with_summary(why);
     };

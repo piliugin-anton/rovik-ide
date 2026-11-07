@@ -29,25 +29,35 @@ const ISOLATED = [
   'Fix a parallel group’s failures in parallel',
 ];
 
-/** Renders the page, subagents on, with its limits open. */
-async function settingsPage(): Promise<HTMLElement> {
+/** Renders the page with these settings, its limits open. */
+async function page(
+  settings: Settings,
+  providers: Provider[] = [],
+  chatModel: { providerId: string; modelId: string } | null = null
+): Promise<HTMLElement> {
   const root = container();
   render(
     () => (
       <SubagentSettings
-        settings={{ ...DEFAULT_SUBAGENT_SETTINGS, enabled: true }}
-        providers={[]}
-        chatModel={null}
+        settings={settings}
+        providers={providers}
+        chatModel={chatModel}
         onChange={() => {}}
         onOpenPage={() => {}}
       />
     ),
     root
   );
-  [...root.querySelectorAll('button')].find((b) => b.textContent?.includes('Limits'))!.click();
+  const limits = [...root.querySelectorAll('button')].find((b) =>
+    b.textContent?.includes('Limits')
+  );
+  if (limits && !limits.disabled) limits.click();
   await flush();
   return root;
 }
+
+/** Renders the page, subagents on, with its limits open. */
+const settingsPage = () => page({ ...DEFAULT_SUBAGENT_SETTINGS, enabled: true });
 
 const checkbox = (root: HTMLElement, label: string) =>
   [...root.querySelectorAll('label.setting-checkbox')]
@@ -183,7 +193,7 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
   assert.deepEqual(
     rows.map((r) => r.querySelector('.autopilot-kind-tag')?.textContent ?? null),
     SUBAGENT_KINDS.map((k) =>
-      k.id === 'testWriter'
+      ['testWriter', 'reviewer'].includes(k.id)
         ? 'Always on'
         : ['planner', 'judge', 'breaker'].includes(k.id)
           ? 'Used by Autopilot (Thorough)'
@@ -194,8 +204,8 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
   );
   const warning = (id: string) =>
     rows[SUBAGENT_KINDS.findIndex((k) => k.id === id)].querySelector('.warning')?.textContent;
-  // Off on the page, and subagents off: Autopilot's chats still send it there.
-  assert.equal(warning('reviewer'), 'In Autopilot, code will also be sent to Beta.');
+  // Always on: code goes there whatever the switches say, so no “In Autopilot”.
+  assert.equal(warning('reviewer'), 'Code will also be sent to Beta.');
   assert.equal(warning('scout'), undefined, 'nothing uses an off scout');
   // T09: nothing picks another provider's model for a row on Default.
   assert.equal(warning('acceptance'), undefined);
@@ -205,8 +215,8 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
     root.textContent?.includes('Thorough tasks don’t start until each has one'),
     'the hint says Thorough’s kinds need a model chosen'
   );
-  // Subagents off: a kind Autopilot uses keeps its model and effort to set,
-  // its switch (ordinary chats') doesn't; the others are greyed out whole.
+  // Subagents off: a kind Autopilot uses keeps its model and effort to set;
+  // the change reviewer has no switch at all, the others are greyed out whole.
   const effort = (label: string) =>
     root.querySelector(`select[aria-label="${label} reasoning effort"]`) as HTMLSelectElement;
   const toggle = (id: string) =>
@@ -214,7 +224,7 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
       'input[type="checkbox"]'
     ) as HTMLInputElement;
   assert.equal(effort('Change reviewer').disabled, false);
-  assert.equal(toggle('reviewer').disabled, true);
+  assert.equal(toggle('reviewer'), null, 'no switch on a kind that is always on');
   assert.equal(effort('Scout').disabled, true);
   assert.equal(toggle('scout').disabled, true);
   // The default model, which they fall back to, too.
@@ -342,5 +352,88 @@ test('the test writer stays enabled with optional helpers both on and off', asyn
       'select[aria-label="Test writer reasoning effort"]'
     ) as HTMLSelectElement;
     assert.equal(effort.disabled, false);
+    // And the other kind the IDE starts itself has no switch to turn it off.
+    const rows = [...root.querySelectorAll('.subagent-kind-row')];
+    const reviewer = rows[SUBAGENT_KINDS.findIndex((k) => k.id === 'reviewer')];
+    assert.equal(reviewer.querySelector('input[type="checkbox"]'), null);
   }
+});
+
+test('the change reviewer has no switch and runs with optional helpers off', async () => {
+  vfsStatus = async () => ({ mountpoint: '/mnt/vfs' });
+  const providers = [
+    {
+      id: 'a',
+      name: 'Alpha',
+      baseUrl: 'http://a',
+      apiKey: '',
+      stream: true,
+      models: [{ id: 'm', enabled: true }],
+    },
+    {
+      id: 'b',
+      name: 'Beta',
+      baseUrl: 'http://b',
+      apiKey: '',
+      stream: true,
+      models: [{ id: 'other', enabled: true }],
+    },
+  ] as Provider[];
+  const onBeta = { model: { providerId: 'b', modelId: 'other' } };
+  const kinds = DEFAULT_SUBAGENT_SETTINGS.kinds;
+  const root = await page(
+    {
+      ...DEFAULT_SUBAGENT_SETTINGS,
+      enabled: false,
+      kinds: {
+        ...kinds,
+        reviewer: { ...kinds.reviewer, ...onBeta },
+        scout: { ...kinds.scout, ...onBeta },
+      },
+    },
+    providers,
+    { providerId: 'a', modelId: 'm' }
+  );
+  const rows = [...root.querySelectorAll('.subagent-kind-row')];
+  const row = (id: string) => rows[SUBAGENT_KINDS.findIndex((k) => k.id === id)];
+  const reviewer = row('reviewer');
+  // No switch to turn it off, and the tag says why.
+  assert.equal(reviewer.querySelector('input[type="checkbox"]'), null);
+  assert.equal(reviewer.querySelector('.autopilot-kind-tag')?.textContent, 'Always on');
+  // It runs whatever the switches say, so its code goes there whatever they say.
+  assert.equal(reviewer.querySelector('.warning')?.textContent, 'Code will also be sent to Beta.');
+  // Its model and its effort stay to set with “Use subagents” off.
+  const picker = reviewer.querySelector('select') as HTMLSelectElement;
+  assert.equal(picker.disabled, false);
+  assert.equal(picker.selectedOptions[0]?.textContent, 'Beta/other');
+  const effort = root.querySelector(
+    'select[aria-label="Change reviewer reasoning effort"]'
+  ) as HTMLSelectElement;
+  assert.equal(effort.disabled, false);
+  const greyedOut = [...reviewer.querySelectorAll('select:disabled')];
+  assert.deepEqual(greyedOut, [], 'nothing in its row is greyed out');
+  // A helper the switches can turn off is off whole.
+  const scout = row('scout');
+  const scoutSwitch = scout.querySelector('input[type="checkbox"]') as HTMLInputElement;
+  assert.equal(scoutSwitch.disabled, true);
+  assert.equal((scout.querySelector('select') as HTMLSelectElement).disabled, true);
+  const scoutEffort = root.querySelector(
+    'select[aria-label="Scout reasoning effort"]'
+  ) as HTMLSelectElement;
+  assert.equal(scoutEffort.disabled, true);
+  // Its Limits stay set: the fields it still uses, and the run's token cap,
+  // which governs what it may spend. Every other kind's stay off.
+  const numbers = (text: string) =>
+    [...root.querySelectorAll('label.setting-number-field')]
+      .filter((l) => l.textContent?.includes(text))
+      .map((l) => l.querySelector('input') as HTMLInputElement);
+  const fields = (text: string) => {
+    const found = numbers(text);
+    assert.ok(found.length > 0, `the page sets ${text}`);
+    return found;
+  };
+  for (const text of ['Tokens per run', 'Review changes from', 'Tool calls', 'Minutes'])
+    assert.ok(fields(text).some((i) => !i.disabled), `${text} stays set with subagents off`);
+  for (const text of ['Tool calls', 'Minutes', 'Plan reviews per request'])
+    assert.ok(fields(text).some((i) => i.disabled), `${text} stays off for other kinds`);
 });

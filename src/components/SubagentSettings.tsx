@@ -17,6 +17,7 @@ import { vfsStatus } from '../lib/virtualFiles';
 import { EFFORTS, type Effort } from '../lib/reasoning';
 import { AUTOPILOT_KINDS, autopilotKindTag, THOROUGH_KINDS } from '../lib/autopilotSettings';
 import {
+  ALWAYS_ON_KINDS,
   kindsWithoutModel,
   LIMIT_FIELDS,
   LIMITS,
@@ -73,8 +74,9 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           <span>
             Use subagents
             <span class="setting-checkbox-sub">
-              Off: optional helpers are disabled. The test writer always runs for code changes in
-              Agent and Autopilot modes. Autopilot also uses the kinds marked for it.
+              Off: optional helpers are disabled. The test writer always runs for code changes, and
+              the change reviewer for each change that hasn’t landed, in Agent and Autopilot modes.
+              Autopilot also uses the kinds marked for it.
             </span>
           </span>
         </label>
@@ -106,7 +108,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           <button class="link-button" onClick={() => props.onOpenPage('autopilot')}>
             Autopilot
           </button>
-          ).
+          ). The change reviewer always runs, with the model and effort set here, and it has no
+          switch: it reads each change that hasn’t landed.
         </p>
         <p class="settings-hint">
           The planner, the judge and the adversarial tester, which Autopilot’s Thorough adds, judge
@@ -118,8 +121,11 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             const k = () => s().kinds[kind.id];
             const others = () => otherProviders(props.providers, s(), kind.id, props.chatModel);
             const autopilot = AUTOPILOT_KINDS.includes(kind.id);
-            const mandatory = kind.id === 'testWriter';
-            const tag = mandatory ? 'Always on' : autopilotKindTag(kind.id);
+            // The test writer and the change reviewer always run: the first
+            // with a switch that can't be turned off, the second without one.
+            const alwaysOn = ALWAYS_ON_KINDS.includes(kind.id);
+            const noSwitch = kind.id === 'reviewer';
+            const tag = alwaysOn ? 'Always on' : autopilotKindTag(kind.id);
             // Thorough's kinds: no Default, a model of the user's choosing (T09).
             const chosenOnly = THOROUGH_KINDS.includes(kind.id);
             const unchosen = () =>
@@ -129,12 +135,15 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             return (
               <div class="subagent-kind-row" classList={{ 'autopilot-used': autopilot }}>
                 <label class="setting-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={mandatory || k().enabled}
-                    disabled={mandatory || off()}
-                    onChange={(e) => patchKind(kind.id, { enabled: e.currentTarget.checked })}
-                  />
+                  {/* The change reviewer runs whatever the switches say: no switch. */}
+                  <Show when={!noSwitch}>
+                    <input
+                      type="checkbox"
+                      checked={alwaysOn || k().enabled}
+                      disabled={alwaysOn || off()}
+                      onChange={(e) => patchKind(kind.id, { enabled: e.currentTarget.checked })}
+                    />
+                  </Show>
                   <span>
                     {kind.label}
                     <Show when={tag}>
@@ -189,9 +198,9 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                       Choose a model for it: Thorough tasks don’t start until it has one.
                     </p>
                   </Show>
-                  <Show when={(k().enabled || autopilot) && others().length > 0}>
+                  <Show when={(alwaysOn || k().enabled || autopilot) && others().length > 0}>
                     <p class="settings-hint setting-explain warning">
-                      {mandatory || k().enabled ? 'Code' : 'In Autopilot, code'} will also be sent
+                      {alwaysOn || k().enabled ? 'Code' : 'In Autopilot, code'} will also be sent
                       to {others().join(', ')}.
                     </p>
                   </Show>
@@ -220,7 +229,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                   placeholder={limit.default}
                   min={limit.min}
                   max={limit.max}
-                  disabled={off()}
+                  // The always-on reviewer's size gate still applies with subagents off.
+                  disabled={off() && field !== 'reviewMinLines'}
                   // Whole already: the field's step is 1 (numberFieldValue).
                   onChange={(v) => patch({ [field]: v ?? limit.default })}
                 />
@@ -294,7 +304,6 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
               min={LIMITS.runTokens.min}
               max={LIMITS.runTokens.max}
               step={1000}
-              disabled={off()}
               onChange={(v) => patch({ maxRunTokens: v === undefined ? undefined : Math.round(v) })}
             />
           </div>
@@ -312,7 +321,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                   placeholder={kind.toolCalls}
                   min={LIMITS.toolCalls.min}
                   max={LIMITS.toolCalls.max}
-                  disabled={off()}
+                  // The change reviewer's budget still applies with subagents off.
+                  disabled={off() && kind.id !== 'reviewer'}
                   onChange={(v) =>
                     patchKind(kind.id, {
                       maxToolCalls: v === undefined ? undefined : Math.round(v),
@@ -326,7 +336,7 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                   min={LIMITS.minutes.min}
                   max={LIMITS.minutes.max}
                   step={0.5}
-                  disabled={off()}
+                  disabled={off() && kind.id !== 'reviewer'}
                   onChange={(v) => patchKind(kind.id, { maxMinutes: v })}
                 />
               </div>

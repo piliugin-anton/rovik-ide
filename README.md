@@ -169,8 +169,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 - **Subagents (optional helpers off by default).** The agent can send scouts:
   read-only helpers that explore one question about the code in a fresh
   context and hand back a short report, so long explorations don't fill
-  the agent's own context. A change reviewer can read each finished
-  change with fresh eyes before the checks run. Each finding is ranked
+  the agent's own context. A change reviewer always reads each finished
+  change that hasn't landed, with fresh eyes, before the checks run; its
+  model and budget are set in Settings → Subagents, and it has no switch.
+  Each finding is ranked
   by its severity, how sure the reviewer is and whether it's about code
   the change touched: the agent fixes or answers the ones that weigh
   most, which hold the change back until they're resolved; lighter ones

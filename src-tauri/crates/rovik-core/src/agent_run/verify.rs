@@ -1383,8 +1383,7 @@ impl Run {
     /// within the run's review budget. True: findings went to the
     /// agent, and one more fix and check round is allowed.
     async fn review_after_green(&mut self, record_id: &str, meta: &Value) -> Result<bool, String> {
-        let config = self.config().subagents;
-        if config.kind(super::subagent::Kind::Reviewer).is_none() || self.plan_mode {
+        if !self.config().subagents.may_run(super::subagent::Kind::Reviewer) || self.plan_mode {
             return Ok(false);
         }
         let cap = self.change_review_cap();
