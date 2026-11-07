@@ -63,3 +63,5 @@ pub mod workload;
 
 pub use crate::core::{Core, EventSink, Paths};
 pub use crate::dispatch::{dispatch, refusal};
+
+mod memory_semantic;

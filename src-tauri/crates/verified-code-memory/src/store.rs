@@ -28,7 +28,7 @@ const FILE_POOL: usize = 40;
 /// SQLite-backed memory store with FTS5 lexical retrieval.
 #[derive(Debug)]
 pub struct MemoryStore {
-    connection: Connection,
+    pub(crate) connection: Connection,
     weights: RetrievalWeights,
 }
 
@@ -50,6 +50,13 @@ impl MemoryStore {
     }
 
     fn initialize(connection: Connection) -> Result<Self> {
+        let schema: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if schema > 3 {
+            return Err(VcmError::UnsupportedSchema {
+                actual: schema,
+                supported: 3,
+            });
+        }
         // The records and the file index first, the full-text index after the
         // columns are settled: FTS5 keeps an external-content index in step
         // with the table through these triggers, and a trigger that fires
@@ -135,6 +142,7 @@ impl MemoryStore {
         backfill_files(&connection)?;
         create_full_text(&connection)?;
         rebuild_full_text(&connection)?;
+        connection.pragma_update(None, "user_version", 3)?;
 
         Ok(Self {
             connection,
@@ -189,7 +197,11 @@ impl MemoryStore {
     }
 
     fn insert(&self, record: &MemoryRecord) -> Result<()> {
-        let transaction = self.connection.unchecked_transaction()?;
+        let transaction = if self.connection.is_autocommit() {
+            Some(self.connection.unchecked_transaction()?)
+        } else {
+            None
+        };
         self.connection.execute(
             r#"INSERT INTO memories (id,kind,verification,applicability,source_kind,repo,title,content,claim_hash,identity,validated_claim_hash,files_json,tags_json,code_version,source_episode,evidence,confidence,created_at,content_updated_at,updated_at,last_validated_at,last_retrieved_at,use_count,success_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)"#,
             params![
@@ -220,7 +232,9 @@ impl MemoryStore {
             ],
         )?;
         self.index_files(record.id, &record.files)?;
-        transaction.commit()?;
+        if let Some(transaction) = transaction {
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -399,9 +413,7 @@ impl MemoryStore {
             return Err(VcmError::EmptyField { field: "repo" });
         }
         if identity.trim().is_empty() {
-            return Err(VcmError::EmptyField {
-                field: "identity",
-            });
+            return Err(VcmError::EmptyField { field: "identity" });
         }
 
         let mut statement = self.connection.prepare(
@@ -498,11 +510,31 @@ impl MemoryStore {
         memory: NewMemory,
         generation: i64,
     ) -> Result<Option<MemoryRecord>> {
+        let transaction = self.connection.unchecked_transaction()?;
         let repo = memory.repo.clone();
         if self.generation(&repo)? != generation {
             return Ok(None);
         }
-        self.remember(memory).map(Some)
+        // Idempotency is checked in the same transaction as admission, so two
+        // writers cannot both insert the same claim after a separate lookup.
+        if !memory.identity.is_empty() {
+            let hash = crate::model::claim_hash(&memory.title, &memory.content);
+            if let Some(existing) = self
+                .find_by_identity(&repo, &memory.identity)?
+                .into_iter()
+                .find(|r| {
+                    r.claim_hash == hash
+                        && r.verification != Verification::Deprecated
+                        && r.code_version == memory.code_version
+                })
+            {
+                transaction.commit()?;
+                return Ok(Some(existing));
+            }
+        }
+        let record = self.remember(memory)?;
+        transaction.commit()?;
+        Ok(Some(record))
     }
 
     /// Confirms a record only if the project's memory has not been cut down
@@ -704,6 +736,52 @@ impl MemoryStore {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// Lists at most 50 records after a stable (update time, id) cursor.
+    /// All trust states remain visible to the manager. A cursor is scoped to
+    /// this project; the encoded boundary survives anchor updates or deletion.
+    pub fn list_page(
+        &self,
+        repo: &str,
+        query: &str,
+        before: Option<&str>,
+    ) -> Result<Vec<MemoryRecord>> {
+        if repo.trim().is_empty() {
+            return Err(VcmError::EmptyField { field: "repo" });
+        }
+        let cursor = if let Some(before) = before {
+            let parts: Vec<_> = before.split('|').collect();
+            if parts.len() != 3
+                || parts[0] != claim_hash(repo, "memory-page-v1")
+                || chrono::DateTime::parse_from_rfc3339(parts[1]).is_err()
+                || Uuid::parse_str(parts[2]).is_err()
+            {
+                return Err(VcmError::InvalidCursor);
+            }
+            Some((parts[1], parts[2]))
+        } else {
+            None
+        };
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT * FROM memories WHERE repo=?1
+            AND (title LIKE ?2 ESCAPE '\' OR content LIKE ?2 ESCAPE '\'
+              OR tags_json LIKE ?2 ESCAPE '\' OR files_json LIKE ?2 ESCAPE '\')
+            AND (?3 IS NULL OR (updated_at,id) < (?3,?4))
+            ORDER BY updated_at DESC,id DESC LIMIT 50
+        "#,
+        )?;
+        let rows = statement.query_map(
+            params![
+                repo,
+                containing(query),
+                cursor.map(|c| c.0),
+                cursor.map(|c| c.1)
+            ],
+            Self::row_to_record,
+        )?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
     /// Replaces a memory's title and text: the two its user corrects.
     ///
     /// The correction is the user's assertion, and it carries no evidence: the
@@ -815,6 +893,15 @@ impl MemoryStore {
         &self,
         query: &RetrievalQuery,
     ) -> Result<(Vec<RetrievedMemory>, RetrievalTelemetry)> {
+        self.retrieve_filtered_with_telemetry(query, |_| true)
+    }
+
+    /// Applies caller visibility/applicability before ranking consumes result slots.
+    pub fn retrieve_filtered_with_telemetry(
+        &self,
+        query: &RetrievalQuery,
+        accept: impl Fn(&MemoryRecord) -> bool,
+    ) -> Result<(Vec<RetrievedMemory>, RetrievalTelemetry)> {
         let started = Instant::now();
 
         if query.limit == 0 || query.limit > MAX_RETRIEVAL_LIMIT {
@@ -836,6 +923,10 @@ impl MemoryStore {
 
         let mut candidates = Vec::new();
         for (record, lexical) in found {
+            if !accept(&record) {
+                telemetry.rejected += 1;
+                continue;
+            }
             match score_memory(
                 &record,
                 &query.task,
@@ -1221,7 +1312,7 @@ impl SharedMemoryStore {
         Ok(Self::new(MemoryStore::open_in_memory()?))
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, MemoryStore>> {
+    pub(crate) fn lock(&self) -> Result<MutexGuard<'_, MemoryStore>> {
         self.inner.lock().map_err(|_| VcmError::LockPoisoned)
     }
 
@@ -1261,7 +1352,12 @@ impl SharedMemoryStore {
     ///
     /// # Errors
     /// See [`MemoryStore::supersede`].
-    pub fn supersede(&self, kept: Uuid, older: &[Uuid], reason: impl Into<String>) -> Result<usize> {
+    pub fn supersede(
+        &self,
+        kept: Uuid,
+        older: &[Uuid],
+        reason: impl Into<String>,
+    ) -> Result<usize> {
         self.lock()?.supersede(kept, older, reason)
     }
 
@@ -1336,6 +1432,16 @@ impl SharedMemoryStore {
         self.lock()?.list(repo, query)
     }
 
+    /// Lists a bounded manager page; see [`MemoryStore::list_page`].
+    pub fn list_page(
+        &self,
+        repo: &str,
+        query: &str,
+        before: Option<&str>,
+    ) -> Result<Vec<MemoryRecord>> {
+        self.lock()?.list_page(repo, query, before)
+    }
+
     /// See [`MemoryStore::edit`].
     ///
     /// # Errors
@@ -1406,6 +1512,18 @@ impl SharedMemoryStore {
     /// See [`MemoryStore::retrieve`].
     pub fn retrieve(&self, query: &RetrievalQuery) -> Result<Vec<RetrievedMemory>> {
         self.lock()?.retrieve(query)
+    }
+
+    /// Retrieves with caller visibility/applicability filtering before limiting.
+    pub fn retrieve_filtered(
+        &self,
+        query: &RetrievalQuery,
+        accept: impl Fn(&MemoryRecord) -> bool,
+    ) -> Result<Vec<RetrievedMemory>> {
+        Ok(self
+            .lock()?
+            .retrieve_filtered_with_telemetry(query, accept)?
+            .0)
     }
 
     /// See [`MemoryStore::retrieve_with_telemetry`].

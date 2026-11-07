@@ -1912,3 +1912,63 @@ every request, so the model's own output goes back with it:
 - A model that refuses the request for its reasoning, or the reasoning sent
   back, gets the request again without it, and isn't sent it again while
   the app runs. The other models on the same provider still are.
+
+### Memory evaluation and optional local semantic retrieval
+
+The memory manager reads 50 records per page. Runs retain file-content versions
+for associated source files, so an unrelated commit does not invalidate a fact,
+while a changed or missing source prevents it from steering a new run. Historical
+verification is retained for audit. Structured findings recorded with
+`memory_remember` stay provisional; a run can record at most three concise claims.
+
+Run `node scripts/eval/memory.mjs` to evaluate the SQLite retriever on the 120-case
+synthetic set. Development and held-out cases are separated by incident. The
+JSON report includes Recall@8, MRR, nDCG, no-match injections and per-case timing.
+These are retrieval checks, not measurements of real agent answer quality.
+`node scripts/eval/memory.mjs --gate --agent-results <paired-results.json>` also
+requires paired held-out coding-task results; without them the release gate fails.
+Each result supplies `id`, `split: "heldout"`, `memoryRelevant`, and `memoryOff` /
+`memoryOn` objects containing `passed`, a pinned `model`, and `configuration`.
+Use the same configuration fingerprint for tools, token budget, seeds and check
+environment in both arms; vary only memory. Include memory-irrelevant controls.
+See [the implementation review](docs/design/long-term-memory-review-nov7-2026.md)
+for remaining evidence and rollout requirements.
+
+Semantic retrieval is an optional local pilot. Install `sentence-transformers`
+in an interpreter you control and provision a model directory beforehand, for
+example a pinned multilingual MiniLM model with 384 dimensions. Requests run
+with offline model loading and cannot download weights. Add this advanced object
+to the project's saved settings (in the app's configuration directory):
+
+```json
+{
+  "memoryCapture": true,
+  "memorySemantic": {
+    "mode": "shadow",
+    "python": "/absolute/path/to/python",
+    "modelPath": "/absolute/path/to/cached-model",
+    "revision": "your-pinned-model-revision",
+    "dimensions": 384,
+    "threshold": 0.8
+  }
+}
+```
+
+`shadow` computes a comparison but returns the lexical answer. `hybrid` explicitly
+opts that project into rank fusion; omit the object or use `off` to roll back.
+Thresholds must be calibrated for the selected model. Invalid configuration,
+busy workers, model errors and a 15-second cold-start timeout fall back to lexical
+retrieval. The local worker retains weights between calls. Backfill runs after a
+run ends, at most three changed claims at a time, outside the response path.
+Vectors are keyed by model revision and claim hash; edits invalidate old vectors,
+and deleting a record or clearing memory removes its vectors. Changing model
+weights requires a new revision identifier.
+
+`memoryCapture: false` independently stops new claim and episode writes while
+retaining retrieval. The existing `memory: false` disables the feature for the
+project. No model content is written to ordinary retrieval comparison logs.
+
+To evaluate an installed local model, set `ROVIK_MEMORY_EVAL_MODEL`,
+`ROVIK_MEMORY_EVAL_PYTHON`, `ROVIK_MEMORY_EVAL_DIMENSIONS`,
+`ROVIK_MEMORY_EVAL_REVISION` and `ROVIK_MEMORY_EVAL_THRESHOLD` before running the
+memory evaluator. Without these, it measures only the lexical/file baseline.

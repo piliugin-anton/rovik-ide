@@ -168,6 +168,30 @@ const rows = () => [...(dialog()?.querySelectorAll('li.memory-entry') ?? [])] as
 const titles = () =>
   rows().map((row) => row.querySelector('.memory-entry-title')?.textContent?.trim() ?? '');
 
+test('the manager follows page cursors and resets them for a new search', async () => {
+  calls = [];
+  const first = Array.from({ length: 50 }, (_, n) =>
+    memory({ id: `page-${n}`, title: `First ${n}` })
+  );
+  backend = {
+    memory_list: ({ before, query }) =>
+      query ? [] : before ? [memory({ id: 'last', title: 'Last page' })] : first,
+  };
+  const view = await mount();
+  try {
+    assert.equal(rows().length, 50);
+    buttonIn(dialog()!, 'Next memories')!.click();
+    await flush();
+    assert.deepEqual(titles(), ['Last page']);
+    assert.equal(calls.at(-1)?.args.before, 'page-49');
+    buttonIn(dialog()!, 'Previous memories')!.click();
+    await flush();
+    assert.equal(rows().length, 50);
+  } finally {
+    view.dispose();
+  }
+});
+
 function rowFor(title: string): HTMLElement | undefined {
   return rows().find(
     (row) => row.querySelector('.memory-entry-title')?.textContent?.trim() === title

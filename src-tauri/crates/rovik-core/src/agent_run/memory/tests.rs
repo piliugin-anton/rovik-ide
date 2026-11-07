@@ -11,6 +11,96 @@ use rovik_protocol::events::MemoryAssociation;
 use verified_code_memory::model::claim_hash;
 use verified_code_memory::{MemoryRecord, NewMemory, SharedMemoryStore, Verification};
 
+#[test]
+fn a_long_query_keeps_its_goal_and_diagnostic_tail() {
+    let request = format!(
+        "Repair the scheduler {} failure: retry-lock-deadlock",
+        "x".repeat(4000)
+    );
+    let query = task_query(&request);
+    assert!(query.starts_with("Repair the scheduler"));
+    assert!(query.ends_with("failure: retry-lock-deadlock"));
+    assert_eq!(query.chars().count(), TASK_CHARS);
+}
+
+#[test]
+fn durable_text_scrubs_credentials_without_erasing_the_project_fact() {
+    let text = "Store credentials in the keychain; api_key=abcdefghijklmnop123456";
+    let safe = redact_secrets(text);
+    assert!(safe.contains("Store credentials in the keychain"));
+    assert!(!safe.contains("abcdefghijklmnop123456"));
+    assert_eq!(
+        redact_secrets("Use per-order locking."),
+        "Use per-order locking."
+    );
+}
+
+#[test]
+fn private_key_bodies_and_truncated_keys_are_not_persisted() {
+    let key = "-----BEGIN PRIVATE KEY-----\nsensitive-key-body\n-----END PRIVATE KEY-----";
+    assert_eq!(
+        redact_secrets(&format!("before {key} after")),
+        "before [redacted] after"
+    );
+    assert_eq!(
+        redact_secrets("-----BEGIN OPENSSH PRIVATE KEY-----\ntruncated-key"),
+        "[redacted]"
+    );
+}
+
+#[test]
+fn a_scoped_version_tracks_dirty_source_changes_and_ignores_other_files() {
+    let dir = crate::testing::temp_dir();
+    std::fs::write(dir.0.as_path().join("a.rs"), "lock(order);").unwrap();
+    let files = vec!["a.rs".to_string()];
+    let version = scoped_version(dir.0.as_path().to_str(), &files).unwrap();
+    std::fs::write(dir.0.as_path().join("unrelated.rs"), "changed").unwrap();
+    assert_eq!(
+        scoped_version(dir.0.as_path().to_str(), &files).unwrap(),
+        version
+    );
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let record = store
+        .remember(
+            NewMemory::procedure("p", "order lock", "lock per order")
+                .with_files(files.clone())
+                .with_code_version(version),
+        )
+        .unwrap();
+    let record = store.verify(record.id, "order regression passed").unwrap();
+    assert!(fingerprint_matches(&record, dir.0.as_path().to_str()));
+    std::fs::write(dir.0.as_path().join("a.rs"), "unlock(order);").unwrap();
+    assert!(!fingerprint_matches(&record, dir.0.as_path().to_str()));
+    std::fs::remove_file(dir.0.as_path().join("a.rs")).unwrap();
+    assert!(!fingerprint_matches(&record, dir.0.as_path().to_str()));
+}
+
+#[test]
+fn source_versions_do_not_read_files_outside_the_project() {
+    let dir = crate::testing::temp_dir();
+    let project = dir.0.as_path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(dir.0.as_path().join("outside.txt"), "outside").unwrap();
+    assert!(scoped_version(project.to_str(), &["../outside.txt".to_owned()]).is_none());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("../outside.txt", project.join("link.txt")).unwrap();
+        assert!(scoped_version(project.to_str(), &["link.txt".to_owned()]).is_none());
+    }
+}
+
+#[test]
+fn a_paused_run_carries_its_original_generation_after_clear() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let memory = run_with(store.clone(), Vec::new());
+    store.clear("p").unwrap();
+    assert_eq!(memory.carry().unwrap().generation, 0);
+    assert_ne!(
+        store.generation("p").unwrap(),
+        memory.carry().unwrap().generation
+    );
+}
+
 /// A check result with just what the plan decides on: which command ran, how it
 /// ended and — for a failure — the files the errors point at.
 fn result(command: &str, status: &'static str, changed: &[&str]) -> CheckResult {
@@ -785,8 +875,14 @@ fn a_read_only_run_never_plans_a_memory_to_be_checked_again() {
 fn repair(failing: &[&str], fixed: &[&str]) -> super::claim::Repair {
     super::claim::Repair::of(
         "npm test",
-        &failing.iter().map(|key| key.to_string()).collect::<Vec<_>>(),
-        &fixed.iter().map(|file| file.to_string()).collect::<Vec<_>>(),
+        &failing
+            .iter()
+            .map(|key| key.to_string())
+            .collect::<Vec<_>>(),
+        &fixed
+            .iter()
+            .map(|file| file.to_string())
+            .collect::<Vec<_>>(),
         "npm test passed".to_string(),
     )
 }
@@ -801,8 +897,7 @@ fn a_repair_given_no_cause_says_the_cause_was_not_established() {
         "the repair says what went wrong first: {rendered}"
     );
     assert_eq!(
-        lines[1],
-        "Cause: not established by this run — check the code before relying on a cause.",
+        lines[1], "Cause: not established by this run — check the code before relying on a cause.",
         "a repair that was given no cause says so rather than inventing one: {rendered}"
     );
     assert!(
@@ -886,11 +981,10 @@ fn a_repairs_identity_is_the_failure_and_the_files_it_applies_to() {
     );
     assert_ne!(
         both,
-        repair(&["src/a.rs"], &["src/a.rs"])
-            .identity(&super::claim::failure_signature(
-                "npm test",
-                &["src/b.rs".to_string()]
-            )),
+        repair(&["src/a.rs"], &["src/a.rs"]).identity(&super::claim::failure_signature(
+            "npm test",
+            &["src/b.rs".to_string()]
+        )),
         "and so is a repair of another failure that changed the same files"
     );
 }

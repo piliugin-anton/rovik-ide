@@ -219,6 +219,16 @@ pub struct MemoryRecord {
 }
 
 impl MemoryRecord {
+    /// Stable paging position, including the project and original update time.
+    /// It remains valid if the anchor record is edited, touched, or deleted.
+    pub fn page_cursor(&self) -> String {
+        format!(
+            "{}|{}|{}",
+            claim_hash(&self.repo, "memory-page-v1"),
+            self.updated_at.to_rfc3339(),
+            self.id
+        )
+    }
     /// Whether the evidence a record carries speaks about the claim it says
     /// now: only when the claim was not edited after it was validated.
     ///

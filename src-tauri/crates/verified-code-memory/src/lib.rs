@@ -45,3 +45,6 @@ pub use model::{
 };
 pub use retrieval::{estimate_tokens, MemoryScore, RetrievalTelemetry, RetrievalWeights};
 pub use store::{MemoryStore, SharedMemoryStore};
+
+/// Optional persistent semantic index and bounded hybrid ranking.
+pub mod semantic;

@@ -57,6 +57,8 @@ pub(super) struct RunMemory {
     /// The project's store; None when its memory is off or its file can't be
     /// opened, and the run goes on without it.
     store: Option<SharedMemoryStore>,
+    /// Structured claims captured in this run (at most three).
+    claims_written: usize,
     /// The project, as the store files memories under it.
     repo: String,
     /// The request, as retrieval matches it.
@@ -138,7 +140,9 @@ impl RunMemory {
     /// (see [`Self::admits`]) and something still backs it — verified, not
     /// marked to be checked again, and its evidence about the text it says now.
     pub(super) fn steers(&self, record: &MemoryRecord) -> bool {
-        self.admits(record) && worth_showing(record)
+        self.admits(record)
+            && worth_showing(record)
+            && fingerprint_matches(record, self.root.as_deref())
     }
 
     /// The records of `records` this run may be shown, in order.
@@ -316,17 +320,10 @@ impl RunMemory {
                     .unwrap_or_default(),
             };
             let signature = claim::failure_signature(&round.command, &round.failures);
-            eprintln!(
-                "debug note_round: sig={signature:?} files={:?} known={}",
-                round.files,
-                self.failures.len()
-            );
-            match self
-                .failures
-                .iter_mut()
-                .find(|known| claim::failure_signature(&known.command, &known.failures) == signature
-                    && known.files == round.files)
-            {
+            match self.failures.iter_mut().find(|known| {
+                claim::failure_signature(&known.command, &known.failures) == signature
+                    && known.files == round.files
+            }) {
                 Some(known) => *known = round,
                 None => self.failures.push(round),
             }
@@ -340,6 +337,8 @@ impl RunMemory {
         self.store.as_ref()?;
         Some(MemoryCarry {
             repo: self.repo.clone(),
+            generation: self.generation,
+            claims_written: self.claims_written,
             recalled: self.recalled.clone(),
             failed_rounds: self.failed_rounds,
             failures: self.failures.clone(),
@@ -360,15 +359,13 @@ impl RunMemory {
         sealed: Vec<String>,
     ) -> RunMemory {
         let store = core.memory.open(&core.paths, Path::new(&carry.repo));
-        // The resumed run works from the memory as it is now: a memory cleared
-        // while the run waited for the checks is not written back by its end.
-        let generation = store
-            .as_ref()
-            .and_then(|store| store.generation(&carry.repo).ok())
-            .unwrap_or_default();
+        // Keep the original write lease across a pause: clearing memory while
+        // checks wait must reject the resumed run as a late writer.
+        let generation = carry.generation;
         let mut memory = RunMemory {
             store,
             generation,
+            claims_written: carry.claims_written,
             restricted,
             root,
             sealed,
@@ -427,6 +424,8 @@ pub(super) struct FailedRound {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct MemoryCarry {
     pub(super) repo: String,
+    pub(super) generation: i64,
+    pub(super) claims_written: usize,
     pub(super) recalled: Vec<MemoryRecord>,
     pub(super) failed_rounds: u32,
     pub(super) failures: Vec<FailedRound>,
@@ -447,6 +446,7 @@ type RecallAnswer = Result<
         SharedMemoryStore,
         Vec<RetrievedMemory>,
         Vec<RetrievedMemory>,
+        i64,
     )>,
     String,
 >;
@@ -500,6 +500,96 @@ fn visible(
         .files
         .iter()
         .any(|file| hidden.iter().any(|sealed| path_overlap(sealed, file)))
+}
+
+/// A version of exactly the associated files, including uncommitted changes.
+/// Unrelated commits cannot make this version stale. Large/unreadable sources
+/// remain unknown instead of manufacturing evidence about their contents.
+fn scoped_version(root: Option<&str>, files: &[String]) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let root = Path::new(root?).canonicalize().ok()?;
+    if files.is_empty() {
+        return None;
+    }
+    let mut files = files.to_vec();
+    files.sort();
+    files.dedup();
+    let mut digest = Sha256::new();
+    for file in files {
+        let path = root.join(&file).canonicalize().ok()?;
+        if !path.starts_with(&root) {
+            return None;
+        }
+        let metadata = std::fs::metadata(&path).ok()?;
+        if metadata.len() > 1_000_000 {
+            return None;
+        }
+        let bytes = std::fs::read(path).ok()?;
+        digest.update(file.as_bytes());
+        digest.update([0]);
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    }
+    Some(format!(
+        "files-sha256:{}",
+        digest
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    ))
+}
+
+fn at_version(mut memory: NewMemory, root: Option<&str>) -> NewMemory {
+    memory.code_version = scoped_version(root, &memory.files);
+    if let Some(root) = root {
+        if let Ok(repo) = git2::Repository::open(root) {
+            if let Some(revision) = repo.head().ok().and_then(|head| head.target()) {
+                memory.tags.push(format!("revision:{revision}"));
+            }
+        }
+    }
+    memory
+}
+
+fn fingerprint_matches(record: &MemoryRecord, root: Option<&str>) -> bool {
+    match record.code_version.as_deref() {
+        Some(version) if version.starts_with("files-sha256:") => {
+            scoped_version(root, &record.files).as_deref() == Some(version)
+        }
+        _ => true, // Historical records retain their explicitly unknown provenance.
+    }
+}
+
+/// Scrubs recognizable credential values before durable capture. Restricted
+/// files remain excluded independently; this is a second line of defense for
+/// values accidentally quoted in otherwise ordinary findings or commands.
+fn redact_secrets(text: &str) -> String {
+    // Remove the body as well as the marker, including truncated keys in logs.
+    let private_keys = r"(?is)-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?(?:-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\z)";
+    let text = match regex::Regex::new(private_keys) {
+        Ok(regex) => regex.replace_all(text, "[redacted]"),
+        Err(_) => return "[redacted]".to_owned(),
+    };
+    let pattern = r#"(?i)(?:sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:api[_-]?key|token|password|secret)\s*[:=]\s*['"]?[a-z0-9_+/=-]{12,})"#;
+    match regex::Regex::new(pattern) {
+        Ok(regex) => regex.replace_all(&text, "[redacted]").into_owned(),
+        Err(_) => "[redacted]".to_owned(),
+    }
+}
+
+/// Keeps the opening intent and diagnostic tail of long requests.
+fn task_query(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= TASK_CHARS {
+        return text.to_owned();
+    }
+    let tail = TASK_CHARS / 4;
+    chars[..TASK_CHARS - tail - 1]
+        .iter()
+        .chain(std::iter::once(&'\n'))
+        .chain(chars[chars.len() - tail..].iter())
+        .collect()
 }
 
 /// Whether a memory still belongs in the prompt: evidence backs it, and nothing
@@ -584,6 +674,59 @@ pub(super) const SEARCH_MAX: usize = 8;
 const GET_CHARS: usize = 2_000;
 
 impl super::run::Run {
+    /// Refreshes already-selected IDs before a request, without running another
+    /// search or model call. User edits/deletes and source changes must not
+    /// survive in a cached packet until the next verification round.
+    pub(super) async fn refresh_memory_packet(&mut self) {
+        let Some(store) = self.memory.store.clone() else {
+            return;
+        };
+        let ids: Vec<_> = self.memory.recalled.iter().map(|r| r.id).collect();
+        let config_dir = self.core.paths.config_dir.clone();
+        let repo = self.memory.repo.clone();
+        let root = self.root.clone();
+        let refreshed = crate::rt::spawn_blocking(move || {
+            if !crate::memory::load(&config_dir, &repo).enabled {
+                return Ok(Vec::new());
+            }
+            let mut records = Vec::new();
+            for id in ids {
+                match store.get(id) {
+                    Ok(mut record) => {
+                        if !fingerprint_matches(&record, root.as_deref()) {
+                            record = store.mark_needs_revalidation(id)?;
+                        }
+                        records.push(record);
+                    }
+                    Err(verified_code_memory::VcmError::NotFound(_)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok::<_, verified_code_memory::VcmError>(records)
+        })
+        .await;
+        let records = match refreshed {
+            Ok(Ok(records)) => self.memory.admit(records),
+            _ => {
+                eprintln!("memory: packet refresh failed; omitting historical context");
+                Vec::new()
+            }
+        };
+        let changed = records.len() != self.memory.recalled.len()
+            || records.iter().zip(&self.memory.recalled).any(|(a, b)| {
+                a.id != b.id
+                    || a.claim_hash != b.claim_hash
+                    || a.verification != b.verification
+                    || a.applicability != b.applicability
+            });
+        self.memory.recalled = records;
+        self.memory.refresh_context();
+        if changed {
+            self.core
+                .emit(event(&self.dialog_id, &self.memory.recalled, None));
+        }
+    }
+
     /// `memory_search`: the model's own lookup in the project's memory, for what
     /// its prompt's packet did not carry.
     ///
@@ -614,11 +757,18 @@ impl super::run::Run {
         }
         let repo = self.memory.repo.clone();
         let wanted = task.clone();
+        let config_dir = self.core.paths.config_dir.clone();
+        let restricted = self.restricted.clone();
+        let root = self.root.clone();
+        let sealed = self.sub().map(|sub| sub.hidden.clone()).unwrap_or_default();
         let found = crate::rt::spawn_blocking(move || {
-            store.retrieve(
+            crate::memory_semantic::retrieve(
+                &store,
                 &RetrievalQuery::new(repo, wanted)
                     .with_files(files)
                     .with_limit(limit),
+                &config_dir,
+                |record| visible(record, &restricted, root.as_deref(), &sealed),
             )
         })
         .await;
@@ -717,7 +867,7 @@ impl super::run::Run {
     /// own claim trusted. A cause is kept only as the model's assertion, with
     /// the evidence it gave beside it, and the next run reads both as a hint.
     pub(super) async fn memory_remember(
-        &self,
+        &mut self,
         args: &super::tools::RememberArgs,
     ) -> super::tools::ToolResult {
         let Some(store) = self.memory.store.clone() else {
@@ -734,8 +884,40 @@ impl super::run::Run {
             );
         }
 
+        if !crate::memory::capture_enabled(&self.core.paths.config_dir, &self.memory.repo) {
+            return super::tools::ToolResult::error("Error: memory was disabled for this project.");
+        }
+        if self.memory.claims_written >= 3 {
+            return super::tools::ToolResult::error(
+                "This run has already recorded three claims; retain only durable findings.",
+            );
+        }
         let claim = args.claim.trim();
+        if claim.chars().count() > 4000
+            || args.title.chars().count() > 160
+            || args.applies_to.len() > 20
+            || args
+                .cause
+                .as_ref()
+                .is_some_and(|text| text.chars().count() > 4000)
+            || args
+                .evidence
+                .as_ref()
+                .is_some_and(|text| text.chars().count() > 4000)
+        {
+            return super::tools::ToolResult::error("Keep a memory concise: title up to 160 characters, claim up to 4000, and at most 20 paths.");
+        }
         let title = args.title.trim();
+        let supplied = format!(
+            "{title} {claim} {} {}",
+            args.cause.as_deref().unwrap_or(""),
+            args.evidence.as_deref().unwrap_or("")
+        );
+        if redact_secrets(&supplied) != supplied {
+            return super::tools::ToolResult::error(
+                "Do not store credential values in memory; describe the source without the value.",
+            );
+        }
         if title.is_empty() || claim.is_empty() {
             return super::tools::ToolResult::error(
                 "Error: a memory needs a title and a claim: what it is about, and what is true.",
@@ -780,22 +962,15 @@ impl super::run::Run {
         // A record must not name a file this run may not see: the restriction
         // would be recorded, then handed to every later run as a memory.
         let probe = record.clone();
-        let sealed = self
-            .sub()
-            .map(|sub| sub.hidden.clone())
-            .unwrap_or_default();
-        let allowed = visible_to(
-            &probe,
-            &self.restricted,
-            self.root.as_deref(),
-            &sealed,
-        );
+        let sealed = self.sub().map(|sub| sub.hidden.clone()).unwrap_or_default();
+        let allowed = visible_to(&probe, &self.restricted, self.root.as_deref(), &sealed);
         if !allowed {
             return super::tools::ToolResult::error(
                 "Error: a memory can't be about a file this run may not read. Record it without that file, or say it in your report.",
             );
         }
 
+        record = at_version(record, self.root.as_deref());
         let identity = record.identity.clone();
         let repo = self.memory.repo.clone();
         let generation = self.memory.generation;
@@ -831,13 +1006,13 @@ impl super::run::Run {
             }
         }
 
-        let stored = crate::rt::spawn_blocking(move || store.remember_if_current(record, generation))
-            .await;
+        let stored =
+            crate::rt::spawn_blocking(move || store.remember_if_current(record, generation)).await;
         match stored {
-            Ok(Ok(Some(record))) => super::tools::ToolResult::ok(format!(
+            Ok(Ok(Some(record))) => { self.memory.claims_written += 1; super::tools::ToolResult::ok(format!(
                 "Remembered for later runs (provisional, {}): {} — {}\nIt is a hint until evidence confirms it: later runs are told to check it against the code.",
                 record.id, record.title, claim
-            )),
+            )) },
             // The project's memory was cut down while this run worked: what it
             // would write is about work whose record is gone.
             Ok(Ok(None)) => super::tools::ToolResult::ok(
@@ -893,7 +1068,11 @@ impl RunMemory {
         format!(
             "\n- [{}]{} {} — {}\n  id: {}\n  Evidence: {}\n  Files: {}\n  Match: {}\n",
             record.verification,
-            match record.applicability {
+            match if fingerprint_matches(record, self.root.as_deref()) {
+                record.applicability
+            } else {
+                verified_code_memory::Applicability::NeedsRevalidation
+            } {
                 verified_code_memory::Applicability::Current => "",
                 verified_code_memory::Applicability::NeedsRevalidation => {
                     " (to be checked again: this claim or the code it names changed)"
@@ -1043,7 +1222,7 @@ impl super::run::Run {
         if text.trim().is_empty() {
             return;
         }
-        let task = text.chars().take(TASK_CHARS).collect::<String>();
+        let task = task_query(&text);
         let repo = root.clone();
         let project = Path::new(&root).to_path_buf();
         let core = self.core.clone();
@@ -1110,7 +1289,7 @@ impl super::run::Run {
             Some(text) if !text.trim().is_empty() => text.to_string(),
             _ => self.latest_user_request().await,
         };
-        let task = text.chars().take(TASK_CHARS).collect::<String>();
+        let task = task_query(&text);
         let repo = settings_root.to_string();
         let chat = self.dialog_id.clone();
 
@@ -1124,6 +1303,9 @@ impl super::run::Run {
             // Opening the store and querying it are disk work, as the
             // project's settings are: off the async threads.
             let own = chat_tag(&chat);
+            let restricted = self.restricted.clone();
+            let root = self.root.clone();
+            let sealed = self.sub().map(|sub| sub.hidden.clone()).unwrap_or_default();
             crate::rt::spawn_blocking(move || {
                 let settings = crate::memory::load(&core.paths.config_dir, &query_repo);
                 if !settings.enabled {
@@ -1132,6 +1314,7 @@ impl super::run::Run {
                 let Some(store) = core.memory.open(&core.paths, &project) else {
                     return Err("its memory file couldn't be opened".to_string());
                 };
+                let generation = store.generation(&query_repo).map_err(|e| e.to_string())?;
                 // The chat's own work isn't prior work: it is in the chat
                 // already, and telling the model what it just did would move
                 // its prompt on every run of the same chat. Left out by the
@@ -1152,7 +1335,16 @@ impl super::run::Run {
                 // memories the panel may show can't fill the slots this
                 // section reads.
                 let verified = query.with_verifications([Verification::Verified]);
-                let proven = match store.retrieve(&verified) {
+                let proven = match crate::memory_semantic::retrieve(
+                    &store,
+                    &verified,
+                    &core.paths.config_dir,
+                    |record| {
+                        worth_showing(record)
+                            && fingerprint_matches(record, root.as_deref())
+                            && visible(record, &restricted, root.as_deref(), &sealed)
+                    },
+                ) {
                     Ok(proven) => proven,
                     Err(error) => {
                         // The panel keeps what the first query found; the
@@ -1161,7 +1353,7 @@ impl super::run::Run {
                         Vec::new()
                     }
                 };
-                Ok(Some((store, memories, proven)))
+                Ok(Some((store, memories, proven, generation)))
             })
             .await
             .unwrap_or_else(|error| Err(format!("the query didn't finish: {error}")))
@@ -1170,13 +1362,14 @@ impl super::run::Run {
         // Only a run that has the project's memory sends its list: off, or
         // a store that didn't open, leaves the chat as it was.
         match found {
-            Ok(Some((store, memories, proven))) => {
+            Ok(Some((store, memories, proven, generation))) => {
                 // The run's sight of the files, so admission below can be the
                 // one rule: what it may not read, and what a child is sealed
                 // from, never enters `recalled`.
                 let sealed = self.sub().map(|sub| sub.hidden.clone()).unwrap_or_default();
                 self.memory = RunMemory {
                     store: Some(store),
+                    generation,
                     repo,
                     task,
                     restricted: self.restricted.clone(),
@@ -1335,6 +1528,9 @@ impl super::run::Run {
     /// records it had in hand, the run's own account of itself, and the lesson
     /// a repaired failure taught. Called once the outcome is final (`go`).
     pub(super) async fn memory_after_run(&mut self, outcome: &str) {
+        if self.memory.read_only {
+            return;
+        }
         let ended = association(outcome, &self.memory);
         let generation = self.memory.generation;
         // What the run's memory was, for the agent log, before any store work:
@@ -1358,12 +1554,16 @@ impl super::run::Run {
         let Some(store) = self.memory.store.clone() else {
             return;
         };
+        if !crate::memory::capture_enabled(&self.core.paths.config_dir, &self.memory.repo) {
+            return;
+        }
         let (repo, task) = (self.memory.repo.clone(), self.memory.task.clone());
         let chat = self.dialog_id.clone();
         let recalled = self.memory.recalled.clone();
         let failures = self.memory.failures.clone();
         let files = self.changed_files.clone();
         let results = self.verification.last_results().to_vec();
+        let root = self.root.clone();
         let outcome = outcome.to_string();
 
         let touched = crate::rt::spawn_blocking(move || {
@@ -1371,35 +1571,30 @@ impl super::run::Run {
             if let Some(ended) = ended {
                 touched = record_association(&store, &recalled, ended);
             }
-            let mut episode = None;
-            if !files.is_empty() && !task.trim().is_empty() {
-                episode = keep_reflection(&Ending {
-                    store: &store,
-                    repo: &repo,
-                    chat: &chat,
-                    task: &task,
-                    outcome: &outcome,
-                    files: &files,
-                    results: &results,
-                    ended,
-                    generation,
-                });
-            }
+            let ending = Ending {
+                store: &store,
+                repo: &repo,
+                chat: &chat,
+                task: &task,
+                outcome: &outcome,
+                files: &files,
+                results: &results,
+                ended,
+                generation,
+                root: root.as_deref(),
+            };
+            let episode = if !files.is_empty() && !task.trim().is_empty() {
+                keep_reflection(&ending)
+            } else {
+                None
+            };
             // A repair only from a failure this run itself fixed, and one
             // lesson for each: two failures repaired in a run are two things
             // the project learned.
             if let Some(MemoryAssociation::ChecksPassed) = ended {
-                eprintln!(
-                    "debug after_run: files={} failures={} results={}",
-                    files.len(),
-                    failures.len(),
-                    results.len()
-                );
                 if !files.is_empty() {
                     for failure in &failures {
-                        keep_lesson(
-                            &store, &repo, &chat, failure, &files, &results, episode, generation,
-                        );
+                        keep_lesson(&ending, failure, episode);
                     }
                 }
             }
@@ -1422,6 +1617,13 @@ impl super::run::Run {
             {
                 *slot = record;
             }
+        }
+        if let Some(store) = self.memory.store.clone() {
+            crate::memory_semantic::schedule(
+                store,
+                self.memory.repo.clone(),
+                self.core.paths.config_dir.clone(),
+            );
         }
         let list = event(&self.dialog_id, &self.memory.recalled, ended);
         self.core.emit(list);
@@ -1460,7 +1662,8 @@ fn passed_evidence(results: &[CheckResult]) -> Option<String> {
         .filter(|result| result.status == "passed")
         .map(|result| result.command.as_str())
         .collect();
-    (!passed.is_empty()).then(|| format!("the checks passed: {}", passed.join(", ")))
+    (!passed.is_empty())
+        .then(|| redact_secrets(&format!("the checks passed: {}", passed.join(", "))))
 }
 
 /// Notes, for each memory the run had in hand, how the run ended: the counters
@@ -1514,7 +1717,12 @@ fn reflect(
     if !checks.is_empty() {
         content.push_str(&format!("\nChecks: {}", checks.join("; ")));
     }
-    NewMemory::episode(repo, brief(first, TITLE_CHARS), content).with_files(files.iter().cloned())
+    NewMemory::episode(
+        repo,
+        redact_secrets(&brief(first, TITLE_CHARS)),
+        redact_secrets(&content),
+    )
+    .with_files(files.iter().cloned())
 }
 
 /// What a run's end tells the project's memory about itself.
@@ -1534,6 +1742,7 @@ struct Ending<'a> {
     /// run whose memory was cut down since then is refused, so clearing or
     /// deleting during a run is not undone by its end.
     generation: i64,
+    root: Option<&'a str>,
 }
 
 /// Keeps the run's reflection, and confirms it when the checks passed.
@@ -1556,6 +1765,7 @@ fn keep_reflection(end: &Ending<'_>) -> Option<Uuid> {
         verified_code_memory::claim_hash(&reflection.title, &reflection.content)
     );
     reflection.identity = identity.clone();
+    reflection = at_version(reflection, end.root);
     if let Ok(found) = store.find_by_identity(repo, &identity) {
         if let Some(kept) = found
             .iter()
@@ -1570,7 +1780,9 @@ fn keep_reflection(end: &Ending<'_>) -> Option<Uuid> {
         // The project's memory was cut down after this run recalled it: what
         // the run would write is about work whose record is gone.
         Ok(None) => {
-            eprintln!("memory: the run's reflection wasn't kept: the memory was cleared during the run");
+            eprintln!(
+                "memory: the run's reflection wasn't kept: the memory was cleared during the run"
+            );
             return None;
         }
         Err(e) => {
@@ -1593,16 +1805,16 @@ fn keep_reflection(end: &Ending<'_>) -> Option<Uuid> {
 /// failed on, and the files that made it pass. An older lesson for the same
 /// check is what it replaces (a remembered title and kind, exactly: nothing
 /// else is invalidated).
-fn keep_lesson(
-    store: &SharedMemoryStore,
-    repo: &str,
-    chat: &str,
-    failure: &FailedRound,
-    files: &[String],
-    results: &[CheckResult],
-    episode: Option<Uuid>,
-    generation: i64,
-) {
+fn keep_lesson(end: &Ending<'_>, failure: &FailedRound, episode: Option<Uuid>) {
+    let (store, repo, chat, files, results, generation, root) = (
+        end.store,
+        end.repo,
+        end.chat,
+        end.files,
+        end.results,
+        end.generation,
+        end.root,
+    );
     let Some(evidence) = passed_evidence(results) else {
         return;
     };
@@ -1622,8 +1834,10 @@ fn keep_lesson(
     let repair = claim::Repair::of(&failure.command, &failure.failures, files, evidence.clone())
         .scoped_to(scope);
     let identity = repair.identity(&signature);
-    let content = repair.render();
-    let claim_hash = verified_code_memory::claim_hash(&repair.title, &content);
+    let content = redact_secrets(&repair.render());
+    let repair_title = redact_secrets(&repair.title);
+    let claim_hash = verified_code_memory::claim_hash(&repair_title, &content);
+    let version = scoped_version(root, scope);
 
     // What the project already has for this failure and these files.
     let same: Vec<MemoryRecord> = match store.find_by_identity(repo, &identity) {
@@ -1635,20 +1849,15 @@ fn keep_lesson(
     };
     // Saying exactly the same thing again is not news: a replayed run end, a
     // retried step, writes nothing.
-    if same
-        .iter()
-        .any(|record| record.verification != Verification::Deprecated
-            && record.claim_hash == claim_hash)
-    {
+    if same.iter().any(|record| {
+        record.verification != Verification::Deprecated
+            && record.claim_hash == claim_hash
+            && record.code_version == version
+    }) {
         return;
     }
 
-    eprintln!(
-        "debug keep_lesson: identity={identity:?} claim={claim_hash} same={} scope={scope:?} files={files:?}",
-        same.len()
-    );
-
-    let mut lesson = NewMemory::procedure(repo, repair.title.clone(), content)
+    let mut lesson = NewMemory::procedure(repo, repair_title, content)
         .with_files(scope.iter().cloned())
         .with_tags([chat_tag(chat)])
         .with_source_kind(SourceKind::TestResult)
@@ -1658,6 +1867,7 @@ fn keep_lesson(
     if let Some(episode) = episode {
         lesson = lesson.with_source_episode(episode);
     }
+    lesson.code_version = version.clone();
     let record = match store.remember_if_current(lesson, generation) {
         Ok(Some(record)) => record,
         Ok(None) => {
@@ -1690,7 +1900,7 @@ fn keep_lesson(
         .filter(|earlier| {
             earlier.id != fresh
                 && earlier.verification != Verification::Deprecated
-                && earlier.claim_hash != claim_hash
+                && (earlier.claim_hash != claim_hash || earlier.code_version != version)
         })
         .map(|earlier| earlier.id)
         .collect();

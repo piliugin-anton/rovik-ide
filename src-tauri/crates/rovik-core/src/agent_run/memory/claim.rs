@@ -24,7 +24,7 @@ pub(super) fn failure_signature(command: &str, keys: &[String]) -> String {
         .collect();
     keys.sort_unstable();
     keys.dedup();
-    format!("{command}|{}", keys.join(";"))
+    super::redact_secrets(&format!("{command}|{}", keys.join(";")))
 }
 
 /// A repair, as the memory says it: what failed, what was done about it, where
@@ -92,7 +92,9 @@ impl Repair {
             Some(cause) => text.push_str(&format!("Cause: {cause}\n")),
             // Said, not omitted: a reader has to know whether the cause was
             // established and found unimportant, or never established at all.
-            None => text.push_str("Cause: not established by this run — check the code before relying on a cause.\n"),
+            None => text.push_str(
+                "Cause: not established by this run — check the code before relying on a cause.\n",
+            ),
         }
         text.push_str(&format!("Fix: {}\n", self.fix));
         if !self.applies_to.is_empty() {

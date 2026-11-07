@@ -44,6 +44,16 @@ pub fn load(config_dir: &Path, settings_root: &str) -> MemorySettings {
     }
 }
 
+/// Whether new claims and run episodes are captured. Disabling capture leaves
+/// retrieval available and provides an independent rollback for write behavior.
+pub fn capture_enabled(config_dir: &Path, repo: &str) -> bool {
+    load(config_dir, repo).enabled
+        && crate::project_profile::load_project_settings(config_dir, repo)
+            .get("memoryCapture")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+}
+
 /// Where the memory of the project in `project` is kept: a file of its own
 /// in the data folder, named as the project's overlay folder is
 /// (`overlay::chats::project_key`), so a project is the same file whichever
@@ -106,6 +116,8 @@ pub fn stats(store: &SharedMemoryStore, repo: &str) -> Result<MemoryStats, Strin
 pub struct MemoryEntry {
     /// The store's id for it, as the chat's panel shows it.
     pub id: String,
+    /// Stable position for the next manager page; opaque to the frontend.
+    pub cursor: String,
     /// `episode`, `project fact` or `procedure`.
     pub kind: String,
     /// One line: what it's about.
@@ -137,6 +149,7 @@ impl From<&MemoryRecord> for MemoryEntry {
     fn from(record: &MemoryRecord) -> Self {
         MemoryEntry {
             id: record.id.to_string(),
+            cursor: record.page_cursor(),
             kind: record.kind.to_string(),
             title: record.title.clone(),
             content: record.content.clone(),

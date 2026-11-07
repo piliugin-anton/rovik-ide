@@ -1728,7 +1728,10 @@ async fn memory_remember_records_a_provisional_fact_with_its_evidence() {
     );
     assert_eq!(
         memory.identity,
-        format!("fact:{}", verified_code_memory::model::claim_hash(title, claim)),
+        format!(
+            "fact:{}",
+            verified_code_memory::model::claim_hash(title, claim)
+        ),
         "a fact the tool recorded is the claim it says, once"
     );
 
@@ -1757,6 +1760,59 @@ async fn memory_remember_records_a_provisional_fact_with_its_evidence() {
         deduced[0].verification,
         Verification::Provisional,
         "and it is provisional too"
+    );
+}
+
+#[tokio::test]
+async fn a_fresh_run_after_clear_can_record_new_knowledge() {
+    let h = harness(&[("src/a.rs", "fn a() {}\n")]).await;
+    store(&h).clear(&repo(&h)).unwrap();
+    run_calling(&h, "Inspect the retry guard", quiet_permissions(), "m1", "memory_remember",
+        json!({"kind":"fact", "title":"New retry finding", "claim":"The retry guard is per order.", "applies_to":["src/a.rs"]})).await;
+    assert_eq!(
+        records_titled(&h, "New retry finding").len(),
+        1,
+        "a new run takes the current generation rather than the initial zero"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_memory_while_a_run_waits_removes_it_from_the_next_request() {
+    let h = harness(&[("src/a.rs", "fn a() {}\n")]).await;
+    let title = "zanzibar retry convention";
+    let id = remember_verified(&h, title, "Serialize zanzibar retries.", &["src/a.rs"]);
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "q1",
+            name: "ask_user",
+            args: json!({"questions":[{"question":"Continue?","options":["Yes"]}]}),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(
+        &url,
+        Harness::send("Inspect zanzibar retries"),
+        quiet_permissions(),
+    ))
+    .await;
+    h.wait_for("questionsAsked", |e| e["type"] == "questionsAsked")
+        .await;
+    assert!(seen.lock().unwrap()[0].to_string().contains(title));
+    store(&h).delete(id).unwrap();
+    let answer =
+        serde_json::from_value(json!({"answers":[{"kind":"option","label":"Yes"}]})).unwrap();
+    assert!(agent_answer_questions(&h.core, h.dialog_id.clone(), "q1".into(), answer).await);
+    h.run_end().await;
+    assert!(
+        !seen
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .to_string()
+            .contains(title),
+        "a removed record must not remain in the cached model packet"
     );
 }
 
@@ -1846,4 +1902,3 @@ async fn memory_remember_refuses_a_claim_it_cannot_write() {
          refused: {written:?}"
     );
 }
-

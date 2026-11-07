@@ -1876,6 +1876,7 @@ impl Run {
     /// stored. Failed attempts are retried in chat_request.rs, which reports
     /// each retry, then succeeds or fails for good.
     pub(super) async fn model_turn(&mut self) -> Result<TurnOutput, String> {
+        self.refresh_memory_packet().await;
         let mut started = Instant::now();
         let mut pending = new_message("assistant", "");
         pending.finalized = false;

@@ -66,6 +66,8 @@ export function memorySummary(stats: MemoryStats): string {
 /** A memory as Settings' manager lists it (rovik-core's `MemoryEntry`). */
 export interface MemoryEntry {
   id: string;
+  /** Opaque position for paged management; absent from older app responses. */
+  cursor?: string;
   /** `episode`, `project fact` or `procedure`. */
   kind: string;
   /** One line: what it's about. */
@@ -110,8 +112,8 @@ export function memoryApplicabilityLabel(state: string | undefined): string | un
  * The memories of the project in `root`, newest first: those whose title,
  * text, tags or files mention `query`, or every one of them when it's empty.
  */
-export function memoryList(root: string, query: string): Promise<MemoryEntry[]> {
-  return invoke<MemoryEntry[]>('memory_list', { root, query });
+export function memoryList(root: string, query: string, before?: string): Promise<MemoryEntry[]> {
+  return invoke<MemoryEntry[]>('memory_list', { root, query, ...(before ? { before } : {}) });
 }
 
 /**

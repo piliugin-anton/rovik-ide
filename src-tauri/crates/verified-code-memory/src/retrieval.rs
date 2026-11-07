@@ -33,7 +33,9 @@ impl Default for RetrievalWeights {
             verified: 1.25,
             kind_bonus: 0.5,
             recency: 0.75,
-            success_rate: 1.0,
+            // A successful run is an association, not claim-specific proof.
+            // Keep the counter for audit but do not reward it by default.
+            success_rate: 0.0,
         }
     }
 }
