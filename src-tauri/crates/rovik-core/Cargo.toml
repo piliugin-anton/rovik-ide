@@ -35,6 +35,7 @@ hyper-util = { workspace = true, features = ["client-proxy", "client-proxy-syste
 httparse = "1.10"
 rusqlite.workspace = true
 sha2.workspace = true
+tempfile = "3"
 # The pinned Chrome for Testing's archive (pinned_browser.rs, D19).
 zip = { version = "9.0.1", default-features = false, features = ["deflate"] }
 grep-searcher = "0.1.17"

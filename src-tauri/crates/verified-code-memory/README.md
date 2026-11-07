@@ -87,6 +87,15 @@ and refilled. The order matters: FTS5 keeps an external-content index in step
 through the triggers, and a trigger firing at a row an empty index never held is
 what SQLite reports as `SQLITE_CORRUPT_VTAB`.
 
+## Native ONNX embeddings
+
+`embedding::OnnxMiniLm` loads the local Chroma `all-MiniLM-L6-v2` ONNX export
+and tokenizer directly in Rust using tract and tokenizers. It implements
+`MemoryEmbedder` with 384-dimensional normalized vectors and reuses its compiled
+CPU model. No Python, child process or separately installed runtime is used.
+The application provisions the pinned model from its dedicated GitHub release;
+this crate's encoder only reads local files and never downloads on inference.
+
 ## Development
 
 ```bash

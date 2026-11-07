@@ -1,0 +1,11 @@
+Model: sentence-transformers/all-MiniLM-L6-v2
+Model card: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+License: Apache License 2.0 (as declared in the source model card).
+
+The ONNX export and tokenizer are mirrored without modification from:
+https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz
+Archive SHA-256: 913d7300ceae3b2dbc2c50d1de4baacab4be7b9380491c27fab7418616a16ec3
+
+The model card and Apache license text are included for attribution and reuse.
+This asset release is separate from Rovik IDE app releases. The same pinned
+files are reused across app versions; app release CI does not republish them.

@@ -9,6 +9,9 @@ pub enum VcmError {
     /// An optional embedding backend cannot serve the request.
     #[error("embedding unavailable: {0}")]
     EmbeddingUnavailable(&'static str),
+    /// Loading or running the local ONNX model failed.
+    #[error("local ONNX embedding failed: {0}")]
+    Onnx(String),
     /// A newer application owns this database; an older writer must not alter it.
     #[error(
         "memory schema {actual} is newer than supported schema {supported}; update the application"

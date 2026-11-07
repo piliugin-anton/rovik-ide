@@ -1,58 +1,68 @@
 //! Optional local semantic retrieval. Shadow mode observes rankings without
 //! changing the active answer; failures always preserve lexical retrieval.
+mod model;
+
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use verified_code_memory::{
-    embedding::LocalSentenceEmbedder, semantic::SemanticIndex, RetrievalQuery, RetrievedMemory,
-    SharedMemoryStore,
+    embedding::{OnnxMiniLm, MINILM_DIMENSIONS, MINILM_REVISION},
+    semantic::SemanticIndex,
+    RetrievalQuery, RetrievedMemory, SharedMemoryStore,
 };
 
+#[derive(Clone, Debug, PartialEq)]
 struct Config {
-    embedder: std::sync::Arc<LocalSentenceEmbedder>,
-    revision: String,
-    dimensions: usize,
+    directory: PathBuf,
     threshold: f32,
     active: bool,
 }
 
+type Cached = Option<(PathBuf, Arc<OnnxMiniLm>)>;
+static BACKEND: OnceLock<Mutex<Cached>> = OnceLock::new();
+
+fn cached(directory: &Path) -> Option<Arc<OnnxMiniLm>> {
+    BACKEND
+        .get_or_init(Default::default)
+        .try_lock()
+        .ok()?
+        .as_ref()
+        .filter(|(path, _)| path == directory)
+        .map(|(_, backend)| backend.clone())
+}
+
 fn parse_config(config_dir: &Path, repo: &str) -> Option<Config> {
-    let settings = crate::project_profile::load_project_settings(config_dir, repo);
     if !crate::memory::load(config_dir, repo).enabled {
         return None;
     }
-    let value = settings.get("memorySemantic")?;
+    let settings = crate::project_profile::load_project_settings(config_dir, repo);
+    settings_config(config_dir, settings.get("memorySemantic")?)
+}
+
+fn settings_config(config_dir: &Path, value: &serde_json::Value) -> Option<Config> {
     let mode = value.get("mode")?.as_str()?;
     if !matches!(mode, "shadow" | "hybrid") {
         return None;
     }
-    let dimensions = usize::try_from(value.get("dimensions")?.as_u64()?).ok()?;
-    let revision = value.get("revision")?.as_str()?.to_owned();
-    let threshold = value.get("threshold")?.as_f64()? as f32;
-    if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) || revision.is_empty() {
+    if let Some(dimensions) = value.get("dimensions") {
+        if dimensions.as_u64()? != MINILM_DIMENSIONS as u64 {
+            return None;
+        }
+    }
+    let threshold = value
+        .get("threshold")
+        .map_or(Some(0.3), |value| value.as_f64())? as f32;
+    if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
         return None;
     }
-    use std::sync::{Arc, Mutex, OnceLock};
-    type Cached = Option<(String, Arc<LocalSentenceEmbedder>)>;
-    static BACKEND: OnceLock<Mutex<Cached>> = OnceLock::new();
-    let key = value.to_string();
-    let mut cache = BACKEND.get_or_init(Default::default).lock().ok()?;
-    let embedder = if let Some((_, backend)) = cache.as_ref().filter(|(stored, _)| stored == &key) {
-        backend.clone()
-    } else {
-        let backend = Arc::new(
-            LocalSentenceEmbedder::new(
-                PathBuf::from(value.get("python")?.as_str()?),
-                PathBuf::from(value.get("modelPath")?.as_str()?),
-                dimensions,
-            )
-            .ok()?,
-        );
-        *cache = Some((key, backend.clone()));
-        backend
+    let directory = match value.get("modelPath") {
+        Some(path) => PathBuf::from(path.as_str()?),
+        None => config_dir.join("memory-models").join(MINILM_REVISION),
     };
+    if !directory.is_absolute() {
+        return None;
+    }
     Some(Config {
-        embedder,
-        revision,
-        dimensions,
+        directory,
         threshold,
         active: mode == "hybrid",
     })
@@ -68,7 +78,7 @@ fn config(config_dir: &Path, repo: &str) -> Option<Config> {
             .and_then(|m| m.as_str())
             .is_some_and(|mode| matches!(mode, "hybrid" | "shadow"))
         {
-            eprintln!("memory: incomplete local semantic configuration; using lexical retrieval");
+            eprintln!("memory: invalid native semantic configuration; using lexical retrieval");
         }
     }
     result
@@ -88,9 +98,13 @@ pub(crate) fn retrieve(
     let Some(config) = config(config_dir, &query.repo) else {
         return Ok(baseline);
     };
+    let Some(embedder) = cached(&config.directory) else {
+        schedule(store.clone(), query.repo.clone(), config_dir.to_path_buf());
+        return Ok(baseline);
+    };
     let proposed =
-        SemanticIndex::new(store.clone(), &config.revision, config.dimensions).and_then(|index| {
-            index.retrieve_filtered(query, config.embedder.as_ref(), config.threshold, &accept)
+        SemanticIndex::new(store.clone(), MINILM_REVISION, MINILM_DIMENSIONS).and_then(|index| {
+            index.retrieve_filtered(query, embedder.as_ref(), config.threshold, &accept)
         });
     match proposed {
         Ok(hits) => {
@@ -117,41 +131,120 @@ pub(crate) fn retrieve(
     }
 }
 
-/// Backfills a small batch off the response path. Only one job per project may
-/// run at once. Generation checks in the index reject deleted/cleared claims.
+/// Prepares the native model and backfills off the response path. One job per
+/// model directory runs at a time; failures retry after one minute.
 pub(crate) fn schedule(store: SharedMemoryStore, repo: String, config_dir: PathBuf) {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
-    static RUNNING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+    static JOBS: OnceLock<Mutex<HashMap<PathBuf, Option<Instant>>>> = OnceLock::new();
     let Some(config) = config(&config_dir, &repo) else {
         return;
     };
-    let running = RUNNING.get_or_init(Default::default);
-    let Ok(mut jobs) = running.lock() else {
+    let jobs = JOBS.get_or_init(Default::default);
+    let Ok(mut state) = jobs.lock() else {
         return;
     };
-    if !jobs.insert(repo.clone()) {
+    if state
+        .get(&config.directory)
+        .is_some_and(|retry| retry.is_none_or(|at| at > Instant::now()))
+    {
         return;
     }
-    drop(jobs);
-    crate::rt::spawn_blocking(move || {
-        // Always release admission, including a backend panic.
-        struct Job<'a>(&'a Mutex<HashSet<String>>, String);
+    state.insert(config.directory.clone(), None);
+    drop(state);
+    crate::rt::spawn(async move {
+        struct Job<'a>(&'a Mutex<HashMap<PathBuf, Option<Instant>>>, PathBuf, bool);
         impl Drop for Job<'_> {
             fn drop(&mut self) {
-                if let Ok(mut jobs) = self.0.lock() {
-                    jobs.remove(&self.1);
+                if let Ok(mut state) = self.0.lock() {
+                    if self.2 {
+                        state.remove(&self.1);
+                    } else {
+                        state.insert(
+                            self.1.clone(),
+                            Some(Instant::now() + Duration::from_secs(60)),
+                        );
+                    }
                 }
             }
         }
-        let _job = Job(running, repo.clone());
-        if !crate::memory::load(&config_dir, &repo).enabled {
-            return;
+        let mut job = Job(jobs, config.directory.clone(), false);
+        let result = async {
+            let embedder = if let Some(backend) = cached(&config.directory) {
+                backend
+            } else {
+                model::install(&config.directory).await?;
+                let path = config.directory.clone();
+                crate::rt::spawn_blocking(move || {
+                    model::check(&path)?;
+                    let backend = Arc::new(OnnxMiniLm::new(&path).map_err(|e| e.to_string())?);
+                    *BACKEND
+                        .get_or_init(Default::default)
+                        .lock()
+                        .map_err(|e| e.to_string())? = Some((path, backend.clone()));
+                    Ok::<_, String>(backend)
+                })
+                .await
+                .map_err(|e| e.to_string())??
+            };
+            // Settings may have changed while downloading or compiling the model.
+            if parse_config(&config_dir, &repo).as_ref() != Some(&config) {
+                return Ok(());
+            }
+            crate::rt::spawn_blocking(move || {
+                if !crate::memory::load(&config_dir, &repo).enabled {
+                    return Ok(());
+                }
+                SemanticIndex::new(store, MINILM_REVISION, MINILM_DIMENSIONS)
+                    .and_then(|index| index.backfill_limited(&repo, embedder.as_ref(), 3))
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| e.to_string())?
         }
-        let result = SemanticIndex::new(store, &config.revision, config.dimensions)
-            .and_then(|index| index.backfill_limited(&repo, config.embedder.as_ref(), 3));
-        if let Err(error) = result {
-            eprintln!("memory: semantic backfill failed: {error}");
+        .await;
+        match result {
+            Ok(()) => job.2 = true,
+            Err(error) => eprintln!(
+                "memory: native semantic preparation failed; using lexical retrieval: {error}"
+            ),
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn native_settings_need_no_python_or_operator_model_path() {
+        let dir = crate::testing::temp_dir();
+        let config = settings_config(&dir.0, &json!({"mode":"shadow"})).unwrap();
+        assert_eq!(
+            config.directory,
+            dir.0.join("memory-models").join(MINILM_REVISION)
+        );
+        assert_eq!(config.threshold, 0.3);
+        assert!(!config.active);
+        assert!(
+            settings_config(&dir.0, &json!({"mode":"hybrid"}))
+                .unwrap()
+                .active
+        );
+    }
+
+    #[test]
+    fn disabled_and_invalid_native_settings_do_not_start_a_model_job() {
+        let dir = crate::testing::temp_dir();
+        for value in [
+            json!({"mode":"off"}),
+            json!({"mode":"hybrid","dimensions":300}),
+            json!({"mode":"shadow","modelPath":"relative"}),
+            json!({"mode":"shadow","threshold":1.5}),
+        ] {
+            assert!(settings_config(&dir.0, &value).is_none());
+        }
+    }
 }

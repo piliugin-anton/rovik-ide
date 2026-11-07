@@ -1,0 +1,72 @@
+name: Publish pinned memory model
+
+# One model tag, not app releases or ordinary CI pushes. A new model version
+# needs new pins and its own release; published assets are never overwritten.
+on:
+  push:
+    tags: [memory-minilm-l6-v2-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: memory-minilm-l6-v2-v1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: memory-minilm-l6-v2-v1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check whether the model is already published
+        id: existing
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq '.[] | select(.tag_name == env.TAG) | {id, draft}' > existing.json
+          if [ -s existing.json ] && [ "$(jq -r .draft existing.json)" = false ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "This model is already published; its assets stay unchanged."
+          fi
+      - name: Prepare and verify the pinned model
+        if: steps.existing.outputs.published != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p model
+          curl --fail --location --retry 3 \
+            https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz \
+            -o onnx.tar.gz
+          echo '913d7300ceae3b2dbc2c50d1de4baacab4be7b9380491c27fab7418616a16ec3  onnx.tar.gz' | sha256sum --check -
+          tar -xzf onnx.tar.gz --strip-components=1 -C model onnx/model.onnx onnx/tokenizer.json
+          cp docs/models/minilm/LICENSE docs/models/minilm/NOTICE docs/models/minilm/MODEL-CARD.md model/
+          cd model
+          echo '4f148ba8ae9c2c7fbee4af2b132db8d06c6a6545b47fc83bbb98c3d22b8393e6  model.onnx' | sha256sum --check -
+          echo 'da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0  tokenizer.json' | sha256sum --check -
+          sha256sum model.onnx tokenizer.json LICENSE NOTICE MODEL-CARD.md > SHA256SUMS
+      - name: Publish the dedicated model release
+        if: steps.existing.outputs.published != 'true'
+        run: |
+          set -euo pipefail
+          cat > notes.md <<'NOTES'
+          Pinned all-MiniLM-L6-v2 ONNX model and tokenizer for native semantic memory.
+
+          This model release is independent of app versions and is not marked as
+          the latest app release. App release CI does not recreate these assets.
+          Download model.onnx and tokenizer.json into one directory for offline
+          setup; Rovik also downloads and verifies these files automatically.
+
+          The export is mirrored unchanged from Chroma's published archive.
+          See LICENSE (Apache 2.0), NOTICE, MODEL-CARD.md and SHA256SUMS for
+          provenance, model details, licensing and checksums.
+          NOTES
+          if [ ! -s existing.json ]; then
+            gh release create "$TAG" --draft --latest=false --target "$GITHUB_SHA" \
+              --title 'MiniLM L6 v2 memory model (v1)' --notes-file notes.md
+          fi
+          # Retries may replace assets only while the release is still a draft.
+          gh release upload "$TAG" model/* --clobber
+          gh release edit "$TAG" --draft=false --latest=false --notes-file notes.md

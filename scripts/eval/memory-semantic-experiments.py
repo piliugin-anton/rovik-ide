@@ -9,7 +9,6 @@ import argparse
 from collections import Counter
 import hashlib
 import importlib.metadata
-import importlib.util
 import json
 import math
 from pathlib import Path
@@ -103,18 +102,36 @@ def concept_encoder(documents, all_senses, nltk_data):
 
 
 def sentence_encoder(model_path, claim_only):
-    worker_path = ROOT / "src-tauri/crates/verified-code-memory/src/minilm.py"
-    spec = importlib.util.spec_from_file_location("memory_minilm", worker_path)
-    worker = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(worker)
-    encoder = worker.MiniLM(model_path)
+    import numpy as np
+    import onnxruntime as ort
+    from tokenizers import Tokenizer
+
+    tokenizer = Tokenizer.from_file(str(model_path / "tokenizer.json"))
+    tokenizer.enable_truncation(max_length=256)
+    tokenizer.enable_padding(pad_id=0, pad_token="[PAD]", length=256)
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    options.inter_op_num_threads = 1
+    session = ort.InferenceSession(str(model_path / "model.onnx"), options, providers=["CPUExecutionProvider"])
 
     def encode(text):
         if claim_only and "\n" in text and text.split("\n", 1)[1]:
             text = text.split("\n", 1)[1]
-        return encoder.encode(text)
+        # Match the production local worker's character bound. All frozen
+        # questions/claims are shorter, so no answer text is lost here.
+        tokens = tokenizer.encode(text[:500])
+        mask = np.array([tokens.attention_mask], dtype=np.int64)
+        hidden = session.run(None, {
+            "input_ids": np.array([tokens.ids], dtype=np.int64),
+            "attention_mask": mask,
+            "token_type_ids": np.zeros((1, len(tokens.ids)), dtype=np.int64),
+        })[0]
+        expanded = np.broadcast_to(mask[:, :, None], hidden.shape)
+        vector = (hidden * expanded).sum(1) / np.clip(expanded.sum(1), 1e-9, None)
+        norm = np.linalg.norm(vector, axis=1, keepdims=True)
+        return (vector / np.maximum(norm, 1e-12)).astype(np.float32)[0].tolist()
 
-    return encode, 384, {"model_sha256": sha(model_path / "model.onnx"), "tokenizer_sha256": sha(model_path / "tokenizer.json"), "pooling": "attention-weighted mean, L2 normalized", "worker_sha256": sha(worker_path)}
+    return encode, 384, {"model_sha256": sha(model_path / "model.onnx"), "tokenizer_sha256": sha(model_path / "tokenizer.json"), "pooling": "attention-weighted mean, L2 normalized"}
 
 
 def main(args):

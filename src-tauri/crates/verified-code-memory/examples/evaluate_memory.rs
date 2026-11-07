@@ -179,15 +179,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         match std::env::var("ROVIK_MEMORY_EVAL_MODEL") {
             Ok(model) => {
-                let python = std::env::var("ROVIK_MEMORY_EVAL_PYTHON")?;
                 let dimensions: usize = std::env::var("ROVIK_MEMORY_EVAL_DIMENSIONS")?.parse()?;
                 let revision = std::env::var("ROVIK_MEMORY_EVAL_REVISION")?;
                 let threshold: f32 = std::env::var("ROVIK_MEMORY_EVAL_THRESHOLD")?.parse()?;
                 Some((
-                    Box::new(verified_code_memory::embedding::LocalSentenceEmbedder::new(
-                        python.into(),
-                        model.into(),
-                        dimensions,
+                    Box::new(verified_code_memory::embedding::OnnxMiniLm::new(
+                        std::path::Path::new(&model),
                     )?),
                     revision,
                     dimensions,

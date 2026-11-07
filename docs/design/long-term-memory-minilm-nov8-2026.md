@@ -40,61 +40,62 @@ quality and corpus-scale latency were not measured. Semantic-only and gated
 policies listed as planned in the protocol were not run; this experiment tests
 the implemented hybrid policy. Production defaults remain unchanged.
 
-## Implementation
+## Native implementation
 
-`LocalSentenceEmbedder` now recognizes a local directory containing
-`model.onnx` and `tokenizer.json` as a MiniLM export and requires 384 dimensions.
-Other model directories retain the sentence-transformers backend. The same
-advanced project settings and persistent offline worker are used; no model
-download occurs during retrieval. Model/provider failure still falls back to
-lexical retrieval through the existing core path.
+The Python worker and its Python unit tests have been replaced by
+`embedding::OnnxMiniLm`, a native Rust encoder using tract and tokenizers.
+It compiles and reuses the local ONNX graph, bounds input to 500 characters
+and 256 tokens, excludes padding from pooling, and emits normalized
+384-dimensional vectors. It does not start Python or require a separately
+installed ONNX runtime. The original research results above remain a record of
+the Python ONNX Runtime experiment; native numerical parity is checked against
+a frozen reference vector from that experiment.
 
-The bundled Python encoder uses one CPU thread, bounds input to 500 characters
-and 256 tokens, excludes padding from mean pooling, and L2 normalizes the output.
-Non-finite, zero and wrong-dimensional vectors fail. The evaluation imports this
-same encoder so calibration cannot silently use different pooling or truncation.
-No Rust dependency, database migration or protocol change is needed.
+When semantic memory is enabled, the core prepares the native model and
+backfills in the background, preserving lexical/file retrieval during setup or
+failure. The pinned model and tokenizer are downloaded once from the dedicated
+`memory-minilm-l6-v2-v1` release in this GitHub repository. This release is
+separate from app releases and is not recreated by CI. Exact file sizes and
+SHA-256 hashes are checked, a complete staged directory is installed atomically,
+and subsequent runs reuse the local copy. Downloads follow the existing
+network/proxy settings. Native vector identities use their own revision.
 
-## Reproduction and verification
+Enable with `memorySemantic: {"mode": "shadow", "threshold": 0.3}` in the
+project settings, then opt into `hybrid` after evaluating against your corpus.
+No interpreter or manual model path is needed. An optional absolute `modelPath`
+can use the exact pinned files provisioned offline. Existing Python fields are
+ignored. See the main README for settings, retries and model-cache behavior.
 
-Provision the checked archive separately and extract its `onnx` folder. In a
-separate virtual environment install `numpy==2.2.6`, `onnxruntime==1.23.2` and
-`tokenizers==0.22.1`. Build the Rust evaluator from `src-tauri`:
+## Native reproduction
+
+Build from `src-tauri` and set `ROVIK_MEMORY_EVAL_MODEL` to the directory containing
+the pinned `model.onnx` and `tokenizer.json`:
 
 ```sh
+cargo test --locked -p verified-code-memory
+cargo test --locked -p verified-code-memory native_minilm -- --ignored
+cargo test --locked -p rovik-core memory_semantic
 cargo build --locked -p verified-code-memory --example evaluate_memory
+ROVIK_MEMORY_EVAL_DIMENSIONS=384 \
+ROVIK_MEMORY_EVAL_REVISION=chroma-minilm-l6-v2-913d7300-title-claim-native-v1 \
+ROVIK_MEMORY_EVAL_THRESHOLD=0.3 \
+  target/debug/examples/evaluate_memory
 ```
 
-From the repository root, using that Python environment:
+The real-model test is ignored by default because model files are provisioned
+separately. It compares the native vector with a frozen reference and verifies
+paraphrase recall through `SemanticIndex`. Deterministic unit tests check
+padding, invalid vectors, incomplete downloads, tampering, retry and cached
+reuse. The earlier Python experiment runner remains historical research tooling,
+not a runtime dependency or required application setup.
 
-```sh
-python scripts/eval/memory-minilm.test.py
-python scripts/eval/memory-semantic-experiments.test.py
-python scripts/eval/memory-semantic-experiments.py \
-  --backend onnx \
-  --evaluator "$PWD/src-tauri/target/debug/examples/evaluate_memory" \
-  --model-archive /absolute/path/to/onnx.tar.gz \
-  --model-path /absolute/path/to/onnx \
-  --output /absolute/path/to/results
-```
-
-The Rust real-model regression is ignored by default because it needs an
-operator-provisioned interpreter and model. It was explicitly executed with
-`ROVIK_MEMORY_EVAL_MODEL` and `ROVIK_MEMORY_EVAL_PYTHON` set, and verified repeated
-normalized embeddings plus paraphrase recall through `SemanticIndex`:
-
-```sh
-cargo test --locked -p verified-code-memory local_minilm_worker -- --ignored
-```
-
-The memory crate tests and doctest pass, as do three Python encoder contracts
-(padding exclusion, Unicode/input bounds, invalid output rejection), four Python
-acceptance-guard tests and Clippy with warnings denied for memory tests/examples.
-All 1,044 frontend tests, type checking and repository formatting checks also
-pass. The six Rust evaluator regression tests pass separately.
-
-A complete replay of the 120 original cases through the actual persistent
-Python worker also passes. Answer delivery, candidate presence, result counts,
-scope checks and packet sizes match the recorded-vector trials in every case.
-This replay excludes the additional hard-negative controls; those are included
-in the calibration and holdout results above.
+Linux validation ran one crate at a time: 86 memory unit/integration tests,
+the memory doctest, the explicitly enabled real-model reference test and six
+evaluator tests passed. Core validation passed 2,576 unit tests initially and
+20 integration tests; its one remaining Go-dependent unit test passed separately
+after installing the actual Go compiler (the environment's `/usr/bin/go` was a
+board game). The core doctest command passed with its existing ignored example.
+Core command/browser tests required execution outside the nested sandbox and
+a private temporary directory. Clippy passed with four existing core warnings
+outside these changes, and memory Clippy passed with warnings denied. All
+1,044 frontend tests, type checking and formatting checks passed.
