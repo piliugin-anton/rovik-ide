@@ -60,6 +60,8 @@ pub const FORWARD_UPGRADE: &str = "rovik-forward";
 /// What a daemon serves beyond what protocol 1 began with, named in its
 /// `Welcome` (4.5). A client checks for one before it relies on it.
 pub mod features {
+    /// Incremental project-memory exchange, including edits and deletion markers.
+    pub const MEMORY_SYNC: &str = "memory-sync";
     /// A message's images and PDFs: `BlobsMissing`, `/blobs`, and starts
     /// whose message names attachments, which a daemon without it would
     /// send to the model without them (K46).

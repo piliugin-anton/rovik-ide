@@ -50,3 +50,5 @@ pub use store::{MemoryStore, SharedMemoryStore};
 
 /// Optional persistent semantic index and bounded hybrid ranking.
 pub mod semantic;
+/// Incremental replication of scoped records, edits and deletion markers.
+pub mod sync;

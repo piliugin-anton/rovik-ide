@@ -61,6 +61,8 @@ pub(super) struct RunMemory {
     claims_written: usize,
     /// The project, as the store files memories under it.
     repo: String,
+    /// Folder whose settings govern this run, distinct from cloud storage scope.
+    settings_root: String,
     /// The request, as retrieval matches it.
     task: String,
     /// What the run recalled, as the store has it now.
@@ -339,6 +341,7 @@ impl RunMemory {
         self.store.as_ref()?;
         Some(MemoryCarry {
             repo: self.repo.clone(),
+            settings_root: self.settings_root.clone(),
             task: self.task.clone(),
             observed_files: self.observed_files.clone(),
             generation: self.generation,
@@ -374,6 +377,7 @@ impl RunMemory {
             root,
             sealed,
             repo: carry.repo,
+            settings_root: carry.settings_root,
             task: carry.task,
             observed_files: carry.observed_files,
             recalled: carry.recalled,
@@ -426,6 +430,7 @@ pub(super) struct FailedRound {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct MemoryCarry {
     pub(super) repo: String,
+    pub(super) settings_root: String,
     pub(super) task: String,
     pub(super) observed_files: HashSet<String>,
     pub(super) generation: i64,
@@ -687,10 +692,10 @@ impl super::run::Run {
         };
         let ids: Vec<_> = self.memory.recalled.iter().map(|r| r.id).collect();
         let config_dir = self.core.paths.config_dir.clone();
-        let repo = self.memory.repo.clone();
+        let settings_root = self.memory.settings_root.clone();
         let root = self.root.clone();
         let refreshed = crate::rt::spawn_blocking(move || {
-            if !crate::memory::load(&config_dir, &repo).enabled {
+            if !crate::memory::load(&config_dir, &settings_root).enabled {
                 return Ok(Vec::new());
             }
             let mut records = Vec::new();
@@ -761,6 +766,7 @@ impl super::run::Run {
         }
         let repo = self.memory.repo.clone();
         let wanted = task.clone();
+        let settings_root = self.memory.settings_root.clone();
         let config_dir = self.core.paths.config_dir.clone();
         let restricted = self.restricted.clone();
         let root = self.root.clone();
@@ -772,6 +778,7 @@ impl super::run::Run {
                     .with_files(files)
                     .with_limit(limit),
                 &config_dir,
+                &settings_root,
                 |record| visible(record, &restricted, root.as_deref(), &sealed),
             )
         })
@@ -888,7 +895,8 @@ impl super::run::Run {
             );
         }
 
-        if !crate::memory::capture_enabled(&self.core.paths.config_dir, &self.memory.repo) {
+        if !crate::memory::capture_enabled(&self.core.paths.config_dir, &self.memory.settings_root)
+        {
             return super::tools::ToolResult::error("Error: memory was disabled for this project.");
         }
         if self.memory.claims_written >= 3 {
@@ -1130,8 +1138,9 @@ impl super::run::Run {
         let sealed = self.memory.sealed.clone();
         let config_dir = self.core.paths.config_dir.clone();
         let read_only = self.memory.read_only;
+        let settings_root = self.memory.settings_root.clone();
         let lookup = crate::rt::spawn_blocking(move || {
-            if !crate::memory::load(&config_dir, &repo).enabled {
+            if !crate::memory::load(&config_dir, &settings_root).enabled {
                 return Ok(None);
             }
             let mut tried = Vec::new();
@@ -1358,12 +1367,14 @@ impl super::run::Run {
             return;
         }
         let task = task_query(&text);
-        let repo = root.clone();
-        let project = Path::new(&root).to_path_buf();
+        let settings_root = self.project_root.clone().unwrap_or(root.clone());
+        let project = Path::new(&settings_root).to_path_buf();
+        let repo = self.core.memory.repo(&project);
+        let asked_settings = settings_root.clone();
         let core = self.core.clone();
         let (asked_repo, asked_task) = (repo.clone(), task.clone());
         let found = crate::rt::spawn_blocking(move || {
-            if !crate::memory::load(&core.paths.config_dir, &asked_repo).enabled {
+            if !crate::memory::load(&core.paths.config_dir, &asked_settings).enabled {
                 return None;
             }
             let store = core.memory.open(&core.paths, &project)?;
@@ -1391,6 +1402,7 @@ impl super::run::Run {
         self.memory = RunMemory {
             store: Some(store),
             repo,
+            settings_root,
             task,
             restricted: self.restricted.clone(),
             root: self.root.clone(),
@@ -1425,7 +1437,8 @@ impl super::run::Run {
             _ => self.latest_user_request().await,
         };
         let task = task_query(&text);
-        let repo = settings_root.to_string();
+        let repo = self.core.memory.repo(Path::new(settings_root));
+        let settings_folder = settings_root.to_string();
         let chat = self.dialog_id.clone();
 
         // Ok(None): the project's memory is off. Err: it was tried and failed,
@@ -1435,6 +1448,7 @@ impl super::run::Run {
         } else {
             let (core, query_repo, query_task) = (self.core.clone(), repo.clone(), task.clone());
             let project = Path::new(settings_root).to_path_buf();
+            let settings_root = settings_folder.clone();
             // Opening the store and querying it are disk work, as the
             // project's settings are: off the async threads.
             let own = chat_tag(&chat);
@@ -1442,7 +1456,7 @@ impl super::run::Run {
             let root = self.root.clone();
             let sealed = self.sub().map(|sub| sub.hidden.clone()).unwrap_or_default();
             crate::rt::spawn_blocking(move || {
-                let settings = crate::memory::load(&core.paths.config_dir, &query_repo);
+                let settings = crate::memory::load(&core.paths.config_dir, &settings_root);
                 if !settings.enabled {
                     return Ok(None);
                 }
@@ -1474,6 +1488,7 @@ impl super::run::Run {
                     &store,
                     &verified,
                     &core.paths.config_dir,
+                    &settings_root,
                     |record| {
                         worth_showing(record)
                             && fingerprint_matches(record, root.as_deref())
@@ -1506,6 +1521,7 @@ impl super::run::Run {
                     store: Some(store),
                     generation,
                     repo,
+                    settings_root: settings_folder,
                     task,
                     restricted: self.restricted.clone(),
                     root: self.root.clone(),
@@ -1689,7 +1705,8 @@ impl super::run::Run {
         let Some(store) = self.memory.store.clone() else {
             return;
         };
-        if !crate::memory::capture_enabled(&self.core.paths.config_dir, &self.memory.repo) {
+        if !crate::memory::capture_enabled(&self.core.paths.config_dir, &self.memory.settings_root)
+        {
             return;
         }
         let (repo, task) = (self.memory.repo.clone(), self.memory.task.clone());

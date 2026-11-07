@@ -79,13 +79,14 @@ pub(crate) fn retrieve(
     store: &SharedMemoryStore,
     query: &RetrievalQuery,
     config_dir: &Path,
+    settings_root: &str,
     accept: impl Fn(&verified_code_memory::MemoryRecord) -> bool,
 ) -> verified_code_memory::Result<Vec<RetrievedMemory>> {
-    if !crate::memory::load(config_dir, &query.repo).enabled {
+    if !crate::memory::load(config_dir, settings_root).enabled {
         return Ok(Vec::new());
     }
     let baseline = store.retrieve_filtered(query, &accept)?;
-    let Some(config) = config(config_dir, &query.repo) else {
+    let Some(config) = config(config_dir, settings_root) else {
         return Ok(baseline);
     };
     let proposed =

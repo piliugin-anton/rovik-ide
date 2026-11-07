@@ -39,6 +39,7 @@ const HOSTS_WAIT: Duration = Duration::from_secs(15);
 mod back;
 mod bar;
 mod mcp_relay;
+mod memory;
 mod mirror;
 mod moving;
 mod pages;
@@ -261,6 +262,8 @@ struct State {
     last_sync: HashMap<String, Oid>,
     /// The projects ensured on each host this session: (host, project).
     ensured: HashSet<(String, String)>,
+    /// Serializes exchanges and cursor acknowledgements per host/project.
+    memory_syncs: HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>,
     /// Each chat's last sync, as its host told it.
     syncs: HashMap<String, ChatSync>,
     /// The chats whose waiting sync the user let be (Keep the older copy):
@@ -852,6 +855,7 @@ impl Remote {
                     .insert(mcp::project::values_id(project), values);
             }
         }
+        self.memory_sync_hint(&host, &request.dialog_id).await;
         self.leave_out_known_text(&mut request).await;
         if let StartKind::Send { message } = &mut request.start {
             if !message.attachments.is_empty() {
@@ -1459,6 +1463,12 @@ impl Remote {
                     self.catch_up(host).await;
                 }
                 self.after_connecting(host).await;
+                let (remote, host_for_memory) = (self.me.clone(), host.to_string());
+                rovik_core::rt::spawn(async move {
+                    if let Some(remote) = remote.upgrade() {
+                        remote.sync_host_memories(&host_for_memory).await;
+                    }
+                });
                 self.pull_all(host).await;
                 self.finish_moves(host).await;
             }
@@ -1589,6 +1599,12 @@ impl Remote {
             AgentEvent::RunEnded { dialog_id, .. } => {
                 self.lock().running.remove(dialog_id);
                 self.pull_later(host, dialog_id, Duration::ZERO);
+                let (remote, host, dialog) = (self.me.clone(), host.to_string(), dialog_id.clone());
+                rovik_core::rt::spawn(async move {
+                    if let Some(remote) = remote.upgrade() {
+                        remote.memory_sync_hint(&host, &dialog).await;
+                    }
+                });
             }
             AgentEvent::TaskDriving { dialog_id, driving } => {
                 let mut state = self.lock();

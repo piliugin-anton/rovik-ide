@@ -248,6 +248,7 @@ impl Remote {
         snapshot: &Snapshot,
     ) -> Result<(), String> {
         self.ensure(host, client, snapshot).await?;
+        self.memory_sync_hint(host, dialog_id).await;
         let (project, shadow) = (&snapshot.project, &snapshot.shadow);
         let pushed = self.push_to(host, dialog_id, project, shadow, snapshot.commit);
         pushed.await.map(drop).map_err(|fail| fail.message)

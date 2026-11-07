@@ -1936,6 +1936,22 @@ every request, so the model's own output goes back with it:
   back, gets the request again without it, and isn't sent it again while
   the app runs. The other models on the same provider still are.
 
+### Cloud project memory
+
+Updated cloud hosts synchronize project memories with the desktop. Separate cloud
+chats share a store keyed by project ID. Claims, source links, evidence and trust
+states travel in bounded incremental pages; edits require revalidation, deletions
+retain markers, and clearing history prevents an offline host from restoring it.
+Synchronization runs with project transfers, starts, completed remote runs,
+reconnections, moves back and memory manager actions. Offline changes catch up
+on reconnection. Older daemons need an upgrade to advertise `memory-sync`.
+
+The Settings memory manager uses the local replica and synchronizes corrections
+with connected hosts. Restricted-file claims are omitted from exports. Embedding
+models and derived indexes remain local to each machine. See the
+[cloud memory synchronization review](docs/design/cloud-memory-sync-nov7-2026.md)
+for lifecycle, compatibility and regression coverage.
+
 ### Memory evaluation and optional local semantic retrieval
 
 The memory manager reads 50 records per page. Runs retain file-content versions

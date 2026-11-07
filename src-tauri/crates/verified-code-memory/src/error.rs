@@ -3,6 +3,9 @@ use uuid::Uuid;
 /// Errors returned by VerifiedCodeMemory.
 #[derive(Debug, thiserror::Error)]
 pub enum VcmError {
+    /// A replication page is malformed, too large or crosses a scope boundary.
+    #[error("invalid memory synchronization: {0}")]
+    InvalidSync(&'static str),
     /// Paging state is invalid or belongs to a different project.
     #[error("invalid memory page cursor; refresh the list")]
     InvalidCursor,

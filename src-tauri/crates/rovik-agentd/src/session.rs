@@ -30,6 +30,7 @@ const WRITE_WAIT: Duration = Duration::from_secs(30);
 const FEATURES: &[&str] = &[
     features::ATTACHMENTS,
     features::PROJECTS,
+    features::MEMORY_SYNC,
     features::MIRROR,
     features::HOST,
     features::CLEAN_UP,

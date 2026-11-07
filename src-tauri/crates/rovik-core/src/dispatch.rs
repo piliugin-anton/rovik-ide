@@ -167,6 +167,7 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::ChatRelease { .. }
         | Request::ChatForget { .. }
         | Request::ProjectEnsure { .. }
+        | Request::MemorySync { .. }
         | Request::WorkSync { .. }
         | Request::WorkResult { .. }
         | Request::WorkResults

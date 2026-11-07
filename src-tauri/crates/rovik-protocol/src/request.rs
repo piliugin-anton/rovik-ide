@@ -213,6 +213,16 @@ pub enum Request {
     },
 
     // Work: the project on the server (6.4–6.7).
+    /// Exchanges a bounded page of project memory revisions. The memory
+    /// library owns and validates the opaque page schema. With no changes,
+    /// discovers the peer identity before sending an incremental page.
+    /// Served only with `features::MEMORY_SYNC`. → `MemorySync`.
+    MemorySync {
+        project: String,
+        replica: Option<String>,
+        after: i64,
+        changes: Option<Value>,
+    },
     /// Creates the project's repository and row on the daemon, or brings
     /// them up to date: its name and settings, and the ignore rules only
     /// the client has (K32). → `Done`.
@@ -471,6 +481,7 @@ impl Request {
             | Request::ConnectorCommands { .. }
             | Request::BlobsMissing { .. }
             | Request::ProjectEnsure { .. }
+            | Request::MemorySync { .. }
             | Request::WorkResults
             | Request::HostInfo
             | Request::KeysList
@@ -495,6 +506,8 @@ impl Request {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "t", content = "v", rename_all = "camelCase")]
 pub enum Response {
+    /// A bounded replication page, validated by the memory library.
+    MemorySync(Value),
     /// Done, with nothing to tell.
     Done,
     Bool(bool),
@@ -586,6 +599,7 @@ macro_rules! replies {
 }
 
 replies! {
+    MemorySync => Value,
     Bool => bool,
     RunId => Option<String>,
     Count => usize,

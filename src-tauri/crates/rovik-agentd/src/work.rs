@@ -652,3 +652,83 @@ fn synced(root: &Path) -> Synced {
 pub fn text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
+
+/// Exchanges memory only for a project registered to this authenticated
+/// computer. No caller-supplied filesystem path is used to open the store.
+pub async fn sync_memory(
+    daemon: &Daemon,
+    computer: &str,
+    project: &str,
+    replica: Option<String>,
+    after: i64,
+    changes: Option<Value>,
+) -> Result<Response, Fail> {
+    let state = daemon.store.project(project).ok_or_else(|| {
+        bad_request("Carry the project to this host before synchronizing its memory.")
+    })?;
+    if state.computer.as_deref() != Some(computer) {
+        return Err(Fail::new(
+            rovik_protocol::FailCode::NotOwner,
+            "Another computer owns this project's memory.",
+        ));
+    }
+    let roots: Vec<_> = daemon
+        .store
+        .chats_of(computer)
+        .into_iter()
+        .filter(|(_, chat)| chat.project.as_deref() == Some(project))
+        .filter_map(|(_, chat)| chat.worktree.map(|path| path.join(&state.subpath)))
+        .collect();
+    let project = project.to_string();
+    let core = daemon.core.clone();
+    rt::spawn_blocking(move || {
+        let filter_root = roots
+            .first()
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("/project"));
+        for root in roots {
+            core.memory
+                .bind_project(&core.paths, &root, &project)
+                .map_err(internal)?;
+        }
+        let store = core
+            .memory
+            .open_project(&core.paths, &project)
+            .ok_or_else(|| internal("The project's memory couldn't be opened."))?;
+        let repo = rovik_core::memory::MemoryState::project_repo(&project);
+        let current = store.sync_replica().map_err(|e| internal(e.to_string()))?;
+        // A replaced database must first be discovered. Never acknowledge a
+        // partial upload against a different peer identity.
+        if replica.as_deref() == Some(&current) {
+            if let Some(changes) = changes {
+                let page: rovik_core::memory::sync::Page =
+                    serde_json::from_value(changes).map_err(|e| bad_request(e.to_string()))?;
+                store
+                    .sync_apply(&repo, &page)
+                    .map_err(|e| bad_request(e.to_string()))?;
+            }
+        } else if changes.is_some() {
+            return Err(bad_request(
+                "The host's memory changed identity; reconnect and retry synchronization.",
+            ));
+        }
+        let after = if replica.as_deref() == Some(&current) {
+            after
+        } else {
+            0
+        };
+        let mut page = store
+            .sync_export(&repo, after)
+            .map_err(|e| internal(e.to_string()))?;
+        rovik_core::memory::filter_sync_page(
+            &mut page,
+            &filter_root,
+            &state.settings.unwrap_or(Value::Null),
+        );
+        serde_json::to_value(page)
+            .map(Response::MemorySync)
+            .map_err(|e| internal(e.to_string()))
+    })
+    .await
+    .map_err(joined)?
+}
