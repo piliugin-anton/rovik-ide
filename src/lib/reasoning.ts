@@ -196,3 +196,13 @@ export function effectiveEffort(current: Effort, accepted?: string | null): Effo
   if (current !== 'xhigh' && current !== 'max') return current;
   return EFFORTS.find((e) => e.id === accepted)?.id ?? current;
 }
+
+/** Resume a chat with its saved effort rather than another chat's model preference. */
+export function resumedEffort(
+  profileId: string,
+  current: Effort,
+  saved: { providerId: string; modelId: string; effort: Effort | null } | null
+): Effort {
+  if (!saved || `${saved.providerId}::${saved.modelId}` !== profileId) return current;
+  return EFFORTS.find((e) => e.id === saved.effort)?.id ?? current;
+}

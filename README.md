@@ -1987,3 +1987,6 @@ Reasoning effort selectors include **Extra high** (`xhigh`) and **Maximum** (`ma
 API runs probe rejected values and retry a lower effort, remembering the accepted
 value for that endpoint and model. The chat selector follows the accepted effort.
 Existing High selections stay High. CLI connectors pass the selected effort to their CLI.
+
+Retry and Continue (including the checklist) restore the chat’s saved reasoning
+effort, even if another chat changed the shared preference for that model.
