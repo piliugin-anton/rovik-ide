@@ -9,6 +9,7 @@
 // no limits or chat list: its chats are this computer's.
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
+import { SettingsLoadError } from './SettingsControls';
 import { CHECK_LABELS, hostStatus, onHostTest, testVerdict, type Step } from '../lib/hosts';
 import {
   afterInstall,
@@ -27,6 +28,8 @@ export default function WslSettings() {
   const [status, setStatus] = createSignal<WslStatus | null>(null);
   const [busy, setBusy] = createSignal<string | null>(null);
   const [error, setError] = createSignal<string | null>(null);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
+  const [loading, setLoading] = createSignal(false);
   const [distro, setDistro] = createSignal('');
   const [user, setUser] = createSignal('');
   const [choosing, setChoosing] = createSignal(false);
@@ -35,13 +38,17 @@ export default function WslSettings() {
   const [installed, setInstalled] = createSignal<string | null>(null);
 
   async function refresh() {
+    setLoading(true);
     try {
       const next = await wslStatus();
       setStatus(next);
+      setLoadError(null);
       if (!distro()) setDistro(next.distro ?? next.distros[0] ?? '');
       if (!user() && next.user) setUser(next.user);
     } catch (err) {
-      setError(String(err));
+      setLoadError(String(err));
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -133,7 +140,19 @@ export default function WslSettings() {
 
       <section class="settings-section">
         <div class="settings-section-title">WSL on this computer</div>
-        <Show when={status()} fallback={<p class="settings-hint">Looking…</p>}>
+        <Show when={loadError()}>
+          <SettingsLoadError retry={refresh} loading={loading()}>
+            WSL couldn’t be read: {loadError()}
+          </SettingsLoadError>
+        </Show>
+        <Show
+          when={status()}
+          fallback={
+            <Show when={!loadError()}>
+              <p class="settings-hint">Looking…</p>
+            </Show>
+          }
+        >
           {(s) => (
             <>
               <Show when={!s().available}>
@@ -152,68 +171,72 @@ export default function WslSettings() {
                   the agent’s commands are refused on this computer.
                 </p>
                 <Show when={!s().unsupported}>
+                  <div class="profile-form">
+                    <label>
+                      Distribution to install
+                      <input
+                        value={distro()}
+                        onInput={(e) => setDistro(e.currentTarget.value)}
+                        placeholder="Ubuntu"
+                        spellcheck={false}
+                      />
+                    </label>
+                    <div class="host-actions">
+                      <button
+                        class="chat-action-button primary"
+                        disabled={busy() != null}
+                        onClick={() => void install()}
+                      >
+                        {busy() ?? 'Install WSL'}
+                      </button>
+                    </div>
+                  </div>
+                </Show>
+              </Show>
+              <Show when={s().available && (!deployed() || choosing())}>
+                <div class="profile-form">
                   <label>
-                    Distribution to install
+                    Distribution
                     <input
+                      list="wsl-distros"
                       value={distro()}
                       onInput={(e) => setDistro(e.currentTarget.value)}
-                      placeholder="Ubuntu"
+                      placeholder={s().distros[0] ?? 'Ubuntu'}
+                      spellcheck={false}
+                    />
+                    <datalist id="wsl-distros">
+                      <For each={s().distros}>{(name) => <option value={name} />}</For>
+                    </datalist>
+                  </label>
+                  <Show when={s().distros.length === 0}>
+                    <p class="settings-hint setting-explain warning">
+                      No distribution is installed. Install one from an administrator PowerShell,
+                      e.g. <code>wsl --install -d Ubuntu</code>, then come back here.
+                    </p>
+                  </Show>
+                  <label>
+                    User in the distribution
+                    <input
+                      value={user()}
+                      onInput={(e) => setUser(e.currentTarget.value)}
+                      placeholder="its default user (not root)"
                       spellcheck={false}
                     />
                   </label>
                   <div class="host-actions">
                     <button
                       class="chat-action-button primary"
-                      disabled={busy() != null}
-                      onClick={() => void install()}
+                      disabled={busy() != null || !distro().trim()}
+                      onClick={() => void setUp()}
                     >
-                      {busy() ?? 'Install WSL'}
+                      {busy() ?? (deployed() ? 'Set up again' : 'Set up')}
                     </button>
+                    <Show when={deployed()}>
+                      <button disabled={busy() != null} onClick={() => setChoosing(false)}>
+                        Cancel
+                      </button>
+                    </Show>
                   </div>
-                </Show>
-              </Show>
-              <Show when={s().available && (!deployed() || choosing())}>
-                <label>
-                  Distribution
-                  <input
-                    list="wsl-distros"
-                    value={distro()}
-                    onInput={(e) => setDistro(e.currentTarget.value)}
-                    placeholder={s().distros[0] ?? 'Ubuntu'}
-                    spellcheck={false}
-                  />
-                  <datalist id="wsl-distros">
-                    <For each={s().distros}>{(name) => <option value={name} />}</For>
-                  </datalist>
-                </label>
-                <Show when={s().distros.length === 0}>
-                  <p class="settings-hint setting-explain warning">
-                    No distribution is installed. Install one from an administrator PowerShell, e.g.{' '}
-                    <code>wsl --install -d Ubuntu</code>, then come back here.
-                  </p>
-                </Show>
-                <label>
-                  User in the distribution
-                  <input
-                    value={user()}
-                    onInput={(e) => setUser(e.currentTarget.value)}
-                    placeholder="its default user (not root)"
-                    spellcheck={false}
-                  />
-                </label>
-                <div class="host-actions">
-                  <button
-                    class="chat-action-button primary"
-                    disabled={busy() != null || !distro().trim()}
-                    onClick={() => void setUp()}
-                  >
-                    {busy() ?? (deployed() ? 'Set up again' : 'Set up')}
-                  </button>
-                  <Show when={deployed()}>
-                    <button disabled={busy() != null} onClick={() => setChoosing(false)}>
-                      Cancel
-                    </button>
-                  </Show>
                 </div>
               </Show>
               <Show when={s().available && deployed() && !choosing()}>

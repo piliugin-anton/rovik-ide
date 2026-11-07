@@ -2561,6 +2561,11 @@ body.tree-dragging {
   font-size: 11px;
 }
 
+/* The control is already indented by its row's label. */
+.settings-section .setting-row-control .setting-explain {
+  margin-left: 0;
+}
+
 .setting-checkbox {
   display: flex;
   align-items: flex-start;
@@ -2886,9 +2891,12 @@ body.tree-dragging {
   width: 480px;
 }
 
+/* Defaults must leave room for each control's own styles, including primary actions. */
 .model-settings
-  button:not(.icon-button):not(.link-button):not(.vision-toggle):not(.settings-menu-item):not(
-    .segmented-option
+  :where(
+    button:not(.icon-button):not(.link-button):not(.vision-toggle):not(.settings-menu-item):not(
+        .segmented-option
+      )
   ) {
   padding: 5px 10px;
   background: var(--bg-control);
@@ -2901,9 +2909,11 @@ body.tree-dragging {
 }
 
 .model-settings
-  button:not(.icon-button):not(.link-button):not(.vision-toggle):not(.settings-menu-item):not(
-    .segmented-option
-  ):hover:not(:disabled) {
+  :where(
+    button:not(.icon-button):not(.link-button):not(.vision-toggle):not(.settings-menu-item):not(
+        .segmented-option
+      ):hover:not(:disabled)
+  ) {
   background: var(--bg-control-hover);
 }
 

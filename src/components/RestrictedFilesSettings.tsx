@@ -9,6 +9,7 @@
 // project at once, kept with the entries saved before it however fast the
 // clicks come; nothing to save on close.
 import { createEffect, createSignal, Index, on, Show } from 'solid-js';
+import { SettingsLoadError } from './SettingsControls';
 import {
   isPattern,
   loadRestrictedFiles,
@@ -24,6 +25,7 @@ export default function RestrictedFilesSettings(props: { root: string }) {
   const [rows, setRows] = createSignal<RestrictedFileRow[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
   const [adding, setAdding] = createSignal('');
   const [addProblem, setAddProblem] = createSignal<string | null>(null);
 
@@ -39,9 +41,10 @@ export default function RestrictedFilesSettings(props: { root: string }) {
       if (mine === loads) {
         setRows(found);
         setError(null);
+        setLoadError(null);
       }
     } catch (err) {
-      if (mine === loads) setError(`Couldn't look at the project: ${String(err)}`);
+      if (mine === loads) setLoadError(`Couldn't look at the project: ${String(err)}`);
     } finally {
       if (mine === loads) setLoading(false);
     }
@@ -115,7 +118,25 @@ export default function RestrictedFilesSettings(props: { root: string }) {
           files, keys, cloud and package registry logins) are found and ticked for you; untick a box
           to let the agent in. Templates such as .env.example aren’t restricted.
         </p>
-        <Show when={!loading()} fallback={<p class="settings-hint">Looking at the project…</p>}>
+        <Show
+          when={!loading() && !loadError()}
+          fallback={
+            <Show
+              when={loadError()}
+              fallback={<p class="settings-hint">Looking at the project…</p>}
+            >
+              <SettingsLoadError
+                retry={() => {
+                  setLoading(true);
+                  return load();
+                }}
+                loading={loading()}
+              >
+                {loadError()}
+              </SettingsLoadError>
+            </Show>
+          }
+        >
           <table class="restricted-files">
             <thead>
               <tr>

@@ -370,7 +370,8 @@ is brought to the app's version by itself.
 
 Every setting applies as soon as you change it, and the Settings menu
 shows each page's state: what's set, and whether it has an effect on this
-computer right now. The pages:
+computer right now. Failed reads of project or computer settings show an error
+with **Try again**, so you can retry without closing Settings. The pages:
 
 | Page                   | What it affects                                                                                                             |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |

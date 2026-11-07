@@ -29,7 +29,7 @@ import {
   Switch,
 } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
-import { SecretsUnlock } from './SettingsControls';
+import { SecretsUnlock, SettingsLoadError } from './SettingsControls';
 import HostAutonomy from './HostAutonomy';
 import HostChatStorage from './HostChatStorage';
 import HostTasks from './HostTasks';
@@ -108,13 +108,17 @@ export default function CloudHostsSettings(props: CloudHostsSettingsProps) {
   const [list, setList] = createSignal<HostsList | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [view, setView] = createSignal<View>({ kind: 'list' });
+  const [loading, setLoading] = createSignal(false);
 
   async function refresh() {
+    setLoading(true);
     try {
       setList(await listHosts());
       setError(null);
     } catch (err) {
       setError(String(err));
+    } finally {
+      setLoading(false);
     }
     // The chats' menus offer the hosts as they are now.
     void refreshHosts();
@@ -154,12 +158,15 @@ export default function CloudHostsSettings(props: CloudHostsSettingsProps) {
   return (
     <div class="permissions-settings cloud-hosts-settings">
       <Show when={error()}>
-        <p class="settings-hint setting-explain warning">{error()}</p>
+        <SettingsLoadError retry={refresh} loading={loading()}>
+          Cloud hosts couldn’t be read: {error()}
+        </SettingsLoadError>
       </Show>
       <Switch>
         <Match when={view().kind === 'list'}>
           <HostList
             list={list()}
+            loading={loading()}
             onOpen={(id) => setView({ kind: 'host', id })}
             onAdd={() => setView({ kind: 'form', host: emptyHost(), isNew: true })}
             onUnlocked={refresh}
@@ -202,6 +209,7 @@ export default function CloudHostsSettings(props: CloudHostsSettingsProps) {
 
 function HostList(props: {
   list: HostsList | null;
+  loading: boolean;
   onOpen: (id: string) => void;
   onAdd: () => void;
   onUnlocked: () => Promise<void>;
@@ -238,7 +246,14 @@ function HostList(props: {
           <SecretsUnlock onUnlocked={props.onUnlocked} />
         </Show>
       </section>
-      <Show when={props.list} fallback={<p class="settings-hint">Loading…</p>}>
+      <Show
+        when={props.list}
+        fallback={
+          <Show when={props.loading}>
+            <p class="settings-hint">Loading…</p>
+          </Show>
+        }
+      >
         {(list) => (
           <>
             <For

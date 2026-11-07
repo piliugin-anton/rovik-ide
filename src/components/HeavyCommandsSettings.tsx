@@ -11,10 +11,20 @@ import { createResource, createSignal, onCleanup, Show } from 'solid-js';
 import { notify } from '../lib/notifications';
 import { plural } from '../lib/textUtils';
 import { describeMachine, setWorkloadSlots, workloadStatus } from '../lib/workload';
-import { Segmented, SettingRow } from './SettingsControls';
+import { Segmented, SettingRow, SettingsLoadError } from './SettingsControls';
 
 export default function HeavyCommandsSettings() {
-  const [status, { refetch, mutate }] = createResource(workloadStatus);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
+  const [status, { refetch, mutate }] = createResource(async () => {
+    try {
+      const next = await workloadStatus();
+      setLoadError(null);
+      return next;
+    } catch (err) {
+      setLoadError(String(err));
+      return null;
+    }
+  });
   const timer = setInterval(() => void refetch(), 2000);
   onCleanup(() => clearInterval(timer));
   // The number shown for "Fixed" before it's picked: auto's, or what was set.
@@ -42,7 +52,19 @@ export default function HeavyCommandsSettings() {
         limits of its own, on its page.
       </p>
 
-      <Show when={status()} fallback={<p class="settings-hint">Asking the machine…</p>}>
+      <Show when={loadError()}>
+        <SettingsLoadError retry={refetch} loading={status.loading}>
+          Heavy commands couldn’t be read: {loadError()}
+        </SettingsLoadError>
+      </Show>
+      <Show
+        when={status()}
+        fallback={
+          <Show when={!loadError()}>
+            <p class="settings-hint">Asking the machine…</p>
+          </Show>
+        }
+      >
         {(s) => (
           <>
             <div class="settings-section">

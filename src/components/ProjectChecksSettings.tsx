@@ -10,7 +10,7 @@
 // setting is.
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js';
 import type { SettingsPage } from '../lib/appSettings';
-import { SettingStatus } from './SettingsControls';
+import { SettingStatus, SettingsLoadError } from './SettingsControls';
 import {
   CHECK_KINDS,
   CHECK_LABEL,
@@ -42,11 +42,13 @@ export default function ProjectChecksSettings(props: {
   const [customized, setCustomized] = createSignal(false);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
 
   const folder = () => props.root.split(/[\\/]/).filter(Boolean).pop() ?? props.root;
   const p = () => props.permissions;
 
-  onMount(async () => {
+  async function load() {
+    setLoading(true);
     try {
       const [detected, settings] = await Promise.all([
         detectProject(props.root),
@@ -55,12 +57,14 @@ export default function ProjectChecksSettings(props: {
       setProfile(detected);
       setChecks(effectiveChecks(detected, settings));
       setCustomized(!!settings.checks);
+      setLoadError(null);
     } catch (err) {
-      setError(String(err));
+      setLoadError(String(err));
     } finally {
       setLoading(false);
     }
-  });
+  }
+  onMount(() => void load());
 
   function save(next: ProjectCheck[]) {
     setChecks(next);
@@ -142,7 +146,7 @@ export default function ProjectChecksSettings(props: {
   const allowed = (command: string) => !command.trim() || checkCommand(command, p()).permitted;
 
   /** No check is ticked (with a command): nothing would run. */
-  const noneRuns = () => !loading() && checksThatRun(checks()).length === 0;
+  const noneRuns = () => !loading() && !loadError() && checksThatRun(checks()).length === 0;
 
   function allow(command: string) {
     props.onPermissionsChange({
@@ -158,9 +162,11 @@ export default function ProjectChecksSettings(props: {
         <SettingStatus warning={!p().verifyChanges || noneRuns()}>
           {!p().verifyChanges
             ? 'Checking is off: these checks don’t run after the agent’s changes.'
-            : noneRuns()
-              ? 'No check is ticked: nothing runs after the agent’s changes until you tick one below.'
-              : 'After a run in which the agent changed files, the ticked checks run; a failure goes back to the agent to fix.'}{' '}
+            : loading() || loadError()
+              ? 'The project’s checks haven’t been read yet.'
+              : noneRuns()
+                ? 'No check is ticked: nothing runs after the agent’s changes until you tick one below.'
+                : 'After a run in which the agent changed files, the ticked checks run; a failure goes back to the agent to fix.'}{' '}
           <button class="link-button" onClick={() => props.onOpenPage('agent')}>
             Agent runs
           </button>
@@ -169,7 +175,19 @@ export default function ProjectChecksSettings(props: {
 
       <section class="settings-section">
         <div class="settings-section-title">Checks for {folder()}</div>
-        <Show when={!loading()} fallback={<p class="settings-hint">Looking at the project…</p>}>
+        <Show
+          when={!loading() && !loadError()}
+          fallback={
+            <Show
+              when={loadError()}
+              fallback={<p class="settings-hint">Looking at the project…</p>}
+            >
+              <SettingsLoadError retry={load} loading={loading()}>
+                Project checks couldn’t be read: {loadError()}
+              </SettingsLoadError>
+            </Show>
+          }
+        >
           <p class="settings-hint">
             {customized()
               ? 'Your list for this project.'

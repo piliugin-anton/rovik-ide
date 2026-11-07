@@ -23,7 +23,7 @@ import { vfsStatus } from '../lib/virtualFiles';
 import { countChecksThatRun } from '../lib/projectProfile';
 import { plural } from '../lib/textUtils';
 import { folderName } from './SettingsMenu';
-import { SettingRow, SettingStatus } from './SettingsControls';
+import { SettingRow, SettingStatus, SettingsLoadError } from './SettingsControls';
 
 interface AgentRunsSettingsProps {
   permissions: AgentPermissions;
@@ -50,7 +50,10 @@ export default function AgentRunsSettings(props: AgentRunsSettingsProps) {
   const noIsolation = () => vfs.state === 'ready' && vfs() !== undefined && !vfs()!.mountpoint;
 
   // The open project's checks, as Project checks has them: what would run.
-  const [checks] = createResource(() => props.rootPath, countChecksThatRun);
+  const [checks, { refetch: refetchChecks }] = createResource(
+    () => props.rootPath,
+    (root) => countChecksThatRun(root).catch(() => null)
+  );
   const folder = () => (props.rootPath ? folderName(props.rootPath) : '');
 
   const pauseExplain = () =>
@@ -160,13 +163,16 @@ export default function AgentRunsSettings(props: AgentRunsSettingsProps) {
           }
         >
           <Show
-            when={checks.state === 'ready'}
+            when={checks.latest !== undefined && checks.latest !== null}
             fallback={
-              <SettingStatus warning={checks.state === 'errored'}>
-                {checks.state === 'errored'
-                  ? `Couldn’t read ${folder()}’s checks.`
-                  : `Looking at ${folder()}’s checks…`}
-              </SettingStatus>
+              <Show
+                when={checks() === null}
+                fallback={<SettingStatus>Looking at {folder()}’s checks…</SettingStatus>}
+              >
+                <SettingsLoadError retry={refetchChecks} loading={checks.loading}>
+                  Couldn’t read {folder()}’s checks.
+                </SettingsLoadError>
+              </Show>
             }
           >
             <SettingStatus warning={!p().verifyChanges || checks() === 0}>

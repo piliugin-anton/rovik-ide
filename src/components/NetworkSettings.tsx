@@ -33,7 +33,13 @@ import {
   type RouteRow,
   type SavedProxy,
 } from '../lib/network';
-import { NumberField, SecretsUnlock, Segmented, SettingStatus } from './SettingsControls';
+import {
+  NumberField,
+  SecretsUnlock,
+  Segmented,
+  SettingStatus,
+  SettingsLoadError,
+} from './SettingsControls';
 
 /** The proxy editor's fields as typed. */
 interface Draft {
@@ -91,11 +97,16 @@ const HERE: RouteRow[] = ['models', 'ssh', 'browser'];
 
 export default function NetworkSettings() {
   const [loadError, setLoadError] = createSignal<string | null>(null);
-  const [view, { mutate }] = createResource(() =>
-    networkSettings().catch((e) => {
-      setLoadError(String(e));
-      return null;
-    })
+  const [view, { mutate, refetch }] = createResource(() =>
+    networkSettings()
+      .then((next) => {
+        setLoadError(null);
+        return next;
+      })
+      .catch((e) => {
+        setLoadError(String(e));
+        return null;
+      })
   );
   // A route's or the timeout's save, refused.
   const [error, setError] = createSignal<string | null>(null);
@@ -346,7 +357,9 @@ export default function NetworkSettings() {
       </p>
 
       <Show when={loadError()}>
-        <SettingStatus warning>The network settings couldn’t be read: {loadError()}</SettingStatus>
+        <SettingsLoadError retry={refetch} loading={view.loading}>
+          The network settings couldn’t be read: {loadError()}
+        </SettingsLoadError>
       </Show>
       <Show
         when={view()}
