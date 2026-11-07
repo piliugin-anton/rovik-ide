@@ -401,22 +401,28 @@ fn a_recorded_outcome_is_not_a_verdict_on_the_claim_its_trust_or_its_age() {
 fn recalling_a_memory_many_times_does_not_make_it_newer_or_rank_it_higher() {
     let store = MemoryStore::open_in_memory().unwrap();
     let older = store
-        .remember(NewMemory::episode(
-            REPO,
-            "Webhook signature check",
-            "Compare the HMAC in constant time.",
-        ))
+        .remember(
+            NewMemory::episode(
+                REPO,
+                "Webhook signature check",
+                "Compare the HMAC in constant time.",
+            )
+            .with_evidence("first source observation"),
+        )
         .unwrap();
     tick();
-    // The same words and the same trust state, so only the instant each claim
+    // Distinct source observations share the same words and trust, so only when each claim
     // was written separates them: `content_updated_at` is that instant for a
     // new memory, and the one written second is the newer.
     let newer = store
-        .remember(NewMemory::episode(
-            REPO,
-            "Webhook signature check",
-            "Compare the HMAC in constant time.",
-        ))
+        .remember(
+            NewMemory::episode(
+                REPO,
+                "Webhook signature check",
+                "Compare the HMAC in constant time.",
+            )
+            .with_evidence("second source observation"),
+        )
         .unwrap();
     let before = store.get(older.id).unwrap();
     let before_newer = store.get(newer.id).unwrap();

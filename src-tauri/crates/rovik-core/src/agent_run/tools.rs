@@ -820,6 +820,9 @@ pub struct ToolResult {
     /// A command's whole output, when its result shows only part of it:
     /// the run saves it where the agent can read it (check_output.rs).
     pub whole_output: Option<String>,
+    /// Source files actually exposed by a structured tool result, for bounded
+    /// file-specific memory lookup. Never extracted from model-controlled prose.
+    pub observed_files: Vec<String>,
 }
 
 impl ToolResult {
@@ -1783,7 +1786,25 @@ async fn run(
             } else {
                 shown
             };
-            return Ok(ToolResult::ok(shown));
+            let mut observed_files = Vec::new();
+            for line in outlines
+                .0
+                .lines
+                .iter()
+                .filter(|line| line.is_match && show_code(&line.path))
+            {
+                if !observed_files.contains(&line.path) {
+                    observed_files.push(line.path.clone());
+                }
+                if observed_files.len() == 4 {
+                    break;
+                }
+            }
+            return Ok(ToolResult {
+                content: shown,
+                observed_files,
+                ..Default::default()
+            });
         }
         BuiltinTool::Neighbours => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {

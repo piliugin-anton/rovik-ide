@@ -75,6 +75,8 @@ pub(super) struct RunMemory {
     /// The files already asked about: a file written twice in a run asks
     /// once, whether the memory had something to say or not.
     asked: HashSet<String>,
+    /// Canonical source paths already retrieved after successful observations.
+    observed_files: HashSet<String>,
     /// The calls a note was put on, cleared when their result is stored —
     /// only those, so no other part's note is taken from its call.
     noted: HashSet<String>,
@@ -337,6 +339,8 @@ impl RunMemory {
         self.store.as_ref()?;
         Some(MemoryCarry {
             repo: self.repo.clone(),
+            task: self.task.clone(),
+            observed_files: self.observed_files.clone(),
             generation: self.generation,
             claims_written: self.claims_written,
             recalled: self.recalled.clone(),
@@ -370,10 +374,8 @@ impl RunMemory {
             root,
             sealed,
             repo: carry.repo,
-            // The request, as retrieval matched it, is rebuilt from the repo
-            // below; the section is re-rendered from the carried records so a
-            // resumed run's prompt carries the same memories as before.
-            task: String::new(),
+            task: carry.task,
+            observed_files: carry.observed_files,
             recalled: carry.recalled,
             context: String::new(),
             asked: HashSet::new(),
@@ -424,6 +426,8 @@ pub(super) struct FailedRound {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct MemoryCarry {
     pub(super) repo: String,
+    pub(super) task: String,
+    pub(super) observed_files: HashSet<String>,
     pub(super) generation: i64,
     pub(super) claims_written: usize,
     pub(super) recalled: Vec<MemoryRecord>,
@@ -985,9 +989,10 @@ impl super::run::Run {
         };
         match looked_up {
             Ok(Ok(found))
-                if found
-                    .iter()
-                    .any(|record| record.verification != Verification::Deprecated) =>
+                if found.iter().any(|existing| {
+                    existing.verification != Verification::Deprecated
+                        && record.matches_capture(existing)
+                }) =>
             {
                 return super::tools::ToolResult::ok(
                     "That's already remembered for this project; nothing was added.",
@@ -1096,6 +1101,129 @@ impl RunMemory {
 }
 
 impl super::run::Run {
+    /// Fills unused memory slots from source files the tools actually exposed.
+    /// Queries are exact-file, verified and current, at most once per file. The
+    /// original packet keeps precedence; this never replaces a distinct claim.
+    pub(super) async fn memory_for_observed_files(&mut self, paths: Vec<String>) {
+        let Some(store) = self.memory.store.clone() else {
+            return;
+        };
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let occupied = self
+            .memory
+            .recalled
+            .iter()
+            .filter(|record| worth_showing(record))
+            .count();
+        let remaining = RECALL_LIMIT.saturating_sub(occupied).min(REPAIR_LIMIT);
+        if paths.is_empty() || remaining == 0 {
+            return;
+        }
+        let repo = self.memory.repo.clone();
+        let task = self.memory.task.clone();
+        let own = chat_tag(&self.dialog_id);
+        let seen = self.memory.observed_files.clone();
+        let known = self.memory.recalled.clone();
+        let restricted = self.memory.restricted.clone();
+        let sealed = self.memory.sealed.clone();
+        let config_dir = self.core.paths.config_dir.clone();
+        let read_only = self.memory.read_only;
+        let lookup = crate::rt::spawn_blocking(move || {
+            if !crate::memory::load(&config_dir, &repo).enabled {
+                return Ok(None);
+            }
+            let mut tried = Vec::new();
+            let mut found = Vec::new();
+            for path in paths.into_iter().take(4) {
+                let Some(file) = crate::agent_tools::project_relative(&root, &path) else {
+                    continue;
+                };
+                if seen.contains(&file) || tried.contains(&file) {
+                    continue;
+                }
+                let query = RetrievalQuery::new(&repo, &task)
+                    .with_files([file.clone()])
+                    .with_verifications([Verification::Verified])
+                    .without_tags([own.as_str()])
+                    .with_limit(remaining);
+                let hits = store.retrieve_filtered(&query, |record| {
+                    !known
+                        .iter()
+                        .any(|old| old.id == record.id || old.same_context_claim(record))
+                        && names_file(record, &file)
+                        && worth_showing(record)
+                        && fingerprint_matches(record, Some(&root))
+                        && visible(record, &restricted, Some(&root), &sealed)
+                })?;
+                tried.push(file);
+                found.extend(hits);
+                verified_code_memory::deduplicate_memories(&mut found);
+                if found.len() >= remaining {
+                    break;
+                }
+            }
+            found.truncate(remaining);
+            if !read_only && !found.is_empty() {
+                let ids: Vec<_> = found.iter().map(|hit| hit.record.id).collect();
+                if let Err(error) = store.record_retrieval(&ids) {
+                    eprintln!("memory: observed source retrieval wasn't noted: {error}");
+                }
+            }
+            Ok::<_, verified_code_memory::VcmError>(Some((found, tried)))
+        })
+        .await;
+        let (hits, tried) = match lookup {
+            Ok(Ok(Some(found))) => found,
+            Ok(Ok(None)) => return,
+            Ok(Err(error)) => {
+                eprintln!("memory: observed source lookup failed: {error}");
+                return;
+            }
+            Err(error) => {
+                eprintln!("memory: observed source lookup did not finish: {error}");
+                return;
+            }
+        };
+        self.memory.observed_files.extend(tried);
+        if hits.is_empty() {
+            return;
+        }
+        let mut records: Vec<_> = self
+            .memory
+            .recalled
+            .iter()
+            .filter(|record| worth_showing(record))
+            .cloned()
+            .collect();
+        for hit in hits {
+            if !records
+                .iter()
+                .any(|known| known.same_context_claim(&hit.record))
+            {
+                self.memory.reasons.insert(
+                    hit.record.id,
+                    format!("observed source file; {}", hit.reason),
+                );
+                records.push(hit.record);
+            }
+        }
+        for old in &self.memory.recalled {
+            if records.len() >= RECALL_LIMIT {
+                break;
+            }
+            if !records.iter().any(|known| known.id == old.id) {
+                records.push(old.clone());
+            }
+        }
+        records.truncate(RECALL_LIMIT);
+        self.memory.recalled = records;
+        self.memory.refresh_context();
+        self.core
+            .emit(event(&self.dialog_id, &self.memory.recalled, None));
+    }
+
     /// Retrieval at the repair decision: a round of checks failed, so look up
     /// what the project learned about a failure like this one — before the model
     /// chooses a fix, not after.
@@ -1127,7 +1255,7 @@ impl super::run::Run {
             signature.push_str(&check.command);
             signature.push('\u{1}');
             if let Some(error_files) = check.error_files.as_ref() {
-                for file in &error_files.changed {
+                for file in error_files.changed.iter().chain(&error_files.other) {
                     if !files.contains(file) {
                         files.push(file.clone());
                     }
@@ -1169,15 +1297,22 @@ impl super::run::Run {
             .with_failure(failure)
             .with_verifications([Verification::Verified])
             .with_limit(REPAIR_LIMIT);
-        let found = crate::rt::spawn_blocking(move || store.retrieve(&query)).await;
+        let restricted = self.memory.restricted.clone();
+        let root = self.root.clone();
+        let sealed = self.memory.sealed.clone();
+        let found = crate::rt::spawn_blocking(move || {
+            store.retrieve_filtered(&query, |record| {
+                !known.contains(&record.id)
+                    && worth_showing(record)
+                    && fingerprint_matches(record, root.as_deref())
+                    && visible(record, &restricted, root.as_deref(), &sealed)
+            })
+        })
+        .await;
 
         let added: Vec<MemoryRecord> = match found {
             Ok(Ok(hits)) => {
-                let fresh: Vec<MemoryRecord> = hits
-                    .into_iter()
-                    .map(|hit| hit.record)
-                    .filter(|record| !known.contains(&record.id))
-                    .collect();
+                let fresh: Vec<MemoryRecord> = hits.into_iter().map(|hit| hit.record).collect();
                 // A repair goes into the same list as everything else, so it is
                 // admitted by the same rule: a failure that points at a
                 // restricted file must not open it through memory.

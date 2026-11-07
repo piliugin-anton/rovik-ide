@@ -126,6 +126,191 @@ fn write(id: &'static str, path: &str, content: &str) -> Reply {
 }
 
 #[tokio::test]
+async fn successful_parallel_reads_supply_distinct_file_memories_before_the_next_decision() {
+    let h = harness(&[("src/a.rs", "fn a() {}\n"), ("src/b.rs", "fn b() {}\n")]).await;
+    for _ in 0..8 {
+        remember_verified(
+            &h,
+            "Zanzibar guard",
+            "Serialize zanzibar retries.",
+            &["src/a.rs"],
+        );
+    }
+    remember_verified(
+        &h,
+        "Yggdrasil invariant",
+        "Retain the yggdrasil boundary.",
+        &["src/b.rs"],
+    );
+    let (url, seen) = model(vec![
+        Reply::Calls(vec![
+            ("r1", "read", json!({"path":"src/a.rs"})),
+            ("r2", "read", json!({"path":"src/b.rs"})),
+        ]),
+        Reply::Call {
+            id: "r3",
+            name: "read",
+            args: json!({"path":"./src/a.rs"}),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(
+        &url,
+        Harness::send("Inspect the implementation"),
+        quiet_permissions(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "done");
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(!requests[0].to_string().contains("Zanzibar guard"));
+    for request in &requests[1..] {
+        let body = request.to_string();
+        assert_eq!(body.matches("Zanzibar guard").count(), 1, "{body}");
+        assert!(body.contains("Yggdrasil invariant"), "{body}");
+    }
+    assert_eq!(last_recalled(&h).len(), 2);
+    assert_eq!(
+        h.events_of("memoryRecalled").len(),
+        4,
+        "initial recall, two observed files, run end; repeated read is cached"
+    );
+}
+
+#[tokio::test]
+async fn search_hits_supply_file_context_without_parsing_untrusted_result_text() {
+    let h = harness(&[("src/a.rs", "fn unique_search_symbol() {}\n")]).await;
+    remember_verified(
+        &h,
+        "Zanzibar invariant",
+        "Retain the zanzibar boundary.",
+        &["src/a.rs"],
+    );
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "s1",
+            name: "search_code",
+            args: json!({"query":"unique_search_symbol"}),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(
+        &url,
+        Harness::send("Investigate this behavior"),
+        quiet_permissions(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "done");
+    let requests = seen.lock().unwrap();
+    assert!(!requests[0].to_string().contains("Zanzibar invariant"));
+    assert!(requests[1].to_string().contains("Zanzibar invariant"));
+}
+
+#[tokio::test]
+async fn observed_file_retrieval_rejects_restricted_and_provisional_candidates_before_limits() {
+    let h = harness(&[("src/a.rs", "fn a() {}\n")]).await;
+    for n in 0..8 {
+        remember_verified(
+            &h,
+            &format!("Hidden boundary {n}"),
+            "Hidden implementation detail.",
+            &["src/a.rs", ".env"],
+        );
+    }
+    remember(
+        &h,
+        "Unproven boundary",
+        "An untested assertion.",
+        &["src/a.rs"],
+    );
+    remember_verified(
+        &h,
+        "Visible boundary",
+        "A supported convention.",
+        &["src/a.rs"],
+    );
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({"path":"src/a.rs"}),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(
+        &url,
+        Harness::send("Inspect the implementation"),
+        quiet_permissions(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "done");
+    let body = seen.lock().unwrap()[1].to_string();
+    assert!(body.contains("Visible boundary"), "{body}");
+    assert!(!body.contains("Hidden boundary"), "{body}");
+    assert!(!body.contains("Unproven boundary"), "{body}");
+}
+
+#[tokio::test]
+async fn a_failed_read_does_not_supply_file_memory() {
+    let h = harness(&[("src/a.rs", "fn a() {}\n")]).await;
+    remember_verified(
+        &h,
+        "Missing boundary",
+        "An old observation.",
+        &["src/missing.rs"],
+    );
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({"path":"src/missing.rs"}),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(
+        &url,
+        Harness::send("Inspect the implementation"),
+        quiet_permissions(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(!seen.lock().unwrap()[1]
+        .to_string()
+        .contains("Missing boundary"));
+}
+
+#[tokio::test]
+async fn the_same_claim_from_two_source_files_keeps_both_provisional_observations() {
+    let h = harness(&[("src/a.rs", "fn a() {}\n"), ("src/b.rs", "fn b() {}\n")]).await;
+    let(url,_)=model(vec![Reply::Calls(vec![
+        ("m1","memory_remember",json!({"kind":"fact","title":"Shared convention","claim":"Guard state updates.","applies_to":["src/a.rs"],"evidence":"src/a.rs:1 source observation"})),
+        ("m2","memory_remember",json!({"kind":"fact","title":"Shared convention","claim":"Guard state updates.","applies_to":["src/b.rs"],"evidence":"src/b.rs:1 source observation"})),
+    ]),Reply::Text("Done.")]).await;
+    h.start(h.request(
+        &url,
+        Harness::send("Inspect the source"),
+        quiet_permissions(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "done");
+    let records = records_titled(&h, "Shared convention");
+    assert_eq!(records.len(), 2, "{records:#?}");
+    assert!(records
+        .iter()
+        .all(|record| record.verification == Verification::Provisional));
+    assert!(records
+        .iter()
+        .any(|record| record.evidence.as_deref() == Some("src/a.rs:1 source observation")));
+    assert!(records
+        .iter()
+        .any(|record| record.evidence.as_deref() == Some("src/b.rs:1 source observation")));
+}
+
+#[tokio::test]
 async fn a_run_starts_with_the_projects_prior_work_in_its_prompt() {
     let h = harness(&[("src/a.rs", "fn a() {}\n")]).await;
     let title = "The retry belongs behind a per-order lock";

@@ -4,8 +4,8 @@ use crate::model::{
     RetrievedMemory, SourceKind, Verification,
 };
 use crate::retrieval::{
-    bm25_relevance, build_fts_query, estimate_tokens, normalize_path, score_memory,
-    RetrievalTelemetry, RetrievalWeights,
+    bm25_relevance, build_fts_query, deduplicate_memories, estimate_tokens, normalize_path,
+    score_memory, RetrievalTelemetry, RetrievalWeights,
 };
 use chrono::Utc;
 use rusqlite::types::Value;
@@ -518,15 +518,10 @@ impl MemoryStore {
         // Idempotency is checked in the same transaction as admission, so two
         // writers cannot both insert the same claim after a separate lookup.
         if !memory.identity.is_empty() {
-            let hash = crate::model::claim_hash(&memory.title, &memory.content);
             if let Some(existing) = self
                 .find_by_identity(&repo, &memory.identity)?
                 .into_iter()
-                .find(|r| {
-                    r.claim_hash == hash
-                        && r.verification != Verification::Deprecated
-                        && r.code_version == memory.code_version
-                })
+                .find(|r| r.verification != Verification::Deprecated && memory.matches_capture(r))
             {
                 transaction.commit()?;
                 return Ok(Some(existing));
@@ -957,6 +952,7 @@ impl MemoryStore {
                 })
                 .then_with(|| left.record.id.cmp(&right.record.id))
         });
+        deduplicate_memories(&mut candidates);
         candidates.truncate(query.limit);
 
         telemetry.used_full_text_search = telemetry.fts_matches > 0;
@@ -1124,9 +1120,17 @@ impl MemoryStore {
         }
 
         let mut emitted = Vec::new();
+        let mut seen: Vec<&MemoryRecord> = Vec::new();
         let mut used = estimate_tokens(&output);
         let mut cut = false;
         for memory in memories {
+            if seen
+                .iter()
+                .any(|record| record.same_context_claim(&memory.record))
+            {
+                continue;
+            }
+            seen.push(&memory.record);
             let block = self.render_memory(memory);
             let cost = estimate_tokens(&block);
             if used + cost <= tokens {

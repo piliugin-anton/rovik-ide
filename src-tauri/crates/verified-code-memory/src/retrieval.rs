@@ -2,6 +2,26 @@ use crate::model::{MemoryKind, MemoryRecord, RetrievedMemory, Verification};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+/// Removes interchangeable copies from ranked results, retaining the first
+/// (highest-ranked) representative. Stored records and their evidence remain
+/// untouched; distinct scopes, sources and claims always remain eligible.
+pub fn deduplicate_memories(memories: &mut Vec<RetrievedMemory>) {
+    retain_distinct(memories, |hit| &hit.record);
+}
+
+pub(crate) fn retain_distinct<T>(items: &mut Vec<T>, record: impl Fn(&T) -> &MemoryRecord) {
+    let mut unique = Vec::with_capacity(items.len());
+    for item in std::mem::take(items) {
+        if !unique
+            .iter()
+            .any(|seen| record(&item).same_context_claim(record(seen)))
+        {
+            unique.push(item);
+        }
+    }
+    *items = unique;
+}
+
 /// Retrieval weights.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetrievalWeights {

@@ -43,7 +43,9 @@ pub use model::{
     claim_hash, Applicability, MemoryKind, MemoryRecord, MemoryStats, NewMemory, RetrievalQuery,
     RetrievedMemory, SourceKind, Verification,
 };
-pub use retrieval::{estimate_tokens, MemoryScore, RetrievalTelemetry, RetrievalWeights};
+pub use retrieval::{
+    deduplicate_memories, estimate_tokens, MemoryScore, RetrievalTelemetry, RetrievalWeights,
+};
 pub use store::{MemoryStore, SharedMemoryStore};
 
 /// Optional persistent semantic index and bounded hybrid ranking.

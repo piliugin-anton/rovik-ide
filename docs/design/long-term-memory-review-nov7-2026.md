@@ -146,3 +146,18 @@ This commit therefore does **not** claim that all required Rust CI gates passed
 on its final source. Linux test tooling and isolated temporary storage were
 provisioned without weakening test assertions. No macOS or Windows execution,
 real embedding-model quality, or full paired-agent benchmark is claimed.
+
+## Subsequent recall experiments
+
+The [first experiment](long-term-memory-experiments-nov7-2026.md) evaluates real
+word-vector representations and stops after three distinct non-improvements.
+The [proposal follow-up](long-term-memory-proposal-followup-nov7-2026.md) tests
+contextual keys, query fields, candidate depth, source granularity, capture and
+incident collapse. Hard coding-task negatives expose false-positive admissions
+absent from the original spectroscopy controls. These exploratory results do
+not change production defaults or establish real-agent quality gains.
+
+The [conservative implementation review](long-term-memory-safe-improvements-nov7-2026.md)
+and [post-implementation rerun](long-term-memory-postimplementation-rerun-nov7-2026.md)
+document the exact-copy and observed-file changes, their regression tests, and
+the complete replay after the implementation was pushed.

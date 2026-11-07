@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "provenance": "Hand-authored, derived search descriptors from the preserved source claims. These are index hints, not new factual evidence or a measured automatic extractor. Authored without editing the benchmark queries. The existing validation split has already been exposed in prior experiments.",
+  "entries": {
+    "retry": {
+      "claim": "Serialize retries with the per-order lock.",
+      "terms": ["order concurrency", "mutual exclusion", "retry scheduling"]
+    },
+    "migration": {
+      "claim": "Apply migrations in sequence within a transaction.",
+      "terms": ["database schema", "schema upgrade", "transaction atomicity"]
+    },
+    "credentials": {
+      "claim": "Keep credentials in the operating system keychain.",
+      "terms": ["password storage", "secret persistence", "OS keychain"]
+    },
+    "pagination": {
+      "claim": "Paginate the manager list using stable cursor ordering.",
+      "terms": ["list navigation", "large result sets", "cursor paging"]
+    },
+    "deletion": {
+      "claim": "Delete derived vectors when the source record is removed.",
+      "terms": ["vector lifecycle", "index cleanup", "source deletion"]
+    },
+    "timeout": {
+      "claim": "Bound a subprocess deadline and reap it after termination.",
+      "terms": ["hung commands", "process cancellation", "child process cleanup"]
+    },
+    "formatting": {
+      "claim": "Format only the changed Rust modules.",
+      "terms": ["Rust code style", "rustfmt", "modified modules"]
+    },
+    "cache": {
+      "claim": "Invalidate query cache entries after editing a claim.",
+      "terms": ["stale lookup results", "cache refresh", "claim edits"]
+    },
+    "worktree": {
+      "claim": "Track dirty worktree fingerprints for applicability.",
+      "terms": ["uncommitted source changes", "code versions", "file fingerprints"]
+    },
+    "provenance": {
+      "claim": "Link procedures to their source episode.",
+      "terms": ["trace lesson origin", "source lineage", "procedure provenance"]
+    },
+    "privacy": {
+      "claim": "Exclude restricted source paths before rendering context.",
+      "terms": ["hidden files", "source visibility", "restricted material"]
+    },
+    "verification": {
+      "claim": "Match evidence to the exact content hash.",
+      "terms": ["claim validation", "evidence binding", "content integrity"]
+    },
+    "fallback": {
+      "claim": "Use lexical retrieval when the embedder fails.",
+      "terms": ["model unavailable", "embedding failure", "lexical fallback"]
+    },
+    "generation": {
+      "claim": "Reject a delayed write with an obsolete generation.",
+      "terms": ["post-clear persistence", "asynchronous write admission", "obsolete write lease"]
+    },
+    "locking": {
+      "claim": "Release the SQLite mutex before model execution.",
+      "terms": ["SQLite concurrency", "model call critical section", "mutex ownership"]
+    },
+    "ranking": {
+      "claim": "Use monotonic BM25 normalization.",
+      "terms": ["relevance ordering", "lexical score direction", "BM25 strength"]
+    },
+    "retention": {
+      "claim": "Prune old episodes while retaining procedures.",
+      "terms": ["history pruning", "durable procedure preservation", "episode cleanup"]
+    },
+    "deduplication": {
+      "claim": "Use scoped failure identity to consolidate lessons.",
+      "terms": ["duplicate repair", "failure signature", "incident consolidation"]
+    },
+    "compaction": {
+      "claim": "Restore active memory IDs after history compaction.",
+      "terms": ["context restoration", "active memory references", "conversation compression"]
+    },
+    "isolation": {
+      "claim": "Retrieve only records in the current project.",
+      "terms": ["repository boundaries", "project scope", "cross project exclusion"]
+    }
+  }
+}

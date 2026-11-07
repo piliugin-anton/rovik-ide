@@ -1068,6 +1068,15 @@ impl Run {
             None => (None, None, None),
         };
         let failed = result.outcome.failed();
+        if !failed && auth.refusal.is_none() {
+            let mut files = std::mem::take(&mut result.observed_files);
+            if tool_name == "read" {
+                if let Some(path) = permissions::str_arg(&args_json, "path") {
+                    files.push(path);
+                }
+            }
+            self.memory_for_observed_files(files).await;
+        }
         if let Some(note) = &auth.result_note {
             if !failed {
                 result.content.push_str(note);

@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "description": "Frozen no-match coding queries against the existing 20-incident corpus. Created before vector-model trials to challenge broad topical similarity beyond the repeated spectroscopy negative.",
+  "cases": [
+    {
+      "id": "control-tls",
+      "incident": "tls-renewal",
+      "split": "development",
+      "task": "Renew the expired TLS certificate for the production ingress."
+    },
+    {
+      "id": "control-charts",
+      "incident": "chart-legend",
+      "split": "development",
+      "task": "Render a responsive chart legend with accessible color swatches."
+    },
+    {
+      "id": "control-kafka",
+      "incident": "kafka-partitions",
+      "split": "development",
+      "task": "Rebalance Kafka partitions across the broker cluster."
+    },
+    {
+      "id": "control-images",
+      "incident": "image-conversion",
+      "split": "development",
+      "task": "Convert HEIC photographs to SVG thumbnails."
+    },
+    {
+      "id": "control-ipv6",
+      "incident": "ipv6-expression",
+      "split": "development",
+      "task": "Compile a regular expression for IPv6 addresses."
+    },
+    {
+      "id": "control-indexes",
+      "incident": "database-index-design",
+      "split": "development",
+      "task": "Compare B-tree and hash indexes for database range queries."
+    },
+    {
+      "id": "control-audio",
+      "incident": "audio-resampling",
+      "split": "development",
+      "task": "Resample audio from 48000 Hz to 44100 Hz."
+    },
+    {
+      "id": "control-fonts",
+      "incident": "font-shaping",
+      "split": "development",
+      "task": "Shape Arabic text with ligatures using HarfBuzz."
+    },
+    {
+      "id": "control-geography",
+      "incident": "geo-projection",
+      "split": "heldout",
+      "task": "Project GPS coordinates from WGS84 to Web Mercator."
+    },
+    {
+      "id": "control-compression",
+      "incident": "compression-ratio",
+      "split": "heldout",
+      "task": "Compare Brotli and Zstandard compression ratios for static assets."
+    },
+    {
+      "id": "control-payments",
+      "incident": "tax-calculation",
+      "split": "heldout",
+      "task": "Calculate sales tax for orders crossing multiple jurisdictions."
+    },
+    {
+      "id": "control-routing",
+      "incident": "bgp-route-selection",
+      "split": "heldout",
+      "task": "Configure BGP route selection with local preference and AS path length."
+    }
+  ]
+}
