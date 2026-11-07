@@ -93,3 +93,6 @@ are provisional, so measured ranking is not a production workload estimate.
 Validation: 74 memory-crate nextest tests, three evaluator tests, one doctest,
 two Python protocol tests, frontend tests and type checking passed. Clippy and
 the repository format check are repeated before committing the final harness.
+
+The user's subsequent contextual-memory proposal is evaluated separately in
+[the proposal follow-up](long-term-memory-proposal-followup-nov7-2026.md).

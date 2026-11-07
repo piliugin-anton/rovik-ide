@@ -2,6 +2,29 @@
 use serde_json::{json, Value};
 use verified_code_memory::{MemoryEmbedder, NewMemory, RetrievalQuery, SharedMemoryStore};
 
+fn fact(
+    repo: &str,
+    title: &str,
+    content: &str,
+    keys: &Value,
+) -> Result<NewMemory, Box<dyn std::error::Error>> {
+    let record = NewMemory::project_fact(repo, title, content);
+    let entry = &keys["entries"][title];
+    if entry.is_null() {
+        return Ok(record);
+    }
+    if entry["claim"].as_str() != Some(content) {
+        return Err(format!("search context does not describe the current claim: {title}").into());
+    }
+    let terms = entry["terms"]
+        .as_array()
+        .ok_or("search terms must be an array")?
+        .iter()
+        .map(|value| value.as_str().ok_or("search terms must be strings"))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(record.with_tags(terms))
+}
+
 /// An experiment can replay real, externally computed embeddings through the
 /// production SQLite index. Missing inputs fail instead of inventing vectors.
 struct RecordedEmbeddings {
@@ -70,10 +93,56 @@ fn stabilize_fixture(
     new_expected.ok_or_else(|| "expected fixture record disappeared".into())
 }
 
+fn rerank_lexical(
+    index: &verified_code_memory::semantic::SemanticIndex,
+    query: &RetrievalQuery,
+    embedder: &dyn MemoryEmbedder,
+    threshold: f32,
+    baseline: &[verified_code_memory::RetrievedMemory],
+) -> verified_code_memory::Result<Vec<verified_code_memory::RetrievedMemory>> {
+    embedder
+        .embed(&format!("{}\n", query.task))
+        .and_then(|vector| {
+            let semantic = index.search(query, &vector, threshold)?;
+            let mut ranked: Vec<_> = baseline
+                .iter()
+                .filter_map(|hit| {
+                    let protected = query.task.trim().eq_ignore_ascii_case(&hit.record.title)
+                        || query.files.iter().any(|file| {
+                            hit.record.files.iter().any(|stored| {
+                                verified_code_memory::retrieval::path_overlap(file, stored)
+                            })
+                        });
+                    let similarity = semantic
+                        .iter()
+                        .find(|(record, _)| record.id == hit.record.id)
+                        .map(|(_, score)| *score);
+                    if !protected && similarity.is_none() {
+                        return None;
+                    }
+                    let mut hit = hit.clone();
+                    hit.score = similarity.unwrap_or(1.0);
+                    hit.reason.push_str(", bi-encoder relevance gate");
+                    Some(hit)
+                })
+                .collect();
+            ranked.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then(a.record.id.cmp(&b.record.id))
+            });
+            Ok(ranked)
+        })
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input = include_str!("../../../../scripts/eval/memory-cases.json");
     let dataset: Value = serde_json::from_str(input)?;
     let config = experiment_config(&std::env::args().skip(1).collect::<Vec<_>>())?;
+    let keys = match config["context_keys_file"].as_str() {
+        Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
+        None => json!({}),
+    };
     let split = config.get("split").and_then(Value::as_str);
     if split.is_some_and(|split| !matches!(split, "development" | "heldout")) {
         return Err("split must be development or heldout".into());
@@ -145,14 +214,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             SharedMemoryStore::open_in_memory()?
         };
         let file = format!("src/{title}.rs");
-        let record = store.remember(
-            NewMemory::project_fact("project", title, text("content")?).with_files([file]),
-        )?;
+        let record =
+            store.remember(fact("project", title, text("content")?, &keys)?.with_files([file]))?;
         store.verify(record.id, "synthetic fixture evidence")?;
         let expected = if case["supersede"] == true {
             store.deprecate(record.id, "explicit fixture update")?;
-            let replacement =
-                store.remember(NewMemory::project_fact("project", title, text("content")?))?;
+            let replacement = store.remember(fact("project", title, text("content")?, &keys)?)?;
             store.verify(replacement.id, "replacement evidence")?;
             replacement.id
         } else {
@@ -165,27 +232,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .filter(|other| other["category"] == "identifier" && other["title"] != case["title"])
         {
-            store.remember(NewMemory::project_fact(
+            store.remember(fact(
                 "project",
                 other["title"].as_str().ok_or("missing title")?,
                 other["content"].as_str().ok_or("missing content")?,
-            ))?;
+                &keys,
+            )?)?;
         }
         // An identical record in another project must never leak.
-        store.remember(NewMemory::project_fact("other", title, text("content")?))?;
+        store.remember(fact("other", title, text("content")?, &keys)?)?;
         let expected = if deterministic {
             stabilize_fixture(fixture_uri, expected)?
         } else {
             expected
         };
         let mut query = RetrievalQuery::new("project", text("task")?);
-        if let Some(file) = case["file"].as_str() {
+        if let Some(file) = case["file"]
+            .as_str()
+            .filter(|_| config["query_mode"] != "intent_only")
+        {
             query = query.with_files([file]);
         }
+        query.limit = config["candidate_limit"].as_u64().unwrap_or(8) as usize;
         let started = std::time::Instant::now();
         let (baseline, telemetry) = store.retrieve_with_telemetry(&query)?;
         let mut embedding_fallback = false;
-        let found = if let Some((embedder, revision, dimensions, threshold)) = &backend {
+        let mut found = if let Some((embedder, revision, dimensions, threshold)) = &backend {
             let index = verified_code_memory::semantic::SemanticIndex::new(
                 store.clone(),
                 revision,
@@ -195,25 +267,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Give the identical prohibited record a vector too: a semantic
             // scope check must not pass just because other projects lack an index.
             index.backfill("other", embedder.as_ref())?;
-            match index.retrieve(&query, embedder.as_ref(), *threshold) {
+            let retrieved = if config["rerank_lexical"] == true {
+                rerank_lexical(&index, &query, embedder.as_ref(), *threshold, &baseline)
+            } else if config["semantic_only"] == true {
+                embedder
+                    .embed(&format!("{}\n", query.task))
+                    .and_then(|vector| {
+                        index.search(&query, &vector, *threshold).map(|hits| {
+                            hits.into_iter()
+                                .map(|(record, score)| verified_code_memory::RetrievedMemory {
+                                    record,
+                                    score,
+                                    reason: "semantic-only ablation".into(),
+                                    components: Default::default(),
+                                })
+                                .collect()
+                        })
+                    })
+            } else {
+                index.retrieve(&query, embedder.as_ref(), *threshold)
+            };
+            match retrieved {
                 Ok(found) => found,
                 Err(verified_code_memory::VcmError::EmbeddingUnavailable(
                     "no vocabulary vector",
                 )) => {
                     embedding_fallback = true;
-                    baseline
+                    if config["semantic_only"] == true {
+                        Vec::new()
+                    } else {
+                        baseline
+                    }
                 }
                 Err(error) => return Err(error.into()),
             }
         } else {
             baseline
         };
+        let candidate_rank = found
+            .iter()
+            .position(|hit| hit.record.id == expected)
+            .map(|at| at + 1);
+        found.truncate(8);
+        let memory_budget = config["memory_budget"].as_u64().unwrap_or(1000) as usize;
+        let (packet, shown) = store.render_packet_traced(&found, memory_budget);
+        let answer_delivered = shown.contains(&expected) && packet.contains(text("content")?);
         let rank = found
             .iter()
             .position(|hit| hit.record.id == expected)
             .map(|at| at + 1);
         let prohibited = found.iter().any(|hit| hit.record.repo != "project");
-        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"rank":rank,"returned":found.len(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
+        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
     }
     let mut groups = serde_json::Map::new();
     for split in ["development", "heldout"] {
@@ -237,12 +341,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|rank| 1.0 / (rank as f64 + 1.0).log2())
             .sum::<f64>()
             / answerable.len() as f64;
-        groups.insert(split.into(), json!({"cases":subset.len(),"recall_at_8":recall,"mrr":mrr,"ndcg_at_8":ndcg,"no_match_injection_rate":negatives.iter().filter(|r|r["returned"]!=0).count() as f64 / negatives.len() as f64}));
+        groups.insert(split.into(), json!({"cases":subset.len(),"recall_at_8":recall,"candidate_recall":answerable.iter().filter(|r|r["candidate_rank"].is_number()).count() as f64 / answerable.len() as f64,"delivered_recall":answerable.iter().filter(|r|r["answer_delivered"]==true).count() as f64 / answerable.len() as f64,"mrr":mrr,"ndcg_at_8":ndcg,"no_match_injection_rate":negatives.iter().filter(|r|r["returned"]!=0).count() as f64 / negatives.len() as f64}));
     }
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"dataset_version":dataset["version"],"dataset_fingerprint":verified_code_memory::claim_hash("memory-eval-v1",input),"experiment_config":config,"policy":if backend.is_some() {"hybrid"} else {"lexical-file"},"memory_off_recall":0,"model":backend.as_ref().map(|(_,revision,dimensions,threshold)| json!({"revision":revision,"dimensions":dimensions,"threshold":threshold})),"answer_quality_evaluated":false,"groups":groups,"cases":rows})
+            &json!({"dataset_version":dataset["version"],"dataset_fingerprint":verified_code_memory::claim_hash("memory-eval-v1",input),"experiment_config":config,"policy":if config["rerank_lexical"]==true {"bi-encoder-gated"} else if config["semantic_only"]==true {"semantic-only"} else if backend.is_some() {"hybrid"} else {"lexical-file"},"memory_off_recall":0,"model":backend.as_ref().map(|(_,revision,dimensions,threshold)| json!({"revision":revision,"dimensions":dimensions,"threshold":threshold})),"answer_quality_evaluated":false,"groups":groups,"cases":rows})
         )?
     );
     Ok(())
@@ -266,6 +370,68 @@ mod tests {
     fn an_invalid_configuration_invocation_is_rejected() {
         assert!(experiment_config(&["--wrong".into()]).is_err());
         assert_eq!(experiment_config(&[]).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn index_context_cannot_be_attached_to_an_edited_claim() {
+        let keys =
+            json!({"entries":{"cache":{"claim":"invalidate entries","terms":["stale results"]}}});
+        let record = fact("p", "cache", "invalidate entries", &keys).unwrap();
+        assert_eq!(record.content, "invalidate entries");
+        assert_eq!(record.tags, vec!["stale results"]);
+        assert!(fact("p", "cache", "retain entries", &keys).is_err());
+    }
+
+    #[test]
+    fn the_relevance_gate_rejects_incidental_words_and_preserves_explicit_files() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        let relevant = store
+            .remember(NewMemory::project_fact(
+                "p",
+                "retry",
+                "racing retries require a lock",
+            ))
+            .unwrap();
+        let incidental = store
+            .remember(NewMemory::project_fact(
+                "p",
+                "simulator",
+                "racing game statistics",
+            ))
+            .unwrap();
+        let file = store
+            .remember(
+                NewMemory::project_fact("p", "constraint", "special convention")
+                    .with_files(["src/required.rs"]),
+            )
+            .unwrap();
+        let model = RecordedEmbeddings {
+            dimensions: 2,
+            vectors: [
+                ("racing\n".into(), vec![1.0, 0.0]),
+                (
+                    format!("{}\n{}", relevant.title, relevant.content),
+                    vec![1.0, 0.0],
+                ),
+                (
+                    format!("{}\n{}", incidental.title, incidental.content),
+                    vec![0.0, 1.0],
+                ),
+                (format!("{}\n{}", file.title, file.content), vec![0.0, 1.0]),
+            ]
+            .into(),
+        };
+        let index =
+            verified_code_memory::semantic::SemanticIndex::new(store.clone(), "test", 2).unwrap();
+        index.backfill("p", &model).unwrap();
+        let query = RetrievalQuery::new("p", "racing").with_files(["src/required.rs"]);
+        let before = store.retrieve(&query).unwrap();
+        assert_eq!(before.len(), 3);
+        let found = rerank_lexical(&index, &query, &model, 0.8, &before).unwrap();
+        let ids: Vec<_> = found.iter().map(|hit| hit.record.id).collect();
+        assert!(ids.contains(&relevant.id));
+        assert!(ids.contains(&file.id));
+        assert!(!ids.contains(&incidental.id));
     }
 
     #[test]

@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "request": "Try the previously untested hypotheses from the uploaded proposal, after completion of the first three-failure experiment.",
+  "source_request_sha256": "5c568650850949464a14fbedd5e97b66e2f28426ec779dabdd650f774fb2167d",
+  "base_experiment_commit": "400e0d8",
+  "keys_sha256": "6bda8f00c55a70c7ab1615dc221253394d4de2bbff0ab86972f416f203116f86",
+  "dataset_sha256": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+  "final_limit": 8,
+  "memory_budget": 1000,
+  "candidate_limits": [8, 32],
+  "calibration_split": "development",
+  "thresholds": [
+    0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9
+  ],
+  "selection": "Maximize development Recall@8 without increasing no-match injections above max(5%, baseline). Break threshold ties toward the higher threshold. Do not retune on validation.",
+  "validation_status": "The existing heldout split was exposed by prior runs; this is a fixed validation check, not a fresh blind holdout.",
+  "hypotheses": [
+    {
+      "id": "H1",
+      "test": "Source-claim-bound contextual tags vs unchanged lexical/file retrieval."
+    },
+    {
+      "id": "H2",
+      "test": "Previously untested semantic-only ablation and contextual-keys-plus-hybrid combination, using the already-pinned real word-vector model."
+    },
+    {
+      "id": "H3",
+      "test": "Intent-only vs provided task-state file fields; an ablation of existing runtime information, not an oracle file-discovery result."
+    },
+    {
+      "id": "H4",
+      "test": "Claim-only vs source-linked context; constructed evidence-delivery fixture using the same source descriptors as H1."
+    },
+    {
+      "id": "H5",
+      "test": "Candidate Recall@32 vs Recall@8. A learned reranker is justified only if ranking losses are observed. Also test a cheap bi-encoder gate/reranker on 32 contextual lexical candidates, preserving exact-title and explicit-file matches. This is not a learned cross-encoder."
+    },
+    {
+      "id": "H6",
+      "test": "Top eight vs incident collapse on the same constructed admitted candidate pool, with two required independent facts and duplicate crowding."
+    },
+    {
+      "id": "H7",
+      "test": "Activity-only vs source-linked structured claims: capture presence and retrieval measured separately; automated extractor accuracy remains unmeasured."
+    }
+  ],
+  "production_defaults_changed": false,
+  "amendment": "After the first requested-proposal run, contextual keys reached higher recall but added a validation false positive for an unrelated meaning of compression. This exploratory follow-up adds a bi-encoder admission/reranking prototype; its threshold is selected on development only, but the hypothesis was informed by exposed validation results. No blind-generalization claim is made, and keys remain frozen."
+}
