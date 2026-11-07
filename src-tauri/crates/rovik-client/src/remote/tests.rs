@@ -150,9 +150,8 @@ fn approval(dialog_id: &str, edit: bool) -> ApprovalRequest {
     }
 }
 
-/// A remote of `app` with `Fake` as `HOST`, connected, once it has caught
-/// up as a first connection does (its `AgentStatus`): the fake keeps the
-/// requests after that.
+/// A remote of `app` with `Fake` as `HOST`, connected, once its initial
+/// mirror pulls have caught up: the fake keeps the requests after that.
 async fn connected(app: &App) -> (Arc<Remote>, Fake) {
     connected_to(app, Fake::default()).await
 }
@@ -162,18 +161,16 @@ async fn connected_to(app: &App, fake: Fake) -> (Arc<Remote>, Fake) {
     let remote = Remote::new(app.core.clone());
     remote.connect(HOST, fake.clone(), identity(HOST));
     for _ in 0..400 {
-        let caught_up = fake
-            .requests
-            .lock()
-            .unwrap()
-            .contains(&Request::AgentStatus);
-        if caught_up {
+        // Seeing the status request doesn't mean startup finished. Placing
+        // a chat before pull_all reads the mirrors can add a startup pull
+        // to the requests the test expects to contain only its own calls.
+        if remote.caught_up(HOST) {
             fake.requests.lock().unwrap().clear();
             return (remote, fake);
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("the fake daemon never answered");
+    panic!("the fake daemon never caught up");
 }
 
 fn starts(fake: &Fake) -> Vec<StartRequest> {
@@ -1256,7 +1253,8 @@ async fn files_arent_sent_to_a_daemon_that_doesnt_take_them() {
     assert!(refused
         .message
         .starts_with("test-server runs a Rovik too old"));
-    assert!(fake.requests.lock().unwrap().is_empty(), "nothing sent");
+    let requests = fake.requests.lock().unwrap().clone();
+    assert!(requests.is_empty(), "nothing sent: {requests:?}");
 }
 
 /// K44: a file the host can't send doesn't hold its row back: the row goes
