@@ -1982,3 +1982,8 @@ To evaluate an installed local model, set `ROVIK_MEMORY_EVAL_MODEL`,
 `ROVIK_MEMORY_EVAL_PYTHON`, `ROVIK_MEMORY_EVAL_DIMENSIONS`,
 `ROVIK_MEMORY_EVAL_REVISION` and `ROVIK_MEMORY_EVAL_THRESHOLD` before running the
 memory evaluator. Without these, it measures only the lexical/file baseline.
+
+Reasoning effort selectors include **Extra high** (`xhigh`) and **Maximum** (`max`).
+API runs probe rejected values and retry a lower effort, remembering the accepted
+value for that endpoint and model. The chat selector follows the accepted effort.
+Existing High selections stay High. CLI connectors pass the selected effort to their CLI.

@@ -139,6 +139,7 @@ export interface ReasoningLearned {
   rejected: string[];
   unresolved: string[];
   reasons: boolean;
+  effectiveEffort?: string | null;
 }
 
 /** What became of a message sent to a run (rovik-protocol `SteerReply`). */

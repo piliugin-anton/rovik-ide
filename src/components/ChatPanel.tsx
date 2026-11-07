@@ -85,6 +85,7 @@ import {
   mergeLearned,
   reasoningStatus,
   saveEffort,
+  effectiveEffort,
   type Effort,
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
@@ -3042,7 +3043,18 @@ export default function ChatPanel(props: ChatProps) {
   createEffect(() => configureAgent(agentConfig()));
 
   // What replies show about the model's reasoning is kept with it.
-  onCleanup(onReasoningLearned((learned) => learnReasoning(learned.profileId, learned)));
+  onCleanup(
+    onReasoningLearned((learned) => {
+      learnReasoning(learned.profileId, learned);
+      const current = effortFor(learned.profileId);
+      const accepted = effectiveEffort(current, learned.effectiveEffort);
+      if (accepted !== current) {
+        setEfforts({ ...efforts(), [learned.profileId]: accepted });
+        saveEffort(learned.profileId, accepted);
+        if (activeProfile()?.id === learned.profileId) saveChatModel(activeDialogId());
+      }
+    })
+  );
   onCleanup(onApiRouteLearned(learnApiRoute));
   // "Show" on a notification of what a chat waits for: that chat, opened
   // if it isn't on screen, or the chat list when several wait.

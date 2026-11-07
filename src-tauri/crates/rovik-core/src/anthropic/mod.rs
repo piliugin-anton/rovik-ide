@@ -389,6 +389,7 @@ pub async fn run(
     let taken = plan.thinking != request::Thinking::Default || plan.effort.is_some();
     let support = if taken {
         ReasoningSupport {
+            effective_effort: plan.effort.map(str::to_string),
             accepted: formats.to_vec(),
             ..Default::default()
         }

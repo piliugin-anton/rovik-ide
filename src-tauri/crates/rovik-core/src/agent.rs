@@ -29,6 +29,7 @@ pub enum ChatStreamEvent {
         /// worked: one of these broke it, but which isn't known. The frontend
         /// tries them one at a time on later requests (lib/reasoning.ts).
         unresolved: Vec<String>,
+        effective_effort: Option<String>,
     },
     Done,
     /// How the reply ended, sent just before `Done`: for diagnostics (the
@@ -466,7 +467,7 @@ pub async fn run_with_reasoning(
                     .iter()
                     .any(|f| f == "reasoning_effort" || f == "reasoning");
                 if let (true, Some(sent)) = (sends_level, level.clone()) {
-                    if refused_levels.len() < 3 && effort_value::refused(&text, &sent) {
+                    if refused_levels.len() < LEVELS.len() && effort_value::refused(&text, &sent) {
                         refused_levels.push(sent.clone());
                         if let Some(next) = effort_value::nearest(
                             &sent,
@@ -557,6 +558,15 @@ pub async fn run_with_reasoning(
     let unresolved = if worked { stripped_blindly } else { Vec::new() };
     let accepted = if worked { formats } else { Vec::new() };
     let support = ReasoningSupport {
+        effective_effort: if worked
+            && accepted
+                .iter()
+                .any(|f| matches!(f.as_str(), "reasoning_effort" | "reasoning"))
+        {
+            level
+        } else {
+            None
+        },
         accepted,
         rejected,
         unresolved,
@@ -690,6 +700,7 @@ pub mod effort_value {
         pool.into_iter()
             .filter(|l| *l != sent && !refused.iter().any(|r| r == l))
             .filter_map(|l| at(l).map(|i| (l, i)))
+            .filter(|(_, i)| !matches!(sent, "xhigh" | "max") || *i < from)
             .min_by_key(|(_, i)| {
                 let distance = i.abs_diff(from);
                 // Ties go up: higher index sorts first.
@@ -705,6 +716,8 @@ pub struct ReasoningSupport {
     pub accepted: Vec<String>,
     pub rejected: Vec<String>,
     pub unresolved: Vec<String>,
+    /// The effort value accepted by the endpoint after probing.
+    pub effective_effort: Option<String>,
 }
 
 /// Whether a 400's text refuses reasoning sent back (reasoning_echo.rs): it
@@ -1554,6 +1567,7 @@ pub async fn run_chat(
             accepted: support.accepted,
             rejected: support.rejected,
             unresolved: support.unresolved,
+            effective_effort: support.effective_effort,
         });
     }
 
@@ -1800,6 +1814,8 @@ pub mod reply_reserve {
             Some(ReasoningEffort::Low) => "low",
             Some(ReasoningEffort::Medium) => "medium",
             Some(ReasoningEffort::High) => "high",
+            Some(ReasoningEffort::Xhigh) => "xhigh",
+            Some(ReasoningEffort::Max) => "max",
         };
         format!("{model_key}|{effort}")
     }
@@ -1810,7 +1826,7 @@ pub mod reply_reserve {
         match effort {
             Some(ReasoningEffort::None | ReasoningEffort::Low) => 4_000,
             None | Some(ReasoningEffort::Medium) => 8_000,
-            Some(ReasoningEffort::High) => 16_000,
+            Some(ReasoningEffort::High | ReasoningEffort::Xhigh | ReasoningEffort::Max) => 16_000,
         }
     }
 
@@ -2624,6 +2640,24 @@ mod reasoning_tests {
             }
         });
         (url, seen)
+    }
+
+    #[tokio::test]
+    async fn upper_efforts_fall_back_and_report_the_accepted_level() {
+        for effort in [ReasoningEffort::Xhigh, ReasoningEffort::Max] {
+            let (url, seen) = level_provider(&["low", "medium", "high"]).await;
+            let (ok, support) = send_effort(&url, &["reasoning_effort"], effort).await;
+            assert!(ok);
+            assert_eq!(
+                support.unwrap().effective_effort.as_deref(),
+                Some("high")
+            );
+            assert_eq!(seen.lock().unwrap()[1]["reasoning_effort"], "high");
+            let (ok, _) = send_effort(&url, &["reasoning_effort"], effort).await;
+            assert!(ok);
+            assert_eq!(seen.lock().unwrap()[2]["reasoning_effort"], "high");
+        }
+        assert_eq!(effort_value::nearest("xhigh", &["max"], &[]), None);
     }
 
     #[tokio::test]

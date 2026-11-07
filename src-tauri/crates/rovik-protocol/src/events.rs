@@ -314,6 +314,9 @@ pub enum AgentEvent {
         rejected: Vec<String>,
         unresolved: Vec<String>,
         reasons: bool,
+        /// Effort accepted after endpoint probing, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effective_effort: Option<String>,
     },
     /// The API route a model was found to work on, to be saved with the
     /// model in the settings (`ChatStreamEvent::ApiRoute`).
