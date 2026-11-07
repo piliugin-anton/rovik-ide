@@ -17,7 +17,7 @@ import { selectionReference } from '../lib/fileReferences';
 import { addToChat, editorFocusRequest, takeEditorFocus } from '../lib/editorBridge';
 import { agentChangesFor } from '../lib/agentChanges';
 import { gitBaseFor } from '../lib/gitMarks';
-import { pendingReveal, takeReveal, type Reveal } from '../lib/openInEditor';
+import { pendingReveal, takeReveal, showsChanges, type Reveal } from '../lib/openInEditor';
 import { diffLines, splitLines } from '../lib/lineDiff';
 import { plural } from '../lib/textUtils';
 import {
@@ -441,10 +441,17 @@ export default function Editor(props: EditorProps) {
     // as the text changes.
     const agentMarks = createChangeMarks(
       editor,
-      () => agentChangesFor(props.currentFilePath)?.baseline,
+      () =>
+        showsChanges(props.currentFilePath)
+          ? agentChangesFor(props.currentFilePath)?.baseline
+          : undefined,
       AGENT_MARKS
     );
-    const gitMarks = createChangeMarks(editor, () => gitBaseFor(props.currentFilePath), GIT_MARKS);
+    const gitMarks = createChangeMarks(
+      editor,
+      () => (showsChanges(props.currentFilePath) ? gitBaseFor(props.currentFilePath) : undefined),
+      GIT_MARKS
+    );
     onCleanup(() => {
       agentMarks.dispose();
       gitMarks.dispose();

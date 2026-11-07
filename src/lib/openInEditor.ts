@@ -82,6 +82,23 @@ export interface OpenInEditor {
   dialogId?: string | null;
 }
 
+const [hiddenChanges, setHiddenChanges] = createSignal<ReadonlySet<string>>(new Set());
+
+/** Whether the file shows change decorations, according to its latest open request. */
+export function showsChanges(path: string): boolean {
+  return !hiddenChanges().has(path);
+}
+
+/** Plain file opens hide both Git and agent change marks, including on existing tabs. */
+export function setShowsChanges(path: string, show: boolean): void {
+  setHiddenChanges((previous) => {
+    const next = new Set(previous);
+    if (show) next.delete(path);
+    else next.add(path);
+    return next;
+  });
+}
+
 type Opener = (request: OpenInEditor) => Promise<void>;
 
 let opener: Opener | null = null;

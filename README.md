@@ -26,6 +26,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 
 - Monaco editor (the editor used in VS Code) with syntax highlighting,
   themes and tabs.
+- Files opened from the Files tab show plain editable source without change
+  highlighting or deleted lines. Open from Git to review changes.
 - Consecutive updates from disk or the agent share one undo step: Ctrl+Z
   restores the text before those updates. Typing, undoing or redoing starts
   a new group, so local edits keep their own undo history.
