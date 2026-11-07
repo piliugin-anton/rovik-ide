@@ -148,6 +148,54 @@ nested ones indented under their parent. It's a starting point, not the whole pr
 read what you need with read by symbol (a declaration's name) or start_line/end_line, search for anything not shown, \
 and query the structural graph with neighbours (files a file uses / is used by) and callers (a symbol's declarations and users).";
 
+/// Changes to the selected declarations, grouped by file. Ranking-only reorderings
+/// produce no update. A removed entry may have fallen out of the map's budget;
+/// it does not establish that the declaration was deleted from the project.
+pub fn update(previous: Option<&str>, current: Option<&str>) -> Option<String> {
+    fn entries(map: Option<&str>) -> BTreeMap<&str, Vec<&str>> {
+        let mut files = BTreeMap::<&str, Vec<&str>>::new();
+        let mut path = None;
+        for line in map
+            .unwrap_or_default()
+            .strip_prefix(HEADER)
+            .unwrap_or_default()
+            .lines()
+        {
+            if !line.starts_with(' ') && line.ends_with(':') {
+                path = Some(line);
+            } else if let Some(path) = path {
+                if !line.trim().is_empty() {
+                    files.entry(path).or_default().push(line);
+                }
+            }
+        }
+        files
+    }
+    let before = entries(previous);
+    let after = entries(current);
+    let paths: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).copied().collect();
+    let mut changes = Vec::new();
+    for path in paths {
+        let old = before.get(path).map(Vec::as_slice).unwrap_or_default();
+        let new = after.get(path).map(Vec::as_slice).unwrap_or_default();
+        let mut lines = Vec::new();
+        for line in old.iter().filter(|line| !new.contains(line)) {
+            lines.push(format!("- {line}"));
+        }
+        for line in new.iter().filter(|line| !old.contains(line)) {
+            lines.push(format!("+ {line}"));
+        }
+        if !lines.is_empty() {
+            changes.push(format!("{path}\n{}", lines.join("\n")));
+        }
+    }
+    (!changes.is_empty()).then(|| format!(
+        "## Repository map update\nChanges to the selected map entries (+ current, - no longer selected). \
+         These supersede earlier entries; selection changes do not prove deletion. Read by symbol for current code.\n{}",
+        changes.join("\n")
+    ))
+}
+
 /// The project's source files and their tags, by project-relative path.
 fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
     let deadline = Instant::now() + options.time_limit;

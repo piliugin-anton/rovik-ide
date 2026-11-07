@@ -6899,3 +6899,38 @@ async fn a_run_that_panics_before_answering_settles_the_message_failed() {
         "the user's message is marked failed"
     );
 }
+
+#[tokio::test]
+async fn a_successful_test_summary_saves_output_that_read_can_retrieve() {
+    let h = harness(&[("check.test.mjs", "import { test } from 'node:test';\ntest('passes', () => { for (let i = 1; i <= 1000; i++) console.log('detail ' + i); });\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "b1",
+            name: "bash",
+            args: json!({ "command": "node --test check.test.mjs" }),
+        },
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({ "path": "@checks/bash-b1.log", "start_line": 480, "end_line": 520 }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allowed_commands: vec!["node".into()],
+        checklist: ChecklistMode::Off,
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("Run the test"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let shown = &result_of(&messages, "b1").content;
+    assert!(shown.contains("exit code 0"), "{shown}");
+    assert!(shown.contains("successful check summarized"), "{shown}");
+    assert!(shown.contains("saved as `@checks/bash-b1.log`"), "{shown}");
+    assert!(!shown.contains("detail 500"));
+    assert!(result_of(&messages, "r1").content.contains("detail 500"));
+    crate::agent_run::check_output::clean(&h.dialog_id);
+}

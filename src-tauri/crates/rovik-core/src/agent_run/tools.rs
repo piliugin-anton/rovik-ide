@@ -5,7 +5,9 @@
 
 use super::builtin_tools::BuiltinTool;
 use super::checklist::MAX_TODO_ITEMS;
-use super::command_output::{cap_output, clean_output, focus_failures};
+use super::command_output::{
+    cap_output, clean_output, focus_failures, is_summary_command, summarize_success,
+};
 use super::permissions::{commands_available, Permissions};
 use super::StopSignal;
 use crate::allowed_hosts::AllowedHosts;
@@ -254,7 +256,7 @@ fn run_command_schema(permissions: &Permissions) -> Value {
                 "Run a shell command and get its exit code and output (stdout/stderr). Each call starts a new shell in \
                  the project root ({shell} on {system}): a `cd` or a variable set in one call doesn't carry over to the next, \
                  so chain the steps that need it (`cd web && npm test`).{userland} Long output is shortened \
-                 to its start and end; for a failing command, to its error lines and final summary. \
+                 to its start and end; successful checks show counts, warnings and a short summary; failing commands show error lines and a final summary. Full shortened output is saved for read. \
                  Non-interactive: no stdin, pagers disabled. Use it for tests, builds, type checks, linters and git inspection. \
                  Prefer read/search_code/write for reading and editing files.{allowed}{hosts}"
             ),
@@ -398,7 +400,7 @@ fn todo_schema() -> Value {
         "type": "function",
         "function": {
             "name": "todo",
-            "description": "Keep your checklist for this task, shown to the user as what you are doing. Use it for tasks with three or more distinct steps or that span several files; not for small tasks. Pass the whole list each time. Create it before you start, with the first step in_progress. Work on one step at a time, each with its own todo call: call todo alone to mark a step in_progress before starting it, do the work, then call todo alone again to mark it done before the next step. Never save up finished steps for one update at the end. Only one step in_progress at a time. If a step turns out unnecessary or has to change, mark it skipped or changed with a short note saying why, instead of silently dropping it.",
+            "description": "Keep your checklist for this task, shown to the user as what you are doing. Use it for tasks with three or more distinct steps or that span several files; not for small tasks. Pass the whole list each time. Create it before you start, with the first step in_progress. Work on one step at a time. After verifying a step, call todo alone to mark it done and the next step in_progress in the same update (or finish the list after the last step). Wait for the result and complete any requested compaction before starting actual work on the next step. Never save up finished steps for one update at the end. Only one step in_progress at a time. If a step turns out unnecessary or has to change, mark it skipped or changed with a short note saying why, instead of silently dropping it.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2085,11 +2087,25 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> (String, boo
     }
     let failed = out.timed_out || out.stopped || out.exit_code != Some(0);
     let mut shortened = out.truncated;
-    // A failing run: its errors and summary. Otherwise its start and end.
+    let summarize = !failed && is_summary_command(command);
+    // Use the full capture for summaries so warnings in the middle survive.
+    let (stdout, stderr) = if summarize {
+        out.whole
+            .as_ref()
+            .map(|(o, e)| (o.as_str(), e.as_str()))
+            .unwrap_or((&out.stdout, &out.stderr))
+    } else {
+        (out.stdout.as_str(), out.stderr.as_str())
+    };
+    let streams = usize::from(!stdout.trim().is_empty()) + usize::from(!stderr.trim().is_empty());
+    let summary_budget = 4_000 / streams.max(1);
+    // Failures keep their existing filtering; data commands keep ordinary output.
     let mut shape = |text: &str| {
         let clean = clean_output(text).trim_end().to_string();
         let shaped = if failed {
             focus_failures(&clean, 12_000)
+        } else if summarize {
+            summarize_success(&clean, summary_budget)
         } else {
             cap_output(&clean, 200, 200, 24_000)
         };
@@ -2098,19 +2114,21 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> (String, boo
         }
         shaped
     };
-    let (has_out, has_err) = (!out.stdout.trim().is_empty(), !out.stderr.trim().is_empty());
+    let (has_out, has_err) = (!stdout.trim().is_empty(), !stderr.trim().is_empty());
     if has_out {
-        parts.push(format!("--- stdout ---\n{}", shape(&out.stdout)));
+        parts.push(format!("--- stdout ---\n{}", shape(stdout)));
     }
     if has_err {
-        parts.push(format!("--- stderr ---\n{}", shape(&out.stderr)));
+        parts.push(format!("--- stderr ---\n{}", shape(stderr)));
     }
     if !has_out && !has_err {
         parts.push("(no output)".into());
     }
     if shortened {
         parts.push(
-            if failed {
+            if summarize {
+                "(successful check summarized: counts, warnings and closing output; full output saved for read)"
+            } else if failed {
                 "(long output: shown are its error lines and its end; rerun narrower, e.g. one test, for the rest)"
             } else {
                 "(long output: shown are its start and end; use a narrower command or read for the rest)"
@@ -3676,6 +3694,65 @@ a.rs (3 matches)
         );
         assert!(whole.contains("\nline 1500\n"));
         assert!(whole.ends_with("line 3000\n--- stderr ---\nwarning: slow\n"));
+    }
+
+    #[test]
+    fn successful_checks_summarize_the_full_capture_and_keep_it_readable() {
+        let lines = (0..1000)
+            .map(|i| format!("test test_{i} ... ok\n"))
+            .collect::<String>();
+        let full = format!(
+            "{lines}warning: use new_api instead\n{lines}test result: ok. 2000 passed; 0 failed\n"
+        );
+        let out = CommandOutput {
+            stdout: "head and tail only".into(),
+            stderr: String::new(),
+            whole: Some((full.clone(), String::new())),
+            exit_code: Some(0),
+            timed_out: false,
+            stopped: false,
+            truncated: true,
+            duration_ms: 100,
+            waited: None,
+        };
+        let (shown, shortened) = format_command_output("cargo test", &out);
+        assert!(shortened);
+        assert!(shown.contains("warning: use new_api instead"));
+        assert!(shown.contains("2000 passed; 0 failed"));
+        assert!(!shown.contains("test test_500"));
+        assert!(whole_output_text("cargo test", &out).contains(&full));
+        let data = CommandOutput {
+            stdout: lines.clone(),
+            whole: None,
+            truncated: false,
+            ..out
+        };
+        assert_eq!(
+            format_command_output("cat report.txt", &data).0,
+            format_command_output("cargo test && cat report.txt", &data)
+                .0
+                .replace("cargo test && cat report.txt", "cat report.txt")
+        );
+        for (exit_code, timed_out, stopped) in [
+            (Some(1), false, false),
+            (Some(0), true, false),
+            (Some(0), false, true),
+        ] {
+            let failed = CommandOutput {
+                exit_code,
+                timed_out,
+                stopped,
+                stdout: lines.clone(),
+                stderr: String::new(),
+                whole: None,
+                truncated: false,
+                duration_ms: 100,
+                waited: None,
+            };
+            assert!(!format_command_output("cargo test", &failed)
+                .0
+                .contains("successful check summarized"));
+        }
     }
 
     /// G02: how a command that ran ended comes from what ran, not from its

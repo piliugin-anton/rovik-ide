@@ -40,6 +40,116 @@ fn chars(s: &str) -> usize {
     s.chars().count()
 }
 
+/// Only summarize checks whose output is a report, not requested data.
+/// Mixed commands, pipelines and machine-readable reports retain normal output.
+pub fn is_summary_command(command: &str) -> bool {
+    let parsed = super::permissions::parse_command(command);
+    // A final exit code of zero must establish that every check succeeded.
+    // Sequencing and fallback operators can mask an earlier failed check.
+    if parsed.opaque
+        || parsed.backgrounds
+        || parsed.piped.iter().any(|p| *p)
+        || command.contains([';', '\n', '\r'])
+        || command.contains("||")
+    {
+        return false;
+    }
+    let mut checks = 0;
+    for words in &parsed.segments {
+        if words.first().is_some_and(|w| w == "cd") && words.len() == 2 {
+            continue;
+        }
+        if !super::worker::is_check_tool(words)
+            || words.iter().any(|w| {
+                matches!(
+                    w.as_str(),
+                    "--help"
+                        | "-h"
+                        | "--version"
+                        | "-V"
+                        | "--list"
+                        | "list"
+                        | "--listTests"
+                        | "--collect-only"
+                        | "--showConfig"
+                        | "--nocapture"
+                        | "--show-output"
+                        | "-s"
+                ) || w.contains("json")
+                    || w.contains("xml")
+                    || w.starts_with("--reporter")
+                    || w.starts_with("--message-format")
+            })
+        {
+            return false;
+        }
+        checks += 1;
+    }
+    checks > 0
+}
+
+static SUCCESS_SUMMARY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*(test result:|test suites:|tests:|test files\b|tests\s+\d|summary\b|finished\b|build succeeded|built in\b|✓ built|duration\b|time:|ok\s|\?\s|[ℹ#]\s*(tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)\b)|\b\d+ (passed|failed|skipped|warnings?)\b").unwrap()
+});
+static WARNING_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(warn(ing)?s?|deprecated|deprecation)\b").unwrap());
+
+/// A successful check's totals, warning context and short closing summary.
+/// The caller saves the full capture whenever this omits anything.
+pub fn summarize_success(text: &str, max_chars: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= 20 && chars(text) <= max_chars {
+        return text.to_string();
+    }
+    let mut keep = vec![false; lines.len()];
+    let mut warnings = vec![false; lines.len()];
+    for (i, line) in lines.iter().enumerate() {
+        if SUCCESS_SUMMARY.is_match(line) {
+            keep[i] = true;
+        }
+        if WARNING_LINE.is_match(line) {
+            for j in i..lines.len().min(i + 8) {
+                if j > i && lines[j].trim().is_empty() {
+                    break;
+                }
+                keep[j] = true;
+                warnings[j] = true;
+            }
+        }
+    }
+    for k in keep.iter_mut().rev().take(5) {
+        *k = true;
+    }
+    let selected = lines
+        .iter()
+        .zip(&keep)
+        .filter_map(|(line, keep)| keep.then_some(*line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // A large batch of suite summaries must not crowd every warning out.
+    // Bound each part separately when the combined selection is too large.
+    if chars(&selected) > max_chars && warnings.iter().any(|w| *w) {
+        let diagnostics = lines
+            .iter()
+            .zip(&warnings)
+            .filter_map(|(line, warning)| warning.then_some(*line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let summary = lines
+            .iter()
+            .zip(keep.iter().zip(&warnings))
+            .filter_map(|(line, (keep, warning))| (*keep && !warning).then_some(*line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return format!(
+            "Warnings:\n{}\nSummary:\n{}",
+            cap_output(&diagnostics, 20, 10, max_chars / 2),
+            cap_output(&summary, 10, 20, max_chars / 2)
+        );
+    }
+    cap_output(&selected, 30, 20, max_chars)
+}
+
 /// The start and the end of long output, whole lines. Errors and summaries
 /// are usually at the end; the start shows what ran.
 pub fn cap_output(text: &str, head_lines: usize, tail_lines: usize, max_chars: usize) -> String {
@@ -1530,6 +1640,88 @@ mod tests {
         ];
         for (code, output) in cases {
             assert_eq!(environment_failure(*code, output, &[]), None, "{output:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod success_tests {
+    use super::*;
+
+    #[test]
+    fn only_recognized_checks_without_data_commands_are_summarized() {
+        for command in [
+            "cargo test -p core",
+            "cargo nextest run",
+            "cd web && npm test",
+            "npm run build && npm run typecheck",
+            "python -m pytest",
+            "go test ./...",
+            "npx vitest run",
+        ] {
+            assert!(is_summary_command(command), "{command}");
+        }
+        for command in [
+            "cat data.json",
+            "git diff",
+            "cargo test && cat data.txt",
+            "cargo test; cargo build",
+            "cargo test || cargo check",
+            "cargo test\ncargo build",
+            "cargo test | tail -20",
+            "cargo test -- --list",
+            "cargo nextest list",
+            "cargo test --message-format=json",
+            "pytest --help",
+            "pytest -s",
+            "cargo test -- --nocapture",
+            "npm run export",
+            "echo $(cargo test)",
+            "cargo test &",
+            "cd web",
+        ] {
+            assert!(!is_summary_command(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn successful_checks_keep_middle_warnings_and_totals_without_passing_test_noise() {
+        let noise = (0..500)
+            .map(|i| format!("test test_{i} ... ok\n"))
+            .collect::<String>();
+        let text = format!("{noise}warning: deprecated API\n  --> src/lib.rs:12\n\n{noise}test result: ok. 1000 passed; 0 failed; 2 ignored\n");
+        let summary = summarize_success(&text, 4_000);
+        assert!(summary.contains("warning: deprecated API\n  --> src/lib.rs:12"));
+        assert!(summary.contains("1000 passed; 0 failed; 2 ignored"));
+        assert!(!summary.contains("test test_250"));
+        assert!(summary.chars().count() < 4_000);
+    }
+
+    #[test]
+    fn many_suite_totals_cannot_crowd_out_warnings() {
+        let text = format!(
+            "warning: deprecated API\n\n{}",
+            "test result: ok. 10 passed; 0 failed\n".repeat(500)
+        );
+        let summary = summarize_success(&text, 4_000);
+        assert!(summary.contains("warning: deprecated API"));
+        assert!(summary.contains("10 passed; 0 failed"));
+        assert!(summary.chars().count() < 4_200);
+    }
+
+    #[test]
+    fn common_success_formats_keep_counts_including_zero_tests() {
+        for report in [
+            "test result: ok. 0 passed; 0 failed; 3 ignored",
+            "Test Suites: 2 passed, 2 total\nTests: 12 passed, 12 total",
+            "Test Files  2 passed (2)\nTests  12 passed (12)",
+            "=== 12 passed, 2 skipped in 0.4s ===",
+            "# tests 12\n# pass 12\n# fail 0",
+            "Summary [0.2s] 12 tests run: 12 passed",
+            "Finished `dev` profile in 1s",
+        ] {
+            let text = format!("{report}\n{}", "progress\n".repeat(50));
+            assert!(summarize_success(&text, 4_000).contains(report), "{report}");
         }
     }
 }

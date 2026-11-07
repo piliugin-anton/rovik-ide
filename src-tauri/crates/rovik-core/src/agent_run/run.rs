@@ -875,8 +875,8 @@ impl Run {
         };
         // The repository map: the declarations most relevant to the request.
         // Built here, then rebuilt mid-run at most every MAP_MAX_AGE
-        // (refresh_repo_map_if_needed). Every model turn sends it on the
-        // request's message (ChatParams::request_context).
+        // (refresh_repo_map_if_needed appends changes). Every turn sends the
+        // initial map on the request's message (ChatParams::request_context).
         let repo_map_chars = repo_map_chars(request.profile.context_tokens);
         let repo_map = match &root {
             Some(r) => {
@@ -2623,11 +2623,10 @@ impl Run {
     /// The request's own context, which goes on the request's message rather
     /// than in the system prompt: what earlier runs of the project learned
     /// (memory.rs), then the repository map. The system prompt stays the
-    /// same for the run's requests, so the provider's cached prefix holds;
-    /// this grows with the map, and a new map costs one cache miss from
-    /// there on (refresh_repo_map_if_needed).
+    /// same for the run's requests. The initial map stays stable; refreshes
+    /// append updates to history instead of rewriting this cached prefix.
     fn request_context(&self) -> Option<String> {
-        let map = self.map.text().clone();
+        let map = self.map.initial.clone();
         match (self.memory.context(), map) {
             ("", map) => map,
             (memory, Some(map)) => Some(format!("{memory}\n\n{map}")),
@@ -2663,12 +2662,9 @@ impl Run {
     /// Rebuilds the repository map mid-run, so the next model turns see the
     /// new declarations (not the run-start snapshot).
     ///
-    /// The map goes on the request's message, in the prefix providers cache
-    /// (ChatParams::request_context): a new map changes the request from
-    /// there on, and the cache misses from there once. So a rebuild waits
-    /// until the map is MAP_MAX_AGE old, whatever changed: the run's own
-    /// writes, and what a command or someone outside the run changed (the
-    /// editor, git).
+    /// Keep the run-start map on the request unchanged. Append changed entries
+    /// after the completed tool results, preserving the provider's cached prefix.
+    /// Rebuild at most every MAP_MAX_AGE for writes, commands and external edits.
     ///
     /// Bullet-proofing, in order of cheap to expensive:
     /// - Skips while the map is fresh, once stopped, or without a project
@@ -2683,8 +2679,8 @@ impl Run {
     ///   original request, so new files the run touched steer the ranking.
     /// - Identical output keeps the old string (no context churn, no log spam).
     ///
-    /// Returns true when the map text changed.
-    async fn refresh_repo_map_if_needed(&mut self) -> Result<bool, String> {
+    /// Returns true when changed entries were appended to history.
+    pub(super) async fn refresh_repo_map_if_needed(&mut self) -> Result<bool, String> {
         let Some(root) = self.root.clone() else {
             return Ok(false);
         };
@@ -2722,13 +2718,21 @@ impl Run {
         let Ok(new_map) = rebuilt else {
             return Ok(false);
         };
-        if !self.map.refreshed(new_map) {
-            return Ok(false);
+        let update = crate::repo_map::update(self.map.text().as_deref(), new_map.as_deref());
+        // Store first: a failed append must not advance the map we diff against.
+        if let Some(update) = &update {
+            self.add_harness(update.clone(), "repoMapUpdate").await?;
         }
+        self.map.refreshed(new_map);
+        let Some(update) = update else {
+            return Ok(false);
+        };
         log::write(
             &self.core,
             json!({
                 "event": "repoMapRefresh",
+                "strategy": "append",
+                "updateChars": update.chars().count(),
                 "dialogId": self.dialog_id,
                 "refreshes": self.map.refreshes(),
                 "mapChars": self.map.text().as_ref().map(|m| m.chars().count()).unwrap_or(0),
@@ -3841,8 +3845,8 @@ fn repo_map_chars(context_tokens: Option<usize>) -> usize {
 }
 
 /// How old the map gets before it's rebuilt mid-run, with the run's changes
-/// and those made outside it (the editor, git); not sooner: a new map
-/// costs the prompt cache the request's part (refresh_repo_map_if_needed).
+/// and those made outside it (the editor, git). Changed entries are appended
+/// to history without replacing the initial map (refresh_repo_map_if_needed).
 /// The rebuild is incremental (only changed files re-parse) and a no-op
 /// when the ranking didn't move, so long runs pay one cheap walk per interval.
 const MAP_MAX_AGE: Duration = Duration::from_secs(120);
@@ -4247,6 +4251,7 @@ async fn project_mcp_files(
 
 /// The repository map and its refresh budget for a run.
 pub(super) struct RepoMapState {
+    initial: Option<String>,
     text: Option<String>,
     budget: usize,
     refreshed_at: Instant,
@@ -4260,6 +4265,7 @@ impl Default for RepoMapState {
 impl RepoMapState {
     fn new(text: Option<String>, budget: usize) -> Self {
         Self {
+            initial: text.clone(),
             text,
             budget,
             refreshed_at: Instant::now(),
@@ -4267,6 +4273,7 @@ impl RepoMapState {
         }
     }
     pub(super) fn prepared(&mut self, text: Option<String>, budget: usize) {
+        self.initial = text.clone();
         self.text = text;
         self.budget = budget;
     }
@@ -4275,6 +4282,10 @@ impl RepoMapState {
     }
     pub(super) fn budget(&self) -> usize {
         self.budget
+    }
+    #[cfg(test)]
+    pub(super) fn expire(&mut self) {
+        self.refreshed_at = Instant::now() - MAP_MAX_AGE;
     }
     fn age(&self) -> Duration {
         self.refreshed_at.elapsed()

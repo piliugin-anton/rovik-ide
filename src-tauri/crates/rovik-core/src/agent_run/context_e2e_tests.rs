@@ -1058,3 +1058,202 @@ async fn a_continued_clm_reply_has_its_notes_on_the_request_to_continue_it() {
         "{request}"
     );
 }
+
+// Drive one request with the same finalization as Run::drive, while tests
+// control the refresh clock or compaction threshold between turns.
+async fn finalized_turn(run: &mut crate::agent_run::run::Run) -> crate::agent_run::run::TurnOutput {
+    let turn = run.model_turn().await.unwrap();
+    assert!(turn.failure.is_none());
+    run.finalize(
+        &turn.message_id,
+        turn.text.clone(),
+        turn.tool_calls.clone(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    turn
+}
+
+#[tokio::test]
+async fn map_refreshes_append_changes_without_rewriting_the_cached_request() {
+    let h = harness(&[("src/lib.rs", "pub fn alpha() {}\n")]).await;
+    let (url, seen) = model(vec![
+        Reply::Text("First."),
+        Reply::Text("Second."),
+        Reply::Text("Third."),
+    ])
+    .await;
+    let core = h.core.clone();
+    let request = h.request(&url, Harness::send("Inspect alpha"), quiet_permissions());
+    // start() normally stores the request before prepare().
+    let StartKind::Send { message } = &request.start else {
+        unreachable!()
+    };
+    let stored = crate::agent_run::stored_message(message);
+    let id = h.dialog_id.clone();
+    core.db
+        .write(move |conn| store::append_messages(conn, &id, &[stored]).map(|_| ()))
+        .await
+        .unwrap();
+    core.agents.set_config(request.config.clone().unwrap());
+    let controls = core.agents.register(&h.dialog_id, "p::m", None).unwrap();
+    let _registered = core.agents.registered(&h.dialog_id, &controls.run_id);
+    let (mut run, _) = crate::agent_run::run::Run::prepare(&core, request, controls)
+        .await
+        .unwrap()
+        .unwrap();
+    finalized_turn(&mut run).await;
+    let before = h.messages().await;
+    std::fs::write(h.project.join("src/lib.rs"), "pub fn beta(value: i32) {}\n").unwrap();
+    // A fresh map defers the scan, even if files changed.
+    assert!(!run.refresh_repo_map_if_needed().await.unwrap());
+    run.map.expire();
+    assert!(run.refresh_repo_map_if_needed().await.unwrap());
+    let after = h.messages().await;
+    assert_eq!(after.len(), before.len() + 1);
+    for (old, new) in before.iter().zip(&after) {
+        assert_eq!(old.id, new.id);
+        assert_eq!(old.content, new.content);
+        assert_eq!(old.meta, new.meta);
+    }
+    let update = after.last().unwrap();
+    assert_eq!(update.meta.as_ref().unwrap()["harness"], "repoMapUpdate");
+    assert!(!crate::agent_run::messages::is_request(update));
+    assert!(
+        update.content.contains("-   1 pub fn alpha()"),
+        "{}",
+        update.content
+    );
+    assert!(update.content.contains("+   1 pub fn beta(value: i32)"));
+    finalized_turn(&mut run).await;
+    run.map.expire();
+    assert!(
+        !run.refresh_repo_map_if_needed().await.unwrap(),
+        "identical maps append nothing"
+    );
+    std::fs::remove_file(h.project.join("src/lib.rs")).unwrap();
+    run.map.expire();
+    assert!(run.refresh_repo_map_if_needed().await.unwrap());
+    finalized_turn(&mut run).await;
+    let requests = seen.lock().unwrap();
+    let first_user = |request: &Value| {
+        messages_of(request)
+            .iter()
+            .find(|m| m["role"] == "user")
+            .unwrap()
+            .clone()
+    };
+    let initial = first_user(&requests[0]);
+    assert!(text_of(&initial).contains("alpha()"));
+    for request in &requests[1..] {
+        assert_eq!(
+            first_user(request),
+            initial,
+            "initial map stays byte-identical"
+        );
+    }
+    assert!(messages_of(&requests[1])
+        .iter()
+        .any(|m| text_of(m).contains("+   1 pub fn beta")));
+    assert!(messages_of(&requests[2])
+        .iter()
+        .any(|m| text_of(m).contains("-   1 pub fn beta")));
+}
+
+#[tokio::test]
+async fn a_combined_checklist_transition_still_requests_compaction_before_work() {
+    let h = harness(&[]).await;
+    pretend_volume(&h);
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [
+                { "title": "Inspect", "status": "in_progress" },
+                { "title": "Implement", "status": "pending" }
+            ]}),
+        },
+        Reply::Call {
+            id: "t2",
+            name: "todo",
+            args: json!({ "items": [
+                { "title": "Inspect", "status": "done" },
+                { "title": "Implement", "status": "in_progress" }
+            ]}),
+        },
+    ])
+    .await;
+    let core = h.core.clone();
+    let mut request = h.request(
+        &url,
+        Harness::send("Inspect then implement"),
+        quiet_permissions(),
+    );
+    request.context_mode = Some("clm".into());
+    // start() normally stores the request before prepare().
+    let StartKind::Send { message } = &request.start else {
+        unreachable!()
+    };
+    let stored = crate::agent_run::stored_message(message);
+    let id = h.dialog_id.clone();
+    core.db
+        .write(move |conn| store::append_messages(conn, &id, &[stored]).map(|_| ()))
+        .await
+        .unwrap();
+    core.agents.set_config(request.config.clone().unwrap());
+    let controls = core.agents.register(&h.dialog_id, "p::m", None).unwrap();
+    let _registered = core.agents.registered(&h.dialog_id, &controls.run_id);
+    let (mut run, _) = crate::agent_run::run::Run::prepare(&core, request, controls)
+        .await
+        .unwrap()
+        .unwrap();
+    let first = finalized_turn(&mut run).await;
+    run.execute_tool_calls(&first.tool_calls, None)
+        .await
+        .unwrap();
+    let second = finalized_turn(&mut run).await;
+    let id = h.dialog_id.clone();
+    core.db
+        .write(move |conn| {
+            let mut state = crate::clm::store::load_state(conn, &id)?;
+            state.tokens = 50;
+            state.budget = 100;
+            crate::clm::store::save_state(conn, &id, &state)
+        })
+        .await
+        .unwrap();
+    run.execute_tool_calls(&second.tool_calls, None)
+        .await
+        .unwrap();
+    let messages = h.messages().await;
+    let answer = result_of(&messages, "t2");
+    assert!(!answer.call_failed());
+    assert!(
+        answer.content.contains("1 of 2 done; now: Implement"),
+        "{}",
+        answer.content
+    );
+    assert!(
+        answer
+            .content
+            .contains("Before \"Implement\": compact that step's span"),
+        "{}",
+        answer.content
+    );
+    let requests = seen.lock().unwrap();
+    let system = text_of(&messages_of(&requests[0])[0]);
+    assert!(system.contains("done and the next step in_progress in the same update"));
+    assert!(system.contains("complete any requested compaction before starting actual work"));
+    let schema = requests[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["function"]["name"] == "todo")
+        .unwrap();
+    assert!(schema["function"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("done and the next step in_progress in the same update"));
+}

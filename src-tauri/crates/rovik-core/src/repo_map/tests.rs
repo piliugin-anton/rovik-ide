@@ -867,3 +867,32 @@ fn qualified_callers_show_the_matching_declaration_only() {
         "{c}"
     );
 }
+
+#[test]
+fn updates_include_only_changed_entries_and_ignore_ranking_order() {
+    let old = format!("{HEADER}\na.rs:\n  1 fn alpha()\nb.rs:\n  3 fn beta()");
+    let reordered = format!("{HEADER}\nb.rs:\n  3 fn beta()\na.rs:\n  1 fn alpha()");
+    assert_eq!(update(Some(&old), Some(&reordered)), None);
+    let new = format!(
+        "{HEADER}\na.rs:\n  2 fn alpha(value: i32)\nb.rs:\n  3 fn beta()\nc.rs:\n  1 fn gamma()"
+    );
+    let delta = update(Some(&old), Some(&new)).unwrap();
+    assert!(
+        delta.contains("a.rs:\n-   1 fn alpha()\n+   2 fn alpha(value: i32)"),
+        "{delta}"
+    );
+    assert!(delta.contains("c.rs:\n+   1 fn gamma()"));
+    assert!(!delta.contains("b.rs"));
+    assert_eq!(update(Some(&new), Some(&new)), None);
+}
+
+#[test]
+fn updates_cover_empty_maps_and_removed_entries_without_claiming_deletion() {
+    let map = format!("{HEADER}\nsrc/日本.rs:\n  1 fn hello()");
+    let added = update(None, Some(&map)).unwrap();
+    assert!(added.contains("+   1 fn hello()"));
+    let removed = update(Some(&map), None).unwrap();
+    assert!(removed.contains("src/日本.rs:\n-   1 fn hello()"));
+    assert!(removed.contains("selection changes do not prove deletion"));
+    assert_eq!(update(None, None), None);
+}
