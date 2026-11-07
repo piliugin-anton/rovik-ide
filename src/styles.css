@@ -2071,22 +2071,87 @@ body.tree-dragging {
    → "Manage memories…". Roomier than a settings page: a memory says a few
    lines, and its form holds both of its fields. */
 
+.memory-settings .setting-row-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.memory-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.memory-settings-actions .link-button {
+  white-space: nowrap;
+}
+
 .modal.memory-manager {
   width: min(720px, calc(100vw - 48px));
 }
 
+.memory-manager .modal-header,
+.memory-manager-tools,
+.memory-manager-pagination {
+  flex-shrink: 0;
+}
+
+.memory-manager .modal-body {
+  min-height: 0;
+}
+
+.memory-manager .settings-status {
+  margin: 0 0 10px;
+}
+
 .memory-manager-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.memory-manager-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.memory-manager-pagination button {
+  padding: 5px 10px;
+  background: var(--bg-control);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.memory-manager-pagination button:hover:not(:disabled) {
+  background: var(--bg-control-hover);
+}
+
+.memory-manager button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .memory-manager-search {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1;
+  flex: 1 1 180px;
   min-width: 0;
   padding: 0 6px;
   background: var(--input-bg);

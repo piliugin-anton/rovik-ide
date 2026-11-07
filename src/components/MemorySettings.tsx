@@ -19,6 +19,7 @@ export default function MemorySettings(props: { root: string }) {
   );
   const [enabled, setEnabled] = createSignal(true);
   const [saving, setSaving] = createSignal(false);
+  const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
   /** The manager is on top: it lists and changes what the project kept. */
   const [managing, setManaging] = createSignal(false);
@@ -31,8 +32,12 @@ export default function MemorySettings(props: { root: string }) {
     )
   );
   async function read() {
-    const settings = await loadProjectSettings(props.root);
+    const root = props.root;
+    setLoading(true);
+    const settings = await loadProjectSettings(root);
+    if (props.root !== root) return;
     setEnabled(settings.memory !== false);
+    setLoading(false);
   }
 
   /** Saves the switch at once: off is `memory: false`, on again removes it. */
@@ -56,10 +61,9 @@ export default function MemorySettings(props: { root: string }) {
       <section class="settings-section">
         <div class="settings-section-title">Long-term memory in this project</div>
         <p class="settings-hint">
-          What the agent's runs in this project learned and kept: an approach that worked, a fact
-          about the code, a failure it fixed. A run starts with what fits its task, shows it above
-          the message box, and records what became of it once the checks ran. Only evidence promotes
-          a memory; one a failure points at is invalidated.
+          Keep facts, procedures and prior work for this project. Chats recall relevant memories and
+          show them above the message box. Memories can be provisional or verified; changes to their
+          source files or related failures can mark them to be checked again.
         </p>
         <SettingRow label="Memories">
           <span class="memory-count" role="status">
@@ -67,21 +71,26 @@ export default function MemorySettings(props: { root: string }) {
               {stats() ? memorySummary(stats()!) : 'The memory could not be counted.'}
             </Show>
           </span>
-          <button class="link-button" onClick={() => setManaging(true)}>
-            Manage memories…
-          </button>
+          <div class="memory-settings-actions">
+            <button class="link-button" onClick={() => setManaging(true)}>
+              Manage memories…
+            </button>
+            <button class="link-button" disabled={stats.loading} onClick={() => void refetch()}>
+              Count again
+            </button>
+          </div>
         </SettingRow>
         <SettingRow label="Use in chats">
           <input
             type="checkbox"
             checked={enabled()}
-            disabled={saving()}
+            disabled={loading() || saving()}
             aria-label="Use this project's memory in chats"
             title="Unticked: the project's chats recall nothing and record nothing"
             onChange={(e) => void change(e.currentTarget.checked)}
           />
         </SettingRow>
-        <Show when={!enabled()}>
+        <Show when={!loading() && !enabled()}>
           <SettingStatus>
             Off for this project: its chats start without prior work and record nothing new. What it
             holds stays, and the count above still shows it.
@@ -90,9 +99,6 @@ export default function MemorySettings(props: { root: string }) {
         <Show when={error()}>
           <SettingStatus warning>{error()}</SettingStatus>
         </Show>
-        <button class="link-button" disabled={stats.loading} onClick={() => void refetch()}>
-          Count again
-        </button>
       </section>
       <Show when={managing()}>
         <MemoryManager

@@ -1293,7 +1293,8 @@ that project (on unless you turn it off). **Manage memories…** opens them: a
 search box that finds a memory by a word of its title or text, a tag or a file
 name; **Edit** rewrites a memory's title and text; **Delete** removes one, and
 **Clear all memories…** removes every memory the project keeps, both after
-asking. Each project's memory is a SQLite file
+asking. Search and page controls stay visible while the list scrolls; a failed
+read offers **Try again**. Each project's memory is a SQLite file
 of its own in the app's data folder (`memory/<project>.db`), so nothing is
 written into your repository. The store is the `verified-code-memory` crate in
 `src-tauri/crates/verified-code-memory`.

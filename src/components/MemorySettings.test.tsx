@@ -21,6 +21,7 @@ let saves = 0;
 let listed: { root: string; query: string }[] = [];
 /** Set: the count waits here until the test lets it go. */
 let held: (() => void)[] | null = null;
+let heldSettings: ((value: unknown) => void)[] | null = null;
 
 /** What the manager lists as it opens: a small memory or two. */
 const memories = () => [
@@ -50,7 +51,10 @@ const memories = () => [
 (window as any).__TAURI_INTERNALS__ = {
   transformCallback: () => 1,
   invoke: async (cmd: string, args: any) => {
-    if (cmd === 'load_project_settings') return stored;
+    if (cmd === 'load_project_settings') {
+      if (heldSettings) return new Promise((resolve) => heldSettings!.push(resolve));
+      return stored;
+    }
     if (cmd === 'save_project_settings') {
       saves++;
       if (savesFail) throw new Error('the disk is full');
@@ -85,6 +89,7 @@ function reset() {
   saves = 0;
   listed = [];
   held = null;
+  heldSettings = null;
 }
 
 /** Nothing an earlier test rendered is left over, portals included. */
@@ -271,4 +276,52 @@ test('long-term memory: closing the manager counts again', async () => {
     ['/home/me/demo', '/home/me/demo'],
     'the count is asked for again, for the same project'
   );
+});
+
+test('long-term memory: empty-state actions have their own row below the count', async () => {
+  const root = await page();
+  const manage = manageButton(root);
+  const actions = root.querySelector('.memory-settings-actions');
+  assert.ok(actions?.contains(manage));
+  assert.equal(actions?.contains(count(root)), false);
+  assert.match(count(root).textContent!, /No memories yet/);
+  assert.match(actions?.textContent ?? '', /Count again/);
+});
+
+test('long-term memory: the switch waits for the saved preference before it can be changed', async () => {
+  reset();
+  emptyBody();
+  heldSettings = [];
+  const root = container();
+  const dispose = render(() => <MemorySettings root="/home/me/demo" />, root);
+  try {
+    await flush();
+    assert.equal(box(root).disabled, true);
+    box(root).click();
+    assert.equal(saves, 0);
+    heldSettings.shift()!({ memory: false });
+    await flush();
+    assert.equal(box(root).disabled, false);
+    assert.equal(box(root).checked, false);
+  } finally {
+    dispose();
+    reset();
+  }
+});
+
+test('long-term memory: closing the manager restores focus to Manage memories', async () => {
+  const root = await page();
+  const manage = manageButton(root);
+  manage.focus();
+  manage.click();
+  await flush();
+  assert.equal(document.activeElement, searchBox());
+  assert.equal(
+    manager()?.closest('.model-settings'),
+    null,
+    'settings styles cannot reach the manager'
+  );
+  closeButton().click();
+  await flush();
+  assert.equal(document.activeElement, manage);
 });
