@@ -45,7 +45,7 @@ def improves(report, incumbent, split, protocol):
 
 def non_improvements(trials):
     """Failures are distinct hypotheses and do not reset after an improvement."""
-    return len({trial["id"] for trial in trials if not trial["improved"]})
+    return len({trial["id"] for trial in trials if trial["improved"] is False})
 
 
 def run(args):
@@ -150,24 +150,32 @@ def run(args):
         name = hypothesis["id"]
         vector_path = profile(name, "development")
         candidates = []
+        unavailable = None
         for threshold in protocol["thresholds"]:
             label = f"{name}-{threshold:.2f}"
-            report = evaluate(label, "development", vector_path, threshold)
+            try:
+                report = evaluate(label, "development", vector_path, threshold)
+            except RuntimeError as error:
+                if 'EmbeddingUnavailable("no vocabulary vector")' not in str(error):
+                    raise
+                unavailable = str(error)
+                break
             if admissible(report, "development", protocol, baseline):
                 candidates.append((report["groups"]["development"]["recall_at_8"], threshold, report))
         candidate = max(candidates, key=lambda c: (c[0], c[1])) if candidates else None
-        improved = candidate is not None and improves(candidate[2], incumbent, "development", protocol)
+        improved = None if unavailable else candidate is not None and improves(candidate[2], incumbent, "development", protocol)
         trial = {**hypothesis, "improved": improved, "threshold": candidate[1] if candidate else None,
-                 "metrics": candidate[2]["groups"]["development"] if candidate else None}
+                 "metrics": candidate[2]["groups"]["development"] if candidate else None,
+                 "status": "unavailable" if unavailable else "evaluated", "error": unavailable}
         trials.append(trial)
         if improved:
             incumbent = candidate[2]
             selected = (name, candidate[1])
         failures = non_improvements(trials)
         print(json.dumps({**trial, "non_improvements": failures}), flush=True)
-        if failures == protocol["stop_after_distinct_non_improvements"]:
+        if not args.all_hypotheses and failures == protocol["stop_after_distinct_non_improvements"]:
             break
-    if failures != protocol["stop_after_distinct_non_improvements"]:
+    if not args.all_hypotheses and failures != protocol["stop_after_distinct_non_improvements"]:
         raise RuntimeError("predeclared hypotheses exhausted before the stopping rule")
     # The selected representation and threshold are frozen before scoring these.
     heldout = evaluate("baseline-heldout", "heldout")
@@ -182,6 +190,7 @@ def run(args):
         "versions": {name: importlib.metadata.version(name) for name in ("spacy", "en-core-web-md", "numpy", "scikit-learn")},
         "model_load_seconds": model_load_seconds,
         "baseline_development": baseline["groups"]["development"],
+        "run_mode": "all hypotheses, explicitly requested after implementation" if args.all_hypotheses else "original three-non-improvement stopping rule",
         "selection_no_match_ceiling": max(protocol["maximum_no_match_injection_rate"], baseline["groups"]["development"]["no_match_injection_rate"]),
         "trials": trials, "distinct_non_improvements": failures, "selected": selected,
         "baseline_heldout": heldout["groups"]["heldout"],
@@ -197,4 +206,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evaluator", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--all-hypotheses", action="store_true", help="Override the original stopping rule when explicitly requested.")
     run(parser.parse_args())

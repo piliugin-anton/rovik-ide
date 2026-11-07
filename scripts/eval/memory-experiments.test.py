@@ -19,6 +19,8 @@ class ExperimentProtocolTests(unittest.TestCase):
         self.assertEqual(experiments.non_improvements(trials), 2)
         trials.append({"id": "three", "improved": False})
         self.assertEqual(experiments.non_improvements(trials), 3)
+        trials.append({"id": "unavailable-model", "improved": None})
+        self.assertEqual(experiments.non_improvements(trials), 3)
 
     def test_recall_cannot_be_improved_by_returning_everything(self):
         protocol = {"maximum_no_match_injection_rate": 0.05}

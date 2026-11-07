@@ -38,16 +38,17 @@ association counters alone do not make identical records distinct.
 - Core doctest command passed with its one existing ignored example.
 - Clippy for both changed crates passed with four existing core warnings outside
   these changes and no new warnings.
-- Frontend tests, type checking and format checking complete before this
-  implementation commit is pushed.
+- Frontend tests, type checking and format checking passed before this
+  implementation commit was pushed.
 
 This is a Linux local validation record, not a claim that the remote native
 platform/Landlock matrix has finished. No database migration, new embedding
 dependency or protocol schema is introduced.
 
-Per the user's requested order, commit and push the validated implementation
-before rerunning the hypotheses. The rerun must identify the pushed code commit,
-execute the complete requested hypothesis set, preserve the original datasets
-and report recall, abstention and packing independently. The existing synthetic
-retrieval score already supplied file fields; runtime integration improvements
-need their scripted request tests and cannot be inferred from that score alone.
+Per the user's requested order, the validated implementation was committed and
+pushed as `ac17433` before rerunning the hypotheses. The
+[complete rerun](long-term-memory-postimplementation-rerun-nov7-2026.md) identifies
+that commit, preserves the original datasets and reports recall, abstention and
+packing independently. The existing synthetic retrieval score already supplied
+file fields; runtime integration improvements need their scripted request tests
+and cannot be inferred from that score alone.

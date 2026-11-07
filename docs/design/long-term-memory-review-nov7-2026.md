@@ -156,3 +156,8 @@ contextual keys, query fields, candidate depth, source granularity, capture and
 incident collapse. Hard coding-task negatives expose false-positive admissions
 absent from the original spectroscopy controls. These exploratory results do
 not change production defaults or establish real-agent quality gains.
+
+The [conservative implementation review](long-term-memory-safe-improvements-nov7-2026.md)
+and [post-implementation rerun](long-term-memory-postimplementation-rerun-nov7-2026.md)
+document the exact-copy and observed-file changes, their regression tests, and
+the complete replay after the implementation was pushed.

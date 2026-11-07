@@ -135,9 +135,13 @@ fn duplicate_stress() -> Result<Value, Box<dyn std::error::Error>> {
         json!({"covered_requirements":coverage,"required":2,"records_supplied":ids.len(),"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet)})
     };
     let flat = evaluate(candidates.iter().take(8).cloned().collect());
+    let mut production = candidates.clone();
+    verified_code_memory::deduplicate_memories(&mut production);
+    production.truncate(8);
+    let production = evaluate(production);
     let diverse = evaluate(collapse(candidates, 8));
     Ok(
-        json!({"constructed_stress":true,"candidate_count":13,"flat":flat,"incident_collapse":diverse,"generator_quality_evaluated":false}),
+        json!({"constructed_stress":true,"candidate_count":13,"flat":flat,"production_exact_dedup":production,"incident_collapse":diverse,"generator_quality_evaluated":false}),
     )
 }
 
@@ -175,6 +179,7 @@ mod tests {
         let report = duplicate_stress().unwrap();
         assert_eq!(report["flat"]["covered_requirements"], 1);
         assert_eq!(report["incident_collapse"]["covered_requirements"], 2);
+        assert_eq!(report["production_exact_dedup"]["covered_requirements"], 2);
         assert_eq!(report["incident_collapse"]["records_supplied"], 2);
         assert!(
             report["incident_collapse"]["packet_tokens"]
