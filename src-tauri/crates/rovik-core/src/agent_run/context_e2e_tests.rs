@@ -326,11 +326,25 @@ async fn three_turns_send_one_prefix_that_only_grows() {
 
 #[tokio::test]
 async fn three_turns_on_a_small_window_are_trimmed_to_fit() {
+    assert_three_turns_are_trimmed_to_fit("").await;
+}
+
+#[tokio::test]
+async fn three_turns_are_trimmed_with_larger_project_instructions() {
+    let instructions = "Inspect the referenced source before making a change.\n".repeat(100);
+    assert_three_turns_are_trimmed_to_fit(&instructions).await;
+}
+
+/// Reserves the same history space regardless of platform/tool prompt size.
+/// The larger-instructions case must exercise result trimming too, rather
+/// than silently changing this fixture into a whole-turn omission test.
+async fn assert_three_turns_are_trimmed_to_fit(instructions: &str) {
     let notes = |c: char| format!("{}\n", c.to_string().repeat(74)).repeat(100); // 7 500 chars
     let h = harness(&[
         ("src/lib.rs", "pub fn alpha_one() {}\n"),
         ("notes/a.txt", &notes('a')),
         ("notes/b.txt", &notes('b')),
+        ("AGENTS.md", instructions),
     ])
     .await;
     let (url, seen) = model(vec![
@@ -354,10 +368,32 @@ async fn three_turns_on_a_small_window_are_trimmed_to_fit() {
         Reply::Text("Read b."),
     ])
     .await;
-    // The system prompt, the tools (the subagent one included: the test
-    // writer is always offered) and the map take ~8 000 tokens and the
-    // reply 8 000: ~4 000 for the history, which the two reads outgrow.
-    let window = 20_000;
+    // Measure the fixed overhead from the first real request. A fixed
+    // 20 000-token window left barely enough history on Linux, but macOS's
+    // longer tool description made it drop the oldest turn instead.
+    run_turns(
+        &h,
+        &url,
+        "trimming",
+        32_000,
+        "m",
+        vec![turn("Read notes/a.txt", None)],
+    )
+    .await;
+    let first = seen.lock().unwrap()[0].clone();
+    let messages = messages_of(&first);
+    let user = messages.iter().find(|m| m["role"] == "user").unwrap();
+    let user_text = text_of(user);
+    let (map, _) = map_and_text(&user_text).expect("the first request includes the repository map");
+    let fixed_chars = text_of(&messages[0]).chars().count()
+        + first["tools"].to_string().chars().count()
+        + map.chars().count()
+        + 2;
+    let fixed_tokens = (fixed_chars as f64 / DEFAULT_CHARS_PER_TOKEN).ceil() as usize;
+    // Four thousand tokens hold either read, but not both. Keep the same
+    // 8 000-token reply reserve, and verify every request fits below.
+    let window = fixed_tokens + 8_000 + 4_000;
+    assert_eq!(reply_room(window), 8_000);
     run_turns(
         &h,
         &url,
@@ -365,7 +401,6 @@ async fn three_turns_on_a_small_window_are_trimmed_to_fit() {
         window,
         "m",
         vec![
-            turn("Read notes/a.txt", None),
             turn("Write notes/c.txt", None),
             turn("Read notes/b.txt", None),
         ],

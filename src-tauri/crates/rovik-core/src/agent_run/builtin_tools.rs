@@ -27,6 +27,9 @@ pub enum BuiltinTool {
     Callers,
     Outline,
     Diagnostics,
+    MemorySearch,
+    MemoryGet,
+    MemoryRemember,
     WebSearch,
     BrowseUrl,
     BrowserScreenshot,
@@ -205,7 +208,7 @@ const READ_PATH: Restricted = Restricted {
 };
 
 impl BuiltinTool {
-    pub const ALL: [BuiltinTool; 21] = [
+    pub const ALL: [BuiltinTool; 24] = [
         BuiltinTool::Read,
         BuiltinTool::Write,
         BuiltinTool::ListDir,
@@ -214,6 +217,9 @@ impl BuiltinTool {
         BuiltinTool::Callers,
         BuiltinTool::Outline,
         BuiltinTool::Diagnostics,
+        BuiltinTool::MemorySearch,
+        BuiltinTool::MemoryGet,
+        BuiltinTool::MemoryRemember,
         BuiltinTool::WebSearch,
         BuiltinTool::BrowseUrl,
         BuiltinTool::BrowserScreenshot,
@@ -315,6 +321,30 @@ impl BuiltinTool {
                     source: false,
                 },
                 ..LOCAL_READ
+            },
+            // The project's long-term memory (agent_run/memory.rs): a lookup
+            // the model makes when its prompt's packet isn't enough. It reads
+            // the run's own store, so it dispatches with the run, and it
+            // changes nothing — no model tool may verify a memory.
+            MemorySearch => ToolSpec {
+                name: "memory_search",
+                needs_project: true,
+                ..BASE
+            },
+            MemoryGet => ToolSpec {
+                name: "memory_get",
+                needs_project: true,
+                ..BASE
+            },
+            // Recording something for later runs: the project's memory, not its
+            // files, and Agent mode only — a plan is not the place to write it.
+            // The record it makes is provisional: no model tool may confirm a
+            // memory (agent_run/memory.rs).
+            MemoryRemember => ToolSpec {
+                name: "memory_remember",
+                modes: Modes::AgentOnly,
+                needs_project: true,
+                ..BASE
             },
             Write => ToolSpec {
                 name: "write",

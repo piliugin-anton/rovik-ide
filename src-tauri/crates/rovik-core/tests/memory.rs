@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use rovik_core::core::Paths;
 use rovik_core::memory::{self, MemoryState};
 use serde_json::json;
+use verified_code_memory::model::SourceKind;
 use verified_code_memory::{NewMemory, RetrievalQuery, SharedMemoryStore};
 
 /// A folder of its own, removed when the test ends.
@@ -191,6 +192,14 @@ fn now_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
+}
+
+/// One listed entry, by the id the page knows it by.
+fn entry_of<'a>(entries: &'a [memory::MemoryEntry], id: &str) -> &'a memory::MemoryEntry {
+    entries
+        .iter()
+        .find(|listed| listed.id == id)
+        .unwrap_or_else(|| panic!("the memory {id} is listed"))
 }
 
 #[test]
@@ -546,5 +555,159 @@ fn clearing_says_how_many_memories_went() {
         memory::clear(&store, "payments-service").unwrap(),
         0,
         "clearing a project that remembers nothing clears nothing"
+    );
+}
+
+// The evidence and applicability the page shows beside each memory.
+
+#[test]
+fn an_entry_names_its_applicability_its_source_and_when_it_was_last_validated() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let before = now_millis();
+    let verified = store
+        .remember(
+            NewMemory::episode(
+                "payments-service",
+                "Checkout retry race condition",
+                "Serialize retries by order ID.",
+            )
+            .with_source_kind(SourceKind::TestResult),
+        )
+        .unwrap();
+    store.verify(verified.id, "12/12 tests passed").unwrap();
+    let stale = store
+        .remember(
+            NewMemory::project_fact(
+                "payments-service",
+                "Retries run in the worker",
+                "Retries are queued, not done inline.",
+            )
+            .with_source_kind(SourceKind::UserAssertion),
+        )
+        .unwrap();
+    store.verify(stale.id, "the tests passed: npm test").unwrap();
+    store.mark_needs_revalidation(stale.id).unwrap();
+    let provisional = store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Retry tests",
+            "The retries are covered twice.",
+        ))
+        .unwrap();
+    let after = now_millis();
+
+    let entries = memory::list(&store, "payments-service", "").unwrap();
+    let current = entry_of(&entries, &verified.id.to_string());
+    let marked = entry_of(&entries, &stale.id.to_string());
+    let unknown = entry_of(&entries, &provisional.id.to_string());
+
+    assert_eq!(
+        current.applicability, "current",
+        "a verified claim of this revision is expected to hold"
+    );
+    assert_eq!(
+        current.source_kind, "test result",
+        "the entry says what the claim came from, as a word"
+    );
+    assert_eq!(marked.source_kind, "user assertion");
+    let validated = current
+        .last_validated_at
+        .unwrap_or_else(|| panic!("a verified memory says when it was last validated"));
+    assert!(
+        (before..=after).contains(&validated),
+        "lastValidatedAt is milliseconds since the Unix epoch: {validated}"
+    );
+
+    assert_eq!(
+        marked.applicability, "needs_revalidation",
+        "a memory a failure in its file asked about says so"
+    );
+    assert_eq!(
+        marked.verification, "verified",
+        "and keeps what the evidence once supported"
+    );
+    assert_eq!(
+        marked.evidence.as_deref(),
+        Some("the tests passed: npm test"),
+        "the evidence is not thrown away"
+    );
+
+    assert_eq!(
+        unknown.applicability, "unknown",
+        "nothing is known about a claim nothing spoke about"
+    );
+    assert!(
+        unknown.last_validated_at.is_none(),
+        "nothing ever validated it, so the entry says nothing: {:?}",
+        unknown.last_validated_at
+    );
+
+    let json = serde_json::to_value(current).unwrap();
+    assert_eq!(
+        json.get("applicability").and_then(|value| value.as_str()),
+        Some("current"),
+        "the page reads camelCase keys: {json}"
+    );
+    assert_eq!(
+        json.get("sourceKind").and_then(|value| value.as_str()),
+        Some("test result")
+    );
+    assert!(
+        json["lastValidatedAt"].as_i64().is_some(),
+        "lastValidatedAt travels as milliseconds: {json}"
+    );
+    let json = serde_json::to_value(unknown).unwrap();
+    assert!(
+        json.get("lastValidatedAt").is_none_or(|value| value.is_null()),
+        "a memory never validated has no stamp: {json}"
+    );
+}
+
+#[test]
+fn an_entry_is_stamped_by_its_own_words_not_by_the_runs_that_used_it() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let memory = store
+        .remember(NewMemory::episode(
+            "payments-service",
+            "Retry race",
+            "Increasing the retry count did not fix it.",
+        ))
+        .unwrap();
+    let remembered_at = memory::list(&store, "payments-service", "").unwrap()[0].updated_at;
+
+    for _ in 0..3 {
+        store.record_outcome(memory.id, true).unwrap();
+    }
+    store.record_retrieval(&[memory.id]).unwrap();
+
+    let listed = memory::list(&store, "payments-service", "").unwrap();
+    assert_eq!(
+        listed[0].updated_at, remembered_at,
+        "being recalled and credited says how the runs went, not that the claim changed"
+    );
+    assert_eq!(
+        listed[0].verification, "provisional",
+        "an outcome is not a verdict on the claim"
+    );
+    assert_eq!(
+        listed[0].applicability, "unknown",
+        "and it says nothing about the code of today"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    memory::edit(
+        &store,
+        &memory.id.to_string(),
+        "Retry race",
+        "Serialize every retry by order ID.",
+    )
+    .unwrap();
+
+    let edited = memory::list(&store, "payments-service", "").unwrap();
+    assert!(
+        edited[0].updated_at > remembered_at,
+        "correcting the words is what moves the stamp: {} then {}",
+        remembered_at,
+        edited[0].updated_at
     );
 }

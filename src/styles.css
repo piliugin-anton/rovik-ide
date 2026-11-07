@@ -7493,6 +7493,24 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   text-decoration: line-through;
 }
 
+/* Whether a memory still applies: shown only when it is not plain "current",
+   so the rows that need a second look stand out. */
+.prior-work-applicability {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--fg-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.prior-work-applicability.needs_revalidation {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
 .prior-work-kind {
   flex-shrink: 0;
   color: var(--fg-dim);

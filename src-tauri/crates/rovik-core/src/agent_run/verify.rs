@@ -663,7 +663,16 @@ impl Run {
         // invalidate and record the outcome of.
         if let Some(memory) = c.memory.take() {
             let core = self.core.clone();
-            self.memory = super::memory::RunMemory::restore(&core, memory);
+            // Carried records keep the run's sight of the files: what it may
+            // not read stays unreadable across the wait for the checks.
+            let sealed = self.sub().map(|sub| sub.hidden.clone()).unwrap_or_default();
+            self.memory = super::memory::RunMemory::restore(
+                &core,
+                memory,
+                self.restricted.clone(),
+                self.root.clone(),
+                sealed,
+            );
         }
         self.ledger = c.ledger;
     }

@@ -40,7 +40,11 @@ pub mod store;
 pub use embedding::{MemoryEmbedder, VectorIndex};
 pub use error::{Result, VcmError};
 pub use model::{
-    MemoryKind, MemoryRecord, MemoryStats, NewMemory, RetrievalQuery, RetrievedMemory, Verification,
+    claim_hash, Applicability, MemoryKind, MemoryRecord, MemoryStats, NewMemory, RetrievalQuery,
+    RetrievedMemory, SourceKind, Verification,
 };
-pub use retrieval::{MemoryScore, RetrievalTelemetry, RetrievalWeights};
+pub use retrieval::{estimate_tokens, MemoryScore, RetrievalTelemetry, RetrievalWeights};
 pub use store::{MemoryStore, SharedMemoryStore};
+
+/// Optional persistent semantic index and bounded hybrid ranking.
+pub mod semantic;

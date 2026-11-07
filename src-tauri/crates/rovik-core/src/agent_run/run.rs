@@ -1304,9 +1304,9 @@ impl Run {
         // Ended before the message got any answer.
         self.settle(false).await;
         self.log_clm_compliance(&outcome).await;
-        // The project's memory: whether what it used helped, the run's own
-        // account of itself, and the lesson a repaired failure taught
-        // (memory.rs).
+        // The project's memory: how the run itself ended, for the records it
+        // had in hand, the run's own account of itself, and the lesson a
+        // repaired failure taught (memory.rs).
         self.memory_after_run(&outcome).await;
         let mut entry = json!({
             "event": "run",
@@ -1876,6 +1876,7 @@ impl Run {
     /// stored. Failed attempts are retried in chat_request.rs, which reports
     /// each retry, then succeeds or fails for good.
     pub(super) async fn model_turn(&mut self) -> Result<TurnOutput, String> {
+        self.refresh_memory_packet().await;
         let mut started = Instant::now();
         let mut pending = new_message("assistant", "");
         pending.finalized = false;
@@ -1897,6 +1898,7 @@ impl Run {
         let context_only = clm && self.context.restricted();
         let mut tools = tools::tools_for(
             self.root.is_some(),
+            self.memory.available(),
             self.profile.vision,
             self.profile.no_tools,
             &config.permissions,

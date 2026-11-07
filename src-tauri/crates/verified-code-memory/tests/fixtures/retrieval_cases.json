@@ -1,0 +1,286 @@
+{
+  "repo": "fixture-project",
+  "cases": [
+    {
+      "name": "a query that names nothing in the project recalls nothing",
+      "corpus": [
+        {
+          "title": "Release the app",
+          "content": "Run cargo xtask release, then tag the commit.",
+          "files": ["xtask/src/main.rs"],
+          "tags": ["release"],
+          "kind": "procedure",
+          "verification": "verified"
+        }
+      ],
+      "query": {
+        "task": "weather forecast for Lisbon tomorrow",
+        "limit": 8
+      },
+      "expect": {
+        "titles": [],
+        "prohibited": ["Release the app"]
+      }
+    },
+    {
+      "name": "the memory sharing more of the task's words comes first",
+      "corpus": [
+        {
+          "title": "Webhook handler",
+          "content": "The webhook handler is registered in routes and covered by the suite.",
+          "files": [],
+          "tags": ["webhook"],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Webhook signature mismatch retries",
+          "content": "On a webhook signature mismatch, retry once with the rotated secret.",
+          "files": [],
+          "tags": ["webhook"],
+          "kind": "project_fact",
+          "verification": "provisional"
+        }
+      ],
+      "query": {
+        "task": "webhook signature mismatch retries",
+        "limit": 8
+      },
+      "expect": {
+        "titles": ["Webhook signature mismatch retries", "Webhook handler"]
+      }
+    },
+    {
+      "name": "a memory about one of the task's files stays a candidate although others match the words better",
+      "corpus": [
+        {
+          "title": "The worker serializes its writes",
+          "content": "Writes go through one lock so nothing interleaves.",
+          "files": ["src/queue.rs"],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Checkout backlog note 1",
+          "content": "The checkout backlog is trimmed by hand each week.",
+          "files": [],
+          "tags": [],
+          "kind": "episode",
+          "verification": "provisional"
+        },
+        {
+          "title": "Checkout backlog note 2",
+          "content": "The checkout backlog is trimmed by hand each week.",
+          "files": [],
+          "tags": [],
+          "kind": "episode",
+          "verification": "provisional"
+        },
+        {
+          "title": "Checkout backlog note 3",
+          "content": "The checkout backlog is trimmed by hand each week.",
+          "files": [],
+          "tags": [],
+          "kind": "episode",
+          "verification": "provisional"
+        }
+      ],
+      "query": {
+        "task": "trim the checkout backlog",
+        "files": ["src/queue.rs"],
+        "limit": 6
+      },
+      "expect": {
+        "includes": ["The worker serializes its writes"]
+      }
+    },
+    {
+      "name": "memories excluded by tag leave the limit to permitted ones",
+      "corpus": [
+        {
+          "title": "Retry policy of the queue",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Retry policy after a timeout",
+          "content": "The retry policy waits for the timeout.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Retry policy of another chat one",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": ["chat-elsewhere"],
+          "kind": "project_fact",
+          "verification": "verified"
+        },
+        {
+          "title": "Retry policy of another chat two",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": ["chat-elsewhere"],
+          "kind": "project_fact",
+          "verification": "verified"
+        },
+        {
+          "title": "Retry policy of another chat three",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": ["chat-elsewhere"],
+          "kind": "project_fact",
+          "verification": "verified"
+        }
+      ],
+      "query": {
+        "task": "queue retry policy",
+        "limit": 2,
+        "excluded_tags": ["chat-elsewhere"]
+      },
+      "expect": {
+        "includes": ["Retry policy of the queue", "Retry policy after a timeout"],
+        "prohibited": [
+          "Retry policy of another chat one",
+          "Retry policy of another chat two",
+          "Retry policy of another chat three"
+        ],
+        "count": 2
+      }
+    },
+    {
+      "name": "asking only for verified memories returns the proven one",
+      "corpus": [
+        {
+          "title": "Retry policy is proven",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "verified"
+        },
+        {
+          "title": "Retry policy guess 1",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Retry policy guess 2",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Retry policy guess 3",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Retry policy guess 4",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Retry policy guess 5",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Retry policy guess 6",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Retry policy guess 7",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        },
+        {
+          "title": "Retry policy guess 8",
+          "content": "The retry policy of the queue backs off twice.",
+          "files": [],
+          "tags": [],
+          "kind": "project_fact",
+          "verification": "provisional"
+        }
+      ],
+      "query": {
+        "task": "queue retry policy",
+        "limit": 8,
+        "verifications": ["verified"]
+      },
+      "expect": {
+        "titles": ["Retry policy is proven"]
+      }
+    },
+    {
+      "name": "a deprecated memory is never recalled, not even when its state is the only one asked for",
+      "corpus": [
+        {
+          "title": "The old retry loop",
+          "content": "The old retry loop backed off twice after every failure.",
+          "files": [],
+          "tags": [],
+          "kind": "episode",
+          "verification": "deprecated"
+        }
+      ],
+      "query": {
+        "task": "retry loop backoff",
+        "limit": 8,
+        "verifications": ["deprecated"]
+      },
+      "expect": {
+        "titles": [],
+        "prohibited": ["The old retry loop"]
+      }
+    },
+    {
+      "name": "a word of the failure makes a memory a candidate",
+      "corpus": [
+        {
+          "title": "Lock ordering deadlocks the workers",
+          "content": "Two locks taken in opposite order deadlock.",
+          "files": [],
+          "tags": ["locks"],
+          "kind": "project_fact",
+          "verification": "provisional"
+        }
+      ],
+      "query": {
+        "task": "why does the build hang",
+        "failure": "deadlock in the workers",
+        "limit": 8
+      },
+      "expect": {
+        "titles": ["Lock ordering deadlocks the workers"]
+      }
+    }
+  ]
+}

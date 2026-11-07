@@ -4,3 +4,4 @@
 2. When running an npm run format after discarding changes in git files appears again
 3. Add git hooks
 4. Editor should newer show horizontal scroll
+5. When client is disconnected from cloud host and at the same time host is transferring a data it may hang

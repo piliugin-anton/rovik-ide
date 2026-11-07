@@ -35,11 +35,15 @@ pub async fn memory_list(
     core: State<'_, Core>,
     root: String,
     query: String,
+    before: Option<String>,
 ) -> Result<Vec<MemoryEntry>, String> {
     let core = (*core).clone();
     crate::util::blocking(move || {
         let store = open_store(&core, &root)?;
-        memory::list(&store, &root, &query)
+        store
+            .list_page(&root, &query, before.as_deref())
+            .map(|rows| rows.iter().map(MemoryEntry::from).collect())
+            .map_err(|e| e.to_string())
     })
     .await
 }

@@ -3,6 +3,22 @@ use uuid::Uuid;
 /// Errors returned by VerifiedCodeMemory.
 #[derive(Debug, thiserror::Error)]
 pub enum VcmError {
+    /// Paging state is invalid or belongs to a different project.
+    #[error("invalid memory page cursor; refresh the list")]
+    InvalidCursor,
+    /// An optional embedding backend cannot serve the request.
+    #[error("embedding unavailable: {0}")]
+    EmbeddingUnavailable(&'static str),
+    /// A newer application owns this database; an older writer must not alter it.
+    #[error(
+        "memory schema {actual} is newer than supported schema {supported}; update the application"
+    )]
+    UnsupportedSchema {
+        /// Version found in the database.
+        actual: i64,
+        /// Newest version this library can write.
+        supported: i64,
+    },
     /// SQLite operation failed.
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),

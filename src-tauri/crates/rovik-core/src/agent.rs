@@ -2045,8 +2045,14 @@ pub async fn chat_context_estimate(
         }
         tools
     };
+    // Whether the next request would offer the project's memory tools (K: the
+    // project's memory is on unless the user turned it off there).
+    let memory = root
+        .as_deref()
+        .is_some_and(|root| crate::memory::load(&core.paths.config_dir, root).enabled);
     let tools = offered(crate::agent_run::tools::tools_for(
         root.is_some(),
+        memory,
         vision,
         no_tools.unwrap_or(false),
         &permissions,
@@ -2074,6 +2080,7 @@ pub async fn chat_context_estimate(
     .then(|| {
         let tools = offered(crate::agent_run::tools::tools_for(
             root.is_some(),
+            memory,
             vision,
             no_tools.unwrap_or(false),
             &permissions,

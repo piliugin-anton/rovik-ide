@@ -7,9 +7,10 @@
 // Both removals ask first (components/ConfirmDialog.tsx) — they can't be
 // undone. Everything else a memory carries (its trust state and evidence,
 // its tags and files) stays as the agent left it.
-import { createResource, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { batch, createResource, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { confirmDialog, type ConfirmOptions } from './ConfirmDialog';
 import {
+  memoryApplicabilityLabel,
   memoryClear,
   memoryDelete,
   memoryEdit,
@@ -33,6 +34,7 @@ export default function MemoryManager(props: { root: string; onClose: () => void
   // `typed` is the box; `search` is what the store is asked, once typing pauses.
   const [typed, setTyped] = createSignal('');
   const [search, setSearch] = createSignal('');
+  const [cursors, setCursors] = createSignal<string[]>([]);
   const [draft, setDraft] = createSignal<Draft | null>(null);
   const [saving, setSaving] = createSignal(false);
   const [editError, setEditError] = createSignal<string | null>(null);
@@ -45,8 +47,9 @@ export default function MemoryManager(props: { root: string; onClose: () => void
   let dialogRef: HTMLDivElement | undefined;
   let searchRef: HTMLInputElement | undefined;
 
-  const [rows, { refetch }] = createResource(search, (query) =>
-    memoryList(props.root, query).catch(() => null)
+  const [rows, { refetch }] = createResource(
+    () => ({ query: search(), before: cursors()[cursors().length - 1] }),
+    ({ query, before }) => memoryList(props.root, query, before).catch(() => null)
   );
 
   /** What the list shows: the last answer, which stays while a new one comes. */
@@ -64,13 +67,19 @@ export default function MemoryManager(props: { root: string; onClose: () => void
   function type(query: string) {
     setTyped(query);
     window.clearTimeout(pending);
-    pending = window.setTimeout(() => setSearch(query), SEARCH_DEBOUNCE_MS);
+    pending = window.setTimeout(() => {
+      batch(() => {
+        setCursors([]);
+        setSearch(query);
+      });
+    }, SEARCH_DEBOUNCE_MS);
   }
 
   /** Empties the box and the search it made, the pending pause included. */
   function clearSearch() {
     window.clearTimeout(pending);
     setTyped('');
+    setCursors([]);
     setSearch('');
   }
 
@@ -184,7 +193,8 @@ export default function MemoryManager(props: { root: string; onClose: () => void
     try {
       await memoryEdit(props.root, form.id, title, content);
       setDraft(null);
-      await refetch();
+      if (cursors().length) setCursors([]);
+      else await refetch();
     } catch (err) {
       setEditError(`Couldn't save the memory: ${String(err)}`);
     } finally {
@@ -204,7 +214,8 @@ export default function MemoryManager(props: { root: string; onClose: () => void
     if (!confirmed) return;
     try {
       await memoryDelete(props.root, entry.id);
-      await refetch();
+      if (cursors().length) setCursors([]);
+      else await refetch();
     } catch (err) {
       setFailure(`Couldn't delete the memory: ${String(err)}`);
     }
@@ -223,7 +234,8 @@ export default function MemoryManager(props: { root: string; onClose: () => void
     try {
       const cleared = await memoryClear(props.root);
       setNotice(`Cleared ${plural(cleared, 'memory', 'memories')}.`);
-      await refetch();
+      if (cursors().length) setCursors([]);
+      else await refetch();
     } catch (err) {
       setFailure(`Couldn't clear the memory: ${String(err)}`);
     }
@@ -295,6 +307,23 @@ export default function MemoryManager(props: { root: string; onClose: () => void
             </p>
           </Show>
 
+          <div class="memory-manager-pagination">
+            <button
+              disabled={rows.loading || cursors().length === 0}
+              onClick={() => setCursors((previous) => previous.slice(0, -1))}
+            >
+              Previous memories
+            </button>
+            <button
+              disabled={rows.loading || listed().length < 50}
+              onClick={() => {
+                const last = listed()[listed().length - 1];
+                if (last) setCursors((previous) => [...previous, last.cursor ?? last.id]);
+              }}
+            >
+              Next memories
+            </button>
+          </div>
           <Show when={rows.latest !== undefined && !unreadable()}>
             <Show when={listed().length > 0} fallback={<p class="settings-hint">{emptyText()}</p>}>
               <ul class="memory-list">
@@ -310,6 +339,21 @@ export default function MemoryManager(props: { root: string; onClose: () => void
                           >
                             {memoryStateLabel(entry.verification)}
                           </span>
+                          <Show when={memoryApplicabilityLabel(entry.applicability)}>
+                            {(label) => (
+                              <span
+                                class="prior-work-applicability"
+                                classList={{ [entry.applicability]: true }}
+                                title={
+                                  entry.lastValidatedAt
+                                    ? `Last confirmed ${new Date(entry.lastValidatedAt).toLocaleDateString()}`
+                                    : 'Never confirmed by evidence'
+                                }
+                              >
+                                {label()}
+                              </span>
+                            )}
+                          </Show>
                           <span class="prior-work-kind">{entry.kind}</span>
                           <span class="memory-entry-title">{entry.title}</span>
                           <span class="memory-entry-date">

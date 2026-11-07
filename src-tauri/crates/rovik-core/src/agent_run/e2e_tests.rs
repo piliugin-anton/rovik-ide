@@ -376,6 +376,15 @@ impl Harness {
         let e = self
             .wait_for_within("runEnded", limit, |e| e["type"] == "runEnded")
             .await;
+        // The event is emitted before the registry releases the run. A test
+        // starting another turn must wait for that release, not race it.
+        tokio::time::timeout(limit, async {
+            while self.core.agents.is_running(&self.dialog_id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the ended run released its registry entry");
         e["outcome"].as_str().unwrap().to_string()
     }
 
@@ -1571,14 +1580,19 @@ async fn a_move_cuts_a_run_that_waits_for_its_approval() {
     assert!(!paused, "it didn't pause: it was cut");
     assert_eq!(h.run_end().await, "interrupted");
     assert!(!core.agents.is_running(&h.dialog_id));
-    assert_eq!(h.events_of("approvalSettled").len(), 1, "the approval goes from the chat");
+    assert_eq!(
+        h.events_of("approvalSettled").len(),
+        1,
+        "the approval goes from the chat"
+    );
     assert!(waits_for_results(&core, &h.dialog_id).await.unwrap());
     assert_eq!(roles(&h.messages().await), ["user", "assistant"]);
     assert_eq!(seen.lock().unwrap().len(), 1);
 
     // Where the chat went: asked again, then run, then the next request.
     h.events.lock().unwrap().clear();
-    h.start(h.request(&url, StartKind::Resume, permissions)).await;
+    h.start(h.request(&url, StartKind::Resume, permissions))
+        .await;
     h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
         .await;
     let chat = h.dialog_id.clone();
@@ -1627,7 +1641,11 @@ async fn a_move_cuts_a_resumed_run_that_waits_for_its_approval() {
     assert!(!paused, "it didn't pause: it was cut");
     assert_eq!(h.run_end().await, "interrupted");
     assert!(!h.core.agents.is_running(&h.dialog_id));
-    assert_eq!(h.events_of("approvalSettled").len(), 1, "the approval goes from the chat");
+    assert_eq!(
+        h.events_of("approvalSettled").len(),
+        1,
+        "the approval goes from the chat"
+    );
     // The call still has no result: a `Resume` asks about it again.
     assert!(waits_for_results(&h.core, &h.dialog_id).await.unwrap());
     assert_eq!(roles(&h.messages().await), ["user", "assistant"]);
@@ -2966,13 +2984,21 @@ async fn a_revision_sent_as_edits_applies_to_the_last_plan() {
     let plan = "# First\n\n## Steps\n1. A\n   - Files: `src/a.rs`\n   - Add `fn a()` that returns 1.\n\
                 2. B\n   - Files: `src/b.rs`\n   - Add `fn b()` that calls `a()`.\n\n## Validation\n- `cargo test`";
     let (url, _) = model(vec![
-        Reply::Call { id: "p0", name: "submit_plan", args: json!({}) },
+        Reply::Call {
+            id: "p0",
+            name: "submit_plan",
+            args: json!({}),
+        },
         Reply::Call {
             id: "p1",
             name: "submit_plan",
             args: json!({ "edits": [{ "old_text": "First", "new_text": "Second" }] }),
         },
-        Reply::Call { id: "p2", name: "submit_plan", args: json!({ "plan": plan }) },
+        Reply::Call {
+            id: "p2",
+            name: "submit_plan",
+            args: json!({ "plan": plan }),
+        },
         Reply::Call {
             id: "p3",
             name: "submit_plan",
@@ -3010,17 +3036,36 @@ async fn a_revision_sent_as_edits_applies_to_the_last_plan() {
             .and_then(Value::as_str)
             .map(str::to_string)
     };
-    assert!(text("p0").contains("Neither `plan` nor `edits` was given"), "{}", text("p0"));
-    assert!(text("p1").contains("There's no earlier plan to edit"), "{}", text("p1"));
+    assert!(
+        text("p0").contains("Neither `plan` nor `edits` was given"),
+        "{}",
+        text("p0")
+    );
+    assert!(
+        text("p1").contains("There's no earlier plan to edit"),
+        "{}",
+        text("p1")
+    );
     assert!(text("p2").starts_with("Saved the plan"), "{}", text("p2"));
     assert_eq!(meta_plan("p2").as_deref(), Some(plan));
     // Nothing applied: the draft stays as it was.
-    assert!(text("p3").starts_with("Error: the plan wasn't saved. Edit 2:"), "{}", text("p3"));
+    assert!(
+        text("p3").starts_with("Error: the plan wasn't saved. Edit 2:"),
+        "{}",
+        text("p3")
+    );
     assert_eq!(meta_plan("p3").as_deref(), Some(plan));
-    assert!(text("p4").starts_with("Error: the plan wasn't saved. Edit 1:"), "{}", text("p4"));
+    assert!(
+        text("p4").starts_with("Error: the plan wasn't saved. Edit 1:"),
+        "{}",
+        text("p4")
+    );
     assert!(text("p5").starts_with("Saved the plan"), "{}", text("p5"));
     let saved = meta_plan("p5").unwrap();
-    assert!(saved.starts_with("# Second") && saved.contains("returns 2"), "{saved}");
+    assert!(
+        saved.starts_with("# Second") && saved.contains("returns 2"),
+        "{saved}"
+    );
     for id in ["p0", "p1", "p3", "p4"] {
         assert_eq!(
             crate::agent_run::tools::error_class(&text(id)),
@@ -3034,7 +3079,10 @@ async fn a_revision_sent_as_edits_applies_to_the_last_plan() {
         .collect();
     assert_eq!(plans.len(), 1);
     let file = std::fs::read_to_string(plans[0].path()).unwrap();
-    assert!(file.starts_with("# Second") && file.contains("returns 2"), "{file}");
+    assert!(
+        file.starts_with("# Second") && file.contains("returns 2"),
+        "{file}"
+    );
 }
 
 #[tokio::test]
@@ -3772,7 +3820,16 @@ fn context_only_turns_on_at_90_and_lifts_after_an_edit() {
     // lift threshold, and the restricted toolset itself.
     assert_eq!(crate::clm::prompt::URGENT, 90);
     assert_eq!(super::run::CLM_RESTRICT_LIFT_BELOW, 75);
-    let only = super::tools::tools_for(true, false, false, &quiet_permissions(), false, true, true);
+    let only = super::tools::tools_for(
+        true,
+        false,
+        false,
+        false,
+        &quiet_permissions(),
+        false,
+        true,
+        true,
+    );
     let names: Vec<&str> = only
         .iter()
         .map(|t| {

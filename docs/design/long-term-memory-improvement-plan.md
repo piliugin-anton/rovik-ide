@@ -1,6 +1,21 @@
 # Improve long-term memory relevance and agent use
 
-Research and implementation plan, 6 November 2026. No application changes are included.
+Research baseline: 6 November 2026. Implementation status reviewed on 7 November 2026.
+
+## Implementation status (November 7)
+
+| Stage                               | State                                             | Evidence                                                                                                                                                                   |
+| ----------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — candidate selection and ranking | Implemented and corrected                         | Relevance gate, independent lexical/file pools, monotonic BM25, scope filters before limits.                                                                               |
+| 2 — evidence and freshness          | Implemented with review fixes                     | Claim hashes, historical evidence, source-file versions, explicit schema version and rejection of newer schemas.                                                           |
+| 3 — agent access                    | Implemented with review fixes                     | Bounded packets, search/get tools, failure and child context, refreshing selected IDs before each model request.                                                           |
+| 4 — capture and consolidation       | Implemented with review fixes                     | Structured provisional tool, bounded capture, scoped repair identities, transactional generation admission, pause-safe write leases and retention.                         |
+| 5 — semantic retrieval              | Implemented as an opt-in local pilot              | Cached offline model worker, persistent derived vectors, model/hash validation, hybrid fusion and shadow mode. Real-model quality and latency gates remain open.           |
+| 6 — evaluation and rollout          | Harness and gates implemented; broad rollout held | 120 synthetic retrieval cases, incident-separated splits, paired-agent quality gate, semantic/capture controls and paged management. Production evidence remains required. |
+
+The complete acceptance review and validation results are recorded in
+[the November 7 review](long-term-memory-review-nov7-2026.md). Implemented
+infrastructure does not imply that production rollout gates have passed.
 
 The recommended order is: repair retrieval correctness and evidence attribution; make useful memories available at the agent's decision points; improve what gets written; then evaluate semantic retrieval. Keep the current local SQLite architecture. A vector database or larger prompt alone would preserve several existing failure modes.
 
@@ -299,3 +314,12 @@ Public LongMemEval/LoCoMo-style tasks can supplement the repository set. Report 
 - The document was formatted with the repository's Prettier, checked for whitespace errors, and its 21 pinned code links were checked against the local checkout. The only repository addition is this plan.
 
 The first implementation milestone should be PRs 1–3: relevant results, trustworthy evidence, and timely delivery to the agent. Those make subsequent extraction and semantic-search improvements measurable and useful.
+
+## November 7 implementation review
+
+The November 6 research findings above describe the original baseline. The
+implementation on `long-term-memory-improvement-nov7-2026` is reviewed against
+all six stages in [the November 7 review](long-term-memory-review-nov7-2026.md).
+That review supersedes the early status table: it distinguishes implemented
+behavior, regression evidence, and production rollout gates. Semantic retrieval
+remains off by default while those quality gates are unmet.

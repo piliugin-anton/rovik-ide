@@ -94,6 +94,8 @@ function memory(over: Partial<MemoryEntry>): MemoryEntry {
     files: [],
     tags: [],
     verification: 'verified',
+    applicability: 'current',
+    sourceKind: 'user assertion',
     updatedAt: Date.UTC(2026, 10, 6, 9),
     ...over,
   };
@@ -165,6 +167,30 @@ const dialog = () => document.querySelector('.modal.memory-manager') as HTMLElem
 const rows = () => [...(dialog()?.querySelectorAll('li.memory-entry') ?? [])] as HTMLElement[];
 const titles = () =>
   rows().map((row) => row.querySelector('.memory-entry-title')?.textContent?.trim() ?? '');
+
+test('the manager follows page cursors and resets them for a new search', async () => {
+  calls = [];
+  const first = Array.from({ length: 50 }, (_, n) =>
+    memory({ id: `page-${n}`, title: `First ${n}` })
+  );
+  backend = {
+    memory_list: ({ before, query }) =>
+      query ? [] : before ? [memory({ id: 'last', title: 'Last page' })] : first,
+  };
+  const view = await mount();
+  try {
+    assert.equal(rows().length, 50);
+    buttonIn(dialog()!, 'Next memories')!.click();
+    await flush();
+    assert.deepEqual(titles(), ['Last page']);
+    assert.equal(calls.at(-1)?.args.before, 'page-49');
+    buttonIn(dialog()!, 'Previous memories')!.click();
+    await flush();
+    assert.equal(rows().length, 50);
+  } finally {
+    view.dispose();
+  }
+});
 
 function rowFor(title: string): HTMLElement | undefined {
   return rows().find(
@@ -284,6 +310,72 @@ test('the manager lists the project’s memories with their state, kind and date
   assert.ok(buttonIn(first, 'Edit'), 'each row can be edited');
   assert.ok(buttonIn(first, 'Delete'), 'each row can be deleted');
   clearAll();
+  view.dispose();
+});
+
+test('the manager: a memory to check again says when it was last confirmed', async () => {
+  const confirmedAt = Date.UTC(2026, 10, 15, 12);
+  calls = [];
+  backend = {
+    memory_list: () => [
+      memory({
+        id: 'm-1',
+        title: 'Tests run with npm test',
+        verification: 'verified',
+        evidence: 'CI run 42',
+        applicability: 'needs_revalidation',
+        lastValidatedAt: confirmedAt,
+      }),
+      memory({
+        id: 'm-2',
+        title: 'Format with prettier',
+        verification: 'provisional',
+        applicability: 'unknown',
+      }),
+      memory({
+        id: 'm-3',
+        title: 'The API lives in src/api',
+        verification: 'provisional',
+        applicability: 'current',
+        lastValidatedAt: confirmedAt,
+      }),
+    ],
+  };
+  const view = await mount();
+
+  /** The applicability chip of the row named `title`, if the row carries one. */
+  const caveat = (title: string) =>
+    rowFor(title)?.querySelector('.prior-work-applicability') as HTMLElement | null;
+
+  // The ordinary case: still current, so the row carries no caveat.
+  assert.equal(
+    caveat('The API lives in src/api')?.textContent?.trim() ?? '',
+    '',
+    'a current memory says nothing'
+  );
+
+  // Marked to be checked again: the chip’s word, and when the memory last held.
+  const again = caveat('Tests run with npm test');
+  assert.ok(again, 'a memory to be checked again carries an applicability chip');
+  assert.equal(again!.textContent?.trim(), 'check again', 'in the manager’s word for it');
+  assert.ok(
+    again!.classList.contains('needs_revalidation'),
+    'the chip keeps its applicability class'
+  );
+  const againTitle = again!.getAttribute('title') ?? '';
+  assert.match(againTitle, /^Last confirmed /, `the tooltip says when: ${againTitle}`);
+  assert.match(againTitle, /2026/, 'the date it was last confirmed');
+  // The state chip stays the memory’s trust: applicability is a second question.
+  assert.equal(
+    rowFor('Tests run with npm test')!.querySelector('.prior-work-state')?.textContent?.trim(),
+    'verified'
+  );
+
+  // Never checked by evidence: said so, and no confirmation claimed.
+  const never = caveat('Format with prettier');
+  assert.ok(never, 'an unchecked memory carries an applicability chip');
+  assert.equal(never!.textContent?.trim(), 'unchecked');
+  assert.equal(never!.getAttribute('title'), 'Never confirmed by evidence');
   view.dispose();
 });
 

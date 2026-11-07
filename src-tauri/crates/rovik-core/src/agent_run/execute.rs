@@ -807,6 +807,56 @@ impl Run {
                     .answer_unrun(tc, content, Outcome::of(refused), refused, meta)
                     .await;
             }
+            // The project's memory: a lookup the model asks for, and the read
+            // of one record. Both are bounded, read-only, and neither can make
+            // a memory verified — only evidence the harness gathers does that.
+            Some(BuiltinTool::MemorySearch) => {
+                let query = args
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let files: Vec<String> = args
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .map(|files| {
+                        files
+                            .iter()
+                            .filter_map(|f| f.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let limit = args
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .map(|n| n as usize);
+                let result = self.memory_search(query, files, limit).await;
+                return self
+                    .add_tool_result(&tc.id, result.content, result.outcome, None, Vec::new())
+                    .await;
+            }
+            Some(BuiltinTool::MemoryRemember) => {
+                let result = match super::tools::RememberArgs::parse(&args) {
+                    Some(remember) => self.memory_remember(&remember).await,
+                    None => super::tools::ToolResult::error(
+                        "Error: memory_remember takes kind (\"fact\" or \"procedure\"), a title and a claim. Nothing was recorded.",
+                    ),
+                };
+                return self
+                    .add_tool_result(&tc.id, result.content, result.outcome, None, Vec::new())
+                    .await;
+            }
+            Some(BuiltinTool::MemoryGet) => {
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let result = self.memory_get(&id).await;
+                return self
+                    .add_tool_result(&tc.id, result.content, result.outcome, None, Vec::new())
+                    .await;
+            }
             // In CLM mode, answered with the context folder's tools above.
             Some(BuiltinTool::RestoreContext) => {
                 let content =

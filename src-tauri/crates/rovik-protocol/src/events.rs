@@ -173,6 +173,21 @@ pub struct BackgroundTask {
     pub started_at: i64,
 }
 
+/// How the run that had a memory in hand ended.
+///
+/// An association, deliberately not a verdict: the run's checks passing says
+/// something happened in a run whose prompt carried this record, not that the
+/// record caused it. The panel words it that way, and nothing here promotes,
+/// deprecates or refreshes the memory.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MemoryAssociation {
+    /// The checks ran, and passed.
+    ChecksPassed,
+    /// The checks ran, and came out short.
+    ChecksFailed,
+}
+
 /// A memory a run recalled from the project's long-term memory
 /// (verified-code-memory), as the chat's "Relevant prior work" panel shows
 /// it: what an earlier run of the project learned.
@@ -190,16 +205,21 @@ pub struct RecalledMemory {
     /// The project files it's about.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
-    /// `provisional`, `verified` or `deprecated`: its trust state, as the
-    /// run left it.
+    /// `provisional`, `verified` or `deprecated`: what evidence once supported
+    /// its claim.
     pub verification: String,
+    /// `current`, `needs_revalidation` or `unknown`: whether that claim is
+    /// expected to hold for the code as it is now. Absent from an event whose
+    /// sender didn't say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub applicability: String,
     /// What promoted or invalidated it, when something did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
-    /// Whether the run's outcome says it helped. Unset when the run ended
-    /// without a verdict: interrupted, or with no check of its own.
+    /// How the run that carried it ended. Unset when the run ended without
+    /// checking anything: interrupted, or with no check of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub helped: Option<bool>,
+    pub association: Option<MemoryAssociation>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
