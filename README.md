@@ -1809,8 +1809,10 @@ next: trimming replaces and drops in batches, and once over the budget it
 cuts down to 85% of it and keeps that cut while the requests fit, so the
 cut moves once in several steps; a user message is sent the same way on
 every turn. The repository map goes on the run's request, before its text:
-it changes only when the run rebuilds it, at most every two minutes, and
-moves on to the next request with the next run. What changes between steps
+the initial map stays unchanged for that run. At most every two minutes,
+the run rebuilds it and appends only changed entries to history. Entries that
+leave the selected map are not necessarily deleted from the project. A new
+run starts with a fresh map on its request. What changes between steps
 (the focus note, context notes) rides on the last message, after everything
 cacheable. Nothing long goes there: the end of the request is where the
 model looks for what to do next, and a map there read as the start of the
@@ -1821,6 +1823,21 @@ step sends unchanged, never on the last one, whose notes the next step
 drops.
 The run log's reply lines carry `cachedTokens`, and the headless report
 the cache hit rate, so the effect of a change to the prompt can be seen.
+
+Checklist transitions can finish the current step and start the next in one
+`todo` call. The agent waits for its result and any requested compaction before
+working on the next step. Successful recognized test/build/check commands show
+counts, warnings and a short closing summary (about 4,000 characters across
+stdout and stderr). Short output and ordinary data commands keep their output;
+failures retain error-focused formatting. Shortened output remains available
+through the saved `@checks/…` path returned by the tool.
+
+Map refresh logs include `strategy: "append"` and `updateChars`. Compare the
+same tasks and model with the evaluation suite before claiming cache savings:
+track uncached/cached input, output/reasoning, model calls, pass rate and repair
+rounds. Prefix-preservation tests do not measure provider cache hits. Approval
+review usage and cache-specific fallback pricing still need accounting fixes
+before comparing total cost per successful task.
 
 ### Attachments
 

@@ -304,6 +304,8 @@ fn an_implementation_request_is_written_from_the_plans_file() {
 fn an_implementation_without_rovik_s_todo_keeps_its_checklist_with_its_own() {
     let with = implementation_request("# P\n", Some(".rovik/plans/p.md"), true);
     assert!(with.contains("with the todo tool"), "{with}");
+    assert!(with.contains("done and the next step in_progress in the same update"));
+    assert!(with.contains("complete any requested compaction before starting actual work"));
     let own = implementation_request("# P\n", Some(".rovik/plans/p.md"), false);
     assert!(!own.contains("todo"), "{own}");
     assert!(

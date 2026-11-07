@@ -893,7 +893,11 @@ mod tests {
         let (_dir, root) = folder();
         let chat = "bg-chat-goes";
         started(chat, &root, &beating("up"));
-        assert!(beats(&root));
+        // Starting the shell does not mean its heartbeat loop has been scheduled.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !beats(&root) {
+            assert!(Instant::now() < deadline, "heartbeat did not start");
+        }
         stop_chat(chat);
         assert!(!beats(&root));
         assert!(list(chat).is_empty());

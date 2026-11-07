@@ -135,8 +135,8 @@ pub fn implementation_request(plan: &str, file: Option<&str>, todo: bool) -> Str
     let checklist = match todo {
         true => concat!(
             "First create your checklist with the todo tool from the plan's steps, with the first step in_progress, then work through them in order, ",
-            "one step at a time, each with its own todo call: call todo alone to mark a step in_progress before starting it, ",
-            "do the work, then call todo alone again to mark it done before the next step. Never save up finished steps for one update at the end. ",
+            "one step at a time. After verifying a step, call todo alone to mark it done and the next step in_progress in the same update (or finish the list after the last step). ",
+            "Wait for the result and complete any requested compaction before starting actual work on the next step. Never save up finished steps for one update at the end. ",
         ),
         false => concat!(
             "First make a checklist of the plan's steps with your own checklist tool, if you have one, then work through them in order, ",
