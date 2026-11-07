@@ -149,6 +149,14 @@ impl Kind {
         matches!(self, Kind::Scout | Kind::Worker | Kind::TestWriter)
     }
 
+    /// A kind the IDE always starts itself, whatever the Subagents page
+    /// says: the change reviewer. The user sets its model, fallbacks,
+    /// effort and budget, but neither switch turns it off. The test writer
+    /// is always on too, without a `kind()` gate: it starts at its own hooks.
+    pub fn always_on(self) -> bool {
+        matches!(self, Kind::Reviewer)
+    }
+
     pub fn parse(s: &str) -> Option<Kind> {
         Kind::ALL.iter().copied().find(|k| k.id() == s.trim())
     }
@@ -480,6 +488,12 @@ pub use rovik_protocol::subagents::{KindConfig, ModelChoice, SubagentConfig};
 pub trait SubagentSettings {
     /// The kind's settings, when subagents and the kind are both on.
     fn kind(&self, kind: Kind) -> Option<&KindConfig>;
+    /// Whether the kind may run in this run: on by the settings, or one the
+    /// IDE always starts itself (`Kind::always_on`), whose row's model,
+    /// fallbacks, effort and budget still apply.
+    fn may_run(&self, kind: Kind) -> bool {
+        kind.always_on() || self.kind(kind).is_some()
+    }
     /// The kinds that are on, in a stable order.
     fn enabled_kinds(&self) -> Vec<Kind>;
     /// The kinds the lead may start with `task`.

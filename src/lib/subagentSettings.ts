@@ -3,8 +3,9 @@
 // The Subagents settings (docs/design/subagents-plan.md, D14 and S08): a
 // master switch, a default subagent model with fallbacks, and for each kind
 // of subagent a switch, a model with fallbacks, a reasoning effort and a
-// budget. Optional helpers default off. The harness always uses the test
-// writer for code changes; its saved model and budget still apply.
+// budget. Optional helpers default off. The test writer and the change
+// reviewer always run (`ALWAYS_ON_KINDS`); their saved model and budget
+// still apply, and the reviewer has no switch at all.
 //
 // The backend gets them resolved (`resolveSubagentConfig`): for each kind,
 // the models to try in order (its model, its fallbacks, the default model
@@ -56,7 +57,7 @@ export const SUBAGENT_KINDS: {
     id: 'reviewer',
     label: 'Change reviewer',
     hint: 'Reviews the whole change with fresh eyes before the checks run. Read-only.',
-    when: 'Runs when the agent finishes a change of at least the size set in Limits, at most 3 times a run.',
+    when: 'Always runs when the run has unlanded changes of at least the size set in Limits, at most 3 times a run.',
     toolCalls: 30,
     minutes: 5,
   },
@@ -133,6 +134,9 @@ export const SUBAGENT_KINDS: {
     minutes: 10,
   },
 ];
+
+/** The kinds that always run: the test writer, and the change reviewer, which has no switch. */
+export const ALWAYS_ON_KINDS: SubagentKindId[] = ['testWriter', 'reviewer'];
 
 /** "default": the default subagent model; "chat": the chat's own model. */
 export type KindModel = 'default' | 'chat' | ModelSelection;
@@ -538,11 +542,15 @@ export function numberFieldValue(
   return Math.min(max, Math.max(min, whole));
 }
 
-/** One line for the Settings menu. */
+/** One line for the Settings menu: the always-on kinds first, then the rest. */
 export function subagentSummary(settings: SubagentSettings): string {
-  if (!settings.enabled) return 'Test writer always on; optional helpers off';
-  const on = SUBAGENT_KINDS.filter(
-    (k) => k.id === 'testWriter' || settings.kinds[k.id].enabled
-  ).map((k) => k.label);
-  return on.length ? `On: ${on.join(', ')}` : 'On, but no kind is turned on';
+  if (!settings.enabled) return 'Change reviewer and test writer always on; optional helpers off';
+  const running = SUBAGENT_KINDS.filter(
+    (k) => ALWAYS_ON_KINDS.includes(k.id) || settings.kinds[k.id].enabled
+  );
+  const on = [
+    ...running.filter((k) => ALWAYS_ON_KINDS.includes(k.id)),
+    ...running.filter((k) => !ALWAYS_ON_KINDS.includes(k.id)),
+  ].map((k) => k.label);
+  return `On: ${on.join(', ')}`;
 }

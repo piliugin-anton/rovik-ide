@@ -191,7 +191,9 @@ impl Run {
     async fn reviewers_view(&mut self, facts: &ReportFacts) -> Option<String> {
         use super::subagent::{Kind, SubStatus, SubagentSettings};
         let config = self.config().subagents;
-        config.kind(Kind::Reviewer)?;
+        if !config.may_run(Kind::Reviewer) {
+            return None;
+        }
         // T06: a task its candidates implemented has the winner's review,
         // in the winner's chat.
         let rows = match self.winners_chat().await {

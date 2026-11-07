@@ -1,9 +1,16 @@
-//! The lead is told how long a brief may be, so its first `task` call fits.
+//! The lead is told how long a brief may be, so its first `task` call fits,
+//! and which kinds the user's switches leave on.
 //!
-//! These use only what `rovik_core::agent_run::subagent` makes public: `lead_prompt`, `Kind`,
-//! `MAX_GOAL_CHARS` and `MAX_CONTEXT_CHARS`.
+//! These use only what `rovik_core::agent_run::subagent` makes public:
+//! `lead_prompt`, `Kind`, `SubagentSettings`, `MAX_GOAL_CHARS` and
+//! `MAX_CONTEXT_CHARS`.
 
-use rovik_core::agent_run::subagent::{lead_prompt, Kind, MAX_CONTEXT_CHARS, MAX_GOAL_CHARS};
+use rovik_core::agent_run::subagent::{
+    lead_prompt, Kind, SubagentSettings, MAX_CONTEXT_CHARS, MAX_GOAL_CHARS,
+};
+use rovik_protocol::subagents::SubagentConfig;
+use serde_json::{json, Value};
+
 
 /// The `## Subagents` section a chat with a kind on gets.
 fn lead_section(kinds: &[Kind], parallel: bool) -> String {
@@ -92,3 +99,96 @@ fn the_leads_prompt_states_the_briefs_length_limits() {
         "a chat with no subagent kind on gets no ## Subagents section, parallel or not"
     );
 }
+
+/// The settings as the app sends them: `resolveSubagentConfig`'s payload.
+fn settings(payload: Value) -> SubagentConfig {
+    serde_json::from_value(payload).expect("the app's own subagents payload")
+}
+
+/// A kind the IDE starts itself isn't the user's to switch off: the change
+/// reviewer runs whether "Use subagents" and its own row's switch are on,
+/// while a kind the lead sends still needs both.
+#[test]
+fn the_change_reviewer_runs_whatever_the_switches_say() {
+    // One home for "the IDE starts it": the reviewer, and nothing else.
+    let always_on: Vec<&str> = Kind::ALL
+        .iter()
+        .filter(|kind| kind.always_on())
+        .map(|kind| kind.id())
+        .collect();
+    assert_eq!(
+        always_on,
+        [Kind::Reviewer.id()],
+        "only the change reviewer ignores the switches (the test writer is gated at its own hooks)"
+    );
+
+    // Subagents off, and the reviewer's row off as well.
+    let off = settings(json!({
+        "enabled": false,
+        "kinds": { "reviewer": { "enabled": false } },
+    }));
+    assert!(
+        off.may_run(Kind::Reviewer),
+        "neither switch turns off the kind the IDE starts itself"
+    );
+    assert!(!off.may_run(Kind::Scout), "a scout needs the switch on");
+
+    // The master switch alone keeps an enabled helper off; the reviewer
+    // doesn't wait for it. The same rows with the master switch on are kinds
+    // that run, so it is the switch — not the row — that's off below.
+    let rows = |enabled: bool| {
+        settings(json!({
+            "enabled": enabled,
+            "kinds": { "reviewer": { "enabled": true }, "scout": { "enabled": true } },
+        }))
+    };
+    let master_on = rows(true);
+    assert!(
+        master_on.kind(Kind::Scout).is_some(),
+        "the scout's own switch is on: this row runs when the master switch is"
+    );
+    assert!(master_on.may_run(Kind::Scout));
+    let master_off = rows(false);
+    assert!(
+        master_off.kind(Kind::Scout).is_none(),
+        "the master switch hides even an enabled row from kind()"
+    );
+    assert!(
+        !master_off.may_run(Kind::Scout),
+        "a scout needs both switches, and the master one is off"
+    );
+    assert!(
+        master_off.may_run(Kind::Reviewer),
+        "the reviewer runs whatever the switches say"
+    );
+
+    // Everything on: what has no row of its own is off, the reviewer
+    // included in "on".
+    let on = settings(json!({
+        "enabled": true,
+        "kinds": { "scout": { "enabled": true } },
+    }));
+    assert!(on.may_run(Kind::Scout));
+    assert!(
+        on.may_run(Kind::Reviewer),
+        "the reviewer has no row of its own and still runs"
+    );
+
+    // The default settings turn on no kind at all: the reviewer is the
+    // exception, and it applies its row's models and budget when it has one.
+    let default = SubagentConfig::default();
+    assert!(default.may_run(Kind::Reviewer));
+    assert!(!default.may_run(Kind::Scout));
+    for kind in Kind::ALL {
+        if kind.always_on() {
+            assert!(default.may_run(*kind), "{} always runs", kind.id());
+        } else {
+            assert!(
+                !default.may_run(*kind),
+                "{} is off in a chat that turned no kind on",
+                kind.id()
+            );
+        }
+    }
+}
+

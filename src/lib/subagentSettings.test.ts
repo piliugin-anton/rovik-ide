@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ModelProfile, ModelSelection, Provider } from '../types';
 import {
+  ALWAYS_ON_KINDS,
   DEFAULT_SUBAGENT_SETTINGS,
   kindChain,
   kindNames,
@@ -10,6 +11,7 @@ import {
   numberFieldValue,
   otherProviders,
   resolveSubagentConfig,
+  SUBAGENT_KINDS,
   subagentSummary,
   type SubagentSettings,
 } from './subagentSettings';
@@ -66,7 +68,10 @@ test('defaults: everything off, chats work as before', () => {
   assert.deepEqual(s, DEFAULT_SUBAGENT_SETTINGS);
   assert.equal(s.enabled, false);
   assert.equal(s.kinds.scout.enabled, false);
-  assert.equal(subagentSummary(s), 'Test writer always on; optional helpers off');
+  assert.equal(
+    subagentSummary(s),
+    'Change reviewer and test writer always on; optional helpers off'
+  );
   const config = resolveSubagentConfig(s, providers, resolve);
   assert.equal(config.enabled, false);
   assert.deepEqual(ids(config.kinds.scout!.models), ['chat']);
@@ -221,7 +226,42 @@ test('models from other providers than the chat’s are named (K18)', () => {
   };
   assert.deepEqual(otherProviders(providers, s, 'scout', sel('a', 'strong')), ['Beta']);
   assert.deepEqual(otherProviders(providers, s, 'scout', sel('b', 'other')), ['Alpha']);
-  assert.equal(subagentSummary(s), 'On: Scout, Test writer');
+  assert.equal(subagentSummary(s), 'On: Change reviewer, Test writer, Scout');
+});
+
+test('the change reviewer and the test writer are always on: no switch, always named (B03)', () => {
+  assert.deepEqual(ALWAYS_ON_KINDS, ['testWriter', 'reviewer']);
+  const reviewer = SUBAGENT_KINDS.find((k) => k.id === 'reviewer')!;
+  assert.equal(
+    reviewer.when,
+    'Always runs when the run has unlanded changes of at least the size set in Limits, at most 3 times a run.'
+  );
+  // Named whatever the switches say: never "no kind is turned on".
+  assert.equal(
+    subagentSummary({ ...DEFAULT_SUBAGENT_SETTINGS, enabled: true }),
+    'On: Change reviewer, Test writer'
+  );
+  // The always-on kinds first, then the helpers that are on, each in the
+  // page's own order: never "no kind is turned on", and never out of order.
+  assert.equal(
+    subagentSummary({
+      ...DEFAULT_SUBAGENT_SETTINGS,
+      enabled: true,
+      kinds: {
+        ...DEFAULT_SUBAGENT_SETTINGS.kinds,
+        scout: { ...DEFAULT_SUBAGENT_SETTINGS.kinds.scout, enabled: true },
+        triage: { ...DEFAULT_SUBAGENT_SETTINGS.kinds.triage, enabled: true },
+      },
+    }),
+    'On: Change reviewer, Test writer, Scout, Failure triage'
+  );
+  assert.equal(
+    subagentSummary({ ...DEFAULT_SUBAGENT_SETTINGS, enabled: false }),
+    'Change reviewer and test writer always on; optional helpers off'
+  );
+  // The rest are helpers the switches still gate.
+  assert.ok(!ALWAYS_ON_KINDS.includes('scout'));
+  assert.ok(!ALWAYS_ON_KINDS.includes('planner'));
 });
 
 test('parallel groups, the red check and parallel repair are off until turned on', () => {

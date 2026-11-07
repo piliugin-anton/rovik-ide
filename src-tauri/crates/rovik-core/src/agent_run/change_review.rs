@@ -1191,7 +1191,7 @@ impl Run {
             return Ok(false);
         }
         let config = self.config().subagents;
-        if config.kind(Kind::Reviewer).is_none() || self.root.is_none() {
+        if !config.may_run(Kind::Reviewer) || self.root.is_none() {
             return Ok(false);
         }
         // The review blocks in every mode: the change isn't accepted while
@@ -1201,6 +1201,24 @@ impl Run {
         // T07: a Thorough task's reviews go on by progress, to a backstop.
         let thorough = self.thorough();
         let cap = self.change_review_cap();
+        if !(self.review.writes_since_review || follow_up)
+            || self.review.carry.reviews_total >= cap
+            || (self.review.reviews_in_row >= MAX_REVIEWS_IN_ROW && !follow_up)
+        {
+            return Ok(false);
+        }
+        // Nothing unlanded to read (the change was put back, landed, or only
+        // one the diff can't see): no review, and nothing asked of the agent
+        // about a change that is gone.
+        let changes = self.change_set();
+        if changes.is_empty() {
+            self.review.change_gone();
+            self.review.finished(
+                "skipped".into(),
+                Some("the run has no unlanded changes".into()),
+            );
+            return Ok(false);
+        }
         if follow_up && self.review.carry.reviews_total < cap {
             if let Some(problem) = self.unanswered_review() {
                 self.add_harness(format!("{IDE_NOTE}{problem}"), "review")
@@ -1208,14 +1226,7 @@ impl Run {
                 return Ok(true);
             }
         }
-        if !(self.review.writes_since_review || follow_up)
-            || self.review.carry.reviews_total >= cap
-            || (self.review.reviews_in_row >= MAX_REVIEWS_IN_ROW && !follow_up)
-        {
-            return Ok(false);
-        }
         let models = config.models(Kind::Reviewer, &self.profile);
-        let changes = self.change_set();
         let rendered = render_diff(&changes, diff_budget(&models[0]));
         // A follow-up checks its findings however small the change is.
         if rendered.changed_lines < config.review_min_lines().max(1) && !follow_up {
@@ -2651,6 +2662,47 @@ mod tests {
             "{e}"
         );
     }
+
+    /// The run's change is gone (the agent put it back): what a review held
+    /// is neither followed up nor answered any more, and a run a review
+    /// already blocked stays blocked.
+    #[test]
+    fn a_change_that_is_gone_holds_nothing_back() {
+        let mut state = ReviewState::default();
+        let finding = weighed("high", "confirmed", false, "The greeting is wrong");
+        state.reported(1, &[finding], false, &[], &mut Vec::new());
+        assert!(state.has_held_findings(), "the finding waits for an answer");
+        let responses =
+            json!({ "responses": [{ "finding": 1, "status": "fixed", "note": "spelled it out" }] });
+        let responses = responses.as_object().unwrap().clone();
+        assert!(
+            !state.answer_review(&responses).content.starts_with("Error:"),
+            "the answer is taken while the change is there"
+        );
+        state.blocked_by_findings();
+        assert!(state.blocked(), "its review blocked the run");
+
+        state.change_gone();
+        assert!(
+            !state.has_held_findings(),
+            "nothing is held about a change that's gone"
+        );
+        let refused = state.answer_review(&responses);
+        assert!(
+            refused.content.contains("no review findings are waiting"),
+            "nothing is waiting for an answer: {}",
+            refused.content
+        );
+        assert!(
+            state.blocked(),
+            "a run a review already blocked stays blocked"
+        );
+        let carry = state.take_carry();
+        assert!(
+            carry.review_findings.is_empty() && carry.review_optional.is_empty(),
+            "no finding is carried into the next review: {carry:?}"
+        );
+    }
 }
 
 /// Review totals and settled/optional findings that survive check approval.
@@ -2798,6 +2850,16 @@ impl ReviewState {
     }
     pub(super) fn changes_made(&mut self) {
         self.writes_since_review = true;
+    }
+    /// The run's change is gone (put back, or landed): what a review held is
+    /// about it, so it's neither followed up nor answered. A run a review
+    /// blocked at its last round keeps `review_blocked`: its record row says
+    /// so, and only a row could unsay it.
+    pub(super) fn change_gone(&mut self) {
+        self.review_held.clear();
+        self.review_answers.clear();
+        self.carry.review_findings.clear();
+        self.carry.review_optional.clear();
     }
     pub(super) fn rounds(&self) -> &[super::guide::ReviewRound] {
         &self.review_rounds
