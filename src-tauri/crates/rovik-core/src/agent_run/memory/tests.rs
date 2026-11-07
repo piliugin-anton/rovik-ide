@@ -101,6 +101,17 @@ fn a_paused_run_carries_its_original_generation_after_clear() {
     );
 }
 
+#[test]
+fn a_paused_run_keeps_its_task_and_observed_file_cache() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let mut memory = run_with(store, Vec::new());
+    memory.task = "Inspect the scheduler".into();
+    memory.observed_files.insert("src/scheduler.rs".into());
+    let carry = memory.carry().unwrap();
+    assert_eq!(carry.task, memory.task);
+    assert_eq!(carry.observed_files, memory.observed_files);
+}
+
 /// A check result with just what the plan decides on: which command ran, how it
 /// ended and — for a failure — the files the errors point at.
 fn result(command: &str, status: &'static str, changed: &[&str]) -> CheckResult {

@@ -148,6 +148,7 @@ impl SemanticIndex {
             }
         }
         found.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
+        crate::retrieval::retain_distinct(&mut found, |(record, _)| record);
         found.truncate(query.limit);
         Ok(found)
     }
@@ -185,18 +186,25 @@ impl SemanticIndex {
         }
         for (rank, (record, similarity)) in semantic.into_iter().enumerate() {
             let score = 1.0 / (61 + rank) as f32;
-            fused
-                .entry(record.id)
-                .and_modify(|hit| {
-                    hit.score += score;
-                    hit.reason.push_str(", semantic match");
-                })
-                .or_insert_with(|| RetrievedMemory {
-                    record,
-                    score,
-                    reason: format!("semantic cosine {similarity:.3}"),
-                    components: Default::default(),
-                });
+            // The two pools may choose different IDs for the same exact copy.
+            // Fuse their evidence of relevance into one claim, not two slots.
+            if let Some(hit) = fused
+                .values_mut()
+                .find(|hit| hit.record.same_context_claim(&record))
+            {
+                hit.score += score;
+                hit.reason.push_str(", semantic match");
+            } else {
+                fused.insert(
+                    record.id,
+                    RetrievedMemory {
+                        record,
+                        score,
+                        reason: format!("semantic cosine {similarity:.3}"),
+                        components: Default::default(),
+                    },
+                );
+            }
         }
         let mut found: Vec<_> = fused.into_values().collect();
         found.sort_by(|a, b| {
@@ -204,6 +212,7 @@ impl SemanticIndex {
                 .total_cmp(&a.score)
                 .then(a.record.id.cmp(&b.record.id))
         });
+        crate::retrieval::deduplicate_memories(&mut found);
         found.truncate(query.limit);
         Ok(found)
     }

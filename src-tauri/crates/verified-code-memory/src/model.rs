@@ -219,6 +219,28 @@ pub struct MemoryRecord {
 }
 
 impl MemoryRecord {
+    /// Whether two records are interchangeable copies in a context packet.
+    /// Distinct evidence, provenance, trust or applicability is retained. IDs,
+    /// timestamps and association counters do not change the claim itself.
+    pub fn same_context_claim(&self, other: &Self) -> bool {
+        self.repo == other.repo
+            && self.claim_hash == other.claim_hash
+            && self.title == other.title
+            && self.content == other.content
+            && self.kind == other.kind
+            && self.identity == other.identity
+            && self.verification == other.verification
+            && self.applicability == other.applicability
+            && self.source_kind == other.source_kind
+            && self.source_episode == other.source_episode
+            && self.evidence == other.evidence
+            && self.validated_claim_hash == other.validated_claim_hash
+            && self.code_version == other.code_version
+            && self.confidence.to_bits() == other.confidence.to_bits()
+            && same_strings(&self.files, &other.files)
+            && same_strings(&self.tags, &other.tags)
+    }
+
     /// Stable paging position, including the project and original update time.
     /// It remains valid if the anchor record is edited, touched, or deleted.
     pub fn page_cursor(&self) -> String {
@@ -296,6 +318,24 @@ pub struct NewMemory {
 }
 
 impl NewMemory {
+    /// Whether this capture repeats an existing assertion with the same source
+    /// and scope. Verification stays on the existing record; new observations
+    /// must not disappear behind text-only deduplication.
+    pub fn matches_capture(&self, record: &MemoryRecord) -> bool {
+        self.repo == record.repo
+            && self.kind == record.kind
+            && self.title == record.title
+            && self.content == record.content
+            && self.identity == record.identity
+            && self.source_kind == record.source_kind
+            && self.source_episode == record.source_episode
+            && self.evidence == record.evidence
+            && self.code_version == record.code_version
+            && self.confidence.to_bits() == record.confidence.to_bits()
+            && same_strings(&self.files, &record.files)
+            && same_strings(&self.tags, &record.tags)
+    }
+
     /// Creates an episode.
     pub fn episode(
         repo: impl Into<String>,
@@ -402,6 +442,10 @@ impl NewMemory {
         self.confidence = confidence.clamp(0.0, 1.0);
         self
     }
+}
+
+fn same_strings(left: &[String], right: &[String]) -> bool {
+    left.iter().all(|value| right.contains(value)) && right.iter().all(|value| left.contains(value))
 }
 
 /// Retrieved memory and score explanation.
