@@ -306,6 +306,9 @@ impl Remote {
         let pulled = self.pull_now(host, dialog_id).await;
         pulled
             .map_err(|e| Fail::new(FailCode::Unreachable, format!("Its last pull failed: {e}.")))?;
+        self.sync_memory_chat(host, dialog_id)
+            .await
+            .map_err(internal)?;
         let chat = dialog_id.to_string();
         let flipped = self.core.db.write(move |c| {
             let mut chats = store::descendants(c, &chat)?;

@@ -16,6 +16,9 @@ use std::time::Instant;
 use uuid::Uuid;
 
 const MAX_RETRIEVAL_LIMIT: usize = 32;
+// Older writers do not advance replication epochs when clearing history.
+// They must refuse to reopen a database that now participates in sync.
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 
 /// How many full-text matches one query reads before reranking: enough that
 /// the best of them survive the relevance gate and the cut to `limit`, few
@@ -51,10 +54,10 @@ impl MemoryStore {
 
     fn initialize(connection: Connection) -> Result<Self> {
         let schema: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if schema > 3 {
+        if schema > SCHEMA_VERSION {
             return Err(VcmError::UnsupportedSchema {
                 actual: schema,
-                supported: 3,
+                supported: SCHEMA_VERSION,
             });
         }
         // The records and the file index first, the full-text index after the
@@ -142,7 +145,7 @@ impl MemoryStore {
         backfill_files(&connection)?;
         create_full_text(&connection)?;
         rebuild_full_text(&connection)?;
-        connection.pragma_update(None, "user_version", 3)?;
+        crate::sync::initialize(&connection)?;
 
         Ok(Self {
             connection,
@@ -196,7 +199,7 @@ impl MemoryStore {
         Ok(record)
     }
 
-    fn insert(&self, record: &MemoryRecord) -> Result<()> {
+    pub(crate) fn insert(&self, record: &MemoryRecord) -> Result<()> {
         let transaction = if self.connection.is_autocommit() {
             Some(self.connection.unchecked_transaction()?)
         } else {
@@ -836,7 +839,7 @@ impl MemoryStore {
 
     /// Moves the project's generation: what was read of its memory before this
     /// may not be written back ([`Self::remember_if_current`]).
-    fn bump_generation(&self, repo: &str) -> Result<i64> {
+    pub(crate) fn bump_generation(&self, repo: &str) -> Result<i64> {
         self.connection.execute(
             r#"
             INSERT INTO memory_generations (repo, generation) VALUES (?1, 1)
@@ -857,6 +860,7 @@ impl MemoryStore {
             return Err(VcmError::EmptyField { field: "repo" });
         }
         let transaction = self.connection.unchecked_transaction()?;
+        self.sync_clear(repo)?;
         let removed = self
             .connection
             .execute("DELETE FROM memories WHERE repo = ?1", params![repo])?;
@@ -1188,8 +1192,12 @@ impl MemoryStore {
         )
     }
 
-    fn update(&self, record: &MemoryRecord) -> Result<()> {
-        let transaction = self.connection.unchecked_transaction()?;
+    pub(crate) fn update(&self, record: &MemoryRecord) -> Result<()> {
+        let transaction = if self.connection.is_autocommit() {
+            Some(self.connection.unchecked_transaction()?)
+        } else {
+            None
+        };
         let changed = self.connection.execute(
             r#"UPDATE memories SET kind=?2,verification=?3,applicability=?4,source_kind=?5,repo=?6,title=?7,content=?8,claim_hash=?9,identity=?10,validated_claim_hash=?11,files_json=?12,tags_json=?13,code_version=?14,source_episode=?15,evidence=?16,confidence=?17,content_updated_at=?18,updated_at=?19,last_validated_at=?20,last_retrieved_at=?21,use_count=?22,success_count=?23 WHERE id=?1"#,
             params![
@@ -1224,7 +1232,9 @@ impl MemoryStore {
         }
 
         self.index_files(record.id, &record.files)?;
-        transaction.commit()?;
+        if let Some(transaction) = transaction {
+            transaction.commit()?;
+        }
         Ok(())
     }
 

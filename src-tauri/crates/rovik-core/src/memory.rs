@@ -12,7 +12,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use uuid::Uuid;
 
+pub use verified_code_memory::sync;
 pub use verified_code_memory::{MemoryRecord, MemoryStats, SharedMemoryStore};
+
+/// Omits claims bound to files the user does not allow the agent to read.
+/// Deletion markers and clear epochs always propagate.
+pub fn filter_sync_page(page: &mut sync::Page, root: &Path, settings: &serde_json::Value) {
+    let restricted = crate::restricted_files::RestrictedFiles::from_settings(settings);
+    page.changes.retain(|change| {
+        change.record.as_ref().is_none_or(|record| {
+            record.files.iter().all(|file| {
+                restricted
+                    .blocked(
+                        &root.to_string_lossy(),
+                        file,
+                        crate::restricted_files::Op::Read,
+                    )
+                    .is_none()
+            })
+        })
+    });
+}
 
 /// The key a project's settings use for its memory, beside `checks` and
 /// `restrictedFiles` (project-settings.json).
@@ -71,15 +91,78 @@ pub fn store_path(paths: &Paths, project: &Path) -> PathBuf {
 #[derive(Default)]
 pub struct MemoryState {
     stores: Mutex<HashMap<PathBuf, SharedMemoryStore>>,
+    aliases: Mutex<HashMap<PathBuf, String>>,
 }
 
 impl MemoryState {
+    /// The storage scope of a folder. Cloud worktrees bind to a stable project
+    /// identity; desktop folders retain their existing local history.
+    pub fn repo(&self, project: &Path) -> String {
+        self.aliases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(project)
+            .cloned()
+            .unwrap_or_else(|| project.to_string_lossy().into_owned())
+    }
+
+    /// A stable cloud project scope, independent of any chat's worktree.
+    pub fn project_repo(project: &str) -> String {
+        format!("project:{project}")
+    }
+
+    /// Opens the shared cloud store without requiring an existing worktree.
+    pub fn open_project(&self, paths: &Paths, project: &str) -> Option<SharedMemoryStore> {
+        self.open(paths, Path::new(&Self::project_repo(project)))
+    }
+
+    /// Binds a trusted daemon worktree to its registered project. Existing
+    /// per-worktree history is migrated with durable progress; clear epochs
+    /// prevent an old file from resurrecting cleared history on restart.
+    pub fn bind_project(&self, paths: &Paths, root: &Path, project: &str) -> Result<(), String> {
+        let repo = Self::project_repo(project);
+        if self.repo(root) == repo {
+            return Ok(());
+        }
+        let target = self
+            .open_project(paths, project)
+            .ok_or("The cloud project's memory couldn't be opened.")?;
+        let legacy = store_path(paths, root);
+        if legacy.is_file() {
+            let source = SharedMemoryStore::open(legacy).map_err(|e| e.to_string())?;
+            let replica = source.sync_replica().map_err(|e| e.to_string())?;
+            let peer = format!("migration:{replica}");
+            let mut progress = target
+                .sync_progress(&repo, &peer)
+                .map_err(|e| e.to_string())?;
+            loop {
+                let page = source
+                    .sync_export(&root.to_string_lossy(), progress.received)
+                    .map_err(|e| e.to_string())?;
+                target.sync_apply(&repo, &page).map_err(|e| e.to_string())?;
+                progress.replica = replica.clone();
+                progress.received = page.through;
+                target
+                    .sync_ack(&repo, &peer, &progress)
+                    .map_err(|e| e.to_string())?;
+                if !page.more {
+                    break;
+                }
+            }
+        }
+        self.aliases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(root.to_path_buf(), repo);
+        Ok(())
+    }
+
     /// The store of the project in `project`, opened the first time it's
     /// asked for. None when its file can't be opened (permissions, a full
     /// disk, a damaged file): logged, and the run goes on without memory
     /// rather than stopping for it.
     pub fn open(&self, paths: &Paths, project: &Path) -> Option<SharedMemoryStore> {
-        let path = store_path(paths, project);
+        let path = store_path(paths, Path::new(&self.repo(project)));
         let mut stores = self.stores.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(store) = stores.get(&path) {
             return Some(store.clone());
@@ -222,4 +305,82 @@ pub fn clear(store: &SharedMemoryStore, repo: &str) -> Result<u32, String> {
 /// are the store's, kept as text.
 fn memory_id(text: &str) -> Result<Uuid, String> {
     Uuid::parse_str(text).map_err(|_| format!("{text:?} is not a memory's id."))
+}
+
+#[cfg(test)]
+mod synchronization_tests {
+    use super::*;
+    use verified_code_memory::NewMemory;
+
+    #[test]
+    fn cloud_worktrees_share_one_store_and_legacy_history_migrates_once() {
+        let core = crate::testing::TestCore::new();
+        let one = core.dir.0.join("one");
+        let two = core.dir.0.join("two");
+        let first = core.core.memory.open(&core.core.paths, &one).unwrap();
+        let old = first
+            .remember(NewMemory::project_fact(
+                one.to_string_lossy(),
+                "Old fact",
+                "Preserve history",
+            ))
+            .unwrap();
+        core.core
+            .memory
+            .bind_project(&core.core.paths, &one, "project-123")
+            .unwrap();
+        core.core
+            .memory
+            .bind_project(&core.core.paths, &two, "project-123")
+            .unwrap();
+        let shared = core.core.memory.open(&core.core.paths, &two).unwrap();
+        let repo = MemoryState::project_repo("project-123");
+        assert_eq!(shared.get(old.id).unwrap().repo, repo);
+        assert_eq!(core.core.memory.repo(&one), core.core.memory.repo(&two));
+        shared.clear(&repo).unwrap();
+        let restarted = MemoryState::default();
+        restarted
+            .bind_project(&core.core.paths, &one, "project-123")
+            .unwrap();
+        assert!(restarted
+            .open(&core.core.paths, &one)
+            .unwrap()
+            .list(&repo, "")
+            .unwrap()
+            .is_empty());
+        assert!(
+            first.get(old.id).is_ok(),
+            "the migration does not delete original history"
+        );
+        restarted
+            .bind_project(&core.core.paths, &two, "project-other")
+            .unwrap();
+        assert_ne!(restarted.repo(&one), restarted.repo(&two));
+    }
+
+    #[test]
+    fn restricted_claims_stay_off_the_wire_without_suppressing_deletions() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        let secret = store
+            .remember(
+                NewMemory::project_fact("repo", "Hidden", "Private source")
+                    .with_files(["private.rs"]),
+            )
+            .unwrap();
+        let visible = store
+            .remember(
+                NewMemory::project_fact("repo", "Visible", "Public source")
+                    .with_files(["public.rs"]),
+            )
+            .unwrap();
+        let settings = serde_json::json!({"restrictedFiles":[{"path":"private.rs","blockRead":true,"blockWrite":true}]});
+        let mut page = store.sync_export("repo", 0).unwrap();
+        filter_sync_page(&mut page, Path::new("/project"), &settings);
+        assert!(page.changes.iter().any(|c| c.id == visible.id));
+        assert!(!page.changes.iter().any(|c| c.id == secret.id));
+        store.delete(secret.id).unwrap();
+        let mut page = store.sync_export("repo", 0).unwrap();
+        filter_sync_page(&mut page, Path::new("/project"), &settings);
+        assert!(page.changes.iter().any(|c| c.id == secret.id && c.deleted));
+    }
 }

@@ -38,6 +38,7 @@ walkdir.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+verified-code-memory.workspace = true
 # A release key and files it signed (release::fixture).
 rovik-protocol = { workspace = true, features = ["testing"] }
 # The scripted model and temporary folders the daemon tests use.

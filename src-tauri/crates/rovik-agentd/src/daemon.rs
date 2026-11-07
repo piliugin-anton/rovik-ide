@@ -108,6 +108,12 @@ impl Daemon {
 
     async fn serve(&self, computer: &str, request: Request) -> Result<Response, Fail> {
         match request {
+            Request::MemorySync {
+                project,
+                replica,
+                after,
+                changes,
+            } => crate::work::sync_memory(self, computer, &project, replica, after, changes).await,
             Request::HostInfo => Ok(Response::HostInfo(host::info(self).await)),
             Request::KeysList => Ok(Response::Keys(self.store.keys())),
             Request::McpSecretsKept => Ok(Response::Count(self.store.mcp_secrets_kept())),
@@ -465,6 +471,28 @@ impl Daemon {
         // chat's worktree, whatever folder the start names (D8).
         start.isolate = Some(false);
         if let Some(root) = work::root(self, &start.dialog_id) {
+            if let Some(project) = self
+                .store
+                .place(&start.dialog_id)
+                .map(|place| place.project)
+            {
+                let core = self.core.clone();
+                let folder = root.clone();
+                let prepared = rovik_core::rt::spawn_blocking(move || {
+                    core.memory.bind_project(&core.paths, &folder, &project)
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result);
+                if let Err(error) = prepared {
+                    self.core.emit(rovik_protocol::events::AgentEvent::Notice {
+                        dialog_id: Some(start.dialog_id.clone()),
+                        kind: "warning".into(),
+                        title: "Project memory".into(),
+                        message: format!("Shared project memory couldn't be prepared: {error}. The run will continue with available memory and synchronization will retry later."),
+                    });
+                }
+            }
             start.root = Some(work::text(&root));
         }
         self.keep_project_settings(&mut start)?;

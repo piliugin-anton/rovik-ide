@@ -1912,3 +1912,14 @@ async fn a_start_brings_the_values_of_the_project_s_variables() {
     let sent = starts(&fake).remove(0).mcp_secrets;
     assert!(sent["project/p1"].is_empty(), "{sent:?}");
 }
+
+#[tokio::test]
+async fn memory_sync_leaves_an_older_daemon_on_its_existing_protocol() {
+    let app = App::new();
+    let (remote, fake) = connected(&app).await;
+    remote
+        .sync_memory(HOST, "project-id", &app.dir.0)
+        .await
+        .unwrap();
+    assert!(fake.requests.lock().unwrap().is_empty());
+}

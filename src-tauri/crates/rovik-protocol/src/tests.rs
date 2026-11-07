@@ -847,6 +847,18 @@ fn every_request_round_trips() {
                 dialog_id: "d".into(),
                 number: 2,
             },
+            Request::MemorySync {
+                project: "project-1".into(),
+                replica: None,
+                after: 0,
+                changes: None,
+            },
+            Request::MemorySync {
+                project: "project-1".into(),
+                replica: Some("peer".into()),
+                after: 7,
+                changes: Some(json!({"format":1,"changes":[]})),
+            },
             Request::ProjectEnsure {
                 project: Project {
                     id: "p".into(),
@@ -1038,6 +1050,7 @@ fn every_response_round_trips() {
     covers(
         "t",
         &[
+            Response::MemorySync(json!({"format":1,"through":7,"changes":[]})),
             Response::Done,
             Response::Bool(false),
             Response::Steer(SteerReply::Queued),
