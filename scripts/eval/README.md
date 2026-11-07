@@ -1,5 +1,16 @@
 # Agent evaluation
 
+Memory retrieval has separate, deterministic evaluators: run
+`node scripts/eval/memory.mjs` for the frozen lexical/file control, or the Rust
+`evaluate_memory_capacity` and `evaluate_memory_pools` examples for constructed
+packing and candidate-crowding cases. The
+[capacity report](../../docs/design/long-term-memory-capacity-gains-nov7-2026.md)
+records the two production gains and their limits. The
+[semantic follow-up](../../docs/design/long-term-memory-semantic-followup-nov7-2026.md)
+documents fresh incident-separated fixtures, offline WordNet/MiniLM experiments,
+per-case regression guards and model setup. These do not measure live-agent task
+success.
+
 G01 in [docs/design/subagents-plan.md](../../docs/design/subagents-plan.md): the
 main agent's baseline on a fixed task set, before subagents change anything. The
 headless runner ([src-tauri/crates/rovik-headless](../../src-tauri/crates/rovik-headless))

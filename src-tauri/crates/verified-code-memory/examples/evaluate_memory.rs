@@ -62,6 +62,17 @@ fn experiment_config(args: &[String]) -> Result<Value, Box<dyn std::error::Error
     }
 }
 
+fn dataset_input(config: &Value) -> std::io::Result<String> {
+    match config.get("dataset_file") {
+        Some(Value::String(path)) => std::fs::read_to_string(path),
+        None => Ok(include_str!("../../../../scripts/eval/memory-cases.json").to_owned()),
+        Some(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "dataset_file must be a path string",
+        )),
+    }
+}
+
 /// Fixes fixture IDs and claim times before indexing: randomly generated UUIDs
 /// otherwise change reciprocal-rank ties between identical experiment replays.
 fn stabilize_fixture(
@@ -136,9 +147,9 @@ fn rerank_lexical(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let input = include_str!("../../../../scripts/eval/memory-cases.json");
-    let dataset: Value = serde_json::from_str(input)?;
     let config = experiment_config(&std::env::args().skip(1).collect::<Vec<_>>())?;
+    let input = dataset_input(&config)?;
+    let dataset: Value = serde_json::from_str(&input)?;
     let keys = match config["context_keys_file"].as_str() {
         Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
         None => json!({}),
@@ -346,7 +357,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"dataset_version":dataset["version"],"dataset_fingerprint":verified_code_memory::claim_hash("memory-eval-v1",input),"experiment_config":config,"policy":if config["rerank_lexical"]==true {"bi-encoder-gated"} else if config["semantic_only"]==true {"semantic-only"} else if backend.is_some() {"hybrid"} else {"lexical-file"},"memory_off_recall":0,"model":backend.as_ref().map(|(_,revision,dimensions,threshold)| json!({"revision":revision,"dimensions":dimensions,"threshold":threshold})),"answer_quality_evaluated":false,"groups":groups,"cases":rows})
+            &json!({"dataset_version":dataset["version"],"dataset_fingerprint":verified_code_memory::claim_hash("memory-eval-v1",&input),"experiment_config":config,"policy":if config["rerank_lexical"]==true {"bi-encoder-gated"} else if config["semantic_only"]==true {"semantic-only"} else if backend.is_some() {"hybrid"} else {"lexical-file"},"memory_off_recall":0,"model":backend.as_ref().map(|(_,revision,dimensions,threshold)| json!({"revision":revision,"dimensions":dimensions,"threshold":threshold})),"answer_quality_evaluated":false,"groups":groups,"cases":rows})
         )?
     );
     Ok(())
@@ -370,6 +381,26 @@ mod tests {
     fn an_invalid_configuration_invocation_is_rejected() {
         assert!(experiment_config(&["--wrong".into()]).is_err());
         assert_eq!(experiment_config(&[]).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn fresh_datasets_are_loaded_explicitly_and_missing_inputs_fail() {
+        assert_eq!(
+            dataset_input(&json!({})).unwrap(),
+            include_str!("../../../../scripts/eval/memory-cases.json")
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fresh.json");
+        let fixture = "{\"version\":2,\"cases\":[]}";
+        std::fs::write(&path, fixture).unwrap();
+        assert_eq!(
+            dataset_input(&json!({"dataset_file":path})).unwrap(),
+            fixture
+        );
+        assert!(
+            dataset_input(&json!({"dataset_file":directory.path().join("missing.json")})).is_err()
+        );
+        assert!(dataset_input(&json!({"dataset_file":true})).is_err());
     }
 
     #[test]

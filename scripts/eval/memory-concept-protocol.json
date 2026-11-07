@@ -1,0 +1,8 @@
+{
+  "backend": "NLTK WordNet 3.0 concept overlap, not a transformer",
+  "representations": ["first sense", "all senses"],
+  "thresholds": [0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+  "selection": "Development only; preserve every delivered baseline answer and introduce no new no-match injection; maximize delivered answers; tie higher threshold. Only evaluate the selected representation on heldout.",
+  "fresh_sha256": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+  "corpus_sha256": "cbda5ea6eef7f36a97a43d4a75f85e07fccbb4f23657d27b4ccbc93e2646ab59"
+}
