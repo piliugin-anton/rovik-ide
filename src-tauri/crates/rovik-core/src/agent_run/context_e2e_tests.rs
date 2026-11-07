@@ -950,9 +950,12 @@ async fn three_clm_turns_on_a_small_window_leave_the_reply_its_room() {
     .await;
     // The system prompt with its CLM section, the tools (the subagent one
     // included) and the map take ~10 000 tokens and the reply 8 000, which
-    // leaves ~3 000 for the context, its task card and the reasoning sent
+    // leaves ~4 000 for the context, its task card and the reasoning sent
     // back: the context gives way, those and the reply's room don't.
-    let window = 21_000;
+    // Leave margin for platform-specific shell instructions and tool schemas.
+    // Still require the first read to give way while the latest read, task
+    // card and reasoning survive.
+    let window = 22_000;
     run_turns(
         &h,
         &url,
