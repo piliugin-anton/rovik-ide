@@ -1,0 +1,5473 @@
+{
+  "backend": "onnx",
+  "protocol_sha256": "a2f986a5f18aecbd01ea80cd90615ccf97597cb3709d1fa688bcbe00375644db",
+  "fresh_sha256": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+  "runner_sha256": "578426be88d0ac29d69d7ad22618892004e1d0cad89fbb83ad6f686fe98c26d3",
+  "baseline": {
+    "original": {
+      "development": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 92,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      }
+    },
+    "fresh": {
+      "development": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      }
+    }
+  },
+  "evaluator_sha256": "c8bd9dbe3fbc724648ec2d1343fc62cc91c447f504c514fe1f19fa782fc2c942",
+  "dataset_sha256": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+  "controls_sha256": "f81c592e35c1ff0dbbca684be958a408b14ba0c4f854401fc988c565a298364d",
+  "packages": {
+    "numpy": "2.2.6",
+    "onnxruntime": "1.23.2",
+    "tokenizers": "0.22.1"
+  },
+  "models": {
+    "title-claim": {
+      "identity": {
+        "model_sha256": "4f148ba8ae9c2c7fbee4af2b132db8d06c6a6545b47fc83bbb98c3d22b8393e6",
+        "tokenizer_sha256": "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0",
+        "pooling": "attention-weighted mean, L2 normalized",
+        "worker_sha256": "35fb471b51fe4f7fe5f4514fb41f932e806d6df321c2efd4daa6b68c761f857b"
+      },
+      "dimensions": 384,
+      "encoding": {
+        "texts": 128,
+        "seconds": 11.156949789999999
+      }
+    },
+    "claim-only": {
+      "identity": {
+        "model_sha256": "4f148ba8ae9c2c7fbee4af2b132db8d06c6a6545b47fc83bbb98c3d22b8393e6",
+        "tokenizer_sha256": "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0",
+        "pooling": "attention-weighted mean, L2 normalized",
+        "worker_sha256": "35fb471b51fe4f7fe5f4514fb41f932e806d6df321c2efd4daa6b68c761f857b"
+      },
+      "dimensions": 384,
+      "encoding": {
+        "texts": 128,
+        "seconds": 15.941778512000013
+      }
+    }
+  },
+  "trials": [
+    {
+      "representation": "title-claim",
+      "threshold": 0.2,
+      "changes": {
+        "original": {
+          "gains": [
+            "migration-implicit",
+            "credentials-implicit",
+            "timeout-implicit",
+            "formatting-implicit",
+            "cache-implicit",
+            "provenance-implicit",
+            "privacy-implicit",
+            "verification-implicit"
+          ],
+          "losses": [],
+          "new_injections": [
+            "retry-abstention",
+            "migration-abstention",
+            "credentials-abstention",
+            "pagination-abstention",
+            "deletion-abstention",
+            "timeout-abstention",
+            "formatting-abstention",
+            "cache-abstention",
+            "worktree-abstention",
+            "provenance-abstention",
+            "privacy-abstention",
+            "verification-abstention",
+            "fallback-abstention",
+            "generation-abstention",
+            "control-tls",
+            "control-kafka"
+          ]
+        },
+        "fresh": {
+          "gains": [
+            "timezone-implicit",
+            "cancellation-implicit",
+            "websocket-implicit",
+            "rate-limits-implicit",
+            "optimistic-locking-implicit",
+            "resource-cleanup-implicit"
+          ],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.9428571428571428,
+          "cases": 92,
+          "delivered_recall": 0.9428571428571428,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8584982293877618,
+          "no_match_injection_rate": 0.8181818181818182,
+          "recall_at_8": 0.9428571428571428
+        },
+        "fresh": {
+          "candidate_recall": 1.0,
+          "cases": 45,
+          "delivered_recall": 1.0,
+          "mrr": 0.888888888888889,
+          "ndcg_at_8": 0.917028531832177,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 1.0
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.25,
+      "changes": {
+        "original": {
+          "gains": [
+            "migration-implicit",
+            "credentials-implicit",
+            "timeout-implicit",
+            "formatting-implicit",
+            "cache-implicit",
+            "privacy-implicit",
+            "verification-implicit"
+          ],
+          "losses": [],
+          "new_injections": ["control-tls"]
+        },
+        "fresh": {
+          "gains": ["timezone-implicit", "websocket-implicit", "resource-cleanup-implicit"],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.9285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.9285714285714286,
+          "mrr": 0.8214285714285714,
+          "ndcg_at_8": 0.8494849471938838,
+          "no_match_injection_rate": 0.13636363636363635,
+          "recall_at_8": 0.9285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8630929753571458,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.3,
+      "changes": {
+        "original": {
+          "gains": [
+            "credentials-implicit",
+            "timeout-implicit",
+            "formatting-implicit",
+            "cache-implicit",
+            "privacy-implicit",
+            "verification-implicit"
+          ],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": ["timezone-implicit", "websocket-implicit", "resource-cleanup-implicit"],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.9142857142857143,
+          "cases": 92,
+          "delivered_recall": 0.9142857142857143,
+          "mrr": 0.9071428571428571,
+          "ndcg_at_8": 0.909013282193878,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.9142857142857143
+        },
+        "fresh": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8630929753571458,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.35,
+      "changes": {
+        "original": {
+          "gains": [
+            "credentials-implicit",
+            "timeout-implicit",
+            "formatting-implicit",
+            "verification-implicit"
+          ],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": ["timezone-implicit", "websocket-implicit", "resource-cleanup-implicit"],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8857142857142857,
+          "cases": 92,
+          "delivered_recall": 0.8857142857142857,
+          "mrr": 0.8857142857142857,
+          "ndcg_at_8": 0.8857142857142857,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8857142857142857
+        },
+        "fresh": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8630929753571458,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.4,
+      "changes": {
+        "original": {
+          "gains": ["credentials-implicit", "timeout-implicit", "verification-implicit"],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8714285714285714,
+          "cases": 92,
+          "delivered_recall": 0.8714285714285714,
+          "mrr": 0.8714285714285714,
+          "ndcg_at_8": 0.8714285714285714,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8714285714285714
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.45,
+      "changes": {
+        "original": {
+          "gains": ["credentials-implicit"],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8428571428571429,
+          "cases": 92,
+          "delivered_recall": 0.8428571428571429,
+          "mrr": 0.8428571428571429,
+          "ndcg_at_8": 0.8428571428571429,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8428571428571429
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.5,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.55,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.6,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.65,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.7,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.75,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.8,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.85,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "title-claim",
+      "threshold": 0.9,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.2,
+      "changes": {
+        "original": {
+          "gains": [
+            "migration-implicit",
+            "credentials-implicit",
+            "pagination-implicit",
+            "timeout-implicit",
+            "formatting-implicit",
+            "cache-implicit",
+            "privacy-implicit",
+            "verification-implicit"
+          ],
+          "losses": [],
+          "new_injections": ["control-tls", "control-kafka", "control-ipv6", "control-audio"]
+        },
+        "fresh": {
+          "gains": [
+            "timezone-implicit",
+            "websocket-implicit",
+            "rate-limits-implicit",
+            "optimistic-locking-implicit",
+            "resource-cleanup-implicit"
+          ],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.9428571428571428,
+          "cases": 92,
+          "delivered_recall": 0.9428571428571428,
+          "mrr": 0.8047619047619048,
+          "ndcg_at_8": 0.840810508061232,
+          "no_match_injection_rate": 0.2727272727272727,
+          "recall_at_8": 0.9428571428571428
+        },
+        "fresh": {
+          "candidate_recall": 0.9666666666666667,
+          "cases": 45,
+          "delivered_recall": 0.9666666666666667,
+          "mrr": 0.8027777777777777,
+          "ndcg_at_8": 0.8449061611024533,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9666666666666667
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.25,
+      "changes": {
+        "original": {
+          "gains": [
+            "migration-implicit",
+            "credentials-implicit",
+            "timeout-implicit",
+            "formatting-implicit",
+            "cache-implicit",
+            "verification-implicit"
+          ],
+          "losses": [],
+          "new_injections": ["control-tls", "control-audio"]
+        },
+        "fresh": {
+          "gains": ["timezone-implicit", "websocket-implicit", "resource-cleanup-implicit"],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.9142857142857143,
+          "cases": 92,
+          "delivered_recall": 0.9142857142857143,
+          "mrr": 0.8928571428571429,
+          "ndcg_at_8": 0.8984684180102054,
+          "no_match_injection_rate": 0.18181818181818182,
+          "recall_at_8": 0.9142857142857143
+        },
+        "fresh": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.8333333333333334,
+          "ndcg_at_8": 0.8507906338095277,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.3,
+      "changes": {
+        "original": {
+          "gains": [
+            "credentials-implicit",
+            "timeout-implicit",
+            "formatting-implicit",
+            "cache-implicit",
+            "verification-implicit"
+          ],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": ["timezone-implicit", "websocket-implicit", "resource-cleanup-implicit"],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.9,
+          "cases": 92,
+          "delivered_recall": 0.9,
+          "mrr": 0.8857142857142857,
+          "ndcg_at_8": 0.8894551358163274,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.9
+        },
+        "fresh": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.8166666666666667,
+          "ndcg_at_8": 0.8384882922619096,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.35,
+      "changes": {
+        "original": {
+          "gains": ["credentials-implicit", "timeout-implicit", "verification-implicit"],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": ["websocket-implicit"],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8714285714285714,
+          "cases": 92,
+          "delivered_recall": 0.8714285714285714,
+          "mrr": 0.8642857142857143,
+          "ndcg_at_8": 0.8661561393367351,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8714285714285714
+        },
+        "fresh": {
+          "candidate_recall": 0.8333333333333334,
+          "cases": 45,
+          "delivered_recall": 0.8333333333333334,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8087286502380971,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8333333333333334
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.4,
+      "changes": {
+        "original": {
+          "gains": ["credentials-implicit", "timeout-implicit"],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8571428571428571,
+          "cases": 92,
+          "delivered_recall": 0.8571428571428571,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8518704250510208,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8571428571428571
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.45,
+      "changes": {
+        "original": {
+          "gains": ["credentials-implicit"],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8428571428571429,
+          "cases": 92,
+          "delivered_recall": 0.8428571428571429,
+          "mrr": 0.8357142857142857,
+          "ndcg_at_8": 0.8375847107653065,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8428571428571429
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.5,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.55,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.6,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.65,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.7,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.75,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.8,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.85,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    },
+    {
+      "representation": "claim-only",
+      "threshold": 0.9,
+      "changes": {
+        "original": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        },
+        "fresh": {
+          "gains": [],
+          "losses": [],
+          "new_injections": []
+        }
+      },
+      "metrics": {
+        "original": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 92,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.09090909090909091,
+          "recall_at_8": 0.8285714285714286
+        },
+        "fresh": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        }
+      }
+    }
+  ],
+  "selected": [9, 0.3, "title-claim"],
+  "heldout": {
+    "original": {
+      "baseline": {
+        "answer_quality_evaluated": false,
+        "cases": [
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "locking-identifier",
+            "incident": "locking",
+            "latency_us": 379,
+            "packet_tokens": 114,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "locking-implicit",
+            "incident": "locking",
+            "latency_us": 276,
+            "packet_tokens": 59,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "locking-file",
+            "incident": "locking",
+            "latency_us": 425,
+            "packet_tokens": 115,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "locking-update",
+            "incident": "locking",
+            "latency_us": 457,
+            "packet_tokens": 110,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "locking-abstention",
+            "incident": "locking",
+            "latency_us": 173,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "locking-composition",
+            "incident": "locking",
+            "latency_us": 396,
+            "packet_tokens": 167,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "ranking-identifier",
+            "incident": "ranking",
+            "latency_us": 230,
+            "packet_tokens": 59,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "ranking-implicit",
+            "incident": "ranking",
+            "latency_us": 257,
+            "packet_tokens": 59,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "ranking-file",
+            "incident": "ranking",
+            "latency_us": 473,
+            "packet_tokens": 111,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "ranking-update",
+            "incident": "ranking",
+            "latency_us": 268,
+            "packet_tokens": 55,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "ranking-abstention",
+            "incident": "ranking",
+            "latency_us": 205,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "ranking-composition",
+            "incident": "ranking",
+            "latency_us": 332,
+            "packet_tokens": 112,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "retention-identifier",
+            "incident": "retention",
+            "latency_us": 234,
+            "packet_tokens": 64,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "retention-implicit",
+            "incident": "retention",
+            "latency_us": 325,
+            "packet_tokens": 127,
+            "prohibited": false,
+            "rank": null,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "retention-file",
+            "incident": "retention",
+            "latency_us": 675,
+            "packet_tokens": 116,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "retention-update",
+            "incident": "retention",
+            "latency_us": 250,
+            "packet_tokens": 59,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "retention-abstention",
+            "incident": "retention",
+            "latency_us": 184,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "retention-composition",
+            "incident": "retention",
+            "latency_us": 586,
+            "packet_tokens": 185,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "deduplication-identifier",
+            "incident": "deduplication",
+            "latency_us": 325,
+            "packet_tokens": 67,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "deduplication-implicit",
+            "incident": "deduplication",
+            "latency_us": 168,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "deduplication-file",
+            "incident": "deduplication",
+            "latency_us": 686,
+            "packet_tokens": 119,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "deduplication-update",
+            "incident": "deduplication",
+            "latency_us": 352,
+            "packet_tokens": 61,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "deduplication-abstention",
+            "incident": "deduplication",
+            "latency_us": 419,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "deduplication-composition",
+            "incident": "deduplication",
+            "latency_us": 426,
+            "packet_tokens": 67,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "compaction-identifier",
+            "incident": "compaction",
+            "latency_us": 345,
+            "packet_tokens": 65,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "compaction-implicit",
+            "incident": "compaction",
+            "latency_us": 238,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "compaction-file",
+            "incident": "compaction",
+            "latency_us": 663,
+            "packet_tokens": 117,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "compaction-update",
+            "incident": "compaction",
+            "latency_us": 315,
+            "packet_tokens": 61,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "compaction-abstention",
+            "incident": "compaction",
+            "latency_us": 256,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "compaction-composition",
+            "incident": "compaction",
+            "latency_us": 426,
+            "packet_tokens": 65,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "isolation-identifier",
+            "incident": "isolation",
+            "latency_us": 326,
+            "packet_tokens": 63,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "isolation-implicit",
+            "incident": "isolation",
+            "latency_us": 228,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "isolation-file",
+            "incident": "isolation",
+            "latency_us": 19571,
+            "packet_tokens": 67,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 19,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "isolation-update",
+            "incident": "isolation",
+            "latency_us": 291,
+            "packet_tokens": 59,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "isolation-abstention",
+            "incident": "isolation",
+            "latency_us": 253,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "isolation-composition",
+            "incident": "isolation",
+            "latency_us": 428,
+            "packet_tokens": 63,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "control-geography",
+            "incident": "geo-projection",
+            "latency_us": 590,
+            "packet_tokens": 65,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "control-compression",
+            "incident": "compression-ratio",
+            "latency_us": 372,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": false,
+            "candidate_rank": 1,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "control-payments",
+            "incident": "tax-calculation",
+            "latency_us": 1285,
+            "packet_tokens": 111,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 1,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "control-routing",
+            "incident": "bgp-route-selection",
+            "latency_us": 625,
+            "packet_tokens": 67,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          }
+        ],
+        "dataset_fingerprint": "80aea60d70404953",
+        "dataset_version": 1,
+        "experiment_config": {
+          "controls_file": "/workspace/rovik-ide/scripts/eval/memory-recall-controls.json",
+          "deterministic": true,
+          "memory_budget": 1000,
+          "split": "heldout"
+        },
+        "groups": {
+          "heldout": {
+            "candidate_recall": 0.8,
+            "cases": 40,
+            "delivered_recall": 0.8,
+            "mrr": 0.8,
+            "ndcg_at_8": 0.8,
+            "no_match_injection_rate": 0.3,
+            "recall_at_8": 0.8
+          }
+        },
+        "memory_off_recall": 0,
+        "model": null,
+        "policy": "lexical-file"
+      },
+      "selected": {
+        "answer_quality_evaluated": false,
+        "cases": [
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "locking-identifier",
+            "incident": "locking",
+            "latency_us": 7133,
+            "packet_tokens": 122,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "locking-implicit",
+            "incident": "locking",
+            "latency_us": 6552,
+            "packet_tokens": 59,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "locking-file",
+            "incident": "locking",
+            "latency_us": 8182,
+            "packet_tokens": 115,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "locking-update",
+            "incident": "locking",
+            "latency_us": 8408,
+            "packet_tokens": 118,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "locking-abstention",
+            "incident": "locking",
+            "latency_us": 7072,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "locking-composition",
+            "incident": "locking",
+            "latency_us": 8204,
+            "packet_tokens": 175,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "ranking-identifier",
+            "incident": "ranking",
+            "latency_us": 6669,
+            "packet_tokens": 63,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "ranking-implicit",
+            "incident": "ranking",
+            "latency_us": 8288,
+            "packet_tokens": 59,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "ranking-file",
+            "incident": "ranking",
+            "latency_us": 7419,
+            "packet_tokens": 111,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "ranking-update",
+            "incident": "ranking",
+            "latency_us": 6928,
+            "packet_tokens": 59,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "ranking-abstention",
+            "incident": "ranking",
+            "latency_us": 6727,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "ranking-composition",
+            "incident": "ranking",
+            "latency_us": 7051,
+            "packet_tokens": 116,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "retention-identifier",
+            "incident": "retention",
+            "latency_us": 6629,
+            "packet_tokens": 123,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "retention-implicit",
+            "incident": "retention",
+            "latency_us": 10087,
+            "packet_tokens": 127,
+            "prohibited": false,
+            "rank": null,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "retention-file",
+            "incident": "retention",
+            "latency_us": 7424,
+            "packet_tokens": 116,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "retention-update",
+            "incident": "retention",
+            "latency_us": 6752,
+            "packet_tokens": 119,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "retention-abstention",
+            "incident": "retention",
+            "latency_us": 7681,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "retention-composition",
+            "incident": "retention",
+            "latency_us": 7105,
+            "packet_tokens": 193,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "deduplication-identifier",
+            "incident": "deduplication",
+            "latency_us": 6303,
+            "packet_tokens": 124,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 2,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "deduplication-implicit",
+            "incident": "deduplication",
+            "latency_us": 6538,
+            "packet_tokens": 116,
+            "prohibited": false,
+            "rank": 2,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "deduplication-file",
+            "incident": "deduplication",
+            "latency_us": 7349,
+            "packet_tokens": 119,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "deduplication-update",
+            "incident": "deduplication",
+            "latency_us": 7674,
+            "packet_tokens": 119,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "deduplication-abstention",
+            "incident": "deduplication",
+            "latency_us": 7594,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "deduplication-composition",
+            "incident": "deduplication",
+            "latency_us": 7948,
+            "packet_tokens": 177,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "compaction-identifier",
+            "incident": "compaction",
+            "latency_us": 6694,
+            "packet_tokens": 69,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "compaction-implicit",
+            "incident": "compaction",
+            "latency_us": 6446,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "compaction-file",
+            "incident": "compaction",
+            "latency_us": 8069,
+            "packet_tokens": 117,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "compaction-update",
+            "incident": "compaction",
+            "latency_us": 6614,
+            "packet_tokens": 65,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "compaction-abstention",
+            "incident": "compaction",
+            "latency_us": 6358,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "compaction-composition",
+            "incident": "compaction",
+            "latency_us": 11419,
+            "packet_tokens": 69,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "isolation-identifier",
+            "incident": "isolation",
+            "latency_us": 6798,
+            "packet_tokens": 67,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "isolation-implicit",
+            "incident": "isolation",
+            "latency_us": 7248,
+            "packet_tokens": 59,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "isolation-file",
+            "incident": "isolation",
+            "latency_us": 7082,
+            "packet_tokens": 67,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "update",
+            "embedding_fallback": false,
+            "id": "isolation-update",
+            "incident": "isolation",
+            "latency_us": 6629,
+            "packet_tokens": 63,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "isolation-abstention",
+            "incident": "isolation",
+            "latency_us": 6401,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "composition",
+            "embedding_fallback": false,
+            "id": "isolation-composition",
+            "incident": "isolation",
+            "latency_us": 7328,
+            "packet_tokens": 124,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "control-geography",
+            "incident": "geo-projection",
+            "latency_us": 7139,
+            "packet_tokens": 65,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "control-compression",
+            "incident": "compression-ratio",
+            "latency_us": 7131,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": false,
+            "candidate_rank": 1,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "control-payments",
+            "incident": "tax-calculation",
+            "latency_us": 7416,
+            "packet_tokens": 111,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "control-routing",
+            "incident": "bgp-route-selection",
+            "latency_us": 7362,
+            "packet_tokens": 67,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          }
+        ],
+        "dataset_fingerprint": "80aea60d70404953",
+        "dataset_version": 1,
+        "experiment_config": {
+          "controls_file": "/workspace/rovik-ide/scripts/eval/memory-recall-controls.json",
+          "deterministic": true,
+          "memory_budget": 1000,
+          "split": "heldout",
+          "threshold": 0.3,
+          "vectors_file": "/workspace/work/minilm/evaluation/onnx-title-claim-0ee6d9fbd25d-heldout.vectors.json"
+        },
+        "groups": {
+          "heldout": {
+            "candidate_recall": 0.8666666666666667,
+            "cases": 40,
+            "delivered_recall": 0.8666666666666667,
+            "mrr": 0.85,
+            "ndcg_at_8": 0.8543643251190486,
+            "no_match_injection_rate": 0.3,
+            "recall_at_8": 0.8666666666666667
+          }
+        },
+        "memory_off_recall": 0,
+        "model": {
+          "dimensions": 384,
+          "revision": "onnx-title-claim-0ee6d9fbd25d",
+          "threshold": 0.30000001192092896
+        },
+        "policy": "hybrid"
+      },
+      "changes": {
+        "gains": ["deduplication-implicit", "isolation-implicit"],
+        "losses": [],
+        "new_injections": []
+      }
+    },
+    "fresh": {
+      "baseline": {
+        "answer_quality_evaluated": false,
+        "cases": [
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "connection-pool-identifier",
+            "incident": "connection-pool",
+            "latency_us": 750,
+            "packet_tokens": 73,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "connection-pool-implicit",
+            "incident": "connection-pool",
+            "latency_us": 1039,
+            "packet_tokens": 208,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 1,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "connection-pool-file",
+            "incident": "connection-pool",
+            "latency_us": 477,
+            "packet_tokens": 72,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "csrf-identifier",
+            "incident": "csrf",
+            "latency_us": 245,
+            "packet_tokens": 70,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "csrf-implicit",
+            "incident": "csrf",
+            "latency_us": 360,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "csrf-file",
+            "incident": "csrf",
+            "latency_us": 449,
+            "packet_tokens": 64,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "pagination-order-identifier",
+            "incident": "pagination-order",
+            "latency_us": 270,
+            "packet_tokens": 71,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "pagination-order-implicit",
+            "incident": "pagination-order",
+            "latency_us": 498,
+            "packet_tokens": 74,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "pagination-order-file",
+            "incident": "pagination-order",
+            "latency_us": 336,
+            "packet_tokens": 64,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "clipboard-identifier",
+            "incident": "clipboard",
+            "latency_us": 236,
+            "packet_tokens": 70,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "clipboard-implicit",
+            "incident": "clipboard",
+            "latency_us": 677,
+            "packet_tokens": 138,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "clipboard-file",
+            "incident": "clipboard",
+            "latency_us": 458,
+            "packet_tokens": 64,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "http-cache-identifier",
+            "incident": "http-cache",
+            "latency_us": 611,
+            "packet_tokens": 71,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "http-cache-implicit",
+            "incident": "http-cache",
+            "latency_us": 537,
+            "packet_tokens": 129,
+            "prohibited": false,
+            "rank": null,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "http-cache-file",
+            "incident": "http-cache",
+            "latency_us": 507,
+            "packet_tokens": 70,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "object-lifetime-identifier",
+            "incident": "object-lifetime",
+            "latency_us": 552,
+            "packet_tokens": 72,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "object-lifetime-implicit",
+            "incident": "object-lifetime",
+            "latency_us": 832,
+            "packet_tokens": 72,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "object-lifetime-file",
+            "incident": "object-lifetime",
+            "latency_us": 610,
+            "packet_tokens": 66,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "filesystem-watch-identifier",
+            "incident": "filesystem-watch",
+            "latency_us": 316,
+            "packet_tokens": 73,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "filesystem-watch-implicit",
+            "incident": "filesystem-watch",
+            "latency_us": 633,
+            "packet_tokens": 197,
+            "prohibited": false,
+            "rank": null,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "filesystem-watch-file",
+            "incident": "filesystem-watch",
+            "latency_us": 513,
+            "packet_tokens": 67,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "shell-arguments-identifier",
+            "incident": "shell-arguments",
+            "latency_us": 271,
+            "packet_tokens": 76,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "shell-arguments-implicit",
+            "incident": "shell-arguments",
+            "latency_us": 237,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "shell-arguments-file",
+            "incident": "shell-arguments",
+            "latency_us": 342,
+            "packet_tokens": 70,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "certificate-chain-identifier",
+            "incident": "certificate-chain",
+            "latency_us": 263,
+            "packet_tokens": 75,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "certificate-chain-implicit",
+            "incident": "certificate-chain",
+            "latency_us": 505,
+            "packet_tokens": 199,
+            "prohibited": false,
+            "rank": null,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "certificate-chain-file",
+            "incident": "certificate-chain",
+            "latency_us": 379,
+            "packet_tokens": 74,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "transactional-outbox-identifier",
+            "incident": "transactional-outbox",
+            "latency_us": 285,
+            "packet_tokens": 77,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "transactional-outbox-implicit",
+            "incident": "transactional-outbox",
+            "latency_us": 624,
+            "packet_tokens": 255,
+            "prohibited": false,
+            "rank": null,
+            "returned": 4,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 4,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 4,
+              "rejected": 0,
+              "returned": 4,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "transactional-outbox-file",
+            "incident": "transactional-outbox",
+            "latency_us": 334,
+            "packet_tokens": 76,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-0",
+            "incident": "fresh-negative-heldout-0",
+            "latency_us": 205,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-1",
+            "incident": "fresh-negative-heldout-1",
+            "latency_us": 195,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-2",
+            "incident": "fresh-negative-heldout-2",
+            "latency_us": 196,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-3",
+            "incident": "fresh-negative-heldout-3",
+            "latency_us": 221,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-4",
+            "incident": "fresh-negative-heldout-4",
+            "latency_us": 361,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-5",
+            "incident": "fresh-negative-heldout-5",
+            "latency_us": 471,
+            "packet_tokens": 129,
+            "prohibited": false,
+            "rank": null,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-6",
+            "incident": "fresh-negative-heldout-6",
+            "latency_us": 265,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-7",
+            "incident": "fresh-negative-heldout-7",
+            "latency_us": 216,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-8",
+            "incident": "fresh-negative-heldout-8",
+            "latency_us": 363,
+            "packet_tokens": 69,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-9",
+            "incident": "fresh-negative-heldout-9",
+            "latency_us": 226,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "fresh-hard-negative-heldout-0",
+            "incident": "fresh-hard-negative-heldout-0",
+            "latency_us": 424,
+            "packet_tokens": 72,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "fresh-hard-negative-heldout-1",
+            "incident": "fresh-hard-negative-heldout-1",
+            "latency_us": 347,
+            "packet_tokens": 74,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "fresh-hard-negative-heldout-2",
+            "incident": "fresh-hard-negative-heldout-2",
+            "latency_us": 411,
+            "packet_tokens": 141,
+            "prohibited": false,
+            "rank": null,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "fresh-hard-negative-heldout-3",
+            "incident": "fresh-hard-negative-heldout-3",
+            "latency_us": 307,
+            "packet_tokens": 76,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "fresh-hard-negative-heldout-4",
+            "incident": "fresh-hard-negative-heldout-4",
+            "latency_us": 462,
+            "packet_tokens": 206,
+            "prohibited": false,
+            "rank": null,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          }
+        ],
+        "dataset_fingerprint": "ed0811b7908ada56",
+        "dataset_version": 2,
+        "experiment_config": {
+          "dataset_file": "/workspace/rovik-ide/scripts/eval/memory-semantic-fresh-cases.json",
+          "deterministic": true,
+          "memory_budget": 1000,
+          "split": "heldout"
+        },
+        "groups": {
+          "heldout": {
+            "candidate_recall": 0.7666666666666667,
+            "cases": 45,
+            "delivered_recall": 0.7666666666666667,
+            "mrr": 0.7666666666666667,
+            "ndcg_at_8": 0.7666666666666667,
+            "no_match_injection_rate": 0.4666666666666667,
+            "recall_at_8": 0.7666666666666667
+          }
+        },
+        "memory_off_recall": 0,
+        "model": null,
+        "policy": "lexical-file"
+      },
+      "selected": {
+        "answer_quality_evaluated": false,
+        "cases": [
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "connection-pool-identifier",
+            "incident": "connection-pool",
+            "latency_us": 5648,
+            "packet_tokens": 77,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "connection-pool-implicit",
+            "incident": "connection-pool",
+            "latency_us": 6448,
+            "packet_tokens": 212,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "connection-pool-file",
+            "incident": "connection-pool",
+            "latency_us": 5364,
+            "packet_tokens": 72,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "csrf-identifier",
+            "incident": "csrf",
+            "latency_us": 4838,
+            "packet_tokens": 74,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "csrf-implicit",
+            "incident": "csrf",
+            "latency_us": 5246,
+            "packet_tokens": 65,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "csrf-file",
+            "incident": "csrf",
+            "latency_us": 5011,
+            "packet_tokens": 64,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "pagination-order-identifier",
+            "incident": "pagination-order",
+            "latency_us": 5294,
+            "packet_tokens": 75,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "pagination-order-implicit",
+            "incident": "pagination-order",
+            "latency_us": 6657,
+            "packet_tokens": 132,
+            "prohibited": false,
+            "rank": null,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "pagination-order-file",
+            "incident": "pagination-order",
+            "latency_us": 5295,
+            "packet_tokens": 64,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "clipboard-identifier",
+            "incident": "clipboard",
+            "latency_us": 4599,
+            "packet_tokens": 74,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "clipboard-implicit",
+            "incident": "clipboard",
+            "latency_us": 5481,
+            "packet_tokens": 146,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "clipboard-file",
+            "incident": "clipboard",
+            "latency_us": 6815,
+            "packet_tokens": 64,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "http-cache-identifier",
+            "incident": "http-cache",
+            "latency_us": 4806,
+            "packet_tokens": 75,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 2,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "http-cache-implicit",
+            "incident": "http-cache",
+            "latency_us": 5425,
+            "packet_tokens": 189,
+            "prohibited": false,
+            "rank": 2,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "http-cache-file",
+            "incident": "http-cache",
+            "latency_us": 5111,
+            "packet_tokens": 70,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "object-lifetime-identifier",
+            "incident": "object-lifetime",
+            "latency_us": 4757,
+            "packet_tokens": 76,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "object-lifetime-implicit",
+            "incident": "object-lifetime",
+            "latency_us": 5262,
+            "packet_tokens": 199,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "object-lifetime-file",
+            "incident": "object-lifetime",
+            "latency_us": 6720,
+            "packet_tokens": 66,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "filesystem-watch-identifier",
+            "incident": "filesystem-watch",
+            "latency_us": 6705,
+            "packet_tokens": 197,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 4,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "filesystem-watch-implicit",
+            "incident": "filesystem-watch",
+            "latency_us": 5881,
+            "packet_tokens": 267,
+            "prohibited": false,
+            "rank": 4,
+            "returned": 4,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "filesystem-watch-file",
+            "incident": "filesystem-watch",
+            "latency_us": 5315,
+            "packet_tokens": 67,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "shell-arguments-identifier",
+            "incident": "shell-arguments",
+            "latency_us": 6729,
+            "packet_tokens": 80,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": true,
+            "candidate_rank": null,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "shell-arguments-implicit",
+            "incident": "shell-arguments",
+            "latency_us": 6299,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "shell-arguments-file",
+            "incident": "shell-arguments",
+            "latency_us": 5224,
+            "packet_tokens": 70,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "certificate-chain-identifier",
+            "incident": "certificate-chain",
+            "latency_us": 6325,
+            "packet_tokens": 79,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 2,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "certificate-chain-implicit",
+            "incident": "certificate-chain",
+            "latency_us": 5161,
+            "packet_tokens": 267,
+            "prohibited": false,
+            "rank": 2,
+            "returned": 4,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "certificate-chain-file",
+            "incident": "certificate-chain",
+            "latency_us": 5051,
+            "packet_tokens": 74,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "identifier",
+            "embedding_fallback": false,
+            "id": "transactional-outbox-identifier",
+            "incident": "transactional-outbox",
+            "latency_us": 7024,
+            "packet_tokens": 81,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 3,
+            "category": "implicit",
+            "embedding_fallback": false,
+            "id": "transactional-outbox-implicit",
+            "incident": "transactional-outbox",
+            "latency_us": 6264,
+            "packet_tokens": 324,
+            "prohibited": false,
+            "rank": 3,
+            "returned": 5,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 4,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 4,
+              "rejected": 0,
+              "returned": 4,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": true,
+            "answerable": true,
+            "candidate_rank": 1,
+            "category": "file",
+            "embedding_fallback": false,
+            "id": "transactional-outbox-file",
+            "incident": "transactional-outbox",
+            "latency_us": 5480,
+            "packet_tokens": 76,
+            "prohibited": false,
+            "rank": 1,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 1,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-0",
+            "incident": "fresh-negative-heldout-0",
+            "latency_us": 5625,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-1",
+            "incident": "fresh-negative-heldout-1",
+            "latency_us": 5808,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-2",
+            "incident": "fresh-negative-heldout-2",
+            "latency_us": 4516,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-3",
+            "incident": "fresh-negative-heldout-3",
+            "latency_us": 4468,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-4",
+            "incident": "fresh-negative-heldout-4",
+            "latency_us": 6371,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-5",
+            "incident": "fresh-negative-heldout-5",
+            "latency_us": 4784,
+            "packet_tokens": 129,
+            "prohibited": false,
+            "rank": null,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-6",
+            "incident": "fresh-negative-heldout-6",
+            "latency_us": 5115,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-7",
+            "incident": "fresh-negative-heldout-7",
+            "latency_us": 6511,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-8",
+            "incident": "fresh-negative-heldout-8",
+            "latency_us": 5812,
+            "packet_tokens": 69,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "abstention",
+            "embedding_fallback": false,
+            "id": "fresh-negative-heldout-9",
+            "incident": "fresh-negative-heldout-9",
+            "latency_us": 4503,
+            "packet_tokens": 16,
+            "prohibited": false,
+            "rank": null,
+            "returned": 0,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 0,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 0,
+              "rejected": 0,
+              "returned": 0,
+              "used_full_text_search": false
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "fresh-hard-negative-heldout-0",
+            "incident": "fresh-hard-negative-heldout-0",
+            "latency_us": 5228,
+            "packet_tokens": 76,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "fresh-hard-negative-heldout-1",
+            "incident": "fresh-hard-negative-heldout-1",
+            "latency_us": 6100,
+            "packet_tokens": 78,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "fresh-hard-negative-heldout-2",
+            "incident": "fresh-hard-negative-heldout-2",
+            "latency_us": 6070,
+            "packet_tokens": 145,
+            "prohibited": false,
+            "rank": null,
+            "returned": 2,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 2,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 2,
+              "rejected": 0,
+              "returned": 2,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "fresh-hard-negative-heldout-3",
+            "incident": "fresh-hard-negative-heldout-3",
+            "latency_us": 4611,
+            "packet_tokens": 80,
+            "prohibited": false,
+            "rank": null,
+            "returned": 1,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 1,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 1,
+              "rejected": 0,
+              "returned": 1,
+              "used_full_text_search": true
+            }
+          },
+          {
+            "answer_delivered": false,
+            "answerable": false,
+            "candidate_rank": null,
+            "category": "hard-negative",
+            "embedding_fallback": false,
+            "id": "fresh-hard-negative-heldout-4",
+            "incident": "fresh-hard-negative-heldout-4",
+            "latency_us": 7059,
+            "packet_tokens": 210,
+            "prohibited": false,
+            "rank": null,
+            "returned": 3,
+            "split": "heldout",
+            "telemetry": {
+              "candidates_scanned": 3,
+              "elapsed_ms": 0,
+              "file_matches": 0,
+              "fts_matches": 3,
+              "rejected": 0,
+              "returned": 3,
+              "used_full_text_search": true
+            }
+          }
+        ],
+        "dataset_fingerprint": "ed0811b7908ada56",
+        "dataset_version": 2,
+        "experiment_config": {
+          "dataset_file": "/workspace/rovik-ide/scripts/eval/memory-semantic-fresh-cases.json",
+          "deterministic": true,
+          "memory_budget": 1000,
+          "split": "heldout",
+          "threshold": 0.3,
+          "vectors_file": "/workspace/work/minilm/evaluation/onnx-title-claim-0ee6d9fbd25d-heldout.vectors.json"
+        },
+        "groups": {
+          "heldout": {
+            "candidate_recall": 0.9333333333333333,
+            "cases": 45,
+            "delivered_recall": 0.9333333333333333,
+            "mrr": 0.8527777777777777,
+            "ndcg_at_8": 0.8730845355072103,
+            "no_match_injection_rate": 0.4666666666666667,
+            "recall_at_8": 0.9333333333333333
+          }
+        },
+        "memory_off_recall": 0,
+        "model": {
+          "dimensions": 384,
+          "revision": "onnx-title-claim-0ee6d9fbd25d",
+          "threshold": 0.30000001192092896
+        },
+        "policy": "hybrid"
+      },
+      "changes": {
+        "gains": [
+          "csrf-implicit",
+          "http-cache-implicit",
+          "filesystem-watch-implicit",
+          "certificate-chain-implicit",
+          "transactional-outbox-implicit"
+        ],
+        "losses": [],
+        "new_injections": []
+      }
+    }
+  },
+  "answer_quality_evaluated": false,
+  "source_commit": "ad3910cbc36a69ed19c2f730c5b80b39d1153f8e",
+  "archive_url": "https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz",
+  "archive_sha256": "913d7300ceae3b2dbc2c50d1de4baacab4be7b9380491c27fab7418616a16ec3",
+  "production_defaults_changed": false,
+  "worker_replay": {
+    "cases": 120,
+    "dataset": "original, without additional hard-negative controls",
+    "compared_to": "selected recorded-vector development and heldout trials",
+    "matching_fields": [
+      "answer_delivered",
+      "candidate_rank",
+      "rank",
+      "returned",
+      "prohibited",
+      "packet_tokens",
+      "embedding_fallback"
+    ],
+    "mismatches": 0,
+    "output_sha256": "46c1b7e85bd73693348896381f987cb8fee5e347d67f5c38263443cbeb1450ac"
+  }
+}

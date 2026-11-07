@@ -1976,6 +1976,26 @@ Vectors are keyed by model revision and claim hash; edits invalidate old vectors
 and deleting a record or clearing memory removes its vectors. Changing model
 weights requires a new revision identifier.
 
+Chroma's `all-MiniLM-L6-v2` ONNX export is also supported. Download
+`https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz`
+as an explicit setup step and verify its SHA-256 before extraction:
+`913d7300ceae3b2dbc2c50d1de4baacab4be7b9380491c27fab7418616a16ec3`.
+Install `onnxruntime==1.23.2`, `tokenizers==0.22.1` and `numpy==2.2.6`
+in the configured Python environment. Set `modelPath` to the absolute extracted
+`onnx` directory containing `model.onnx` and `tokenizer.json`, `dimensions` to
+384, and `revision` to `chroma-minilm-l6-v2-913d7300-title-claim-v1`.
+The worker recognizes the local ONNX files and retains one CPU session without
+requiring sentence-transformers or contacting a model hub. It embeds at most
+500 characters and 256 tokens, using attention-masked mean pooling and L2
+normalization. The evaluation runner uses the same encoder.
+
+On the frozen synthetic recall cases, the development-selected cosine threshold
+was **0.30** for this export with title-plus-claim input. Start with `shadow`
+and calibrate against your own corpus before enabling `hybrid`; this English
+model and threshold do not establish multilingual or live-agent quality.
+See [the MiniLM evaluation](docs/design/long-term-memory-minilm-nov8-2026.md)
+for gains, remaining false matches and reproduction steps.
+
 `memoryCapture: false` independently stops new claim and episode writes while
 retaining retrieval. The existing `memory: false` disables the feature for the
 project. No model content is written to ordinary retrieval comparison logs.
