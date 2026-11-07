@@ -450,7 +450,7 @@ export interface OpenAIChatOptions {
   temperature?: number | null;
   top_p?: number | null;
   stop?: string[] | null;
-  reasoning_effort?: 'none' | 'low' | 'medium' | 'high' | null;
+  reasoning_effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
   /** The forms to send it in (lib/reasoning.ts); absent: the older default. */
   reasoning_formats?: string[] | null;
 }
@@ -460,7 +460,13 @@ export type ChatStreamEvent =
   /** The model's reasoning, apart from the reply. */
   | { type: 'Reasoning'; content: string }
   /** Which reasoning forms the provider accepted or rejected (lib/reasoning.ts). */
-  | { type: 'ReasoningSupport'; accepted: string[]; rejected: string[]; unresolved: string[] }
+  | {
+      type: 'ReasoningSupport';
+      accepted: string[];
+      rejected: string[];
+      unresolved: string[];
+      effective_effort?: string | null;
+    }
   /** The API route the model was found to work on, to save with it. */
   | { type: 'ApiRoute'; route: ApiRoute }
   | { type: 'Done' }

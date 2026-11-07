@@ -3249,6 +3249,7 @@ impl Stream {
                         rejected: Vec::new(),
                         unresolved: Vec::new(),
                         reasons: true,
+                        effective_effort: None,
                     });
                 }
                 self.dirty_reasoning = true;
@@ -3257,6 +3258,7 @@ impl Stream {
                 accepted,
                 rejected,
                 unresolved,
+                effective_effort,
             } => {
                 self.core.emit(AgentEvent::ReasoningLearned {
                     profile_id: self.profile_id.clone(),
@@ -3264,6 +3266,7 @@ impl Stream {
                     rejected: rejected.clone(),
                     unresolved: unresolved.clone(),
                     reasons: false,
+                    effective_effort,
                 });
                 self.learned = Some((accepted, rejected, unresolved));
             }
@@ -3567,6 +3570,8 @@ fn effort_label(options: &Option<OpenAIChatOptions>) -> &'static str {
         Some(ReasoningEffort::Low) => "low effort",
         Some(ReasoningEffort::Medium) => "medium effort",
         Some(ReasoningEffort::High) => "high effort",
+        Some(ReasoningEffort::Xhigh) => "extra high effort",
+        Some(ReasoningEffort::Max) => "maximum effort",
     }
 }
 

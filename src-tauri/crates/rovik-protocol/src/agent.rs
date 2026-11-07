@@ -83,6 +83,8 @@ pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    Xhigh,
+    Max,
 }
 
 impl ReasoningEffort {
@@ -92,6 +94,8 @@ impl ReasoningEffort {
             ReasoningEffort::Low => "low",
             ReasoningEffort::Medium => "medium",
             ReasoningEffort::High => "high",
+            ReasoningEffort::Xhigh => "xhigh",
+            ReasoningEffort::Max => "max",
         }
     }
 }

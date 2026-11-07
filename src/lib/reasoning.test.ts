@@ -2,7 +2,13 @@
 // nothing new, nothing saved. Run with: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeLearned, REASONING_FIELDS } from './reasoning';
+import {
+  EFFORTS,
+  effectiveEffort,
+  resumedEffort,
+  mergeLearned,
+  REASONING_FIELDS,
+} from './reasoning';
 
 const [field, other] = REASONING_FIELDS;
 
@@ -24,4 +30,52 @@ test('what is new is learned', () => {
   assert.deepEqual(again.rejected, [{ field: other, at: 3000 }]);
   // Accepted after all: the rejection goes.
   assert.deepEqual(mergeLearned(again, [other], [], [], 4000).rejected, []);
+});
+
+test('extra high and maximum are distinct effort choices above high', () => {
+  assert.deepEqual(
+    EFFORTS.slice(-3).map((e) => e.id),
+    ['high', 'xhigh', 'max']
+  );
+});
+
+test('a probed fallback updates upper effort selections and preserves existing high', () => {
+  assert.equal(effectiveEffort('max', 'xhigh'), 'xhigh');
+  assert.equal(effectiveEffort('xhigh', 'high'), 'high');
+  assert.equal(effectiveEffort('high', 'max'), 'high');
+  assert.equal(effectiveEffort('max', undefined), 'max');
+  assert.equal(effectiveEffort('max', 'unknown'), 'max');
+});
+
+test('retry and continue keep the chat effort when another chat changed the model preference', () => {
+  for (const effort of ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'default'] as const) {
+    assert.equal(
+      resumedEffort('provider::model', 'low', {
+        providerId: 'provider',
+        modelId: 'model',
+        effort,
+      }),
+      effort
+    );
+  }
+});
+
+test('resuming an older chat or switching models preserves the current effort', () => {
+  assert.equal(resumedEffort('provider::model', 'xhigh', null), 'xhigh');
+  assert.equal(
+    resumedEffort('provider::model', 'max', {
+      providerId: 'provider',
+      modelId: 'model',
+      effort: null,
+    }),
+    'max'
+  );
+  assert.equal(
+    resumedEffort('other::model', 'high', {
+      providerId: 'provider',
+      modelId: 'model',
+      effort: 'max',
+    }),
+    'high'
+  );
 });

@@ -207,6 +207,8 @@ fn effort_arg(effort: ReasoningEffort) -> &'static str {
         ReasoningEffort::None | ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High => "high",
+        ReasoningEffort::Xhigh => "xhigh",
+        ReasoningEffort::Max => "max",
     }
 }
 

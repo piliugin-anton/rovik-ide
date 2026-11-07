@@ -81,7 +81,7 @@ impl ModelInfo {
             None => (true, true, true),
         };
         let efforts = if adaptive {
-            vec!["low", "medium", "high"]
+            LEVELS.to_vec()
         } else {
             Vec::new()
         };
@@ -159,6 +159,7 @@ impl ModelInfo {
             .iter()
             .copied()
             .filter_map(|l| at(l).map(|i| (l, i)))
+            .filter(|(_, i)| !matches!(level, "xhigh" | "max") || *i <= wanted)
             .min_by_key(|(_, i)| (i.abs_diff(wanted), usize::MAX - i))
             .map(|(l, _)| l)
     }
@@ -281,7 +282,7 @@ mod tests {
     fn guesses_follow_the_claude_generations() {
         let opus55 = ModelInfo::guess("claude-opus-5-5");
         assert!(opus55.adaptive && !opus55.budget && opus55.thinks_by_default);
-        assert_eq!(opus55.efforts, ["low", "medium", "high"]);
+        assert_eq!(opus55.efforts, LEVELS);
         let opus46 = ModelInfo::guess("claude-opus-4-6");
         assert!(opus46.adaptive && opus46.budget && !opus46.thinks_by_default);
         let opus48 = ModelInfo::guess("claude-opus-4-8");
@@ -341,6 +342,8 @@ mod tests {
         let mut info = ModelInfo::guess("claude-opus-5-5");
         info.efforts = vec!["low", "high", "max"];
         assert_eq!(info.effort_for("high"), Some("high"));
+        assert_eq!(info.effort_for("xhigh"), Some("high"));
+        assert_eq!(info.effort_for("max"), Some("max"));
         // Between low and high: the higher.
         assert_eq!(info.effort_for("medium"), Some("high"));
         assert_eq!(info.lowest_effort(), Some("low"));

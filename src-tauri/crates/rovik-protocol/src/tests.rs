@@ -2091,3 +2091,12 @@ fn a_storage_from_an_older_daemon_has_no_chats() {
     assert!(storage.chats.is_empty());
     assert_eq!(serde_json::to_value(&storage).unwrap(), older);
 }
+
+#[test]
+fn upper_reasoning_efforts_round_trip_without_aliasing() {
+    for level in ["xhigh", "max"] {
+        let effort: ReasoningEffort = serde_json::from_value(serde_json::json!(level)).unwrap();
+        assert_eq!(effort.level(), level);
+        assert_eq!(serde_json::to_value(effort).unwrap(), serde_json::json!(level));
+    }
+}

@@ -88,6 +88,11 @@ pub struct Plan {
 
 /// The thinking budget for an effort level.
 fn budget_for(level: &str) -> u32 {
+    let level = if matches!(level, "xhigh" | "max") {
+        "high"
+    } else {
+        level
+    };
     BUDGETS
         .iter()
         .find(|(l, _)| *l == level)

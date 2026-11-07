@@ -223,6 +223,7 @@ fn an_event_too_big_for_a_frame_goes_as_resync_for_its_chat() {
         rejected: Vec::new(),
         unresolved: Vec::new(),
         reasons: false,
+        effective_effort: None,
     });
     let got = read(&mut sub, "laptop");
     assert_eq!(kinds(&got), ["subagentStarted", "resync", "resync"]);

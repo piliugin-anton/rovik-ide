@@ -48,7 +48,7 @@ export interface ReasoningSetting {
   learned?: ReasoningLearned;
 }
 
-export type Effort = 'default' | 'none' | 'low' | 'medium' | 'high';
+export type Effort = 'default' | 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const EFFORTS: { id: Effort; label: string; hint: string }[] = [
   { id: 'default', label: 'Default effort', hint: "The provider's default: nothing is sent" },
@@ -60,6 +60,8 @@ export const EFFORTS: { id: Effort; label: string; hint: string }[] = [
   { id: 'low', label: 'Low effort', hint: 'Brief reasoning: faster and cheaper' },
   { id: 'medium', label: 'Medium effort', hint: 'Balanced reasoning' },
   { id: 'high', label: 'High effort', hint: 'Thorough reasoning: slower, for harder tasks' },
+  { id: 'xhigh', label: 'Extra high effort', hint: 'Deeper reasoning for difficult tasks' },
+  { id: 'max', label: 'Maximum effort', hint: 'Maximum reasoning: more time and tokens' },
 ];
 
 const RETRY_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
@@ -187,4 +189,20 @@ export function saveEffort(profileId: string, effort: Effort) {
 /** `fn` runs with them all when another window chose one. */
 export function followEfforts(fn: (all: Record<string, Effort>) => void): () => void {
   return efforts.subscribe(() => fn(loadEfforts()));
+}
+
+/** Keep a probed upper effort in sync with a supported selector value. */
+export function effectiveEffort(current: Effort, accepted?: string | null): Effort {
+  if (current !== 'xhigh' && current !== 'max') return current;
+  return EFFORTS.find((e) => e.id === accepted)?.id ?? current;
+}
+
+/** Resume a chat with its saved effort rather than another chat's model preference. */
+export function resumedEffort(
+  profileId: string,
+  current: Effort,
+  saved: { providerId: string; modelId: string; effort: Effort | null } | null
+): Effort {
+  if (!saved || `${saved.providerId}::${saved.modelId}` !== profileId) return current;
+  return EFFORTS.find((e) => e.id === saved.effort)?.id ?? current;
 }

@@ -85,6 +85,8 @@ import {
   mergeLearned,
   reasoningStatus,
   saveEffort,
+  effectiveEffort,
+  resumedEffort,
   type Effort,
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
@@ -498,7 +500,7 @@ export default function ChatPanel(props: ChatProps) {
     chatModelRequest++;
     const profile = resolveProfile(providers(), sel);
     const effort = profile ? effortFor(profile.id) : null;
-    void chatApi
+    return chatApi
       .setModel(dialogId, { providerId: sel.providerId, modelId: sel.modelId, effort })
       .catch((err) => console.error('Chat model not saved:', err));
   }
@@ -530,8 +532,10 @@ export default function ChatPanel(props: ChatProps) {
   });
 
   /** The effort for a request: nothing for "Default", or when no form is worth sending. */
-  function reasoningOptions(profile: ModelProfile): OpenAIChatOptions | undefined {
-    const effort = effortFor(profile.id);
+  function reasoningOptions(
+    profile: ModelProfile,
+    effort: Effort = effortFor(profile.id)
+  ): OpenAIChatOptions | undefined {
     if (effort === 'default') return undefined;
     const formats = formatsToSend(profile.reasoning);
     if (formats.length === 0) return undefined;
@@ -3042,7 +3046,18 @@ export default function ChatPanel(props: ChatProps) {
   createEffect(() => configureAgent(agentConfig()));
 
   // What replies show about the model's reasoning is kept with it.
-  onCleanup(onReasoningLearned((learned) => learnReasoning(learned.profileId, learned)));
+  onCleanup(
+    onReasoningLearned((learned) => {
+      learnReasoning(learned.profileId, learned);
+      const current = effortFor(learned.profileId);
+      const accepted = effectiveEffort(current, learned.effectiveEffort);
+      if (accepted !== current) {
+        setEfforts({ ...efforts(), [learned.profileId]: accepted });
+        saveEffort(learned.profileId, accepted);
+        if (activeProfile()?.id === learned.profileId) saveChatModel(activeDialogId());
+      }
+    })
+  );
   onCleanup(onApiRouteLearned(learnApiRoute));
   // "Show" on a notification of what a chat waits for: that chat, opened
   // if it isn't on screen, or the chat list when several wait.
@@ -3080,12 +3095,18 @@ export default function ChatPanel(props: ChatProps) {
     listController?.followLatest();
     try {
       await store.flush();
-      saveChatModel(dialogId);
+      const effort =
+        start.kind === 'send'
+          ? effortFor(profile.id)
+          : resumedEffort(profile.id, effortFor(profile.id), await chatApi.getModel(dialogId));
+      // Restore the selector too, before saving and starting the resumed run.
+      setEfforts({ ...efforts(), [profile.id]: effort });
+      await saveChatModel(dialogId);
       await startRun({
         dialogId,
         start,
         profile,
-        options: reasoningOptions(profile),
+        options: reasoningOptions(profile, effort),
         mode: chatMode(),
         contextMode: ensureContextMode(dialogId),
         root: props.rootPath(),
@@ -3121,11 +3142,16 @@ export default function ChatPanel(props: ChatProps) {
     await store.flush();
     const profile = activeProfile();
     if (!profile) return null;
+    const effort = resumedEffort(
+      profile.id,
+      effortFor(profile.id),
+      await chatApi.getModel(dialogId)
+    );
     return {
       dialogId,
       start: { kind: 'continueRun' },
       profile,
-      options: reasoningOptions(profile),
+      options: reasoningOptions(profile, effort),
       mode: chatMode(),
       contextMode: ensureContextMode(dialogId),
       root: props.rootPath(),
