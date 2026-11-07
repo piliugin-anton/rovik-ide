@@ -5,6 +5,8 @@ import assert from 'node:assert/strict';
 import { diffLines } from './lineDiff';
 import {
   dropReveal,
+  setShowsChanges,
+  showsChanges,
   firstChangedLine,
   openInEditor,
   pendingReveal,
@@ -79,4 +81,14 @@ test('a request goes to the opener App registered; without one, nothing happens'
   setEditorOpener(null);
   await openInEditor({ path: '/p/c.ts' });
   assert.deepEqual(seen, ['/p/b.ts']);
+});
+
+test('plain opens hide existing change marks until a change view is requested again', () => {
+  const path = '/p/plain.ts';
+  assert.equal(showsChanges(path), true);
+  setShowsChanges(path, false);
+  assert.equal(showsChanges(path), false);
+  assert.equal(showsChanges('/p/other.ts'), true);
+  setShowsChanges(path, true);
+  assert.equal(showsChanges(path), true);
 });

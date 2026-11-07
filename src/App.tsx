@@ -87,6 +87,7 @@ import { editorSettings } from './lib/editorSettings';
 import { onAddToChat, requestEditorFocus, setProjectFileResolver } from './lib/editorBridge';
 import {
   dropReveal,
+  setShowsChanges,
   openInEditor,
   placeOf,
   requestReveal,
@@ -720,6 +721,8 @@ export default function App() {
     }
     const opened = await openTab(rowFor(abs), activate);
     if (!opened) return;
+    setShowsChanges(abs, marks !== 'none');
+    if (marks === 'none') dropReveal(abs);
     if (focus) showEditor();
     const hunks = await marksFor(abs, marks);
     const at = request.at ?? (hunks?.length ? 'first-change' : undefined);
@@ -774,6 +777,7 @@ export default function App() {
       ...(compare.stash ? { stash: compare.stash } : {}),
       ...(compare.commit ? { commit: compare.commit } : {}),
     };
+    setShowsChanges(id, true);
     setGitBase(id, compare.fileName, compare.before);
     setOpenFiles((prev) => (existed ? prev.map((f) => (f.path === id ? tab : f)) : [...prev, tab]));
     if (activate) setActivePath(id);
@@ -1280,6 +1284,7 @@ export default function App() {
     if (!openFiles().some((f) => f.path === path)) return;
     clearGitBase(path);
     dropReveal(path);
+    setShowsChanges(path, true);
 
     setOpenFiles((files) => files.filter((f) => f.path !== path));
     if (activePath() === path) setActivePath(lastTab());
@@ -2189,7 +2194,9 @@ export default function App() {
               activePath={activePath}
               selectedIds={selectedFileIds}
               onToggle={tree.toggle}
-              onOpenFile={(row) => void openInEditor({ path: row.path, focus: true })}
+              onOpenFile={(row) =>
+                void openInEditor({ path: row.path, focus: true, marks: 'none' })
+              }
               onDrop={(ids, destDir) => void handleTreeDrop(ids, destDir)}
               onSelect={handleFileTreeSelect}
               onClearSelection={handleFileTreeClearSelection}
