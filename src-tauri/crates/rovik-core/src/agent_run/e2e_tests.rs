@@ -1274,14 +1274,21 @@ async fn a_check_failing_before_the_change_too_holds_nothing_back() {
 }
 
 /// A conflict found while the chat runs goes to it: markers in its file and
-/// a note; it combines both changes and they land. Needs FUSE
-/// (skipped without it).
+/// a note; it combines both changes and they land. The chat's call can't
+/// return before the test's change to the project is in, so the note always
+/// rides that call's own result. Needs FUSE (skipped without it).
 #[tokio::test]
 async fn a_running_chat_resolves_its_own_conflict() {
     if !crate::vfs::mount_works() {
         return;
     }
-    let mut h = harness(&[("a.txt", "one\n")]).await;
+    // The chat's call: it looks at the project's `gate` until the test opens
+    // it, giving up after about five seconds of looking, so a product that
+    // never lets the call see the test's write fails an assertion rather than
+    // hangs. The chat doesn't change `gate`, so it sees the project's.
+    let wait_for_the_gate = "i=0; while [ \"$(cat gate)\" != open ]; do i=$((i + 1)); \
+                             [ \"$i\" -lt 100 ] || exit 1; sleep 0.05; done";
+    let mut h = harness(&[("a.txt", "one\n"), ("gate", "shut\n")]).await;
     h.isolate().await;
     crate::overlay::chats::set_chat_resolves(true);
     let (url, _) = model(vec![
@@ -1290,11 +1297,12 @@ async fn a_running_chat_resolves_its_own_conflict() {
             name: "write",
             args: json!({ "path": "a.txt", "old_text": "one", "content": "chat" }),
         },
-        // Time for the user to edit the same line in the project.
+        // The user's edit comes while this runs: it can't return before the
+        // test opens the gate.
         Reply::Call {
             id: "b1",
             name: "bash",
-            args: json!({ "command": "sleep 1" }),
+            args: json!({ "command": wait_for_the_gate }),
         },
         Reply::Call {
             id: "r1",
@@ -1320,9 +1328,9 @@ async fn a_running_chat_resolves_its_own_conflict() {
     request.isolate = Some(true);
     h.start(request).await;
     // The user's edit, once the write's result is stored: the conflict is
-    // found while `sleep` runs, and told with its result. The chat's change
-    // shows earlier, while the write finishes, and a conflict found then
-    // goes with the write's own result.
+    // found while the chat's call waits for the gate, and told with that
+    // call's result. The chat's change shows earlier, while the write
+    // finishes, and a conflict found then goes with the write's own result.
     h.wait_for("w1's result", |e| {
         e["type"] == "messagesAdded"
             && e["messages"]
@@ -1331,11 +1339,33 @@ async fn a_running_chat_resolves_its_own_conflict() {
     })
     .await;
     std::fs::write(h.project.join("a.txt"), "user\n").unwrap();
-    // What the project's watcher does when the file changes.
-    crate::overlay::chats::project_changed(&h.project, &[h.project.join("a.txt")], false);
+    // What the project's watcher does when the file changes: the conflict is
+    // handed to the running chat, not left for the user.
+    let left =
+        crate::overlay::chats::project_changed(&h.project, &[h.project.join("a.txt")], false);
+    assert!(left.is_empty(), "the conflict was left for the user: {left:?}");
+    assert_eq!(crate::overlay::chats::markers_left(&h.dialog_id), ["a.txt"]);
+    // The rendezvous: the call couldn't have returned before the change was
+    // in and handed over, so the note it gets is the note its own result
+    // carries.
+    std::fs::write(h.project.join("gate"), "open\n").unwrap();
+    // The write above is only on the disk: the chat's view can keep serving
+    // its own copy of the file on Linux, so the watcher's invalidation for
+    // that one path is done too. Only `gate` is named: naming `a.txt` again
+    // would report the conflict it has already been handed.
+    let gate_left =
+        crate::overlay::chats::project_changed(&h.project, &[h.project.join("gate")], false);
+    assert!(
+        gate_left.is_empty(),
+        "the chat's gate change was left for the user: {gate_left:?}"
+    );
     assert_eq!(h.run_end().await, "done");
     let messages = h.messages().await;
     let b1 = &result_of(&messages, "b1").content;
+    assert!(
+        !b1.contains("exit code 1"),
+        "the chat's call gave up before the project's gate opened: {b1}"
+    );
     assert!(b1.contains("conflict markers"), "the chat was told: {b1}");
     assert!(result_of(&messages, "r1")
         .content
@@ -1345,6 +1375,64 @@ async fn a_running_chat_resolves_its_own_conflict() {
         Some("user and chat\n"),
         "landed once resolved"
     );
+}
+
+/// A conflict found while the chat is idle is left for the user. The same
+/// path reported to `project_changed` a second time, now while the chat
+/// runs, hands the conflict to it: the note left for it says the file
+/// carries conflict markers, not that its change won't land. The handover
+/// is that second report, not the run's start. Needs FUSE (skipped without
+/// it).
+#[tokio::test]
+async fn an_idle_chats_conflict_is_handed_to_it_when_the_path_is_reported_again_while_it_runs() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = harness(&[("a.txt", "one\n")]).await;
+    h.isolate().await;
+    crate::overlay::chats::set_chat_resolves(true);
+    // The chat's overlay, as a run opens it, holding the chat's own version
+    // of the file (the project's is still `one`).
+    if crate::overlay::chats::get(&h.dialog_id).is_none() {
+        crate::overlay::chats::open(&h.dialog_id, &h.project, Box::new(|_, _| {})).unwrap();
+    }
+    let chat = crate::overlay::chats::get(&h.dialog_id).unwrap();
+    std::fs::write(chat.view.join("a.txt"), "chat\n").unwrap();
+    chat.fs.flush();
+    // The project's own change to the same file, found while the chat is
+    // idle: it is the user's to settle, and the chat is told nothing yet.
+    std::fs::write(h.project.join("a.txt"), "user\n").unwrap();
+    crate::overlay::chats::set_running(&h.dialog_id, false);
+    let idle_left =
+        crate::overlay::chats::project_changed(&h.project, &[h.project.join("a.txt")], false);
+    // Now the chat runs: the same conflict is handed over to it, so it is no
+    // longer the user's, and the note it would be given at that moment is
+    // the one below.
+    crate::overlay::chats::set_running(&h.dialog_id, true);
+    let running_left =
+        crate::overlay::chats::project_changed(&h.project, &[h.project.join("a.txt")], false);
+    let note = crate::overlay::chats::take_note(&h.dialog_id);
+    let marked = crate::overlay::chats::markers_left(&h.dialog_id);
+    // Leave nothing behind for the tests that follow, whichever way the
+    // assertions below go.
+    crate::overlay::chats::set_running(&h.dialog_id, false);
+    assert!(
+        idle_left
+            .iter()
+            .any(|(a, b)| a.contains("a.txt") || b.contains("a.txt")),
+        "the idle chat's conflict wasn't left for the user: {idle_left:?}"
+    );
+    assert!(
+        running_left.is_empty(),
+        "the running chat's conflict was left for the user: {running_left:?}"
+    );
+    let note = note.expect("the running chat was left no note to read");
+    assert!(note.contains("conflict markers"), "the chat was told: {note}");
+    assert!(
+        !note.contains("won't land"),
+        "the chat was told its change won't land: {note}"
+    );
+    assert_eq!(marked, ["a.txt"]);
 }
 
 /// While many files change in the project (a branch switch), an isolated
