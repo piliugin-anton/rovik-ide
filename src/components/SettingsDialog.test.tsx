@@ -425,3 +425,65 @@ test('settings dialog: the pages open on the saved settings, cross-links between
     undefined
   );
 });
+
+test('settings dialog: on Model providers the list scrolls on its own, so Add provider stays in view', async () => {
+  // The dialog body scrolls as a whole. On this page it becomes a flex column
+  // instead: the saved providers scroll in `.providers-list`, while the hint
+  // above them and "+ Add provider" below them stay where they are. A
+  // provider's form keeps the whole body scrolling, as before.
+  const { root } = await dialog();
+  item(root, 'Model providers').click();
+  await flush();
+
+  const body = root.querySelector('.modal-body')!;
+  assert.ok(
+    body.classList.contains('providers-list-body'),
+    'the list view’s body is a flex column'
+  );
+  const list = body.querySelector('.providers-list');
+  assert.ok(list, 'the rows have a scroller of their own');
+  assert.equal(list!.parentElement, body, 'the scroller is the body’s own child');
+  const rows = [...list!.querySelectorAll('.profile-row')];
+  assert.ok(
+    rows.some((r) => r.textContent?.includes('Alpha')),
+    'the saved provider Alpha is a row in the scroller'
+  );
+
+  // The hint and the Add button are the body's other children, beside the
+  // list: the body's `> :not(.providers-list)` rule keeps their height, so
+  // they never scroll out of the dialog with the rows.
+  const hint = body.querySelector('.settings-hint');
+  const add = [...root.querySelectorAll('button')].find((b) => b.textContent === '+ Add provider');
+  assert.ok(hint, 'the page explains what a provider is');
+  assert.ok(add, 'the Add provider button is there');
+  assert.equal(hint!.closest('.providers-list'), null, 'the hint is not in the scroller');
+  assert.equal(hint!.parentElement, body, 'the hint is the body’s own child');
+  assert.equal(add!.closest('.providers-list'), null, 'the Add button is not in it either');
+  assert.equal(add!.parentElement, body, 'the Add button is the body’s own child');
+
+  // A provider's form keeps the whole body scrolling, as before.
+  add!.click();
+  await flush();
+  assert.ok(root.querySelector('.profile-form'), 'the new provider’s form is open');
+  assert.equal(root.querySelector('.providers-list'), null, 'the list made way for the form');
+  assert.equal(
+    body.classList.contains('providers-list-body'),
+    false,
+    'the form looks nothing like the list view'
+  );
+
+  // Cancel brings the list, and the pinned hint and button, back.
+  const cancel = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Cancel')!;
+  cancel.click();
+  await flush();
+  assert.equal(root.querySelector('.profile-form'), null, 'the form is closed');
+  assert.ok(
+    body.classList.contains('providers-list-body'),
+    'the list view’s body is a flex column again'
+  );
+  const again = [...body.querySelectorAll('.providers-list .profile-row')];
+  assert.ok(
+    again.some((r) => r.textContent?.includes('Alpha')),
+    'Alpha is back in the scroller'
+  );
+});

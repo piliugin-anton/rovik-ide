@@ -1984,6 +1984,29 @@ body.tree-dragging {
   overflow-y: auto;
 }
 
+/* Settings → Model providers, on the list (components/ModelProvidersSettings.tsx):
+   only the list scrolls, so the hint above it and the Add button below stay in
+   view. The body keeps its own scrollbar as the fallback for a window too short
+   for the hint and the button. */
+.modal-body.providers-list-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.providers-list-body > :not(.providers-list) {
+  flex-shrink: 0;
+}
+
+.providers-list {
+  flex: 1 1 auto;
+  /* Never squeezed to nothing: on a window too short for even the hint and
+     the button, the list keeps a few rows and the body scrolls as a whole. */
+  min-height: 6rem;
+  overflow-y: auto;
+}
+
 /* Confirm dialog (components/ConfirmDialog.tsx) */
 
 .modal.confirm-dialog {
@@ -7504,22 +7527,13 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 12px;
 }
 
-.prior-work-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.prior-work-title {
-  color: var(--fg-dim);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
+/* The header, its title and its caret are drawn by the checklist's rules
+   below (the same docked card). */
 .prior-work-verdict {
+  flex-shrink: 0;
   color: var(--fg-muted);
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .prior-work-list {
@@ -7626,11 +7640,13 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 12px;
 }
 
-.todo-panel.collapsed {
+.todo-panel.collapsed,
+.prior-work.collapsed {
   padding-bottom: 8px;
 }
 
-.todo-panel-head {
+.todo-panel-head,
+.prior-work-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -7645,17 +7661,20 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   cursor: pointer;
 }
 
-.todo-panel-caret {
+.todo-panel-caret,
+.prior-work-caret {
   flex-shrink: 0;
   color: var(--fg-dim);
   transition: transform 0.12s ease;
 }
 
-.todo-panel-caret.open {
+.todo-panel-caret.open,
+.prior-work-caret.open {
   transform: rotate(90deg);
 }
 
-.todo-panel-title {
+.todo-panel-title,
+.prior-work-title {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -7780,6 +7799,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
     animation: none;
   }
   .todo-panel-caret,
+  .prior-work-caret,
   .todo-panel-bar > span {
     transition: none;
   }

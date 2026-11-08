@@ -195,30 +195,34 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
             in the chat go only to models marked for them, Tools off sends it no tools, and
             Reasoning on lets the chat choose an effort.
           </p>
-          <For
-            each={providers()}
-            fallback={<div class="empty-state">No providers yet. Add one to start chatting.</div>}
-          >
-            {(p) => (
-              <div class="profile-row">
-                <div class="profile-row-info">
-                  <span class="profile-row-label">{p.name}</span>
-                  <span class="profile-row-sub" title={p.baseUrl}>
-                    {p.baseUrl}
-                  </span>
-                  <span class="profile-row-sub">
-                    {p.models.filter((m) => m.enabled).length} of {p.models.length} models enabled
-                  </span>
+          {/* The list alone scrolls (styles.css, .providers-list): the hint
+              above it and the button below stay in view. */}
+          <div class="providers-list">
+            <For
+              each={providers()}
+              fallback={<div class="empty-state">No providers yet. Add one to start chatting.</div>}
+            >
+              {(p) => (
+                <div class="profile-row">
+                  <div class="profile-row-info">
+                    <span class="profile-row-label">{p.name}</span>
+                    <span class="profile-row-sub" title={p.baseUrl}>
+                      {p.baseUrl}
+                    </span>
+                    <span class="profile-row-sub">
+                      {p.models.filter((m) => m.enabled).length} of {p.models.length} models enabled
+                    </span>
+                  </div>
+                  <div class="profile-row-actions">
+                    <button onClick={() => openDraft(p, false)}>Edit</button>
+                    <button class="danger" onClick={() => void removeProvider(p)}>
+                      Delete
+                    </button>
+                  </div>
                 </div>
-                <div class="profile-row-actions">
-                  <button onClick={() => openDraft(p, false)}>Edit</button>
-                  <button class="danger" onClick={() => void removeProvider(p)}>
-                    Delete
-                  </button>
-                </div>
-              </div>
-            )}
-          </For>
+              )}
+            </For>
+          </div>
           <button class="add-profile-button" onClick={() => openDraft(emptyDraft(), true)}>
             + Add provider
           </button>

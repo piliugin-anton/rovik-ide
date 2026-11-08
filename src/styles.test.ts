@@ -616,3 +616,47 @@ test('criterion 2: Editor.tsx gives the vertical breathing room to Monaco itself
     'monaco.editor.create passes padding: { top: 8, bottom: 8 }'
   );
 });
+
+// --- Model providers: only the list scrolls --------------------------------
+// The dialog body scrolls as a whole (`.modal-body { overflow-y: auto }`), so
+// on Model providers the hint above the rows and "+ Add provider" below them
+// scrolled out of the dialog with the providers. The body becomes a flex
+// column while the list shows: the rules below let `.providers-list` take the
+// room the pinned hint and button leave and scroll on its own.
+
+test('the providers list scrolls on its own, so the hint and Add provider stay put', () => {
+  const list = bodiesOf('.providers-list').join('\n');
+  assert.ok(list.length > 0, '.providers-list has a rule');
+  assert.match(list, /overflow-y:\s*auto/, 'the list is the scroller: its rows scroll in it');
+  // The list keeps a floor it can't shrink below: on a window too short for
+  // the pinned hint and button, the body scrolls as a whole rather than the
+  // list collapsing to nothing and leaving every provider row unreachable.
+  const floor = /min-height:\s*([^;]+)/.exec(list)?.[1].trim() ?? '';
+  assert.ok(floor.length > 0, 'the list declares a min-height: the floor it can’t shrink below');
+  const kept = /^(\d+(?:\.\d+)?)(px|rem|em|ch|pt|vh|vw)$/.exec(floor);
+  assert.ok(kept !== null, `the list’s floor is a length, not 0 or auto: ${floor}`);
+  assert.ok(Number(kept![1]) > 0, `the list’s floor is a positive length: ${floor}`);
+  assert.ok(
+    /flex:\s*1\s+1\s+auto/.test(list) || /flex-grow:\s*1\b/.test(list),
+    'the list takes the room the hint and button leave'
+  );
+
+  // The list view's body: a column, so the list gets the leftover height
+  // instead of the page scrolling as a whole.
+  const body = bodiesOf('.modal-body.providers-list-body').join('\n');
+  assert.ok(body.length > 0, '.modal-body.providers-list-body has a rule');
+  assert.match(body, /display:\s*flex/, 'the list view’s body is a flex column');
+  assert.match(body, /flex-direction:\s*column/, 'the list is under the hint, the button below it');
+  assert.match(body, /min-height:\s*0/, 'the body may squeeze the list to the room it has');
+  assert.match(
+    body,
+    /overflow-y:\s*auto/,
+    'a body too short for the pinned parts still scrolls instead of cutting the button off'
+  );
+
+  // Everything else in that body (the hint, the load-failed alert, the Add
+  // button) keeps its height: those are the parts that must never scroll away.
+  const pinned = bodiesOf('.providers-list-body > :not(.providers-list)').join('\n');
+  assert.ok(pinned.length > 0, '.providers-list-body > :not(.providers-list) has a rule');
+  assert.match(pinned, /flex-shrink:\s*0/, 'the hint, the alert and the button never shrink away');
+});

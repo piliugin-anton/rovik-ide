@@ -131,3 +131,47 @@ test('prior work: a row says whether the memory still holds for the code', () =>
     `a claim expected to hold is not marked stale: "${listed[1].textContent}"`
   );
 });
+
+test('prior work: the card folds to its header and opens again', () => {
+  // The other tests here render an open card: the fold is remembered per app.
+  localStorage.removeItem('rovik.priorWorkCollapsed');
+  const root = panel([memory(), memory({ id: 'fx-old' })]);
+  const card = () => root.querySelector<HTMLElement>('section.prior-work')!;
+  const head = () => root.querySelector<HTMLButtonElement>('button.prior-work-head')!;
+
+  assert.ok(head(), 'the header is a button');
+  assert.equal(head().getAttribute('aria-expanded'), 'true');
+  assert.equal(rows(root).length, 2);
+
+  head().click();
+  assert.equal(head().getAttribute('aria-expanded'), 'false');
+  assert.equal(rows(root).length, 0);
+  assert.match(head().textContent ?? '', /Relevant prior work/);
+  assert.ok(card().classList.contains('collapsed'));
+  assert.equal(localStorage.getItem('rovik.priorWorkCollapsed'), '1');
+
+  head().click();
+  assert.equal(head().getAttribute('aria-expanded'), 'true');
+  assert.equal(rows(root).length, 2);
+  assert.ok(!card().classList.contains('collapsed'));
+  assert.equal(localStorage.getItem('rovik.priorWorkCollapsed'), '0');
+  localStorage.removeItem('rovik.priorWorkCollapsed');
+});
+
+test('prior work: a folded card still says how the run ended', () => {
+  localStorage.setItem('rovik.priorWorkCollapsed', '1');
+  const root = panel([memory({ association: 'checksPassed' })]);
+  // The card reads the key at creation: keep the store clean for the other tests.
+  localStorage.removeItem('rovik.priorWorkCollapsed');
+  const card = root.querySelector<HTMLElement>('section.prior-work')!;
+  const head = root.querySelector<HTMLButtonElement>('button.prior-work-head')!;
+  const shown = head.querySelector('.prior-work-verdict')?.textContent;
+
+  assert.ok(card.classList.contains('collapsed'), 'it starts folded');
+  assert.equal(card.getAttribute('aria-label'), 'Relevant prior work');
+  assert.equal(rows(root).length, 0, 'no memory row shows');
+  assert.equal(head.getAttribute('aria-expanded'), 'false');
+  assert.equal(verdict(root), 'The checks passed after this');
+  assert.equal(shown, 'The checks passed after this');
+  assert.match(head.textContent ?? '', /Relevant prior work/);
+});

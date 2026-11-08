@@ -161,7 +161,14 @@ export default function SettingsDialog(props: SettingsDialogProps) {
           </div>
         </Show>
 
-        <div class="modal-body">
+        <div
+          class="modal-body"
+          // On the Model providers list the list alone scrolls, so the hint
+          // and the Add button stay in view (styles.css).
+          classList={{
+            'providers-list-body': page() === 'providers' && providersApi()?.draftTitle() == null,
+          }}
+        >
           <Show when={aiSettingsLoadFailed() && AI_PAGES.includes(page())}>
             <p class="settings-status warning settings-load-failed" role="alert">
               The saved AI settings couldn’t be read, so defaults are shown here and changes to them
