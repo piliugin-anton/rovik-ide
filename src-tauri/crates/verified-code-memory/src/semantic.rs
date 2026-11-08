@@ -268,6 +268,46 @@ impl SemanticIndex {
         });
         crate::retrieval::deduplicate_memories(&mut found);
         found.truncate(query.limit);
+        // The separator also consumes one character of the encoder window.
+        // Keep incumbent ranks; only unused slots receive diagnostic evidence.
+        let failure = query
+            .failure
+            .as_deref()
+            .filter(|text| !text.trim().is_empty());
+        let truncated = embedder.input_character_limit().is_some_and(|limit| {
+            limit > 0 && query.task.chars().count().saturating_add(1) >= limit
+        });
+        if let Some(failure) = failure.filter(|_| truncated && found.len() < query.limit) {
+            let supplementary = embedder.embed(failure).and_then(|diagnostic| {
+                self.search_filtered(query, &diagnostic, minimum, |record| {
+                    accept(record)
+                        && !found
+                            .iter()
+                            .any(|hit| hit.record.same_context_claim(record))
+                })
+            });
+            match supplementary {
+                Ok(hits) => {
+                    let last_score = found.last().map_or(1.0 / 61.0, |hit| hit.score);
+                    for (rank, (record, similarity)) in hits.into_iter().enumerate() {
+                        found.push(RetrievedMemory {
+                            record,
+                            score: last_score / (rank + 2) as f32,
+                            reason: format!("diagnostic cosine {similarity:.3}"),
+                            components: Default::default(),
+                        });
+                        if found.len() == query.limit {
+                            break;
+                        }
+                    }
+                }
+                // A busy encoder or an unavailable supplementary view must not
+                // discard answers from the successful original lookup.
+                Err(error) => eprintln!(
+                    "memory: diagnostic lookup unavailable; preserving current results: {error}"
+                ),
+            }
+        }
         Ok(found)
     }
 }

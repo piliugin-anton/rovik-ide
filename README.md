@@ -2030,6 +2030,11 @@ recovered 6 additional heldout answers out of 60 while preserving all 258 fully
 indexed regression outcomes. Existing model false matches appear sooner as
 coverage grows; this remains an opt-in availability improvement.
 
+When a task hides its failure text beyond the native
+encoder's character limit, an independent diagnostic lookup can fill unused
+result slots while preserving existing ranks and visibility checks. See the
+[structured-query experiments](docs/design/long-term-memory-structured-queries-nov8-2026.md).
+
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
 setup. An existing incomplete or corrupt directory is reported and left intact;

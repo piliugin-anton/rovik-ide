@@ -29,12 +29,17 @@ fn fact(
 /// production SQLite index. Missing inputs fail instead of inventing vectors.
 struct RecordedEmbeddings {
     dimensions: usize,
+    input_character_limit: Option<usize>,
     vectors: std::collections::BTreeMap<String, Vec<f32>>,
 }
 
 impl MemoryEmbedder for RecordedEmbeddings {
     fn dimensions(&self) -> usize {
         self.dimensions
+    }
+
+    fn input_character_limit(&self) -> Option<usize> {
+        self.input_character_limit
     }
 
     fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
@@ -62,6 +67,9 @@ struct MemoizedEmbeddings {
 impl MemoryEmbedder for MemoizedEmbeddings {
     fn dimensions(&self) -> usize {
         self.inner.dimensions()
+    }
+    fn input_character_limit(&self) -> Option<usize> {
+        self.inner.input_character_limit()
     }
     fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
         if let Some(vector) = self
@@ -100,6 +108,24 @@ fn dataset_input(config: &Value) -> std::io::Result<String> {
             "dataset_file must be a path string",
         )),
     }
+}
+
+fn fixture_query(
+    case: &Value,
+    config: &Value,
+) -> Result<RetrievalQuery, Box<dyn std::error::Error>> {
+    let mut query = RetrievalQuery::new("project", case["task"].as_str().ok_or("missing task")?);
+    if let Some(failure) = case["failure"].as_str() {
+        query = query.with_failure(failure);
+    }
+    if let Some(file) = case["file"]
+        .as_str()
+        .filter(|_| config["query_mode"] != "intent_only")
+    {
+        query = query.with_files([file]);
+    }
+    query.limit = config["candidate_limit"].as_u64().unwrap_or(8) as usize;
+    Ok(query)
 }
 
 /// Fixes fixture IDs and claim times before indexing: randomly generated UUIDs
@@ -221,6 +247,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some((
             Box::new(RecordedEmbeddings {
                 dimensions,
+                input_character_limit: recorded["input_character_limit"]
+                    .as_u64()
+                    .map(|n| n as usize),
                 vectors: serde_json::from_value(recorded["vectors"].clone())?,
             }),
             recorded["revision"]
@@ -325,14 +354,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             capture_order(fixture_uri, offset as usize)?;
         }
-        let mut query = RetrievalQuery::new("project", text("task")?);
-        if let Some(file) = case["file"]
-            .as_str()
-            .filter(|_| config["query_mode"] != "intent_only")
-        {
-            query = query.with_files([file]);
-        }
-        query.limit = config["candidate_limit"].as_u64().unwrap_or(8) as usize;
+        let query = fixture_query(case, &config)?;
         let started = std::time::Instant::now();
         let (baseline, telemetry) = store.retrieve_with_telemetry(&query)?;
         let mut embedding_fallback = false;
@@ -412,7 +434,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .position(|hit| hit.record.id == expected)
             .map(|at| at + 1);
         let prohibited = found.iter().any(|hit| hit.record.repo != "project");
-        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
+        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
     }
     let mut groups = serde_json::Map::new();
     for split in ["development", "heldout"] {
@@ -449,7 +471,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(
             path,
             serde_json::to_vec(
-                &json!({"revision":revision,"dimensions":dimensions,"vectors":&*vectors}),
+                &json!({"revision":revision,"dimensions":dimensions,"input_character_limit":backend.input_character_limit(),"vectors":&*vectors}),
             )?,
         )?;
     }
@@ -465,6 +487,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixture_failure_text_reaches_the_real_retriever() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        let wanted = store
+            .remember(NewMemory::procedure(
+                "project",
+                "sqlite",
+                "Serialize locked database writers.",
+            ))
+            .unwrap();
+        let case = json!({"task":"Fix the tests", "failure":"database is locked"});
+        assert!(store
+            .retrieve(&RetrievalQuery::new("project", "Fix the tests"))
+            .unwrap()
+            .is_empty());
+        let hits = store
+            .retrieve(&fixture_query(&case, &json!({})).unwrap())
+            .unwrap();
+        assert_eq!(hits[0].record.id, wanted.id);
+    }
 
     #[test]
     fn capture_offsets_change_which_claims_fit_an_indexing_budget_without_changing_claims() {
@@ -549,6 +592,7 @@ mod tests {
     fn a_recorded_model_never_fabricates_an_unrecorded_embedding() {
         let model = RecordedEmbeddings {
             dimensions: 2,
+            input_character_limit: None,
             vectors: [("known".into(), vec![1.0, 0.0])].into(),
         };
         assert_eq!(model.embed("known").unwrap(), vec![1.0, 0.0]);
@@ -616,6 +660,7 @@ mod tests {
             .unwrap();
         let model = RecordedEmbeddings {
             dimensions: 2,
+            input_character_limit: None,
             vectors: [
                 ("racing\n".into(), vec![1.0, 0.0]),
                 (

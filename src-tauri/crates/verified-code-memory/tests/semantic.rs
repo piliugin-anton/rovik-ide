@@ -17,6 +17,175 @@ impl MemoryEmbedder for Embed {
     }
 }
 
+struct Diagnostic {
+    limit: Option<usize>,
+    unavailable: bool,
+}
+
+impl MemoryEmbedder for Diagnostic {
+    fn dimensions(&self) -> usize {
+        2
+    }
+    fn input_character_limit(&self) -> Option<usize> {
+        self.limit
+    }
+    fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+        if text == "recover" && self.unavailable {
+            return Err(verified_code_memory::VcmError::EmbeddingUnavailable(
+                "fixture diagnostic unavailable",
+            ));
+        }
+        Ok(if text == "recover" || text.starts_with("secondary") {
+            vec![0.0, 1.0]
+        } else {
+            vec![1.0, 0.0]
+        })
+    }
+}
+
+#[test]
+fn diagnostics_hidden_by_the_encoder_window_fill_free_slots_after_all_visibility_filters() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let primary = store
+        .remember(NewMemory::procedure("a", "primary", "base observation"))
+        .unwrap();
+    let wanted = store
+        .remember(NewMemory::procedure("a", "secondary", "learned constraint"))
+        .unwrap();
+    for record in [&primary, &wanted] {
+        store.verify(record.id, "fixture").unwrap();
+    }
+    for n in 0..20 {
+        let hidden = store
+            .remember(
+                NewMemory::procedure("a", format!("secondary-{n}"), "hidden constraint")
+                    .with_tags(["hidden"]),
+            )
+            .unwrap();
+        store.verify(hidden.id, "fixture").unwrap();
+    }
+    let rejected = store
+        .remember(NewMemory::procedure(
+            "a",
+            "secondary-rejected",
+            "caller private",
+        ))
+        .unwrap();
+    store.verify(rejected.id, "fixture").unwrap();
+    store
+        .remember(NewMemory::procedure(
+            "a",
+            "secondary-provisional",
+            "not verified",
+        ))
+        .unwrap();
+    let obsolete = store
+        .remember(NewMemory::procedure("a", "secondary-obsolete", "obsolete"))
+        .unwrap();
+    store.deprecate(obsolete.id, "replaced").unwrap();
+    store
+        .remember(NewMemory::procedure("b", "secondary", "foreign constraint"))
+        .unwrap();
+    let model = Diagnostic {
+        limit: Some(8),
+        unavailable: false,
+    };
+    let index = SemanticIndex::new(store, "diagnostic-fixture", 2).unwrap();
+    index.backfill("a", &model).unwrap();
+    index.backfill("b", &model).unwrap();
+    let query = RetrievalQuery::new("a", "界".repeat(7))
+        .with_failure("recover")
+        .with_limit(2)
+        .with_verifications([Verification::Verified])
+        .without_tags(["hidden"]);
+    let hits = index
+        .retrieve_filtered(&query, &model, 0.8, |record| record.id != rejected.id)
+        .unwrap();
+    assert_eq!(
+        hits.iter().map(|hit| hit.record.id).collect::<Vec<_>>(),
+        [primary.id, wanted.id]
+    );
+    assert!(hits[0].score > hits[1].score);
+    assert!(hits[1].reason.contains("diagnostic cosine"));
+}
+
+#[test]
+fn supplementary_diagnostics_require_a_truncated_character_window_a_failure_and_a_free_slot() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    for title in ["primary", "secondary"] {
+        store
+            .remember(NewMemory::procedure("a", title, "observation"))
+            .unwrap();
+    }
+    let index = SemanticIndex::new(store, "diagnostic-fixture", 2).unwrap();
+    index
+        .backfill(
+            "a",
+            &Diagnostic {
+                limit: Some(8),
+                unavailable: false,
+            },
+        )
+        .unwrap();
+    for (limit, characters, failure, slots, expected) in [
+        (Some(8), 6, "recover", 2, 1),
+        (Some(8), 7, "recover", 2, 2),
+        (None, 12, "recover", 2, 1),
+        (Some(0), 12, "recover", 2, 1),
+        (Some(8), 12, " ", 2, 1),
+        (Some(8), 12, "recover", 1, 1),
+    ] {
+        let query = RetrievalQuery::new("a", "界".repeat(characters))
+            .with_failure(failure)
+            .with_limit(slots);
+        assert_eq!(
+            index
+                .retrieve(
+                    &query,
+                    &Diagnostic {
+                        limit,
+                        unavailable: false
+                    },
+                    0.8
+                )
+                .unwrap()
+                .len(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn a_failed_supplementary_embedding_preserves_the_successful_original_answer() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let wanted = store
+        .remember(NewMemory::procedure("a", "primary", "observation"))
+        .unwrap();
+    let index = SemanticIndex::new(store, "diagnostic-fixture", 2).unwrap();
+    index
+        .backfill(
+            "a",
+            &Diagnostic {
+                limit: Some(8),
+                unavailable: false,
+            },
+        )
+        .unwrap();
+    let query = RetrievalQuery::new("a", "界".repeat(7)).with_failure("recover");
+    let hits = index
+        .retrieve(
+            &query,
+            &Diagnostic {
+                limit: Some(8),
+                unavailable: true,
+            },
+            0.8,
+        )
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].record.id, wanted.id);
+}
+
 #[test]
 fn completion_indexes_past_three_and_resumes_without_reembedding_current_claims() {
     use std::sync::atomic::{AtomicUsize, Ordering};
