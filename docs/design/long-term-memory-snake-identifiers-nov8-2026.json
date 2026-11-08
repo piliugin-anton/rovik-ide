@@ -1,0 +1,770 @@
+{
+  "protocol": {
+    "version": 1,
+    "baseline_commit": "13ad4a575287cf74734388f2b7cded00102e5358",
+    "frozen_before_trials": true,
+    "dataset": "scripts/eval/memory-snake-identifier-cases.json",
+    "dataset_sha256": "bfc8231889b32bab6e2c9c75a787d4c36af600b1dbd685bade005969873f26fd",
+    "approaches": [
+      {
+        "id": "conjunctive_snake_components",
+        "description": "Extend the existing bounded conjunctive code-name lookup to ASCII alphabetic snake_case components. Keep ordinary exact phrase lookup first. Reject empty, numeric, short and generic components as whole names; preserve existing CamelCase behavior."
+      }
+    ],
+    "selection": "Require development delivery gains with no per-fact rank/delivery regression, no negative record-ID changes or safety violations. Only score the fixed selected candidate on heldout. Historical source incidents are exposed; this is a constructed mechanism check, not blind semantic validation.",
+    "policy": {
+      "threshold": 0.3,
+      "short_query_words": 2,
+      "short_query_scale": 0.9166666666666666,
+      "candidate_limit": 8,
+      "memory_budget": 1000,
+      "deterministic": true
+    },
+    "guards": [
+      "All 792 older policy replays plus 160 complex and 16 retention policy replays preserve earlier outcomes.",
+      "Preserve each supplied primary and additional composed-answer fact and rank.",
+      "Negatives preserve returned IDs and order; unknown-symbol controls still abstain.",
+      "Keep caller visibility, trust, tags, repository scope, duplicate handling and packet limits.",
+      "No full-pool eviction, model weights, preprocessing, thresholds, stored claims, schemas or release assets change."
+    ],
+    "registration_serialization": "JSON.stringify(parsed, null, 2) plus a final newline",
+    "committed_dataset_sha256": "9b2eb353c4bb15029a915492f6b25370daa2eafca0412b2b63c8719a7dd1cb80"
+  },
+  "trials": [
+    {
+      "key": "snake",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6964285714285714,
+        "ndcg_at_8": 0.7376660274234746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [
+          "snake-SharedMemoryStore-reversed",
+          "snake-SharedMemoryStore-upper-reversed",
+          "snake-SharedMemoryStore-qualified",
+          "snake-SharedMemoryStore-mixed-context",
+          "snake-SharedMemoryStore-composed",
+          "snake-RetrievalQuery-reversed",
+          "snake-RetrievalQuery-upper-reversed",
+          "snake-RetrievalQuery-qualified",
+          "snake-RetrievalQuery-mixed-context",
+          "snake-RetrievalQuery-composed",
+          "snake-MemoryRecord-reversed",
+          "snake-MemoryRecord-upper-reversed",
+          "snake-MemoryRecord-qualified",
+          "snake-MemoryRecord-mixed-context",
+          "snake-MemoryRecord-composed",
+          "snake-WorkloadStatus-reversed",
+          "snake-WorkloadStatus-upper-reversed",
+          "snake-WorkloadStatus-qualified",
+          "snake-WorkloadStatus-mixed-context",
+          "snake-WorkloadStatus-composed"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.800595238095238,
+        "ndcg_at_8": 0.8516851726097714,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": ["snake-RetrievalQuery-composed"],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6904761904761905,
+        "ndcg_at_8": 0.7329899647959225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [
+          "snake-BrowserProxy-reversed",
+          "snake-BrowserProxy-upper-reversed",
+          "snake-BrowserProxy-qualified",
+          "snake-BrowserProxy-mixed-context",
+          "snake-BrowserProxy-composed",
+          "snake-CommandOutput-reversed",
+          "snake-CommandOutput-upper-reversed",
+          "snake-CommandOutput-qualified",
+          "snake-CommandOutput-mixed-context",
+          "snake-CommandOutput-composed",
+          "snake-ProcessTree-reversed",
+          "snake-ProcessTree-upper-reversed",
+          "snake-ProcessTree-qualified",
+          "snake-ProcessTree-mixed-context",
+          "snake-ProcessTree-composed",
+          "snake-BrowserScreenshot-reversed",
+          "snake-BrowserScreenshot-upper-reversed",
+          "snake-BrowserScreenshot-qualified",
+          "snake-BrowserScreenshot-mixed-context",
+          "snake-BrowserScreenshot-composed"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.9404761904761906,
+        "ndcg_at_8": 0.9557806966836756,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    }
+  ],
+  "regressions": [
+    {
+      "key": "original",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 58,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 58,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 58,
+      "metrics": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8253953169047639,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7833333333333333,
+        "ndcg_at_8": 0.7876976584523819,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8166666666666668,
+        "ndcg_at_8": 0.8449496685608756,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.5,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.5059523809523809,
+        "ndcg_at_8": 0.5973502075255279,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 40,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.7511904761904761,
+        "ndcg_at_8": 0.7965486100798123,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9285714285714286
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0.5,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0.2857142857142857,
+        "ndcg_at_8": 0.3333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    }
+  ],
+  "earlier_exact_replays": 968,
+  "source_sha256": {
+    "src-tauri/crates/verified-code-memory/src/retrieval.rs": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+    "src-tauri/crates/verified-code-memory/tests/identifiers.rs": "39476435150267a53036a9a79005b5627a4e62c8cc88610ad6518742bf7e77eb"
+  },
+  "baseline_evaluator_sha256": "72b6c16b394bf8b89668455ac301e3eb586ede47e2dc52f1f9b50359e160d967",
+  "evaluated_candidate_evaluator_sha256": "943a68017df838600e0dfb43271bf8bca200451909b9415d55efec720ac5c7b1",
+  "model_sha256": "4f148ba8ae9c2c7fbee4af2b132db8d06c6a6545b47fc83bbb98c3d22b8393e6",
+  "verification": {
+    "memory_tests_including_doctest": 120,
+    "native_tests": 2,
+    "evaluator_tests": 12,
+    "clippy": "passed with -D warnings",
+    "frontend_tests": 1046,
+    "typecheck": "passed",
+    "format": "passed",
+    "changed_crates": ["verified-code-memory"],
+    "crate_tests_run_separately": true
+  }
+}

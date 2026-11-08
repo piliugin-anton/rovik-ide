@@ -374,24 +374,40 @@ pub(crate) fn identifier_fts_query(inputs: &[&str]) -> String {
     for input in inputs {
         for name in input.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
             let bytes = name.as_bytes();
-            if bytes.len() > 128 || !bytes.iter().all(u8::is_ascii_alphabetic) {
+            if bytes.len() > 128 {
                 continue;
             }
-            let mut starts = vec![0];
-            for i in 1..bytes.len() {
-                if bytes[i].is_ascii_uppercase()
-                    && (bytes[i - 1].is_ascii_lowercase()
-                        || (bytes[i - 1].is_ascii_uppercase()
-                            && bytes.get(i + 1).is_some_and(u8::is_ascii_lowercase)))
-                {
-                    starts.push(i);
+            let mut parts: Vec<String> = if name.contains('_') {
+                let components: Vec<_> = name.split('_').collect();
+                if components.iter().any(|part| {
+                    part.is_empty() || !part.as_bytes().iter().all(u8::is_ascii_alphabetic)
+                }) {
+                    continue;
                 }
-            }
-            starts.push(bytes.len());
-            let mut parts: Vec<_> = starts
-                .windows(2)
-                .map(|pair| name[pair[0]..pair[1]].to_ascii_lowercase())
-                .collect();
+                components
+                    .into_iter()
+                    .map(str::to_ascii_lowercase)
+                    .collect()
+            } else {
+                if !bytes.iter().all(u8::is_ascii_alphabetic) {
+                    continue;
+                }
+                let mut starts = vec![0];
+                for i in 1..bytes.len() {
+                    if bytes[i].is_ascii_uppercase()
+                        && (bytes[i - 1].is_ascii_lowercase()
+                            || (bytes[i - 1].is_ascii_uppercase()
+                                && bytes.get(i + 1).is_some_and(u8::is_ascii_lowercase)))
+                    {
+                        starts.push(i);
+                    }
+                }
+                starts.push(bytes.len());
+                starts
+                    .windows(2)
+                    .map(|pair| name[pair[0]..pair[1]].to_ascii_lowercase())
+                    .collect()
+            };
             if !(2..=8).contains(&parts.len()) || parts.iter().any(|part| !is_distinctive(part)) {
                 continue;
             }
@@ -495,7 +511,6 @@ mod tests {
             "GetMemoryStore",
             "HttpIOState",
             "MemoryMemory",
-            "shared_memory_store",
             "SharedMemoryStore2",
             "MEMORY",
             "",
@@ -503,6 +518,38 @@ mod tests {
         ] {
             assert!(identifier_fts_query(&[text]).is_empty(), "{text}");
         }
+    }
+
+    #[test]
+    fn snake_identifiers_use_complete_words_without_fts_phrase_order_constraints() {
+        let expected = "(\"memory\" AND \"shared\" AND \"store\")";
+        // Snake names were previously unsupported by this helper. Their ordinary
+        // exact-phrase lookup still runs first; fallback now requires all words.
+        for name in [
+            "shared_memory_store",
+            "store_memory_shared",
+            "STORE_MEMORY_SHARED",
+            "crate::store_memory_shared",
+        ] {
+            assert_eq!(identifier_fts_query(&[name]), expected);
+        }
+        for name in [
+            "_shared_memory_store",
+            "shared_memory_store_",
+            "shared__memory_store",
+            "shared_memory_2store",
+            "get_memory_store",
+            "fix_the_tests",
+            "memory_memory",
+            "http_io_state",
+            "alpha_bravo_charlie_delta_echo_foxtrot_golf_hotel_india",
+        ] {
+            assert!(identifier_fts_query(&[name]).is_empty(), "{name}");
+        }
+        assert_eq!(
+            identifier_fts_query(&["shared_memory_store", "SharedMemoryStore"]),
+            expected
+        );
     }
 
     #[test]

@@ -2038,6 +2038,9 @@ result slots while preserving existing ranks and visibility checks. See the
 If ordinary text and file retrieval find nothing, meaningful CamelCase names can
 match prose by requiring every component (`SharedMemoryStore` matches all of
 "shared", "memory" and "store"). Generic, short or partial names are rejected.
+The same fallback supports alphabetic snake_case names, including reordered
+components, while preserving ordinary exact-phrase matches. See the
+[snake identifier experiments](docs/design/long-term-memory-snake-identifiers-nov8-2026.md).
 With competing text matches, complete identifier matches can fill free slots
 after ordinary results. Exact title lookups and explicit files retain their
 protected behavior. [Harder identifier experiments](docs/design/long-term-memory-complex-identifiers-nov8-2026.md)

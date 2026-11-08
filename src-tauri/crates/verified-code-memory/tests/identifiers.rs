@@ -1,6 +1,105 @@
 use verified_code_memory::{MemoryStore, NewMemory, RetrievalQuery, Verification};
 
 #[test]
+fn reordered_snake_symbols_find_prose_and_preserve_literal_lookup_priority() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let prose = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store",
+            "Use a locked connection.",
+        ))
+        .unwrap();
+    for task in [
+        "store_memory_shared",
+        "STORE_MEMORY_SHARED",
+        "crate::store_memory_shared",
+    ] {
+        let hits = store.retrieve(&RetrievalQuery::new("a", task)).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].record.id, prose.id);
+    }
+    let literal = store
+        .remember(NewMemory::procedure(
+            "a",
+            "store_memory_shared",
+            "Canonical literal fact.",
+        ))
+        .unwrap();
+    let hits = store
+        .retrieve(&RetrievalQuery::new("a", "store_memory_shared"))
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].record.id, literal.id);
+}
+
+#[test]
+fn snake_supplementation_requires_all_components_and_applies_eligibility_before_limits() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let wanted = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store",
+            "Visible constraint.",
+        ))
+        .unwrap();
+    store.verify(wanted.id, "fixture").unwrap();
+    let context = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Telemetry notes",
+            "Existing telemetry observation.",
+        ))
+        .unwrap();
+    store.verify(context.id, "fixture").unwrap();
+    for n in 0..100 {
+        let private = store
+            .remember(
+                NewMemory::procedure(
+                    "a",
+                    format!("Shared memory store {n}"),
+                    "Private constraint.",
+                )
+                .with_tags(["private"]),
+            )
+            .unwrap();
+        store.verify(private.id, "fixture").unwrap();
+    }
+    store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store provisional",
+            "Unverified.",
+        ))
+        .unwrap();
+    let foreign = store
+        .remember(NewMemory::procedure(
+            "b",
+            "Shared memory store foreign",
+            "Foreign.",
+        ))
+        .unwrap();
+    store.verify(foreign.id, "fixture").unwrap();
+    let query = RetrievalQuery::new("a", "store_memory_shared telemetry")
+        .with_verifications([Verification::Verified])
+        .without_tags(["private"])
+        .with_limit(2);
+    let found = store.retrieve(&query).unwrap();
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].record.id, context.id);
+    assert_eq!(found[1].record.id, wanted.id);
+    for task in [
+        "store_memory_encryptor telemetry",
+        "fix_the_tests telemetry",
+        "store__memory_shared telemetry",
+    ] {
+        let found = store.retrieve(&RetrievalQuery::new("a", task)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].record.id, context.id);
+    }
+}
+
+#[test]
 fn competing_text_matches_retain_priority_while_symbols_fill_free_slots() {
     let store = MemoryStore::open_in_memory().unwrap();
     let wanted = store
