@@ -108,6 +108,12 @@ vectors gain conclusions during the next backfill without a model download or
 reindex of unchanged primary text. This adds at most one inference and one vector
 per long claim; it does not index every intermediate paragraph.
 
+For a single-paragraph note, a complete final sentence can supply that extra view
+when it starts outside the encoder window and fits entirely inside one window.
+Incomplete fragments and abbreviation-like boundaries are excluded. Existing
+paragraph views retain priority, and the complete stored note must still fit the
+packet allowance. This uses the same model and at most one conclusion vector.
+
 When a long task hides the failure text, hybrid retrieval reuses its independent
 diagnostic embedding to search these conclusions too. Existing results and ordinary
 conclusion matches keep priority. If slots remain, this adds one vector-table search

@@ -50,6 +50,42 @@ fn long_claim() -> String {
 }
 
 #[test]
+fn a_complete_hidden_sentence_is_indexed_but_fragments_and_abbreviations_are_not() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let background = "Background material ".repeat(12);
+    let wanted = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Sentence",
+            format!("{background}. Use a lock."),
+        ))
+        .unwrap();
+    for (title, content) in [
+        ("Fragment", format!("{background} use a lock")),
+        ("Incomplete", format!("{background}. Use a lock")),
+        ("Abbreviation", format!("{background} e.g. Use a lock.")),
+    ] {
+        store
+            .remember(NewMemory::procedure("a", title, content))
+            .unwrap();
+    }
+    let model = Windowed::new(true);
+    let index = SemanticIndex::new(store.clone(), "sentence-v1", 2).unwrap();
+    index.backfill("a", &model).unwrap();
+    let query = RetrievalQuery::new("a", "serialize");
+    assert!(index.search(&query, &[1.0, 0.0], 0.8).unwrap().is_empty());
+    let hits = index.retrieve(&query, &model, 0.8).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].record.id, wanted.id);
+    let (packet, shown) = store.render_packet_traced(&hits, 1000);
+    assert!(shown.contains(&wanted.id));
+    assert!(packet.contains(&wanted.content));
+    assert_eq!(index.backfill("a", &model).unwrap(), 0);
+    store.edit(wanted.id, "Sentence", "Send mail.").unwrap();
+    assert!(index.retrieve(&query, &model, 0.8).unwrap().is_empty());
+}
+
+#[test]
 fn hidden_conclusions_fill_free_slots_without_changing_primary_search_or_incumbents() {
     let store = SharedMemoryStore::open_in_memory().unwrap();
     let wanted = store

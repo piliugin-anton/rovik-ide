@@ -534,9 +534,25 @@ fn overflow_conclusion(document: &str, limit: Option<usize>) -> Option<String> {
         return None;
     }
     let document = document.replace("\r\n", "\n");
-    // Require an explicit paragraph that the primary encoder never saw.
-    // An arbitrary suffix can discard the context of a single-paragraph claim.
-    let (prefix, paragraph) = document.rsplit_once("\n\n")?;
+    // Require a complete paragraph or sentence beyond the primary window.
+    // Arbitrary suffixes can discard the context of a claim.
+    let (prefix, paragraph) = if let Some(parts) = document.rsplit_once("\n\n") {
+        parts
+    } else {
+        // A complete sentence retains its linguistic boundary; an arbitrary
+        // suffix can turn a fragment into an unrelated semantic match.
+        let (prefix, sentence) = document.rsplit_once(". ")?;
+        let previous = prefix.split_whitespace().last()?;
+        if previous.len() < 3
+            || !previous.chars().all(char::is_alphabetic)
+            || !sentence.chars().next()?.is_uppercase()
+            || !matches!(sentence.chars().last()?, '.' | '!' | '?')
+            || sentence.chars().count() > limit
+        {
+            return None;
+        }
+        (prefix, sentence)
+    };
     if prefix.chars().count().saturating_add(2) < limit {
         return None;
     }

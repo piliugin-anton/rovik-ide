@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "baseline_commit": "db856ab",
+  "dataset": "scripts/eval/memory-long-failure-cases.json",
+  "dataset_sha256": "87b8119ce5ce2ee2820d3c3f7049ab9aa4e8ffcdc525fdd2a3772824500e8924",
+  "regression_inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-diagnostic-cases.json": "735bbaf0160eb1805ff21fb1a8d6d20a118c602233691a79fb159bc256f10973",
+    "scripts/eval/memory-identifier-cases.json": "315b81aa8832825fb2f6b4213bfe61b57328b64abcd370614f5939045a0bdf7f",
+    "scripts/eval/memory-complex-identifier-cases.json": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d",
+    "scripts/eval/memory-hybrid-retention-cases.json": "4ca3dd70015fbb7b1595c98aa4cb0c64f7e1662dc82176ff9215020370e242b1",
+    "scripts/eval/memory-snake-identifier-cases.json": "9b2eb353c4bb15029a915492f6b25370daa2eafca0412b2b63c8719a7dd1cb80",
+    "scripts/eval/memory-fullpool-retry-cases.json": "1f2dcb3fc7fbe176d57e4dc2ac1d68f6ce7e017cc08195536de974ce4d579bc2",
+    "scripts/eval/memory-fullpool-retry-retention-cases.json": "72d1b16ddc1ad290220307bacc6b5af5b69fc848ae8dccc26e8096b17b9cff14",
+    "scripts/eval/memory-overflow-cases.json": "7f3d7b75de5a2bc8c87c16eaf120ea48df2e437be9f36be5328f3b146cec82dc",
+    "scripts/eval/memory-cross-window-cases.json": "7891ba454b9f6c76b4e005811c1c0005fd50e31bb9d89bf0673ec0469b4c8dbd"
+  },
+  "frozen_before_trials": true,
+  "hypothesis": "A long failure can hide its final diagnostic even when the task itself is short. Embed only an explicitly separated final diagnostic paragraph that begins outside the declared input window, and append eligible matches into free slots after all existing views.",
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "limit": 8,
+    "budget": 1000
+  },
+  "guards": [
+    "Preserve all previously delivered facts and ranks, negative IDs/order, visibility, scope, trust, tags and packet limit.",
+    "Do not displace any existing result or change existing diagnostic cases.",
+    "Test development before the exposed reserved split.",
+    "Reuse existing model and indexes; no extra stored vectors."
+  ],
+  "limitation": "Synthetic correlated views, no blind or live-agent quality claim.",
+  "amendment": {
+    "before_second_trial": true,
+    "reason": "Free-slot supplementation produced no development gain because all four misses had full pools.",
+    "trial": "As a separate stress test, try the highest admitted final-paragraph semantic match in the final full-pool slot, preserving leading ranks; reject any negative-output change or previously supplied fact/rank loss. This relaxes the no-displacement design for this trial only, not the regression guards."
+  },
+  "retention_guard": "scripts/eval/memory-long-failure-retention-cases.json",
+  "retention_note": "Registered before retention scoring; ten required facts cannot fit eight, so compare each supplied fact/rank.",
+  "second_amendment": {
+    "before_third_trial": true,
+    "reason": "Unconditional replacement improved two development answers but worsened ten per-fact ranks in retention guards.",
+    "trial": "Permit a tail match only for a task with no distinctive FTS terms, and only if the complete failure has no all/every/each/both/everything/entire/whole collection qualifier; keep top ranks and all earlier guards. Add generic-task collection retention guards before scoring."
+  },
+  "generic_retention_guard": "scripts/eval/memory-long-failure-generic-retention-cases.json",
+  "plural_retention_guard": "scripts/eval/memory-long-failure-plural-retention-cases.json",
+  "plural_retention_note": "Added before its first scoring, after the generic-task gate was proposed; protects collection intent expressed without explicit universal words.",
+  "input_sha256": {
+    "scripts/eval/memory-long-failure-cases.json": "87b8119ce5ce2ee2820d3c3f7049ab9aa4e8ffcdc525fdd2a3772824500e8924",
+    "scripts/eval/memory-long-failure-retention-cases.json": "b28e0dac87fa09dea10ac87773333955ff073ffb4cc54a4a07ab9b9f68531d1f",
+    "scripts/eval/memory-long-failure-generic-retention-cases.json": "cdaa65995208033a9810284a2a000ec42d8a6b9b3a62ca9d9f7f16c8d141cca0",
+    "scripts/eval/memory-long-failure-plural-retention-cases.json": "a3c1c6ad2f736c5c38e1a69afbd8c89646d6ef484784d0d19cec462b2ad91ccd"
+  },
+  "registration_serialization": "JSON.stringify(parsed, null, 2) plus a final newline",
+  "decision": "All three trials rejected: free-slot approach had no gain; full-pool variants lost requested facts. Runtime source restored byte-for-byte.",
+  "committed_input_sha256": {
+    "scripts/eval/memory-long-failure-cases.json": "87b8119ce5ce2ee2820d3c3f7049ab9aa4e8ffcdc525fdd2a3772824500e8924",
+    "scripts/eval/memory-long-failure-retention-cases.json": "d391e427b2a3252511fab849352dfa796ce55761195111c2e365f5abe72790e6",
+    "scripts/eval/memory-long-failure-generic-retention-cases.json": "4961de694e749b4bbecd5e24dd386c5ca752232587ca542e5f1ea04fdfcbc48b",
+    "scripts/eval/memory-long-failure-plural-retention-cases.json": "625971e95fe024d05c1c56cdddd4f022f0575eef5c985d9c54b85874be4c42b4"
+  }
+}

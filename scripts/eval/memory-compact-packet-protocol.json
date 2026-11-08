@@ -1,0 +1,16 @@
+{
+  "baseline": "31f1a7c",
+  "new_cases": false,
+  "hypothesis": "Under packet pressure, compact repeated absent metadata and applicability warnings while preserving all baseline complete claims, their text and rank, identifiers, evidence, files and match reasons. Use saved space for additional full claims; leave the original packet when nothing is gained.",
+  "policy": {
+    "limit": 8,
+    "budget": 1000,
+    "threshold": 0.3
+  },
+  "guards": [
+    "No requested fact/rank loss, negative IDs/order change, scope/trust/tag violation or token overrun.",
+    "Retain original format unless at least one more complete claim fits.",
+    "No stored claim rewrite or retrieval change."
+  ],
+  "selection": "Development before reserved; all incidents already exposed."
+}
