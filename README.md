@@ -101,7 +101,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   - **Agent** does the work: reads code, edits files, runs commands and
     checks the result. When a decision is yours to make, it asks you.
   - **Plan** only looks around, asks you questions and writes a plan. When
-    you approve it, Agent mode carries it out.
+    you approve it, Agent mode carries it out. **Implement this plan** sends
+    a request naming the saved plan's current title, with its file attached.
 - **Four working principles** in its system prompt: think before coding
   (say what it assumes, ask when unsure), simplicity first, surgical
   changes, and goal-driven execution (a short plan, each step with how

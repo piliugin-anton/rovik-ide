@@ -7,12 +7,15 @@ import { chatStore } from './chatStore';
 import { setEditorOpener, type Compare, type OpenInEditor } from './openInEditor';
 
 const PLAN = '# Fix the build\n\n1. Pin the toolchain\n';
+let savedPlan = PLAN;
+let readError: Error | null = null;
 const calls: { cmd: string; args: any }[] = [];
 (globalThis as any).window = {
   __TAURI_INTERNALS__: {
     invoke: async (cmd: string, args: any) => {
       calls.push({ cmd, args });
-      return cmd === 'chat_read_plan' ? PLAN : null;
+      if (cmd === 'chat_read_plan' && readError) throw readError;
+      return cmd === 'chat_read_plan' ? savedPlan : null;
     },
   },
   setTimeout: () => 0,
@@ -52,17 +55,53 @@ test('a plan is read through chat_read_plan, for a chat of either kind', async (
   assert.deepEqual(reads(), [{ dialogId: 'chat-7', path: '/p/.rovik/plans/a.md' }]);
 });
 
-test('implementing a plan sends its path; the backend writes what the model gets (A04)', () => {
+test('implementing a plan names its saved title and keeps its path in metadata (A04)', async () => {
   calls.length = 0;
-  const message = implementationMessage('/p/.rovik/plans/a.md', '/p');
+  const message = await implementationMessage('chat-7', '/p/.rovik/plans/a.md');
   assert.deepEqual(message, {
-    content: 'Implement the plan in `.rovik/plans/a.md`.',
+    content: 'Implement "Fix the build" plan.',
     meta: { mode: 'agent', implementsPlan: true, planPath: '/p/.rovik/plans/a.md' },
   });
-  assert.equal(reads().length, 0, 'not read here');
-  assert.equal(
-    implementationMessage('/srv/w/.rovik/plans/a.md', '/p').content,
-    'Implement the plan in `/srv/w/.rovik/plans/a.md`.',
-    'a path outside the project, as it is'
-  );
+  assert.deepEqual(reads(), [{ dialogId: 'chat-7', path: '/p/.rovik/plans/a.md' }]);
+});
+
+test('implementing a plan uses the current saved title including edits and Unicode', async () => {
+  try {
+    savedPlan = '\r\n#\tAdd a submit button in contact form ✓ ###\r\n\r\n## Steps\r\n';
+    const message = await implementationMessage('remote-chat', '/srv/w/.rovik/plans/a.md');
+    assert.equal(message.content, 'Implement "Add a submit button in contact form ✓" plan.');
+    assert.equal(message.meta.planPath, '/srv/w/.rovik/plans/a.md');
+    assert.deepEqual(reads()[reads().length - 1], {
+      dialogId: 'remote-chat',
+      path: '/srv/w/.rovik/plans/a.md',
+    });
+  } finally {
+    savedPlan = PLAN;
+  }
+});
+
+test('a plan without a title uses its filename rather than a generic request', async () => {
+  try {
+    savedPlan = '## Steps\n\n1. Add the button.\n';
+    for (const file of [
+      '/p/.rovik/plans/contact-form.md',
+      'C:\\p\\.rovik\\plans\\contact-form.md',
+    ]) {
+      assert.equal(
+        (await implementationMessage('chat-7', file)).content,
+        'Implement "contact-form" plan.'
+      );
+    }
+  } finally {
+    savedPlan = PLAN;
+  }
+});
+
+test('an unreadable plan fails instead of sending a generic implementation request', async () => {
+  try {
+    readError = new Error('The plan was deleted');
+    await assert.rejects(implementationMessage('chat-7', '/p/.rovik/plans/a.md'), readError);
+  } finally {
+    readError = null;
+  }
 });

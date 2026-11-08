@@ -35,15 +35,18 @@ export function relativePlanPath(path: string, root: string | null): string {
 
 /**
  * The message that implements a saved plan, in Agent mode: a short line for
- * the chat, and the plan's path, from which the backend sends the model the
- * plan in full.
+ * the chat naming the saved plan's current title, and the plan's path, from
+ * which the backend sends the model the plan in full.
  */
-export function implementationMessage(
-  file: string,
-  root: string | null
-): { content: string; meta: NonNullable<ChatMessage['meta']> } {
+export async function implementationMessage(
+  dialogId: string,
+  file: string
+): Promise<{ content: string; meta: NonNullable<ChatMessage['meta']> }> {
+  const plan = await readPlan(dialogId, file);
+  const heading = /^#\s+(.+?)(?:\s+#+)?$/u.exec(plan.trimStart().split(/\r?\n/, 1)[0]);
+  const title = heading?.[1].trim() || file.split(/[\\/]/).pop()?.replace(/\.md$/i, '') || file;
   return {
-    content: `Implement the plan in \`${relativePlanPath(file, root)}\`.`,
+    content: `Implement "${title}" plan.`,
     meta: { mode: 'agent', implementsPlan: true, planPath: file },
   };
 }
