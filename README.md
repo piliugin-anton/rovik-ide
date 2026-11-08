@@ -2053,7 +2053,7 @@ check this independently of strict vector-search cutoffs and lexical behavior.
 For a terse hybrid lookup naming exactly one complete compound identifier, a full
 pool may use its last slot for that fact when no complete match is represented.
 Leading results retain their ranks. Longer requests, collection wording, explicit
-file/failure context, exact incumbent titles, single-slot lookups, digits and
+failure context, exact incumbent titles, single-slot lookups, digits and
 wildcards retain their existing pools. See the
 [focused-symbol experiments](docs/design/long-term-memory-focused-symbols-nov8-2026.md)
 for the fixed scope rules and per-fact retention checks.
@@ -2067,6 +2067,10 @@ Names may be separated by spaces, commas or semicolons, including qualified name
 such as `crate::SharedMemoryStore`. The same limits and context protections apply
 after splitting the list. See the
 [harder list cases](docs/design/long-term-memory-code-lists-nov8-2026.md).
+With supplied files, focused requests naming one to four symbols protect every
+incumbent file match at its current rank before covering missing names. If too few
+other slots remain, the entire pool stays intact. See the
+[file-focused experiment](docs/design/long-term-memory-file-focused-nov8-2026.md).
 
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline

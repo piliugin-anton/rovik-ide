@@ -495,18 +495,22 @@ impl SemanticIndex {
                 Err(error) => eprintln!("memory: focused symbol lookup unavailable; preserving current results: {error}"),
             }
         }
-        if found.len() == query.limit
-            && query.limit > 1
-            && query.files.is_empty()
-            && query.failure.is_none()
-            && !exact_title
+        if found.len() == query.limit && query.limit > 1 && query.failure.is_none() && !exact_title
         {
-            if let Some(names) = focused_identifiers(&query.task) {
+            let minimum_names = if query.files.is_empty() { 2 } else { 1 };
+            if let Some(names) = focused_identifiers(&query.task, minimum_names) {
                 let supplementary = (|| -> Result<_> {
                     let mut protected = vec![false; found.len()];
                     protected[0] = true;
                     for (i, hit) in found.iter().enumerate() {
-                        if focused_words(&query.task).any(|word| {
+                        // A file hint is independent relevance evidence. Keep
+                        // every matching incumbent, even at the pool's tail.
+                        if query.files.iter().any(|file| {
+                            hit.record
+                                .files
+                                .iter()
+                                .any(|stored| crate::retrieval::path_overlap(file, stored))
+                        }) || focused_words(&query.task).any(|word| {
                             hit.record.title.eq_ignore_ascii_case(word)
                                 || hit.record.title.eq_ignore_ascii_case(
                                     word.trim_matches(|c: char| !c.is_alphanumeric()),
@@ -575,9 +579,9 @@ impl SemanticIndex {
     }
 }
 
-fn focused_identifiers(task: &str) -> Option<Vec<&str>> {
+fn focused_identifiers(task: &str, minimum_names: usize) -> Option<Vec<&str>> {
     let words: Vec<_> = focused_words(task).collect();
-    if !(2..=5).contains(&words.len()) || !focused_scope(task) {
+    if !(minimum_names..=5).contains(&words.len()) || !focused_scope(task) {
         return None;
     }
     let mut names = Vec::new();
@@ -592,7 +596,7 @@ fn focused_identifiers(task: &str) -> Option<Vec<&str>> {
             names.push(word);
         }
     }
-    (context <= 1 && (2..=4).contains(&names.len())).then_some(names)
+    (context <= 1 && (minimum_names..=4).contains(&names.len())).then_some(names)
 }
 
 fn focused_words(task: &str) -> impl Iterator<Item = &str> {

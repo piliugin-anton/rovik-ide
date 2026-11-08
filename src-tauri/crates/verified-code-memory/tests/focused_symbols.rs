@@ -50,6 +50,15 @@ fn ids(hits: &[verified_code_memory::RetrievedMemory]) -> Vec<Uuid> {
     hits.iter().map(|hit| hit.record.id).collect()
 }
 
+fn reserve_context_slot(store: &SharedMemoryStore) {
+    // Seven crowding records plus the context still fill all eight slots.
+    // A ninth equally ranked record can randomly exclude the context before
+    // the policy under test even runs, depending on generated UUID ties.
+    let spare = store.list("a", "Crowding observation 7").unwrap();
+    assert_eq!(spare.len(), 1);
+    store.delete(spare[0].id).unwrap();
+}
+
 #[test]
 fn terse_symbol_requests_recover_the_named_fact_without_moving_the_leading_results() {
     let (store, index, wanted) = fixture();
@@ -211,9 +220,18 @@ fn focused_symbol_candidates_obey_scope_trust_tags_and_caller_visibility_before_
         .unwrap();
     assert_eq!(denied.len(), 8);
     assert!(denied.iter().all(|hit| hit.record.id != wanted));
+    let file_query = query.clone().with_files(["src/noise.rs"]);
+    let file_hits = index.retrieve(&file_query, &FocusModel, 0.8).unwrap();
+    assert_eq!(file_hits.last().unwrap().record.id, wanted);
+    let file_denied = index
+        .retrieve_filtered(&file_query, &FocusModel, 0.8, |r| r.id != wanted)
+        .unwrap();
+    assert_eq!(ids(&file_denied), ids(&denied));
     store.deprecate(wanted, "obsolete").unwrap();
     let obsolete = index.retrieve(&query, &FocusModel, 0.8).unwrap();
     assert_eq!(ids(&obsolete), ids(&denied));
+    let file_obsolete = index.retrieve(&file_query, &FocusModel, 0.8).unwrap();
+    assert_eq!(ids(&file_obsolete), ids(&file_denied));
 }
 
 #[test]
@@ -336,6 +354,7 @@ fn multiple_named_facts_are_recovered_atomically_without_moving_existing_named_f
 #[test]
 fn an_explicit_context_title_is_protected_alongside_compound_names() {
     let (store, index, first) = fixture();
+    reserve_context_slot(&store);
     let second = store
         .remember(NewMemory::procedure(
             "a",
@@ -375,4 +394,134 @@ fn an_explicit_context_title_is_protected_alongside_compound_names() {
         assert!(after.iter().any(|h| h.record.id == first));
         assert!(after.iter().any(|h| h.record.id == second.id));
     }
+}
+
+#[test]
+fn focused_file_requests_recover_named_facts_without_displacing_the_tail_file_match() {
+    let (store, index, first) = fixture();
+    reserve_context_slot(&store);
+    let second = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Retrieval query",
+            "Use a lock for query state.",
+        ))
+        .unwrap();
+    store.verify(second.id, "source").unwrap();
+    let context = store
+        .remember(
+            NewMemory::procedure(
+                "a",
+                "File observation",
+                format!("{}Use a lock for file state.", "crowding ".repeat(8)),
+            )
+            .with_files(["src/noise.rs"]),
+        )
+        .unwrap();
+    store.verify(context.id, "file evidence").unwrap();
+    index.backfill("a", &FocusModel).unwrap();
+    for task in [
+        "SharedMemoryStore crowding",
+        "SharedMemoryStore,RetrievalQuery crowding",
+        "crate::SharedMemoryStore;crate::RetrievalQuery crowding",
+    ] {
+        let query = RetrievalQuery::new("a", task).with_files(["./src\\noise.rs"]);
+        let before = index
+            .retrieve(&query.clone().with_failure(""), &FocusModel, 0.8)
+            .unwrap();
+        assert_eq!(before.len(), 8);
+        assert_eq!(before[7].record.id, context.id);
+        assert!(before.iter().all(|hit| hit.record.id != first));
+        let after = index.retrieve(&query, &FocusModel, 0.8).unwrap();
+        assert_eq!(after.len(), 8);
+        assert_eq!(after[0].record.id, before[0].record.id);
+        assert_eq!(after[7].record.id, context.id);
+        assert!(after.iter().any(|hit| hit.record.id == first));
+        if task.contains("RetrievalQuery") {
+            assert!(after.iter().any(|hit| hit.record.id == second.id));
+        }
+        for incumbent in before.iter().filter(|hit| {
+            hit.record.files.iter().any(|file| {
+                query
+                    .files
+                    .iter()
+                    .any(|supplied| verified_code_memory::retrieval::path_overlap(file, supplied))
+            })
+        }) {
+            assert_eq!(
+                after
+                    .iter()
+                    .position(|hit| hit.record.id == incumbent.record.id),
+                before
+                    .iter()
+                    .position(|hit| hit.record.id == incumbent.record.id)
+            );
+        }
+    }
+    let denied =
+        RetrievalQuery::new("a", "SharedMemoryStore crowding").with_files(["src/noise.rs"]);
+    let before = index
+        .retrieve(&denied.clone().with_failure(""), &FocusModel, 0.8)
+        .unwrap();
+    assert_eq!(
+        ids(&index
+            .retrieve_filtered(&denied, &FocusModel, 0.8, |record| record.id != first)
+            .unwrap()),
+        ids(&before)
+    );
+}
+
+#[test]
+fn a_file_pool_with_insufficient_unprotected_slots_aborts_all_named_additions() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    for n in 0..8 {
+        let memory = NewMemory::procedure(
+            "a",
+            format!("Crowding observation {n}"),
+            format!("Crowding sample {n} records a distinct observation."),
+        );
+        let memory = if n < 7 {
+            memory.with_files(["src/context.rs"])
+        } else {
+            memory
+        };
+        let record = store.remember(memory).unwrap();
+        store.verify(record.id, "file evidence").unwrap();
+    }
+    let first = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store",
+            "Use a lock for shared state.",
+        ))
+        .unwrap();
+    store.verify(first.id, "source").unwrap();
+    let second = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Retrieval query",
+            "Use a lock for query state.",
+        ))
+        .unwrap();
+    store.verify(second.id, "source").unwrap();
+    let index = SemanticIndex::new(store, "file-fixture", 2).unwrap();
+    index.backfill("a", &FocusModel).unwrap();
+    let query = RetrievalQuery::new("a", "SharedMemoryStore,RetrievalQuery crowding")
+        .with_files(["src/context.rs"]);
+    let before = index
+        .retrieve(&query.clone().with_failure(""), &FocusModel, 0.8)
+        .unwrap();
+    assert_eq!(before.len(), 8);
+    assert_eq!(
+        before
+            .iter()
+            .filter(|hit| !hit.record.files.is_empty())
+            .count(),
+        7
+    );
+    let after = index.retrieve(&query, &FocusModel, 0.8).unwrap();
+    assert_eq!(ids(&after), ids(&before));
+    assert!(after
+        .iter()
+        .all(|hit| hit.record.id != first.id && hit.record.id != second.id));
 }
