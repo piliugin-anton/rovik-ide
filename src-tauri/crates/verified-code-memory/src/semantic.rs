@@ -344,14 +344,17 @@ impl SemanticIndex {
         let truncated = embedder.input_character_limit().is_some_and(|limit| {
             limit > 0 && query.task.chars().count().saturating_add(1) >= limit
         });
+        let mut diagnostic_vector = None;
         if let Some(failure) = failure.filter(|_| truncated && found.len() < query.limit) {
             let supplementary = embedder.embed(failure).and_then(|diagnostic| {
-                self.search_filtered(query, &diagnostic, minimum, |record| {
+                let hits = self.search_filtered(query, &diagnostic, minimum, |record| {
                     accept(record)
                         && !found
                             .iter()
                             .any(|hit| hit.record.same_context_claim(record))
-                })
+                })?;
+                diagnostic_vector = Some(diagnostic);
+                Ok(hits)
             });
             match supplementary {
                 Ok(hits) => {
@@ -410,34 +413,45 @@ impl SemanticIndex {
                 .input_character_limit()
                 .is_some_and(|limit| limit > 0)
         {
-            match self.search_view_filtered(
-                query,
-                &vector,
-                minimum,
-                |record| {
-                    accept(record)
-                        && !found
-                            .iter()
-                            .any(|hit| hit.record.same_context_claim(record))
-                },
-                true,
+            // Preserve ordinary conclusion matches before trying a diagnostic
+            // that was hidden by the task window. Its inference already ran.
+            for (view, reason) in std::iter::once((&vector, "conclusion")).chain(
+                diagnostic_vector
+                    .as_ref()
+                    .map(|vector| (vector, "diagnostic conclusion")),
             ) {
-                Ok(hits) => {
-                    let last_score = found.last().map_or(1.0 / 61.0, |hit| hit.score);
-                    for (rank, (record, similarity)) in
-                        hits.into_iter().take(query.limit - found.len()).enumerate()
-                    {
-                        found.push(RetrievedMemory {
-                            record,
-                            score: last_score / (rank + 2) as f32,
-                            reason: format!("conclusion cosine {similarity:.3}"),
-                            components: Default::default(),
-                        });
-                    }
+                if found.len() == query.limit {
+                    break;
                 }
-                Err(error) => eprintln!(
-                    "memory: conclusion lookup unavailable; preserving current results: {error}"
-                ),
+                match self.search_view_filtered(
+                    query,
+                    view,
+                    minimum,
+                    |record| {
+                        accept(record)
+                            && !found
+                                .iter()
+                                .any(|hit| hit.record.same_context_claim(record))
+                    },
+                    true,
+                ) {
+                    Ok(hits) => {
+                        let last_score = found.last().map_or(1.0 / 61.0, |hit| hit.score);
+                        for (rank, (record, similarity)) in
+                            hits.into_iter().take(query.limit - found.len()).enumerate()
+                        {
+                            found.push(RetrievedMemory {
+                                record,
+                                score: last_score / (rank + 2) as f32,
+                                reason: format!("{reason} cosine {similarity:.3}"),
+                                components: Default::default(),
+                            });
+                        }
+                    }
+                    Err(error) => eprintln!(
+                        "memory: {reason} lookup unavailable; preserving current results: {error}"
+                    ),
+                }
             }
         }
         Ok(found)

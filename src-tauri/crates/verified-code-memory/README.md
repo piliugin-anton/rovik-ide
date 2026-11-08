@@ -107,6 +107,11 @@ vectors gain conclusions during the next backfill without a model download or
 reindex of unchanged primary text. This adds at most one inference and one vector
 per long claim; it does not index every intermediate paragraph.
 
+When a long task hides the failure text, hybrid retrieval reuses its independent
+diagnostic embedding to search these conclusions too. Existing results and ordinary
+conclusion matches keep priority. If slots remain, this adds one vector-table search
+without another inference call.
+
 ## Development
 
 ```bash
