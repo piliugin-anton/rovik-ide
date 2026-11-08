@@ -101,7 +101,18 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   - **Agent** does the work: reads code, edits files, runs commands and
     checks the result. When a decision is yours to make, it asks you.
   - **Plan** only looks around, asks you questions and writes a plan. When
-    you approve it, Agent mode carries it out.
+    you approve it, Agent mode carries it out. **Implement this plan** sends
+    a request naming the saved plan's current title, with its file attached.
+    Saved plans show **Implementing in chat** while their implementation run
+    is active, and **Implemented in chat** after a successful run with every
+    checklist step done. The chat link opens AI Chat and selects that chat.
+    Interrupted runs and steps skipped or changed require another attempt or
+    review. Editing a plan makes its new version available to implement again.
+    This also works when you ask Agent mode to implement a plan referenced
+    with `@` or its `.rovik/plans/` path, without clicking the button.
+    The agent associates its checklist with that plan and the user's original
+    instruction; mentioning, reading, or reviewing a plan alone does not
+    record an implementation. Unclear intent remains untracked.
 - **Four working principles** in its system prompt: think before coding
   (say what it assumes, ask when unsure), simplicity first, surgical
   changes, and goal-driven execution (a short plan, each step with how

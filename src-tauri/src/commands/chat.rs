@@ -118,6 +118,27 @@ pub async fn chat_read_plan(
     std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))
 }
 
+/// Implementation evidence for this revision, read from local chats and
+/// remote mirrors in the current project. No host connection is required.
+#[tauri::command]
+pub async fn chat_plan_implementation(
+    core: State<'_, Core>,
+    project_id: Option<String>,
+    path: String,
+    content: String,
+) -> Result<Option<rovik_core::agent_run::plan::PlanImplementation>, String> {
+    core.db
+        .read(move |conn| {
+            rovik_core::agent_run::plan::plan_implementation(
+                conn,
+                project_id.as_deref(),
+                &path,
+                &content,
+            )
+        })
+        .await
+}
+
 /// "Looks like a copy": share the chats, or a separate history.
 #[tauri::command]
 pub async fn chat_answer_copy(

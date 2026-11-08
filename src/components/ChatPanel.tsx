@@ -3201,11 +3201,16 @@ export default function ChatPanel(props: ChatProps) {
    * request, which keeps it in view for the whole run (the current request
    * is never dropped from the context); the chat shows a short line.
    */
-  function startImplementation(dialogId: string, file: string) {
+  async function startImplementation(dialogId: string, file: string) {
     if (!activeProfile() || isRunning(dialogId)) return;
-    setChatMode('agent');
-    const { content, meta } = implementationMessage(file, props.rootPath());
-    void sendMessage(dialogId, { id: crypto.randomUUID(), content, meta }, undefined);
+    try {
+      const { content, meta } = await implementationMessage(dialogId, file);
+      if (activeDialogId() !== dialogId || !activeProfile() || isRunning(dialogId)) return;
+      setChatMode('agent');
+      void sendMessage(dialogId, { id: crypto.randomUUID(), content, meta }, undefined);
+    } catch (err) {
+      notify({ kind: 'error', title: 'The plan couldn’t be read', message: String(err) });
+    }
   }
 
   /**
@@ -3284,7 +3289,7 @@ export default function ChatPanel(props: ChatProps) {
     for (let i = list.length - 1; i >= 0; i--) {
       const m = list[i];
       if (isRequestMessage(m)) {
-        return /^Implement the plan in `([^`]+)`/.exec(m.content)?.[1];
+        return m.meta?.planPath ?? /^Implement the plan in `([^`]+)`/.exec(m.content)?.[1];
       }
     }
     return undefined;

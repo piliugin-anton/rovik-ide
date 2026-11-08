@@ -14,6 +14,57 @@ fn db() -> Connection {
 
 const DAY: i64 = 86_400_000;
 
+#[test]
+fn plan_implementation_lookup_matches_project_revision_and_latest_attempt_across_chats() {
+    use crate::agent_run::plan::{plan_fingerprint, plan_implementation};
+    use serde_json::json;
+    let mut conn = db();
+    dialog(&mut conn, "planner", "Plan", 0);
+    dialog(&mut conn, "implementer", "Implementation", 0);
+    let plan = "# Contact form\n";
+    let mut first = message("first", "user", "Implement the plan.");
+    first.meta = Some(json!({
+        "implementsPlan": true, "planKey": ".rovik/plans/contact.md",
+        "planPath": "/host/worktree/.rovik/plans/contact.md", "planFingerprint": plan_fingerprint(plan),
+        "planImplementation": { "status": "implemented", "runId": "run-one", "updatedAt": 1 }
+    }));
+    add(&mut conn, "planner", vec![first]);
+    let lookup = |c: &Connection, text: &str| {
+        plan_implementation(c, None, "/project/.rovik/plans/contact.md", text).unwrap()
+    };
+    let result = lookup(&conn, "# Contact form\r\n").unwrap();
+    assert_eq!(result.dialog_id, "planner");
+    assert_eq!(result.status, "implemented");
+    assert_eq!(result.run_id.as_deref(), Some("run-one"));
+    assert!(lookup(&conn, "# Edited plan\n").is_none());
+    assert!(plan_implementation(
+        &conn,
+        Some("other-project"),
+        "/project/.rovik/plans/contact.md",
+        plan
+    )
+    .unwrap()
+    .is_none());
+    assert!(
+        plan_implementation(&conn, None, "/project/.rovik/plans/other.md", plan)
+            .unwrap()
+            .is_none()
+    );
+
+    let mut second = message("second", "user", "Implement it again.");
+    second.meta = Some(json!({
+        "implementsPlan": true, "planKey": ".rovik/plans/contact.md", "planFingerprint": plan_fingerprint(plan),
+        "planImplementation": { "status": "implementing", "runId": "run-two", "updatedAt": 2 }
+    }));
+    add(&mut conn, "implementer", vec![second]);
+    assert_eq!(lookup(&conn, plan).unwrap().dialog_id, "implementer");
+    assert_eq!(lookup(&conn, plan).unwrap().status, "implementing");
+    delete_dialog(&mut conn, "implementer").unwrap();
+    assert_eq!(lookup(&conn, plan).unwrap().dialog_id, "planner");
+    delete_dialog(&mut conn, "planner").unwrap();
+    assert!(lookup(&conn, plan).is_none());
+}
+
 fn dialog(conn: &mut Connection, id: &str, title: &str, age_days: i64) {
     let t = now_ms() - age_days * DAY;
     create_dialog(

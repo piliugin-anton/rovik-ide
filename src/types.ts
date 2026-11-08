@@ -355,6 +355,17 @@ export interface ToolMeta {
   implementsPlan?: boolean;
   /** Its plan's file: the backend sends the model the plan from it (lib/plans.ts). */
   planPath?: string;
+  /** Revision and execution evidence persisted by the backend on the request. */
+  planFingerprint?: string;
+  planKey?: string;
+  /** Exact user instruction backing a normal chat's semantic plan association. */
+  planImplementationInstruction?: string;
+  planImplementation?: {
+    status: import('./lib/planImplementations').PlanImplementation['status'];
+    outcome?: string | null;
+    updatedAt: number;
+    runId?: string | null;
+  };
   /** The change reviewer's record (lib/changeReview.ts). */
   review?: import('./lib/changeReview').ReviewMeta;
   /** The plan checker's problems with a plan Agent mode was asked to implement (B07b). */

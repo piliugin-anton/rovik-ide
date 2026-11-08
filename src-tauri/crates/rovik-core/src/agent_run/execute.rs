@@ -709,6 +709,19 @@ impl Run {
                     outcome,
                     ..
                 } = checklist::describe_todo(&items);
+                if !outcome.failed() {
+                    if let Err(error) = self.record_plan_implementation_intent(&args).await {
+                        return self
+                            .add_tool_result(
+                                &tc.id,
+                                format!("Error: {error}"),
+                                Outcome::Failed,
+                                None,
+                                Vec::new(),
+                            )
+                            .await;
+                    }
+                }
                 // Phase D: a step just finished in CLM mode asks for a
                 // compaction of that step's span (and a TASK.md update).
                 // The previous checklist is what was current before this
