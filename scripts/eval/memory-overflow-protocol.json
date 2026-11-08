@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "baseline_commit": "8064e2ad72dd6f4d4b2f05cdb5532371f59e67a7",
+  "frozen_before_trials": true,
+  "dataset": "scripts/eval/memory-overflow-cases.json",
+  "dataset_sha256": "7f3d7b75de5a2bc8c87c16eaf120ea48df2e437be9f36be5328f3b146cec82dc",
+  "regression_inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-diagnostic-cases.json": "735bbaf0160eb1805ff21fb1a8d6d20a118c602233691a79fb159bc256f10973",
+    "scripts/eval/memory-identifier-cases.json": "315b81aa8832825fb2f6b4213bfe61b57328b64abcd370614f5939045a0bdf7f",
+    "scripts/eval/memory-complex-identifier-cases.json": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d",
+    "scripts/eval/memory-hybrid-retention-cases.json": "4ca3dd70015fbb7b1595c98aa4cb0c64f7e1662dc82176ff9215020370e242b1",
+    "scripts/eval/memory-snake-identifier-cases.json": "9b2eb353c4bb15029a915492f6b25370daa2eafca0412b2b63c8719a7dd1cb80",
+    "scripts/eval/memory-fullpool-retry-cases.json": "1f2dcb3fc7fbe176d57e4dc2ac1d68f6ce7e017cc08195536de974ce4d579bc2",
+    "scripts/eval/memory-fullpool-retry-retention-cases.json": "72d1b16ddc1ad290220307bacc6b5af5b69fc848ae8dccc26e8096b17b9cff14"
+  },
+  "hypothesis": "A long stored claim can hide its final recommendation beyond the encoder character limit. Derive at most one additional bounded conclusion vector without altering primary vectors or claims; append matches only into unused hybrid result slots, preserving all incumbent ranks and full pools.",
+  "trials": [
+    {
+      "id": "overflow_strict",
+      "tail_admission": "normal minimum (0.3), without the short-query relaxation"
+    },
+    {
+      "id": "overflow_conservative",
+      "tail_admission": "max(normal minimum, 0.4) for the separate conclusion view if strict admission fails guards"
+    }
+  ],
+  "design": [
+    "Only providers declaring a positive character limit produce overflow views. Short records keep precisely their existing representation.",
+    "Use the last nonempty paragraph of the stored title/content text, bounded to the final encoder-window characters. At most two vectors per long record total.",
+    "Derived conclusion vectors bind memory ID, model and current claim hash; old vectors remain valid and get conclusion backfill without requiring a new model release.",
+    "Apply repository, state, tags and caller visibility before conclusion limits. Reject late writes after edit/delete/clear/cancellation.",
+    "Keep original claims and packet budget; actual full-claim delivery must improve, not merely candidates.",
+    "Final selected representation requires a blank-line-separated paragraph beginning outside the primary encoder window. CRLF is normalized only for the conclusion view; trailing whitespace alone cannot create overflow."
+  ],
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "final_limit": 8,
+    "memory_budget": 1000,
+    "deterministic": true
+  },
+  "selection": "Select the first development improvement preserving per-fact delivery/ranks and negative IDs/order across all old and new cases. Score only a safe selected candidate on the exposed reserved split. If neither passes restore runtime and report rejected trials; do not tune on reserved outputs.",
+  "limitations": "New cases reuse historical source incidents and explicit synthetic prefaces. No new independent semantic or end-to-end agent success claim. Full-pool misses remain protected and unresolved.",
+  "amendments": [
+    {
+      "trigger": "The initial development-safe prototype failed the unchanged supplementary_diagnostics_require_a_truncated_character_window_a_failure_and_a_free_slot test: a suffix of a one-paragraph claim gained relevance that its original contextual vector did not have.",
+      "decision": "Reject arbitrary one-paragraph suffixes. Index only an explicitly separated final paragraph starting beyond the declared primary window. Preserve the original test unchanged. This narrows representation to previously invisible complete context.",
+      "timing": "Amendment follows the legacy contract failure, not reserved-split outcome selection. Initial reserved evaluation had already been launched concurrently with the crate suite; it is preliminary exposed evidence, not blind validation."
+    }
+  ],
+  "selected_trial": "overflow_strict_explicit_paragraph",
+  "registration_serialization": "JSON.stringify(parsed, null, 2) plus a final newline",
+  "committed_dataset_sha256": "7f3d7b75de5a2bc8c87c16eaf120ea48df2e437be9f36be5328f3b146cec82dc"
+}

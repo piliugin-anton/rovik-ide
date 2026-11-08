@@ -96,6 +96,17 @@ CPU model. No Python, child process or separately installed runtime is used.
 The application provisions the pinned model from its dedicated GitHub release;
 this crate's encoder only reads local files and never downloads on inference.
 
+For a stored note longer than the encoder's character window, background indexing
+also embeds its final nonempty paragraph (bounded to one window). Hybrid retrieval
+can append a matching conclusion into unused result slots, after all existing
+results. Full pools and strict primary-vector search keep their existing behavior.
+The complete stored claim must still fit the prompt budget to be delivered.
+Conclusion vectors are derived data bound to the model and current claim hash;
+edits, deletion, scope and visibility checks apply to both views. Existing primary
+vectors gain conclusions during the next backfill without a model download or
+reindex of unchanged primary text. This adds at most one inference and one vector
+per long claim; it does not index every intermediate paragraph.
+
 ## Development
 
 ```bash

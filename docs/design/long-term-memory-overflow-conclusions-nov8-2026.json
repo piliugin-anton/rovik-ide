@@ -1,0 +1,2373 @@
+{
+  "protocol": {
+    "version": 1,
+    "baseline_commit": "8064e2ad72dd6f4d4b2f05cdb5532371f59e67a7",
+    "frozen_before_trials": true,
+    "dataset": "scripts/eval/memory-overflow-cases.json",
+    "dataset_sha256": "7f3d7b75de5a2bc8c87c16eaf120ea48df2e437be9f36be5328f3b146cec82dc",
+    "regression_inputs_sha256": {
+      "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+      "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+      "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+      "scripts/eval/memory-diagnostic-cases.json": "735bbaf0160eb1805ff21fb1a8d6d20a118c602233691a79fb159bc256f10973",
+      "scripts/eval/memory-identifier-cases.json": "315b81aa8832825fb2f6b4213bfe61b57328b64abcd370614f5939045a0bdf7f",
+      "scripts/eval/memory-complex-identifier-cases.json": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d",
+      "scripts/eval/memory-hybrid-retention-cases.json": "4ca3dd70015fbb7b1595c98aa4cb0c64f7e1662dc82176ff9215020370e242b1",
+      "scripts/eval/memory-snake-identifier-cases.json": "9b2eb353c4bb15029a915492f6b25370daa2eafca0412b2b63c8719a7dd1cb80",
+      "scripts/eval/memory-fullpool-retry-cases.json": "1f2dcb3fc7fbe176d57e4dc2ac1d68f6ce7e017cc08195536de974ce4d579bc2",
+      "scripts/eval/memory-fullpool-retry-retention-cases.json": "72d1b16ddc1ad290220307bacc6b5af5b69fc848ae8dccc26e8096b17b9cff14"
+    },
+    "hypothesis": "A long stored claim can hide its final recommendation beyond the encoder character limit. Derive at most one additional bounded conclusion vector without altering primary vectors or claims; append matches only into unused hybrid result slots, preserving all incumbent ranks and full pools.",
+    "trials": [
+      {
+        "id": "overflow_strict",
+        "tail_admission": "normal minimum (0.3), without the short-query relaxation"
+      },
+      {
+        "id": "overflow_conservative",
+        "tail_admission": "max(normal minimum, 0.4) for the separate conclusion view if strict admission fails guards"
+      }
+    ],
+    "design": [
+      "Only providers declaring a positive character limit produce overflow views. Short records keep precisely their existing representation.",
+      "Use the last nonempty paragraph of the stored title/content text, bounded to the final encoder-window characters. At most two vectors per long record total.",
+      "Derived conclusion vectors bind memory ID, model and current claim hash; old vectors remain valid and get conclusion backfill without requiring a new model release.",
+      "Apply repository, state, tags and caller visibility before conclusion limits. Reject late writes after edit/delete/clear/cancellation.",
+      "Keep original claims and packet budget; actual full-claim delivery must improve, not merely candidates.",
+      "Final selected representation requires a blank-line-separated paragraph beginning outside the primary encoder window. CRLF is normalized only for the conclusion view; trailing whitespace alone cannot create overflow."
+    ],
+    "policy": {
+      "threshold": 0.3,
+      "short_query_words": 2,
+      "short_query_scale": 0.9166666666666666,
+      "final_limit": 8,
+      "memory_budget": 1000,
+      "deterministic": true
+    },
+    "selection": "Select the first development improvement preserving per-fact delivery/ranks and negative IDs/order across all old and new cases. Score only a safe selected candidate on the exposed reserved split. If neither passes restore runtime and report rejected trials; do not tune on reserved outputs.",
+    "limitations": "New cases reuse historical source incidents and explicit synthetic prefaces. No new independent semantic or end-to-end agent success claim. Full-pool misses remain protected and unresolved.",
+    "amendments": [
+      {
+        "trigger": "The initial development-safe prototype failed the unchanged supplementary_diagnostics_require_a_truncated_character_window_a_failure_and_a_free_slot test: a suffix of a one-paragraph claim gained relevance that its original contextual vector did not have.",
+        "decision": "Reject arbitrary one-paragraph suffixes. Index only an explicitly separated final paragraph starting beyond the declared primary window. Preserve the original test unchanged. This narrows representation to previously invisible complete context.",
+        "timing": "Amendment follows the legacy contract failure, not reserved-split outcome selection. Initial reserved evaluation had already been launched concurrently with the crate suite; it is preliminary exposed evidence, not blind validation."
+      }
+    ],
+    "selected_trial": "overflow_strict_explicit_paragraph",
+    "registration_serialization": "JSON.stringify(parsed, null, 2) plus a final newline",
+    "committed_dataset_sha256": "7f3d7b75de5a2bc8c87c16eaf120ea48df2e437be9f36be5328f3b146cec82dc"
+  },
+  "decision": "Ship explicit hidden-conclusion indexing at the unchanged normal admission threshold. Initial arbitrary-suffix prototype rejected by an existing unit contract; conservative-threshold alternative not needed.",
+  "model": {
+    "revision": "chroma-minilm-l6-v2-913d7300-title-claim-native-v1",
+    "dimensions": 384,
+    "threshold": 0.3,
+    "model_sha256": "4f148ba8ae9c2c7fbee4af2b132db8d06c6a6545b47fc83bbb98c3d22b8393e6",
+    "tokenizer_sha256": "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0"
+  },
+  "new_case_baseline": [
+    {
+      "key": "overflow",
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.6416666666666666,
+        "ndcg_at_8": 0.6565464876785729,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.7
+      }
+    },
+    {
+      "key": "overflow",
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.775,
+        "cases": 55,
+        "delivered_recall": 0.775,
+        "mrr": 0.6791666666666666,
+        "ndcg_at_8": 0.7038662191964322,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.775
+      }
+    },
+    {
+      "key": "overflow",
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.575,
+        "cases": 55,
+        "delivered_recall": 0.575,
+        "mrr": 0.5375,
+        "ndcg_at_8": 0.5465338279036697,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.575
+      }
+    },
+    {
+      "key": "overflow",
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.825,
+        "cases": 55,
+        "delivered_recall": 0.825,
+        "mrr": 0.6875,
+        "ndcg_at_8": 0.7235056822321508,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.825
+      }
+    }
+  ],
+  "selected_replays": [
+    {
+      "key": "overflow",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.6416666666666666,
+        "ndcg_at_8": 0.6565464876785729,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.7
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "overflow",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.825,
+        "cases": 55,
+        "delivered_recall": 0.825,
+        "mrr": 0.7041666666666666,
+        "ndcg_at_8": 0.7354127068750052,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.825
+      },
+      "changes": {
+        "gains": ["overflow-timezone-paragraph-overflow", "overflow-websocket-paragraph-overflow"],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "overflow",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.575,
+        "cases": 55,
+        "delivered_recall": 0.575,
+        "mrr": 0.5375,
+        "ndcg_at_8": 0.5465338279036697,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.575
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "overflow",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.85,
+        "cases": 55,
+        "delivered_recall": 0.85,
+        "mrr": 0.7125,
+        "ndcg_at_8": 0.7485056822321509,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.85
+      },
+      "changes": {
+        "gains": ["overflow-csrf-paragraph-overflow"],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 58,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 58,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 58,
+      "metrics": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8253953169047639,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7833333333333333,
+        "ndcg_at_8": 0.7876976584523819,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8166666666666668,
+        "ndcg_at_8": 0.8449496685608756,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.5,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.5059523809523809,
+        "ndcg_at_8": 0.5973502075255279,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 40,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.7511904761904761,
+        "ndcg_at_8": 0.7965486100798123,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9285714285714286
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0.5,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0.2857142857142857,
+        "ndcg_at_8": 0.3333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6964285714285714,
+        "ndcg_at_8": 0.7376660274234746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.800595238095238,
+        "ndcg_at_8": 0.8516851726097714,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6904761904761905,
+        "ndcg_at_8": 0.7329899647959225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.9404761904761906,
+        "ndcg_at_8": 0.9557806966836756,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.6071428571428571,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3794642857142857,
+        "ndcg_at_8": 0.4321801213648027,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.6071428571428571
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8928571428571429,
+        "cases": 40,
+        "delivered_recall": 0.7857142857142857,
+        "mrr": 0.6644557823129251,
+        "ndcg_at_8": 0.7183205500457946,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8928571428571429
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.022321428571428572,
+        "ndcg_at_8": 0.05406651750992184,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.07539682539682539,
+        "ndcg_at_8": 0.17047897562911482,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    }
+  ],
+  "gains": [
+    {
+      "policy": "hybrid",
+      "split": "development",
+      "id": "overflow-timezone-paragraph-overflow",
+      "rank_before": null,
+      "rank_after": 2,
+      "packet_tokens": 433,
+      "content_delivered": true
+    },
+    {
+      "policy": "hybrid",
+      "split": "development",
+      "id": "overflow-websocket-paragraph-overflow",
+      "rank_before": null,
+      "rank_after": 2,
+      "packet_tokens": 446,
+      "content_delivered": true
+    },
+    {
+      "policy": "hybrid",
+      "split": "heldout",
+      "id": "overflow-csrf-paragraph-overflow",
+      "rank_before": null,
+      "rank_after": 1,
+      "packet_tokens": 222,
+      "content_delivered": true
+    }
+  ],
+  "strata": [
+    {
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "development",
+      "category": "identifier",
+      "delivered": 10,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "development",
+      "category": "paragraph-overflow",
+      "delivered": 7,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "development",
+      "category": "single-paragraph-overflow",
+      "delivered": 7,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "development",
+      "category": "short-control",
+      "delivered": 4,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "category": "identifier",
+      "delivered": 10,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "category": "paragraph-overflow",
+      "delivered": 7,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "category": "single-paragraph-overflow",
+      "delivered": 7,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "development",
+      "category": "short-control",
+      "delivered": 4,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "development",
+      "category": "identifier",
+      "delivered": 10,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "development",
+      "category": "paragraph-overflow",
+      "delivered": 7,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "development",
+      "category": "single-paragraph-overflow",
+      "delivered": 7,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "development",
+      "category": "short-control",
+      "delivered": 7,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "category": "identifier",
+      "delivered": 10,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "category": "paragraph-overflow",
+      "delivered": 9,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "category": "single-paragraph-overflow",
+      "delivered": 7,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "development",
+      "category": "short-control",
+      "delivered": 7,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "heldout",
+      "category": "identifier",
+      "delivered": 10,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "heldout",
+      "category": "paragraph-overflow",
+      "delivered": 5,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "heldout",
+      "category": "single-paragraph-overflow",
+      "delivered": 5,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "heldout",
+      "category": "short-control",
+      "delivered": 3,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "category": "identifier",
+      "delivered": 10,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "category": "paragraph-overflow",
+      "delivered": 5,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "category": "single-paragraph-overflow",
+      "delivered": 5,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "lexical",
+      "split": "heldout",
+      "category": "short-control",
+      "delivered": 3,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "heldout",
+      "category": "identifier",
+      "delivered": 10,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "heldout",
+      "category": "paragraph-overflow",
+      "delivered": 8,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "heldout",
+      "category": "single-paragraph-overflow",
+      "delivered": 8,
+      "cases": 10
+    },
+    {
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "heldout",
+      "category": "short-control",
+      "delivered": 7,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "category": "identifier",
+      "delivered": 10,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "category": "paragraph-overflow",
+      "delivered": 9,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "category": "single-paragraph-overflow",
+      "delivered": 8,
+      "cases": 10
+    },
+    {
+      "label": "explicit",
+      "policy": "hybrid",
+      "split": "heldout",
+      "category": "short-control",
+      "delivered": 7,
+      "cases": 10
+    }
+  ],
+  "new_negative_counts": [
+    {
+      "policy": "lexical",
+      "split": "development",
+      "before": [
+        {
+          "id": "overflow-fresh-negative-development-0",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-1",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-2",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-3",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-4",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-5",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-development-6",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-development-7",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-8",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-9",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-0",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-1",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-2",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-3",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-4",
+          "returned": 1
+        }
+      ],
+      "after": [
+        {
+          "id": "overflow-fresh-negative-development-0",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-1",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-2",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-3",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-4",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-5",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-development-6",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-development-7",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-8",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-9",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-0",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-1",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-2",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-3",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-4",
+          "returned": 1
+        }
+      ]
+    },
+    {
+      "policy": "hybrid",
+      "split": "development",
+      "before": [
+        {
+          "id": "overflow-fresh-negative-development-0",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-1",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-2",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-3",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-4",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-5",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-development-6",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-development-7",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-8",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-9",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-0",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-1",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-2",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-3",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-4",
+          "returned": 1
+        }
+      ],
+      "after": [
+        {
+          "id": "overflow-fresh-negative-development-0",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-1",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-2",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-3",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-4",
+          "returned": 8
+        },
+        {
+          "id": "overflow-fresh-negative-development-5",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-development-6",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-development-7",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-8",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-development-9",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-0",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-1",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-2",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-3",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-development-4",
+          "returned": 1
+        }
+      ]
+    },
+    {
+      "policy": "lexical",
+      "split": "heldout",
+      "before": [
+        {
+          "id": "overflow-fresh-negative-heldout-0",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-1",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-2",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-3",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-4",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-5",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-6",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-7",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-8",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-9",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-0",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-1",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-2",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-3",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-4",
+          "returned": 3
+        }
+      ],
+      "after": [
+        {
+          "id": "overflow-fresh-negative-heldout-0",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-1",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-2",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-3",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-4",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-5",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-6",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-7",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-8",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-9",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-0",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-1",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-2",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-3",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-4",
+          "returned": 3
+        }
+      ]
+    },
+    {
+      "policy": "hybrid",
+      "split": "heldout",
+      "before": [
+        {
+          "id": "overflow-fresh-negative-heldout-0",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-1",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-2",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-3",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-4",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-5",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-6",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-7",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-8",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-9",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-0",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-1",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-2",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-3",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-4",
+          "returned": 3
+        }
+      ],
+      "after": [
+        {
+          "id": "overflow-fresh-negative-heldout-0",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-1",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-2",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-3",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-4",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-5",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-6",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-7",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-8",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-negative-heldout-9",
+          "returned": 0
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-0",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-1",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-2",
+          "returned": 2
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-3",
+          "returned": 1
+        },
+        {
+          "id": "overflow-fresh-hard-negative-heldout-4",
+          "returned": 3
+        }
+      ]
+    }
+  ],
+  "guards": {
+    "old_policy_views": 1336,
+    "old_deterministic_outputs_identical": true,
+    "new_policy_views": 220,
+    "new_negative_ids_and_order_unchanged": true,
+    "per_fact_delivery_and_ranks_preserved": true,
+    "scope_visibility_trust_tags_and_budgets": "passed",
+    "excluded_from_exact_comparison": ["latency_us", "telemetry"],
+    "timing_note": "Replays overlapped compilation and frontend tests; not a latency benchmark."
+  },
+  "preliminary_prototype": {
+    "development": [
+      {
+        "key": "overflow",
+        "label": "overflow_strict",
+        "policy": "lexical",
+        "split": "development",
+        "cases": 55,
+        "metrics": {
+          "candidate_recall": 0.7,
+          "cases": 55,
+          "delivered_recall": 0.7,
+          "mrr": 0.6416666666666666,
+          "ndcg_at_8": 0.6565464876785729,
+          "no_match_injection_rate": 0.7333333333333333,
+          "recall_at_8": 0.7
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "overflow",
+        "label": "overflow_strict",
+        "policy": "hybrid",
+        "split": "development",
+        "cases": 55,
+        "metrics": {
+          "candidate_recall": 0.825,
+          "cases": 55,
+          "delivered_recall": 0.825,
+          "mrr": 0.7041666666666666,
+          "ndcg_at_8": 0.7354127068750052,
+          "no_match_injection_rate": 0.7333333333333333,
+          "recall_at_8": 0.825
+        },
+        "changes": {
+          "gains": [
+            "overflow-timezone-paragraph-overflow",
+            "overflow-websocket-paragraph-overflow"
+          ],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      }
+    ],
+    "exposed_reserved_evaluation": [
+      {
+        "key": "overflow",
+        "label": "selected",
+        "policy": "lexical",
+        "split": "development",
+        "cases": 55,
+        "metrics": {
+          "candidate_recall": 0.7,
+          "cases": 55,
+          "delivered_recall": 0.7,
+          "mrr": 0.6416666666666666,
+          "ndcg_at_8": 0.6565464876785729,
+          "no_match_injection_rate": 0.7333333333333333,
+          "recall_at_8": 0.7
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "overflow",
+        "label": "selected",
+        "policy": "hybrid",
+        "split": "development",
+        "cases": 55,
+        "metrics": {
+          "candidate_recall": 0.825,
+          "cases": 55,
+          "delivered_recall": 0.825,
+          "mrr": 0.7041666666666666,
+          "ndcg_at_8": 0.7354127068750052,
+          "no_match_injection_rate": 0.7333333333333333,
+          "recall_at_8": 0.825
+        },
+        "changes": {
+          "gains": [
+            "overflow-timezone-paragraph-overflow",
+            "overflow-websocket-paragraph-overflow"
+          ],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "overflow",
+        "label": "selected",
+        "policy": "lexical",
+        "split": "heldout",
+        "cases": 55,
+        "metrics": {
+          "candidate_recall": 0.575,
+          "cases": 55,
+          "delivered_recall": 0.575,
+          "mrr": 0.5375,
+          "ndcg_at_8": 0.5465338279036697,
+          "no_match_injection_rate": 0.4666666666666667,
+          "recall_at_8": 0.575
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "overflow",
+        "label": "selected",
+        "policy": "hybrid",
+        "split": "heldout",
+        "cases": 55,
+        "metrics": {
+          "candidate_recall": 0.85,
+          "cases": 55,
+          "delivered_recall": 0.85,
+          "mrr": 0.7125,
+          "ndcg_at_8": 0.7485056822321509,
+          "no_match_injection_rate": 0.4666666666666667,
+          "recall_at_8": 0.85
+        },
+        "changes": {
+          "gains": ["overflow-csrf-paragraph-overflow"],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      }
+    ],
+    "rejection": "Unchanged legacy diagnostic guard failed: expected one result, arbitrary claim suffix added a second. Explicit hidden paragraphs remove this unsupported context-free representation.",
+    "selection_caveat": "Reserved outputs were exposed concurrently with the failing crate suite; the amendment was driven by that legacy unit contract. All incidents were already exposed. No blind selection claim."
+  },
+  "source_sha256": {
+    "baseline_semantic": "3e01c2d6ba274a63e920fc820b350d6a6b543835e22628f86dbb71b88475fd55",
+    "selected_semantic": "5a5b2260445ba19310304e71b71996f7ca92b399ab5a3e9ccfb7fb7bd91479fb",
+    "background_worker": "210ddd4e7adbef2159eb0f8173b294d7f61f43b307ac09894bef37f29dc8e32d"
+  },
+  "executables_sha256": {
+    "baseline": "943a68017df838600e0dfb43271bf8bca200451909b9415d55efec720ac5c7b1",
+    "selected": "887817a66c8e2475ba8bd9ffbb3b32de5537a9a224467a7c76aa551c3689efa9"
+  },
+  "output_fingerprints": [
+    {
+      "key": "overflow",
+      "policy": "lexical",
+      "split": "development",
+      "baseline": "555ce63e548dd075f4e4a1ffc58b12fdd129b0e0cb0cd4e93eca4668efb4a9ec",
+      "selected": "555ce63e548dd075f4e4a1ffc58b12fdd129b0e0cb0cd4e93eca4668efb4a9ec"
+    },
+    {
+      "key": "overflow",
+      "policy": "hybrid",
+      "split": "development",
+      "baseline": "0d41e86f043b40b2eb3bb329d7d82a1c15fb2a3a2f65ad502fa673292fa12ee1",
+      "selected": "73019c5ca684f77687666d9611e1cef005de2b80497427774dda586f7881b98e"
+    },
+    {
+      "key": "overflow",
+      "policy": "lexical",
+      "split": "heldout",
+      "baseline": "0b699a29957472ce5c3fb3eca954e516e9bbb4faccfa03378854ac504a3eaa1e",
+      "selected": "0b699a29957472ce5c3fb3eca954e516e9bbb4faccfa03378854ac504a3eaa1e"
+    },
+    {
+      "key": "overflow",
+      "policy": "hybrid",
+      "split": "heldout",
+      "baseline": "151c31faff5b330f913928698dff371d08d30c9bff4e9003d86db32d096158c8",
+      "selected": "a94249780bd5ab391b4e861c2899b54c4f5606089964432251f4377d194b2cbf"
+    },
+    {
+      "key": "original",
+      "policy": "lexical",
+      "split": "development",
+      "baseline": "219f61d31b716a3eea6e3f5424cbcd5bec16d7fd23868f03dc26a4c48ef3d7e0",
+      "selected": "219f61d31b716a3eea6e3f5424cbcd5bec16d7fd23868f03dc26a4c48ef3d7e0"
+    },
+    {
+      "key": "original",
+      "policy": "hybrid",
+      "split": "development",
+      "baseline": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28",
+      "selected": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28"
+    },
+    {
+      "key": "original",
+      "policy": "lexical",
+      "split": "heldout",
+      "baseline": "12362bbf7ee6a536d00aab4c2d6d648ec006cb4597c1f3eeeae60d96d0c91daf",
+      "selected": "12362bbf7ee6a536d00aab4c2d6d648ec006cb4597c1f3eeeae60d96d0c91daf"
+    },
+    {
+      "key": "original",
+      "policy": "hybrid",
+      "split": "heldout",
+      "baseline": "ca5240575bc2ad716458c433b1a34ebd12a295d3ac54fb11efc357207af4cf70",
+      "selected": "ca5240575bc2ad716458c433b1a34ebd12a295d3ac54fb11efc357207af4cf70"
+    },
+    {
+      "key": "fresh",
+      "policy": "lexical",
+      "split": "development",
+      "baseline": "8aa2ab9680da85d84689d9592780a2652a541904abd55131eaaa64ca37c1ae86",
+      "selected": "8aa2ab9680da85d84689d9592780a2652a541904abd55131eaaa64ca37c1ae86"
+    },
+    {
+      "key": "fresh",
+      "policy": "hybrid",
+      "split": "development",
+      "baseline": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d",
+      "selected": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d"
+    },
+    {
+      "key": "fresh",
+      "policy": "lexical",
+      "split": "heldout",
+      "baseline": "9906ba20c70f8af61fa1025664439f6de54d40673eb851eaba575165abeab263",
+      "selected": "9906ba20c70f8af61fa1025664439f6de54d40673eb851eaba575165abeab263"
+    },
+    {
+      "key": "fresh",
+      "policy": "hybrid",
+      "split": "heldout",
+      "baseline": "73be6ff51df41dd3b581b58bfeaf7759305c9ba32e4bb9c46b0d1b519571ed1e",
+      "selected": "73be6ff51df41dd3b581b58bfeaf7759305c9ba32e4bb9c46b0d1b519571ed1e"
+    },
+    {
+      "key": "diagnostic",
+      "policy": "lexical",
+      "split": "development",
+      "baseline": "86853934e60d2d055b5815ca5c02cad94ed408e094900fe70c333a5e68d6e139",
+      "selected": "86853934e60d2d055b5815ca5c02cad94ed408e094900fe70c333a5e68d6e139"
+    },
+    {
+      "key": "diagnostic",
+      "policy": "hybrid",
+      "split": "development",
+      "baseline": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274",
+      "selected": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274"
+    },
+    {
+      "key": "diagnostic",
+      "policy": "lexical",
+      "split": "heldout",
+      "baseline": "67359804194144d49876f5336a1a44aa4b211927f8f495fb9231e24ecbf10238",
+      "selected": "67359804194144d49876f5336a1a44aa4b211927f8f495fb9231e24ecbf10238"
+    },
+    {
+      "key": "diagnostic",
+      "policy": "hybrid",
+      "split": "heldout",
+      "baseline": "06a54c2fb53841f947dc074d42554e58cae9f11b9aabd1f611f49162caca3aa2",
+      "selected": "06a54c2fb53841f947dc074d42554e58cae9f11b9aabd1f611f49162caca3aa2"
+    },
+    {
+      "key": "identifier",
+      "policy": "lexical",
+      "split": "development",
+      "baseline": "c5ea9b5f971ee442c1a55ddfc250e454580864d35c596b8a36549aac94f277b2",
+      "selected": "c5ea9b5f971ee442c1a55ddfc250e454580864d35c596b8a36549aac94f277b2"
+    },
+    {
+      "key": "identifier",
+      "policy": "hybrid",
+      "split": "development",
+      "baseline": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d",
+      "selected": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d"
+    },
+    {
+      "key": "identifier",
+      "policy": "lexical",
+      "split": "heldout",
+      "baseline": "98cdfdd7fb20e848e2a4c4964587c4d5faeb62b83bad885f6af520c9b8b568d1",
+      "selected": "98cdfdd7fb20e848e2a4c4964587c4d5faeb62b83bad885f6af520c9b8b568d1"
+    },
+    {
+      "key": "identifier",
+      "policy": "hybrid",
+      "split": "heldout",
+      "baseline": "faa0b9361677105d3d00204ef8d679d41f0f00db88e45f45c0c3793c88e4fc8a",
+      "selected": "faa0b9361677105d3d00204ef8d679d41f0f00db88e45f45c0c3793c88e4fc8a"
+    },
+    {
+      "key": "complex",
+      "policy": "lexical",
+      "split": "development",
+      "baseline": "72ee5c291219eb683630fde29a6c51b91da2111310e5a5b2f2ff716abf7b8b6b",
+      "selected": "72ee5c291219eb683630fde29a6c51b91da2111310e5a5b2f2ff716abf7b8b6b"
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "development",
+      "baseline": "956d931bbccb9655e96fd3e2866f7fc6a234a15de3f9e779d2c46983650cb620",
+      "selected": "956d931bbccb9655e96fd3e2866f7fc6a234a15de3f9e779d2c46983650cb620"
+    },
+    {
+      "key": "complex",
+      "policy": "lexical",
+      "split": "heldout",
+      "baseline": "34d7a3c8a1efcd763535b2b61f343bfefa47c452b831dd645ee1a612682e5507",
+      "selected": "34d7a3c8a1efcd763535b2b61f343bfefa47c452b831dd645ee1a612682e5507"
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "heldout",
+      "baseline": "bdc45a08772388594f40d0fd6f53b36dcaadb1dbfd34ae0d5b3bd2b2417cf89c",
+      "selected": "bdc45a08772388594f40d0fd6f53b36dcaadb1dbfd34ae0d5b3bd2b2417cf89c"
+    },
+    {
+      "key": "retention",
+      "policy": "lexical",
+      "split": "development",
+      "baseline": "7d787ebe63b47b83e3a9c9958f8dd871c3492c54dca34b3dd58f5b758a4539ea",
+      "selected": "7d787ebe63b47b83e3a9c9958f8dd871c3492c54dca34b3dd58f5b758a4539ea"
+    },
+    {
+      "key": "retention",
+      "policy": "hybrid",
+      "split": "development",
+      "baseline": "69fe5e2f3394e16c3730abdbc6dc63808660985f109ce3bfeb073f8a2ac6c2d4",
+      "selected": "69fe5e2f3394e16c3730abdbc6dc63808660985f109ce3bfeb073f8a2ac6c2d4"
+    },
+    {
+      "key": "retention",
+      "policy": "lexical",
+      "split": "heldout",
+      "baseline": "df99df8628125d25542d36ab1a5f816687513acfcfe9f4f35155e438af106170",
+      "selected": "df99df8628125d25542d36ab1a5f816687513acfcfe9f4f35155e438af106170"
+    },
+    {
+      "key": "retention",
+      "policy": "hybrid",
+      "split": "heldout",
+      "baseline": "f6629698f66887c2a5747fee32043c4efb32291fbce915ac181e0b26fd22df5d",
+      "selected": "f6629698f66887c2a5747fee32043c4efb32291fbce915ac181e0b26fd22df5d"
+    },
+    {
+      "key": "snake",
+      "policy": "lexical",
+      "split": "development",
+      "baseline": "20d5d363ece969ccd9ca050846cbc1b325b1579059356dab270fd6344d2b3bc2",
+      "selected": "20d5d363ece969ccd9ca050846cbc1b325b1579059356dab270fd6344d2b3bc2"
+    },
+    {
+      "key": "snake",
+      "policy": "hybrid",
+      "split": "development",
+      "baseline": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877",
+      "selected": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877"
+    },
+    {
+      "key": "snake",
+      "policy": "lexical",
+      "split": "heldout",
+      "baseline": "9e5f5d3cbcc2b26c80d7f8e0e1bc4c1984c6cc874518f2b2891ea6a795a2ae87",
+      "selected": "9e5f5d3cbcc2b26c80d7f8e0e1bc4c1984c6cc874518f2b2891ea6a795a2ae87"
+    },
+    {
+      "key": "snake",
+      "policy": "hybrid",
+      "split": "heldout",
+      "baseline": "9ee5c510a58151c876e98dc9fad4254604a7d01486b2f944b209317be4d4f17b",
+      "selected": "9ee5c510a58151c876e98dc9fad4254604a7d01486b2f944b209317be4d4f17b"
+    },
+    {
+      "key": "expanded",
+      "policy": "lexical",
+      "split": "development",
+      "baseline": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc",
+      "selected": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc"
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "baseline": "69fe3bcf2a1f1740442409aff0ec4b4ca7d47f27c6d815d293dd1f8b2d06ebc6",
+      "selected": "69fe3bcf2a1f1740442409aff0ec4b4ca7d47f27c6d815d293dd1f8b2d06ebc6"
+    },
+    {
+      "key": "expanded",
+      "policy": "lexical",
+      "split": "heldout",
+      "baseline": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c",
+      "selected": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c"
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "heldout",
+      "baseline": "7c9aa7be3690d03f3e8b3d2e077708e6d2a70a36f451f5427b0205f01a31e231",
+      "selected": "7c9aa7be3690d03f3e8b3d2e077708e6d2a70a36f451f5427b0205f01a31e231"
+    },
+    {
+      "key": "guards",
+      "policy": "lexical",
+      "split": "development",
+      "baseline": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571",
+      "selected": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571"
+    },
+    {
+      "key": "guards",
+      "policy": "hybrid",
+      "split": "development",
+      "baseline": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d",
+      "selected": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d"
+    },
+    {
+      "key": "guards",
+      "policy": "lexical",
+      "split": "heldout",
+      "baseline": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0",
+      "selected": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0"
+    },
+    {
+      "key": "guards",
+      "policy": "hybrid",
+      "split": "heldout",
+      "baseline": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4",
+      "selected": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4"
+    }
+  ],
+  "validation": {
+    "crates_tested_sequentially": true,
+    "memory_all_target_tests": 141,
+    "memory_native_onnx_tests": 2,
+    "memory_doc_tests": 1,
+    "core_unit_and_end_to_end_tests": 2595,
+    "core_integration_tests": 21,
+    "core_native_background_worker": 1,
+    "frontend_tests": 1046,
+    "typecheck": "passed",
+    "formatting": "full repository passed; final report formatting checked after metadata update",
+    "clippy": {
+      "memory": "passed with -D warnings",
+      "core": "passed; exactly the four historical warnings, no new warnings"
+    },
+    "fixture_and_scope_audit": "registration and historical input hashes verified; all 1556 policy views checked"
+  }
+}

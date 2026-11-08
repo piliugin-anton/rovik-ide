@@ -34,6 +34,9 @@ impl verified_code_memory::MemoryEmbedder for BackgroundEncoder<'_> {
     fn dimensions(&self) -> usize {
         MINILM_DIMENSIONS
     }
+    fn input_character_limit(&self) -> Option<usize> {
+        verified_code_memory::MemoryEmbedder::input_character_limit(self.0)
+    }
     fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
         self.0.embed_blocking(text)
     }
@@ -422,6 +425,16 @@ mod tests {
                     ))
                     .unwrap();
             }
+            store
+                .remember(verified_code_memory::NewMemory::procedure(
+                    "shared-origin",
+                    "Long investigation",
+                    format!(
+                        "{}\n\nStore timestamps in UTC and localize at the display boundary.",
+                        "Session setup and preliminary observations. ".repeat(16)
+                    ),
+                ))
+                .unwrap();
             schedule(
                 store.clone(),
                 "shared-origin".into(),
@@ -444,6 +457,9 @@ mod tests {
         impl verified_code_memory::MemoryEmbedder for NoInference {
             fn dimensions(&self) -> usize {
                 MINILM_DIMENSIONS
+            }
+            fn input_character_limit(&self) -> Option<usize> {
+                Some(500)
             }
             fn embed(&self, _: &str) -> verified_code_memory::Result<Vec<f32>> {
                 panic!("a claim remained unindexed after its only scheduled job")
