@@ -1,0 +1,3183 @@
+{
+  "version": 1,
+  "description": "Harder extensions of perfect dense named-fact recall: eight additional source-grounded symbols, three/four named facts, multiple normalized file hints, duplicates, unknown paths, visibility and scope controls. No blind evaluation claim.",
+  "corpus": [
+    {
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      }
+    },
+    {
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      }
+    },
+    {
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      }
+    },
+    {
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      }
+    },
+    {
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      }
+    },
+    {
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      }
+    },
+    {
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      }
+    },
+    {
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      }
+    },
+    {
+      "title": "Crowding observation 0",
+      "content": "Crowding sample 0 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 1",
+      "content": "Crowding sample 1 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 2",
+      "content": "Crowding sample 2 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 3",
+      "content": "Crowding sample 3 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 4",
+      "content": "Crowding sample 4 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 5",
+      "content": "Crowding sample 5 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 6",
+      "content": "Crowding sample 6 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 7",
+      "content": "Crowding sample 7 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 8",
+      "content": "Crowding sample 8 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "File context",
+      "content": "This file configures logging destinations.",
+      "files": ["src/noise.rs"],
+      "verified": true
+    },
+    {
+      "title": "Dispatch context",
+      "content": "This file assigns incoming commands to available executors.",
+      "files": ["src/dispatch.rs"],
+      "verified": true
+    },
+    {
+      "title": "Suffix collision",
+      "content": "This file has a different whole path segment.",
+      "files": ["src/notnoise.rs"],
+      "verified": true
+    },
+    {
+      "title": "provisional file observation",
+      "content": "This observation must not pass the requested visibility filters.",
+      "files": ["src/noise.rs", "src/dispatch.rs"],
+      "verified": false
+    },
+    {
+      "title": "hidden file observation",
+      "content": "This observation must not pass the requested visibility filters.",
+      "files": ["src/noise.rs", "src/dispatch.rs"],
+      "verified": true,
+      "tags": ["hidden"]
+    },
+    {
+      "title": "foreign file observation",
+      "content": "This observation must not pass the requested visibility filters.",
+      "files": ["src/noise.rs", "src/dispatch.rs"],
+      "verified": true,
+      "repo": "other"
+    }
+  ],
+  "cases": [
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-single",
+      "category": "single",
+      "task": "OnnxMiniLm crowding",
+      "file": "./src\\noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-three",
+      "category": "three",
+      "task": "OnnxMiniLm,SemanticIndex,RetrievalWeights crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-four",
+      "category": "four",
+      "task": "OnnxMiniLm;SemanticIndex;RetrievalWeights;RetrievalTelemetry crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "Retrieval telemetry",
+          "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-qualified",
+      "category": "qualified",
+      "task": "crate::OnnxMiniLm,crate::SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-multi-file-three",
+      "category": "multi-file-three",
+      "task": "OnnxMiniLm,SemanticIndex,RetrievalWeights crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-duplicate-hints",
+      "category": "duplicate-hints",
+      "task": "OnnxMiniLm crowding",
+      "file": "src/noise.rs",
+      "files": ["./src/noise.rs", "src/dispatch.rs", "./src\\dispatch.rs"],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-unknown-file",
+      "category": "unknown-file",
+      "task": "OnnxMiniLm,SemanticIndex,RetrievalWeights crowding",
+      "file": "src/noise.rs",
+      "files": ["src/unknown.rs"],
+      "required": [
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-filtered",
+      "category": "filtered",
+      "task": "OnnxMiniLm,SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-unknown",
+      "category": "unknown",
+      "task": "OnnxMiniLm,UnknownMemorySymbol crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-collection",
+      "category": "collection",
+      "task": "all OnnxMiniLm,SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-numeric",
+      "category": "numeric",
+      "task": "OnnxMiniLm crowding 2",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-wildcard",
+      "category": "wildcard",
+      "task": "OnnxMiniLm crowding*",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-OnnxMiniLm-failure",
+      "category": "failure",
+      "task": "OnnxMiniLm crowding",
+      "failure": "Retain every crowding fact.",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-single",
+      "category": "single",
+      "task": "SemanticIndex crowding",
+      "file": "./src\\noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-three",
+      "category": "three",
+      "task": "SemanticIndex,OnnxMiniLm,RetrievalWeights crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-four",
+      "category": "four",
+      "task": "SemanticIndex;OnnxMiniLm;RetrievalWeights;RetrievalTelemetry crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "Retrieval telemetry",
+          "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-qualified",
+      "category": "qualified",
+      "task": "crate::SemanticIndex,crate::OnnxMiniLm crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-multi-file-three",
+      "category": "multi-file-three",
+      "task": "SemanticIndex,OnnxMiniLm,RetrievalWeights crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-duplicate-hints",
+      "category": "duplicate-hints",
+      "task": "SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": ["./src/noise.rs", "src/dispatch.rs", "./src\\dispatch.rs"],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-unknown-file",
+      "category": "unknown-file",
+      "task": "SemanticIndex,OnnxMiniLm,RetrievalWeights crowding",
+      "file": "src/noise.rs",
+      "files": ["src/unknown.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-filtered",
+      "category": "filtered",
+      "task": "SemanticIndex,OnnxMiniLm crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-unknown",
+      "category": "unknown",
+      "task": "SemanticIndex,UnknownMemorySymbol crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-collection",
+      "category": "collection",
+      "task": "all SemanticIndex,OnnxMiniLm crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-numeric",
+      "category": "numeric",
+      "task": "SemanticIndex crowding 2",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-wildcard",
+      "category": "wildcard",
+      "task": "SemanticIndex crowding*",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-SemanticIndex-failure",
+      "category": "failure",
+      "task": "SemanticIndex crowding",
+      "failure": "Retain every crowding fact.",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-single",
+      "category": "single",
+      "task": "RetrievalWeights crowding",
+      "file": "./src\\noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-three",
+      "category": "three",
+      "task": "RetrievalWeights,OnnxMiniLm,SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-four",
+      "category": "four",
+      "task": "RetrievalWeights;OnnxMiniLm;SemanticIndex;RetrievalTelemetry crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Retrieval telemetry",
+          "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-qualified",
+      "category": "qualified",
+      "task": "crate::RetrievalWeights,crate::OnnxMiniLm crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-multi-file-three",
+      "category": "multi-file-three",
+      "task": "RetrievalWeights,OnnxMiniLm,SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-duplicate-hints",
+      "category": "duplicate-hints",
+      "task": "RetrievalWeights crowding",
+      "file": "src/noise.rs",
+      "files": ["./src/noise.rs", "src/dispatch.rs", "./src\\dispatch.rs"],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-unknown-file",
+      "category": "unknown-file",
+      "task": "RetrievalWeights,OnnxMiniLm,SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": ["src/unknown.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-filtered",
+      "category": "filtered",
+      "task": "RetrievalWeights,OnnxMiniLm crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-unknown",
+      "category": "unknown",
+      "task": "RetrievalWeights,UnknownMemorySymbol crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-collection",
+      "category": "collection",
+      "task": "all RetrievalWeights,OnnxMiniLm crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-numeric",
+      "category": "numeric",
+      "task": "RetrievalWeights crowding 2",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-wildcard",
+      "category": "wildcard",
+      "task": "RetrievalWeights crowding*",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalWeights-failure",
+      "category": "failure",
+      "task": "RetrievalWeights crowding",
+      "failure": "Retain every crowding fact.",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-single",
+      "category": "single",
+      "task": "RetrievalTelemetry crowding",
+      "file": "./src\\noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-three",
+      "category": "three",
+      "task": "RetrievalTelemetry,OnnxMiniLm,SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-four",
+      "category": "four",
+      "task": "RetrievalTelemetry;OnnxMiniLm;SemanticIndex;RetrievalWeights crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-qualified",
+      "category": "qualified",
+      "task": "crate::RetrievalTelemetry,crate::OnnxMiniLm crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-multi-file-three",
+      "category": "multi-file-three",
+      "task": "RetrievalTelemetry,OnnxMiniLm,SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-duplicate-hints",
+      "category": "duplicate-hints",
+      "task": "RetrievalTelemetry crowding",
+      "file": "src/noise.rs",
+      "files": ["./src/noise.rs", "src/dispatch.rs", "./src\\dispatch.rs"],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-unknown-file",
+      "category": "unknown-file",
+      "task": "RetrievalTelemetry,OnnxMiniLm,SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": ["src/unknown.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-filtered",
+      "category": "filtered",
+      "task": "RetrievalTelemetry,OnnxMiniLm crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-unknown",
+      "category": "unknown",
+      "task": "RetrievalTelemetry,UnknownMemorySymbol crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-collection",
+      "category": "collection",
+      "task": "all RetrievalTelemetry,OnnxMiniLm crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-numeric",
+      "category": "numeric",
+      "task": "RetrievalTelemetry crowding 2",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-wildcard",
+      "category": "wildcard",
+      "task": "RetrievalTelemetry crowding*",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievalTelemetry-failure",
+      "category": "failure",
+      "task": "RetrievalTelemetry crowding",
+      "failure": "Retain every crowding fact.",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-single",
+      "category": "single",
+      "task": "MemorySettings crowding",
+      "file": "./src\\noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-three",
+      "category": "three",
+      "task": "MemorySettings,MemoryState,MemoryEntry crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-four",
+      "category": "four",
+      "task": "MemorySettings;MemoryState;MemoryEntry;RetrievedMemory crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "Retrieved memory",
+          "content": "Carry the underlying record, total score, explanation and individual ranking components together."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-qualified",
+      "category": "qualified",
+      "task": "crate::MemorySettings,crate::MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-multi-file-three",
+      "category": "multi-file-three",
+      "task": "MemorySettings,MemoryState,MemoryEntry crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-duplicate-hints",
+      "category": "duplicate-hints",
+      "task": "MemorySettings crowding",
+      "file": "src/noise.rs",
+      "files": ["./src/noise.rs", "src/dispatch.rs", "./src\\dispatch.rs"],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-unknown-file",
+      "category": "unknown-file",
+      "task": "MemorySettings,MemoryState,MemoryEntry crowding",
+      "file": "src/noise.rs",
+      "files": ["src/unknown.rs"],
+      "required": [
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-filtered",
+      "category": "filtered",
+      "task": "MemorySettings,MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-unknown",
+      "category": "unknown",
+      "task": "MemorySettings,UnknownMemorySymbol crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-collection",
+      "category": "collection",
+      "task": "all MemorySettings,MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-numeric",
+      "category": "numeric",
+      "task": "MemorySettings crowding 2",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-wildcard",
+      "category": "wildcard",
+      "task": "MemorySettings crowding*",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemorySettings-failure",
+      "category": "failure",
+      "task": "MemorySettings crowding",
+      "failure": "Retain every crowding fact.",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-single",
+      "category": "single",
+      "task": "MemoryState crowding",
+      "file": "./src\\noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-three",
+      "category": "three",
+      "task": "MemoryState,MemorySettings,MemoryEntry crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-four",
+      "category": "four",
+      "task": "MemoryState;MemorySettings;MemoryEntry;RetrievedMemory crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "Retrieved memory",
+          "content": "Carry the underlying record, total score, explanation and individual ranking components together."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-qualified",
+      "category": "qualified",
+      "task": "crate::MemoryState,crate::MemorySettings crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-multi-file-three",
+      "category": "multi-file-three",
+      "task": "MemoryState,MemorySettings,MemoryEntry crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-duplicate-hints",
+      "category": "duplicate-hints",
+      "task": "MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": ["./src/noise.rs", "src/dispatch.rs", "./src\\dispatch.rs"],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-unknown-file",
+      "category": "unknown-file",
+      "task": "MemoryState,MemorySettings,MemoryEntry crowding",
+      "file": "src/noise.rs",
+      "files": ["src/unknown.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-filtered",
+      "category": "filtered",
+      "task": "MemoryState,MemorySettings crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-unknown",
+      "category": "unknown",
+      "task": "MemoryState,UnknownMemorySymbol crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-collection",
+      "category": "collection",
+      "task": "all MemoryState,MemorySettings crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-numeric",
+      "category": "numeric",
+      "task": "MemoryState crowding 2",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-wildcard",
+      "category": "wildcard",
+      "task": "MemoryState crowding*",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryState-failure",
+      "category": "failure",
+      "task": "MemoryState crowding",
+      "failure": "Retain every crowding fact.",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-single",
+      "category": "single",
+      "task": "MemoryEntry crowding",
+      "file": "./src\\noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-three",
+      "category": "three",
+      "task": "MemoryEntry,MemorySettings,MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-four",
+      "category": "four",
+      "task": "MemoryEntry;MemorySettings;MemoryState;RetrievedMemory crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Retrieved memory",
+          "content": "Carry the underlying record, total score, explanation and individual ranking components together."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-qualified",
+      "category": "qualified",
+      "task": "crate::MemoryEntry,crate::MemorySettings crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-multi-file-three",
+      "category": "multi-file-three",
+      "task": "MemoryEntry,MemorySettings,MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-duplicate-hints",
+      "category": "duplicate-hints",
+      "task": "MemoryEntry crowding",
+      "file": "src/noise.rs",
+      "files": ["./src/noise.rs", "src/dispatch.rs", "./src\\dispatch.rs"],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-unknown-file",
+      "category": "unknown-file",
+      "task": "MemoryEntry,MemorySettings,MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": ["src/unknown.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-filtered",
+      "category": "filtered",
+      "task": "MemoryEntry,MemorySettings crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-unknown",
+      "category": "unknown",
+      "task": "MemoryEntry,UnknownMemorySymbol crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-collection",
+      "category": "collection",
+      "task": "all MemoryEntry,MemorySettings crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-numeric",
+      "category": "numeric",
+      "task": "MemoryEntry crowding 2",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-wildcard",
+      "category": "wildcard",
+      "task": "MemoryEntry crowding*",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-MemoryEntry-failure",
+      "category": "failure",
+      "task": "MemoryEntry crowding",
+      "failure": "Retain every crowding fact.",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-single",
+      "category": "single",
+      "task": "RetrievedMemory crowding",
+      "file": "./src\\noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-three",
+      "category": "three",
+      "task": "RetrievedMemory,MemorySettings,MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-four",
+      "category": "four",
+      "task": "RetrievedMemory;MemorySettings;MemoryState;MemoryEntry crowding",
+      "file": "src/noise.rs",
+      "files": [],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-qualified",
+      "category": "qualified",
+      "task": "crate::RetrievedMemory,crate::MemorySettings crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-multi-file-three",
+      "category": "multi-file-three",
+      "task": "RetrievedMemory,MemorySettings,MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-duplicate-hints",
+      "category": "duplicate-hints",
+      "task": "RetrievedMemory crowding",
+      "file": "src/noise.rs",
+      "files": ["./src/noise.rs", "src/dispatch.rs", "./src\\dispatch.rs"],
+      "required": [
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-unknown-file",
+      "category": "unknown-file",
+      "task": "RetrievedMemory,MemorySettings,MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": ["src/unknown.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-filtered",
+      "category": "filtered",
+      "task": "RetrievedMemory,MemorySettings crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-unknown",
+      "category": "unknown",
+      "task": "RetrievedMemory,UnknownMemorySymbol crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-collection",
+      "category": "collection",
+      "task": "all RetrievedMemory,MemorySettings crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-numeric",
+      "category": "numeric",
+      "task": "RetrievedMemory crowding 2",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-wildcard",
+      "category": "wildcard",
+      "task": "RetrievedMemory crowding*",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": false,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-RetrievedMemory-failure",
+      "category": "failure",
+      "task": "RetrievedMemory crowding",
+      "failure": "Retain every crowding fact.",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"]
+    }
+  ]
+}

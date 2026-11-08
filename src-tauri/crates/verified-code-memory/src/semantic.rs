@@ -543,7 +543,7 @@ impl SemanticIndex {
                             }
                         }
                         if represented.is_empty() {
-                            let Some(candidate) = self
+                            let Some(mut candidate) = self
                                 .store
                                 .identifier_candidates_filtered(&lookup, &accept)?
                                 .into_iter()
@@ -551,6 +551,9 @@ impl SemanticIndex {
                             else {
                                 return Ok(None);
                             };
+                            candidate
+                                .reason
+                                .push_str(", requested complete symbol match");
                             additions.push(candidate);
                         }
                     }
@@ -558,13 +561,48 @@ impl SemanticIndex {
                     if additions.len() > slots.len() {
                         return Ok(None);
                     }
+                    // File coverage must not cancel the successful name plan.
+                    // Keep its slot assignments; use only remaining positions.
+                    let file_coverage = (|| -> Result<_> {
+                        let mut files: Vec<RetrievedMemory> = Vec::new();
+                        for file in &query.files {
+                            if found.iter().chain(&additions).chain(&files).any(|hit| {
+                                hit.record
+                                    .files
+                                    .iter()
+                                    .any(|stored| crate::retrieval::path_overlap(file, stored))
+                            }) {
+                                continue;
+                            }
+                            let mut lookup = query.clone();
+                            lookup.files = vec![file.clone()];
+                            if let Some(mut hit) = self
+                                .store
+                                .file_candidates_filtered(&lookup, &accept)?
+                                .into_iter()
+                                .next()
+                            {
+                                hit.reason.push_str(", requested file coverage");
+                                files.push(hit);
+                            }
+                        }
+                        Ok(files)
+                    })();
+                    match file_coverage {
+                        Ok(files) if additions.len() + files.len() <= slots.len() => {
+                            additions.extend(files);
+                        }
+                        Ok(_) => {}
+                        Err(error) => eprintln!(
+                            "memory: file coverage unavailable; preserving name plan: {error}"
+                        ),
+                    }
                     Ok(Some((slots, additions)))
                 })();
                 match supplementary {
                     Ok(Some((slots, additions))) => {
                         for (slot, mut hit) in slots.into_iter().zip(additions) {
                             hit.score = found[slot].score;
-                            hit.reason.push_str(", requested complete symbol match");
                             found[slot] = hit;
                         }
                     }

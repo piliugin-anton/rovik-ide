@@ -139,6 +139,11 @@ With supplied files, this atomic planner accepts one to four names and protects
 every incumbent whose stored paths overlap any supplied path. It preserves their
 ranks even at the tail; too few remaining slots aborts the entire plan. File
 matching uses the same normalized whole-segment rules as lexical retrieval.
+After planning names, unused unprotected positions can cover missing supplied
+paths with eligible file claims from the existing indexed collector. A claim
+can cover several hints. Unknown paths with no eligible memory are skipped;
+insufficient slots or a file lookup error preserves the successful name plan.
+File additions are applied together, without moving earlier named facts.
 
 ## Development
 

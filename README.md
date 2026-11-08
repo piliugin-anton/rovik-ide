@@ -2071,6 +2071,11 @@ With supplied files, focused requests naming one to four symbols protect every
 incumbent file match at its current rank before covering missing names. If too few
 other slots remain, the entire pool stays intact. See the
 [file-focused experiment](docs/design/long-term-memory-file-focused-nov8-2026.md).
+Within that focused scope, missing file coverage can use slots remaining after
+the name plan. One eligible claim can cover each known supplied path, including
+normalized duplicate hints. If the file additions cannot all fit, the name plan
+keeps its original results and ranks. See the
+[harder file-coverage cases](docs/design/long-term-memory-file-coverage-nov9-2026.md).
 
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
