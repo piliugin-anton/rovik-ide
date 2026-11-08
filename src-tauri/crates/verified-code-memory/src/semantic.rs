@@ -78,11 +78,33 @@ impl SemanticIndex {
         embedder: &dyn MemoryEmbedder,
         limit: usize,
     ) -> Result<usize> {
+        self.backfill_controlled(repo, embedder, limit, || true)
+    }
+
+    /// Completes the pending snapshot while `should_continue` permits it.
+    /// The predicate runs without the store lock, before inference and before
+    /// committing its result, so disabling memory also rejects in-flight work.
+    pub fn backfill_while(
+        &self,
+        repo: &str,
+        embedder: &dyn MemoryEmbedder,
+        should_continue: impl Fn() -> bool,
+    ) -> Result<usize> {
+        self.backfill_controlled(repo, embedder, usize::MAX, should_continue)
+    }
+
+    fn backfill_controlled(
+        &self,
+        repo: &str,
+        embedder: &dyn MemoryEmbedder,
+        limit: usize,
+        should_continue: impl Fn() -> bool,
+    ) -> Result<usize> {
         let generation = self.store.generation(repo)?;
         let records = self.store.list(repo, "")?;
         let mut written = 0;
         for record in records {
-            if written >= limit {
+            if written >= limit || self.store.generation(repo)? != generation {
                 break;
             }
             if record.verification == Verification::Deprecated {
@@ -94,8 +116,14 @@ impl SemanticIndex {
             if current {
                 continue;
             }
+            if !should_continue() {
+                break;
+            }
             let vector = embedder.embed(&format!("{}\n{}", record.title, record.content))?;
             validate(&vector, self.dimensions)?;
+            if !should_continue() {
+                break;
+            }
             let guard = self.store.lock()?;
             if guard.generation(repo)? != generation {
                 break;

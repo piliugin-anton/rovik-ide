@@ -18,6 +18,89 @@ impl MemoryEmbedder for Embed {
 }
 
 #[test]
+fn completion_indexes_past_three_and_resumes_without_reembedding_current_claims() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Count(AtomicUsize);
+    impl MemoryEmbedder for Count {
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Embed.embed(text)
+        }
+    }
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    for n in 0..12 {
+        store
+            .remember(NewMemory::procedure(
+                "a",
+                format!("lock-{n}"),
+                format!("lock procedure {n}"),
+            ))
+            .unwrap();
+    }
+    store
+        .remember(NewMemory::procedure("b", "foreign", "lock"))
+        .unwrap();
+    let old = store
+        .remember(NewMemory::procedure("a", "obsolete", "lock"))
+        .unwrap();
+    store.deprecate(old.id, "replaced").unwrap();
+    let index = SemanticIndex::new(store, "v1", 2).unwrap();
+    let embedder = Count(AtomicUsize::new(0));
+    assert_eq!(index.backfill_limited("a", &embedder, 3).unwrap(), 3);
+    assert_eq!(index.backfill_while("a", &embedder, || true).unwrap(), 9);
+    assert_eq!(index.backfill_while("a", &embedder, || true).unwrap(), 0);
+    assert_eq!(embedder.0.load(Ordering::SeqCst), 12);
+    let query = RetrievalQuery::new("a", "serialize").with_limit(32);
+    assert_eq!(index.search(&query, &[1.0, 0.0], 0.8).unwrap().len(), 12);
+}
+
+#[test]
+fn cancellation_rejects_inflight_vectors_and_allows_a_later_resume() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Count(AtomicUsize);
+    impl MemoryEmbedder for Count {
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Embed.embed(text)
+        }
+    }
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    for n in 0..12 {
+        store
+            .remember(NewMemory::procedure(
+                "a",
+                format!("lock-{n}"),
+                format!("lock procedure {n}"),
+            ))
+            .unwrap();
+    }
+    let index = SemanticIndex::new(store.clone(), "v1", 2).unwrap();
+    let embedder = Count(AtomicUsize::new(0));
+    assert_eq!(index.backfill_while("a", &embedder, || false).unwrap(), 0);
+    assert_eq!(embedder.0.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        index
+            .backfill_while("a", &embedder, || {
+                // Reading the store in the predicate must not deadlock either.
+                assert_eq!(store.list("a", "").unwrap().len(), 12);
+                embedder.0.load(Ordering::SeqCst) < 4
+            })
+            .unwrap(),
+        3
+    );
+    let query = RetrievalQuery::new("a", "serialize").with_limit(32);
+    assert_eq!(index.search(&query, &[1.0, 0.0], 0.8).unwrap().len(), 3);
+    assert_eq!(index.backfill_while("a", &embedder, || true).unwrap(), 9);
+    assert_eq!(embedder.0.load(Ordering::SeqCst), 13);
+}
+
+#[test]
 fn short_query_calibration_recovers_topic_queries_without_relaxing_long_or_generic_requests() {
     struct Topic;
     impl MemoryEmbedder for Topic {

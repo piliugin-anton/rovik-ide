@@ -175,6 +175,31 @@ fn rerank_lexical(
         })
 }
 
+// Rotate capture age independently of title/UUID, so an indexing budget cannot
+// accidentally benefit from the expected claim always being among the newest.
+fn capture_order(uri: &str, offset: usize) -> Result<(), Box<dyn std::error::Error>> {
+    let mut connection = rusqlite::Connection::open(uri)?;
+    let transaction = connection.transaction()?;
+    let mut ids = {
+        let mut statement =
+            transaction.prepare("SELECT id FROM memories WHERE repo='project' ORDER BY id")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    if !ids.is_empty() {
+        let length = ids.len();
+        ids.rotate_left(offset % length);
+    }
+    for (age, id) in ids.iter().enumerate() {
+        transaction.execute(
+            "UPDATE memories SET updated_at=strftime('%Y-%m-%dT%H:%M:%S+00:00', '2026-11-07', ?2 || ' seconds') WHERE id=?1",
+            rusqlite::params![id, i64::try_from(age)?],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = experiment_config(&std::env::args().skip(1).collect::<Vec<_>>())?;
     let input = dataset_input(&config)?;
@@ -294,6 +319,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             expected
         };
+        if let Some(offset) = config["capture_offset"].as_u64() {
+            if !deterministic {
+                return Err("capture_offset requires deterministic fixtures".into());
+            }
+            capture_order(fixture_uri, offset as usize)?;
+        }
         let mut query = RetrievalQuery::new("project", text("task")?);
         if let Some(file) = case["file"]
             .as_str()
@@ -321,7 +352,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 index
             };
-            index.backfill("project", embedder)?;
+            index.backfill_limited(
+                "project",
+                embedder,
+                config["backfill_limit"]
+                    .as_u64()
+                    .map_or(usize::MAX, |n| n as usize),
+            )?;
             // Give the identical prohibited record a vector too: a semantic
             // scope check must not pass just because other projects lack an index.
             index.backfill("other", embedder)?;
@@ -428,6 +465,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_offsets_change_which_claims_fit_an_indexing_budget_without_changing_claims() {
+        let uri = "file:capture-order-test?mode=memory&cache=shared";
+        let store = SharedMemoryStore::open(uri).unwrap();
+        for n in 0..12 {
+            store
+                .remember(NewMemory::project_fact(
+                    "project",
+                    format!("claim-{n}"),
+                    format!("body {n}"),
+                ))
+                .unwrap();
+        }
+        capture_order(uri, 0).unwrap();
+        let first = store.list("project", "").unwrap();
+        assert!(first
+            .windows(2)
+            .all(|pair| pair[0].updated_at > pair[1].updated_at));
+        capture_order(uri, 7).unwrap();
+        let second = store.list("project", "").unwrap();
+        assert_ne!(first[0].id, second[0].id);
+        assert_eq!(first.len(), second.len());
+        for record in &first {
+            assert_eq!(
+                record.claim_hash,
+                second
+                    .iter()
+                    .find(|r| r.id == record.id)
+                    .unwrap()
+                    .claim_hash
+            );
+        }
+        capture_order(uri, 7 + 12).unwrap();
+        assert_eq!(
+            second.iter().map(|r| r.id).collect::<Vec<_>>(),
+            store
+                .list("project", "")
+                .unwrap()
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn evaluation_caches_each_successful_input_without_caching_provider_failures() {

@@ -2023,6 +2023,13 @@ This small calibration recovered one additional development answer without
 losing existing answers or increasing false matches; validation recall stayed
 unchanged. See [the follow-up](docs/design/long-term-memory-recall-iterations-nov8-2026.md).
 
+Background indexing completes pending claims rather than stopping after three,
+and projects sharing a model queue independently. Work stops when memory or its
+semantic settings change. [Index completion experiments](docs/design/long-term-memory-index-completion-nov8-2026.md)
+recovered 6 additional heldout answers out of 60 while preserving all 258 fully
+indexed regression outcomes. Existing model false matches appear sooner as
+coverage grows; this remains an opt-in availability improvement.
+
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
 setup. An existing incomplete or corrupt directory is reported and left intact;

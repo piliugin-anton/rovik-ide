@@ -76,18 +76,22 @@ impl OnnxMiniLm {
             model: std::sync::Mutex::new(model),
         })
     }
-}
-
-impl MemoryEmbedder for OnnxMiniLm {
-    fn dimensions(&self) -> usize {
-        MINILM_DIMENSIONS
+    /// Waits for the shared encoder instead of failing when a query is using it.
+    /// Use only on a blocking background worker; interactive queries use `embed`.
+    pub fn embed_blocking(&self, text: &str) -> Result<Vec<f32>> {
+        let model = self
+            .model
+            .lock()
+            .map_err(|_| crate::VcmError::EmbeddingUnavailable("ONNX model is unavailable"))?;
+        self.encode(text, &model)
     }
 
-    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+    fn encode(
+        &self,
+        text: &str,
+        model: &tract_onnx::prelude::TypedRunnableModel<tract_onnx::prelude::TypedModel>,
+    ) -> Result<Vec<f32>> {
         use tract_onnx::prelude::*;
-        let model = self.model.try_lock().map_err(|_| {
-            crate::VcmError::EmbeddingUnavailable("ONNX model is busy or unavailable")
-        })?;
         let text: String = text.chars().take(500).collect();
         let tokens = self.tokenizer.encode(text, true).map_err(onnx_error)?;
         let length = tokens.len();
@@ -118,6 +122,19 @@ impl MemoryEmbedder for OnnxMiniLm {
         }
         let values: Vec<f32> = hidden.iter().copied().collect();
         pool(&values, tokens.get_attention_mask())
+    }
+}
+
+impl MemoryEmbedder for OnnxMiniLm {
+    fn dimensions(&self) -> usize {
+        MINILM_DIMENSIONS
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        let model = self.model.try_lock().map_err(|_| {
+            crate::VcmError::EmbeddingUnavailable("ONNX model is busy or unavailable")
+        })?;
+        self.encode(text, &model)
     }
 }
 
@@ -203,6 +220,16 @@ mod tests {
             backend.embed(reference["text"].as_str().unwrap()).unwrap(),
             vector
         );
+        std::thread::scope(|scope| {
+            let guard = backend.model.lock().unwrap();
+            assert!(backend
+                .embed("interactive query stays nonblocking")
+                .is_err());
+            let pending =
+                scope.spawn(|| backend.embed_blocking(reference["text"].as_str().unwrap()));
+            drop(guard);
+            assert_eq!(pending.join().unwrap().unwrap(), vector);
+        });
         let store = crate::SharedMemoryStore::open_in_memory().unwrap();
         let wanted = store
             .remember(crate::NewMemory::procedure(
