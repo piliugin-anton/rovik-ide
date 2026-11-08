@@ -1,0 +1,398 @@
+[
+  {
+    "name": "lexical-duplicates-100",
+    "task": "retry queue lock",
+    "files": [],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution."
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 100,
+        "hidden": false
+      }
+    ],
+    "required": [
+      "Deadline",
+      "Retry queue lock"
+    ]
+  },
+  {
+    "name": "lexical-hidden-100",
+    "task": "retry queue lock",
+    "files": [],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution."
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 100,
+        "hidden": true
+      }
+    ],
+    "required": [
+      "Deadline"
+    ]
+  },
+  {
+    "name": "file-duplicates-100",
+    "task": "quasar spectroscopy",
+    "files": [
+      "src/queue.rs"
+    ],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution.",
+        "files": [
+          "src/queue.rs"
+        ]
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 100,
+        "hidden": false,
+        "files": [
+          "src/queue.rs"
+        ]
+      }
+    ],
+    "required": [
+      "Deadline",
+      "Retry queue lock"
+    ]
+  },
+  {
+    "name": "file-hidden-100",
+    "task": "quasar spectroscopy",
+    "files": [
+      "src/queue.rs"
+    ],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution.",
+        "files": [
+          "src/queue.rs"
+        ]
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 100,
+        "hidden": true,
+        "files": [
+          "src/queue.rs"
+        ]
+      }
+    ],
+    "required": [
+      "Deadline"
+    ]
+  },
+  {
+    "name": "lexical-duplicates-1000",
+    "task": "retry queue lock",
+    "files": [],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution."
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 1000,
+        "hidden": false
+      }
+    ],
+    "required": [
+      "Deadline",
+      "Retry queue lock"
+    ]
+  },
+  {
+    "name": "lexical-hidden-1000",
+    "task": "retry queue lock",
+    "files": [],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution."
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 1000,
+        "hidden": true
+      }
+    ],
+    "required": [
+      "Deadline"
+    ]
+  },
+  {
+    "name": "file-duplicates-1000",
+    "task": "quasar spectroscopy",
+    "files": [
+      "src/queue.rs"
+    ],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution.",
+        "files": [
+          "src/queue.rs"
+        ]
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 1000,
+        "hidden": false,
+        "files": [
+          "src/queue.rs"
+        ]
+      }
+    ],
+    "required": [
+      "Deadline",
+      "Retry queue lock"
+    ]
+  },
+  {
+    "name": "file-hidden-1000",
+    "task": "quasar spectroscopy",
+    "files": [
+      "src/queue.rs"
+    ],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution.",
+        "files": [
+          "src/queue.rs"
+        ]
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 1000,
+        "hidden": true,
+        "files": [
+          "src/queue.rs"
+        ]
+      }
+    ],
+    "required": [
+      "Deadline"
+    ]
+  },
+  {
+    "name": "lexical-duplicates-10000",
+    "task": "retry queue lock",
+    "files": [],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution."
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 10000,
+        "hidden": false
+      }
+    ],
+    "required": [
+      "Deadline",
+      "Retry queue lock"
+    ]
+  },
+  {
+    "name": "lexical-hidden-10000",
+    "task": "retry queue lock",
+    "files": [],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution."
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 10000,
+        "hidden": true
+      }
+    ],
+    "required": [
+      "Deadline"
+    ]
+  },
+  {
+    "name": "file-duplicates-10000",
+    "task": "quasar spectroscopy",
+    "files": [
+      "src/queue.rs"
+    ],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution.",
+        "files": [
+          "src/queue.rs"
+        ]
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 10000,
+        "hidden": false,
+        "files": [
+          "src/queue.rs"
+        ]
+      }
+    ],
+    "required": [
+      "Deadline",
+      "Retry queue lock"
+    ]
+  },
+  {
+    "name": "file-hidden-10000",
+    "task": "quasar spectroscopy",
+    "files": [
+      "src/queue.rs"
+    ],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution.",
+        "files": [
+          "src/queue.rs"
+        ]
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 10000,
+        "hidden": true,
+        "files": [
+          "src/queue.rs"
+        ]
+      }
+    ],
+    "required": [
+      "Deadline"
+    ]
+  },
+  {
+    "name": "other-project",
+    "task": "retry queue lock",
+    "files": [],
+    "excluded_tags": [
+      "excluded"
+    ],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution."
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 100,
+        "repo": "other"
+      }
+    ],
+    "required": [
+      "Deadline"
+    ]
+  },
+  {
+    "name": "excluded-tag",
+    "task": "retry queue lock",
+    "files": [],
+    "excluded_tags": [
+      "excluded"
+    ],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution."
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 100,
+        "tags": [
+          "excluded"
+        ]
+      }
+    ],
+    "required": [
+      "Deadline"
+    ]
+  },
+  {
+    "name": "deprecated",
+    "task": "retry queue lock",
+    "files": [],
+    "excluded_tags": [
+      "excluded"
+    ],
+    "corpus": [
+      {
+        "title": "Deadline",
+        "content": "Bound retry execution."
+      },
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 100,
+        "verification": "deprecated"
+      }
+    ],
+    "required": [
+      "Deadline"
+    ]
+  },
+  {
+    "name": "abstention",
+    "task": "quasar spectroscopy",
+    "files": [],
+    "corpus": [
+      {
+        "title": "Retry queue lock",
+        "content": "Retry queue lock serializes access.",
+        "copies": 100
+      }
+    ],
+    "required": []
+  },
+  {
+    "name": "whole-file-segments",
+    "task": "quasar spectroscopy",
+    "files": [
+      "foo.rs"
+    ],
+    "corpus": [
+      {
+        "title": "Unrelated",
+        "content": "Do not supply this.",
+        "files": [
+          "src/notfoo.rs"
+        ],
+        "copies": 100
+      }
+    ],
+    "required": []
+  }
+]

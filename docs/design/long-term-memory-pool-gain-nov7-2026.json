@@ -1,0 +1,823 @@
+{
+  "experiment": "candidate pool capacity",
+  "baseline_commit": "b7bfd2680412ef3a35c155f1a66a0b67679cd218",
+  "fixture_sha256": "f3d42a71442809c44e3e5f74d971301d7a2b5fd09b1694d3682257cba7a30a52",
+  "scope": "Constructed mechanism evaluation at 100/1000/10000 rows, not blind semantic recall or agent task success",
+  "before": {
+    "cases": [
+      {
+        "delivered": 1,
+        "elapsed_us": 2939,
+        "history_unchanged": true,
+        "name": "lexical-duplicates-100",
+        "packet_tokens": 64,
+        "recalled": 1,
+        "required": 2,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 80,
+          "elapsed_ms": 2,
+          "file_matches": 0,
+          "fts_matches": 80,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Retry queue lock"]
+      },
+      {
+        "delivered": 0,
+        "elapsed_us": 2719,
+        "history_unchanged": true,
+        "name": "lexical-hidden-100",
+        "packet_tokens": 16,
+        "recalled": 0,
+        "required": 1,
+        "returned": 0,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 80,
+          "elapsed_ms": 2,
+          "file_matches": 0,
+          "fts_matches": 80,
+          "rejected": 80,
+          "returned": 0,
+          "used_full_text_search": true
+        },
+        "titles": []
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 1888,
+        "history_unchanged": true,
+        "name": "file-duplicates-100",
+        "packet_tokens": 60,
+        "recalled": 1,
+        "required": 2,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 40,
+          "elapsed_ms": 1,
+          "file_matches": 40,
+          "fts_matches": 0,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": false
+        },
+        "titles": ["Retry queue lock"]
+      },
+      {
+        "delivered": 0,
+        "elapsed_us": 1249,
+        "history_unchanged": true,
+        "name": "file-hidden-100",
+        "packet_tokens": 16,
+        "recalled": 0,
+        "required": 1,
+        "returned": 0,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 40,
+          "elapsed_ms": 1,
+          "file_matches": 40,
+          "fts_matches": 0,
+          "rejected": 40,
+          "returned": 0,
+          "used_full_text_search": false
+        },
+        "titles": []
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 5192,
+        "history_unchanged": true,
+        "name": "lexical-duplicates-1000",
+        "packet_tokens": 64,
+        "recalled": 1,
+        "required": 2,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 80,
+          "elapsed_ms": 5,
+          "file_matches": 0,
+          "fts_matches": 80,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Retry queue lock"]
+      },
+      {
+        "delivered": 0,
+        "elapsed_us": 3545,
+        "history_unchanged": true,
+        "name": "lexical-hidden-1000",
+        "packet_tokens": 16,
+        "recalled": 0,
+        "required": 1,
+        "returned": 0,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 80,
+          "elapsed_ms": 3,
+          "file_matches": 0,
+          "fts_matches": 80,
+          "rejected": 80,
+          "returned": 0,
+          "used_full_text_search": true
+        },
+        "titles": []
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 4098,
+        "history_unchanged": true,
+        "name": "file-duplicates-1000",
+        "packet_tokens": 60,
+        "recalled": 1,
+        "required": 2,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 40,
+          "elapsed_ms": 4,
+          "file_matches": 40,
+          "fts_matches": 0,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": false
+        },
+        "titles": ["Retry queue lock"]
+      },
+      {
+        "delivered": 0,
+        "elapsed_us": 3690,
+        "history_unchanged": true,
+        "name": "file-hidden-1000",
+        "packet_tokens": 16,
+        "recalled": 0,
+        "required": 1,
+        "returned": 0,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 40,
+          "elapsed_ms": 3,
+          "file_matches": 40,
+          "fts_matches": 0,
+          "rejected": 40,
+          "returned": 0,
+          "used_full_text_search": false
+        },
+        "titles": []
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 16225,
+        "history_unchanged": true,
+        "name": "lexical-duplicates-10000",
+        "packet_tokens": 64,
+        "recalled": 1,
+        "required": 2,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 80,
+          "elapsed_ms": 16,
+          "file_matches": 0,
+          "fts_matches": 80,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Retry queue lock"]
+      },
+      {
+        "delivered": 0,
+        "elapsed_us": 14817,
+        "history_unchanged": true,
+        "name": "lexical-hidden-10000",
+        "packet_tokens": 16,
+        "recalled": 0,
+        "required": 1,
+        "returned": 0,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 80,
+          "elapsed_ms": 14,
+          "file_matches": 0,
+          "fts_matches": 80,
+          "rejected": 80,
+          "returned": 0,
+          "used_full_text_search": true
+        },
+        "titles": []
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 25706,
+        "history_unchanged": true,
+        "name": "file-duplicates-10000",
+        "packet_tokens": 60,
+        "recalled": 1,
+        "required": 2,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 40,
+          "elapsed_ms": 25,
+          "file_matches": 40,
+          "fts_matches": 0,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": false
+        },
+        "titles": ["Retry queue lock"]
+      },
+      {
+        "delivered": 0,
+        "elapsed_us": 24314,
+        "history_unchanged": true,
+        "name": "file-hidden-10000",
+        "packet_tokens": 16,
+        "recalled": 0,
+        "required": 1,
+        "returned": 0,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 40,
+          "elapsed_ms": 24,
+          "file_matches": 40,
+          "fts_matches": 0,
+          "rejected": 40,
+          "returned": 0,
+          "used_full_text_search": false
+        },
+        "titles": []
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 259,
+        "history_unchanged": true,
+        "name": "other-project",
+        "packet_tokens": 59,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 1,
+          "elapsed_ms": 0,
+          "file_matches": 0,
+          "fts_matches": 1,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 251,
+        "history_unchanged": true,
+        "name": "excluded-tag",
+        "packet_tokens": 59,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 1,
+          "elapsed_ms": 0,
+          "file_matches": 0,
+          "fts_matches": 1,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 262,
+        "history_unchanged": true,
+        "name": "deprecated",
+        "packet_tokens": 59,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 1,
+          "elapsed_ms": 0,
+          "file_matches": 0,
+          "fts_matches": 1,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 0,
+        "elapsed_us": 116,
+        "history_unchanged": true,
+        "name": "abstention",
+        "packet_tokens": 16,
+        "recalled": 0,
+        "required": 0,
+        "returned": 0,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 0,
+          "elapsed_ms": 0,
+          "file_matches": 0,
+          "fts_matches": 0,
+          "rejected": 0,
+          "returned": 0,
+          "used_full_text_search": false
+        },
+        "titles": []
+      },
+      {
+        "delivered": 0,
+        "elapsed_us": 241,
+        "history_unchanged": true,
+        "name": "whole-file-segments",
+        "packet_tokens": 16,
+        "recalled": 0,
+        "required": 0,
+        "returned": 0,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 0,
+          "elapsed_ms": 0,
+          "file_matches": 0,
+          "fts_matches": 0,
+          "rejected": 0,
+          "returned": 0,
+          "used_full_text_search": false
+        },
+        "titles": []
+      }
+    ],
+    "delivered": 9,
+    "description": "Constructed candidate-capacity cases, not semantic generalization or agent task success",
+    "recalled": 9,
+    "required": 21
+  },
+  "after": {
+    "cases": [
+      {
+        "delivered": 2,
+        "elapsed_us": 7087,
+        "history_unchanged": true,
+        "name": "lexical-duplicates-100",
+        "packet_tokens": 116,
+        "recalled": 2,
+        "required": 2,
+        "returned": 2,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 101,
+          "elapsed_ms": 7,
+          "file_matches": 0,
+          "fts_matches": 101,
+          "rejected": 0,
+          "returned": 2,
+          "used_full_text_search": true
+        },
+        "titles": ["Retry queue lock", "Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 3251,
+        "history_unchanged": true,
+        "name": "lexical-hidden-100",
+        "packet_tokens": 59,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 101,
+          "elapsed_ms": 3,
+          "file_matches": 0,
+          "fts_matches": 101,
+          "rejected": 100,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 2,
+        "elapsed_us": 4010,
+        "history_unchanged": true,
+        "name": "file-duplicates-100",
+        "packet_tokens": 108,
+        "recalled": 2,
+        "required": 2,
+        "returned": 2,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 101,
+          "elapsed_ms": 4,
+          "file_matches": 101,
+          "fts_matches": 0,
+          "rejected": 0,
+          "returned": 2,
+          "used_full_text_search": false
+        },
+        "titles": ["Retry queue lock", "Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 2437,
+        "history_unchanged": true,
+        "name": "file-hidden-100",
+        "packet_tokens": 54,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 101,
+          "elapsed_ms": 2,
+          "file_matches": 101,
+          "fts_matches": 0,
+          "rejected": 100,
+          "returned": 1,
+          "used_full_text_search": false
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 2,
+        "elapsed_us": 73088,
+        "history_unchanged": true,
+        "name": "lexical-duplicates-1000",
+        "packet_tokens": 116,
+        "recalled": 2,
+        "required": 2,
+        "returned": 2,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 1001,
+          "elapsed_ms": 73,
+          "file_matches": 0,
+          "fts_matches": 1001,
+          "rejected": 0,
+          "returned": 2,
+          "used_full_text_search": true
+        },
+        "titles": ["Retry queue lock", "Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 23307,
+        "history_unchanged": true,
+        "name": "lexical-hidden-1000",
+        "packet_tokens": 59,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 1001,
+          "elapsed_ms": 23,
+          "file_matches": 0,
+          "fts_matches": 1001,
+          "rejected": 1000,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 2,
+        "elapsed_us": 45196,
+        "history_unchanged": true,
+        "name": "file-duplicates-1000",
+        "packet_tokens": 108,
+        "recalled": 2,
+        "required": 2,
+        "returned": 2,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 1001,
+          "elapsed_ms": 45,
+          "file_matches": 1001,
+          "fts_matches": 0,
+          "rejected": 0,
+          "returned": 2,
+          "used_full_text_search": false
+        },
+        "titles": ["Retry queue lock", "Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 35082,
+        "history_unchanged": true,
+        "name": "file-hidden-1000",
+        "packet_tokens": 54,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 1001,
+          "elapsed_ms": 35,
+          "file_matches": 1001,
+          "fts_matches": 0,
+          "rejected": 1000,
+          "returned": 1,
+          "used_full_text_search": false
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 2,
+        "elapsed_us": 294769,
+        "history_unchanged": true,
+        "name": "lexical-duplicates-10000",
+        "packet_tokens": 116,
+        "recalled": 2,
+        "required": 2,
+        "returned": 2,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 10001,
+          "elapsed_ms": 294,
+          "file_matches": 0,
+          "fts_matches": 10001,
+          "rejected": 0,
+          "returned": 2,
+          "used_full_text_search": true
+        },
+        "titles": ["Retry queue lock", "Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 227637,
+        "history_unchanged": true,
+        "name": "lexical-hidden-10000",
+        "packet_tokens": 59,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 10001,
+          "elapsed_ms": 227,
+          "file_matches": 0,
+          "fts_matches": 10001,
+          "rejected": 10000,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 2,
+        "elapsed_us": 284526,
+        "history_unchanged": true,
+        "name": "file-duplicates-10000",
+        "packet_tokens": 108,
+        "recalled": 2,
+        "required": 2,
+        "returned": 2,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 10001,
+          "elapsed_ms": 284,
+          "file_matches": 10001,
+          "fts_matches": 0,
+          "rejected": 0,
+          "returned": 2,
+          "used_full_text_search": false
+        },
+        "titles": ["Retry queue lock", "Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 221930,
+        "history_unchanged": true,
+        "name": "file-hidden-10000",
+        "packet_tokens": 54,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 10001,
+          "elapsed_ms": 221,
+          "file_matches": 10001,
+          "fts_matches": 0,
+          "rejected": 10000,
+          "returned": 1,
+          "used_full_text_search": false
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 268,
+        "history_unchanged": true,
+        "name": "other-project",
+        "packet_tokens": 59,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 1,
+          "elapsed_ms": 0,
+          "file_matches": 0,
+          "fts_matches": 1,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 240,
+        "history_unchanged": true,
+        "name": "excluded-tag",
+        "packet_tokens": 59,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 1,
+          "elapsed_ms": 0,
+          "file_matches": 0,
+          "fts_matches": 1,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 1,
+        "elapsed_us": 247,
+        "history_unchanged": true,
+        "name": "deprecated",
+        "packet_tokens": 59,
+        "recalled": 1,
+        "required": 1,
+        "returned": 1,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 1,
+          "elapsed_ms": 0,
+          "file_matches": 0,
+          "fts_matches": 1,
+          "rejected": 0,
+          "returned": 1,
+          "used_full_text_search": true
+        },
+        "titles": ["Deadline"]
+      },
+      {
+        "delivered": 0,
+        "elapsed_us": 100,
+        "history_unchanged": true,
+        "name": "abstention",
+        "packet_tokens": 16,
+        "recalled": 0,
+        "required": 0,
+        "returned": 0,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 0,
+          "elapsed_ms": 0,
+          "file_matches": 0,
+          "fts_matches": 0,
+          "rejected": 0,
+          "returned": 0,
+          "used_full_text_search": false
+        },
+        "titles": []
+      },
+      {
+        "delivered": 0,
+        "elapsed_us": 221,
+        "history_unchanged": true,
+        "name": "whole-file-segments",
+        "packet_tokens": 16,
+        "recalled": 0,
+        "required": 0,
+        "returned": 0,
+        "safe": true,
+        "stable": true,
+        "telemetry": {
+          "candidates_scanned": 0,
+          "elapsed_ms": 0,
+          "file_matches": 0,
+          "fts_matches": 0,
+          "rejected": 0,
+          "returned": 0,
+          "used_full_text_search": false
+        },
+        "titles": []
+      }
+    ],
+    "delivered": 21,
+    "description": "Constructed candidate-capacity cases, not semantic generalization or agent task success",
+    "recalled": 21,
+    "required": 21
+  },
+  "original_control": {
+    "before": {
+      "development": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 92,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "heldout": {
+        "candidate_recall": 0.8,
+        "cases": 40,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.3,
+        "recall_at_8": 0.8
+      }
+    },
+    "after": {
+      "development": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 92,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.09090909090909091,
+        "recall_at_8": 0.8285714285714286
+      },
+      "heldout": {
+        "candidate_recall": 0.8,
+        "cases": 40,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.3,
+        "recall_at_8": 0.8
+      }
+    },
+    "cases_compared": 132,
+    "fields_compared": [
+      "id",
+      "rank",
+      "candidate_rank",
+      "answer_delivered",
+      "returned",
+      "packet_tokens",
+      "prohibited"
+    ],
+    "changed_cases": []
+  }
+}

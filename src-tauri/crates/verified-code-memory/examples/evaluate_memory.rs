@@ -52,6 +52,35 @@ impl MemoryEmbedder for RecordedEmbeddings {
     }
 }
 
+/// Keeps repeated fixture documents from running the native encoder again in
+/// each temporary SQLite store. This cache exists only for one evaluation run.
+struct MemoizedEmbeddings {
+    inner: Box<dyn MemoryEmbedder>,
+    vectors: std::sync::Mutex<std::collections::BTreeMap<String, Vec<f32>>>,
+}
+
+impl MemoryEmbedder for MemoizedEmbeddings {
+    fn dimensions(&self) -> usize {
+        self.inner.dimensions()
+    }
+    fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+        if let Some(vector) = self
+            .vectors
+            .lock()
+            .map_err(|_| verified_code_memory::VcmError::LockPoisoned)?
+            .get(text)
+        {
+            return Ok(vector.clone());
+        }
+        let vector = self.inner.embed(text)?;
+        self.vectors
+            .lock()
+            .map_err(|_| verified_code_memory::VcmError::LockPoisoned)?
+            .insert(text.to_owned(), vector.clone());
+        Ok(vector)
+    }
+}
+
 fn experiment_config(args: &[String]) -> Result<Value, Box<dyn std::error::Error>> {
     match args {
         [] => Ok(json!({})),
@@ -59,6 +88,17 @@ fn experiment_config(args: &[String]) -> Result<Value, Box<dyn std::error::Error
             Ok(serde_json::from_slice(&std::fs::read(path)?)?)
         }
         _ => Err("usage: evaluate_memory [--experiment-config config.json]".into()),
+    }
+}
+
+fn dataset_input(config: &Value) -> std::io::Result<String> {
+    match config.get("dataset_file") {
+        Some(Value::String(path)) => std::fs::read_to_string(path),
+        None => Ok(include_str!("../../../../scripts/eval/memory-cases.json").to_owned()),
+        Some(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "dataset_file must be a path string",
+        )),
     }
 }
 
@@ -136,9 +176,9 @@ fn rerank_lexical(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let input = include_str!("../../../../scripts/eval/memory-cases.json");
-    let dataset: Value = serde_json::from_str(input)?;
     let config = experiment_config(&std::env::args().skip(1).collect::<Vec<_>>())?;
+    let input = dataset_input(&config)?;
+    let dataset: Value = serde_json::from_str(&input)?;
     let keys = match config["context_keys_file"].as_str() {
         Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
         None => json!({}),
@@ -168,15 +208,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         match std::env::var("ROVIK_MEMORY_EVAL_MODEL") {
             Ok(model) => {
-                let python = std::env::var("ROVIK_MEMORY_EVAL_PYTHON")?;
                 let dimensions: usize = std::env::var("ROVIK_MEMORY_EVAL_DIMENSIONS")?.parse()?;
                 let revision = std::env::var("ROVIK_MEMORY_EVAL_REVISION")?;
                 let threshold: f32 = std::env::var("ROVIK_MEMORY_EVAL_THRESHOLD")?.parse()?;
                 Some((
-                    Box::new(verified_code_memory::embedding::LocalSentenceEmbedder::new(
-                        python.into(),
-                        model.into(),
-                        dimensions,
+                    Box::new(verified_code_memory::embedding::OnnxMiniLm::new(
+                        std::path::Path::new(&model),
                     )?),
                     revision,
                     dimensions,
@@ -186,6 +223,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => None,
         }
     };
+    let backend = backend.map(|(inner, revision, dimensions, threshold)| {
+        (
+            MemoizedEmbeddings {
+                inner,
+                vectors: Default::default(),
+            },
+            revision,
+            dimensions,
+            threshold,
+        )
+    });
     let mut cases = dataset["cases"].as_array().ok_or("missing cases")?.clone();
     if let Some(path) = config["controls_file"].as_str() {
         let controls: Value = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -263,12 +311,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 revision,
                 *dimensions,
             )?;
-            index.backfill("project", embedder.as_ref())?;
+            let index = if let Some(words) = config["short_query_words"].as_u64() {
+                index.with_short_query_scale(
+                    words as usize,
+                    config["short_query_scale"]
+                        .as_f64()
+                        .ok_or("missing short-query scale")? as f32,
+                )?
+            } else {
+                index
+            };
+            index.backfill("project", embedder)?;
             // Give the identical prohibited record a vector too: a semantic
             // scope check must not pass just because other projects lack an index.
-            index.backfill("other", embedder.as_ref())?;
+            index.backfill("other", embedder)?;
             let retrieved = if config["rerank_lexical"] == true {
-                rerank_lexical(&index, &query, embedder.as_ref(), *threshold, &baseline)
+                rerank_lexical(&index, &query, embedder, *threshold, &baseline)
             } else if config["semantic_only"] == true {
                 embedder
                     .embed(&format!("{}\n", query.task))
@@ -285,7 +343,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         })
                     })
             } else {
-                index.retrieve(&query, embedder.as_ref(), *threshold)
+                index.retrieve(&query, embedder, *threshold)
             };
             match retrieved {
                 Ok(found) => found,
@@ -343,10 +401,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             / answerable.len() as f64;
         groups.insert(split.into(), json!({"cases":subset.len(),"recall_at_8":recall,"candidate_recall":answerable.iter().filter(|r|r["candidate_rank"].is_number()).count() as f64 / answerable.len() as f64,"delivered_recall":answerable.iter().filter(|r|r["answer_delivered"]==true).count() as f64 / answerable.len() as f64,"mrr":mrr,"ndcg_at_8":ndcg,"no_match_injection_rate":negatives.iter().filter(|r|r["returned"]!=0).count() as f64 / negatives.len() as f64}));
     }
+    if let Some(path) = config["save_vectors_file"].as_str() {
+        let (backend, revision, dimensions, _) = backend
+            .as_ref()
+            .ok_or("saving vectors requires an embedding backend")?;
+        let vectors = backend
+            .vectors
+            .lock()
+            .map_err(|_| verified_code_memory::VcmError::LockPoisoned)?;
+        std::fs::write(
+            path,
+            serde_json::to_vec(
+                &json!({"revision":revision,"dimensions":dimensions,"vectors":&*vectors}),
+            )?,
+        )?;
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &json!({"dataset_version":dataset["version"],"dataset_fingerprint":verified_code_memory::claim_hash("memory-eval-v1",input),"experiment_config":config,"policy":if config["rerank_lexical"]==true {"bi-encoder-gated"} else if config["semantic_only"]==true {"semantic-only"} else if backend.is_some() {"hybrid"} else {"lexical-file"},"memory_off_recall":0,"model":backend.as_ref().map(|(_,revision,dimensions,threshold)| json!({"revision":revision,"dimensions":dimensions,"threshold":threshold})),"answer_quality_evaluated":false,"groups":groups,"cases":rows})
+            &json!({"dataset_version":dataset["version"],"dataset_fingerprint":verified_code_memory::claim_hash("memory-eval-v1",&input),"experiment_config":config,"policy":if config["rerank_lexical"]==true {"bi-encoder-gated"} else if config["semantic_only"]==true {"semantic-only"} else if backend.is_some() {"hybrid"} else {"lexical-file"},"memory_off_recall":0,"model":backend.as_ref().map(|(_,revision,dimensions,threshold)| json!({"revision":revision,"dimensions":dimensions,"threshold":threshold})),"answer_quality_evaluated":false,"groups":groups,"cases":rows})
         )?
     );
     Ok(())
@@ -355,6 +428,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evaluation_caches_each_successful_input_without_caching_provider_failures() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct Count(Arc<AtomicUsize>);
+        impl MemoryEmbedder for Count {
+            fn dimensions(&self) -> usize {
+                2
+            }
+            fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                if text == "missing" {
+                    return Err(verified_code_memory::VcmError::EmbeddingUnavailable(
+                        "fixture failure",
+                    ));
+                }
+                Ok(vec![text.len() as f32, 1.0])
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let model = MemoizedEmbeddings {
+            inner: Box::new(Count(calls.clone())),
+            vectors: Default::default(),
+        };
+        assert_eq!(model.embed("alpha").unwrap(), model.embed("alpha").unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_ne!(model.embed("alpha").unwrap(), model.embed("beta").unwrap());
+        for _ in 0..2 {
+            assert!(model.embed("missing").is_err());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
 
     #[test]
     fn a_recorded_model_never_fabricates_an_unrecorded_embedding() {
@@ -370,6 +478,26 @@ mod tests {
     fn an_invalid_configuration_invocation_is_rejected() {
         assert!(experiment_config(&["--wrong".into()]).is_err());
         assert_eq!(experiment_config(&[]).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn fresh_datasets_are_loaded_explicitly_and_missing_inputs_fail() {
+        assert_eq!(
+            dataset_input(&json!({})).unwrap(),
+            include_str!("../../../../scripts/eval/memory-cases.json")
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fresh.json");
+        let fixture = "{\"version\":2,\"cases\":[]}";
+        std::fs::write(&path, fixture).unwrap();
+        assert_eq!(
+            dataset_input(&json!({"dataset_file":path})).unwrap(),
+            fixture
+        );
+        assert!(
+            dataset_input(&json!({"dataset_file":directory.path().join("missing.json")})).is_err()
+        );
+        assert!(dataset_input(&json!({"dataset_file":true})).is_err());
     }
 
     #[test]

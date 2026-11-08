@@ -37,6 +37,13 @@ are applied before the result limit, so a record the caller may not see can't
 take a slot from one it may. Deprecated memories are never retrieved; `list` is
 where they show.
 
+The lexical and file pools retain at most 80 and 40 distinct admissible claims.
+The indexed scan continues past rejected rows and exact copies to fill those
+pools. Copies keep their highest-ranked representative and remain stored for
+audit. Scan telemetry counts rows inspected in both pools, including rejected
+rows and overlaps; a heavily restricted or repetitive history can require more
+reads without increasing the retained pool or the final result limit.
+
 SQLite's `bm25()` is negative and the better a row matches the more negative it
 is. `bm25_relevance` keeps that direction (`rank = -4.0` scores above `-0.5`)
 and bounds it to `0..1` before the contextual reranker adds its components.
@@ -44,9 +51,11 @@ and bounds it to `0..1` before the contextual reranker adds its components.
 `render_packet(memories, tokens)` renders what a prompt or a tool answer shows: at
 most `tokens`' worth (`estimate_tokens`, four characters to a token), each record
 with its id — what `memory_get` takes — its applicability, its evidence and its
-files. A record that would not fit ends the packet with a line saying so and a
-pointer to fetch it, rather than being dropped silently; `render_context` is the
-same rendering with no bound.
+files. A record that would not fit leaves room for later complete claims. Any
+remaining allowance goes to fetch pointers for omitted records, in rank order,
+and a truncation notice if it fits. The header, pointers and notice all count
+toward the allowance; very small allowances can produce an empty packet.
+`render_context` is the same rendering with no bound.
 
 ## Evidence, applicability and freshness
 
@@ -77,6 +86,15 @@ the file index filled, and then — only after that — the full-text index crea
 and refilled. The order matters: FTS5 keeps an external-content index in step
 through the triggers, and a trigger firing at a row an empty index never held is
 what SQLite reports as `SQLITE_CORRUPT_VTAB`.
+
+## Native ONNX embeddings
+
+`embedding::OnnxMiniLm` loads the local Chroma `all-MiniLM-L6-v2` ONNX export
+and tokenizer directly in Rust using tract and tokenizers. It implements
+`MemoryEmbedder` with 384-dimensional normalized vectors and reuses its compiled
+CPU model. No Python, child process or separately installed runtime is used.
+The application provisions the pinned model from its dedicated GitHub release;
+this crate's encoder only reads local files and never downloads on inference.
 
 ## Development
 

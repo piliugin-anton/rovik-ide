@@ -4,10 +4,10 @@ use crate::model::{
     RetrievedMemory, SourceKind, Verification,
 };
 use crate::retrieval::{
-    bm25_relevance, build_fts_query, deduplicate_memories, estimate_tokens, normalize_path,
-    score_memory, RetrievalTelemetry, RetrievalWeights,
+    bm25_relevance, build_fts_query, collect_ranked_candidates, compare_memories,
+    deduplicate_memories, estimate_tokens, normalize_path, RetrievalTelemetry, RetrievalWeights,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -20,12 +20,11 @@ const MAX_RETRIEVAL_LIMIT: usize = 32;
 // They must refuse to reopen a database that now participates in sync.
 pub(crate) const SCHEMA_VERSION: i64 = 4;
 
-/// How many full-text matches one query reads before reranking: enough that
-/// the best of them survive the relevance gate and the cut to `limit`, few
-/// enough that a one-word query over a large project stays cheap.
+/// How many distinct admissible full-text claims one query retains before
+/// reranking. Rejected rows and exact copies do not consume this allowance.
 const LEXICAL_POOL: usize = 80;
 
-/// How many memories that name one of the query's files one query reads.
+/// How many distinct admissible file claims one query retains.
 const FILE_POOL: usize = 40;
 
 /// SQLite-backed memory store with FTS5 lexical retrieval.
@@ -912,31 +911,13 @@ impl MemoryStore {
 
         let now = Utc::now();
         let mut telemetry = RetrievalTelemetry::default();
-        let mut found = self.lexical_candidates(query, &mut telemetry)?;
-        for record in self.file_candidates(query, &mut telemetry)? {
-            if !found.iter().any(|(seen, _)| seen.id == record.id) {
-                found.push((record, None));
-            }
-        }
-        telemetry.candidates_scanned = found.len();
-
-        let mut candidates = Vec::new();
-        for (record, lexical) in found {
-            if !accept(&record) {
-                telemetry.rejected += 1;
-                continue;
-            }
-            match score_memory(
-                &record,
-                &query.task,
-                &query.files,
-                query.failure.as_deref(),
-                lexical,
-                now,
-                &self.weights,
-            ) {
-                Some(memory) => candidates.push(memory),
-                None => telemetry.rejected += 1,
+        let mut candidates = self.lexical_candidates(query, &accept, now, &mut telemetry)?;
+        for hit in self.file_candidates(query, &accept, now, &mut telemetry)? {
+            if !candidates
+                .iter()
+                .any(|seen| seen.record.id == hit.record.id)
+            {
+                candidates.push(hit);
             }
         }
 
@@ -944,18 +925,7 @@ impl MemoryStore {
         // over the same memories answers the same way every time. "Newer" is
         // the claim's own stamp, as the recency component reads it — not when
         // the record was last touched by a run.
-        candidates.sort_by(|left, right| {
-            right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| {
-                    right
-                        .record
-                        .content_updated_at
-                        .cmp(&left.record.content_updated_at)
-                })
-                .then_with(|| left.record.id.cmp(&right.record.id))
-        });
+        candidates.sort_by(compare_memories);
         deduplicate_memories(&mut candidates);
         candidates.truncate(query.limit);
 
@@ -971,8 +941,10 @@ impl MemoryStore {
     fn lexical_candidates(
         &self,
         query: &RetrievalQuery,
+        accept: &impl Fn(&MemoryRecord) -> bool,
+        now: DateTime<Utc>,
         telemetry: &mut RetrievalTelemetry,
-    ) -> Result<Vec<(MemoryRecord, Option<f32>)>> {
+    ) -> Result<Vec<RetrievedMemory>> {
         let Some(states) = states_sql(query) else {
             return Ok(Vec::new());
         };
@@ -995,22 +967,28 @@ impl MemoryStore {
               AND {states}
               {tags}
             ORDER BY lexical_rank, m.id
-            LIMIT {pool}
             "#,
-            pool = LEXICAL_POOL,
             tags = tags_sql(&query.excluded_tags),
         );
         let mut statement = self.connection.prepare(&sql)?;
         let mut values = vec![Value::Text(fts_query), Value::Text(query.repo.clone())];
         values.extend(tag_needles(&query.excluded_tags));
 
-        let mut rows = statement.query(params_from_iter(values))?;
-        let mut found = Vec::new();
-        while let Some(row) = rows.next()? {
+        let rows = statement.query_map(params_from_iter(values), |row| {
             let rank: f64 = row.get("lexical_rank")?;
-            telemetry.fts_matches += 1;
-            found.push((Self::row_to_record(row)?, Some(bm25_relevance(rank))));
-        }
+            Ok((Self::row_to_record(row)?, Some(bm25_relevance(rank))))
+        })?;
+        let scanned = telemetry.candidates_scanned;
+        let found = collect_ranked_candidates(
+            rows.map(|row| row.map_err(Into::into)),
+            query,
+            accept,
+            now,
+            &self.weights,
+            LEXICAL_POOL,
+            telemetry,
+        )?;
+        telemetry.fts_matches = telemetry.candidates_scanned - scanned;
         Ok(found)
     }
 
@@ -1024,8 +1002,10 @@ impl MemoryStore {
     fn file_candidates(
         &self,
         query: &RetrievalQuery,
+        accept: &impl Fn(&MemoryRecord) -> bool,
+        now: DateTime<Utc>,
         telemetry: &mut RetrievalTelemetry,
-    ) -> Result<Vec<MemoryRecord>> {
+    ) -> Result<Vec<RetrievedMemory>> {
         let wanted: Vec<String> = query
             .files
             .iter()
@@ -1061,9 +1041,7 @@ impl MemoryStore {
                   AND ({conditions})
               )
             ORDER BY m.updated_at DESC, m.id
-            LIMIT {pool}
             "#,
-            pool = FILE_POOL,
             tags = tags_sql(&query.excluded_tags),
         );
         let mut values = vec![Value::Text(query.repo.clone())];
@@ -1077,13 +1055,20 @@ impl MemoryStore {
         }
 
         let mut statement = self.connection.prepare(&sql)?;
-        let mut rows = statement.query(params_from_iter(values))?;
-        let mut found = Vec::new();
-        while let Some(row) = rows.next()? {
-            found.push(Self::row_to_record(row)?);
-        }
-
-        telemetry.file_matches = found.len();
+        let rows = statement.query_map(params_from_iter(values), |row| {
+            Ok((Self::row_to_record(row)?, None))
+        })?;
+        let scanned = telemetry.candidates_scanned;
+        let found = collect_ranked_candidates(
+            rows.map(|row| row.map_err(Into::into)),
+            query,
+            accept,
+            now,
+            &self.weights,
+            FILE_POOL,
+            telemetry,
+        )?;
+        telemetry.file_matches = telemetry.candidates_scanned - scanned;
         Ok(found)
     }
 
@@ -1101,7 +1086,7 @@ impl MemoryStore {
         self.render_packet(memories, usize::MAX)
     }
 
-    /// Renders the prompt's memory packet, within no bound.
+    /// Renders the prompt's memory packet within the token allowance.
     #[must_use]
     pub fn render_packet(&self, memories: &[RetrievedMemory], tokens: usize) -> String {
         self.render_packet_traced(memories, tokens).0
@@ -1117,16 +1102,22 @@ impl MemoryStore {
         tokens: usize,
     ) -> (String, Vec<Uuid>) {
         let mut output = String::from("## Relevant prior work\n\n");
+        if estimate_tokens(&output) > tokens {
+            return (String::new(), Vec::new());
+        }
 
         if memories.is_empty() {
-            output.push_str("No sufficiently relevant prior memory.\n");
+            let empty = "No sufficiently relevant prior memory.\n";
+            if estimate_tokens(&output) + estimate_tokens(empty) <= tokens {
+                output.push_str(empty);
+            }
             return (output, Vec::new());
         }
 
         let mut emitted = Vec::new();
         let mut seen: Vec<&MemoryRecord> = Vec::new();
         let mut used = estimate_tokens(&output);
-        let mut cut = false;
+        let mut omitted = Vec::new();
         for memory in memories {
             if seen
                 .iter()
@@ -1143,22 +1134,26 @@ impl MemoryStore {
                 emitted.push(memory.record.id);
                 continue;
             }
-            // What is left of the allowance goes to this record's first line
-            // and its id, so the model knows it exists and can ask for it.
+            // A long source episode must not hide shorter claims later in the
+            // ranked pool. Complete claims get space before any fetch hints.
+            omitted.push(memory);
+        }
+
+        for memory in &omitted {
             let head = format!(
                 "- [{}] {} — (cut to fit the memory allowance; `memory_get` {} for the rest)\n",
                 memory.record.verification, memory.record.title, memory.record.id
             );
             if used + estimate_tokens(&head) <= tokens {
                 output.push_str(&head);
+                used += estimate_tokens(&head);
                 emitted.push(memory.record.id);
             }
-            cut = true;
-            break;
         }
 
-        if cut {
-            output.push_str("(The memory packet was cut to its allowance.)\n");
+        let footer = "(The memory packet was cut to its allowance.)\n";
+        if !omitted.is_empty() && used + estimate_tokens(footer) <= tokens {
+            output.push_str(footer);
         }
         (output, emitted)
     }

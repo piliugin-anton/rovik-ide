@@ -22,135 +22,221 @@ pub trait VectorIndex: Send + Sync {
     fn search(&self, repo: &str, query: &[f32], limit: usize) -> Result<Vec<(Uuid, f32)>>;
 }
 
-/// Offline sentence-transformers backend using a cached local model directory.
-/// Python and sentence-transformers must be installed by the operator. No
-/// network downloads or shell evaluation occur on a retrieval request.
-#[derive(Debug, Clone)]
-pub struct LocalSentenceEmbedder {
-    python: std::path::PathBuf,
-    model: std::path::PathBuf,
-    dimensions: usize,
-    worker: std::sync::Arc<std::sync::Mutex<Option<Worker>>>,
+/// Native, offline Chroma all-MiniLM-L6-v2 inference. The caller provisions
+/// the local model and tokenizer; embedding never downloads or starts a process.
+pub struct OnnxMiniLm {
+    tokenizer: tokenizers::Tokenizer,
+    model:
+        std::sync::Mutex<tract_onnx::prelude::TypedRunnableModel<tract_onnx::prelude::TypedModel>>,
 }
 
-impl LocalSentenceEmbedder {
-    /// Selects an interpreter and local model; the revision is the caller's
-    /// index identity, so a changed model must use a different revision.
-    pub fn new(
-        python: std::path::PathBuf,
-        model: std::path::PathBuf,
-        dimensions: usize,
-    ) -> Result<Self> {
-        if !python.is_absolute() || !model.is_absolute() || !model.is_dir() || dimensions == 0 {
-            return Err(crate::VcmError::EmptyField {
-                field: "absolute interpreter and local model directory",
-            });
+/// The number of dimensions produced by the pinned MiniLM model.
+pub const MINILM_DIMENSIONS: usize = 384;
+/// Model identity, including the preprocessing policy, for derived SQLite vectors.
+pub const MINILM_REVISION: &str = "chroma-minilm-l6-v2-913d7300-title-claim-native-v1";
+const TOKENS: usize = 256;
+
+fn onnx_error(error: impl std::fmt::Display) -> crate::VcmError {
+    crate::VcmError::Onnx(error.to_string())
+}
+
+impl OnnxMiniLm {
+    /// Loads an ONNX model and tokenizer from `directory`. CPU inference is
+    /// compiled once and reused. Missing or unsupported model files return errors.
+    pub fn new(directory: &std::path::Path) -> Result<Self> {
+        use tract_onnx::prelude::*;
+        let mut tokenizer = tokenizers::Tokenizer::from_file(directory.join("tokenizer.json"))
+            .map_err(onnx_error)?;
+        tokenizer
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: TOKENS,
+                ..Default::default()
+            }))
+            .map_err(onnx_error)?;
+        tokenizer.with_padding(Some(tokenizers::PaddingParams {
+            strategy: tokenizers::PaddingStrategy::BatchLongest,
+            ..Default::default()
+        }));
+        let mut model = tract_onnx::onnx()
+            .model_for_path(directory.join("model.onnx"))
+            .map_err(onnx_error)?;
+        let sequence = model.symbols.sym("sequence_length");
+        for input in 0..3 {
+            model = model
+                .with_input_fact(input, i64::fact([1.to_dim(), sequence.to_dim()]).into())
+                .map_err(onnx_error)?;
         }
+        let model = model
+            .into_optimized()
+            .map_err(onnx_error)?
+            .into_runnable()
+            .map_err(onnx_error)?;
         Ok(Self {
-            python,
-            model,
-            dimensions,
-            worker: Default::default(),
+            tokenizer,
+            model: std::sync::Mutex::new(model),
         })
     }
 }
 
-#[derive(Debug)]
-struct Worker {
-    child: std::process::Child,
-    input: std::process::ChildStdin,
-    replies: std::sync::mpsc::Receiver<Vec<u8>>,
-}
-impl Drop for Worker {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+impl MemoryEmbedder for OnnxMiniLm {
+    fn dimensions(&self) -> usize {
+        MINILM_DIMENSIONS
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        use tract_onnx::prelude::*;
+        let model = self.model.try_lock().map_err(|_| {
+            crate::VcmError::EmbeddingUnavailable("ONNX model is busy or unavailable")
+        })?;
+        let text: String = text.chars().take(500).collect();
+        let tokens = self.tokenizer.encode(text, true).map_err(onnx_error)?;
+        let length = tokens.len();
+        let tensor = |values: &[u32]| {
+            Tensor::from_shape(
+                &[1, length],
+                &values.iter().map(|v| i64::from(*v)).collect::<Vec<_>>(),
+            )
+            .map(TValue::from)
+            .map_err(onnx_error)
+        };
+        let outputs = model
+            .run(tvec![
+                tensor(tokens.get_ids())?,
+                tensor(tokens.get_attention_mask())?,
+                tensor(tokens.get_type_ids())?,
+            ])
+            .map_err(onnx_error)?;
+        let hidden = outputs
+            .first()
+            .ok_or_else(|| onnx_error("model returned no output"))?
+            .to_array_view::<f32>()
+            .map_err(onnx_error)?;
+        if hidden.shape() != [1, length, MINILM_DIMENSIONS] {
+            return Err(onnx_error(
+                "MiniLM must return one 384-dimensional embedding per input token",
+            ));
+        }
+        let values: Vec<f32> = hidden.iter().copied().collect();
+        pool(&values, tokens.get_attention_mask())
     }
 }
 
-impl MemoryEmbedder for LocalSentenceEmbedder {
-    fn dimensions(&self) -> usize {
-        self.dimensions
+fn pool(hidden: &[f32], mask: &[u32]) -> Result<Vec<f32>> {
+    if hidden.len() != mask.len() * MINILM_DIMENSIONS {
+        return Err(onnx_error(
+            "token embeddings do not match the attention mask",
+        ));
     }
-    fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        use std::io::{BufRead, Read, Write};
-        use std::process::{Command, Stdio};
-        let error = || crate::VcmError::EmbeddingUnavailable("local worker failed or timed out");
-        let mut slot = self.worker.try_lock().map_err(|_| {
-            crate::VcmError::EmbeddingUnavailable("local worker is busy or unavailable")
-        })?;
-        if slot.is_none() {
-            let script = "import json,sys\nfrom sentence_transformers import SentenceTransformer\nm=SentenceTransformer(sys.argv[1],local_files_only=True,device='cpu')\nfor line in sys.stdin:\n print(json.dumps(m.encode(json.loads(line),normalize_embeddings=True).tolist()),flush=True)";
-            let mut child = Command::new(&self.python)
-                .args(["-u", "-c", script])
-                .arg(&self.model)
-                .env("HF_HUB_OFFLINE", "1")
-                .env("TRANSFORMERS_OFFLINE", "1")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|_| error())?;
-            let input = child.stdin.take().ok_or_else(error)?;
-            let output = child.stdout.take().ok_or_else(error)?;
-            let (send, replies) = std::sync::mpsc::sync_channel(1);
-            std::thread::spawn(move || {
-                let mut reader = std::io::BufReader::new(output);
-                loop {
-                    let mut bytes = Vec::new();
-                    match reader
-                        .by_ref()
-                        .take(2_000_000)
-                        .read_until(b'\n', &mut bytes)
-                    {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
-                            if bytes.last() != Some(&b'\n') || send.send(bytes).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-            *slot = Some(Worker {
-                child,
-                input,
-                replies,
-            });
-        }
-        let worker = slot.as_mut().ok_or_else(error)?;
-        // At most 4 KiB including JSON escaping: this fits an empty pipe while
-        // the model loads, so writing cannot deadlock before the response timeout.
-        let mut bounded = String::new();
-        for c in text.chars().take(500) {
-            bounded.push(c);
-        }
-        let mut request = serde_json::to_vec(&bounded)?;
-        request.push(b'\n');
-        let response = worker
-            .input
-            .write_all(&request)
-            .map_err(|_| error())
-            .and_then(|_| {
-                worker
-                    .replies
-                    .recv_timeout(std::time::Duration::from_secs(15))
-                    .map_err(|_| error())
-            });
-        let bytes = match response {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                *slot = None;
-                return Err(error);
+    let mut vector = vec![0.0f64; MINILM_DIMENSIONS];
+    for (token, &include) in hidden.chunks_exact(MINILM_DIMENSIONS).zip(mask) {
+        if include != 0 {
+            for (sum, &value) in vector.iter_mut().zip(token) {
+                *sum += f64::from(value);
             }
-        };
-        let vector: Vec<f32> = serde_json::from_slice(&bytes)?;
-        if vector.len() != self.dimensions {
-            return Err(crate::VcmError::EmbeddingDimensionMismatch {
-                expected: self.dimensions,
-                actual: vector.len(),
-            });
         }
-        Ok(vector)
+    }
+    // The masked mean and masked sum have the same L2-normalized direction.
+    let norm = vector.iter().map(|value| value * value).sum::<f64>().sqrt();
+    if !norm.is_finite() || norm <= 0.0 {
+        return Err(onnx_error("MiniLM returned a zero or non-finite embedding"));
+    }
+    Ok(vector
+        .into_iter()
+        .map(|value| (value / norm) as f32)
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn padding_does_not_contribute_to_the_normalized_embedding() {
+        let mut hidden = vec![0.0; 3 * MINILM_DIMENSIONS];
+        hidden[0] = 6.0;
+        hidden[MINILM_DIMENSIONS + 1] = 8.0;
+        hidden[2 * MINILM_DIMENSIONS..].fill(1000.0);
+        let vector = pool(&hidden, &[1, 1, 0]).unwrap();
+        assert!((vector[0] - 0.6).abs() < 1e-6);
+        assert!((vector[1] - 0.8).abs() < 1e-6);
+        assert!(vector[2..].iter().all(|value| *value == 0.0));
+    }
+
+    #[test]
+    fn invalid_outputs_cannot_enter_the_semantic_index() {
+        for hidden in [
+            vec![0.0; MINILM_DIMENSIONS],
+            vec![f32::NAN; MINILM_DIMENSIONS],
+            vec![1.0; 300],
+        ] {
+            assert!(pool(&hidden, &[1]).is_err());
+        }
+        assert!(pool(&[], &[]).is_err());
+    }
+
+    #[test]
+    fn a_missing_model_returns_an_actionable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            OnnxMiniLm::new(dir.path()),
+            Err(crate::VcmError::Onnx(_))
+        ));
+    }
+
+    #[test]
+    #[ignore = "requires ROVIK_MEMORY_EVAL_MODEL pointing to the pinned local ONNX files"]
+    fn native_minilm_matches_the_reference_and_recalls_paraphrases() {
+        let model = std::env::var_os("ROVIK_MEMORY_EVAL_MODEL").unwrap();
+        let backend = OnnxMiniLm::new(std::path::Path::new(&model)).unwrap();
+        let reference: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/minilm-reference.json")).unwrap();
+        let vector = backend.embed(reference["text"].as_str().unwrap()).unwrap();
+        let expected: Vec<f32> = serde_json::from_value(reference["embedding"].clone()).unwrap();
+        assert_eq!(vector.len(), MINILM_DIMENSIONS);
+        for (actual, expected) in vector.iter().zip(&expected) {
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "native {actual}, reference {expected}"
+            );
+        }
+        assert_eq!(
+            backend.embed(reference["text"].as_str().unwrap()).unwrap(),
+            vector
+        );
+        let store = crate::SharedMemoryStore::open_in_memory().unwrap();
+        let wanted = store
+            .remember(crate::NewMemory::procedure(
+                "a",
+                "Concurrent state",
+                "Use a mutex to protect shared data.",
+            ))
+            .unwrap();
+        let index =
+            crate::semantic::SemanticIndex::new(store, MINILM_REVISION, MINILM_DIMENSIONS).unwrap();
+        index.backfill("a", &backend).unwrap();
+        let hits = index
+            .retrieve(
+                &crate::RetrievalQuery::new("a", "Prevent simultaneous access with a lock"),
+                &backend,
+                0.3,
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].record.id, wanted.id);
+    }
+
+    #[test]
+    #[ignore = "requires ROVIK_MEMORY_EVAL_MODEL pointing to the pinned local ONNX files"]
+    fn native_minilm_reuses_one_model_across_empty_and_maximum_length_unicode_inputs() {
+        let model = std::env::var_os("ROVIK_MEMORY_EVAL_MODEL").unwrap();
+        let backend = OnnxMiniLm::new(std::path::Path::new(&model)).unwrap();
+        let empty = backend.embed("").unwrap();
+        let long = backend.embed(&"界".repeat(600)).unwrap();
+        for vector in [&empty, &long] {
+            assert_eq!(vector.len(), MINILM_DIMENSIONS);
+            assert!(vector.iter().all(|value| value.is_finite()));
+            assert!((vector.iter().map(|value| value * value).sum::<f32>() - 1.0).abs() < 1e-5);
+        }
+        assert_eq!(backend.embed("").unwrap(), empty);
     }
 }
