@@ -1,0 +1,1640 @@
+{
+  "version": 1,
+  "description": "Harder extensions of previously 100% isolated CamelCase and snake_case hybrid lookups. Correlated source views with dense distinct observations, exact-copy pressure, three required facts, file context, and negative controls. Earlier fixtures unchanged.",
+  "source_binding_commit": "a7362af3928ea3f272c6bad817b681d4a4c8335e",
+  "corpus": [
+    {
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      }
+    },
+    {
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      }
+    },
+    {
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      }
+    },
+    {
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      }
+    },
+    {
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      }
+    },
+    {
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      }
+    },
+    {
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      }
+    },
+    {
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      }
+    },
+    {
+      "title": "Crowding observation 0",
+      "content": "Crowding sample 0 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 1",
+      "content": "Crowding sample 1 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 2",
+      "content": "Crowding sample 2 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 3",
+      "content": "Crowding sample 3 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 4",
+      "content": "Crowding sample 4 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 5",
+      "content": "Crowding sample 5 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 6",
+      "content": "Crowding sample 6 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 7",
+      "content": "Crowding sample 7 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 8",
+      "content": "Crowding sample 8 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "File context",
+      "content": "This file configures logging destinations.",
+      "files": ["src/noise.rs"],
+      "verified": true
+    }
+  ],
+  "cases": [
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-SharedMemoryStore-isolated-camel",
+      "category": "isolated-camel",
+      "task": "SharedMemoryStore"
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-SharedMemoryStore-isolated-snake",
+      "category": "isolated-snake",
+      "task": "store_memory_shared"
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-SharedMemoryStore-dense-camel",
+      "category": "dense-camel",
+      "task": "SharedMemoryStore crowding"
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-SharedMemoryStore-dense-snake",
+      "category": "dense-snake",
+      "task": "store_memory_shared crowding"
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-SharedMemoryStore-three-facts",
+      "category": "three-facts",
+      "task": "SharedMemoryStore RetrievalQuery MemoryRecord crowding",
+      "required": [
+        {
+          "title": "Retrieval query",
+          "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags."
+        },
+        {
+          "title": "Memory record",
+          "content": "Keep trust, applicability, provenance, repository, claim text and its hash together."
+        }
+      ]
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-SharedMemoryStore-exact-duplicates",
+      "category": "exact-duplicates",
+      "task": "SharedMemoryStore duplicates"
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": "src/noise.rs",
+      "answerable": true,
+      "id": "dense-SharedMemoryStore-file-dense",
+      "category": "file-dense",
+      "task": "store_memory_shared crowding"
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-SharedMemoryStore-adjacent-negative",
+      "category": "adjacent-negative",
+      "task": "store_memory_shared_encryptor crowding"
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-SharedMemoryStore-generic-negative",
+      "category": "generic-negative",
+      "task": "fix_the_tests crowding"
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-SharedMemoryStore-unrelated-negative",
+      "category": "unrelated-negative",
+      "task": "unrelated_spectroscopy_analyzer"
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-RetrievalQuery-isolated-camel",
+      "category": "isolated-camel",
+      "task": "RetrievalQuery"
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-RetrievalQuery-isolated-snake",
+      "category": "isolated-snake",
+      "task": "query_retrieval"
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-RetrievalQuery-dense-camel",
+      "category": "dense-camel",
+      "task": "RetrievalQuery crowding"
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-RetrievalQuery-dense-snake",
+      "category": "dense-snake",
+      "task": "query_retrieval crowding"
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-RetrievalQuery-three-facts",
+      "category": "three-facts",
+      "task": "RetrievalQuery SharedMemoryStore MemoryRecord crowding",
+      "required": [
+        {
+          "title": "Shared memory store",
+          "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store."
+        },
+        {
+          "title": "Memory record",
+          "content": "Keep trust, applicability, provenance, repository, claim text and its hash together."
+        }
+      ]
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-RetrievalQuery-exact-duplicates",
+      "category": "exact-duplicates",
+      "task": "RetrievalQuery duplicates"
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": "src/noise.rs",
+      "answerable": true,
+      "id": "dense-RetrievalQuery-file-dense",
+      "category": "file-dense",
+      "task": "query_retrieval crowding"
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-RetrievalQuery-adjacent-negative",
+      "category": "adjacent-negative",
+      "task": "query_retrieval_encryptor crowding"
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-RetrievalQuery-generic-negative",
+      "category": "generic-negative",
+      "task": "fix_the_tests crowding"
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-RetrievalQuery-unrelated-negative",
+      "category": "unrelated-negative",
+      "task": "unrelated_spectroscopy_analyzer"
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-MemoryRecord-isolated-camel",
+      "category": "isolated-camel",
+      "task": "MemoryRecord"
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-MemoryRecord-isolated-snake",
+      "category": "isolated-snake",
+      "task": "record_memory"
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-MemoryRecord-dense-camel",
+      "category": "dense-camel",
+      "task": "MemoryRecord crowding"
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-MemoryRecord-dense-snake",
+      "category": "dense-snake",
+      "task": "record_memory crowding"
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-MemoryRecord-three-facts",
+      "category": "three-facts",
+      "task": "MemoryRecord SharedMemoryStore RetrievalQuery crowding",
+      "required": [
+        {
+          "title": "Shared memory store",
+          "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store."
+        },
+        {
+          "title": "Retrieval query",
+          "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags."
+        }
+      ]
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-MemoryRecord-exact-duplicates",
+      "category": "exact-duplicates",
+      "task": "MemoryRecord duplicates"
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": "src/noise.rs",
+      "answerable": true,
+      "id": "dense-MemoryRecord-file-dense",
+      "category": "file-dense",
+      "task": "record_memory crowding"
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-MemoryRecord-adjacent-negative",
+      "category": "adjacent-negative",
+      "task": "record_memory_encryptor crowding"
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-MemoryRecord-generic-negative",
+      "category": "generic-negative",
+      "task": "fix_the_tests crowding"
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-MemoryRecord-unrelated-negative",
+      "category": "unrelated-negative",
+      "task": "unrelated_spectroscopy_analyzer"
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-WorkloadStatus-isolated-camel",
+      "category": "isolated-camel",
+      "task": "WorkloadStatus"
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-WorkloadStatus-isolated-snake",
+      "category": "isolated-snake",
+      "task": "status_workload"
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-WorkloadStatus-dense-camel",
+      "category": "dense-camel",
+      "task": "WorkloadStatus crowding"
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-WorkloadStatus-dense-snake",
+      "category": "dense-snake",
+      "task": "status_workload crowding"
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-WorkloadStatus-three-facts",
+      "category": "three-facts",
+      "task": "WorkloadStatus SharedMemoryStore RetrievalQuery crowding",
+      "required": [
+        {
+          "title": "Shared memory store",
+          "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store."
+        },
+        {
+          "title": "Retrieval query",
+          "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags."
+        }
+      ]
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-WorkloadStatus-exact-duplicates",
+      "category": "exact-duplicates",
+      "task": "WorkloadStatus duplicates"
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": "src/noise.rs",
+      "answerable": true,
+      "id": "dense-WorkloadStatus-file-dense",
+      "category": "file-dense",
+      "task": "status_workload crowding"
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-WorkloadStatus-adjacent-negative",
+      "category": "adjacent-negative",
+      "task": "status_workload_encryptor crowding"
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-WorkloadStatus-generic-negative",
+      "category": "generic-negative",
+      "task": "fix_the_tests crowding"
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-WorkloadStatus-unrelated-negative",
+      "category": "unrelated-negative",
+      "task": "unrelated_spectroscopy_analyzer"
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserProxy-isolated-camel",
+      "category": "isolated-camel",
+      "task": "BrowserProxy"
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserProxy-isolated-snake",
+      "category": "isolated-snake",
+      "task": "proxy_browser"
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserProxy-dense-camel",
+      "category": "dense-camel",
+      "task": "BrowserProxy crowding"
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserProxy-dense-snake",
+      "category": "dense-snake",
+      "task": "proxy_browser crowding"
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserProxy-three-facts",
+      "category": "three-facts",
+      "task": "BrowserProxy CommandOutput ProcessTree crowding",
+      "required": [
+        {
+          "title": "Command output",
+          "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata."
+        },
+        {
+          "title": "Process tree",
+          "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made."
+        }
+      ]
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserProxy-exact-duplicates",
+      "category": "exact-duplicates",
+      "task": "BrowserProxy duplicates"
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": "src/noise.rs",
+      "answerable": true,
+      "id": "dense-BrowserProxy-file-dense",
+      "category": "file-dense",
+      "task": "proxy_browser crowding"
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-BrowserProxy-adjacent-negative",
+      "category": "adjacent-negative",
+      "task": "proxy_browser_encryptor crowding"
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-BrowserProxy-generic-negative",
+      "category": "generic-negative",
+      "task": "fix_the_tests crowding"
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-BrowserProxy-unrelated-negative",
+      "category": "unrelated-negative",
+      "task": "unrelated_spectroscopy_analyzer"
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-CommandOutput-isolated-camel",
+      "category": "isolated-camel",
+      "task": "CommandOutput"
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-CommandOutput-isolated-snake",
+      "category": "isolated-snake",
+      "task": "output_command"
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-CommandOutput-dense-camel",
+      "category": "dense-camel",
+      "task": "CommandOutput crowding"
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-CommandOutput-dense-snake",
+      "category": "dense-snake",
+      "task": "output_command crowding"
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-CommandOutput-three-facts",
+      "category": "three-facts",
+      "task": "CommandOutput BrowserProxy ProcessTree crowding",
+      "required": [
+        {
+          "title": "Browser proxy",
+          "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://."
+        },
+        {
+          "title": "Process tree",
+          "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made."
+        }
+      ]
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-CommandOutput-exact-duplicates",
+      "category": "exact-duplicates",
+      "task": "CommandOutput duplicates"
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": "src/noise.rs",
+      "answerable": true,
+      "id": "dense-CommandOutput-file-dense",
+      "category": "file-dense",
+      "task": "output_command crowding"
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-CommandOutput-adjacent-negative",
+      "category": "adjacent-negative",
+      "task": "output_command_encryptor crowding"
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-CommandOutput-generic-negative",
+      "category": "generic-negative",
+      "task": "fix_the_tests crowding"
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-CommandOutput-unrelated-negative",
+      "category": "unrelated-negative",
+      "task": "unrelated_spectroscopy_analyzer"
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-ProcessTree-isolated-camel",
+      "category": "isolated-camel",
+      "task": "ProcessTree"
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-ProcessTree-isolated-snake",
+      "category": "isolated-snake",
+      "task": "tree_process"
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-ProcessTree-dense-camel",
+      "category": "dense-camel",
+      "task": "ProcessTree crowding"
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-ProcessTree-dense-snake",
+      "category": "dense-snake",
+      "task": "tree_process crowding"
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-ProcessTree-three-facts",
+      "category": "three-facts",
+      "task": "ProcessTree BrowserProxy CommandOutput crowding",
+      "required": [
+        {
+          "title": "Browser proxy",
+          "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://."
+        },
+        {
+          "title": "Command output",
+          "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata."
+        }
+      ]
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-ProcessTree-exact-duplicates",
+      "category": "exact-duplicates",
+      "task": "ProcessTree duplicates"
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": "src/noise.rs",
+      "answerable": true,
+      "id": "dense-ProcessTree-file-dense",
+      "category": "file-dense",
+      "task": "tree_process crowding"
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-ProcessTree-adjacent-negative",
+      "category": "adjacent-negative",
+      "task": "tree_process_encryptor crowding"
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-ProcessTree-generic-negative",
+      "category": "generic-negative",
+      "task": "fix_the_tests crowding"
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-ProcessTree-unrelated-negative",
+      "category": "unrelated-negative",
+      "task": "unrelated_spectroscopy_analyzer"
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserScreenshot-isolated-camel",
+      "category": "isolated-camel",
+      "task": "BrowserScreenshot"
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserScreenshot-isolated-snake",
+      "category": "isolated-snake",
+      "task": "screenshot_browser"
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserScreenshot-dense-camel",
+      "category": "dense-camel",
+      "task": "BrowserScreenshot crowding"
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserScreenshot-dense-snake",
+      "category": "dense-snake",
+      "task": "screenshot_browser crowding"
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserScreenshot-three-facts",
+      "category": "three-facts",
+      "task": "BrowserScreenshot BrowserProxy CommandOutput crowding",
+      "required": [
+        {
+          "title": "Browser proxy",
+          "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://."
+        },
+        {
+          "title": "Command output",
+          "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata."
+        }
+      ]
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "dense-BrowserScreenshot-exact-duplicates",
+      "category": "exact-duplicates",
+      "task": "BrowserScreenshot duplicates"
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": "src/noise.rs",
+      "answerable": true,
+      "id": "dense-BrowserScreenshot-file-dense",
+      "category": "file-dense",
+      "task": "screenshot_browser crowding"
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-BrowserScreenshot-adjacent-negative",
+      "category": "adjacent-negative",
+      "task": "screenshot_browser_encryptor crowding"
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-BrowserScreenshot-generic-negative",
+      "category": "generic-negative",
+      "task": "fix_the_tests crowding"
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": false,
+      "id": "dense-BrowserScreenshot-unrelated-negative",
+      "category": "unrelated-negative",
+      "task": "unrelated_spectroscopy_analyzer"
+    }
+  ]
+}

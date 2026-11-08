@@ -1,0 +1,3166 @@
+{
+  "protocol": {
+    "version": 1,
+    "baseline_commit": "42ac482a56e4a039d66a454774f03529de269947",
+    "frozen_before_trials": true,
+    "inputs_sha256": {
+      "scripts/eval/memory-fullpool-retry-cases.json": "e856cf79c767092d46f7eaa6f600711ec671c7c978377430715e5d025c2016cb",
+      "scripts/eval/memory-fullpool-retry-retention-cases.json": "de291902a3650820dedfa46458b898237fc5c25f441d07434f50c07d8704503c"
+    },
+    "review": [
+      {
+        "prior": "32-candidate lexical pools with word vectors",
+        "reason_to_retry": "Current MiniLM, exact compound matching and the dense corpus differ from the old candidate pool trial."
+      },
+      {
+        "prior": "Contextual hybrid fusion and relevance reranking",
+        "reason_to_retry": "Use complete algorithmic symbol evidence rather than manually authored contextual aliases."
+      },
+      {
+        "prior": "Incident collapse/diversity",
+        "reason_to_retry": "Retry bounded vector diversity selection; retain distinct facts and reject any observed per-fact loss."
+      },
+      {
+        "prior": "Unconditional hybrid tail replacement",
+        "decision": "Already rejected for six supplied-fact losses; do not ship or weaken the retention guards."
+      }
+    ],
+    "trials": [
+      {
+        "id": "pool32",
+        "description": "Retrieve 32 lexical and semantic candidates, fuse by existing RRF, return eight."
+      },
+      {
+        "id": "symbol_rrf",
+        "description": "Add a complete-symbol rank input before truncation over the widened pools; no manual aliases or cosine retuning."
+      },
+      {
+        "id": "diversity",
+        "description": "Widen candidate pools and greedily rerank admitted records with MMR lambda 0.8 over normalized RRF relevance and stored cosine redundancy; never change stored claims."
+      }
+    ],
+    "policy": {
+      "threshold": 0.3,
+      "short_query_words": 2,
+      "short_query_scale": 0.9166666666666666,
+      "final_limit": 8,
+      "memory_budget": 1000,
+      "deterministic": true
+    },
+    "selection": "Fixed-policy retries on exposed old cases and new constructed stress views. No blind generalization claim. Select on development subject to old and new per-fact/negative guards; score only a safe improving candidate on the reserved split.",
+    "guards": [
+      "Preserve every delivered primary or required fact and its rank, even for incomplete multi-fact answers.",
+      "Negative record IDs and order unchanged; no scope, trust, tag, caller-visibility or token-limit violations.",
+      "Keep all existing fixtures and compare both lexical and hybrid outputs.",
+      "Do not collapse distinct observations merely because their text or episode resembles another.",
+      "Reject unsafe trials, restore baseline code, and continue with the next registered approach. If none passes, publish the measured failures without a production change."
+    ],
+    "registration_serialization": "JSON.stringify(parsed, null, 2) plus a final newline",
+    "committed_inputs_sha256": {
+      "scripts/eval/memory-fullpool-retry-cases.json": "1f2dcb3fc7fbe176d57e4dc2ac1d68f6ce7e017cc08195536de974ce4d579bc2",
+      "scripts/eval/memory-fullpool-retry-retention-cases.json": "72d1b16ddc1ad290220307bacc6b5af5b69fc848ae8dccc26e8096b17b9cff14"
+    }
+  },
+  "decision": "All three development retries rejected. Runtime source restored byte-for-byte; only stronger fixtures, registration and evidence retained. No rejected prototype scored on the reserved split.",
+  "model": {
+    "backend": "tract-onnx",
+    "revision": "chroma-minilm-l6-v2-913d7300-title-claim-native-v1",
+    "dimensions": 384,
+    "model_sha256": "4f148ba8ae9c2c7fbee4af2b132db8d06c6a6545b47fc83bbb98c3d22b8393e6",
+    "tokenizer_sha256": "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0"
+  },
+  "baseline_strata": [
+    {
+      "split": "development",
+      "policy": "lexical",
+      "category": "isolated-camel",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [1, 1, 1, 1]
+    },
+    {
+      "split": "development",
+      "policy": "lexical",
+      "category": "isolated-snake",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [1, 1, 1, 1]
+    },
+    {
+      "split": "development",
+      "policy": "lexical",
+      "category": "dense-camel",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "lexical",
+      "category": "dense-snake",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "lexical",
+      "category": "three-facts",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "lexical",
+      "category": "exact-duplicates",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [2, 2, 2, 2]
+    },
+    {
+      "split": "development",
+      "policy": "lexical",
+      "category": "file-dense",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "lexical",
+      "category": "adjacent-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "lexical",
+      "category": "generic-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "lexical",
+      "category": "unrelated-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 0,
+      "returned": [0, 0, 0, 0]
+    },
+    {
+      "split": "development",
+      "policy": "hybrid",
+      "category": "isolated-camel",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [2, 2, 2, 1]
+    },
+    {
+      "split": "development",
+      "policy": "hybrid",
+      "category": "isolated-snake",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [2, 1, 2, 1]
+    },
+    {
+      "split": "development",
+      "policy": "hybrid",
+      "category": "dense-camel",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "hybrid",
+      "category": "dense-snake",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 2,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "hybrid",
+      "category": "three-facts",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "hybrid",
+      "category": "exact-duplicates",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [2, 2, 3, 2]
+    },
+    {
+      "split": "development",
+      "policy": "hybrid",
+      "category": "file-dense",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 2,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "hybrid",
+      "category": "adjacent-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 2,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "hybrid",
+      "category": "generic-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "development",
+      "policy": "hybrid",
+      "category": "unrelated-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 0,
+      "returned": [0, 0, 0, 0]
+    },
+    {
+      "split": "heldout",
+      "policy": "lexical",
+      "category": "isolated-camel",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [1, 1, 1, 1]
+    },
+    {
+      "split": "heldout",
+      "policy": "lexical",
+      "category": "isolated-snake",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [1, 1, 1, 1]
+    },
+    {
+      "split": "heldout",
+      "policy": "lexical",
+      "category": "dense-camel",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "lexical",
+      "category": "dense-snake",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "lexical",
+      "category": "three-facts",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "lexical",
+      "category": "exact-duplicates",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [2, 2, 2, 2]
+    },
+    {
+      "split": "heldout",
+      "policy": "lexical",
+      "category": "file-dense",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "lexical",
+      "category": "adjacent-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "lexical",
+      "category": "generic-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "lexical",
+      "category": "unrelated-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 0,
+      "returned": [0, 0, 0, 0]
+    },
+    {
+      "split": "heldout",
+      "policy": "hybrid",
+      "category": "isolated-camel",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [1, 1, 2, 1]
+    },
+    {
+      "split": "heldout",
+      "policy": "hybrid",
+      "category": "isolated-snake",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [1, 1, 1, 1]
+    },
+    {
+      "split": "heldout",
+      "policy": "hybrid",
+      "category": "dense-camel",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 2,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "hybrid",
+      "category": "dense-snake",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "hybrid",
+      "category": "three-facts",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "hybrid",
+      "category": "exact-duplicates",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [2, 2, 3, 2]
+    },
+    {
+      "split": "heldout",
+      "policy": "hybrid",
+      "category": "file-dense",
+      "cases": 4,
+      "answerable": true,
+      "primary_or_answer_delivered": 4,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "hybrid",
+      "category": "adjacent-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 4,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "hybrid",
+      "category": "generic-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 0,
+      "returned": [8, 8, 8, 8]
+    },
+    {
+      "split": "heldout",
+      "policy": "hybrid",
+      "category": "unrelated-negative",
+      "cases": 4,
+      "answerable": false,
+      "primary_or_answer_delivered": 0,
+      "returned": [0, 0, 0, 0]
+    }
+  ],
+  "trials": [
+    {
+      "key": "expanded",
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      }
+    },
+    {
+      "key": "expanded",
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.6071428571428571,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3794642857142857,
+        "ndcg_at_8": 0.4321801213648027,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.6071428571428571
+      }
+    },
+    {
+      "key": "expanded",
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      }
+    },
+    {
+      "key": "expanded",
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8928571428571429,
+        "cases": 40,
+        "delivered_recall": 0.7857142857142857,
+        "mrr": 0.6644557823129251,
+        "ndcg_at_8": 0.7183205500457946,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8928571428571429
+      }
+    },
+    {
+      "key": "guards",
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      }
+    },
+    {
+      "key": "guards",
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.022321428571428572,
+        "ndcg_at_8": 0.05406651750992184,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      }
+    },
+    {
+      "key": "guards",
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      }
+    },
+    {
+      "key": "guards",
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.07539682539682539,
+        "ndcg_at_8": 0.17047897562911482,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      }
+    },
+    {
+      "key": "expanded",
+      "label": "pool32",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "pool32",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.5357142857142857,
+        "cases": 40,
+        "delivered_recall": 0.5,
+        "mrr": 0.3803571428571428,
+        "ndcg_at_8": 0.4188607566724395,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5357142857142857
+      },
+      "changes": {
+        "gains": [],
+        "losses": ["dense-SharedMemoryStore-file-dense", "dense-WorkloadStatus-file-dense"],
+        "rank_losses": ["dense-SharedMemoryStore-file-dense", "dense-WorkloadStatus-file-dense"],
+        "negative_changes": [
+          "dense-SharedMemoryStore-adjacent-negative",
+          "dense-RetrievalQuery-adjacent-negative",
+          "dense-MemoryRecord-adjacent-negative",
+          "dense-WorkloadStatus-adjacent-negative"
+        ],
+        "safety": []
+      },
+      "safe": false
+    },
+    {
+      "key": "guards",
+      "label": "pool32",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "pool32",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.03333333333333333,
+        "ndcg_at_8": 0.0644754678724236,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [
+          "dense-retention-SharedMemoryStore-singular Crowding observation 2",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 3",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 4",
+          "dense-retention-SharedMemoryStore-plural Crowding observation 4",
+          "dense-retention-SharedMemoryStore-plural Crowding observation 5",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 2",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 3",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 5",
+          "dense-retention-RetrievalQuery-singular Crowding observation 2",
+          "dense-retention-RetrievalQuery-singular Crowding observation 3",
+          "dense-retention-RetrievalQuery-singular Crowding observation 4",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 2",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 3",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 5",
+          "dense-retention-MemoryRecord-singular Crowding observation 2",
+          "dense-retention-MemoryRecord-singular Crowding observation 3",
+          "dense-retention-MemoryRecord-singular Crowding observation 5",
+          "dense-retention-MemoryRecord-singular Crowding observation 6",
+          "dense-retention-MemoryRecord-singular Crowding observation 7",
+          "dense-retention-MemoryRecord-plural Crowding observation 5",
+          "dense-retention-MemoryRecord-plural Crowding observation 6",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 2",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 3",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 5",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 6",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 7",
+          "dense-retention-WorkloadStatus-singular Crowding observation 6",
+          "dense-retention-WorkloadStatus-singular Crowding observation 7",
+          "dense-retention-WorkloadStatus-plural Crowding observation 3",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 2",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 3",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 4",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 6"
+        ],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": false
+    },
+    {
+      "key": "expanded",
+      "label": "symbol_rrf",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "symbol_rrf",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.9642857142857143,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.8681972789115645,
+        "ndcg_at_8": 0.8911214295565811,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9642857142857143
+      },
+      "changes": {
+        "gains": [
+          "dense-SharedMemoryStore-dense-camel",
+          "dense-RetrievalQuery-dense-camel",
+          "dense-RetrievalQuery-dense-snake",
+          "dense-RetrievalQuery-file-dense",
+          "dense-MemoryRecord-dense-camel",
+          "dense-MemoryRecord-dense-snake",
+          "dense-MemoryRecord-file-dense",
+          "dense-WorkloadStatus-dense-camel"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [
+          "dense-SharedMemoryStore-adjacent-negative",
+          "dense-RetrievalQuery-adjacent-negative",
+          "dense-MemoryRecord-adjacent-negative",
+          "dense-WorkloadStatus-adjacent-negative"
+        ],
+        "safety": []
+      },
+      "safe": false
+    },
+    {
+      "key": "guards",
+      "label": "symbol_rrf",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "symbol_rrf",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": null,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [
+          "dense-retention-SharedMemoryStore-singular Crowding observation 1",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 2",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 3",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 4",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 5",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 6",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 7",
+          "dense-retention-SharedMemoryStore-plural Crowding observation 1",
+          "dense-retention-SharedMemoryStore-plural Crowding observation 4",
+          "dense-retention-SharedMemoryStore-plural Crowding observation 5",
+          "dense-retention-SharedMemoryStore-plural Crowding observation 6",
+          "dense-retention-SharedMemoryStore-plural Crowding observation 7",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 1",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 2",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 3",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 4",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 5",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 6",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 7",
+          "dense-retention-RetrievalQuery-singular Crowding observation 1",
+          "dense-retention-RetrievalQuery-singular Crowding observation 2",
+          "dense-retention-RetrievalQuery-singular Crowding observation 3",
+          "dense-retention-RetrievalQuery-singular Crowding observation 4",
+          "dense-retention-RetrievalQuery-singular Crowding observation 5",
+          "dense-retention-RetrievalQuery-singular Crowding observation 6",
+          "dense-retention-RetrievalQuery-singular Crowding observation 7",
+          "dense-retention-RetrievalQuery-plural Crowding observation 0",
+          "dense-retention-RetrievalQuery-plural Crowding observation 1",
+          "dense-retention-RetrievalQuery-plural Crowding observation 2",
+          "dense-retention-RetrievalQuery-plural Crowding observation 3",
+          "dense-retention-RetrievalQuery-plural Crowding observation 4",
+          "dense-retention-RetrievalQuery-plural Crowding observation 5",
+          "dense-retention-RetrievalQuery-plural Crowding observation 6",
+          "dense-retention-RetrievalQuery-plural Crowding observation 7",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 1",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 2",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 3",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 4",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 5",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 6",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 7",
+          "dense-retention-MemoryRecord-singular Crowding observation 1",
+          "dense-retention-MemoryRecord-singular Crowding observation 2",
+          "dense-retention-MemoryRecord-singular Crowding observation 3",
+          "dense-retention-MemoryRecord-singular Crowding observation 4",
+          "dense-retention-MemoryRecord-singular Crowding observation 5",
+          "dense-retention-MemoryRecord-singular Crowding observation 6",
+          "dense-retention-MemoryRecord-singular Crowding observation 7",
+          "dense-retention-MemoryRecord-plural Crowding observation 0",
+          "dense-retention-MemoryRecord-plural Crowding observation 1",
+          "dense-retention-MemoryRecord-plural Crowding observation 4",
+          "dense-retention-MemoryRecord-plural Crowding observation 5",
+          "dense-retention-MemoryRecord-plural Crowding observation 6",
+          "dense-retention-MemoryRecord-plural Crowding observation 7",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 1",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 2",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 3",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 4",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 5",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 6",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 7",
+          "dense-retention-WorkloadStatus-singular Crowding observation 0",
+          "dense-retention-WorkloadStatus-singular Crowding observation 1",
+          "dense-retention-WorkloadStatus-singular Crowding observation 3",
+          "dense-retention-WorkloadStatus-singular Crowding observation 4",
+          "dense-retention-WorkloadStatus-singular Crowding observation 5",
+          "dense-retention-WorkloadStatus-singular Crowding observation 6",
+          "dense-retention-WorkloadStatus-singular Crowding observation 7",
+          "dense-retention-WorkloadStatus-plural Crowding observation 0",
+          "dense-retention-WorkloadStatus-plural Crowding observation 1",
+          "dense-retention-WorkloadStatus-plural Crowding observation 3",
+          "dense-retention-WorkloadStatus-plural Crowding observation 4",
+          "dense-retention-WorkloadStatus-plural Crowding observation 5",
+          "dense-retention-WorkloadStatus-plural Crowding observation 6",
+          "dense-retention-WorkloadStatus-plural Crowding observation 7",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 1",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 2",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 3",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 4",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 5",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 6",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 7"
+        ],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": false
+    },
+    {
+      "key": "expanded",
+      "label": "diversity",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "diversity",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8214285714285714,
+        "cases": 40,
+        "delivered_recall": 0.7142857142857143,
+        "mrr": 0.5416666666666667,
+        "ndcg_at_8": 0.6143602427296054,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8214285714285714
+      },
+      "changes": {
+        "gains": [
+          "dense-SharedMemoryStore-dense-camel",
+          "dense-RetrievalQuery-dense-camel",
+          "dense-RetrievalQuery-dense-snake",
+          "dense-MemoryRecord-dense-camel",
+          "dense-MemoryRecord-dense-snake",
+          "dense-WorkloadStatus-dense-camel"
+        ],
+        "losses": ["dense-SharedMemoryStore-file-dense", "dense-WorkloadStatus-file-dense"],
+        "rank_losses": ["dense-SharedMemoryStore-file-dense", "dense-WorkloadStatus-file-dense"],
+        "negative_changes": [
+          "dense-SharedMemoryStore-adjacent-negative",
+          "dense-RetrievalQuery-adjacent-negative",
+          "dense-MemoryRecord-adjacent-negative",
+          "dense-WorkloadStatus-adjacent-negative"
+        ],
+        "safety": []
+      },
+      "safe": false
+    },
+    {
+      "key": "guards",
+      "label": "diversity",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "diversity",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.4861111111111111,
+        "ndcg_at_8": 0.6200189407738362,
+        "no_match_injection_rate": null,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [
+          "dense-retention-SharedMemoryStore-singular Crowding observation 2",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 3",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 4",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 5",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 6",
+          "dense-retention-SharedMemoryStore-singular Crowding observation 7",
+          "dense-retention-SharedMemoryStore-plural Crowding observation 4",
+          "dense-retention-SharedMemoryStore-plural Crowding observation 5",
+          "dense-retention-SharedMemoryStore-plural Crowding observation 7",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 2",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 3",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 4",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 5",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 6",
+          "dense-retention-SharedMemoryStore-failure-channel Crowding observation 7",
+          "dense-retention-RetrievalQuery-singular Crowding observation 2",
+          "dense-retention-RetrievalQuery-singular Crowding observation 3",
+          "dense-retention-RetrievalQuery-singular Crowding observation 4",
+          "dense-retention-RetrievalQuery-singular Crowding observation 5",
+          "dense-retention-RetrievalQuery-singular Crowding observation 6",
+          "dense-retention-RetrievalQuery-singular Crowding observation 7",
+          "dense-retention-RetrievalQuery-plural Crowding observation 0",
+          "dense-retention-RetrievalQuery-plural Crowding observation 2",
+          "dense-retention-RetrievalQuery-plural Crowding observation 3",
+          "dense-retention-RetrievalQuery-plural Crowding observation 5",
+          "dense-retention-RetrievalQuery-plural Crowding observation 7",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 2",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 3",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 4",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 5",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 6",
+          "dense-retention-RetrievalQuery-failure-channel Crowding observation 7",
+          "dense-retention-MemoryRecord-singular Crowding observation 2",
+          "dense-retention-MemoryRecord-singular Crowding observation 3",
+          "dense-retention-MemoryRecord-singular Crowding observation 4",
+          "dense-retention-MemoryRecord-singular Crowding observation 6",
+          "dense-retention-MemoryRecord-singular Crowding observation 7",
+          "dense-retention-MemoryRecord-plural Crowding observation 1",
+          "dense-retention-MemoryRecord-plural Crowding observation 4",
+          "dense-retention-MemoryRecord-plural Crowding observation 6",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 2",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 3",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 4",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 5",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 6",
+          "dense-retention-MemoryRecord-failure-channel Crowding observation 7",
+          "dense-retention-WorkloadStatus-singular Crowding observation 0",
+          "dense-retention-WorkloadStatus-singular Crowding observation 1",
+          "dense-retention-WorkloadStatus-singular Crowding observation 3",
+          "dense-retention-WorkloadStatus-singular Crowding observation 4",
+          "dense-retention-WorkloadStatus-singular Crowding observation 6",
+          "dense-retention-WorkloadStatus-singular Crowding observation 7",
+          "dense-retention-WorkloadStatus-plural Crowding observation 1",
+          "dense-retention-WorkloadStatus-plural Crowding observation 2",
+          "dense-retention-WorkloadStatus-plural Crowding observation 3",
+          "dense-retention-WorkloadStatus-plural Crowding observation 5",
+          "dense-retention-WorkloadStatus-plural Crowding observation 7",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 2",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 3",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 4",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 5",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 6",
+          "dense-retention-WorkloadStatus-failure-channel Crowding observation 7"
+        ],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": false
+    },
+    {
+      "key": "expanded",
+      "label": "restored",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "restored",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.6071428571428571,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3794642857142857,
+        "ndcg_at_8": 0.4321801213648027,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.6071428571428571
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "restored",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "restored",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8928571428571429,
+        "cases": 40,
+        "delivered_recall": 0.7857142857142857,
+        "mrr": 0.6644557823129251,
+        "ndcg_at_8": 0.7183205500457946,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8928571428571429
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "restored",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "restored",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.022321428571428572,
+        "ndcg_at_8": 0.05406651750992184,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "restored",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "restored",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.07539682539682539,
+        "ndcg_at_8": 0.17047897562911482,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    }
+  ],
+  "retention_regressions": [
+    {
+      "label": "pool32",
+      "lost_fact_instances": 3,
+      "worsened_rank_instances": 30,
+      "affected_cases": 11,
+      "changes": [
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 2",
+          "before": 6,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 4",
+          "before": 5,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-plural",
+          "title": "Crowding observation 4",
+          "before": 4,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-plural",
+          "title": "Crowding observation 5",
+          "before": 5,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 5,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 6,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 2",
+          "before": 6,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 4",
+          "before": 5,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 5,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 6,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 2",
+          "before": 4,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 3",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 6",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 5",
+          "before": 6,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 6",
+          "before": 5,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 4,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 6",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 6",
+          "before": 7,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 7",
+          "before": 6,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 5,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 6,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 4",
+          "before": 4,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 6",
+          "before": 7,
+          "after": 8
+        }
+      ]
+    },
+    {
+      "label": "symbol_rrf",
+      "lost_fact_instances": 13,
+      "worsened_rank_instances": 69,
+      "affected_cases": 12,
+      "changes": [
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 1",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 2",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 4",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 5",
+          "before": 4,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 6",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 7",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-plural",
+          "title": "Crowding observation 1",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-plural",
+          "title": "Crowding observation 4",
+          "before": 4,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-plural",
+          "title": "Crowding observation 5",
+          "before": 5,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-plural",
+          "title": "Crowding observation 6",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-plural",
+          "title": "Crowding observation 7",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 1",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 4",
+          "before": 4,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 6",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 7",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 1",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 2",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 4",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 5",
+          "before": 4,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 6",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 7",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 0",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 1",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 2",
+          "before": 8,
+          "after": null
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 4",
+          "before": 6,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 5",
+          "before": 5,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 6",
+          "before": 4,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 1",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 4",
+          "before": 4,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 6",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 7",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 1",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 2",
+          "before": 4,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 3",
+          "before": 5,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 4",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 6",
+          "before": 6,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 0",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 1",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 4",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 5",
+          "before": 6,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 6",
+          "before": 5,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 7",
+          "before": 4,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 1",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 4,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 5,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 4",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 6",
+          "before": 6,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 0",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 1",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 3",
+          "before": 4,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 4",
+          "before": 5,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 5",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 6",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 7",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 0",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 1",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 4",
+          "before": 6,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 5",
+          "before": 5,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 6",
+          "before": 4,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 1",
+          "before": 1,
+          "after": 2
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 4",
+          "before": 4,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 6",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 4
+        }
+      ]
+    },
+    {
+      "label": "diversity",
+      "lost_fact_instances": 20,
+      "worsened_rank_instances": 43,
+      "affected_cases": 12,
+      "changes": [
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 2",
+          "before": 6,
+          "after": null
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 4",
+          "before": 5,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 5",
+          "before": 4,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 6",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-singular",
+          "title": "Crowding observation 7",
+          "before": 2,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-plural",
+          "title": "Crowding observation 4",
+          "before": 4,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-plural",
+          "title": "Crowding observation 5",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-plural",
+          "title": "Crowding observation 7",
+          "before": 2,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 5,
+          "after": null
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 4",
+          "before": 4,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 6",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-SharedMemoryStore-failure-channel",
+          "title": "Crowding observation 7",
+          "before": 2,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 2",
+          "before": 6,
+          "after": null
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 4",
+          "before": 5,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 5",
+          "before": 4,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 6",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-singular",
+          "title": "Crowding observation 7",
+          "before": 2,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 0",
+          "before": 2,
+          "after": 3
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 2",
+          "before": 8,
+          "after": null
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 5",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-plural",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 5,
+          "after": null
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 4",
+          "before": 4,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 6",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-RetrievalQuery-failure-channel",
+          "title": "Crowding observation 7",
+          "before": 2,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 2",
+          "before": 4,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 3",
+          "before": 5,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 4",
+          "before": 2,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 6",
+          "before": 6,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-singular",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 1",
+          "before": 2,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 4",
+          "before": 3,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-MemoryRecord-plural",
+          "title": "Crowding observation 6",
+          "before": 5,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 4,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 5,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 4",
+          "before": 2,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 6",
+          "before": 6,
+          "after": null
+        },
+        {
+          "id": "dense-retention-MemoryRecord-failure-channel",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 0",
+          "before": 2,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 1",
+          "before": 3,
+          "after": 5
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 3",
+          "before": 4,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 4",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 6",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-singular",
+          "title": "Crowding observation 7",
+          "before": 6,
+          "after": null
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 1",
+          "before": 2,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 2",
+          "before": 8,
+          "after": null
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 3",
+          "before": 7,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 5",
+          "before": 5,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-plural",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 6
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 2",
+          "before": 5,
+          "after": null
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 3",
+          "before": 6,
+          "after": 8
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 4",
+          "before": 4,
+          "after": 7
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 5",
+          "before": 2,
+          "after": 4
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 6",
+          "before": 7,
+          "after": null
+        },
+        {
+          "id": "dense-retention-WorkloadStatus-failure-channel",
+          "title": "Crowding observation 7",
+          "before": 3,
+          "after": 6
+        }
+      ]
+    }
+  ],
+  "prototype_patches": {
+    "pool32": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex dfb9ab3..59375fd 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -219,7 +219,9 @@ impl SemanticIndex {\n         accept: impl Fn(&MemoryRecord) -> bool,\n     ) -> Result<Vec<RetrievedMemory>> {\n         validate_threshold(minimum)?;\n-        let lexical = self.store.retrieve_filtered(query, &accept)?;\n+        let mut pool_query = query.clone();\n+        pool_query.limit = 32;\n+        let lexical = self.store.retrieve_filtered(&pool_query, &accept)?;\n         let vector = embedder.embed(&format!(\n             \"{}\\n{}\",\n             query.task,\n@@ -232,7 +234,7 @@ impl SemanticIndex {\n             .filter(|(limit, _)| words > 0 && words <= *limit)\n             .filter(|_| !crate::retrieval::build_fts_query(&[&text]).is_empty())\n             .map_or(minimum, |(_, scale)| minimum * scale);\n-        let semantic = self.search_filtered(query, &vector, admission, &accept)?;\n+        let semantic = self.search_filtered(&pool_query, &vector, admission, &accept)?;\n         let mut fused = HashMap::new();\n         for (rank, mut hit) in lexical.into_iter().enumerate() {\n             hit.score = 1.0 / (61 + rank) as f32;\n",
+    "symbol_rrf": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex dfb9ab3..2161356 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -219,7 +219,9 @@ impl SemanticIndex {\n         accept: impl Fn(&MemoryRecord) -> bool,\n     ) -> Result<Vec<RetrievedMemory>> {\n         validate_threshold(minimum)?;\n-        let lexical = self.store.retrieve_filtered(query, &accept)?;\n+        let mut pool_query = query.clone();\n+        pool_query.limit = 32;\n+        let lexical = self.store.retrieve_filtered(&pool_query, &accept)?;\n         let vector = embedder.embed(&format!(\n             \"{}\\n{}\",\n             query.task,\n@@ -232,7 +234,7 @@ impl SemanticIndex {\n             .filter(|(limit, _)| words > 0 && words <= *limit)\n             .filter(|_| !crate::retrieval::build_fts_query(&[&text]).is_empty())\n             .map_or(minimum, |(_, scale)| minimum * scale);\n-        let semantic = self.search_filtered(query, &vector, admission, &accept)?;\n+        let semantic = self.search_filtered(&pool_query, &vector, admission, &accept)?;\n         let mut fused = HashMap::new();\n         for (rank, mut hit) in lexical.into_iter().enumerate() {\n             hit.score = 1.0 / (61 + rank) as f32;\n@@ -260,6 +262,16 @@ impl SemanticIndex {\n                 );\n             }\n         }\n+        for (rank, mut symbol) in self.store.identifier_candidates_filtered(&pool_query, &accept)?.into_iter().enumerate() {\n+            let score = 1.0 / (61 + rank) as f32;\n+            if let Some(hit) = fused.values_mut().find(|hit| hit.record.same_context_claim(&symbol.record)) {\n+                hit.score += score;\n+                hit.reason.push_str(\", complete symbol match\");\n+            } else {\n+                symbol.score = score;\n+                fused.insert(symbol.record.id, symbol);\n+            }\n+        }\n         let mut found: Vec<_> = fused.into_values().collect();\n         found.sort_by(|a, b| {\n             b.score\n",
+    "diversity": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex dfb9ab3..503e8cd 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -219,7 +219,9 @@ impl SemanticIndex {\n         accept: impl Fn(&MemoryRecord) -> bool,\n     ) -> Result<Vec<RetrievedMemory>> {\n         validate_threshold(minimum)?;\n-        let lexical = self.store.retrieve_filtered(query, &accept)?;\n+        let mut pool_query = query.clone();\n+        pool_query.limit = 32;\n+        let lexical = self.store.retrieve_filtered(&pool_query, &accept)?;\n         let vector = embedder.embed(&format!(\n             \"{}\\n{}\",\n             query.task,\n@@ -232,7 +234,7 @@ impl SemanticIndex {\n             .filter(|(limit, _)| words > 0 && words <= *limit)\n             .filter(|_| !crate::retrieval::build_fts_query(&[&text]).is_empty())\n             .map_or(minimum, |(_, scale)| minimum * scale);\n-        let semantic = self.search_filtered(query, &vector, admission, &accept)?;\n+        let semantic = self.search_filtered(&pool_query, &vector, admission, &accept)?;\n         let mut fused = HashMap::new();\n         for (rank, mut hit) in lexical.into_iter().enumerate() {\n             hit.score = 1.0 / (61 + rank) as f32;\n@@ -267,7 +269,31 @@ impl SemanticIndex {\n                 .then(a.record.id.cmp(&b.record.id))\n         });\n         crate::retrieval::deduplicate_memories(&mut found);\n-        found.truncate(query.limit);\n+        let mut vectors = HashMap::new();\n+        {\n+            let guard = self.store.lock()?;\n+            let mut statement = guard.connection.prepare(\"SELECT v.memory_id, v.vector_json FROM memory_vectors v JOIN memories m ON m.id=v.memory_id WHERE m.repo=?1 AND v.model=?2 AND v.claim_hash=m.claim_hash\")?;\n+            let rows = statement.query_map(params![query.repo, self.model], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;\n+            for row in rows {\n+                let (id, json) = row?;\n+                let stored: Vec<f32> = serde_json::from_str(&json)?;\n+                validate(&stored, self.dimensions)?;\n+                vectors.insert(id, stored);\n+            }\n+        }\n+        let maximum = found.first().map_or(1.0, |hit| hit.score);\n+        let mut selected: Vec<RetrievedMemory> = Vec::new();\n+        while !found.is_empty() && selected.len() < query.limit {\n+            let relevance = |hit: &RetrievedMemory| {\n+                let redundancy = vectors.get(&hit.record.id.to_string()).map_or(0.0, |vector| {\n+                    selected.iter().filter_map(|other| vectors.get(&other.record.id.to_string())).map(|other| cosine(vector, other)).fold(0.0_f32, f32::max)\n+                });\n+                0.8 * hit.score / maximum - 0.2 * redundancy\n+            };\n+            let best = (0..found.len()).max_by(|&a, &b| relevance(&found[a]).total_cmp(&relevance(&found[b])).then(found[b].record.id.cmp(&found[a].record.id))).unwrap_or(0);\n+            selected.push(found.remove(best));\n+        }\n+        found = selected;\n         // The separator also consumes one character of the encoder window.\n         // Keep incumbent ranks; only unused slots receive diagnostic evidence.\n         let failure = query\n"
+  },
+  "production_semantic_sha256": "3e01c2d6ba274a63e920fc820b350d6a6b543835e22628f86dbb71b88475fd55",
+  "restoration": {
+    "policy_views": 208,
+    "deterministic_fields_identical": true,
+    "only_excluded_fields": ["latency_us", "telemetry"],
+    "exclusion_reason": "Latency and timed telemetry are observational, not retrieval output; safety and budgets checked explicitly."
+  },
+  "output_fingerprints": [
+    {
+      "key": "expanded",
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "development",
+      "raw_sha256": "75e25608569a5cf3a6109ff469768e5ccb7f57730e3daef212b4090ee593f3fe",
+      "deterministic_cases_sha256": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc"
+    },
+    {
+      "key": "expanded",
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "development",
+      "raw_sha256": "818b169e5fb77f604e59ac604b6046c300446ecff1415d29181b095a905035ce",
+      "deterministic_cases_sha256": "69fe3bcf2a1f1740442409aff0ec4b4ca7d47f27c6d815d293dd1f8b2d06ebc6"
+    },
+    {
+      "key": "expanded",
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "heldout",
+      "raw_sha256": "003c226cd4e16ee51434d45fba4b14978122cf3048934139a98436df82b96c6c",
+      "deterministic_cases_sha256": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c"
+    },
+    {
+      "key": "expanded",
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "heldout",
+      "raw_sha256": "b9150bb5a79d288681140e8e4cca6d5a15e53fd69f884d9d0c9a1a8ae49ac909",
+      "deterministic_cases_sha256": "7c9aa7be3690d03f3e8b3d2e077708e6d2a70a36f451f5427b0205f01a31e231"
+    },
+    {
+      "key": "guards",
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "development",
+      "raw_sha256": "8424f9aad1c34ea1dc8c72d4c599d0d9b5770e93c3887b317ec06b9aadf28438",
+      "deterministic_cases_sha256": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571"
+    },
+    {
+      "key": "guards",
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "development",
+      "raw_sha256": "8bfc98f3310e157000c69890198f854d4de03887f27ba4665b519844b0c1cea4",
+      "deterministic_cases_sha256": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d"
+    },
+    {
+      "key": "guards",
+      "label": "baseline",
+      "policy": "lexical",
+      "split": "heldout",
+      "raw_sha256": "d41f654d936a33bdf07d46f37c199d1829e332b6a4eb0b7e592279a8d694a218",
+      "deterministic_cases_sha256": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0"
+    },
+    {
+      "key": "guards",
+      "label": "baseline",
+      "policy": "hybrid",
+      "split": "heldout",
+      "raw_sha256": "71dbdfda1f593ebb88247f6e534bdcfc633b760c1258766389b6b023477db4e6",
+      "deterministic_cases_sha256": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4"
+    },
+    {
+      "key": "expanded",
+      "label": "pool32",
+      "policy": "lexical",
+      "split": "development",
+      "raw_sha256": "ee58451b363f71f259f63ba25df2ad79a39d845112b8b5d748888d8ff1246364",
+      "deterministic_cases_sha256": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc"
+    },
+    {
+      "key": "expanded",
+      "label": "pool32",
+      "policy": "hybrid",
+      "split": "development",
+      "raw_sha256": "fd6cc20786940cc41c1613800b70b00a85cf8edeb06687a8997addbed4eaaa20",
+      "deterministic_cases_sha256": "8cc6a65345a952e0409aa49413ebe28eca59926599947f7ab729ecabbb42a7bc"
+    },
+    {
+      "key": "guards",
+      "label": "pool32",
+      "policy": "lexical",
+      "split": "development",
+      "raw_sha256": "bfbe9906f3c96e2158cf526bff149a42821a353c482ab0bb95215c4609b5f823",
+      "deterministic_cases_sha256": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571"
+    },
+    {
+      "key": "guards",
+      "label": "pool32",
+      "policy": "hybrid",
+      "split": "development",
+      "raw_sha256": "871073627eb51705c286b3c6434139ac41223a59813933456e1e6948c9a92c43",
+      "deterministic_cases_sha256": "e66f9056207ab5bff96d79b978cd270c0a5d9a6c67a14e87a9e365c0e4779fcb"
+    },
+    {
+      "key": "expanded",
+      "label": "symbol_rrf",
+      "policy": "lexical",
+      "split": "development",
+      "raw_sha256": "ae24311e49d8e8cbef64158b341b059c360dba5f6e966501dcec2c0ec2782d21",
+      "deterministic_cases_sha256": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc"
+    },
+    {
+      "key": "expanded",
+      "label": "symbol_rrf",
+      "policy": "hybrid",
+      "split": "development",
+      "raw_sha256": "5e1baf641cf241f3acff2dd5d50ec21acce51055ec8c1cf057039105df011889",
+      "deterministic_cases_sha256": "4b1064749bbfc7092d99a6bcfd521d8dd94cf9fb15b31509f58fbc16ab085c2d"
+    },
+    {
+      "key": "guards",
+      "label": "symbol_rrf",
+      "policy": "lexical",
+      "split": "development",
+      "raw_sha256": "ab7478f9da0e7110c583592a1b8e48fe1695651607e16df8f5b43d12fcb182cf",
+      "deterministic_cases_sha256": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571"
+    },
+    {
+      "key": "guards",
+      "label": "symbol_rrf",
+      "policy": "hybrid",
+      "split": "development",
+      "raw_sha256": "7e9d72fff8c7625d47815fa1d310042e56cc0b1992c59f9452a9cafb9f3acb42",
+      "deterministic_cases_sha256": "5dfa7f7f69c6eb74b67323d0e3d8e68d21f3942df62235ad522329cb4705fe02"
+    },
+    {
+      "key": "expanded",
+      "label": "diversity",
+      "policy": "lexical",
+      "split": "development",
+      "raw_sha256": "b2093d3140cce84803d52b8f199265c5e1bc722a2cf739db428fb6e36b54ea8d",
+      "deterministic_cases_sha256": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc"
+    },
+    {
+      "key": "expanded",
+      "label": "diversity",
+      "policy": "hybrid",
+      "split": "development",
+      "raw_sha256": "08f28505072112d5823b4720f2d2fbd9d0791d9d4b6b533b50c7b4658c763f94",
+      "deterministic_cases_sha256": "b792f97b56bb7011d1956c179ac3ef921c63275e7eaa142dbe733da9d5745663"
+    },
+    {
+      "key": "guards",
+      "label": "diversity",
+      "policy": "lexical",
+      "split": "development",
+      "raw_sha256": "23763ef470a56bf031ae91eeb45f58d0cb71f52a71ac00da7d5eafddee16935b",
+      "deterministic_cases_sha256": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571"
+    },
+    {
+      "key": "guards",
+      "label": "diversity",
+      "policy": "hybrid",
+      "split": "development",
+      "raw_sha256": "895d8f9486e81838c7b6008f176aeec3146d8690361eecff1c762d4d3c23f00c",
+      "deterministic_cases_sha256": "2a3d90aa3cc341859f910624a94d5fb32e51259f020eedd6fb566d1a7f8ad51a"
+    },
+    {
+      "key": "expanded",
+      "label": "restored",
+      "policy": "lexical",
+      "split": "development",
+      "raw_sha256": "d8efbc117cb1fb57bdf5b14d529c94ba6b9752c718c61f68101c1a968c94db9d",
+      "deterministic_cases_sha256": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc"
+    },
+    {
+      "key": "expanded",
+      "label": "restored",
+      "policy": "hybrid",
+      "split": "development",
+      "raw_sha256": "0c3688b049807933bb48953535413485564151432a20066e1b1472e5e8513113",
+      "deterministic_cases_sha256": "69fe3bcf2a1f1740442409aff0ec4b4ca7d47f27c6d815d293dd1f8b2d06ebc6"
+    },
+    {
+      "key": "expanded",
+      "label": "restored",
+      "policy": "lexical",
+      "split": "heldout",
+      "raw_sha256": "5bb2a3941d6e1fbd23a3a420d63488909c741cea2e6305ed2efd1ba1e93c08cc",
+      "deterministic_cases_sha256": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c"
+    },
+    {
+      "key": "expanded",
+      "label": "restored",
+      "policy": "hybrid",
+      "split": "heldout",
+      "raw_sha256": "1e59506d17b2f258eb8f0ceb5ac78b362438b4f5bb0415525ad35bd98acd9781",
+      "deterministic_cases_sha256": "7c9aa7be3690d03f3e8b3d2e077708e6d2a70a36f451f5427b0205f01a31e231"
+    },
+    {
+      "key": "guards",
+      "label": "restored",
+      "policy": "lexical",
+      "split": "development",
+      "raw_sha256": "2466211d8cb7b71798ae031deaec47b96848603dcdb85468c4dde46da280a077",
+      "deterministic_cases_sha256": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571"
+    },
+    {
+      "key": "guards",
+      "label": "restored",
+      "policy": "hybrid",
+      "split": "development",
+      "raw_sha256": "e462ad8c02d5ccf5bdcce451eac24acb3835e5066aa41a3c92c33c7c332995e0",
+      "deterministic_cases_sha256": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d"
+    },
+    {
+      "key": "guards",
+      "label": "restored",
+      "policy": "lexical",
+      "split": "heldout",
+      "raw_sha256": "f4eecd4face64e09c523efcf046ecb4b0a83c1610b2e67f2b48d65f20c986db0",
+      "deterministic_cases_sha256": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0"
+    },
+    {
+      "key": "guards",
+      "label": "restored",
+      "policy": "hybrid",
+      "split": "heldout",
+      "raw_sha256": "e4574dd46af79040322866847b78fb8b43e7bb9111251f0dc8bfdb658f2bed39",
+      "deterministic_cases_sha256": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4"
+    }
+  ],
+  "original_perfect_controls": [
+    {
+      "key": "identifier",
+      "label": "final",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      }
+    },
+    {
+      "key": "identifier",
+      "label": "final",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      }
+    },
+    {
+      "key": "identifier",
+      "label": "final",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      }
+    },
+    {
+      "key": "identifier",
+      "label": "final",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.5,
+        "recall_at_8": 1
+      }
+    },
+    {
+      "key": "snake",
+      "label": "final",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6964285714285714,
+        "ndcg_at_8": 0.7376660274234746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      }
+    },
+    {
+      "key": "snake",
+      "label": "final",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.800595238095238,
+        "ndcg_at_8": 0.8516851726097714,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      }
+    },
+    {
+      "key": "snake",
+      "label": "final",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6904761904761905,
+        "ndcg_at_8": 0.7329899647959225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      }
+    },
+    {
+      "key": "snake",
+      "label": "final",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.9404761904761906,
+        "ndcg_at_8": 0.9557806966836756,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      }
+    }
+  ],
+  "changed_answers": [
+    {
+      "label": "pool32",
+      "id": "dense-SharedMemoryStore-file-dense",
+      "delivered_before": true,
+      "delivered_after": false,
+      "primary_rank_before": 8,
+      "primary_rank_after": null
+    },
+    {
+      "label": "pool32",
+      "id": "dense-WorkloadStatus-file-dense",
+      "delivered_before": true,
+      "delivered_after": false,
+      "primary_rank_before": 8,
+      "primary_rank_after": null
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-SharedMemoryStore-dense-camel",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 1
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-RetrievalQuery-dense-camel",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 1
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-RetrievalQuery-dense-snake",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 1
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-RetrievalQuery-file-dense",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 6
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-MemoryRecord-dense-camel",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 1
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-MemoryRecord-dense-snake",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 1
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-MemoryRecord-file-dense",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 7
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-WorkloadStatus-dense-camel",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 1
+    },
+    {
+      "label": "diversity",
+      "id": "dense-SharedMemoryStore-dense-camel",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 2
+    },
+    {
+      "label": "diversity",
+      "id": "dense-SharedMemoryStore-file-dense",
+      "delivered_before": true,
+      "delivered_after": false,
+      "primary_rank_before": 8,
+      "primary_rank_after": null
+    },
+    {
+      "label": "diversity",
+      "id": "dense-RetrievalQuery-dense-camel",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 2
+    },
+    {
+      "label": "diversity",
+      "id": "dense-RetrievalQuery-dense-snake",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 2
+    },
+    {
+      "label": "diversity",
+      "id": "dense-MemoryRecord-dense-camel",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 2
+    },
+    {
+      "label": "diversity",
+      "id": "dense-MemoryRecord-dense-snake",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 2
+    },
+    {
+      "label": "diversity",
+      "id": "dense-WorkloadStatus-dense-camel",
+      "delivered_before": false,
+      "delivered_after": true,
+      "primary_rank_before": null,
+      "primary_rank_after": 2
+    },
+    {
+      "label": "diversity",
+      "id": "dense-WorkloadStatus-file-dense",
+      "delivered_before": true,
+      "delivered_after": false,
+      "primary_rank_before": 8,
+      "primary_rank_after": null
+    }
+  ],
+  "changed_negatives": [
+    {
+      "label": "pool32",
+      "id": "dense-SharedMemoryStore-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000001e"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-00000000000b"
+      ]
+    },
+    {
+      "label": "pool32",
+      "id": "dense-RetrievalQuery-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000008",
+        "00000000-0000-0000-0000-000000000007"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-00000000000d"
+      ]
+    },
+    {
+      "label": "pool32",
+      "id": "dense-MemoryRecord-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-00000000000d"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000008"
+      ]
+    },
+    {
+      "label": "pool32",
+      "id": "dense-WorkloadStatus-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-00000000001f",
+        "00000000-0000-0000-0000-000000000006"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-000000000008"
+      ]
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-SharedMemoryStore-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000001e"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-00000000000b"
+      ]
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-RetrievalQuery-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000008",
+        "00000000-0000-0000-0000-000000000007"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-00000000000d"
+      ]
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-MemoryRecord-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-00000000000d"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000008"
+      ]
+    },
+    {
+      "label": "symbol_rrf",
+      "id": "dense-WorkloadStatus-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-00000000001f",
+        "00000000-0000-0000-0000-000000000006"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-000000000008"
+      ]
+    },
+    {
+      "label": "diversity",
+      "id": "dense-SharedMemoryStore-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000001e"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-00000000000b"
+      ]
+    },
+    {
+      "label": "diversity",
+      "id": "dense-RetrievalQuery-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000008",
+        "00000000-0000-0000-0000-000000000007"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000008",
+        "00000000-0000-0000-0000-000000000007"
+      ]
+    },
+    {
+      "label": "diversity",
+      "id": "dense-MemoryRecord-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-00000000000d"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-00000000000d",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000008"
+      ]
+    },
+    {
+      "label": "diversity",
+      "id": "dense-WorkloadStatus-adjacent-negative",
+      "before": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-00000000000b",
+        "00000000-0000-0000-0000-00000000001f",
+        "00000000-0000-0000-0000-000000000006"
+      ],
+      "after": [
+        "00000000-0000-0000-0000-000000000005",
+        "00000000-0000-0000-0000-00000000000a",
+        "00000000-0000-0000-0000-000000000007",
+        "00000000-0000-0000-0000-000000000009",
+        "00000000-0000-0000-0000-00000000000c",
+        "00000000-0000-0000-0000-000000000006",
+        "00000000-0000-0000-0000-000000000008",
+        "00000000-0000-0000-0000-00000000000d"
+      ]
+    }
+  ],
+  "validation": {
+    "crate": "verified-code-memory only; no multi-crate test run",
+    "rust_all_targets": "passed",
+    "rust_doc_tests": 1,
+    "native_onnx_tests": 2,
+    "clippy": "passed with -D warnings",
+    "frontend_tests": 1046,
+    "typecheck": "passed",
+    "fixture_audit": "104 unique case IDs; split counts, source hashes at binding commit, required-fact presence, feasible main requests and pretrial registration hashes verified",
+    "old_runtime_and_fixtures": "unchanged",
+    "new_baseline_restoration": "208 deterministic policy views identical"
+  }
+}
