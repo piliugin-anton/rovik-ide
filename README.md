@@ -2058,6 +2058,12 @@ wildcards retain their existing pools. See the
 [focused-symbol experiments](docs/design/long-term-memory-focused-symbols-nov8-2026.md)
 for the fixed scope rules and per-fact retention checks.
 
+A focused request naming two to four compound identifiers can cover all of them
+within that same pool. Already supplied named facts and exact requested titles
+keep their ranks; only other trailing slots can be replaced. Every requested name
+must have an eligible match, with enough slots for the entire set. See the
+[multiple-symbol experiment](docs/design/long-term-memory-multi-symbols-nov8-2026.md).
+
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
 setup. An existing incomplete or corrupt directory is reported and left intact;

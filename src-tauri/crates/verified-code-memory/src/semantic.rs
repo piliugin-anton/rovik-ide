@@ -495,13 +495,116 @@ impl SemanticIndex {
                 Err(error) => eprintln!("memory: focused symbol lookup unavailable; preserving current results: {error}"),
             }
         }
+        if found.len() == query.limit
+            && query.limit > 1
+            && query.files.is_empty()
+            && query.failure.is_none()
+            && !exact_title
+        {
+            if let Some(names) = focused_identifiers(&query.task) {
+                let supplementary = (|| -> Result<_> {
+                    let mut protected = vec![false; found.len()];
+                    protected[0] = true;
+                    for (i, hit) in found.iter().enumerate() {
+                        if query.task.split_whitespace().any(|word| {
+                            hit.record.title.eq_ignore_ascii_case(word)
+                                || hit.record.title.eq_ignore_ascii_case(
+                                    word.trim_matches(|c: char| !c.is_alphanumeric()),
+                                )
+                        }) {
+                            protected[i] = true;
+                        }
+                    }
+                    let mut additions: Vec<RetrievedMemory> = Vec::new();
+                    for name in names {
+                        let mut lookup = query.clone();
+                        lookup.task = name.to_owned();
+                        let represented =
+                            self.store
+                                .identifier_candidates_filtered(&lookup, |record| {
+                                    accept(record)
+                                        && (found
+                                            .iter()
+                                            .any(|hit| hit.record.same_context_claim(record))
+                                            || additions
+                                                .iter()
+                                                .any(|hit| hit.record.same_context_claim(record)))
+                                })?;
+                        for (i, hit) in found.iter().enumerate() {
+                            if represented
+                                .iter()
+                                .any(|r| r.record.same_context_claim(&hit.record))
+                            {
+                                protected[i] = true;
+                            }
+                        }
+                        if represented.is_empty() {
+                            let Some(candidate) = self
+                                .store
+                                .identifier_candidates_filtered(&lookup, &accept)?
+                                .into_iter()
+                                .next()
+                            else {
+                                return Ok(None);
+                            };
+                            additions.push(candidate);
+                        }
+                    }
+                    let slots: Vec<_> = (1..found.len()).rev().filter(|i| !protected[*i]).collect();
+                    if additions.len() > slots.len() {
+                        return Ok(None);
+                    }
+                    Ok(Some((slots, additions)))
+                })();
+                match supplementary {
+                    Ok(Some((slots, additions))) => {
+                        for (slot, mut hit) in slots.into_iter().zip(additions) {
+                            hit.score = found[slot].score;
+                            hit.reason.push_str(", requested complete symbol match");
+                            found[slot] = hit;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!(
+                        "memory: multi-symbol lookup unavailable; preserving results: {error}"
+                    ),
+                }
+            }
+        }
         Ok(found)
     }
 }
 
+fn focused_identifiers(task: &str) -> Option<Vec<&str>> {
+    let words: Vec<_> = task.split_whitespace().collect();
+    if !(2..=5).contains(&words.len()) || !focused_scope(task) {
+        return None;
+    }
+    let mut names = Vec::new();
+    let mut context = 0;
+    for word in words {
+        let clause = crate::retrieval::identifier_fts_query(&[word]);
+        if clause.is_empty() {
+            context += 1;
+        } else if clause.contains(" OR ") {
+            return None;
+        } else if !names.contains(&word) {
+            names.push(word);
+        }
+    }
+    (context <= 1 && (2..=4).contains(&names.len())).then_some(names)
+}
+
 fn focused_identifier(task: &str) -> bool {
-    if !(1..=2).contains(&task.split_whitespace().count())
-        || task.contains(['*', '?'])
+    if !(1..=2).contains(&task.split_whitespace().count()) || !focused_scope(task) {
+        return false;
+    }
+    let clause = crate::retrieval::identifier_fts_query(&[task]);
+    !clause.is_empty() && !clause.contains(" OR ")
+}
+
+fn focused_scope(task: &str) -> bool {
+    if task.contains(['*', '?'])
         || task.chars().any(char::is_numeric)
         || task.split(|c: char| !c.is_ascii_alphabetic()).any(|word| {
             matches!(
@@ -523,8 +626,7 @@ fn focused_identifier(task: &str) -> bool {
     {
         return false;
     }
-    let clause = crate::retrieval::identifier_fts_query(&[task]);
-    !clause.is_empty() && !clause.contains(" OR ")
+    true
 }
 
 fn overflow_conclusion(document: &str, limit: Option<usize>) -> Option<String> {

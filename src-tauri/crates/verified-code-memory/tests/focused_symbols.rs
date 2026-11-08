@@ -272,3 +272,91 @@ fn a_known_complete_match_beyond_the_supplementary_pool_is_not_replaced() {
     let after = index.retrieve(&query, &DenseModel, 0.8).unwrap();
     assert_eq!(ids(&after), ids(&before));
 }
+
+#[test]
+fn multiple_named_facts_are_recovered_atomically_without_moving_existing_named_facts() {
+    let (store, index, first) = fixture();
+    let second = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Retrieval query",
+            "Use a lock for query state.",
+        ))
+        .unwrap();
+    store.verify(second.id, "separate source").unwrap();
+    index.backfill("a", &FocusModel).unwrap();
+    for task in [
+        "SharedMemoryStore RetrievalQuery crowding",
+        "shared_memory_store RetrievalQuery crowding",
+    ] {
+        let query = RetrievalQuery::new("a", task);
+        let before = index
+            .retrieve(&query.clone().with_failure(""), &FocusModel, 0.8)
+            .unwrap();
+        let after = index.retrieve(&query, &FocusModel, 0.8).unwrap();
+        assert_eq!(after.len(), 8);
+        assert_eq!(after[0].record.id, before[0].record.id);
+        assert!(after.iter().any(|h| h.record.id == first));
+        assert!(after.iter().any(|h| h.record.id == second.id));
+        for id in [first, second.id] {
+            if let Some(rank) = before.iter().position(|h| h.record.id == id) {
+                assert_eq!(after.iter().position(|h| h.record.id == id), Some(rank));
+            }
+        }
+        let (packet, shown) = store.render_packet_traced(&after, 1000);
+        assert!(shown.contains(&second.id));
+        assert!(packet.contains(&second.content));
+    }
+    for task in [
+        "SharedMemoryStore UnknownMemory crowding",
+        "all SharedMemoryStore RetrievalQuery crowding",
+        "Please review SharedMemoryStore RetrievalQuery crowding",
+    ] {
+        let query = RetrievalQuery::new("a", task);
+        let before = index
+            .retrieve(&query.clone().with_failure(""), &FocusModel, 0.8)
+            .unwrap();
+        assert_eq!(
+            ids(&index.retrieve(&query, &FocusModel, 0.8).unwrap()),
+            ids(&before)
+        );
+    }
+}
+
+#[test]
+fn an_explicit_context_title_is_protected_alongside_compound_names() {
+    let (store, index, first) = fixture();
+    let second = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Retrieval query",
+            "Use a lock for query state.",
+        ))
+        .unwrap();
+    store.verify(second.id, "source").unwrap();
+    let context = store
+        .remember(NewMemory::procedure(
+            "a",
+            "crowding",
+            format!(
+                "{}Use a lock for the contextual fact.",
+                "crowding ".repeat(8)
+            ),
+        ))
+        .unwrap();
+    store.verify(context.id, "context source").unwrap();
+    index.backfill("a", &FocusModel).unwrap();
+    let query = RetrievalQuery::new("a", "SharedMemoryStore RetrievalQuery crowding");
+    let before = index
+        .retrieve(&query.clone().with_failure(""), &FocusModel, 0.8)
+        .unwrap();
+    let rank = before
+        .iter()
+        .position(|h| h.record.id == context.id)
+        .unwrap();
+    assert_eq!(rank, 7);
+    let after = index.retrieve(&query, &FocusModel, 0.8).unwrap();
+    assert_eq!(after[rank].record.id, context.id);
+    assert!(after.iter().any(|h| h.record.id == first));
+    assert!(after.iter().any(|h| h.record.id == second.id));
+}

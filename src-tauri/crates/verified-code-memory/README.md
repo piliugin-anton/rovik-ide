@@ -126,6 +126,13 @@ lookups, explicit file/failure context, exact incumbent titles, longer requests,
 registered collection words, digits and wildcards keep their existing pools.
 This focused rule does not apply to lexical or strict vector searches.
 
+Requests naming two to four compound identifiers can cover each requested name
+within the same pool. Existing named matches and exact titles mentioned in the
+request keep their positions; only other trailing slots may be used. The request
+may contain at most one other term. If a name has no eligible match or the slots
+cannot cover all missing names, the pool stays intact. The same collection,
+file/failure, numeric and wildcard protections apply, with no extra inference.
+
 ## Development
 
 ```bash
