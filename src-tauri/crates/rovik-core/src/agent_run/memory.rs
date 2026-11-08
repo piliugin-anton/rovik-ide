@@ -1775,6 +1775,7 @@ impl super::run::Run {
                 store,
                 self.memory.repo.clone(),
                 self.core.paths.config_dir.clone(),
+                self.memory.settings_root.clone(),
             );
         }
         let list = event(&self.dialog_id, &self.memory.recalled, ended);

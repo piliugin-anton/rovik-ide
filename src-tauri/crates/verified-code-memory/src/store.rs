@@ -5,7 +5,8 @@ use crate::model::{
 };
 use crate::retrieval::{
     bm25_relevance, build_fts_query, collect_ranked_candidates, compare_memories,
-    deduplicate_memories, estimate_tokens, normalize_path, RetrievalTelemetry, RetrievalWeights,
+    deduplicate_memories, estimate_tokens, identifier_fts_query, normalize_path,
+    RetrievalTelemetry, RetrievalWeights,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::types::Value;
@@ -921,6 +922,17 @@ impl MemoryStore {
             }
         }
 
+        // Keep ordinary lexical and explicit-file behavior intact. A compound
+        // code name can name the words of a prose claim without sharing its
+        // literal FTS token; require all its meaningful components together.
+        let had_ordinary = !candidates.is_empty();
+        if !had_ordinary {
+            let fallback =
+                identifier_fts_query(&[&query.task, query.failure.as_deref().unwrap_or("")]);
+            candidates =
+                self.full_text_candidates(query, &accept, now, &mut telemetry, fallback)?;
+        }
+
         // Equal scores fall to the newer claim, then to the id: the same query
         // over the same memories answers the same way every time. "Newer" is
         // the claim's own stamp, as the recency component reads it — not when
@@ -928,6 +940,39 @@ impl MemoryStore {
         candidates.sort_by(compare_memories);
         deduplicate_memories(&mut candidates);
         candidates.truncate(query.limit);
+
+        let exact_title = candidates.iter().any(|hit| {
+            hit.record.title.eq_ignore_ascii_case(query.task.trim())
+                || query
+                    .failure
+                    .as_deref()
+                    .is_some_and(|failure| hit.record.title.eq_ignore_ascii_case(failure.trim()))
+        });
+        // A concrete file or an exact claim title already provides deliberate
+        // context. Supplement only unresolved text matches, never those paths.
+        if had_ordinary && query.files.is_empty() && !exact_title && candidates.len() < query.limit
+        {
+            let fallback =
+                identifier_fts_query(&[&query.task, query.failure.as_deref().unwrap_or("")]);
+            let eligible = |record: &MemoryRecord| {
+                accept(record)
+                    && !candidates
+                        .iter()
+                        .any(|hit| hit.record.same_context_claim(record))
+            };
+            let mut supplemental =
+                self.full_text_candidates(query, &eligible, now, &mut telemetry, fallback)?;
+            supplemental.sort_by(compare_memories);
+            let last_score = candidates.last().map_or(1.0, |hit| hit.score);
+            for (rank, mut hit) in supplemental
+                .into_iter()
+                .take(query.limit - candidates.len())
+                .enumerate()
+            {
+                hit.score = last_score / (rank + 2) as f32;
+                candidates.push(hit);
+            }
+        }
 
         telemetry.used_full_text_search = telemetry.fts_matches > 0;
         telemetry.returned = candidates.len();
@@ -945,11 +990,22 @@ impl MemoryStore {
         now: DateTime<Utc>,
         telemetry: &mut RetrievalTelemetry,
     ) -> Result<Vec<RetrievedMemory>> {
+        let failure = query.failure.as_deref().unwrap_or("");
+        let fts_query = build_fts_query(&[query.task.as_str(), failure]);
+        self.full_text_candidates(query, accept, now, telemetry, fts_query)
+    }
+
+    fn full_text_candidates(
+        &self,
+        query: &RetrievalQuery,
+        accept: &impl Fn(&MemoryRecord) -> bool,
+        now: DateTime<Utc>,
+        telemetry: &mut RetrievalTelemetry,
+        fts_query: String,
+    ) -> Result<Vec<RetrievedMemory>> {
         let Some(states) = states_sql(query) else {
             return Ok(Vec::new());
         };
-        let failure = query.failure.as_deref().unwrap_or("");
-        let fts_query = build_fts_query(&[query.task.as_str(), failure]);
         // No word of the query names anything (it is all "fix the tests"), so
         // there is nothing for the index to look up: only a file can make a
         // memory relevant to this query.
@@ -988,7 +1044,7 @@ impl MemoryStore {
             LEXICAL_POOL,
             telemetry,
         )?;
-        telemetry.fts_matches = telemetry.candidates_scanned - scanned;
+        telemetry.fts_matches += telemetry.candidates_scanned - scanned;
         Ok(found)
     }
 
@@ -1529,10 +1585,37 @@ impl SharedMemoryStore {
         query: &RetrievalQuery,
         accept: impl Fn(&MemoryRecord) -> bool,
     ) -> Result<Vec<RetrievedMemory>> {
-        Ok(self
-            .lock()?
-            .retrieve_filtered_with_telemetry(query, accept)?
-            .0)
+        Ok(self.retrieve_filtered_with_telemetry(query, accept)?.0)
+    }
+
+    /// Returns retrieval telemetry with caller visibility applied before limits.
+    pub fn retrieve_filtered_with_telemetry(
+        &self,
+        query: &RetrievalQuery,
+        accept: impl Fn(&MemoryRecord) -> bool,
+    ) -> Result<(Vec<RetrievedMemory>, RetrievalTelemetry)> {
+        self.lock()?.retrieve_filtered_with_telemetry(query, accept)
+    }
+
+    /// Complete symbol matches, with eligibility applied before the bounded pool.
+    pub(crate) fn identifier_candidates_filtered(
+        &self,
+        query: &RetrievalQuery,
+        accept: impl Fn(&MemoryRecord) -> bool,
+    ) -> Result<Vec<RetrievedMemory>> {
+        let text = identifier_fts_query(&[&query.task, query.failure.as_deref().unwrap_or("")]);
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut found = self.lock()?.full_text_candidates(
+            query,
+            &accept,
+            Utc::now(),
+            &mut RetrievalTelemetry::default(),
+            text,
+        )?;
+        found.sort_by(compare_memories);
+        Ok(found)
     }
 
     /// See [`MemoryStore::retrieve_with_telemetry`].

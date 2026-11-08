@@ -1,0 +1,2950 @@
+{
+  "protocol": {
+    "version": 1,
+    "baseline_commit": "e62a3baba83f0d8845c85204cb9e22326e3c6c2e",
+    "frozen_before_trials": true,
+    "new_cases_added": false,
+    "inputs_sha256": {
+      "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+      "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+      "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+      "scripts/eval/memory-diagnostic-cases.json": "735bbaf0160eb1805ff21fb1a8d6d20a118c602233691a79fb159bc256f10973",
+      "scripts/eval/memory-identifier-cases.json": "315b81aa8832825fb2f6b4213bfe61b57328b64abcd370614f5939045a0bdf7f",
+      "scripts/eval/memory-complex-identifier-cases.json": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d",
+      "scripts/eval/memory-hybrid-retention-cases.json": "4ca3dd70015fbb7b1595c98aa4cb0c64f7e1662dc82176ff9215020370e242b1",
+      "scripts/eval/memory-snake-identifier-cases.json": "9b2eb353c4bb15029a915492f6b25370daa2eafca0412b2b63c8719a7dd1cb80",
+      "scripts/eval/memory-fullpool-retry-cases.json": "1f2dcb3fc7fbe176d57e4dc2ac1d68f6ce7e017cc08195536de974ce4d579bc2",
+      "scripts/eval/memory-fullpool-retry-retention-cases.json": "72d1b16ddc1ad290220307bacc6b5af5b69fc848ae8dccc26e8096b17b9cff14",
+      "scripts/eval/memory-overflow-cases.json": "7f3d7b75de5a2bc8c87c16eaf120ea48df2e437be9f36be5328f3b146cec82dc",
+      "scripts/eval/memory-cross-window-cases.json": "7891ba454b9f6c76b4e005811c1c0005fd50e31bb9d89bf0673ec0469b4c8dbd"
+    },
+    "review_source": "docs/design/long-term-memory-hybrid-anchors-nov8-2026.json",
+    "hypothesis": "The rejected unconditional tail replacement conflated terse symbol-focused lookups with broader collection requests. A complete code identifier can provide a stronger relevance signal in a terse request, while preserving broad-context and collection pools.",
+    "trial": {
+      "id": "focused_symbol_tail",
+      "description": "Only full hybrid pools with at least two slots; no supplied files or failure; one or two whitespace words; exactly one complete compound-name clause; no registered collection word, numeric character or wildcard. If none of that clause's eligible complete matches is already represented, replace only the final record with the highest-ranked eligible complete match. Preserve the leading records, apply all eligibility/copy filters, and keep normal semantic/lexical thresholds."
+    },
+    "collections": [
+      "all",
+      "every",
+      "each",
+      "both",
+      "either",
+      "any",
+      "everything",
+      "entire",
+      "whole",
+      "many",
+      "several",
+      "multiple"
+    ],
+    "policy": {
+      "threshold": 0.3,
+      "short_query_words": 2,
+      "short_query_scale": 0.9166666666666666,
+      "final_limit": 8,
+      "memory_budget": 1000,
+      "deterministic": true
+    },
+    "selection": "Run fixed development checks on complex, fullpool-retry and both retention suites first. Reject on any delivered fact/rank loss, negative identity/order change, visibility/trust/scope violation or token overrun. Then all historical development and unchanged crate contracts; only a safe improving candidate reaches reserved scoring. No cases, cutoffs or scope guards retuned from reserved outcomes.",
+    "limitations": "Correlated exposed source incidents. This is a focused ranking policy, not a proof that every omitted tail is irrelevant. Full pools for collection/narrative/file/failure requests remain protected. No new independent or blind result.",
+    "guard_verification": {
+      "before_reserved_scoring": true,
+      "counterexample": "The initial whitespace-only collection check failed a new unit probe for all_crowding/all-crowding. Recognize registered collection words across punctuation separators and reject Unicode numeric characters too.",
+      "benchmark_changes": false,
+      "known_match_probe": "An incumbent complete match can sit below 80 higher-ranked supplementary matches. A separate incumbent-only filtered scan must run before selecting a replacement, so pool truncation cannot hide an already supplied fact.",
+      "probes_reproduced_before_fix": true
+    }
+  },
+  "experiment_review": [
+    {
+      "family": "word vectors, IDF, common-component removal, character ngrams, weighted titles",
+      "outcome": "No safe gain beyond the first small mean-vector development result; replaced by MiniLM."
+    },
+    {
+      "family": "manual contextual keys and semantic gate; semantic-only; task-state ablation; structured capture",
+      "outcome": "Grounded context can help, but manual aliases and false matches block generalization claims. Removing supplied files regressed."
+    },
+    {
+      "family": "WordNet concepts; claim-only, claim-first and averaged document representations; cosine lead gaps",
+      "outcome": "No safe improvement, or gains coupled to negative/rank regressions."
+    },
+    {
+      "family": "packing and admissible distinct candidate pools; exact deduplication",
+      "outcome": "Safe mechanism gains after preserving distinct facts, original text and packet limits."
+    },
+    {
+      "family": "complete cancellable indexing; clones; diagnostic truncation",
+      "outcome": "Availability fixes recover missing representations without changing semantic thresholds."
+    },
+    {
+      "family": "short-query scale, complete CamelCase/snake names, free-slot hybrid supplements",
+      "outcome": "Safe bounded gains while literal/file contracts and full pools remain protected."
+    },
+    {
+      "family": "full-pool tail replacement, wider pools, symbol RRF and MMR diversity",
+      "outcome": "Rejected: aggregate gains hid supplied-fact losses or negative output changes."
+    },
+    {
+      "family": "hidden explicit conclusions and diagnostic/conclusion combination",
+      "outcome": "Safe gains on constructed long-note views. Arbitrary single-paragraph suffixes failed an existing contract and remain rejected."
+    }
+  ],
+  "rejected_query_views": {
+    "protocol": {
+      "version": 1,
+      "baseline_commit": "e62a3baba83f0d8845c85204cb9e22326e3c6c2e",
+      "frozen_before_trials": true,
+      "new_cases_added": false,
+      "inputs_sha256": {
+        "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+        "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+        "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+        "scripts/eval/memory-diagnostic-cases.json": "735bbaf0160eb1805ff21fb1a8d6d20a118c602233691a79fb159bc256f10973",
+        "scripts/eval/memory-identifier-cases.json": "315b81aa8832825fb2f6b4213bfe61b57328b64abcd370614f5939045a0bdf7f",
+        "scripts/eval/memory-complex-identifier-cases.json": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d",
+        "scripts/eval/memory-hybrid-retention-cases.json": "4ca3dd70015fbb7b1595c98aa4cb0c64f7e1662dc82176ff9215020370e242b1",
+        "scripts/eval/memory-snake-identifier-cases.json": "9b2eb353c4bb15029a915492f6b25370daa2eafca0412b2b63c8719a7dd1cb80",
+        "scripts/eval/memory-fullpool-retry-cases.json": "1f2dcb3fc7fbe176d57e4dc2ac1d68f6ce7e017cc08195536de974ce4d579bc2",
+        "scripts/eval/memory-fullpool-retry-retention-cases.json": "72d1b16ddc1ad290220307bacc6b5af5b69fc848ae8dccc26e8096b17b9cff14",
+        "scripts/eval/memory-overflow-cases.json": "7f3d7b75de5a2bc8c87c16eaf120ea48df2e437be9f36be5328f3b146cec82dc",
+        "scripts/eval/memory-cross-window-cases.json": "7891ba454b9f6c76b4e005811c1c0005fd50e31bb9d89bf0673ec0469b4c8dbd"
+      },
+      "review": [
+        {
+          "family": "word vectors, IDF, common-component removal, character ngrams, weighted titles",
+          "outcome": "No safe gain beyond the first small mean-vector development result; replaced by MiniLM."
+        },
+        {
+          "family": "manual contextual keys and semantic gate; semantic-only; task-state ablation; structured capture",
+          "outcome": "Grounded context can help, but manual aliases and false matches block generalization claims. Removing supplied files regressed."
+        },
+        {
+          "family": "WordNet concepts; claim-only, claim-first and averaged document representations; cosine lead gaps",
+          "outcome": "No safe improvement, or gains coupled to negative/rank regressions."
+        },
+        {
+          "family": "packing and admissible distinct candidate pools; exact deduplication",
+          "outcome": "Safe mechanism gains after preserving distinct facts, original text and packet limits."
+        },
+        {
+          "family": "complete cancellable indexing; clones; diagnostic truncation",
+          "outcome": "Availability fixes recover missing representations without changing semantic thresholds."
+        },
+        {
+          "family": "short-query scale, complete CamelCase/snake names, free-slot hybrid supplements",
+          "outcome": "Safe bounded gains while literal/file contracts and full pools remain protected."
+        },
+        {
+          "family": "full-pool tail replacement, wider pools, symbol RRF and MMR diversity",
+          "outcome": "Rejected: aggregate gains hid supplied-fact losses or negative output changes."
+        },
+        {
+          "family": "hidden explicit conclusions and diagnostic/conclusion combination",
+          "outcome": "Safe gains on constructed long-note views. Arbitrary single-paragraph suffixes failed an existing contract and remain rejected."
+        }
+      ],
+      "hypothesis": "MiniLM can represent terse topic fragments differently from grammatical requests. Supplement with one deterministic question/request view, using the unchanged normal threshold and preserving all incumbent ranks. No aliases or document rewrites.",
+      "trials": [
+        {
+          "id": "question",
+          "template": "How to {task}?"
+        },
+        {
+          "id": "problem",
+          "template": "Problem: {task}"
+        },
+        {
+          "id": "solution",
+          "template": "Solution for {task}"
+        }
+      ],
+      "eligibility": "At most three whitespace words, nonempty distinctive FTS terms, no failure or supplied files, no exact incumbent task title, declared positive encoder limit and reformulated text fully inside that limit. Only unused result slots may be filled. Native-capable providers only; no relaxation of strict search.",
+      "policy": {
+        "threshold": 0.3,
+        "short_query_words": 2,
+        "short_query_scale": 0.9166666666666666,
+        "final_limit": 8,
+        "memory_budget": 1000,
+        "deterministic": true
+      },
+      "selection": "Fixed variants on original/fresh development first. Reject each variant for any individual answer/fact rank or delivery loss, negative IDs/order change, scope or budget violation. Replay all historical development views and crate contracts before reserved scoring. A safe development gain may ship with unchanged exposed reserved recall; do not retune on reserved outcomes.",
+      "stopping": "If no view passes development, restore baseline and record failures before trying a different mechanism.",
+      "limitations": "All fixtures and reserved incidents are already exposed. No new independent cases, blind semantic result or live-agent success claim.",
+      "decision": "All three fixed query views reproduce original/fresh development recall with no gains; removed. No reserved trial was scored."
+    },
+    "development_results": [
+      {
+        "key": "original",
+        "label": "question",
+        "policy": "lexical",
+        "split": "development",
+        "cases": 110,
+        "metrics": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.05,
+          "recall_at_8": 0.8285714285714286
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "original",
+        "label": "question",
+        "policy": "hybrid",
+        "split": "development",
+        "cases": 110,
+        "metrics": {
+          "candidate_recall": 0.9285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.9285714285714286,
+          "mrr": 0.9214285714285714,
+          "ndcg_at_8": 0.9232989964795921,
+          "no_match_injection_rate": 0.075,
+          "recall_at_8": 0.9285714285714286
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "fresh",
+        "label": "question",
+        "policy": "lexical",
+        "split": "development",
+        "cases": 45,
+        "metrics": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "fresh",
+        "label": "question",
+        "policy": "hybrid",
+        "split": "development",
+        "cases": 45,
+        "metrics": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8630929753571458,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "original",
+        "label": "problem",
+        "policy": "lexical",
+        "split": "development",
+        "cases": 110,
+        "metrics": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.05,
+          "recall_at_8": 0.8285714285714286
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "original",
+        "label": "problem",
+        "policy": "hybrid",
+        "split": "development",
+        "cases": 110,
+        "metrics": {
+          "candidate_recall": 0.9285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.9285714285714286,
+          "mrr": 0.9214285714285714,
+          "ndcg_at_8": 0.9232989964795921,
+          "no_match_injection_rate": 0.075,
+          "recall_at_8": 0.9285714285714286
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "fresh",
+        "label": "problem",
+        "policy": "lexical",
+        "split": "development",
+        "cases": 45,
+        "metrics": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "fresh",
+        "label": "problem",
+        "policy": "hybrid",
+        "split": "development",
+        "cases": 45,
+        "metrics": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8630929753571458,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "original",
+        "label": "solution",
+        "policy": "lexical",
+        "split": "development",
+        "cases": 110,
+        "metrics": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.05,
+          "recall_at_8": 0.8285714285714286
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "original",
+        "label": "solution",
+        "policy": "hybrid",
+        "split": "development",
+        "cases": 110,
+        "metrics": {
+          "candidate_recall": 0.9285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.9285714285714286,
+          "mrr": 0.9214285714285714,
+          "ndcg_at_8": 0.9232989964795921,
+          "no_match_injection_rate": 0.075,
+          "recall_at_8": 0.9285714285714286
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "fresh",
+        "label": "solution",
+        "policy": "lexical",
+        "split": "development",
+        "cases": 45,
+        "metrics": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "fresh",
+        "label": "solution",
+        "policy": "hybrid",
+        "split": "development",
+        "cases": 45,
+        "metrics": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8630929753571458,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      }
+    ],
+    "decision": "No expected-answer gain; all three removed. Only development scored. Question view changed one positive returned pool and solution view changed three, without recovering an answer."
+  },
+  "decision": "Ship focused complete-symbol rescue; all current benchmark inputs and denominators unchanged. Scope guards and incumbent presence are checked before replacement. This deliberately replaces one returned tail in eligible focused pools; absence of observed requested-fact regressions is not a universal usefulness judgment on every displaced tail.",
+  "selected_replays": [
+    {
+      "key": "complex",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5238095238095238,
+        "ndcg_at_8": 0.6424166184949177,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [
+          "complex-SharedMemoryStore-full-pool",
+          "complex-RetrievalQuery-full-pool",
+          "complex-MemoryRecord-full-pool",
+          "complex-WorkloadStatus-full-pool"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "complex",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.7601190476190476,
+        "ndcg_at_8": 0.8190818155645072,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": ["complex-CommandOutput-full-pool", "complex-ProcessTree-full-pool"],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8214285714285714,
+        "cases": 40,
+        "delivered_recall": 0.7857142857142857,
+        "mrr": 0.40625,
+        "ndcg_at_8": 0.49977973781888746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8214285714285714
+      },
+      "changes": {
+        "gains": [
+          "dense-SharedMemoryStore-dense-camel",
+          "dense-RetrievalQuery-dense-camel",
+          "dense-RetrievalQuery-dense-snake",
+          "dense-MemoryRecord-dense-camel",
+          "dense-MemoryRecord-dense-snake",
+          "dense-WorkloadStatus-dense-camel"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "expanded",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.9642857142857143,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6733843537414966,
+        "ndcg_at_8": 0.7408537555304895,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9642857142857143
+      },
+      "changes": {
+        "gains": ["dense-CommandOutput-dense-camel", "dense-ProcessTree-dense-camel"],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "retention",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 4,
+      "metrics": {
+        "candidate_recall": 0.5,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0.2857142857142857,
+        "ndcg_at_8": 0.3333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.022321428571428572,
+        "ndcg_at_8": 0.05406651750992184,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "guards",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 12,
+      "metrics": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.07539682539682539,
+        "ndcg_at_8": 0.17047897562911482,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 58,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 58,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "original",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 58,
+      "metrics": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "fresh",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8253953169047639,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7833333333333333,
+        "ndcg_at_8": 0.7876976584523819,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "diagnostic",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8166666666666668,
+        "ndcg_at_8": 0.8449496685608756,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "identifier",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 24,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.5,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6964285714285714,
+        "ndcg_at_8": 0.7376660274234746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.800595238095238,
+        "ndcg_at_8": 0.8516851726097714,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6904761904761905,
+        "ndcg_at_8": 0.7329899647959225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "snake",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 40,
+      "metrics": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.9404761904761906,
+        "ndcg_at_8": 0.9557806966836756,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "overflow",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.6416666666666666,
+        "ndcg_at_8": 0.6565464876785729,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.7
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "overflow",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.825,
+        "cases": 55,
+        "delivered_recall": 0.825,
+        "mrr": 0.7041666666666666,
+        "ndcg_at_8": 0.7354127068750052,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.825
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "overflow",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.575,
+        "cases": 55,
+        "delivered_recall": 0.575,
+        "mrr": 0.5375,
+        "ndcg_at_8": 0.5465338279036697,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.575
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "overflow",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.85,
+        "cases": 55,
+        "delivered_recall": 0.85,
+        "mrr": 0.7125,
+        "ndcg_at_8": 0.7485056822321509,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.85
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "cross",
+      "label": "selected",
+      "policy": "lexical",
+      "split": "development",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.55,
+        "ndcg_at_8": 0.5879000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.7
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "cross",
+      "label": "selected",
+      "policy": "hybrid",
+      "split": "development",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 55,
+        "delivered_recall": 0.8,
+        "mrr": 0.5833333333333333,
+        "ndcg_at_8": 0.637900047100102,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "cross",
+      "label": "reserved",
+      "policy": "lexical",
+      "split": "heldout",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.65,
+        "cases": 55,
+        "delivered_recall": 0.6,
+        "mrr": 0.5308333333333334,
+        "ndcg_at_8": 0.5607088595581592,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.65
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    },
+    {
+      "key": "cross",
+      "label": "reserved",
+      "policy": "hybrid",
+      "split": "heldout",
+      "cases": 55,
+      "metrics": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.825,
+        "mrr": 0.5933333333333334,
+        "ndcg_at_8": 0.6628103432691683,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.875
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      },
+      "safe": true
+    }
+  ],
+  "gains": [
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "complex-SharedMemoryStore-full-pool",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 544
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "complex-RetrievalQuery-full-pool",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 553
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "complex-MemoryRecord-full-pool",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 541
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "complex-WorkloadStatus-full-pool",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 546
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "heldout",
+      "id": "complex-CommandOutput-full-pool",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 549
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "heldout",
+      "id": "complex-ProcessTree-full-pool",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 554
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-SharedMemoryStore-dense-camel",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 544
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-RetrievalQuery-dense-camel",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 553
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-RetrievalQuery-dense-snake",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 553
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-MemoryRecord-dense-camel",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 541
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-MemoryRecord-dense-snake",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 541
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-WorkloadStatus-dense-camel",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 546
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "heldout",
+      "id": "dense-CommandOutput-dense-camel",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 549
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "heldout",
+      "id": "dense-ProcessTree-dense-camel",
+      "before_rank": null,
+      "after_rank": 8,
+      "packet_tokens": 554
+    }
+  ],
+  "changed_cases": [
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "complex-SharedMemoryStore-full-pool",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-SharedMemoryStore-full-pool",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-SharedMemoryStore-full-pool",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 544,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000013"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "complex-RetrievalQuery-full-pool",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-RetrievalQuery-full-pool",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000006"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-RetrievalQuery-full-pool",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 553,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000012"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "complex-MemoryRecord-full-pool",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-MemoryRecord-full-pool",
+        "incident": "MemoryRecord",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000006"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-MemoryRecord-full-pool",
+        "incident": "MemoryRecord",
+        "packet_tokens": 541,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000010"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "complex-WorkloadStatus-full-pool",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-WorkloadStatus-full-pool",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-WorkloadStatus-full-pool",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 546,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000015"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "heldout",
+      "id": "complex-CommandOutput-full-pool",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-CommandOutput-full-pool",
+        "incident": "CommandOutput",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000008"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-CommandOutput-full-pool",
+        "incident": "CommandOutput",
+        "packet_tokens": 549,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "key": "complex",
+      "policy": "hybrid",
+      "split": "heldout",
+      "id": "complex-ProcessTree-full-pool",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-ProcessTree-full-pool",
+        "incident": "ProcessTree",
+        "packet_tokens": 528,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000e"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "full-pool",
+        "embedding_fallback": false,
+        "id": "complex-ProcessTree-full-pool",
+        "incident": "ProcessTree",
+        "packet_tokens": 554,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000011"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-SharedMemoryStore-dense-camel",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-SharedMemoryStore-dense-camel",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-SharedMemoryStore-dense-camel",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 544,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-RetrievalQuery-dense-camel",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-RetrievalQuery-dense-camel",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-RetrievalQuery-dense-camel",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 553,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-RetrievalQuery-dense-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "dense-snake",
+        "embedding_fallback": false,
+        "id": "dense-RetrievalQuery-dense-snake",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "dense-snake",
+        "embedding_fallback": false,
+        "id": "dense-RetrievalQuery-dense-snake",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 553,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-MemoryRecord-dense-camel",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-MemoryRecord-dense-camel",
+        "incident": "MemoryRecord",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-MemoryRecord-dense-camel",
+        "incident": "MemoryRecord",
+        "packet_tokens": 541,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-MemoryRecord-dense-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "dense-snake",
+        "embedding_fallback": false,
+        "id": "dense-MemoryRecord-dense-snake",
+        "incident": "MemoryRecord",
+        "packet_tokens": 528,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000d"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "dense-snake",
+        "embedding_fallback": false,
+        "id": "dense-MemoryRecord-dense-snake",
+        "incident": "MemoryRecord",
+        "packet_tokens": 541,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "development",
+      "id": "dense-WorkloadStatus-dense-camel",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-WorkloadStatus-dense-camel",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-WorkloadStatus-dense-camel",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 546,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "heldout",
+      "id": "dense-CommandOutput-dense-camel",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-CommandOutput-dense-camel",
+        "incident": "CommandOutput",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000007"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-CommandOutput-dense-camel",
+        "incident": "CommandOutput",
+        "packet_tokens": 549,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000004"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "key": "expanded",
+      "policy": "hybrid",
+      "split": "heldout",
+      "id": "dense-ProcessTree-dense-camel",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-ProcessTree-dense-camel",
+        "incident": "ProcessTree",
+        "packet_tokens": 528,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000d"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "dense-camel",
+        "embedding_fallback": false,
+        "id": "dense-ProcessTree-dense-camel",
+        "incident": "ProcessTree",
+        "packet_tokens": 554,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001c"
+        ],
+        "split": "heldout"
+      }
+    }
+  ],
+  "retention": [
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 4,
+      "all_per_fact_ranks_and_outputs_identical": true
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 4,
+      "all_per_fact_ranks_and_outputs_identical": true
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 4,
+      "all_per_fact_ranks_and_outputs_identical": true
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 4,
+      "all_per_fact_ranks_and_outputs_identical": true
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "all_per_fact_ranks_and_outputs_identical": true
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "all_per_fact_ranks_and_outputs_identical": true
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "all_per_fact_ranks_and_outputs_identical": true
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "all_per_fact_ranks_and_outputs_identical": true
+    }
+  ],
+  "guard_probes": {
+    "collection_separator": "all_crowding/all-crowding failed the initial whitespace-only guard; lexical-token guard fixed it before reserved scoring.",
+    "bounded_pool": "A supplied complete match below the top 80 supplementary rows was incorrectly replaceable; incumbent-only filtering before that limit now preserves it.",
+    "all_five_unit_tests_pass": true
+  },
+  "regression": {
+    "policy_views": 1776,
+    "identical_deterministic_views": 1762,
+    "changed_views": 14,
+    "new_benchmark_cases": 0,
+    "previous_delivered_facts_and_ranks_preserved": true,
+    "negative_ids_and_order_unchanged": true,
+    "scope_trust_tags_visibility_and_token_limits": "passed",
+    "exclusions": ["latency_us", "telemetry"],
+    "no_latency_benchmark": true
+  },
+  "model": {
+    "revision": "chroma-minilm-l6-v2-913d7300-title-claim-native-v1",
+    "dimensions": 384,
+    "threshold": 0.3,
+    "model_sha256": "4f148ba8ae9c2c7fbee4af2b132db8d06c6a6545b47fc83bbb98c3d22b8393e6",
+    "tokenizer_sha256": "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0"
+  },
+  "source_sha256": {
+    "baseline": "47d47e0ddfa8ffa872b2a6f1250136960c56db482b8c944011e1db01fc1ce142",
+    "selected": "b3ffbc38f895cc62cd0917689782e92a35788a641fadc0d91f8beba798656c92"
+  },
+  "executables_sha256": {
+    "baseline": "2e5c90f29503656f393629cad651d7fe7edefdaee12e91bbd49f8126f21edb95",
+    "selected": "d43f0bc510113e0825476bba39d50c426f894e05ceb417e7f1c807e422afd539"
+  },
+  "baseline_binding": {
+    "previous_report": "docs/design/long-term-memory-cross-window-nov8-2026.json",
+    "baseline_source_and_executable_identical": true,
+    "all_input_hashes_unchanged": true
+  },
+  "output_fingerprints": [
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "72ee5c291219eb683630fde29a6c51b91da2111310e5a5b2f2ff716abf7b8b6b",
+      "selected": "72ee5c291219eb683630fde29a6c51b91da2111310e5a5b2f2ff716abf7b8b6b"
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "956d931bbccb9655e96fd3e2866f7fc6a234a15de3f9e779d2c46983650cb620",
+      "selected": "abf3f06c79329e80713d4415fbf00bd1f377f583cbc35ef476c54c95c9ea7cae"
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "34d7a3c8a1efcd763535b2b61f343bfefa47c452b831dd645ee1a612682e5507",
+      "selected": "34d7a3c8a1efcd763535b2b61f343bfefa47c452b831dd645ee1a612682e5507"
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "bdc45a08772388594f40d0fd6f53b36dcaadb1dbfd34ae0d5b3bd2b2417cf89c",
+      "selected": "bc021812922a42fbf35556a3e4c8d278b1c5e666b8439b83a0514f85c6bfe0a3"
+    },
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc",
+      "selected": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc"
+    },
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "69fe3bcf2a1f1740442409aff0ec4b4ca7d47f27c6d815d293dd1f8b2d06ebc6",
+      "selected": "e1c950183a013020f219996c407c1ef279807b716cba0bc5452431c5581ae962"
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c",
+      "selected": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c"
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "7c9aa7be3690d03f3e8b3d2e077708e6d2a70a36f451f5427b0205f01a31e231",
+      "selected": "736b6e4962e87b62550b1243d611962495da2d1d666e09cb1a3c268b8b11eab1"
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "7d787ebe63b47b83e3a9c9958f8dd871c3492c54dca34b3dd58f5b758a4539ea",
+      "selected": "7d787ebe63b47b83e3a9c9958f8dd871c3492c54dca34b3dd58f5b758a4539ea"
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "69fe5e2f3394e16c3730abdbc6dc63808660985f109ce3bfeb073f8a2ac6c2d4",
+      "selected": "69fe5e2f3394e16c3730abdbc6dc63808660985f109ce3bfeb073f8a2ac6c2d4"
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "df99df8628125d25542d36ab1a5f816687513acfcfe9f4f35155e438af106170",
+      "selected": "df99df8628125d25542d36ab1a5f816687513acfcfe9f4f35155e438af106170"
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "f6629698f66887c2a5747fee32043c4efb32291fbce915ac181e0b26fd22df5d",
+      "selected": "f6629698f66887c2a5747fee32043c4efb32291fbce915ac181e0b26fd22df5d"
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571",
+      "selected": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571"
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d",
+      "selected": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d"
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0",
+      "selected": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0"
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4",
+      "selected": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4"
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "219f61d31b716a3eea6e3f5424cbcd5bec16d7fd23868f03dc26a4c48ef3d7e0",
+      "selected": "219f61d31b716a3eea6e3f5424cbcd5bec16d7fd23868f03dc26a4c48ef3d7e0"
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28",
+      "selected": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28"
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "12362bbf7ee6a536d00aab4c2d6d648ec006cb4597c1f3eeeae60d96d0c91daf",
+      "selected": "12362bbf7ee6a536d00aab4c2d6d648ec006cb4597c1f3eeeae60d96d0c91daf"
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "ca5240575bc2ad716458c433b1a34ebd12a295d3ac54fb11efc357207af4cf70",
+      "selected": "ca5240575bc2ad716458c433b1a34ebd12a295d3ac54fb11efc357207af4cf70"
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "8aa2ab9680da85d84689d9592780a2652a541904abd55131eaaa64ca37c1ae86",
+      "selected": "8aa2ab9680da85d84689d9592780a2652a541904abd55131eaaa64ca37c1ae86"
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d",
+      "selected": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d"
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "9906ba20c70f8af61fa1025664439f6de54d40673eb851eaba575165abeab263",
+      "selected": "9906ba20c70f8af61fa1025664439f6de54d40673eb851eaba575165abeab263"
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "73be6ff51df41dd3b581b58bfeaf7759305c9ba32e4bb9c46b0d1b519571ed1e",
+      "selected": "73be6ff51df41dd3b581b58bfeaf7759305c9ba32e4bb9c46b0d1b519571ed1e"
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "86853934e60d2d055b5815ca5c02cad94ed408e094900fe70c333a5e68d6e139",
+      "selected": "86853934e60d2d055b5815ca5c02cad94ed408e094900fe70c333a5e68d6e139"
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274",
+      "selected": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274"
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "67359804194144d49876f5336a1a44aa4b211927f8f495fb9231e24ecbf10238",
+      "selected": "67359804194144d49876f5336a1a44aa4b211927f8f495fb9231e24ecbf10238"
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "06a54c2fb53841f947dc074d42554e58cae9f11b9aabd1f611f49162caca3aa2",
+      "selected": "06a54c2fb53841f947dc074d42554e58cae9f11b9aabd1f611f49162caca3aa2"
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "c5ea9b5f971ee442c1a55ddfc250e454580864d35c596b8a36549aac94f277b2",
+      "selected": "c5ea9b5f971ee442c1a55ddfc250e454580864d35c596b8a36549aac94f277b2"
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d",
+      "selected": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d"
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "98cdfdd7fb20e848e2a4c4964587c4d5faeb62b83bad885f6af520c9b8b568d1",
+      "selected": "98cdfdd7fb20e848e2a4c4964587c4d5faeb62b83bad885f6af520c9b8b568d1"
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "faa0b9361677105d3d00204ef8d679d41f0f00db88e45f45c0c3793c88e4fc8a",
+      "selected": "faa0b9361677105d3d00204ef8d679d41f0f00db88e45f45c0c3793c88e4fc8a"
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "20d5d363ece969ccd9ca050846cbc1b325b1579059356dab270fd6344d2b3bc2",
+      "selected": "20d5d363ece969ccd9ca050846cbc1b325b1579059356dab270fd6344d2b3bc2"
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877",
+      "selected": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877"
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "9e5f5d3cbcc2b26c80d7f8e0e1bc4c1984c6cc874518f2b2891ea6a795a2ae87",
+      "selected": "9e5f5d3cbcc2b26c80d7f8e0e1bc4c1984c6cc874518f2b2891ea6a795a2ae87"
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "9ee5c510a58151c876e98dc9fad4254604a7d01486b2f944b209317be4d4f17b",
+      "selected": "9ee5c510a58151c876e98dc9fad4254604a7d01486b2f944b209317be4d4f17b"
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "555ce63e548dd075f4e4a1ffc58b12fdd129b0e0cb0cd4e93eca4668efb4a9ec",
+      "selected": "555ce63e548dd075f4e4a1ffc58b12fdd129b0e0cb0cd4e93eca4668efb4a9ec"
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "73019c5ca684f77687666d9611e1cef005de2b80497427774dda586f7881b98e",
+      "selected": "73019c5ca684f77687666d9611e1cef005de2b80497427774dda586f7881b98e"
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "0b699a29957472ce5c3fb3eca954e516e9bbb4faccfa03378854ac504a3eaa1e",
+      "selected": "0b699a29957472ce5c3fb3eca954e516e9bbb4faccfa03378854ac504a3eaa1e"
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "a94249780bd5ab391b4e861c2899b54c4f5606089964432251f4377d194b2cbf",
+      "selected": "a94249780bd5ab391b4e861c2899b54c4f5606089964432251f4377d194b2cbf"
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "cf475b64b87414fa638e9f356142d95e2a4951433ce020a834a34310061e3a08",
+      "selected": "cf475b64b87414fa638e9f356142d95e2a4951433ce020a834a34310061e3a08"
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "e161f97da1abe92b16d69e0cda8efdb21b7a82de7ad2fbfc634e9c98899f990c",
+      "selected": "e161f97da1abe92b16d69e0cda8efdb21b7a82de7ad2fbfc634e9c98899f990c"
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "201eb5f390f75231222ef4215ab3d4cbf4ca2e332a1b7a3c192a82dd97cb159b",
+      "selected": "201eb5f390f75231222ef4215ab3d4cbf4ca2e332a1b7a3c192a82dd97cb159b"
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "094e5d211b17760d90a610151be987f584c2776b8855d0299e5a8c714553517d",
+      "selected": "094e5d211b17760d90a610151be987f584c2776b8855d0299e5a8c714553517d"
+    }
+  ],
+  "validation": {
+    "changed_crate": "verified-code-memory only",
+    "all_target_tests": 149,
+    "native_onnx_tests": 2,
+    "doc_tests": 1,
+    "clippy": "passed with -D warnings",
+    "frontend_tests": 1046,
+    "typecheck": "passed"
+  }
+}

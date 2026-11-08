@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "frozen_before_product_changes": true,
+  "base_commit": "65459211d76bd73f5daedcd921770e5ace5486e1",
+  "question": "Does finishing a background indexing job recover answers lost by the three-claim budget?",
+  "datasets": ["scripts/eval/memory-cases.json", "scripts/eval/memory-semantic-fresh-cases.json"],
+  "controls": "scripts/eval/memory-short-query-controls.json",
+  "development": { "capture_offsets": [0, 7, 17], "backfill_limits": [0, 3, 8, null] },
+  "heldout": { "capture_offsets": [11], "backfill_limits": [3, null] },
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "memory_budget": 1000,
+    "deterministic": true
+  },
+  "selection": "Try full completion first; if it fails regression guards, try resumable batches. Do not change thresholds or claim text based on results.",
+  "gates": [
+    "All 258 previously fully indexed cases retain delivery, rank and negative returned count; preserve scope and 1000-token budget.",
+    "For matched capture orders, report all gains, losses and negative injections against the three-record budget, including heldout.",
+    "Cancellation before or during inference stops writes; clear/edit/delete and visibility protections remain effective.",
+    "Projects sharing a model directory must be able to schedule independent jobs; settings are checked throughout indexing."
+  ],
+  "interpretation": "Synthetic availability experiment using previously evaluated claims, not fresh semantic generalization or end-to-end task success. Full indexing may reveal the existing model's false positives; report these separately. Indexing runs off the response path."
+}

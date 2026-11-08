@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "baseline_commit": "c9e0fd964c9732e4826d052527953788e3e3ebc6",
+  "frozen_before_product_trials": true,
+  "dataset": "scripts/eval/memory-complex-identifier-cases.json",
+  "dataset_sha256": "44deafe337c84cafce0d4ae21444eb886d10fb840f35d5293fbc192ac9ce796e",
+  "selection_split": "development",
+  "validation_split": "heldout",
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "deterministic": true,
+    "memory_budget": 1000
+  },
+  "experiments": [
+    {
+      "id": "append_strict_symbols",
+      "description": "Fill unused ordinary result slots with complete conjunctive identifier matches; retain ordinary ranks."
+    },
+    {
+      "id": "separate_hybrid_supplements",
+      "description": "If direct lexical supplementation changes incumbent hybrid ranks, keep supplementary symbols outside reciprocal-rank fusion and append them after the incumbent hybrid result."
+    }
+  ],
+  "guards": [
+    "Never lose a delivered fact or worsen its rank, including each previously supplied member of a composed answer.",
+    "Negatives keep exactly the same returned record IDs; no increased noise, project leak, caller exclusion, verification/tag violation or packet overrun.",
+    "Replay all earlier corpora under lexical and hybrid plus diagnostic hybrid policies.",
+    "Use a fixed eight-result, 1000-token budget; do not change claim text, thresholds, model weights, or release assets after seeing results.",
+    "Full-pool failures remain visible; do not discard hard categories to achieve 100%. Select on development before scoring the fixed heldout candidate."
+  ],
+  "amendments": [
+    {
+      "reason": "The broad append prototype improved development recall but failed the pre-existing exact-literal/file lookup contract. Preserve that test and restrict supplementation rather than weakening it.",
+      "registered_before_trial": true,
+      "additional_experiment": {
+        "id": "unresolved_text_context_only",
+        "description": "Append complete symbol matches only with free slots, no explicit file context and no existing title equal to the task or failure. Keep incumbent order and all prior contracts."
+      }
+    }
+  ],
+  "registration_serialization": "JSON.stringify(parsed, null, 2) plus a final newline",
+  "committed_dataset_sha256": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d"
+}

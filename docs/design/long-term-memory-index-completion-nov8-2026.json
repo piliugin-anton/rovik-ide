@@ -1,0 +1,989 @@
+{
+  "evaluator_sha256": "fba6925da91b37f68f6ce6ed7014f58772147aaa195d9e4792b8706949103037",
+  "protocol": {
+    "version": 1,
+    "frozen_before_product_changes": true,
+    "base_commit": "65459211d76bd73f5daedcd921770e5ace5486e1",
+    "question": "Does finishing a background indexing job recover answers lost by the three-claim budget?",
+    "datasets": ["scripts/eval/memory-cases.json", "scripts/eval/memory-semantic-fresh-cases.json"],
+    "controls": "scripts/eval/memory-short-query-controls.json",
+    "development": {
+      "capture_offsets": [0, 7, 17],
+      "backfill_limits": [0, 3, 8, null]
+    },
+    "heldout": {
+      "capture_offsets": [11],
+      "backfill_limits": [3, null]
+    },
+    "policy": {
+      "threshold": 0.3,
+      "short_query_words": 2,
+      "short_query_scale": 0.9166666666666666,
+      "memory_budget": 1000,
+      "deterministic": true
+    },
+    "selection": "Try full completion first; if it fails regression guards, try resumable batches. Do not change thresholds or claim text based on results.",
+    "gates": [
+      "All 258 previously fully indexed cases retain delivery, rank and negative returned count; preserve scope and 1000-token budget.",
+      "For matched capture orders, report all gains, losses and negative injections against the three-record budget, including heldout.",
+      "Cancellation before or during inference stops writes; clear/edit/delete and visibility protections remain effective.",
+      "Projects sharing a model directory must be able to schedule independent jobs; settings are checked throughout indexing."
+    ],
+    "interpretation": "Synthetic availability experiment using previously evaluated claims, not fresh semantic generalization or end-to-end task success. Full indexing may reveal the existing model's false positives; report these separately. Indexing runs off the response path."
+  },
+  "interpretation": "Availability gain from completing existing semantic coverage; no semantic generalization or precision gain claimed. Full indexing exposes known model false positives sooner than partial indexing.",
+  "selected": "Complete cancellable snapshot, separate project queue identities, and schedule on warm retrieval.",
+  "input_sha256": {
+    "scripts/eval/memory-indexing-experiments.json": "fb31374e2bceaf85c20f53618255eb168d2ef3e9050fb80af8866623d9ef834a",
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "src-tauri/crates/verified-code-memory/src/embedding.rs": "d3ef315189b1bb894d8b6991f1a339b85bb5b3e33e5e823c069db4ea32ab37e5",
+    "src-tauri/crates/verified-code-memory/src/semantic.rs": "9f03f01606e1305543aac5b41039e80ef5649aff2d8d3c3f203883c1408c92d0",
+    "src-tauri/crates/verified-code-memory/examples/evaluate_memory.rs": "bb333e3b937f21f204037b0a1203f7dad3444ec3d5ebc7a67ab71312c3861c3d",
+    "src-tauri/crates/rovik-core/src/memory_semantic.rs": "362a82561a71625f543f8355c2f5dc24960234f80e3d20b541c01561ee2ccedf"
+  },
+  "native_model_sha256": "4f148ba8ae9c2c7fbee4af2b132db8d06c6a6545b47fc83bbb98c3d22b8393e6",
+  "tokenizer_sha256": "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0",
+  "recorded_native_vectors_sha256": {
+    "original-development": "ebdb748ce64a1aaa3fe943870678bff9c8922685945e1f5552bd0ef04558026d",
+    "original-heldout": "7f922bccfc84d9a69bcde908f7ab74222099e9b15f19e100d570716c81bfa593",
+    "fresh-development": "1a7e8d4226627e7050b54e6163711093345e1febb504c82950b9544c3a940a59",
+    "fresh-heldout": "18031cd25a5c37fcc026c7680bead33c6819bd7e817d67a6ad848a0bf5456832"
+  },
+  "matrix": [
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 0,
+      "limit": 0,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 0,
+      "limit": 3,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 110,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.8571428571428571,
+        "ndcg_at_8": 0.8571428571428571,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8571428571428571
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 0,
+      "limit": 8,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8714285714285714,
+        "cases": 110,
+        "delivered_recall": 0.8714285714285714,
+        "mrr": 0.8714285714285714,
+        "ndcg_at_8": 0.8714285714285714,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.8714285714285714
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 0,
+      "limit": null,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 7,
+      "limit": 0,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 7,
+      "limit": 3,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8428571428571429,
+        "cases": 110,
+        "delivered_recall": 0.8428571428571429,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8428571428571429
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 7,
+      "limit": 8,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8714285714285714,
+        "cases": 110,
+        "delivered_recall": 0.8714285714285714,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8503388430612262,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8714285714285714
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 7,
+      "limit": null,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 17,
+      "limit": 0,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 17,
+      "limit": 3,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.8285714285714286
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 17,
+      "limit": 8,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 110,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8518704250510208,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.8571428571428571
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 17,
+      "limit": null,
+      "cases": 110,
+      "metrics": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 0,
+      "limit": 0,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 0,
+      "limit": 3,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8333333333333334,
+        "cases": 45,
+        "delivered_recall": 0.8333333333333334,
+        "mrr": 0.8166666666666667,
+        "ndcg_at_8": 0.8210309917857153,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8333333333333334
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 0,
+      "limit": 8,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 0,
+      "limit": null,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 7,
+      "limit": 0,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 7,
+      "limit": 3,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 7,
+      "limit": 8,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 7,
+      "limit": null,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 17,
+      "limit": 0,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 17,
+      "limit": 3,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8333333333333334,
+        "cases": 45,
+        "delivered_recall": 0.8333333333333334,
+        "mrr": 0.8166666666666667,
+        "ndcg_at_8": 0.8210309917857153,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8333333333333334
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 17,
+      "limit": 8,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.8333333333333334,
+        "ndcg_at_8": 0.8420619835714305,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8666666666666667
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 17,
+      "limit": null,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "heldout",
+      "offset": 11,
+      "limit": 3,
+      "cases": 58,
+      "metrics": {
+        "candidate_recall": 0.8333333333333334,
+        "cases": 58,
+        "delivered_recall": 0.8333333333333334,
+        "mrr": 0.8333333333333334,
+        "ndcg_at_8": 0.8333333333333334,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8333333333333334
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "original",
+      "split": "heldout",
+      "offset": 11,
+      "limit": null,
+      "cases": 58,
+      "metrics": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "heldout",
+      "offset": 11,
+      "limit": 3,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    },
+    {
+      "corpus": "fresh",
+      "split": "heldout",
+      "offset": 11,
+      "limit": null,
+      "cases": 45,
+      "metrics": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "scope_violations": 0,
+      "budget_violations": 0
+    }
+  ],
+  "comparisons_against_three_claims": [
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 0,
+      "before": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 110,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.8571428571428571,
+        "ndcg_at_8": 0.8571428571428571,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8571428571428571
+      },
+      "after": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "changes": {
+        "gains": [
+          "migration-implicit",
+          "credentials-implicit",
+          "formatting-implicit",
+          "cache-implicit",
+          "privacy-implicit"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "extra_negative_injections": [
+          {
+            "id": "control-indexes",
+            "before": 2,
+            "after": 3
+          },
+          {
+            "id": "short-negative-development-11",
+            "before": 0,
+            "after": 1
+          }
+        ]
+      }
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 7,
+      "before": {
+        "candidate_recall": 0.8428571428571429,
+        "cases": 110,
+        "delivered_recall": 0.8428571428571429,
+        "mrr": 0.8428571428571429,
+        "ndcg_at_8": 0.8428571428571429,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8428571428571429
+      },
+      "after": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "changes": {
+        "gains": [
+          "migration-implicit",
+          "credentials-implicit",
+          "timeout-implicit",
+          "cache-implicit",
+          "privacy-implicit",
+          "verification-implicit"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "extra_negative_injections": [
+          {
+            "id": "control-indexes",
+            "before": 2,
+            "after": 3
+          },
+          {
+            "id": "short-negative-development-11",
+            "before": 0,
+            "after": 1
+          }
+        ]
+      }
+    },
+    {
+      "corpus": "original",
+      "split": "development",
+      "offset": 17,
+      "before": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.8285714285714286
+      },
+      "after": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "changes": {
+        "gains": [
+          "migration-implicit",
+          "credentials-implicit",
+          "timeout-implicit",
+          "formatting-implicit",
+          "cache-implicit",
+          "privacy-implicit",
+          "verification-implicit"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "extra_negative_injections": []
+      }
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 0,
+      "before": {
+        "candidate_recall": 0.8333333333333334,
+        "cases": 45,
+        "delivered_recall": 0.8333333333333334,
+        "mrr": 0.8166666666666667,
+        "ndcg_at_8": 0.8210309917857153,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8333333333333334
+      },
+      "after": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "changes": {
+        "gains": ["timezone-implicit", "resource-cleanup-implicit"],
+        "losses": [],
+        "rank_losses": [],
+        "extra_negative_injections": []
+      }
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 7,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "changes": {
+        "gains": ["timezone-implicit", "websocket-implicit", "resource-cleanup-implicit"],
+        "losses": [],
+        "rank_losses": [],
+        "extra_negative_injections": []
+      }
+    },
+    {
+      "corpus": "fresh",
+      "split": "development",
+      "offset": 17,
+      "before": {
+        "candidate_recall": 0.8333333333333334,
+        "cases": 45,
+        "delivered_recall": 0.8333333333333334,
+        "mrr": 0.8166666666666667,
+        "ndcg_at_8": 0.8210309917857153,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8333333333333334
+      },
+      "after": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "changes": {
+        "gains": ["websocket-implicit", "resource-cleanup-implicit"],
+        "losses": [],
+        "rank_losses": [],
+        "extra_negative_injections": []
+      }
+    },
+    {
+      "corpus": "original",
+      "split": "heldout",
+      "offset": 11,
+      "before": {
+        "candidate_recall": 0.8333333333333334,
+        "cases": 58,
+        "delivered_recall": 0.8333333333333334,
+        "mrr": 0.8333333333333334,
+        "ndcg_at_8": 0.8333333333333334,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8333333333333334
+      },
+      "after": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "changes": {
+        "gains": ["deduplication-implicit"],
+        "losses": [],
+        "rank_losses": [],
+        "extra_negative_injections": [
+          {
+            "id": "short-negative-heldout-16",
+            "before": 0,
+            "after": 1
+          }
+        ]
+      }
+    },
+    {
+      "corpus": "fresh",
+      "split": "heldout",
+      "offset": 11,
+      "before": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "changes": {
+        "gains": [
+          "csrf-implicit",
+          "http-cache-implicit",
+          "filesystem-watch-implicit",
+          "certificate-chain-implicit",
+          "transactional-outbox-implicit"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "extra_negative_injections": []
+      }
+    }
+  ],
+  "fully_indexed_native_regressions": {
+    "cases": 258,
+    "summary": [
+      {
+        "corpus": "original",
+        "split": "development",
+        "cases": 110,
+        "exact_outcomes_preserved": true,
+        "metrics": {
+          "candidate_recall": 0.9285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.9285714285714286,
+          "mrr": 0.9214285714285714,
+          "ndcg_at_8": 0.9232989964795921,
+          "no_match_injection_rate": 0.075,
+          "recall_at_8": 0.9285714285714286
+        }
+      },
+      {
+        "corpus": "original",
+        "split": "heldout",
+        "cases": 58,
+        "exact_outcomes_preserved": true,
+        "metrics": {
+          "candidate_recall": 0.8666666666666667,
+          "cases": 58,
+          "delivered_recall": 0.8666666666666667,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8543643251190486,
+          "no_match_injection_rate": 0.14285714285714285,
+          "recall_at_8": 0.8666666666666667
+        }
+      },
+      {
+        "corpus": "fresh",
+        "split": "development",
+        "cases": 45,
+        "exact_outcomes_preserved": true,
+        "metrics": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8630929753571458,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        }
+      },
+      {
+        "corpus": "fresh",
+        "split": "heldout",
+        "cases": 45,
+        "exact_outcomes_preserved": true,
+        "metrics": {
+          "candidate_recall": 0.9333333333333333,
+          "cases": 45,
+          "delivered_recall": 0.9333333333333333,
+          "mrr": 0.8527777777777777,
+          "ndcg_at_8": 0.8730845355072103,
+          "no_match_injection_rate": 0.4666666666666667,
+          "recall_at_8": 0.9333333333333333
+        }
+      }
+    ]
+  },
+  "verification": {
+    "status": "passed",
+    "crate_suites_run_separately": true,
+    "memory": {
+      "unit_and_integration": 90,
+      "doctests": 1,
+      "native_reference_and_shape_tests": 2,
+      "evaluator_tests": 8,
+      "clippy": "passed with -D warnings"
+    },
+    "core": {
+      "full_suite": {
+        "unit": 2579,
+        "integration": 20,
+        "ignored": 30,
+        "stage": "Before the final encoder-lock and warm-query refinements; unchanged callers and integration behavior covered."
+      },
+      "final_semantic_unit_tests": 6,
+      "final_native_integration": {
+        "passed": 1,
+        "initial_claims_indexed": 24,
+        "later_claims_indexed_after_warm_retrieval": 2,
+        "projects": 2
+      },
+      "clippy": {
+        "new_warnings": 0,
+        "existing_warnings": 4
+      }
+    },
+    "frontend_tests": 1044,
+    "typecheck": "passed",
+    "format": "passed",
+    "regression_guard": {
+      "native_cases": 258,
+      "exact_outcomes_preserved": true
+    },
+    "limitation": "Existing false-positive admissions appear sooner with complete coverage; see comparisons_against_three_claims. No precision gain is claimed."
+  },
+  "rebase_validation": {
+    "onto_master": "f72ef2e274367419d0c921a9f63d6ebb334732ee",
+    "frozen_experiment_inputs_unchanged": true,
+    "compatibility_change": "Route job settings and cancellation through the local settings root; distinguish cloned-project jobs by that root while indexing their shared repository identity.",
+    "source_sha256": {
+      "src-tauri/crates/verified-code-memory/src/embedding.rs": "d3ef315189b1bb894d8b6991f1a339b85bb5b3e33e5e823c069db4ea32ab37e5",
+      "src-tauri/crates/verified-code-memory/src/semantic.rs": "9f03f01606e1305543aac5b41039e80ef5649aff2d8d3c3f203883c1408c92d0",
+      "src-tauri/crates/verified-code-memory/examples/evaluate_memory.rs": "bb333e3b937f21f204037b0a1203f7dad3444ec3d5ebc7a67ab71312c3861c3d",
+      "src-tauri/crates/rovik-core/src/memory_semantic.rs": "834da040737ff39c3bfac3f92fcac711458458658e625c13abb45223f53608ac",
+      "src-tauri/crates/rovik-core/src/agent_run/memory.rs": "7cad2405e5bbc6508a3e9e165212a350c7f2f558706d9cb33f52afe3da4bc4b1"
+    },
+    "verification": {
+      "crate_suites_run_separately": true,
+      "memory": {
+        "unit_and_integration": 102,
+        "doctests": 1,
+        "native_tests": 2,
+        "clippy": "passed with -D warnings"
+      },
+      "core": {
+        "unit": 2595,
+        "integration": 21,
+        "ignored": 30,
+        "native_cloned_project_test": 1,
+        "clippy_new_warnings": 0,
+        "clippy_existing_warnings": 4
+      },
+      "frontend_tests": 1046,
+      "typecheck": "passed",
+      "format": "passed",
+      "native_recall_replay": {
+        "cases": 258,
+        "exact_outcomes_preserved": true
+      },
+      "environment_retry": "The first core run exhausted the workspace filesystem and had 36 setup-related failures. Removed obsolete artifacts and moved temporary test files onto a separate filesystem; the complete suite then passed without test or product-code changes."
+    }
+  }
+}

@@ -1,0 +1,474 @@
+{
+  "protocol": {
+    "version": 1,
+    "baseline_commit": "c9e0fd964c9732e4826d052527953788e3e3ebc6",
+    "frozen_before_product_trials": true,
+    "dataset": "scripts/eval/memory-complex-identifier-cases.json",
+    "dataset_sha256": "44deafe337c84cafce0d4ae21444eb886d10fb840f35d5293fbc192ac9ce796e",
+    "selection_split": "development",
+    "validation_split": "heldout",
+    "policy": {
+      "threshold": 0.3,
+      "short_query_words": 2,
+      "short_query_scale": 0.9166666666666666,
+      "deterministic": true,
+      "memory_budget": 1000
+    },
+    "experiments": [
+      {
+        "id": "append_strict_symbols",
+        "description": "Fill unused ordinary result slots with complete conjunctive identifier matches; retain ordinary ranks."
+      },
+      {
+        "id": "separate_hybrid_supplements",
+        "description": "If direct lexical supplementation changes incumbent hybrid ranks, keep supplementary symbols outside reciprocal-rank fusion and append them after the incumbent hybrid result."
+      }
+    ],
+    "guards": [
+      "Never lose a delivered fact or worsen its rank, including each previously supplied member of a composed answer.",
+      "Negatives keep exactly the same returned record IDs; no increased noise, project leak, caller exclusion, verification/tag violation or packet overrun.",
+      "Replay all earlier corpora under lexical and hybrid plus diagnostic hybrid policies.",
+      "Use a fixed eight-result, 1000-token budget; do not change claim text, thresholds, model weights, or release assets after seeing results.",
+      "Full-pool failures remain visible; do not discard hard categories to achieve 100%. Select on development before scoring the fixed heldout candidate."
+    ],
+    "amendments": [
+      {
+        "reason": "The broad append prototype improved development recall but failed the pre-existing exact-literal/file lookup contract. Preserve that test and restrict supplementation rather than weakening it.",
+        "registered_before_trial": true,
+        "additional_experiment": {
+          "id": "unresolved_text_context_only",
+          "description": "Append complete symbol matches only with free slots, no explicit file context and no existing title equal to the task or failure. Keep incumbent order and all prior contracts."
+        }
+      }
+    ],
+    "registration_serialization": "JSON.stringify(parsed, null, 2) plus a final newline",
+    "committed_dataset_sha256": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d"
+  },
+  "metric": "All required claims must be shown with full text in the rendered packet; preserve each previously delivered member and its rank.",
+  "trials": [
+    {
+      "label": "append",
+      "split": "development",
+      "policy": "lexical",
+      "before": {
+        "candidate_recall": 0.14285714285714285,
+        "cases": 40,
+        "delivered_recall": 0.14285714285714285,
+        "mrr": 0.14285714285714285,
+        "ndcg_at_8": 0.14285714285714285,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.14285714285714285
+      },
+      "after": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.48214285714285715,
+        "ndcg_at_8": 0.5794930646683849,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [
+          "complex-SharedMemoryStore-mixed-text",
+          "complex-SharedMemoryStore-failure-noise",
+          "complex-SharedMemoryStore-file-noise",
+          "complex-SharedMemoryStore-composed",
+          "complex-SharedMemoryStore-filtered",
+          "complex-RetrievalQuery-mixed-text",
+          "complex-RetrievalQuery-failure-noise",
+          "complex-RetrievalQuery-file-noise",
+          "complex-RetrievalQuery-composed",
+          "complex-RetrievalQuery-filtered",
+          "complex-MemoryRecord-mixed-text",
+          "complex-MemoryRecord-failure-noise",
+          "complex-MemoryRecord-file-noise",
+          "complex-MemoryRecord-composed",
+          "complex-MemoryRecord-filtered",
+          "complex-WorkloadStatus-mixed-text",
+          "complex-WorkloadStatus-failure-noise",
+          "complex-WorkloadStatus-file-noise",
+          "complex-WorkloadStatus-composed",
+          "complex-WorkloadStatus-filtered"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "new_negative_records": [],
+        "safety": []
+      },
+      "remaining_missing": [
+        "complex-SharedMemoryStore-full-pool",
+        "complex-RetrievalQuery-full-pool",
+        "complex-MemoryRecord-full-pool",
+        "complex-WorkloadStatus-full-pool"
+      ]
+    },
+    {
+      "label": "append",
+      "split": "development",
+      "policy": "hybrid",
+      "before": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.47023809523809523,
+        "ndcg_at_8": 0.569865327617504,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "after": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6488095238095238,
+        "ndcg_at_8": 0.7027988493622542,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "new_negative_records": [],
+        "safety": []
+      },
+      "remaining_missing": [
+        "complex-SharedMemoryStore-full-pool",
+        "complex-RetrievalQuery-full-pool",
+        "complex-MemoryRecord-full-pool",
+        "complex-WorkloadStatus-full-pool"
+      ]
+    },
+    {
+      "label": "conservative",
+      "split": "development",
+      "policy": "lexical",
+      "before": {
+        "candidate_recall": 0.14285714285714285,
+        "cases": 40,
+        "delivered_recall": 0.14285714285714285,
+        "mrr": 0.14285714285714285,
+        "ndcg_at_8": 0.14285714285714285,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.14285714285714285
+      },
+      "after": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "changes": {
+        "gains": [
+          "complex-SharedMemoryStore-mixed-text",
+          "complex-SharedMemoryStore-failure-noise",
+          "complex-SharedMemoryStore-composed",
+          "complex-RetrievalQuery-mixed-text",
+          "complex-RetrievalQuery-failure-noise",
+          "complex-RetrievalQuery-composed",
+          "complex-MemoryRecord-mixed-text",
+          "complex-MemoryRecord-failure-noise",
+          "complex-MemoryRecord-composed",
+          "complex-WorkloadStatus-mixed-text",
+          "complex-WorkloadStatus-failure-noise",
+          "complex-WorkloadStatus-composed"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "new_negative_records": [],
+        "safety": []
+      },
+      "remaining_missing": [
+        "complex-SharedMemoryStore-file-noise",
+        "complex-SharedMemoryStore-full-pool",
+        "complex-SharedMemoryStore-filtered",
+        "complex-RetrievalQuery-file-noise",
+        "complex-RetrievalQuery-full-pool",
+        "complex-RetrievalQuery-filtered",
+        "complex-MemoryRecord-file-noise",
+        "complex-MemoryRecord-full-pool",
+        "complex-MemoryRecord-filtered",
+        "complex-WorkloadStatus-file-noise",
+        "complex-WorkloadStatus-full-pool",
+        "complex-WorkloadStatus-filtered"
+      ]
+    },
+    {
+      "label": "conservative",
+      "split": "development",
+      "policy": "hybrid",
+      "before": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.47023809523809523,
+        "ndcg_at_8": 0.569865327617504,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "after": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.5059523809523809,
+        "ndcg_at_8": 0.5973502075255279,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "new_negative_records": [],
+        "safety": []
+      },
+      "remaining_missing": [
+        "complex-SharedMemoryStore-full-pool",
+        "complex-RetrievalQuery-full-pool",
+        "complex-MemoryRecord-full-pool",
+        "complex-WorkloadStatus-full-pool"
+      ]
+    },
+    {
+      "label": "conservative",
+      "split": "heldout",
+      "policy": "lexical",
+      "before": {
+        "candidate_recall": 0.14285714285714285,
+        "cases": 40,
+        "delivered_recall": 0.14285714285714285,
+        "mrr": 0.14285714285714285,
+        "ndcg_at_8": 0.14285714285714285,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.14285714285714285
+      },
+      "after": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "changes": {
+        "gains": [
+          "complex-BrowserProxy-mixed-text",
+          "complex-BrowserProxy-failure-noise",
+          "complex-BrowserProxy-composed",
+          "complex-CommandOutput-mixed-text",
+          "complex-CommandOutput-failure-noise",
+          "complex-CommandOutput-composed",
+          "complex-ProcessTree-mixed-text",
+          "complex-ProcessTree-failure-noise",
+          "complex-ProcessTree-composed",
+          "complex-BrowserScreenshot-mixed-text",
+          "complex-BrowserScreenshot-failure-noise",
+          "complex-BrowserScreenshot-composed"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "new_negative_records": [],
+        "safety": []
+      },
+      "remaining_missing": [
+        "complex-BrowserProxy-file-noise",
+        "complex-BrowserProxy-full-pool",
+        "complex-BrowserProxy-filtered",
+        "complex-CommandOutput-file-noise",
+        "complex-CommandOutput-full-pool",
+        "complex-CommandOutput-filtered",
+        "complex-ProcessTree-file-noise",
+        "complex-ProcessTree-full-pool",
+        "complex-ProcessTree-filtered",
+        "complex-BrowserScreenshot-file-noise",
+        "complex-BrowserScreenshot-full-pool",
+        "complex-BrowserScreenshot-filtered"
+      ]
+    },
+    {
+      "label": "conservative",
+      "split": "heldout",
+      "policy": "hybrid",
+      "before": {
+        "candidate_recall": 0.75,
+        "cases": 40,
+        "delivered_recall": 0.7142857142857143,
+        "mrr": 0.5607142857142857,
+        "ndcg_at_8": 0.609472163906345,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.75
+      },
+      "after": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.7154761904761904,
+        "ndcg_at_8": 0.7514821991104225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "changes": {
+        "gains": [
+          "complex-BrowserProxy-composed",
+          "complex-CommandOutput-mixed-text",
+          "complex-CommandOutput-failure-noise",
+          "complex-CommandOutput-composed"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "new_negative_records": [],
+        "safety": []
+      },
+      "remaining_missing": [
+        "complex-CommandOutput-file-noise",
+        "complex-CommandOutput-full-pool",
+        "complex-CommandOutput-filtered",
+        "complex-ProcessTree-full-pool"
+      ]
+    }
+  ],
+  "rejected_append": {
+    "reason": "Pre-existing exact literal/file lookup protection test failed (2 records versus expected 1). No tests were weakened.",
+    "test": "original_literal_and_file_matches_prevent_identifier_expansion"
+  },
+  "selected": "conservative",
+  "earlier_regressions": {
+    "total": 792,
+    "reports": [
+      {
+        "dataset": "original",
+        "split": "development",
+        "policy": "lexical",
+        "cases": 110,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "original",
+        "split": "development",
+        "policy": "hybrid",
+        "cases": 110,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "original",
+        "split": "heldout",
+        "policy": "lexical",
+        "cases": 58,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "original",
+        "split": "heldout",
+        "policy": "hybrid",
+        "cases": 58,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-semantic-fresh-cases",
+        "split": "development",
+        "policy": "lexical",
+        "cases": 45,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-semantic-fresh-cases",
+        "split": "development",
+        "policy": "hybrid",
+        "cases": 45,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-semantic-fresh-cases",
+        "split": "heldout",
+        "policy": "lexical",
+        "cases": 45,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-semantic-fresh-cases",
+        "split": "heldout",
+        "policy": "hybrid",
+        "cases": 45,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-diagnostic-cases",
+        "split": "development",
+        "policy": "lexical",
+        "cases": 45,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-diagnostic-cases",
+        "split": "development",
+        "policy": "hybrid",
+        "cases": 45,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-diagnostic-cases",
+        "split": "heldout",
+        "policy": "lexical",
+        "cases": 45,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-diagnostic-cases",
+        "split": "heldout",
+        "policy": "hybrid",
+        "cases": 45,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-identifier-cases",
+        "split": "development",
+        "policy": "lexical",
+        "cases": 24,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-identifier-cases",
+        "split": "development",
+        "policy": "hybrid",
+        "cases": 24,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-identifier-cases",
+        "split": "heldout",
+        "policy": "lexical",
+        "cases": 24,
+        "exact_outcomes_preserved": true
+      },
+      {
+        "dataset": "memory-identifier-cases",
+        "split": "heldout",
+        "policy": "hybrid",
+        "cases": 24,
+        "exact_outcomes_preserved": true
+      }
+    ]
+  },
+  "source_sha256": {
+    "src-tauri/crates/verified-code-memory/src/store.rs": "ab12a0b839e469575fac782af47b6f92e7d22806837ea49d4c2487a92ff23166",
+    "src-tauri/crates/verified-code-memory/examples/evaluate_memory.rs": "e67dc5fa212b54716df70c9977584ead78661372a39f5f6c3adf5c1c73f990e5",
+    "src-tauri/crates/verified-code-memory/tests/identifiers.rs": "30a3d35bdd95734874378c5c448959eebbdd372c2e49f9959cf6bcda8150ddb0"
+  },
+  "evaluated_baseline_binary_sha256": "4c3a7f18c78d71a506da0a0ffe7d3204336e8a20a1d8d98a7427da0a4d88a10c",
+  "evaluated_candidate_binary_sha256": "e10c55b4cf5ad5daf9dcf6aba829776ecf4528d6b43e377a37e3d017d8429bf6",
+  "verification": {
+    "memory_tests_including_doctest": 114,
+    "native_tests": 2,
+    "evaluator_tests": 12,
+    "clippy": "passed with -D warnings",
+    "frontend_tests": 1046,
+    "typecheck": "passed",
+    "format": "passed",
+    "changed_crates": ["verified-code-memory"],
+    "crate_tests_run_separately": true
+  }
+}

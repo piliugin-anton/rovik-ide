@@ -11,6 +11,12 @@ pub trait MemoryEmbedder: Send + Sync {
 
     /// Embedding dimension.
     fn dimensions(&self) -> usize;
+
+    /// Positive character limit applied to an input before encoding. `None`
+    /// means no character truncation; providers retain that default behavior.
+    fn input_character_limit(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Pluggable vector-search backend.
@@ -35,6 +41,7 @@ pub const MINILM_DIMENSIONS: usize = 384;
 /// Model identity, including the preprocessing policy, for derived SQLite vectors.
 pub const MINILM_REVISION: &str = "chroma-minilm-l6-v2-913d7300-title-claim-native-v1";
 const TOKENS: usize = 256;
+const INPUT_CHARACTERS: usize = 500;
 
 fn onnx_error(error: impl std::fmt::Display) -> crate::VcmError {
     crate::VcmError::Onnx(error.to_string())
@@ -76,19 +83,23 @@ impl OnnxMiniLm {
             model: std::sync::Mutex::new(model),
         })
     }
-}
-
-impl MemoryEmbedder for OnnxMiniLm {
-    fn dimensions(&self) -> usize {
-        MINILM_DIMENSIONS
+    /// Waits for the shared encoder instead of failing when a query is using it.
+    /// Use only on a blocking background worker; interactive queries use `embed`.
+    pub fn embed_blocking(&self, text: &str) -> Result<Vec<f32>> {
+        let model = self
+            .model
+            .lock()
+            .map_err(|_| crate::VcmError::EmbeddingUnavailable("ONNX model is unavailable"))?;
+        self.encode(text, &model)
     }
 
-    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+    fn encode(
+        &self,
+        text: &str,
+        model: &tract_onnx::prelude::TypedRunnableModel<tract_onnx::prelude::TypedModel>,
+    ) -> Result<Vec<f32>> {
         use tract_onnx::prelude::*;
-        let model = self.model.try_lock().map_err(|_| {
-            crate::VcmError::EmbeddingUnavailable("ONNX model is busy or unavailable")
-        })?;
-        let text: String = text.chars().take(500).collect();
+        let text: String = text.chars().take(INPUT_CHARACTERS).collect();
         let tokens = self.tokenizer.encode(text, true).map_err(onnx_error)?;
         let length = tokens.len();
         let tensor = |values: &[u32]| {
@@ -118,6 +129,23 @@ impl MemoryEmbedder for OnnxMiniLm {
         }
         let values: Vec<f32> = hidden.iter().copied().collect();
         pool(&values, tokens.get_attention_mask())
+    }
+}
+
+impl MemoryEmbedder for OnnxMiniLm {
+    fn dimensions(&self) -> usize {
+        MINILM_DIMENSIONS
+    }
+
+    fn input_character_limit(&self) -> Option<usize> {
+        Some(INPUT_CHARACTERS)
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        let model = self.model.try_lock().map_err(|_| {
+            crate::VcmError::EmbeddingUnavailable("ONNX model is busy or unavailable")
+        })?;
+        self.encode(text, &model)
     }
 }
 
@@ -188,6 +216,7 @@ mod tests {
     fn native_minilm_matches_the_reference_and_recalls_paraphrases() {
         let model = std::env::var_os("ROVIK_MEMORY_EVAL_MODEL").unwrap();
         let backend = OnnxMiniLm::new(std::path::Path::new(&model)).unwrap();
+        assert_eq!(backend.input_character_limit(), Some(500));
         let reference: serde_json::Value =
             serde_json::from_str(include_str!("../tests/fixtures/minilm-reference.json")).unwrap();
         let vector = backend.embed(reference["text"].as_str().unwrap()).unwrap();
@@ -203,6 +232,16 @@ mod tests {
             backend.embed(reference["text"].as_str().unwrap()).unwrap(),
             vector
         );
+        std::thread::scope(|scope| {
+            let guard = backend.model.lock().unwrap();
+            assert!(backend
+                .embed("interactive query stays nonblocking")
+                .is_err());
+            let pending =
+                scope.spawn(|| backend.embed_blocking(reference["text"].as_str().unwrap()));
+            drop(guard);
+            assert_eq!(pending.join().unwrap().unwrap(), vector);
+        });
         let store = crate::SharedMemoryStore::open_in_memory().unwrap();
         let wanted = store
             .remember(crate::NewMemory::procedure(
@@ -223,6 +262,13 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.id, wanted.id);
+        let long =
+            crate::RetrievalQuery::new("a", "Please continue the requested work. ".repeat(20))
+                .with_failure("Prevent simultaneous access with a lock");
+        assert_eq!(
+            index.retrieve(&long, &backend, 0.3).unwrap()[0].record.id,
+            wanted.id
+        );
     }
 
     #[test]

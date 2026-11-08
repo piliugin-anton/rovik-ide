@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "baseline_commit": "42ac482a56e4a039d66a454774f03529de269947",
+  "frozen_before_trials": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-fullpool-retry-cases.json": "e856cf79c767092d46f7eaa6f600711ec671c7c978377430715e5d025c2016cb",
+    "scripts/eval/memory-fullpool-retry-retention-cases.json": "de291902a3650820dedfa46458b898237fc5c25f441d07434f50c07d8704503c"
+  },
+  "review": [
+    {
+      "prior": "32-candidate lexical pools with word vectors",
+      "reason_to_retry": "Current MiniLM, exact compound matching and the dense corpus differ from the old candidate pool trial."
+    },
+    {
+      "prior": "Contextual hybrid fusion and relevance reranking",
+      "reason_to_retry": "Use complete algorithmic symbol evidence rather than manually authored contextual aliases."
+    },
+    {
+      "prior": "Incident collapse/diversity",
+      "reason_to_retry": "Retry bounded vector diversity selection; retain distinct facts and reject any observed per-fact loss."
+    },
+    {
+      "prior": "Unconditional hybrid tail replacement",
+      "decision": "Already rejected for six supplied-fact losses; do not ship or weaken the retention guards."
+    }
+  ],
+  "trials": [
+    {
+      "id": "pool32",
+      "description": "Retrieve 32 lexical and semantic candidates, fuse by existing RRF, return eight."
+    },
+    {
+      "id": "symbol_rrf",
+      "description": "Add a complete-symbol rank input before truncation over the widened pools; no manual aliases or cosine retuning."
+    },
+    {
+      "id": "diversity",
+      "description": "Widen candidate pools and greedily rerank admitted records with MMR lambda 0.8 over normalized RRF relevance and stored cosine redundancy; never change stored claims."
+    }
+  ],
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "final_limit": 8,
+    "memory_budget": 1000,
+    "deterministic": true
+  },
+  "selection": "Fixed-policy retries on exposed old cases and new constructed stress views. No blind generalization claim. Select on development subject to old and new per-fact/negative guards; score only a safe improving candidate on the reserved split.",
+  "guards": [
+    "Preserve every delivered primary or required fact and its rank, even for incomplete multi-fact answers.",
+    "Negative record IDs and order unchanged; no scope, trust, tag, caller-visibility or token-limit violations.",
+    "Keep all existing fixtures and compare both lexical and hybrid outputs.",
+    "Do not collapse distinct observations merely because their text or episode resembles another.",
+    "Reject unsafe trials, restore baseline code, and continue with the next registered approach. If none passes, publish the measured failures without a production change."
+  ],
+  "registration_serialization": "JSON.stringify(parsed, null, 2) plus a final newline",
+  "committed_inputs_sha256": {
+    "scripts/eval/memory-fullpool-retry-cases.json": "1f2dcb3fc7fbe176d57e4dc2ac1d68f6ce7e017cc08195536de974ce4d579bc2",
+    "scripts/eval/memory-fullpool-retry-retention-cases.json": "72d1b16ddc1ad290220307bacc6b5af5b69fc848ae8dccc26e8096b17b9cff14"
+  }
+}

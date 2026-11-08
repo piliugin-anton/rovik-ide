@@ -163,6 +163,26 @@ async fn a_run_on_a_daemon_calls_mcp_tools() {
     let h = harness(&[]).await;
     h.core.agents.set_on_server();
     let (_rovik, docs, got) = docs_server().await;
+    // The scripted model calls immediately; wait for the same daemon session
+    // the run will use rather than racing its bounded startup listing.
+    let via = h.core.mcp.via(&h.dialog_id);
+    let listed = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        h.core.mcp.list(
+            std::slice::from_ref(&docs),
+            Some(&h.project),
+            via.as_deref(),
+        ),
+    )
+    .await
+    .expect("docs server did not become ready");
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0]
+        .tools
+        .as_ref()
+        .unwrap()
+        .iter()
+        .any(|tool| tool.name == "bash"));
     let (url, seen) = model(vec![
         Reply::Call {
             id: "m1",

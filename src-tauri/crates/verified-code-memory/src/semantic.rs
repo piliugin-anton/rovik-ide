@@ -32,6 +32,10 @@ impl SemanticIndex {
             "CREATE TABLE IF NOT EXISTS memory_vectors (
             memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
             model TEXT NOT NULL, claim_hash TEXT NOT NULL, vector_json TEXT NOT NULL,
+            PRIMARY KEY(memory_id, model)) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS memory_vector_conclusions (
+            memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            model TEXT NOT NULL, claim_hash TEXT NOT NULL, vector_json TEXT NOT NULL,
             PRIMARY KEY(memory_id, model)) WITHOUT ROWID;",
         )?;
         Ok(Self {
@@ -66,6 +70,7 @@ impl SemanticIndex {
     }
 
     /// Embeds missing or changed records without holding the store lock.
+    /// Truncated records may also get one bounded conclusion vector.
     /// A concurrent edit, delete or clear causes the late result to be rejected.
     pub fn backfill(&self, repo: &str, embedder: &dyn MemoryEmbedder) -> Result<usize> {
         self.backfill_limited(repo, embedder, usize::MAX)
@@ -78,11 +83,33 @@ impl SemanticIndex {
         embedder: &dyn MemoryEmbedder,
         limit: usize,
     ) -> Result<usize> {
+        self.backfill_controlled(repo, embedder, limit, || true)
+    }
+
+    /// Completes the pending snapshot while `should_continue` permits it.
+    /// The predicate runs without the store lock, before inference and before
+    /// committing its result, so disabling memory also rejects in-flight work.
+    pub fn backfill_while(
+        &self,
+        repo: &str,
+        embedder: &dyn MemoryEmbedder,
+        should_continue: impl Fn() -> bool,
+    ) -> Result<usize> {
+        self.backfill_controlled(repo, embedder, usize::MAX, should_continue)
+    }
+
+    fn backfill_controlled(
+        &self,
+        repo: &str,
+        embedder: &dyn MemoryEmbedder,
+        limit: usize,
+        should_continue: impl Fn() -> bool,
+    ) -> Result<usize> {
         let generation = self.store.generation(repo)?;
         let records = self.store.list(repo, "")?;
         let mut written = 0;
         for record in records {
-            if written >= limit {
+            if written >= limit || self.store.generation(repo)? != generation {
                 break;
             }
             if record.verification == Verification::Deprecated {
@@ -91,26 +118,78 @@ impl SemanticIndex {
             let current: bool = self.store.lock()?.connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM memory_vectors WHERE memory_id=?1 AND model=?2 AND claim_hash=?3)",
                 params![record.id.to_string(), self.model, record.claim_hash], |row| row.get(0))?;
-            if current {
+            let document = format!("{}\n{}", record.title, record.content);
+            let conclusion = overflow_conclusion(&document, embedder.input_character_limit());
+            let conclusion_current: bool = conclusion.is_none() || self.store.lock()?.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory_vector_conclusions WHERE memory_id=?1 AND model=?2 AND claim_hash=?3)",
+                params![record.id.to_string(), self.model, record.claim_hash], |row| row.get(0))?;
+            if current && conclusion_current {
                 continue;
             }
-            let vector = embedder.embed(&format!("{}\n{}", record.title, record.content))?;
-            validate(&vector, self.dimensions)?;
-            let guard = self.store.lock()?;
+            if !should_continue() {
+                break;
+            }
+            let vector = if current {
+                None
+            } else {
+                let vector = embedder.embed(&document)?;
+                validate(&vector, self.dimensions)?;
+                Some(vector)
+            };
+            if !should_continue() {
+                break;
+            }
+            let conclusion_vector = if conclusion_current {
+                None
+            } else {
+                conclusion.and_then(|text| {
+                    match embedder.embed(&text).and_then(|vector| {
+                        validate(&vector, self.dimensions)?;
+                        Ok(vector)
+                    }) {
+                        Ok(vector) => Some(vector),
+                        Err(error) => {
+                            eprintln!("memory: conclusion embedding unavailable; preserving primary index: {error}");
+                            None
+                        }
+                    }
+                })
+            };
+            if !should_continue() {
+                break;
+            }
+            let mut guard = self.store.lock()?;
             if guard.generation(repo)? != generation {
                 break;
             }
-            written += guard.connection.execute("INSERT INTO memory_vectors(memory_id,model,claim_hash,vector_json)
+            let transaction = guard.connection.transaction()?;
+            let mut changed = 0;
+            if let Some(vector) = vector {
+                changed += transaction.execute("INSERT INTO memory_vectors(memory_id,model,claim_hash,vector_json)
                 SELECT id, ?2, claim_hash, ?4 FROM memories WHERE id=?1 AND repo=?5 AND claim_hash=?3
                 ON CONFLICT(memory_id,model) DO UPDATE SET claim_hash=excluded.claim_hash, vector_json=excluded.vector_json",
                 params![record.id.to_string(), self.model, record.claim_hash, serde_json::to_string(&vector)?, repo])?;
+            }
+            if let Some(vector) = conclusion_vector {
+                changed += transaction.execute("INSERT INTO memory_vector_conclusions(memory_id,model,claim_hash,vector_json)
+                SELECT id, ?2, claim_hash, ?4 FROM memories WHERE id=?1 AND repo=?5 AND claim_hash=?3
+                ON CONFLICT(memory_id,model) DO UPDATE SET claim_hash=excluded.claim_hash, vector_json=excluded.vector_json",
+                params![record.id.to_string(), self.model, record.claim_hash, serde_json::to_string(&vector)?, repo])?;
+            }
+            transaction.commit()?;
+            written += usize::from(changed > 0);
         }
         Ok(written)
     }
 
     /// Removes this model's vectors for a project; the next backfill rebuilds them.
     pub fn clear(&self, repo: &str) -> Result<usize> {
-        Ok(self.store.lock()?.connection.execute("DELETE FROM memory_vectors WHERE model=?1 AND memory_id IN (SELECT id FROM memories WHERE repo=?2)", params![self.model, repo])?)
+        let mut guard = self.store.lock()?;
+        let transaction = guard.connection.transaction()?;
+        transaction.execute("DELETE FROM memory_vector_conclusions WHERE model=?1 AND memory_id IN (SELECT id FROM memories WHERE repo=?2)", params![self.model, repo])?;
+        let removed = transaction.execute("DELETE FROM memory_vectors WHERE model=?1 AND memory_id IN (SELECT id FROM memories WHERE repo=?2)", params![self.model, repo])?;
+        transaction.commit()?;
+        Ok(removed)
     }
 
     /// Searches exact cosine similarity within the query's repository and filters.
@@ -132,13 +211,29 @@ impl SemanticIndex {
         minimum: f32,
         accept: impl Fn(&MemoryRecord) -> bool,
     ) -> Result<Vec<(MemoryRecord, f32)>> {
+        self.search_view_filtered(query, vector, minimum, accept, false)
+    }
+
+    fn search_view_filtered(
+        &self,
+        query: &RetrievalQuery,
+        vector: &[f32],
+        minimum: f32,
+        accept: impl Fn(&MemoryRecord) -> bool,
+        conclusion: bool,
+    ) -> Result<Vec<(MemoryRecord, f32)>> {
         validate(vector, self.dimensions)?;
         validate_threshold(minimum)?;
         if query.limit == 0 || query.limit > 32 {
             return Err(VcmError::InvalidLimit(query.limit));
         }
         let guard = self.store.lock()?;
-        let mut statement = guard.connection.prepare("SELECT v.memory_id, v.vector_json FROM memory_vectors v JOIN memories m ON m.id=v.memory_id WHERE m.repo=?1 AND v.model=?2 AND v.claim_hash=m.claim_hash")?;
+        let table = if conclusion {
+            "memory_vector_conclusions"
+        } else {
+            "memory_vectors"
+        };
+        let mut statement = guard.connection.prepare(&format!("SELECT v.memory_id, v.vector_json FROM {table} v JOIN memories m ON m.id=v.memory_id WHERE m.repo=?1 AND v.model=?2 AND v.claim_hash=m.claim_hash"))?;
         let rows = statement.query_map(params![query.repo, self.model], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
@@ -240,8 +335,222 @@ impl SemanticIndex {
         });
         crate::retrieval::deduplicate_memories(&mut found);
         found.truncate(query.limit);
+        // The separator also consumes one character of the encoder window.
+        // Keep incumbent ranks; only unused slots receive diagnostic evidence.
+        let failure = query
+            .failure
+            .as_deref()
+            .filter(|text| !text.trim().is_empty());
+        let truncated = embedder.input_character_limit().is_some_and(|limit| {
+            limit > 0 && query.task.chars().count().saturating_add(1) >= limit
+        });
+        let mut diagnostic_vector = None;
+        if let Some(failure) = failure.filter(|_| truncated && found.len() < query.limit) {
+            let supplementary = embedder.embed(failure).and_then(|diagnostic| {
+                let hits = self.search_filtered(query, &diagnostic, minimum, |record| {
+                    accept(record)
+                        && !found
+                            .iter()
+                            .any(|hit| hit.record.same_context_claim(record))
+                })?;
+                diagnostic_vector = Some(diagnostic);
+                Ok(hits)
+            });
+            match supplementary {
+                Ok(hits) => {
+                    let last_score = found.last().map_or(1.0 / 61.0, |hit| hit.score);
+                    for (rank, (record, similarity)) in hits.into_iter().enumerate() {
+                        found.push(RetrievedMemory {
+                            record,
+                            score: last_score / (rank + 2) as f32,
+                            reason: format!("diagnostic cosine {similarity:.3}"),
+                            components: Default::default(),
+                        });
+                        if found.len() == query.limit {
+                            break;
+                        }
+                    }
+                }
+                // A busy encoder or an unavailable supplementary view must not
+                // discard answers from the successful original lookup.
+                Err(error) => eprintln!(
+                    "memory: diagnostic lookup unavailable; preserving current results: {error}"
+                ),
+            }
+        }
+        let exact_title = found.iter().any(|hit| {
+            hit.record.title.eq_ignore_ascii_case(query.task.trim())
+                || query
+                    .failure
+                    .as_deref()
+                    .is_some_and(|failure| hit.record.title.eq_ignore_ascii_case(failure.trim()))
+        });
+        if found.len() < query.limit && !exact_title {
+            match self.store.identifier_candidates_filtered(query, |record| {
+                accept(record)
+                    && !found
+                        .iter()
+                        .any(|hit| hit.record.same_context_claim(record))
+            }) {
+                Ok(hits) => {
+                    let last_score = found.last().map_or(1.0 / 61.0, |hit| hit.score);
+                    for (rank, mut hit) in
+                        hits.into_iter().take(query.limit - found.len()).enumerate()
+                    {
+                        hit.score = last_score / (rank + 2) as f32;
+                        hit.reason.push_str(", supplementary complete symbol match");
+                        found.push(hit);
+                    }
+                }
+                Err(error) => eprintln!(
+                    "memory: symbol lookup unavailable; preserving current results: {error}"
+                ),
+            }
+        }
+        if found.len() < query.limit
+            && !exact_title
+            && embedder
+                .input_character_limit()
+                .is_some_and(|limit| limit > 0)
+        {
+            // Preserve ordinary conclusion matches before trying a diagnostic
+            // that was hidden by the task window. Its inference already ran.
+            for (view, reason) in std::iter::once((&vector, "conclusion")).chain(
+                diagnostic_vector
+                    .as_ref()
+                    .map(|vector| (vector, "diagnostic conclusion")),
+            ) {
+                if found.len() == query.limit {
+                    break;
+                }
+                match self.search_view_filtered(
+                    query,
+                    view,
+                    minimum,
+                    |record| {
+                        accept(record)
+                            && !found
+                                .iter()
+                                .any(|hit| hit.record.same_context_claim(record))
+                    },
+                    true,
+                ) {
+                    Ok(hits) => {
+                        let last_score = found.last().map_or(1.0 / 61.0, |hit| hit.score);
+                        for (rank, (record, similarity)) in
+                            hits.into_iter().take(query.limit - found.len()).enumerate()
+                        {
+                            found.push(RetrievedMemory {
+                                record,
+                                score: last_score / (rank + 2) as f32,
+                                reason: format!("{reason} cosine {similarity:.3}"),
+                                components: Default::default(),
+                            });
+                        }
+                    }
+                    Err(error) => eprintln!(
+                        "memory: {reason} lookup unavailable; preserving current results: {error}"
+                    ),
+                }
+            }
+        }
+        // A terse request can name one exact compound symbol while broad
+        // context fills the pool. Preserve the leaders and broader requests.
+        if found.len() == query.limit
+            && query.limit > 1
+            && query.files.is_empty()
+            && query.failure.is_none()
+            && !exact_title
+            && focused_identifier(&query.task)
+        {
+            // Check incumbents in their own filtered scan: an already supplied
+            // match can rank below the separate supplementary pool's bound.
+            let supplementary = self
+                .store
+                .identifier_candidates_filtered(query, |record| {
+                    accept(record)
+                        && found
+                            .iter()
+                            .any(|hit| hit.record.same_context_claim(record))
+                })
+                .and_then(|represented| {
+                    if represented.is_empty() {
+                        Ok(self
+                            .store
+                            .identifier_candidates_filtered(query, &accept)?
+                            .into_iter()
+                            .next())
+                    } else {
+                        Ok(None)
+                    }
+                });
+            match supplementary {
+                Ok(Some(mut candidate)) => {
+                    found.pop();
+                    candidate.score = found.last().map_or(1.0 / 61.0, |hit| hit.score) / 2.0;
+                    candidate.reason.push_str(", focused complete symbol match");
+                    found.push(candidate);
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("memory: focused symbol lookup unavailable; preserving current results: {error}"),
+            }
+        }
         Ok(found)
     }
+}
+
+fn focused_identifier(task: &str) -> bool {
+    if !(1..=2).contains(&task.split_whitespace().count())
+        || task.contains(['*', '?'])
+        || task.chars().any(char::is_numeric)
+        || task.split(|c: char| !c.is_ascii_alphabetic()).any(|word| {
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "all"
+                    | "every"
+                    | "each"
+                    | "both"
+                    | "either"
+                    | "any"
+                    | "everything"
+                    | "entire"
+                    | "whole"
+                    | "many"
+                    | "several"
+                    | "multiple"
+            )
+        })
+    {
+        return false;
+    }
+    let clause = crate::retrieval::identifier_fts_query(&[task]);
+    !clause.is_empty() && !clause.contains(" OR ")
+}
+
+fn overflow_conclusion(document: &str, limit: Option<usize>) -> Option<String> {
+    let limit = limit.filter(|limit| *limit > 0)?;
+    let document = document.trim_end();
+    if document.chars().count() <= limit {
+        return None;
+    }
+    let document = document.replace("\r\n", "\n");
+    // Require an explicit paragraph that the primary encoder never saw.
+    // An arbitrary suffix can discard the context of a single-paragraph claim.
+    let (prefix, paragraph) = document.rsplit_once("\n\n")?;
+    if prefix.chars().count().saturating_add(2) < limit {
+        return None;
+    }
+    let paragraph = paragraph.trim();
+    Some(
+        paragraph
+            .chars()
+            .rev()
+            .take(limit)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
+    )
 }
 
 fn validate_threshold(minimum: f32) -> Result<()> {

@@ -29,12 +29,17 @@ fn fact(
 /// production SQLite index. Missing inputs fail instead of inventing vectors.
 struct RecordedEmbeddings {
     dimensions: usize,
+    input_character_limit: Option<usize>,
     vectors: std::collections::BTreeMap<String, Vec<f32>>,
 }
 
 impl MemoryEmbedder for RecordedEmbeddings {
     fn dimensions(&self) -> usize {
         self.dimensions
+    }
+
+    fn input_character_limit(&self) -> Option<usize> {
+        self.input_character_limit
     }
 
     fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
@@ -62,6 +67,9 @@ struct MemoizedEmbeddings {
 impl MemoryEmbedder for MemoizedEmbeddings {
     fn dimensions(&self) -> usize {
         self.inner.dimensions()
+    }
+    fn input_character_limit(&self) -> Option<usize> {
+        self.inner.input_character_limit()
     }
     fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
         if let Some(vector) = self
@@ -100,6 +108,118 @@ fn dataset_input(config: &Value) -> std::io::Result<String> {
             "dataset_file must be a path string",
         )),
     }
+}
+
+fn fixture_strings(value: &Value) -> Result<Vec<&str>, Box<dyn std::error::Error>> {
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    value
+        .as_array()
+        .ok_or("fixture list must be an array")?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| "fixture list entries must be strings".into())
+        })
+        .collect()
+}
+
+fn fixture_query(
+    case: &Value,
+    config: &Value,
+) -> Result<RetrievalQuery, Box<dyn std::error::Error>> {
+    let mut query = RetrievalQuery::new("project", case["task"].as_str().ok_or("missing task")?);
+    if let Some(failure) = case["failure"].as_str() {
+        query = query.with_failure(failure);
+    }
+    if let Some(file) = case["file"]
+        .as_str()
+        .filter(|_| config["query_mode"] != "intent_only")
+    {
+        query = query.with_files([file]);
+    }
+    query.limit = config["candidate_limit"].as_u64().unwrap_or(8) as usize;
+    if !case["verifications"].is_null() {
+        query.verifications = serde_json::from_value(case["verifications"].clone())?;
+    }
+    query.excluded_tags = fixture_strings(&case["excluded_tags"])?
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    Ok(query)
+}
+
+fn populate_corpus(
+    store: &SharedMemoryStore,
+    corpus: &Value,
+    primary_title: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if corpus.is_null() {
+        return Ok(());
+    }
+    for entry in corpus.as_array().ok_or("corpus must be an array")? {
+        let title = entry["title"].as_str().ok_or("missing corpus title")?;
+        let repo = if entry["repo"].is_null() {
+            "project"
+        } else {
+            entry["repo"].as_str().ok_or("invalid corpus repository")?
+        };
+        if repo == "project" && title == primary_title {
+            continue;
+        }
+        let content = entry["content"].as_str().ok_or("missing corpus content")?;
+        let mut input = NewMemory::project_fact(repo, title, content);
+        input = input
+            .with_files(fixture_strings(&entry["files"])?)
+            .with_tags(fixture_strings(&entry["tags"])?);
+        let record = store.remember(input)?;
+        if serde_json::from_value::<Option<bool>>(entry["verified"].clone())?.unwrap_or(false) {
+            store.verify(record.id, "fixture corpus evidence")?;
+        }
+        if serde_json::from_value::<Option<bool>>(entry["deprecated"].clone())?.unwrap_or(false) {
+            store.deprecate(record.id, "fixture obsolete claim")?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct RequiredEvidence {
+    count: usize,
+    delivered: usize,
+    ranks: serde_json::Map<String, Value>,
+}
+
+fn required_evidence(
+    required: &Value,
+    live: &[verified_code_memory::MemoryRecord],
+    found: &[verified_code_memory::RetrievedMemory],
+    packet: &str,
+    shown: &[uuid::Uuid],
+) -> Result<RequiredEvidence, Box<dyn std::error::Error>> {
+    let mut evidence = RequiredEvidence::default();
+    if required.is_null() {
+        return Ok(evidence);
+    }
+    for fact in required.as_array().ok_or("required must be an array")? {
+        let title = fact["title"].as_str().ok_or("missing required title")?;
+        let content = fact["content"].as_str().ok_or("missing required content")?;
+        let record = live
+            .iter()
+            .find(|r| r.title == title && r.content == content)
+            .ok_or("required fact absent from corpus")?;
+        evidence.count += 1;
+        evidence.delivered += usize::from(shown.contains(&record.id) && packet.contains(content));
+        evidence.ranks.insert(
+            title.to_owned(),
+            json!(found
+                .iter()
+                .position(|h| h.record.id == record.id)
+                .map(|i| i + 1)),
+        );
+    }
+    Ok(evidence)
 }
 
 /// Fixes fixture IDs and claim times before indexing: randomly generated UUIDs
@@ -175,6 +295,31 @@ fn rerank_lexical(
         })
 }
 
+// Rotate capture age independently of title/UUID, so an indexing budget cannot
+// accidentally benefit from the expected claim always being among the newest.
+fn capture_order(uri: &str, offset: usize) -> Result<(), Box<dyn std::error::Error>> {
+    let mut connection = rusqlite::Connection::open(uri)?;
+    let transaction = connection.transaction()?;
+    let mut ids = {
+        let mut statement =
+            transaction.prepare("SELECT id FROM memories WHERE repo='project' ORDER BY id")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    if !ids.is_empty() {
+        let length = ids.len();
+        ids.rotate_left(offset % length);
+    }
+    for (age, id) in ids.iter().enumerate() {
+        transaction.execute(
+            "UPDATE memories SET updated_at=strftime('%Y-%m-%dT%H:%M:%S+00:00', '2026-11-07', ?2 || ' seconds') WHERE id=?1",
+            rusqlite::params![id, i64::try_from(age)?],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = experiment_config(&std::env::args().skip(1).collect::<Vec<_>>())?;
     let input = dataset_input(&config)?;
@@ -196,6 +341,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some((
             Box::new(RecordedEmbeddings {
                 dimensions,
+                input_character_limit: recorded["input_character_limit"]
+                    .as_u64()
+                    .map(|n| n as usize),
                 vectors: serde_json::from_value(recorded["vectors"].clone())?,
             }),
             recorded["revision"]
@@ -287,6 +435,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &keys,
             )?)?;
         }
+        populate_corpus(&store, &dataset["corpus"], title)?;
+        populate_corpus(&store, &case["corpus"], title)?;
         // An identical record in another project must never leak.
         store.remember(fact("other", title, text("content")?, &keys)?)?;
         let expected = if deterministic {
@@ -294,16 +444,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             expected
         };
-        let mut query = RetrievalQuery::new("project", text("task")?);
-        if let Some(file) = case["file"]
-            .as_str()
-            .filter(|_| config["query_mode"] != "intent_only")
-        {
-            query = query.with_files([file]);
+        if let Some(offset) = config["capture_offset"].as_u64() {
+            if !deterministic {
+                return Err("capture_offset requires deterministic fixtures".into());
+            }
+            capture_order(fixture_uri, offset as usize)?;
         }
-        query.limit = config["candidate_limit"].as_u64().unwrap_or(8) as usize;
+        let query = fixture_query(case, &config)?;
+        let excluded: Vec<String> = fixture_strings(&case["exclude_titles"])?
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let accept =
+            |record: &verified_code_memory::MemoryRecord| !excluded.contains(&record.title);
         let started = std::time::Instant::now();
-        let (baseline, telemetry) = store.retrieve_with_telemetry(&query)?;
+        let (baseline, telemetry) = store.retrieve_filtered_with_telemetry(&query, accept)?;
         let mut embedding_fallback = false;
         let mut found = if let Some((embedder, revision, dimensions, threshold)) = &backend {
             let index = verified_code_memory::semantic::SemanticIndex::new(
@@ -321,7 +476,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 index
             };
-            index.backfill("project", embedder)?;
+            index.backfill_limited(
+                "project",
+                embedder,
+                config["backfill_limit"]
+                    .as_u64()
+                    .map_or(usize::MAX, |n| n as usize),
+            )?;
             // Give the identical prohibited record a vector too: a semantic
             // scope check must not pass just because other projects lack an index.
             index.backfill("other", embedder)?;
@@ -331,19 +492,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 embedder
                     .embed(&format!("{}\n", query.task))
                     .and_then(|vector| {
-                        index.search(&query, &vector, *threshold).map(|hits| {
-                            hits.into_iter()
-                                .map(|(record, score)| verified_code_memory::RetrievedMemory {
-                                    record,
-                                    score,
-                                    reason: "semantic-only ablation".into(),
-                                    components: Default::default(),
-                                })
-                                .collect()
-                        })
+                        index
+                            .search_filtered(&query, &vector, *threshold, accept)
+                            .map(|hits| {
+                                hits.into_iter()
+                                    .map(|(record, score)| verified_code_memory::RetrievedMemory {
+                                        record,
+                                        score,
+                                        reason: "semantic-only ablation".into(),
+                                        components: Default::default(),
+                                    })
+                                    .collect()
+                            })
                     })
             } else {
-                index.retrieve(&query, embedder, *threshold)
+                index.retrieve_filtered(&query, embedder, *threshold, accept)
             };
             match retrieved {
                 Ok(found) => found,
@@ -369,13 +532,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         found.truncate(8);
         let memory_budget = config["memory_budget"].as_u64().unwrap_or(1000) as usize;
         let (packet, shown) = store.render_packet_traced(&found, memory_budget);
-        let answer_delivered = shown.contains(&expected) && packet.contains(text("content")?);
+        let primary_delivered = shown.contains(&expected) && packet.contains(text("content")?);
+        let live = store.list("project", "")?;
+        let additional = required_evidence(&case["required"], &live, &found, &packet, &shown)?;
+        let required_count = 1 + additional.count;
+        let required_delivered = usize::from(primary_delivered) + additional.delivered;
+        let required_ranks = additional.ranks;
+        let answer_delivered = required_delivered == required_count;
         let rank = found
             .iter()
             .position(|hit| hit.record.id == expected)
             .map(|at| at + 1);
-        let prohibited = found.iter().any(|hit| hit.record.repo != "project");
-        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
+        let prohibited = found.iter().any(|hit| {
+            hit.record.repo != "project"
+                || !accept(&hit.record)
+                || hit.record.verification == verified_code_memory::Verification::Deprecated
+                || (!query.verifications.is_empty()
+                    && !query.verifications.contains(&hit.record.verification))
+                || hit
+                    .record
+                    .tags
+                    .iter()
+                    .any(|tag| query.excluded_tags.contains(tag))
+        });
+        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"primary_delivered":primary_delivered,"required_delivered":required_delivered,"required_count":required_count,"required_ranks":required_ranks,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
     }
     let mut groups = serde_json::Map::new();
     for split in ["development", "heldout"] {
@@ -412,7 +592,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(
             path,
             serde_json::to_vec(
-                &json!({"revision":revision,"dimensions":dimensions,"vectors":&*vectors}),
+                &json!({"revision":revision,"dimensions":dimensions,"input_character_limit":backend.input_character_limit(),"vectors":&*vectors}),
             )?,
         )?;
     }
@@ -428,6 +608,144 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_fixture_filters_fail_instead_of_silently_removing_protections() {
+        for value in [json!("hidden"), json!([true])] {
+            assert!(fixture_strings(&value).is_err());
+        }
+        assert!(fixture_query(
+            &json!({"task":"lookup","verifications":"verified"}),
+            &json!({})
+        )
+        .is_err());
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        assert!(populate_corpus(
+            &store,
+            &json!([{"title":"bad","content":"claim","verified":"yes"}]),
+            "none"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn composed_answers_require_each_claims_full_text_in_the_rendered_packet() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        let corpus = json!([
+            {"title":"alpha","content":"Alpha constraint.","verified":true},
+            {"title":"beta","content":"Beta constraint.","verified":true}
+        ]);
+        populate_corpus(&store, &corpus, "no-primary").unwrap();
+        let query = RetrievalQuery::new("project", "alpha beta");
+        let hits = store.retrieve(&query).unwrap();
+        let (packet, shown) = store.render_packet_traced(&hits, 1000);
+        let required = json!([{"title":"alpha","content":"Alpha constraint."},{"title":"beta","content":"Beta constraint."}]);
+        let live = store.list("project", "").unwrap();
+        let full = required_evidence(&required, &live, &hits, &packet, &shown).unwrap();
+        assert_eq!((full.delivered, full.count), (2, 2));
+        let missing_text =
+            required_evidence(&required, &live, &hits, "Alpha constraint.", &shown).unwrap();
+        assert_eq!((missing_text.delivered, missing_text.count), (1, 2));
+        assert!(required_evidence(
+            &json!([{"title":"missing","content":"absent"}]),
+            &live,
+            &hits,
+            &packet,
+            &shown
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fixture_corpus_trust_tags_and_caller_filters_reach_the_real_lookup() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        populate_corpus(
+            &store,
+            &json!([
+                {"title":"wanted","content":"Constraint.","verified":true},
+                {"title":"private","content":"Constraint.","verified":true,"tags":["hidden"]},
+                {"title":"denied","content":"Constraint.","verified":true},
+                {"title":"provisional","content":"Constraint."}
+            ]),
+            "no-primary",
+        )
+        .unwrap();
+        let query = fixture_query(
+            &json!({"task":"constraint","verifications":["verified"],"excluded_tags":["hidden"]}),
+            &json!({}),
+        )
+        .unwrap();
+        let hits = store
+            .retrieve_filtered(&query, |r| r.title != "denied")
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].record.title, "wanted");
+    }
+
+    #[test]
+    fn fixture_failure_text_reaches_the_real_retriever() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        let wanted = store
+            .remember(NewMemory::procedure(
+                "project",
+                "sqlite",
+                "Serialize locked database writers.",
+            ))
+            .unwrap();
+        let case = json!({"task":"Fix the tests", "failure":"database is locked"});
+        assert!(store
+            .retrieve(&RetrievalQuery::new("project", "Fix the tests"))
+            .unwrap()
+            .is_empty());
+        let hits = store
+            .retrieve(&fixture_query(&case, &json!({})).unwrap())
+            .unwrap();
+        assert_eq!(hits[0].record.id, wanted.id);
+    }
+
+    #[test]
+    fn capture_offsets_change_which_claims_fit_an_indexing_budget_without_changing_claims() {
+        let uri = "file:capture-order-test?mode=memory&cache=shared";
+        let store = SharedMemoryStore::open(uri).unwrap();
+        for n in 0..12 {
+            store
+                .remember(NewMemory::project_fact(
+                    "project",
+                    format!("claim-{n}"),
+                    format!("body {n}"),
+                ))
+                .unwrap();
+        }
+        capture_order(uri, 0).unwrap();
+        let first = store.list("project", "").unwrap();
+        assert!(first
+            .windows(2)
+            .all(|pair| pair[0].updated_at > pair[1].updated_at));
+        capture_order(uri, 7).unwrap();
+        let second = store.list("project", "").unwrap();
+        assert_ne!(first[0].id, second[0].id);
+        assert_eq!(first.len(), second.len());
+        for record in &first {
+            assert_eq!(
+                record.claim_hash,
+                second
+                    .iter()
+                    .find(|r| r.id == record.id)
+                    .unwrap()
+                    .claim_hash
+            );
+        }
+        capture_order(uri, 7 + 12).unwrap();
+        assert_eq!(
+            second.iter().map(|r| r.id).collect::<Vec<_>>(),
+            store
+                .list("project", "")
+                .unwrap()
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn evaluation_caches_each_successful_input_without_caching_provider_failures() {
@@ -468,6 +786,7 @@ mod tests {
     fn a_recorded_model_never_fabricates_an_unrecorded_embedding() {
         let model = RecordedEmbeddings {
             dimensions: 2,
+            input_character_limit: None,
             vectors: [("known".into(), vec![1.0, 0.0])].into(),
         };
         assert_eq!(model.embed("known").unwrap(), vec![1.0, 0.0]);
@@ -535,6 +854,7 @@ mod tests {
             .unwrap();
         let model = RecordedEmbeddings {
             dimensions: 2,
+            input_character_limit: None,
             vectors: [
                 ("racing\n".into(), vec![1.0, 0.0]),
                 (

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "base_commit": "a7362af3928ea3f272c6bad817b681d4a4c8335e",
+  "frozen_before_trials": true,
+  "approaches": [
+    {
+      "id": "separate_diagnostic_channel",
+      "hypothesis": "When a long task hides diagnostic text beyond the encoder character bound, independently embed the failure and append distinct admitted hits after the incumbent ranking.",
+      "dataset": "scripts/eval/memory-diagnostic-cases.json",
+      "cutoff": 0.3,
+      "selection": "Reject on any delivered-answer loss, worse delivered rank, extra returned record on any negative, scope leak or packet overflow."
+    },
+    {
+      "id": "conjunctive_identifier_fallback",
+      "hypothesis": "After ordinary lexical and file pools are empty, split ASCII CamelCase/PascalCase/acronym boundaries and require every component as exact FTS terms. Reject names with generic or short components; bound to four names of at most eight components.",
+      "dataset": "scripts/eval/memory-identifier-cases.json",
+      "selection": "Must improve lexical delivery on development and heldout with no per-case guard failures, and preserve incumbent hybrid delivery, rank and abstention."
+    }
+  ],
+  "policy": {
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "threshold": 0.3,
+    "memory_budget": 1000,
+    "deterministic": true
+  },
+  "regression_guards": [
+    "All 258 existing cases under lexical and hybrid policies; preserve delivered answers and their ranks, never increase negative returned counts, enforce scope and token budget.",
+    "Frozen diagnostic and identifier cases use the same guards. Select on development, then evaluate only accepted approaches on heldout.",
+    "No new aliases, source claim edits, threshold retuning, model weights or model release."
+  ],
+  "datasets_sha256": {
+    "scripts/eval/memory-identifier-cases.json": "315b81aa8832825fb2f6b4213bfe61b57328b64abcd370614f5939045a0bdf7f",
+    "scripts/eval/memory-diagnostic-cases.json": "735bbaf0160eb1805ff21fb1a8d6d20a118c602233691a79fb159bc256f10973"
+  },
+  "novelty": "Prior work tried word/concept/character embeddings, document order, thresholds, reranking, packing and index completion. These trials change structured query decomposition and diagnostic-channel availability."
+}

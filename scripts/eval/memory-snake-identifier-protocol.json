@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "baseline_commit": "13ad4a575287cf74734388f2b7cded00102e5358",
+  "frozen_before_trials": true,
+  "dataset": "scripts/eval/memory-snake-identifier-cases.json",
+  "dataset_sha256": "bfc8231889b32bab6e2c9c75a787d4c36af600b1dbd685bade005969873f26fd",
+  "approaches": [
+    {
+      "id": "conjunctive_snake_components",
+      "description": "Extend the existing bounded conjunctive code-name lookup to ASCII alphabetic snake_case components. Keep ordinary exact phrase lookup first. Reject empty, numeric, short and generic components as whole names; preserve existing CamelCase behavior."
+    }
+  ],
+  "selection": "Require development delivery gains with no per-fact rank/delivery regression, no negative record-ID changes or safety violations. Only score the fixed selected candidate on heldout. Historical source incidents are exposed; this is a constructed mechanism check, not blind semantic validation.",
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "candidate_limit": 8,
+    "memory_budget": 1000,
+    "deterministic": true
+  },
+  "guards": [
+    "All 792 older policy replays plus 160 complex and 16 retention policy replays preserve earlier outcomes.",
+    "Preserve each supplied primary and additional composed-answer fact and rank.",
+    "Negatives preserve returned IDs and order; unknown-symbol controls still abstain.",
+    "Keep caller visibility, trust, tags, repository scope, duplicate handling and packet limits.",
+    "No full-pool eviction, model weights, preprocessing, thresholds, stored claims, schemas or release assets change."
+  ],
+  "registration_serialization": "JSON.stringify(parsed, null, 2) plus a final newline",
+  "committed_dataset_sha256": "9b2eb353c4bb15029a915492f6b25370daa2eafca0412b2b63c8719a7dd1cb80"
+}

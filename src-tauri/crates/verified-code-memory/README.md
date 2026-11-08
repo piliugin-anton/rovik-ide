@@ -96,6 +96,30 @@ CPU model. No Python, child process or separately installed runtime is used.
 The application provisions the pinned model from its dedicated GitHub release;
 this crate's encoder only reads local files and never downloads on inference.
 
+For a stored note longer than the encoder's character window, background indexing
+also embeds its final nonempty paragraph (bounded to one window). Hybrid retrieval
+can append a matching conclusion into unused result slots, after all existing
+results. Conclusion lookup does not displace incumbents, and strict primary-vector
+search keeps its existing behavior.
+The complete stored claim must still fit the prompt budget to be delivered.
+Conclusion vectors are derived data bound to the model and current claim hash;
+edits, deletion, scope and visibility checks apply to both views. Existing primary
+vectors gain conclusions during the next backfill without a model download or
+reindex of unchanged primary text. This adds at most one inference and one vector
+per long claim; it does not index every intermediate paragraph.
+
+When a long task hides the failure text, hybrid retrieval reuses its independent
+diagnostic embedding to search these conclusions too. Existing results and ordinary
+conclusion matches keep priority. If slots remain, this adds one vector-table search
+without another inference call.
+
+For a full hybrid pool, a one- or two-word request naming exactly one complete
+compound identifier may replace the final result with an eligible complete match
+when none is already represented. Leading results retain their ranks. Single-slot
+lookups, explicit file/failure context, exact incumbent titles, longer requests,
+registered collection words, digits and wildcards keep their existing pools.
+This focused rule does not apply to lexical or strict vector searches.
+
 ## Development
 
 ```bash

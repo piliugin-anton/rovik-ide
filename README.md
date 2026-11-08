@@ -2023,6 +2023,41 @@ This small calibration recovered one additional development answer without
 losing existing answers or increasing false matches; validation recall stayed
 unchanged. See [the follow-up](docs/design/long-term-memory-recall-iterations-nov8-2026.md).
 
+Background indexing completes pending claims rather than stopping after three,
+and projects sharing a model queue independently. Work stops when memory or its
+semantic settings change. [Index completion experiments](docs/design/long-term-memory-index-completion-nov8-2026.md)
+recovered 6 additional heldout answers out of 60 while preserving all 258 fully
+indexed regression outcomes. Existing model false matches appear sooner as
+coverage grows; this remains an opt-in availability improvement.
+
+When a task hides its failure text beyond the native
+encoder's character limit, an independent diagnostic lookup can fill unused
+result slots while preserving existing ranks and visibility checks. See the
+[structured-query experiments](docs/design/long-term-memory-structured-queries-nov8-2026.md).
+
+If ordinary text and file retrieval find nothing, meaningful CamelCase names can
+match prose by requiring every component (`SharedMemoryStore` matches all of
+"shared", "memory" and "store"). Generic, short or partial names are rejected.
+The same fallback supports alphabetic snake_case names, including reordered
+components, while preserving ordinary exact-phrase matches. See the
+[snake identifier experiments](docs/design/long-term-memory-snake-identifiers-nov8-2026.md).
+With competing text matches, complete identifier matches can fill free slots
+after ordinary results. Exact title lookups and explicit files retain their
+protected behavior. [Harder identifier experiments](docs/design/long-term-memory-complex-identifiers-nov8-2026.md)
+include composed answers, misleading context and full result pools.
+Hybrid retrieval can also fill unused slots with complete symbol matches after
+its incumbent results, including when lexical retrieval preserves a file hint.
+[Hybrid anchor experiments](docs/design/long-term-memory-hybrid-anchors-nov8-2026.md)
+check this independently of strict vector-search cutoffs and lexical behavior.
+
+For a terse hybrid lookup naming exactly one complete compound identifier, a full
+pool may use its last slot for that fact when no complete match is represented.
+Leading results retain their ranks. Longer requests, collection wording, explicit
+file/failure context, exact incumbent titles, single-slot lookups, digits and
+wildcards retain their existing pools. See the
+[focused-symbol experiments](docs/design/long-term-memory-focused-symbols-nov8-2026.md)
+for the fixed scope rules and per-fact retention checks.
+
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
 setup. An existing incomplete or corrupt directory is reported and left intact;
@@ -2030,8 +2065,8 @@ remove that directory to retry the download. Native inference reuses the loaded
 model, bounds input to 500 characters and 256 tokens, excludes padding from
 mean pooling, and normalizes each 384-dimensional vector. The built-in model
 revision identifies derived SQLite vectors; edits invalidate old vectors, and
-deleting or clearing memory removes them. Backfill processes at most three
-changed claims per background batch. Invalid settings, busy inference and model
+deleting or clearing memory removes them. Background indexing completes its
+pending snapshot with cancellation checks. Invalid settings, busy inference and model
 errors preserve lexical/file retrieval. Failed preparation retries after a
 minute when memory is used again. Legacy Python settings are no longer needed.
 

@@ -2,8 +2,10 @@
 //! changing the active answer; failures always preserve lexical retrieval.
 mod model;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use verified_code_memory::{
     embedding::{OnnxMiniLm, MINILM_DIMENSIONS, MINILM_REVISION},
     semantic::SemanticIndex,
@@ -20,6 +22,25 @@ struct Config {
 
 type Cached = Option<(PathBuf, Arc<OnnxMiniLm>)>;
 static BACKEND: OnceLock<Mutex<Cached>> = OnceLock::new();
+type JobKey = (PathBuf, String);
+type Jobs = Mutex<HashMap<JobKey, Option<Instant>>>;
+static JOBS: OnceLock<Jobs> = OnceLock::new();
+// Separate queued projects share one encoder without competing for its
+// nonblocking inference lock or downloading/compiling duplicate models.
+static WORKER: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+struct BackgroundEncoder<'a>(&'a OnnxMiniLm);
+impl verified_code_memory::MemoryEmbedder for BackgroundEncoder<'_> {
+    fn dimensions(&self) -> usize {
+        MINILM_DIMENSIONS
+    }
+    fn input_character_limit(&self) -> Option<usize> {
+        verified_code_memory::MemoryEmbedder::input_character_limit(self.0)
+    }
+    fn embed(&self, text: &str) -> verified_code_memory::Result<Vec<f32>> {
+        self.0.embed_blocking(text)
+    }
+}
 
 fn cached(directory: &Path) -> Option<Arc<OnnxMiniLm>> {
     BACKEND
@@ -108,7 +129,12 @@ pub(crate) fn retrieve(
         return Ok(baseline);
     };
     let Some(embedder) = cached(&config.directory) else {
-        schedule(store.clone(), query.repo.clone(), config_dir.to_path_buf());
+        schedule(
+            store.clone(),
+            query.repo.clone(),
+            config_dir.to_path_buf(),
+            settings_root.to_owned(),
+        );
         return Ok(baseline);
     };
     let proposed = SemanticIndex::new(store.clone(), MINILM_REVISION, MINILM_DIMENSIONS)
@@ -116,6 +142,14 @@ pub(crate) fn retrieve(
         .and_then(|index| {
             index.retrieve_filtered(query, embedder.as_ref(), config.threshold, &accept)
         });
+    // Catch existing stores and claims captured during another snapshot. Queue
+    // after this query's inference so new work cannot take its encoder lock.
+    schedule(
+        store.clone(),
+        query.repo.clone(),
+        config_dir.to_path_buf(),
+        settings_root.to_owned(),
+    );
     match proposed {
         Ok(hits) => {
             let overlap = hits
@@ -141,29 +175,32 @@ pub(crate) fn retrieve(
     }
 }
 
-/// Prepares the native model and backfills off the response path. One job per
-/// model directory runs at a time; failures retry after one minute.
-pub(crate) fn schedule(store: SharedMemoryStore, repo: String, config_dir: PathBuf) {
-    use std::collections::HashMap;
-    use std::time::{Duration, Instant};
-    static JOBS: OnceLock<Mutex<HashMap<PathBuf, Option<Instant>>>> = OnceLock::new();
-    let Some(config) = config(&config_dir, &repo) else {
+/// Prepares the native model and completes a project's pending snapshot off the
+/// response path. Projects queue independently; failures retry after one minute.
+pub(crate) fn schedule(
+    store: SharedMemoryStore,
+    repo: String,
+    config_dir: PathBuf,
+    settings_root: String,
+) {
+    let Some(config) = config(&config_dir, &settings_root) else {
         return;
     };
     let jobs = JOBS.get_or_init(Default::default);
+    let key = (config.directory.clone(), settings_root.clone());
     let Ok(mut state) = jobs.lock() else {
         return;
     };
     if state
-        .get(&config.directory)
+        .get(&key)
         .is_some_and(|retry| retry.is_none_or(|at| at > Instant::now()))
     {
         return;
     }
-    state.insert(config.directory.clone(), None);
+    state.insert(key.clone(), None);
     drop(state);
     crate::rt::spawn(async move {
-        struct Job<'a>(&'a Mutex<HashMap<PathBuf, Option<Instant>>>, PathBuf, bool);
+        struct Job<'a>(&'a Jobs, JobKey, bool);
         impl Drop for Job<'_> {
             fn drop(&mut self) {
                 if let Ok(mut state) = self.0.lock() {
@@ -178,8 +215,13 @@ pub(crate) fn schedule(store: SharedMemoryStore, repo: String, config_dir: PathB
                 }
             }
         }
-        let mut job = Job(jobs, config.directory.clone(), false);
+        let mut job = Job(jobs, key, false);
         let result = async {
+            let _worker = WORKER.get_or_init(Default::default).lock().await;
+            // Queued work may have been disabled before acquiring the encoder.
+            if parse_config(&config_dir, &settings_root).as_ref() != Some(&config) {
+                return Ok(());
+            }
             let embedder = if let Some(backend) = cached(&config.directory) {
                 backend
             } else {
@@ -198,17 +240,20 @@ pub(crate) fn schedule(store: SharedMemoryStore, repo: String, config_dir: PathB
                 .map_err(|e| e.to_string())??
             };
             // Settings may have changed while downloading or compiling the model.
-            if parse_config(&config_dir, &repo).as_ref() != Some(&config) {
+            if parse_config(&config_dir, &settings_root).as_ref() != Some(&config) {
                 return Ok(());
             }
             crate::rt::spawn_blocking(move || {
-                if !crate::memory::load(&config_dir, &repo).enabled {
-                    return Ok(());
-                }
-                SemanticIndex::new(store, MINILM_REVISION, MINILM_DIMENSIONS)
-                    .and_then(|index| index.backfill_limited(&repo, embedder.as_ref(), 3))
-                    .map(|_| ())
-                    .map_err(|e| e.to_string())
+                backfill(
+                    store,
+                    &repo,
+                    &config_dir,
+                    &settings_root,
+                    &config,
+                    &BackgroundEncoder(embedder.as_ref()),
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string())
             })
             .await
             .map_err(|e| e.to_string())?
@@ -223,10 +268,239 @@ pub(crate) fn schedule(store: SharedMemoryStore, repo: String, config_dir: PathB
     });
 }
 
+fn backfill(
+    store: SharedMemoryStore,
+    repo: &str,
+    config_dir: &Path,
+    settings_root: &str,
+    config: &Config,
+    embedder: &dyn verified_code_memory::MemoryEmbedder,
+) -> verified_code_memory::Result<usize> {
+    SemanticIndex::new(store, MINILM_REVISION, MINILM_DIMENSIONS)?.backfill_while(
+        repo,
+        embedder,
+        || parse_config(config_dir, settings_root).as_ref() == Some(config),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    struct Disabling {
+        directory: PathBuf,
+        calls: std::sync::atomic::AtomicUsize,
+        replacement: serde_json::Value,
+    }
+    impl verified_code_memory::MemoryEmbedder for Disabling {
+        fn dimensions(&self) -> usize {
+            MINILM_DIMENSIONS
+        }
+        fn embed(&self, _: &str) -> verified_code_memory::Result<Vec<f32>> {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 3 {
+                crate::project_profile::save_project_settings(
+                    &self.directory,
+                    "project".into(),
+                    self.replacement.clone(),
+                )
+                .unwrap();
+            }
+            Ok(vec![1.0; MINILM_DIMENSIONS])
+        }
+    }
+
+    #[test]
+    fn background_completion_stops_when_memory_or_semantic_settings_change() {
+        for replacement in [
+            json!({"memory":false,"memorySemantic":{"mode":"hybrid"}}),
+            json!({"memorySemantic":{"mode":"off"}}),
+            json!({"memorySemantic":{"mode":"hybrid","threshold":0.4}}),
+        ] {
+            let dir = crate::testing::temp_dir();
+            crate::project_profile::save_project_settings(
+                &dir.0,
+                "project".into(),
+                json!({"memorySemantic":{"mode":"hybrid"}}),
+            )
+            .unwrap();
+            let original = parse_config(&dir.0, "project").unwrap();
+            let store = SharedMemoryStore::open_in_memory().unwrap();
+            for n in 0..12 {
+                store
+                    .remember(verified_code_memory::NewMemory::procedure(
+                        "shared-origin",
+                        format!("lock-{n}"),
+                        format!("lock procedure {n}"),
+                    ))
+                    .unwrap();
+            }
+            let embedder = Disabling {
+                directory: dir.0.clone(),
+                calls: Default::default(),
+                replacement,
+            };
+            assert_eq!(
+                backfill(
+                    store.clone(),
+                    "shared-origin",
+                    &dir.0,
+                    "project",
+                    &original,
+                    &embedder
+                )
+                .unwrap(),
+                3
+            );
+            assert_eq!(embedder.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+            assert_eq!(
+                backfill(
+                    store.clone(),
+                    "shared-origin",
+                    &dir.0,
+                    "project",
+                    &original,
+                    &embedder
+                )
+                .unwrap(),
+                0
+            );
+            let index = SemanticIndex::new(store, MINILM_REVISION, MINILM_DIMENSIONS).unwrap();
+            assert_eq!(
+                index
+                    .search(
+                        &RetrievalQuery::new("shared-origin", "lock").with_limit(32),
+                        &vec![1.0; MINILM_DIMENSIONS],
+                        0.3
+                    )
+                    .unwrap()
+                    .len(),
+                3
+            );
+        }
+    }
+
+    async fn wait_for_indexing(model: &Path, stores: &[(&str, SharedMemoryStore)]) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let complete = {
+                let pending = JOBS.get().unwrap().lock().unwrap();
+                assert!(pending.values().all(Option::is_none), "indexing job failed");
+                stores.iter().all(|(repo, _)| {
+                    !pending.contains_key(&(model.to_path_buf(), repo.to_string()))
+                })
+            };
+            if complete {
+                break;
+            }
+            assert!(Instant::now() < deadline, "indexing did not complete");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ROVIK_REAL_MEMORY_INDEX=1 and a pinned MiniLM directory"]
+    async fn cloned_projects_complete_independent_jobs_using_local_settings_and_one_native_model() {
+        if std::env::var("ROVIK_REAL_MEMORY_INDEX").as_deref() != Ok("1") {
+            return;
+        }
+        let model = PathBuf::from(std::env::var("ROVIK_MEMORY_EVAL_MODEL").unwrap());
+        let dir = crate::testing::temp_dir();
+        let worker = WORKER.get_or_init(Default::default).lock().await;
+        let mut stores = Vec::new();
+        for repo in ["project-a", "project-b"] {
+            crate::project_profile::save_project_settings(
+                &dir.0,
+                repo.into(),
+                json!({"memorySemantic":{"mode":"hybrid","modelPath":model}}),
+            )
+            .unwrap();
+            let store = SharedMemoryStore::open_in_memory().unwrap();
+            for n in 0..12 {
+                store
+                    .remember(verified_code_memory::NewMemory::procedure(
+                        "shared-origin",
+                        format!("lock-{n}"),
+                        format!("Serialize retries for order {n}."),
+                    ))
+                    .unwrap();
+            }
+            store
+                .remember(verified_code_memory::NewMemory::procedure(
+                    "shared-origin",
+                    "Long investigation",
+                    format!(
+                        "{}\n\nStore timestamps in UTC and localize at the display boundary.",
+                        "Session setup and preliminary observations. ".repeat(16)
+                    ),
+                ))
+                .unwrap();
+            schedule(
+                store.clone(),
+                "shared-origin".into(),
+                dir.0.clone(),
+                repo.into(),
+            );
+            stores.push((repo, store));
+        }
+        for (repo, _) in &stores {
+            assert!(JOBS
+                .get()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .contains_key(&(model.clone(), repo.to_string())));
+        }
+        drop(worker);
+        wait_for_indexing(&model, &stores).await;
+        struct NoInference;
+        impl verified_code_memory::MemoryEmbedder for NoInference {
+            fn dimensions(&self) -> usize {
+                MINILM_DIMENSIONS
+            }
+            fn input_character_limit(&self) -> Option<usize> {
+                Some(500)
+            }
+            fn embed(&self, _: &str) -> verified_code_memory::Result<Vec<f32>> {
+                panic!("a claim remained unindexed after its only scheduled job")
+            }
+        }
+        for (repo, store) in &stores {
+            assert_eq!(
+                SemanticIndex::new(store.clone(), MINILM_REVISION, MINILM_DIMENSIONS)
+                    .unwrap()
+                    .backfill("shared-origin", &NoInference)
+                    .unwrap(),
+                0
+            );
+            store
+                .remember(verified_code_memory::NewMemory::procedure(
+                    "shared-origin",
+                    "late snapshot claim",
+                    "Protect shared state with a mutex.",
+                ))
+                .unwrap();
+            // No capture hook: warm retrieval itself must schedule the new claim.
+            retrieve(
+                store,
+                &RetrievalQuery::new("shared-origin", "Prevent simultaneous access"),
+                &dir.0,
+                repo,
+                |_| true,
+            )
+            .unwrap();
+        }
+        wait_for_indexing(&model, &stores).await;
+        for (_, store) in stores {
+            assert_eq!(
+                SemanticIndex::new(store, MINILM_REVISION, MINILM_DIMENSIONS)
+                    .unwrap()
+                    .backfill("shared-origin", &NoInference)
+                    .unwrap(),
+                0
+            );
+        }
+    }
 
     #[test]
     fn native_settings_need_no_python_or_operator_model_path() {
