@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "baseline_commit": "e62a3baba83f0d8845c85204cb9e22326e3c6c2e",
+  "frozen_before_trials": true,
+  "new_cases_added": false,
+  "inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-diagnostic-cases.json": "735bbaf0160eb1805ff21fb1a8d6d20a118c602233691a79fb159bc256f10973",
+    "scripts/eval/memory-identifier-cases.json": "315b81aa8832825fb2f6b4213bfe61b57328b64abcd370614f5939045a0bdf7f",
+    "scripts/eval/memory-complex-identifier-cases.json": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d",
+    "scripts/eval/memory-hybrid-retention-cases.json": "4ca3dd70015fbb7b1595c98aa4cb0c64f7e1662dc82176ff9215020370e242b1",
+    "scripts/eval/memory-snake-identifier-cases.json": "9b2eb353c4bb15029a915492f6b25370daa2eafca0412b2b63c8719a7dd1cb80",
+    "scripts/eval/memory-fullpool-retry-cases.json": "1f2dcb3fc7fbe176d57e4dc2ac1d68f6ce7e017cc08195536de974ce4d579bc2",
+    "scripts/eval/memory-fullpool-retry-retention-cases.json": "72d1b16ddc1ad290220307bacc6b5af5b69fc848ae8dccc26e8096b17b9cff14",
+    "scripts/eval/memory-overflow-cases.json": "7f3d7b75de5a2bc8c87c16eaf120ea48df2e437be9f36be5328f3b146cec82dc",
+    "scripts/eval/memory-cross-window-cases.json": "7891ba454b9f6c76b4e005811c1c0005fd50e31bb9d89bf0673ec0469b4c8dbd"
+  },
+  "review_source": "docs/design/long-term-memory-hybrid-anchors-nov8-2026.json",
+  "hypothesis": "The rejected unconditional tail replacement conflated terse symbol-focused lookups with broader collection requests. A complete code identifier can provide a stronger relevance signal in a terse request, while preserving broad-context and collection pools.",
+  "trial": {
+    "id": "focused_symbol_tail",
+    "description": "Only full hybrid pools with at least two slots; no supplied files or failure; one or two whitespace words; exactly one complete compound-name clause; no registered collection word, numeric character or wildcard. If none of that clause's eligible complete matches is already represented, replace only the final record with the highest-ranked eligible complete match. Preserve the leading records, apply all eligibility/copy filters, and keep normal semantic/lexical thresholds."
+  },
+  "collections": [
+    "all",
+    "every",
+    "each",
+    "both",
+    "either",
+    "any",
+    "everything",
+    "entire",
+    "whole",
+    "many",
+    "several",
+    "multiple"
+  ],
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "final_limit": 8,
+    "memory_budget": 1000,
+    "deterministic": true
+  },
+  "selection": "Run fixed development checks on complex, fullpool-retry and both retention suites first. Reject on any delivered fact/rank loss, negative identity/order change, visibility/trust/scope violation or token overrun. Then all historical development and unchanged crate contracts; only a safe improving candidate reaches reserved scoring. No cases, cutoffs or scope guards retuned from reserved outcomes.",
+  "limitations": "Correlated exposed source incidents. This is a focused ranking policy, not a proof that every omitted tail is irrelevant. Full pools for collection/narrative/file/failure requests remain protected. No new independent or blind result.",
+  "guard_verification": {
+    "before_reserved_scoring": true,
+    "counterexample": "The initial whitespace-only collection check failed a new unit probe for all_crowding/all-crowding. Recognize registered collection words across punctuation separators and reject Unicode numeric characters too.",
+    "benchmark_changes": false,
+    "known_match_probe": "An incumbent complete match can sit below 80 higher-ranked supplementary matches. A separate incumbent-only filtered scan must run before selecting a replacement, so pool truncation cannot hide an already supplied fact.",
+    "probes_reproduced_before_fix": true
+  }
+}

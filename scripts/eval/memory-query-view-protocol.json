@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "baseline_commit": "e62a3baba83f0d8845c85204cb9e22326e3c6c2e",
+  "frozen_before_trials": true,
+  "new_cases_added": false,
+  "inputs_sha256": {
+    "scripts/eval/memory-cases.json": "27bc08a27a29ceae284d42f9fdce8759765637ec92bad5d0fee6451791f34e53",
+    "scripts/eval/memory-short-query-controls.json": "a0fb5e567ff7a375427ad71fd841a86638b4c173d9920f9e37a181c698cd753a",
+    "scripts/eval/memory-semantic-fresh-cases.json": "009216a2145f17d7b7fa9757442f506625ea70204115b7e169b67ad3bd2d1803",
+    "scripts/eval/memory-diagnostic-cases.json": "735bbaf0160eb1805ff21fb1a8d6d20a118c602233691a79fb159bc256f10973",
+    "scripts/eval/memory-identifier-cases.json": "315b81aa8832825fb2f6b4213bfe61b57328b64abcd370614f5939045a0bdf7f",
+    "scripts/eval/memory-complex-identifier-cases.json": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d",
+    "scripts/eval/memory-hybrid-retention-cases.json": "4ca3dd70015fbb7b1595c98aa4cb0c64f7e1662dc82176ff9215020370e242b1",
+    "scripts/eval/memory-snake-identifier-cases.json": "9b2eb353c4bb15029a915492f6b25370daa2eafca0412b2b63c8719a7dd1cb80",
+    "scripts/eval/memory-fullpool-retry-cases.json": "1f2dcb3fc7fbe176d57e4dc2ac1d68f6ce7e017cc08195536de974ce4d579bc2",
+    "scripts/eval/memory-fullpool-retry-retention-cases.json": "72d1b16ddc1ad290220307bacc6b5af5b69fc848ae8dccc26e8096b17b9cff14",
+    "scripts/eval/memory-overflow-cases.json": "7f3d7b75de5a2bc8c87c16eaf120ea48df2e437be9f36be5328f3b146cec82dc",
+    "scripts/eval/memory-cross-window-cases.json": "7891ba454b9f6c76b4e005811c1c0005fd50e31bb9d89bf0673ec0469b4c8dbd"
+  },
+  "review": [
+    {
+      "family": "word vectors, IDF, common-component removal, character ngrams, weighted titles",
+      "outcome": "No safe gain beyond the first small mean-vector development result; replaced by MiniLM."
+    },
+    {
+      "family": "manual contextual keys and semantic gate; semantic-only; task-state ablation; structured capture",
+      "outcome": "Grounded context can help, but manual aliases and false matches block generalization claims. Removing supplied files regressed."
+    },
+    {
+      "family": "WordNet concepts; claim-only, claim-first and averaged document representations; cosine lead gaps",
+      "outcome": "No safe improvement, or gains coupled to negative/rank regressions."
+    },
+    {
+      "family": "packing and admissible distinct candidate pools; exact deduplication",
+      "outcome": "Safe mechanism gains after preserving distinct facts, original text and packet limits."
+    },
+    {
+      "family": "complete cancellable indexing; clones; diagnostic truncation",
+      "outcome": "Availability fixes recover missing representations without changing semantic thresholds."
+    },
+    {
+      "family": "short-query scale, complete CamelCase/snake names, free-slot hybrid supplements",
+      "outcome": "Safe bounded gains while literal/file contracts and full pools remain protected."
+    },
+    {
+      "family": "full-pool tail replacement, wider pools, symbol RRF and MMR diversity",
+      "outcome": "Rejected: aggregate gains hid supplied-fact losses or negative output changes."
+    },
+    {
+      "family": "hidden explicit conclusions and diagnostic/conclusion combination",
+      "outcome": "Safe gains on constructed long-note views. Arbitrary single-paragraph suffixes failed an existing contract and remain rejected."
+    }
+  ],
+  "hypothesis": "MiniLM can represent terse topic fragments differently from grammatical requests. Supplement with one deterministic question/request view, using the unchanged normal threshold and preserving all incumbent ranks. No aliases or document rewrites.",
+  "trials": [
+    {
+      "id": "question",
+      "template": "How to {task}?"
+    },
+    {
+      "id": "problem",
+      "template": "Problem: {task}"
+    },
+    {
+      "id": "solution",
+      "template": "Solution for {task}"
+    }
+  ],
+  "eligibility": "At most three whitespace words, nonempty distinctive FTS terms, no failure or supplied files, no exact incumbent task title, declared positive encoder limit and reformulated text fully inside that limit. Only unused result slots may be filled. Native-capable providers only; no relaxation of strict search.",
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "final_limit": 8,
+    "memory_budget": 1000,
+    "deterministic": true
+  },
+  "selection": "Fixed variants on original/fresh development first. Reject each variant for any individual answer/fact rank or delivery loss, negative IDs/order change, scope or budget violation. Replay all historical development views and crate contracts before reserved scoring. A safe development gain may ship with unchanged exposed reserved recall; do not retune on reserved outcomes.",
+  "stopping": "If no view passes development, restore baseline and record failures before trying a different mechanism.",
+  "limitations": "All fixtures and reserved incidents are already exposed. No new independent cases, blind semantic result or live-agent success claim.",
+  "decision": "All three fixed query views reproduce original/fresh development recall with no gains; removed. No reserved trial was scored."
+}

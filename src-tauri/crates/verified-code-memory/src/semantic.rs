@@ -454,8 +454,77 @@ impl SemanticIndex {
                 }
             }
         }
+        // A terse request can name one exact compound symbol while broad
+        // context fills the pool. Preserve the leaders and broader requests.
+        if found.len() == query.limit
+            && query.limit > 1
+            && query.files.is_empty()
+            && query.failure.is_none()
+            && !exact_title
+            && focused_identifier(&query.task)
+        {
+            // Check incumbents in their own filtered scan: an already supplied
+            // match can rank below the separate supplementary pool's bound.
+            let supplementary = self
+                .store
+                .identifier_candidates_filtered(query, |record| {
+                    accept(record)
+                        && found
+                            .iter()
+                            .any(|hit| hit.record.same_context_claim(record))
+                })
+                .and_then(|represented| {
+                    if represented.is_empty() {
+                        Ok(self
+                            .store
+                            .identifier_candidates_filtered(query, &accept)?
+                            .into_iter()
+                            .next())
+                    } else {
+                        Ok(None)
+                    }
+                });
+            match supplementary {
+                Ok(Some(mut candidate)) => {
+                    found.pop();
+                    candidate.score = found.last().map_or(1.0 / 61.0, |hit| hit.score) / 2.0;
+                    candidate.reason.push_str(", focused complete symbol match");
+                    found.push(candidate);
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("memory: focused symbol lookup unavailable; preserving current results: {error}"),
+            }
+        }
         Ok(found)
     }
+}
+
+fn focused_identifier(task: &str) -> bool {
+    if !(1..=2).contains(&task.split_whitespace().count())
+        || task.contains(['*', '?'])
+        || task.chars().any(char::is_numeric)
+        || task.split(|c: char| !c.is_ascii_alphabetic()).any(|word| {
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "all"
+                    | "every"
+                    | "each"
+                    | "both"
+                    | "either"
+                    | "any"
+                    | "everything"
+                    | "entire"
+                    | "whole"
+                    | "many"
+                    | "several"
+                    | "multiple"
+            )
+        })
+    {
+        return false;
+    }
+    let clause = crate::retrieval::identifier_fts_query(&[task]);
+    !clause.is_empty() && !clause.contains(" OR ")
 }
 
 fn overflow_conclusion(document: &str, limit: Option<usize>) -> Option<String> {

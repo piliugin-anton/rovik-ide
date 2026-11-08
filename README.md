@@ -2050,6 +2050,14 @@ its incumbent results, including when lexical retrieval preserves a file hint.
 [Hybrid anchor experiments](docs/design/long-term-memory-hybrid-anchors-nov8-2026.md)
 check this independently of strict vector-search cutoffs and lexical behavior.
 
+For a terse hybrid lookup naming exactly one complete compound identifier, a full
+pool may use its last slot for that fact when no complete match is represented.
+Leading results retain their ranks. Longer requests, collection wording, explicit
+file/failure context, exact incumbent titles, single-slot lookups, digits and
+wildcards retain their existing pools. See the
+[focused-symbol experiments](docs/design/long-term-memory-focused-symbols-nov8-2026.md)
+for the fixed scope rules and per-fact retention checks.
+
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
 setup. An existing incomplete or corrupt directory is reported and left intact;
@@ -2057,8 +2065,8 @@ remove that directory to retry the download. Native inference reuses the loaded
 model, bounds input to 500 characters and 256 tokens, excludes padding from
 mean pooling, and normalizes each 384-dimensional vector. The built-in model
 revision identifies derived SQLite vectors; edits invalidate old vectors, and
-deleting or clearing memory removes them. Backfill processes at most three
-changed claims per background batch. Invalid settings, busy inference and model
+deleting or clearing memory removes them. Background indexing completes its
+pending snapshot with cancellation checks. Invalid settings, busy inference and model
 errors preserve lexical/file retrieval. Failed preparation retries after a
 minute when memory is used again. Legacy Python settings are no longer needed.
 
