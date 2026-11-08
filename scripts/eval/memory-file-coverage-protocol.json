@@ -1,0 +1,30 @@
+{
+  "baseline": "7854861599aba2c9f95b1188561b1676cf09415a",
+  "frozen_before_trials": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-file-coverage-cases.json": "94ccaac231afaa37c4290eeeb51464fb79958583d36eeaa0128e0a332a59ac3f",
+    "scripts/eval/memory-file-coverage-retention-cases.json": "43ec3b081fe999cd14aec91fdd2fceb81fac864774d8e6e6967b599c732dd98b"
+  },
+  "harness": "Before runtime trials, add an optional case files array alongside legacy file, omitted by intent_only. Compile baseline with this parser and unchanged baseline retrieval; no historical case used a files array.",
+  "review": [
+    "Previous broad replacement, wider pools and MMR displaced required observations. Keep atomic focused intent and per-fact rank checks.",
+    "File-focused planning preserves incumbent file matches but cannot restore a file fact removed during ordinary lexical ranking before hybrid fusion."
+  ],
+  "hypothesis": "For the same focused named-fact scope, jointly plan eligible missing file coverage and missing names. Reuse existing filtered indexed file collector, choose one claim per uncovered supplied path, skip paths with no eligible memory, and abort all additions if insufficient unprotected slots.",
+  "policy": {
+    "threshold": 0.3,
+    "limit": 8,
+    "memory_budget": 1000,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666
+  },
+  "selection": "Development plus all historical development views and unchanged crate contracts before exposed reserved scoring. Reject any delivered fact/rank loss, negative ID/order change, scope/trust/tag/caller violation or packet overrun.",
+  "limitation": "Eight additional source-grounded incidents and correlated syntax views, all exposed in this repair workflow; no blind semantic or real-agent gain claim.",
+  "development_followup": {
+    "registered_before_followup_trial": true,
+    "rejected": "Atomic name-plus-file plan loses a baseline-delivered named fact when seven file-matching incumbents leave one slot for a missing name and another file. Original runtime passes the new contract; first trial fails.",
+    "selected_hypothesis": "Keep the original atomic name plan and slot assignment. Plan missing file coverage separately using only slots remaining after named additions. If file coverage is too large or fails, keep the exact name-only plan; no partial file additions.",
+    "guard_timing": "The new capacity counterexample was added during development after the first trial and before the followup or any candidate reserved scoring."
+  },
+  "execution_status": "Development and required Rust checks passed; reserved run stopped at explicit user request to commit and push. No further tests or final format check."
+}

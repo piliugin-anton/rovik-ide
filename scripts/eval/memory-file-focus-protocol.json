@@ -1,0 +1,23 @@
+{
+  "baseline": "6528b37",
+  "frozen_before_trials": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-file-focus-cases.json": "d1134d015649b940bf8e7051de6d898edb4a8e0ba7e2de65b9bcae94931cc0bc",
+    "scripts/eval/memory-file-focus-retention-cases.json": "e585686394a3c104b54774df85c9f0aeb9774ae7afbeead7c0f155e91ed2b5e8"
+  },
+  "review": [
+    "Unconditional full-pool replacement previously lost requested crowding facts despite preserving file hints.",
+    "Focused symbol coverage now protects explicit collection scope, named facts and literal context, but entirely disables focused full-pool recovery for supplied files.",
+    "Retry only terse complete named facts, protect every incumbent whose stored path overlaps any supplied file, and abort atomically when all slots are protected."
+  ],
+  "hypothesis": "Use the existing atomic name-coverage planner for file-hinted requests with one to four complete symbols; preserve leaders, named facts, literal titles and every file-matching incumbent at their current ranks.",
+  "policy": {
+    "threshold": 0.3,
+    "limit": 8,
+    "memory_budget": 1000,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666
+  },
+  "selection": "One fixed development trial plus all historical development results and unchanged crate contracts before reserved scoring. Reject each lost delivered fact or worse rank, changed negative identity/order, scope/trust/tag/caller violation or budget overrun.",
+  "limitations": "Correlated cases from eight exposed source incidents; no blind or general semantic precision claim."
+}

@@ -495,13 +495,163 @@ impl SemanticIndex {
                 Err(error) => eprintln!("memory: focused symbol lookup unavailable; preserving current results: {error}"),
             }
         }
+        if found.len() == query.limit && query.limit > 1 && query.failure.is_none() && !exact_title
+        {
+            let minimum_names = if query.files.is_empty() { 2 } else { 1 };
+            if let Some(names) = focused_identifiers(&query.task, minimum_names) {
+                let supplementary = (|| -> Result<_> {
+                    let mut protected = vec![false; found.len()];
+                    protected[0] = true;
+                    for (i, hit) in found.iter().enumerate() {
+                        // A file hint is independent relevance evidence. Keep
+                        // every matching incumbent, even at the pool's tail.
+                        if query.files.iter().any(|file| {
+                            hit.record
+                                .files
+                                .iter()
+                                .any(|stored| crate::retrieval::path_overlap(file, stored))
+                        }) || focused_words(&query.task).any(|word| {
+                            hit.record.title.eq_ignore_ascii_case(word)
+                                || hit.record.title.eq_ignore_ascii_case(
+                                    word.trim_matches(|c: char| !c.is_alphanumeric()),
+                                )
+                        }) {
+                            protected[i] = true;
+                        }
+                    }
+                    let mut additions: Vec<RetrievedMemory> = Vec::new();
+                    for name in names {
+                        let mut lookup = query.clone();
+                        lookup.task = name.to_owned();
+                        let represented =
+                            self.store
+                                .identifier_candidates_filtered(&lookup, |record| {
+                                    accept(record)
+                                        && (found
+                                            .iter()
+                                            .any(|hit| hit.record.same_context_claim(record))
+                                            || additions
+                                                .iter()
+                                                .any(|hit| hit.record.same_context_claim(record)))
+                                })?;
+                        for (i, hit) in found.iter().enumerate() {
+                            if represented
+                                .iter()
+                                .any(|r| r.record.same_context_claim(&hit.record))
+                            {
+                                protected[i] = true;
+                            }
+                        }
+                        if represented.is_empty() {
+                            let Some(mut candidate) = self
+                                .store
+                                .identifier_candidates_filtered(&lookup, &accept)?
+                                .into_iter()
+                                .next()
+                            else {
+                                return Ok(None);
+                            };
+                            candidate
+                                .reason
+                                .push_str(", requested complete symbol match");
+                            additions.push(candidate);
+                        }
+                    }
+                    let slots: Vec<_> = (1..found.len()).rev().filter(|i| !protected[*i]).collect();
+                    if additions.len() > slots.len() {
+                        return Ok(None);
+                    }
+                    // File coverage must not cancel the successful name plan.
+                    // Keep its slot assignments; use only remaining positions.
+                    let file_coverage = (|| -> Result<_> {
+                        let mut files: Vec<RetrievedMemory> = Vec::new();
+                        for file in &query.files {
+                            if found.iter().chain(&additions).chain(&files).any(|hit| {
+                                hit.record
+                                    .files
+                                    .iter()
+                                    .any(|stored| crate::retrieval::path_overlap(file, stored))
+                            }) {
+                                continue;
+                            }
+                            let mut lookup = query.clone();
+                            lookup.files = vec![file.clone()];
+                            if let Some(mut hit) = self
+                                .store
+                                .file_candidates_filtered(&lookup, &accept)?
+                                .into_iter()
+                                .next()
+                            {
+                                hit.reason.push_str(", requested file coverage");
+                                files.push(hit);
+                            }
+                        }
+                        Ok(files)
+                    })();
+                    match file_coverage {
+                        Ok(files) if additions.len() + files.len() <= slots.len() => {
+                            additions.extend(files);
+                        }
+                        Ok(_) => {}
+                        Err(error) => eprintln!(
+                            "memory: file coverage unavailable; preserving name plan: {error}"
+                        ),
+                    }
+                    Ok(Some((slots, additions)))
+                })();
+                match supplementary {
+                    Ok(Some((slots, additions))) => {
+                        for (slot, mut hit) in slots.into_iter().zip(additions) {
+                            hit.score = found[slot].score;
+                            found[slot] = hit;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!(
+                        "memory: multi-symbol lookup unavailable; preserving results: {error}"
+                    ),
+                }
+            }
+        }
         Ok(found)
     }
 }
 
+fn focused_identifiers(task: &str, minimum_names: usize) -> Option<Vec<&str>> {
+    let words: Vec<_> = focused_words(task).collect();
+    if !(minimum_names..=5).contains(&words.len()) || !focused_scope(task) {
+        return None;
+    }
+    let mut names = Vec::new();
+    let mut context = 0;
+    for word in words {
+        let clause = crate::retrieval::identifier_fts_query(&[word]);
+        if clause.is_empty() {
+            context += 1;
+        } else if clause.contains(" OR ") {
+            return None;
+        } else if !names.contains(&word) {
+            names.push(word);
+        }
+    }
+    (context <= 1 && (minimum_names..=4).contains(&names.len())).then_some(names)
+}
+
+fn focused_words(task: &str) -> impl Iterator<Item = &str> {
+    task.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';'))
+        .filter(|word| !word.is_empty())
+}
+
 fn focused_identifier(task: &str) -> bool {
-    if !(1..=2).contains(&task.split_whitespace().count())
-        || task.contains(['*', '?'])
+    if !(1..=2).contains(&task.split_whitespace().count()) || !focused_scope(task) {
+        return false;
+    }
+    let clause = crate::retrieval::identifier_fts_query(&[task]);
+    !clause.is_empty() && !clause.contains(" OR ")
+}
+
+fn focused_scope(task: &str) -> bool {
+    if task.contains(['*', '?'])
         || task.chars().any(char::is_numeric)
         || task.split(|c: char| !c.is_ascii_alphabetic()).any(|word| {
             matches!(
@@ -523,8 +673,7 @@ fn focused_identifier(task: &str) -> bool {
     {
         return false;
     }
-    let clause = crate::retrieval::identifier_fts_query(&[task]);
-    !clause.is_empty() && !clause.contains(" OR ")
+    true
 }
 
 fn overflow_conclusion(document: &str, limit: Option<usize>) -> Option<String> {

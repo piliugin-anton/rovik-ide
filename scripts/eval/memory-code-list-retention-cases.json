@@ -1,0 +1,1543 @@
+{
+  "version": 1,
+  "description": "Capacity-infeasible list-syntax retention guards; preserve per-fact ranks, exclude from recall headline.",
+  "corpus": [
+    {
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      }
+    },
+    {
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      }
+    },
+    {
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      }
+    },
+    {
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      }
+    },
+    {
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      }
+    },
+    {
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      }
+    },
+    {
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      }
+    },
+    {
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      }
+    },
+    {
+      "title": "Crowding observation 0",
+      "content": "Crowding sample 0 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 1",
+      "content": "Crowding sample 1 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 2",
+      "content": "Crowding sample 2 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 3",
+      "content": "Crowding sample 3 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 4",
+      "content": "Crowding sample 4 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 5",
+      "content": "Crowding sample 5 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 6",
+      "content": "Crowding sample 6 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 7",
+      "content": "Crowding sample 7 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Crowding observation 8",
+      "content": "Crowding sample 8 records a distinct metric with its own provenance.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "File context",
+      "content": "This file configures logging destinations.",
+      "files": ["src/noise.rs"],
+      "verified": true
+    }
+  ],
+  "cases": [
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-SharedMemoryStore-universal",
+      "category": "universal",
+      "task": "Keep every crowding observation while reviewing SharedMemoryStore,RetrievalQuery,MemoryRecord",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-SharedMemoryStore-plural",
+      "category": "plural",
+      "task": "Preserve the crowding facts for SharedMemoryStore;RetrievalQuery;MemoryRecord",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "SharedMemoryStore",
+      "split": "development",
+      "title": "Shared memory store",
+      "content": "Share a SQLite connection behind a lock so concurrent memory callers use one store.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/store.rs",
+        "sha256": "652c272557434a7a564a921186ee321e11d55488670fea7aedf60ca45da20948",
+        "symbol": "SharedMemoryStore"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-SharedMemoryStore-short-collection",
+      "category": "short-collection",
+      "task": "SharedMemoryStore,RetrievalQuery,MemoryRecord all_crowding",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-RetrievalQuery-universal",
+      "category": "universal",
+      "task": "Keep every crowding observation while reviewing RetrievalQuery,SharedMemoryStore,MemoryRecord",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-RetrievalQuery-plural",
+      "category": "plural",
+      "task": "Preserve the crowding facts for RetrievalQuery;SharedMemoryStore;MemoryRecord",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievalQuery",
+      "split": "development",
+      "title": "Retrieval query",
+      "content": "A lookup carries a repository, task, optional failure and file paths, a result limit, verification filters and excluded tags.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievalQuery"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-RetrievalQuery-short-collection",
+      "category": "short-collection",
+      "task": "RetrievalQuery,SharedMemoryStore,MemoryRecord all_crowding",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-MemoryRecord-universal",
+      "category": "universal",
+      "task": "Keep every crowding observation while reviewing MemoryRecord,SharedMemoryStore,RetrievalQuery",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-MemoryRecord-plural",
+      "category": "plural",
+      "task": "Preserve the crowding facts for MemoryRecord;SharedMemoryStore;RetrievalQuery",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemoryRecord",
+      "split": "development",
+      "title": "Memory record",
+      "content": "Keep trust, applicability, provenance, repository, claim text and its hash together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "MemoryRecord"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-MemoryRecord-short-collection",
+      "category": "short-collection",
+      "task": "MemoryRecord,SharedMemoryStore,RetrievalQuery all_crowding",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-WorkloadStatus-universal",
+      "category": "universal",
+      "task": "Keep every crowding observation while reviewing WorkloadStatus,SharedMemoryStore,RetrievalQuery",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-WorkloadStatus-plural",
+      "category": "plural",
+      "task": "Preserve the crowding facts for WorkloadStatus;SharedMemoryStore;RetrievalQuery",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "WorkloadStatus",
+      "split": "development",
+      "title": "Workload status",
+      "content": "Expose automatic and maximum slots, busy and waiting commands, processor count and available memory.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/workload/mod.rs",
+        "sha256": "68654dbe0b6b08dbc45b263ab61a0f08f90d7f171ec1f3a0c7d8389ceeafd33d",
+        "symbol": "WorkloadStatus"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-WorkloadStatus-short-collection",
+      "category": "short-collection",
+      "task": "WorkloadStatus,SharedMemoryStore,RetrievalQuery all_crowding",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-BrowserProxy-universal",
+      "category": "universal",
+      "task": "Keep every crowding observation while reviewing BrowserProxy,CommandOutput,ProcessTree",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-BrowserProxy-plural",
+      "category": "plural",
+      "task": "Preserve the crowding facts for BrowserProxy;CommandOutput;ProcessTree",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "BrowserProxy",
+      "split": "heldout",
+      "title": "Browser proxy",
+      "content": "Keep the browser proxy server and optional credentials together; direct mode uses direct://.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/net/mod.rs",
+        "sha256": "71cb4f0d7e6476367c77c4fb8ff6e060a2c4b941425ba8062079754b36305b88",
+        "symbol": "BrowserProxy"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-BrowserProxy-short-collection",
+      "category": "short-collection",
+      "task": "BrowserProxy,CommandOutput,ProcessTree all_crowding",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-CommandOutput-universal",
+      "category": "universal",
+      "task": "Keep every crowding observation while reviewing CommandOutput,BrowserProxy,ProcessTree",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-CommandOutput-plural",
+      "category": "plural",
+      "task": "Preserve the crowding facts for CommandOutput;BrowserProxy;ProcessTree",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "CommandOutput",
+      "split": "heldout",
+      "title": "Command output",
+      "content": "An absent exit code means a signal or timeout; retain stdout, stderr, stop state and truncated-output metadata.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "CommandOutput"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-CommandOutput-short-collection",
+      "category": "short-collection",
+      "task": "CommandOutput,BrowserProxy,ProcessTree all_crowding",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-ProcessTree-universal",
+      "category": "universal",
+      "task": "Keep every crowding observation while reviewing ProcessTree,BrowserProxy,CommandOutput",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-ProcessTree-plural",
+      "category": "plural",
+      "task": "Preserve the crowding facts for ProcessTree;BrowserProxy;CommandOutput",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "ProcessTree",
+      "split": "heldout",
+      "title": "Process tree",
+      "content": "On Windows use a job object to end a spawned shell and its descendants together, falling back to tree termination when no job can be made.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/command_tool.rs",
+        "sha256": "0a38b7eb4d350e5521f4d7eec3686496f5f0f10e17f25af72cad99aa5a0a84fa",
+        "symbol": "ProcessTree"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-ProcessTree-short-collection",
+      "category": "short-collection",
+      "task": "ProcessTree,BrowserProxy,CommandOutput all_crowding",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-BrowserScreenshot-universal",
+      "category": "universal",
+      "task": "Keep every crowding observation while reviewing BrowserScreenshot,BrowserProxy,CommandOutput",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-BrowserScreenshot-plural",
+      "category": "plural",
+      "task": "Preserve the crowding facts for BrowserScreenshot;BrowserProxy;CommandOutput",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "BrowserScreenshot",
+      "split": "heldout",
+      "title": "Browser screenshot",
+      "content": "Keep the URL, page title, image dimensions and attachment identifier; encode image bytes only when building a vision request.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/browser_tools.rs",
+        "sha256": "76a9e0c6164d5442f952283363cb3d6fef61d3fd5f9b485ad658f1f32d61483b",
+        "symbol": "BrowserScreenshot"
+      },
+      "supersede": false,
+      "file": null,
+      "answerable": true,
+      "id": "list-retention-BrowserScreenshot-short-collection",
+      "category": "short-collection",
+      "task": "BrowserScreenshot,BrowserProxy,CommandOutput all_crowding",
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        }
+      ],
+      "capacity_feasible": false
+    }
+  ]
+}

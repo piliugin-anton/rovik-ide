@@ -122,9 +122,28 @@ without another inference call.
 For a full hybrid pool, a one- or two-word request naming exactly one complete
 compound identifier may replace the final result with an eligible complete match
 when none is already represented. Leading results retain their ranks. Single-slot
-lookups, explicit file/failure context, exact incumbent titles, longer requests,
+lookups, explicit failure context, exact incumbent titles, longer requests,
 registered collection words, digits and wildcards keep their existing pools.
 This focused rule does not apply to lexical or strict vector searches.
+
+Requests naming two to four compound identifiers can cover each requested name
+within the same pool. Existing named matches and exact titles mentioned in the
+request keep their positions; only other trailing slots may be used. The request
+may contain at most one other term. If a name has no eligible match or the slots
+cannot cover all missing names, the pool stays intact. The same collection,
+failure, numeric and wildcard protections apply, with no extra inference.
+Spaces, commas and semicolons separate names and literal context terms; qualified
+names are supported. The request may contain at most five nonempty terms after
+splitting, including repeated mentions. Duplicate names need no additional slot.
+With supplied files, this atomic planner accepts one to four names and protects
+every incumbent whose stored paths overlap any supplied path. It preserves their
+ranks even at the tail; too few remaining slots aborts the entire plan. File
+matching uses the same normalized whole-segment rules as lexical retrieval.
+After planning names, unused unprotected positions can cover missing supplied
+paths with eligible file claims from the existing indexed collector. A claim
+can cover several hints. Unknown paths with no eligible memory are skipped;
+insufficient slots or a file lookup error preserves the successful name plan.
+File additions are applied together, without moving earlier named facts.
 
 ## Development
 

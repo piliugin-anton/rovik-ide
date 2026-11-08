@@ -2064,10 +2064,29 @@ check this independently of strict vector-search cutoffs and lexical behavior.
 For a terse hybrid lookup naming exactly one complete compound identifier, a full
 pool may use its last slot for that fact when no complete match is represented.
 Leading results retain their ranks. Longer requests, collection wording, explicit
-file/failure context, exact incumbent titles, single-slot lookups, digits and
+failure context, exact incumbent titles, single-slot lookups, digits and
 wildcards retain their existing pools. See the
 [focused-symbol experiments](docs/design/long-term-memory-focused-symbols-nov8-2026.md)
 for the fixed scope rules and per-fact retention checks.
+
+A focused request naming two to four compound identifiers can cover all of them
+within that same pool. Already supplied named facts and exact requested titles
+keep their ranks; only other trailing slots can be replaced. Every requested name
+must have an eligible match, with enough slots for the entire set. See the
+[multiple-symbol experiment](docs/design/long-term-memory-multi-symbols-nov8-2026.md).
+Names may be separated by spaces, commas or semicolons, including qualified names
+such as `crate::SharedMemoryStore`. The same limits and context protections apply
+after splitting the list. See the
+[harder list cases](docs/design/long-term-memory-code-lists-nov8-2026.md).
+With supplied files, focused requests naming one to four symbols protect every
+incumbent file match at its current rank before covering missing names. If too few
+other slots remain, the entire pool stays intact. See the
+[file-focused experiment](docs/design/long-term-memory-file-focused-nov8-2026.md).
+Within that focused scope, missing file coverage can use slots remaining after
+the name plan. One eligible claim can cover each known supplied path, including
+normalized duplicate hints. If the file additions cannot all fit, the name plan
+keeps its original results and ranks. See the
+[harder file-coverage cases](docs/design/long-term-memory-file-coverage-nov9-2026.md).
 
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline

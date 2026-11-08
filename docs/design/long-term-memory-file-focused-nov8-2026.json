@@ -1,0 +1,4890 @@
+{
+  "baseline": "6528b37cd63e86e19cac08da902ac2a881f1778f",
+  "branch": "ltm-improvements-nov9-2026",
+  "protocol": "scripts/eval/memory-file-focus-protocol.json",
+  "method": "Frozen harder variants before one development trial; development selection and crate contracts before exposed reserved scoring. Native pinned MiniLM, threshold .3, limit eight, budget 1000, short-query scale 11/12 for two words. Historical baseline outputs reuse verified identical runtime source; all candidate views replayed.",
+  "limitations": [
+    "Eight reused, exposed source incidents; correlated query variants, no independent semantic or live-agent claim.",
+    "Capacity-infeasible retention cases excluded from recall headline. Guard every previously delivered required fact and rank.",
+    "Unrequested trailing records may be replaced; fixture retention is not universal precision proof. Concurrent checks do not establish latency improvement.",
+    "Eight positive cases per split still lack a file fact before focused planning; complete-answer scores retain those failures."
+  ],
+  "historical": [
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "after": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "identical": 40,
+      "primary_before": 12,
+      "primary_after": 12,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 40,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.42028061224489793,
+        "ndcg_at_8": 0.5342177052083443,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9285714285714286
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.4292091836734694,
+        "ndcg_at_8": 0.5567509106930392,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 38,
+      "primary_before": 26,
+      "primary_after": 28,
+      "changes": {
+        "gains": ["dense-RetrievalQuery-file-dense", "dense-MemoryRecord-file-dense"],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "after": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "identical": 40,
+      "primary_before": 12,
+      "primary_after": 12,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.6778486394557823,
+        "ndcg_at_8": 0.7521203582728371,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.6778486394557823,
+        "ndcg_at_8": 0.7521203582728371,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 4,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 4,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 4,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0.5,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0.2857142857142857,
+        "ndcg_at_8": 0.3333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "after": {
+        "candidate_recall": 0.5,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0.2857142857142857,
+        "ndcg_at_8": 0.3333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "identical": 4,
+      "primary_before": 2,
+      "primary_after": 2,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.022321428571428572,
+        "ndcg_at_8": 0.05406651750992184,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "after": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.022321428571428572,
+        "ndcg_at_8": 0.05406651750992184,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "identical": 12,
+      "primary_before": 2,
+      "primary_after": 2,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.07539682539682539,
+        "ndcg_at_8": 0.17047897562911482,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "after": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.07539682539682539,
+        "ndcg_at_8": 0.17047897562911482,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "identical": 12,
+      "primary_before": 6,
+      "primary_after": 6,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.6416666666666666,
+        "ndcg_at_8": 0.6565464876785729,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.7
+      },
+      "after": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.6416666666666666,
+        "ndcg_at_8": 0.6565464876785729,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.7
+      },
+      "identical": 55,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7291666666666666,
+        "ndcg_at_8": 0.766959194553578,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.875
+      },
+      "after": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7291666666666666,
+        "ndcg_at_8": 0.766959194553578,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.875
+      },
+      "identical": 55,
+      "primary_before": 35,
+      "primary_after": 35,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.575,
+        "cases": 55,
+        "delivered_recall": 0.575,
+        "mrr": 0.5375,
+        "ndcg_at_8": 0.5465338279036697,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.575
+      },
+      "after": {
+        "candidate_recall": 0.575,
+        "cases": 55,
+        "delivered_recall": 0.575,
+        "mrr": 0.5375,
+        "ndcg_at_8": 0.5465338279036697,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.575
+      },
+      "identical": 55,
+      "primary_before": 23,
+      "primary_after": 23,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7375,
+        "ndcg_at_8": 0.7735056822321509,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.875
+      },
+      "after": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7375,
+        "ndcg_at_8": 0.7735056822321509,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.875
+      },
+      "identical": 55,
+      "primary_before": 35,
+      "primary_after": 35,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.55,
+        "ndcg_at_8": 0.5879000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.7
+      },
+      "after": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.55,
+        "ndcg_at_8": 0.5879000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.7
+      },
+      "identical": 55,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.85,
+        "cases": 55,
+        "delivered_recall": 0.85,
+        "mrr": 0.6,
+        "ndcg_at_8": 0.6629000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.85
+      },
+      "after": {
+        "candidate_recall": 0.85,
+        "cases": 55,
+        "delivered_recall": 0.85,
+        "mrr": 0.6,
+        "ndcg_at_8": 0.6629000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.85
+      },
+      "identical": 55,
+      "primary_before": 34,
+      "primary_after": 34,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.65,
+        "cases": 55,
+        "delivered_recall": 0.6,
+        "mrr": 0.5308333333333334,
+        "ndcg_at_8": 0.5607088595581592,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.65
+      },
+      "after": {
+        "candidate_recall": 0.65,
+        "cases": 55,
+        "delivered_recall": 0.6,
+        "mrr": 0.5308333333333334,
+        "ndcg_at_8": 0.5607088595581592,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.65
+      },
+      "identical": 55,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.825,
+        "mrr": 0.5933333333333334,
+        "ndcg_at_8": 0.6628103432691683,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.875
+      },
+      "after": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.825,
+        "mrr": 0.5933333333333334,
+        "ndcg_at_8": 0.6628103432691683,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.875
+      },
+      "identical": 55,
+      "primary_before": 33,
+      "primary_after": 33,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 110,
+      "before": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "after": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "identical": 110,
+      "primary_before": 58,
+      "primary_after": 58,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 110,
+      "before": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "after": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "identical": 110,
+      "primary_before": 65,
+      "primary_after": 65,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 58,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 58,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 58,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.10714285714285714,
+        "recall_at_8": 0.8
+      },
+      "identical": 58,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 58,
+      "before": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 58,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8543643251190486,
+        "no_match_injection_rate": 0.14285714285714285,
+        "recall_at_8": 0.8666666666666667
+      },
+      "identical": 58,
+      "primary_before": 26,
+      "primary_after": 26,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "identical": 45,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "after": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "identical": 45,
+      "primary_before": 27,
+      "primary_after": 27,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.7666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.7666666666666667,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7666666666666667,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.7666666666666667
+      },
+      "identical": 45,
+      "primary_before": 23,
+      "primary_after": 23,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8527777777777777,
+        "ndcg_at_8": 0.8730845355072103,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.9333333333333333
+      },
+      "identical": 45,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "identical": 45,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8253953169047639,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9
+      },
+      "after": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8253953169047639,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9
+      },
+      "identical": 45,
+      "primary_before": 27,
+      "primary_after": 27,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7833333333333333,
+        "ndcg_at_8": 0.7876976584523819,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7833333333333333,
+        "ndcg_at_8": 0.7876976584523819,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "identical": 45,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8166666666666668,
+        "ndcg_at_8": 0.8449496685608756,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.8166666666666668,
+        "ndcg_at_8": 0.8449496685608756,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "identical": 45,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "identical": 24,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      },
+      "identical": 24,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "identical": 24,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.5,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.5,
+        "recall_at_8": 1
+      },
+      "identical": 24,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "after": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "identical": 40,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5238095238095238,
+        "ndcg_at_8": 0.6424166184949177,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5238095238095238,
+        "ndcg_at_8": 0.6424166184949177,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "after": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "identical": 40,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.7601190476190476,
+        "ndcg_at_8": 0.8190818155645072,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.7601190476190476,
+        "ndcg_at_8": 0.8190818155645072,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6964285714285714,
+        "ndcg_at_8": 0.7376660274234746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "after": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6964285714285714,
+        "ndcg_at_8": 0.7376660274234746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "identical": 40,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.800595238095238,
+        "ndcg_at_8": 0.8516851726097714,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.800595238095238,
+        "ndcg_at_8": 0.8516851726097714,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6904761904761905,
+        "ndcg_at_8": 0.7329899647959225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "after": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6904761904761905,
+        "ndcg_at_8": 0.7329899647959225,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "identical": 40,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.9404761904761906,
+        "ndcg_at_8": 0.9557806966836756,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.9404761904761906,
+        "ndcg_at_8": 0.9557806966836756,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "identical": 45,
+      "primary_before": 26,
+      "primary_after": 26,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "identical": 45,
+      "primary_before": 26,
+      "primary_after": 26,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "identical": 45,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.9333333333333333,
+        "cases": 45,
+        "delivered_recall": 0.9333333333333333,
+        "mrr": 0.6527777777777779,
+        "ndcg_at_8": 0.7210934200254898,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9333333333333333
+      },
+      "identical": 45,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.16666666666666666,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "after": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.16666666666666666,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "identical": 12,
+      "primary_before": 2,
+      "primary_after": 2,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.27658730158730155,
+        "ndcg_at_8": 0.3882269257359688,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "after": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.27658730158730155,
+        "ndcg_at_8": 0.3882269257359688,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "identical": 12,
+      "primary_before": 9,
+      "primary_after": 9,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.44444444444444436,
+        "ndcg_at_8": 0.5166292762412937,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "after": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.44444444444444436,
+        "ndcg_at_8": 0.5166292762412937,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "identical": 12,
+      "primary_before": 9,
+      "primary_after": 9,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "identical": 12,
+      "primary_before": 1,
+      "primary_after": 1,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "identical": 12,
+      "primary_before": 1,
+      "primary_after": 1,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "identical": 12,
+      "primary_before": 1,
+      "primary_after": 1,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "identical": 12,
+      "primary_before": 1,
+      "primary_after": 1,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "identical": 40,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.1337159863945578,
+        "ndcg_at_8": 0.3241184742704798,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.1337159863945578,
+        "ndcg_at_8": 0.3241184742704798,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "identical": 40,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5130952380952382,
+        "ndcg_at_8": 0.6257471923389127,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5130952380952382,
+        "ndcg_at_8": 0.6257471923389127,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.18055555555555555,
+        "ndcg_at_8": 0.2192441461309548,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.18055555555555555,
+        "ndcg_at_8": 0.2192441461309548,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "identical": 12,
+      "primary_before": 4,
+      "primary_after": 4,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.13194444444444445,
+        "ndcg_at_8": 0.1785909110241198,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.13194444444444445,
+        "ndcg_at_8": 0.1785909110241198,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "identical": 12,
+      "primary_before": 4,
+      "primary_after": 4,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.20833333333333334,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.20833333333333334,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "identical": 12,
+      "primary_before": 4,
+      "primary_after": 4,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.2341269841269841,
+        "ndcg_at_8": 0.2995994033730207,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "after": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.2341269841269841,
+        "ndcg_at_8": 0.2995994033730207,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "identical": 12,
+      "primary_before": 6,
+      "primary_after": 6,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    }
+  ],
+  "extensions": [
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "identical": 32,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 0.3125,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0.04598214285714286,
+        "ndcg_at_8": 0.1052780767170416,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.3125
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 32,
+        "delivered_recall": 0.5,
+        "mrr": 0.13526785714285713,
+        "ndcg_at_8": 0.32551051510990603,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "identical": 18,
+      "primary_before": 5,
+      "primary_after": 16,
+      "changes": {
+        "gains": [
+          "file-focus-SharedMemoryStore-pair",
+          "file-focus-SharedMemoryStore-four",
+          "file-focus-RetrievalQuery-pair",
+          "file-focus-RetrievalQuery-four",
+          "file-focus-MemoryRecord-pair",
+          "file-focus-MemoryRecord-four",
+          "file-focus-WorkloadStatus-pair",
+          "file-focus-WorkloadStatus-four"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "identical": 32,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 0.75,
+        "cases": 32,
+        "delivered_recall": 0.0625,
+        "mrr": 0.45223214285714286,
+        "ndcg_at_8": 0.521275201192664,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.75
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 32,
+        "delivered_recall": 0.5,
+        "mrr": 0.48348214285714286,
+        "ndcg_at_8": 0.6001414203890961,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "identical": 23,
+      "primary_before": 12,
+      "primary_after": 16,
+      "changes": {
+        "gains": [
+          "file-focus-BrowserProxy-pair",
+          "file-focus-BrowserProxy-four",
+          "file-focus-CommandOutput-pair",
+          "file-focus-CommandOutput-four",
+          "file-focus-ProcessTree-pair",
+          "file-focus-ProcessTree-four",
+          "file-focus-BrowserScreenshot-four"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 8,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 8,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 8,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0.625,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.425,
+        "ndcg_at_8": 0.4717132018086354,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.625
+      },
+      "after": {
+        "candidate_recall": 0.625,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.425,
+        "ndcg_at_8": 0.4717132018086354,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.625
+      },
+      "identical": 8,
+      "primary_before": 5,
+      "primary_after": 5,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    }
+  ],
+  "changed_cases": [
+    {
+      "suite": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "dense-RetrievalQuery-file-dense",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-RetrievalQuery-file-dense",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-RetrievalQuery-file-dense",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 553,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "dense-MemoryRecord-file-dense",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-MemoryRecord-file-dense",
+        "incident": "MemoryRecord",
+        "packet_tokens": 528,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 1,
+        "required_delivered": 0,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000d"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-MemoryRecord-file-dense",
+        "incident": "MemoryRecord",
+        "packet_tokens": 542,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-SharedMemoryStore-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-SharedMemoryStore-single",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 2,
+        "required_delivered": 0,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-SharedMemoryStore-single",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 545,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-SharedMemoryStore-pair",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-SharedMemoryStore-pair",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 511,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 3,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": 8,
+          "Retrieval query": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-SharedMemoryStore-pair",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 539,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "File context": 8,
+          "Retrieval query": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-SharedMemoryStore-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 5,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-SharedMemoryStore-four",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 507,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 5,
+        "required_count": 5,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 4,
+          "Memory record": 7,
+          "Retrieval query": null,
+          "Workload status": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 5,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-SharedMemoryStore-four",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 522,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 5,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "File context": 4,
+          "Memory record": 7,
+          "Retrieval query": 6,
+          "Workload status": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-RetrievalQuery-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-single",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 2,
+        "required_delivered": 0,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-single",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 553,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-RetrievalQuery-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-snake",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 2,
+        "required_delivered": 0,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-snake",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 553,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-RetrievalQuery-pair",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-pair",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 511,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 3,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": 8,
+          "Shared memory store": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-pair",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 538,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "File context": 8,
+          "Shared memory store": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-RetrievalQuery-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-four",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 497,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 5,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 3,
+          "Memory record": 6,
+          "Shared memory store": 4,
+          "Workload status": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-four",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 517,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "File context": 3,
+          "Memory record": 6,
+          "Shared memory store": 4,
+          "Workload status": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-MemoryRecord-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-single",
+        "incident": "MemoryRecord",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 2,
+        "required_delivered": 0,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-single",
+        "incident": "MemoryRecord",
+        "packet_tokens": 542,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-MemoryRecord-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-snake",
+        "incident": "MemoryRecord",
+        "packet_tokens": 528,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 2,
+        "required_delivered": 0,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000d"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-snake",
+        "incident": "MemoryRecord",
+        "packet_tokens": 542,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-MemoryRecord-pair",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-pair",
+        "incident": "MemoryRecord",
+        "packet_tokens": 510,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 3,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 6,
+          "Shared memory store": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-pair",
+        "incident": "MemoryRecord",
+        "packet_tokens": 519,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "File context": 6,
+          "Shared memory store": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-MemoryRecord-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-four",
+        "incident": "MemoryRecord",
+        "packet_tokens": 505,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 5,
+        "required_delivered": 4,
+        "required_ranks": {
+          "File context": 4,
+          "Retrieval query": null,
+          "Shared memory store": 5,
+          "Workload status": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-four",
+        "incident": "MemoryRecord",
+        "packet_tokens": 521,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "File context": 4,
+          "Retrieval query": 6,
+          "Shared memory store": 5,
+          "Workload status": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-00000000001d",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-WorkloadStatus-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-WorkloadStatus-single",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 2,
+        "required_delivered": 0,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-WorkloadStatus-single",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 547,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-WorkloadStatus-pair",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-WorkloadStatus-pair",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 506,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 3,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 5,
+          "Shared memory store": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-WorkloadStatus-pair",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 520,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "File context": 5,
+          "Shared memory store": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-WorkloadStatus-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-WorkloadStatus-four",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 504,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 5,
+        "required_delivered": 3,
+        "required_ranks": {
+          "File context": 4,
+          "Memory record": null,
+          "Retrieval query": null,
+          "Shared memory store": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000000c"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-WorkloadStatus-four",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 529,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "File context": 4,
+          "Memory record": 6,
+          "Retrieval query": 8,
+          "Shared memory store": 5
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-BrowserProxy-pair",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserProxy-pair",
+        "incident": "BrowserProxy",
+        "packet_tokens": 495,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 3,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Command output": null,
+          "File context": 2
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserProxy-pair",
+        "incident": "BrowserProxy",
+        "packet_tokens": 507,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Command output": 8,
+          "File context": 2
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000004"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-BrowserProxy-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 3,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserProxy-four",
+        "incident": "BrowserProxy",
+        "packet_tokens": 504,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 3,
+        "required_count": 5,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Browser screenshot": 1,
+          "Command output": null,
+          "File context": 2,
+          "Process tree": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 3,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserProxy-four",
+        "incident": "BrowserProxy",
+        "packet_tokens": 534,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 3,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "Browser screenshot": 1,
+          "Command output": 8,
+          "File context": 2,
+          "Process tree": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-000000000004"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-CommandOutput-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-CommandOutput-single",
+        "incident": "CommandOutput",
+        "packet_tokens": 532,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 2,
+        "required_delivered": 0,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000007"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-CommandOutput-single",
+        "incident": "CommandOutput",
+        "packet_tokens": 549,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000004"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-CommandOutput-pair",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-CommandOutput-pair",
+        "incident": "CommandOutput",
+        "packet_tokens": 490,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 3,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Browser proxy": 1,
+          "File context": 2
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-CommandOutput-pair",
+        "incident": "CommandOutput",
+        "packet_tokens": 507,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Browser proxy": 1,
+          "File context": 2
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000004"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-CommandOutput-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-CommandOutput-four",
+        "incident": "CommandOutput",
+        "packet_tokens": 501,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 5,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Browser proxy": 3,
+          "Browser screenshot": 1,
+          "File context": 2,
+          "Process tree": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-CommandOutput-four",
+        "incident": "CommandOutput",
+        "packet_tokens": 536,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "Browser proxy": 3,
+          "Browser screenshot": 1,
+          "File context": 2,
+          "Process tree": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-000000000004"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-ProcessTree-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": null,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-ProcessTree-single",
+        "incident": "ProcessTree",
+        "packet_tokens": 528,
+        "primary_delivered": false,
+        "prohibited": false,
+        "rank": null,
+        "required_count": 2,
+        "required_delivered": 0,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000d"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-ProcessTree-single",
+        "incident": "ProcessTree",
+        "packet_tokens": 555,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001c"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-ProcessTree-pair",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 4,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-ProcessTree-pair",
+        "incident": "ProcessTree",
+        "packet_tokens": 505,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 4,
+        "required_count": 3,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Browser proxy": null,
+          "File context": 3
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 4,
+        "category": "pair",
+        "embedding_fallback": false,
+        "id": "file-focus-ProcessTree-pair",
+        "incident": "ProcessTree",
+        "packet_tokens": 516,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 4,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Browser proxy": 8,
+          "File context": 3
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000d",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000002"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-ProcessTree-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-ProcessTree-four",
+        "incident": "ProcessTree",
+        "packet_tokens": 516,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 5,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Browser proxy": 3,
+          "Browser screenshot": 1,
+          "Command output": null,
+          "File context": 2
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-ProcessTree-four",
+        "incident": "ProcessTree",
+        "packet_tokens": 526,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "Browser proxy": 3,
+          "Browser screenshot": 1,
+          "Command output": 8,
+          "File context": 2
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000004"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-BrowserScreenshot-four",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserScreenshot-four",
+        "incident": "BrowserScreenshot",
+        "packet_tokens": 507,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 5,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Browser proxy": 3,
+          "Command output": null,
+          "File context": 2,
+          "Process tree": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "four",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserScreenshot-four",
+        "incident": "BrowserScreenshot",
+        "packet_tokens": 537,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 5,
+        "required_delivered": 5,
+        "required_ranks": {
+          "Browser proxy": 3,
+          "Command output": 8,
+          "File context": 2,
+          "Process tree": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000001f",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-000000000004"
+        ],
+        "split": "heldout"
+      }
+    }
+  ],
+  "fingerprints": [
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc",
+      "candidate": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc"
+    },
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "c0060b4ec954440b73f00f4a8258cd0162c24023b4c234cb3ef2dad318a5cc85",
+      "candidate": "1f7efde4569b54708d1d9eba3b3aff6475f16d409b6e9bace228388941415fba"
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c",
+      "candidate": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c"
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "0f8c378f69677094ea7e5bd04872afa9c503748e117eaefeb5faf9d686568773",
+      "candidate": "0f8c378f69677094ea7e5bd04872afa9c503748e117eaefeb5faf9d686568773"
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "7d787ebe63b47b83e3a9c9958f8dd871c3492c54dca34b3dd58f5b758a4539ea",
+      "candidate": "7d787ebe63b47b83e3a9c9958f8dd871c3492c54dca34b3dd58f5b758a4539ea"
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "69fe5e2f3394e16c3730abdbc6dc63808660985f109ce3bfeb073f8a2ac6c2d4",
+      "candidate": "69fe5e2f3394e16c3730abdbc6dc63808660985f109ce3bfeb073f8a2ac6c2d4"
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "df99df8628125d25542d36ab1a5f816687513acfcfe9f4f35155e438af106170",
+      "candidate": "df99df8628125d25542d36ab1a5f816687513acfcfe9f4f35155e438af106170"
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "f6629698f66887c2a5747fee32043c4efb32291fbce915ac181e0b26fd22df5d",
+      "candidate": "f6629698f66887c2a5747fee32043c4efb32291fbce915ac181e0b26fd22df5d"
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571",
+      "candidate": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571"
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d",
+      "candidate": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d"
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0",
+      "candidate": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0"
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4",
+      "candidate": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4"
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "555ce63e548dd075f4e4a1ffc58b12fdd129b0e0cb0cd4e93eca4668efb4a9ec",
+      "candidate": "555ce63e548dd075f4e4a1ffc58b12fdd129b0e0cb0cd4e93eca4668efb4a9ec"
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "be8543b9da7f9141b2176e0294a8d01b4471b8c00ab5f38d2490f08eaa655d6a",
+      "candidate": "be8543b9da7f9141b2176e0294a8d01b4471b8c00ab5f38d2490f08eaa655d6a"
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "0b699a29957472ce5c3fb3eca954e516e9bbb4faccfa03378854ac504a3eaa1e",
+      "candidate": "0b699a29957472ce5c3fb3eca954e516e9bbb4faccfa03378854ac504a3eaa1e"
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "cd33b3d069f4f09cab30928198bce232215b6bb28ac6b377ac3f8d96d278314a",
+      "candidate": "cd33b3d069f4f09cab30928198bce232215b6bb28ac6b377ac3f8d96d278314a"
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "cf475b64b87414fa638e9f356142d95e2a4951433ce020a834a34310061e3a08",
+      "candidate": "cf475b64b87414fa638e9f356142d95e2a4951433ce020a834a34310061e3a08"
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "274ab7c57663ed42d914ed7ce0a411b295833a0ce22f2a0f442936791d23f8e3",
+      "candidate": "274ab7c57663ed42d914ed7ce0a411b295833a0ce22f2a0f442936791d23f8e3"
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "201eb5f390f75231222ef4215ab3d4cbf4ca2e332a1b7a3c192a82dd97cb159b",
+      "candidate": "201eb5f390f75231222ef4215ab3d4cbf4ca2e332a1b7a3c192a82dd97cb159b"
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "094e5d211b17760d90a610151be987f584c2776b8855d0299e5a8c714553517d",
+      "candidate": "094e5d211b17760d90a610151be987f584c2776b8855d0299e5a8c714553517d"
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "219f61d31b716a3eea6e3f5424cbcd5bec16d7fd23868f03dc26a4c48ef3d7e0",
+      "candidate": "219f61d31b716a3eea6e3f5424cbcd5bec16d7fd23868f03dc26a4c48ef3d7e0"
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28",
+      "candidate": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28"
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "12362bbf7ee6a536d00aab4c2d6d648ec006cb4597c1f3eeeae60d96d0c91daf",
+      "candidate": "12362bbf7ee6a536d00aab4c2d6d648ec006cb4597c1f3eeeae60d96d0c91daf"
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "ca5240575bc2ad716458c433b1a34ebd12a295d3ac54fb11efc357207af4cf70",
+      "candidate": "ca5240575bc2ad716458c433b1a34ebd12a295d3ac54fb11efc357207af4cf70"
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "8aa2ab9680da85d84689d9592780a2652a541904abd55131eaaa64ca37c1ae86",
+      "candidate": "8aa2ab9680da85d84689d9592780a2652a541904abd55131eaaa64ca37c1ae86"
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d",
+      "candidate": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d"
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "9906ba20c70f8af61fa1025664439f6de54d40673eb851eaba575165abeab263",
+      "candidate": "9906ba20c70f8af61fa1025664439f6de54d40673eb851eaba575165abeab263"
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "73be6ff51df41dd3b581b58bfeaf7759305c9ba32e4bb9c46b0d1b519571ed1e",
+      "candidate": "73be6ff51df41dd3b581b58bfeaf7759305c9ba32e4bb9c46b0d1b519571ed1e"
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "86853934e60d2d055b5815ca5c02cad94ed408e094900fe70c333a5e68d6e139",
+      "candidate": "86853934e60d2d055b5815ca5c02cad94ed408e094900fe70c333a5e68d6e139"
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274",
+      "candidate": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274"
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "67359804194144d49876f5336a1a44aa4b211927f8f495fb9231e24ecbf10238",
+      "candidate": "67359804194144d49876f5336a1a44aa4b211927f8f495fb9231e24ecbf10238"
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "06a54c2fb53841f947dc074d42554e58cae9f11b9aabd1f611f49162caca3aa2",
+      "candidate": "06a54c2fb53841f947dc074d42554e58cae9f11b9aabd1f611f49162caca3aa2"
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "c5ea9b5f971ee442c1a55ddfc250e454580864d35c596b8a36549aac94f277b2",
+      "candidate": "c5ea9b5f971ee442c1a55ddfc250e454580864d35c596b8a36549aac94f277b2"
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d",
+      "candidate": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d"
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "98cdfdd7fb20e848e2a4c4964587c4d5faeb62b83bad885f6af520c9b8b568d1",
+      "candidate": "98cdfdd7fb20e848e2a4c4964587c4d5faeb62b83bad885f6af520c9b8b568d1"
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "faa0b9361677105d3d00204ef8d679d41f0f00db88e45f45c0c3793c88e4fc8a",
+      "candidate": "faa0b9361677105d3d00204ef8d679d41f0f00db88e45f45c0c3793c88e4fc8a"
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "72ee5c291219eb683630fde29a6c51b91da2111310e5a5b2f2ff716abf7b8b6b",
+      "candidate": "72ee5c291219eb683630fde29a6c51b91da2111310e5a5b2f2ff716abf7b8b6b"
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "abf3f06c79329e80713d4415fbf00bd1f377f583cbc35ef476c54c95c9ea7cae",
+      "candidate": "abf3f06c79329e80713d4415fbf00bd1f377f583cbc35ef476c54c95c9ea7cae"
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "34d7a3c8a1efcd763535b2b61f343bfefa47c452b831dd645ee1a612682e5507",
+      "candidate": "34d7a3c8a1efcd763535b2b61f343bfefa47c452b831dd645ee1a612682e5507"
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "bc021812922a42fbf35556a3e4c8d278b1c5e666b8439b83a0514f85c6bfe0a3",
+      "candidate": "bc021812922a42fbf35556a3e4c8d278b1c5e666b8439b83a0514f85c6bfe0a3"
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "20d5d363ece969ccd9ca050846cbc1b325b1579059356dab270fd6344d2b3bc2",
+      "candidate": "20d5d363ece969ccd9ca050846cbc1b325b1579059356dab270fd6344d2b3bc2"
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877",
+      "candidate": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877"
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "9e5f5d3cbcc2b26c80d7f8e0e1bc4c1984c6cc874518f2b2891ea6a795a2ae87",
+      "candidate": "9e5f5d3cbcc2b26c80d7f8e0e1bc4c1984c6cc874518f2b2891ea6a795a2ae87"
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "9ee5c510a58151c876e98dc9fad4254604a7d01486b2f944b209317be4d4f17b",
+      "candidate": "9ee5c510a58151c876e98dc9fad4254604a7d01486b2f944b209317be4d4f17b"
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb",
+      "candidate": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb"
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb",
+      "candidate": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb"
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63",
+      "candidate": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63"
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63",
+      "candidate": "f49a6bfea749720ada613b56e33a44e4bdd156b6574a430878ee06697a5e2f63"
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "6eb76482c2b101bd9e4cadfd644b19d3624824e8a014bccc038a350e6e01567f",
+      "candidate": "6eb76482c2b101bd9e4cadfd644b19d3624824e8a014bccc038a350e6e01567f"
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "c652604ba86d749bd99bc79ee0a48836664005568de0572f1c0a865a3d0b50e1",
+      "candidate": "c652604ba86d749bd99bc79ee0a48836664005568de0572f1c0a865a3d0b50e1"
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "ef93023b414766e8f526bd6903a9fe8a107d9d4045d46c212dcd17987eda4d5d",
+      "candidate": "ef93023b414766e8f526bd6903a9fe8a107d9d4045d46c212dcd17987eda4d5d"
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "12b2fabc27a1837901783c0982ddaaf441ad25bd7db2f71c9337832f07dfbde3",
+      "candidate": "12b2fabc27a1837901783c0982ddaaf441ad25bd7db2f71c9337832f07dfbde3"
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3",
+      "candidate": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3"
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3",
+      "candidate": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3"
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b",
+      "candidate": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b"
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b",
+      "candidate": "30833f0805d2075f00f07599379c74de1a6460780a32d40d9cbaa731bc3c8f1b"
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8",
+      "candidate": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8"
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8",
+      "candidate": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8"
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451",
+      "candidate": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451"
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451",
+      "candidate": "c7f35e0d4d8025f95cd9118ac0fdc6accd9b2d4b9cc04e970be56c1665f7c451"
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "b23a22889ad4c1f7cdb6285bc7b3e52ba0f420fc883259f6b922ce7128244954",
+      "candidate": "b23a22889ad4c1f7cdb6285bc7b3e52ba0f420fc883259f6b922ce7128244954"
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "3d8cacd68f8d2b65ae613a9b7a0ffd3c993bd483777de20e86ac3a489e408971",
+      "candidate": "3d8cacd68f8d2b65ae613a9b7a0ffd3c993bd483777de20e86ac3a489e408971"
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "deddd1e4ec2220dfb7eda0e87be1724bba39ff07311bbea35f22b128f8d2585d",
+      "candidate": "deddd1e4ec2220dfb7eda0e87be1724bba39ff07311bbea35f22b128f8d2585d"
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "dd7d53dead04e24509bb2234b493d544ac11046d9fe65f49691ddce7545d905d",
+      "candidate": "dd7d53dead04e24509bb2234b493d544ac11046d9fe65f49691ddce7545d905d"
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "bf7337c0f41a26735df0a9e8c9edb8a4a682350467a35ed55a8a83bcf4a07c41",
+      "candidate": "bf7337c0f41a26735df0a9e8c9edb8a4a682350467a35ed55a8a83bcf4a07c41"
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "8019b30fc552e34209101935e1232ac9ebe30a874744259d4d5f63d864edfdaa",
+      "candidate": "8019b30fc552e34209101935e1232ac9ebe30a874744259d4d5f63d864edfdaa"
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "f0e356d6bd463a9dc7e1cc7f1d04b9cdce9802b65897d7fdf1e4b7ae8d57c241",
+      "candidate": "f0e356d6bd463a9dc7e1cc7f1d04b9cdce9802b65897d7fdf1e4b7ae8d57c241"
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "2ed8e223aea9f67514e25b8d938d6732d7b7bb7e60b66f26a09185c1e28b46f7",
+      "candidate": "2ed8e223aea9f67514e25b8d938d6732d7b7bb7e60b66f26a09185c1e28b46f7"
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "f94aa064c03c82146feda349a0423c2852fddbf057b33cb956ea676015807f2e",
+      "candidate": "f94aa064c03c82146feda349a0423c2852fddbf057b33cb956ea676015807f2e"
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "e58692a74435d724a429232d9af6f9cddbddbcb21a188ad62b8946f00181197c",
+      "candidate": "8f28819a7614122592ffac7c124b118086f7e1758cfeef2b12ce07ce0b207e4e"
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "201a6aa3f5e16448326412a26f83cecfb04936f007b43c7dad2b12a0558e7f88",
+      "candidate": "201a6aa3f5e16448326412a26f83cecfb04936f007b43c7dad2b12a0558e7f88"
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "93abc650c5c994a7b54ac0f009614ab3754e67aca4af8f3f6d20a3266e78834d",
+      "candidate": "86750a0707d6469a07ecdd47a2e51205283964a8bad9ebd42b3d6cd362d695ce"
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "11cb12cdfbf78100c2f4827e09e0337aea410464f74e2a7027bc77743097706e",
+      "candidate": "11cb12cdfbf78100c2f4827e09e0337aea410464f74e2a7027bc77743097706e"
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "982d06bb3a6c6c4a1842aef186b49ddeec3b5594509751cf6c7cbf07486058da",
+      "candidate": "982d06bb3a6c6c4a1842aef186b49ddeec3b5594509751cf6c7cbf07486058da"
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "664ac88fc134bd26a8a6ae21f45d258fe71cd7c65b035315437595d054c53017",
+      "candidate": "664ac88fc134bd26a8a6ae21f45d258fe71cd7c65b035315437595d054c53017"
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "c78fac3fd1fc74a78e9de511e775983d1e519754839e5bcf188e45022160525b",
+      "candidate": "c78fac3fd1fc74a78e9de511e775983d1e519754839e5bcf188e45022160525b"
+    }
+  ],
+  "audit": {
+    "historical_views": 2308,
+    "historical_identical": 2306,
+    "new_views": 160,
+    "new_identical": 137,
+    "complete_answer_gains": 17,
+    "losses": [],
+    "rank_losses": [],
+    "negative_changes": [],
+    "safety": []
+  },
+  "source_sha256": {
+    "baseline": "7fa7bb65ad54c083f39e9ac80d9e2e3e847114ac9bb6a5e06fadc94040d019ce",
+    "candidate": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84"
+  },
+  "registered_inputs_sha256": {
+    "scripts/eval/memory-file-focus-cases.json": "d1134d015649b940bf8e7051de6d898edb4a8e0ba7e2de65b9bcae94931cc0bc",
+    "scripts/eval/memory-file-focus-retention-cases.json": "e585686394a3c104b54774df85c9f0aeb9774ae7afbeead7c0f155e91ed2b5e8"
+  },
+  "committed_inputs_sha256": {
+    "scripts/eval/memory-file-focus-cases.json": "b4fd45d3a9aa103a8eadb68124c11256bec6459eee70d18ff0426b2c936e8bf2",
+    "scripts/eval/memory-file-focus-retention-cases.json": "5afcaad6223d22b8fdf312cbe7bb0b8d94b9475aeb00ed1f1b8ce99f82a03524"
+  },
+  "validation": {
+    "rust_all_targets_passed": 154,
+    "focused_fixture_randomized_repeats": 10,
+    "native_onnx_tests_passed": 2,
+    "doctests_passed": 1,
+    "clippy": "warnings denied",
+    "frontend_tests_passed": 1046,
+    "typecheck": "passed",
+    "format": "passed"
+  }
+}

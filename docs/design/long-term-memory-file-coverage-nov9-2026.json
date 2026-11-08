@@ -1,0 +1,5442 @@
+{
+  "baseline": "7854861599aba2c9f95b1188561b1676cf09415a",
+  "branch": "ltm-improvements-nov9-2026",
+  "protocol": "scripts/eval/memory-file-coverage-protocol.json",
+  "method": "Frozen harder variants before two development trials, one rejected by a capacity contract; development selection and crate contracts before exposed reserved scoring. Native pinned MiniLM, threshold .3, limit eight, budget 1000, short-query scale 11/12 for two words. Historical baseline outputs reuse verified identical runtime source; all candidate views replayed.",
+  "limitations": [
+    "Eight additional, exposed source incidents; correlated query variants, no independent semantic or live-agent claim.",
+    "Capacity-infeasible retention cases excluded from recall headline. Guard every previously delivered required fact and rank.",
+    "Unrequested trailing records may be replaced; fixture retention is not universal precision proof. Concurrent checks do not establish latency improvement.",
+    "New complete-answer scores retain every primary, peer and file requirement, including short-component identifier misses."
+  ],
+  "pending": [
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 55
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 58
+    },
+    {
+      "key": "original",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 58
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45
+    },
+    {
+      "key": "fresh",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45
+    },
+    {
+      "key": "diagnostic",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 24
+    },
+    {
+      "key": "identifier",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 24
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40
+    },
+    {
+      "key": "complex",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40
+    },
+    {
+      "key": "snake",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 45
+    },
+    {
+      "key": "longfailure",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 45
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12
+    },
+    {
+      "key": "longguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12
+    },
+    {
+      "key": "genericguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12
+    },
+    {
+      "key": "pluralguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40
+    },
+    {
+      "key": "lists",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12
+    },
+    {
+      "key": "listguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12
+    }
+  ],
+  "historical": [
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "after": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "identical": 40,
+      "primary_before": 12,
+      "primary_after": 12,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.4292091836734694,
+        "ndcg_at_8": 0.5567509106930392,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.4292091836734694,
+        "ndcg_at_8": 0.5567509106930392,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 36,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "after": {
+        "candidate_recall": 0.42857142857142855,
+        "cases": 40,
+        "delivered_recall": 0.42857142857142855,
+        "mrr": 0.35714285714285715,
+        "ndcg_at_8": 0.3758471076530654,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.42857142857142855
+      },
+      "identical": 40,
+      "primary_before": 12,
+      "primary_after": 12,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.6778486394557823,
+        "ndcg_at_8": 0.7521203582728371,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.6778486394557823,
+        "ndcg_at_8": 0.7521203582728371,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 36,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 4,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 4,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 4,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 4,
+      "before": {
+        "candidate_recall": 0.5,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0.2857142857142857,
+        "ndcg_at_8": 0.3333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "after": {
+        "candidate_recall": 0.5,
+        "cases": 4,
+        "delivered_recall": 0,
+        "mrr": 0.2857142857142857,
+        "ndcg_at_8": 0.3333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "identical": 4,
+      "primary_before": 2,
+      "primary_after": 2,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.022321428571428572,
+        "ndcg_at_8": 0.05406651750992184,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "after": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.022321428571428572,
+        "ndcg_at_8": 0.05406651750992184,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "identical": 12,
+      "primary_before": 2,
+      "primary_after": 2,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 12,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.07539682539682539,
+        "ndcg_at_8": 0.17047897562911482,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "after": {
+        "candidate_recall": 0.5,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.07539682539682539,
+        "ndcg_at_8": 0.17047897562911482,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.5
+      },
+      "identical": 12,
+      "primary_before": 6,
+      "primary_after": 6,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.6416666666666666,
+        "ndcg_at_8": 0.6565464876785729,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.7
+      },
+      "after": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.6416666666666666,
+        "ndcg_at_8": 0.6565464876785729,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.7
+      },
+      "identical": 55,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7291666666666666,
+        "ndcg_at_8": 0.766959194553578,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.875
+      },
+      "after": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7291666666666666,
+        "ndcg_at_8": 0.766959194553578,
+        "no_match_injection_rate": 0.7333333333333333,
+        "recall_at_8": 0.875
+      },
+      "identical": 55,
+      "primary_before": 35,
+      "primary_after": 35,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.575,
+        "cases": 55,
+        "delivered_recall": 0.575,
+        "mrr": 0.5375,
+        "ndcg_at_8": 0.5465338279036697,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.575
+      },
+      "after": {
+        "candidate_recall": 0.575,
+        "cases": 55,
+        "delivered_recall": 0.575,
+        "mrr": 0.5375,
+        "ndcg_at_8": 0.5465338279036697,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.575
+      },
+      "identical": 55,
+      "primary_before": 23,
+      "primary_after": 23,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7375,
+        "ndcg_at_8": 0.7735056822321509,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.875
+      },
+      "after": {
+        "candidate_recall": 0.875,
+        "cases": 55,
+        "delivered_recall": 0.875,
+        "mrr": 0.7375,
+        "ndcg_at_8": 0.7735056822321509,
+        "no_match_injection_rate": 0.4666666666666667,
+        "recall_at_8": 0.875
+      },
+      "identical": 55,
+      "primary_before": 35,
+      "primary_after": 35,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.55,
+        "ndcg_at_8": 0.5879000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.7
+      },
+      "after": {
+        "candidate_recall": 0.7,
+        "cases": 55,
+        "delivered_recall": 0.7,
+        "mrr": 0.55,
+        "ndcg_at_8": 0.5879000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.7
+      },
+      "identical": 55,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.85,
+        "cases": 55,
+        "delivered_recall": 0.85,
+        "mrr": 0.6,
+        "ndcg_at_8": 0.6629000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.85
+      },
+      "after": {
+        "candidate_recall": 0.85,
+        "cases": 55,
+        "delivered_recall": 0.85,
+        "mrr": 0.6,
+        "ndcg_at_8": 0.6629000471001019,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.85
+      },
+      "identical": 55,
+      "primary_before": 34,
+      "primary_after": 34,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 55,
+      "before": {
+        "candidate_recall": 0.65,
+        "cases": 55,
+        "delivered_recall": 0.6,
+        "mrr": 0.5308333333333334,
+        "ndcg_at_8": 0.5607088595581592,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.65
+      },
+      "after": {
+        "candidate_recall": 0.65,
+        "cases": 55,
+        "delivered_recall": 0.6,
+        "mrr": 0.5308333333333334,
+        "ndcg_at_8": 0.5607088595581592,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.65
+      },
+      "identical": 55,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 110,
+      "before": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "after": {
+        "candidate_recall": 0.8285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.8285714285714286,
+        "mrr": 0.8285714285714286,
+        "ndcg_at_8": 0.8285714285714286,
+        "no_match_injection_rate": 0.05,
+        "recall_at_8": 0.8285714285714286
+      },
+      "identical": 110,
+      "primary_before": 58,
+      "primary_after": 58,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 110,
+      "before": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "after": {
+        "candidate_recall": 0.9285714285714286,
+        "cases": 110,
+        "delivered_recall": 0.9285714285714286,
+        "mrr": 0.9214285714285714,
+        "ndcg_at_8": 0.9232989964795921,
+        "no_match_injection_rate": 0.075,
+        "recall_at_8": 0.9285714285714286
+      },
+      "identical": 110,
+      "primary_before": 65,
+      "primary_after": 65,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8
+      },
+      "identical": 45,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "after": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.85,
+        "ndcg_at_8": 0.8630929753571458,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.9
+      },
+      "identical": 45,
+      "primary_before": 27,
+      "primary_after": 27,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "after": {
+        "candidate_recall": 0.8,
+        "cases": 45,
+        "delivered_recall": 0.8,
+        "mrr": 0.7666666666666667,
+        "ndcg_at_8": 0.7753953169047638,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8
+      },
+      "identical": 45,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8253953169047639,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9
+      },
+      "after": {
+        "candidate_recall": 0.9,
+        "cases": 45,
+        "delivered_recall": 0.9,
+        "mrr": 0.8,
+        "ndcg_at_8": 0.8253953169047639,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.9
+      },
+      "identical": 45,
+      "primary_before": 27,
+      "primary_after": 27,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0,
+        "recall_at_8": 1
+      },
+      "identical": 24,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 24,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 24,
+        "delivered_recall": 1,
+        "mrr": 1,
+        "ndcg_at_8": 1,
+        "no_match_injection_rate": 0.375,
+        "recall_at_8": 1
+      },
+      "identical": 24,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "after": {
+        "candidate_recall": 0.5714285714285714,
+        "cases": 40,
+        "delivered_recall": 0.5714285714285714,
+        "mrr": 0.3392857142857143,
+        "ndcg_at_8": 0.3992274207908257,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.5714285714285714
+      },
+      "identical": 40,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5238095238095238,
+        "ndcg_at_8": 0.6424166184949177,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.5238095238095238,
+        "ndcg_at_8": 0.6424166184949177,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6964285714285714,
+        "ndcg_at_8": 0.7376660274234746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "after": {
+        "candidate_recall": 0.8571428571428571,
+        "cases": 40,
+        "delivered_recall": 0.8571428571428571,
+        "mrr": 0.6964285714285714,
+        "ndcg_at_8": 0.7376660274234746,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 0.8571428571428571
+      },
+      "identical": 40,
+      "primary_before": 24,
+      "primary_after": 24,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.800595238095238,
+        "ndcg_at_8": 0.8516851726097714,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.800595238095238,
+        "ndcg_at_8": 0.8516851726097714,
+        "no_match_injection_rate": 0.6666666666666666,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "identical": 45,
+      "primary_before": 26,
+      "primary_after": 26,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 45,
+      "before": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "after": {
+        "candidate_recall": 0.8666666666666667,
+        "cases": 45,
+        "delivered_recall": 0.8666666666666667,
+        "mrr": 0.5633333333333332,
+        "ndcg_at_8": 0.6360157065067672,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.8666666666666667
+      },
+      "identical": 45,
+      "primary_before": 26,
+      "primary_after": 26,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.16666666666666666,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "after": {
+        "candidate_recall": 0.16666666666666666,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg_at_8": 0.16666666666666666,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.16666666666666666
+      },
+      "identical": 12,
+      "primary_before": 2,
+      "primary_after": 2,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.27658730158730155,
+        "ndcg_at_8": 0.3882269257359688,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "after": {
+        "candidate_recall": 0.75,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.27658730158730155,
+        "ndcg_at_8": 0.3882269257359688,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.75
+      },
+      "identical": 12,
+      "primary_before": 9,
+      "primary_after": 9,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "identical": 12,
+      "primary_before": 1,
+      "primary_after": 1,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "identical": 12,
+      "primary_before": 1,
+      "primary_after": 1,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "identical": 12,
+      "primary_before": 1,
+      "primary_after": 1,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.08333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.08333333333333333,
+        "ndcg_at_8": 0.08333333333333333,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.08333333333333333
+      },
+      "identical": 12,
+      "primary_before": 1,
+      "primary_after": 1,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 40,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "identical": 40,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 40,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.1337159863945578,
+        "ndcg_at_8": 0.3241184742704798,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 40,
+        "delivered_recall": 1,
+        "mrr": 0.1337159863945578,
+        "ndcg_at_8": 0.3241184742704798,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "identical": 40,
+      "primary_before": 28,
+      "primary_after": 28,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.18055555555555555,
+        "ndcg_at_8": 0.2192441461309548,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.18055555555555555,
+        "ndcg_at_8": 0.2192441461309548,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "identical": 12,
+      "primary_before": 4,
+      "primary_after": 4,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 12,
+      "before": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.13194444444444445,
+        "ndcg_at_8": 0.1785909110241198,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "after": {
+        "candidate_recall": 0.3333333333333333,
+        "cases": 12,
+        "delivered_recall": 0,
+        "mrr": 0.13194444444444445,
+        "ndcg_at_8": 0.1785909110241198,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.3333333333333333
+      },
+      "identical": 12,
+      "primary_before": 4,
+      "primary_after": 4,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "identical": 32,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 32,
+        "delivered_recall": 0.5,
+        "mrr": 0.13526785714285713,
+        "ndcg_at_8": 0.32551051510990603,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 32,
+        "delivered_recall": 1,
+        "mrr": 0.13526785714285713,
+        "ndcg_at_8": 0.32551051510990603,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "identical": 24,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [
+          "file-focus-SharedMemoryStore-single",
+          "file-focus-SharedMemoryStore-snake",
+          "file-focus-RetrievalQuery-single",
+          "file-focus-RetrievalQuery-snake",
+          "file-focus-MemoryRecord-single",
+          "file-focus-MemoryRecord-snake",
+          "file-focus-WorkloadStatus-single",
+          "file-focus-WorkloadStatus-snake"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 32,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "identical": 32,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 32,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 32,
+        "delivered_recall": 0.5,
+        "mrr": 0.48348214285714286,
+        "ndcg_at_8": 0.6001414203890961,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 32,
+        "delivered_recall": 1,
+        "mrr": 0.48348214285714286,
+        "ndcg_at_8": 0.6001414203890961,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "identical": 24,
+      "primary_before": 16,
+      "primary_after": 16,
+      "changes": {
+        "gains": [
+          "file-focus-BrowserProxy-single",
+          "file-focus-BrowserProxy-snake",
+          "file-focus-CommandOutput-single",
+          "file-focus-CommandOutput-snake",
+          "file-focus-ProcessTree-single",
+          "file-focus-ProcessTree-snake",
+          "file-focus-BrowserScreenshot-single",
+          "file-focus-BrowserScreenshot-snake"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 8,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 8,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 8,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0.625,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.425,
+        "ndcg_at_8": 0.4717132018086354,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.625
+      },
+      "after": {
+        "candidate_recall": 0.625,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.425,
+        "ndcg_at_8": 0.4717132018086354,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.625
+      },
+      "identical": 8,
+      "primary_before": 5,
+      "primary_after": 5,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    }
+  ],
+  "extensions": [
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 52,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 52,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 52,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "identical": 52,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 52,
+      "before": {
+        "candidate_recall": 0.34375,
+        "cases": 52,
+        "delivered_recall": 0.09375,
+        "mrr": 0.051636904761904766,
+        "ndcg_at_8": 0.11688149154613164,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.34375
+      },
+      "after": {
+        "candidate_recall": 0.34375,
+        "cases": 52,
+        "delivered_recall": 0.1875,
+        "mrr": 0.051636904761904766,
+        "ndcg_at_8": 0.11688149154613164,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0.34375
+      },
+      "identical": 49,
+      "primary_before": 11,
+      "primary_after": 11,
+      "changes": {
+        "gains": [
+          "file-cover-SemanticIndex-single",
+          "file-cover-RetrievalWeights-single",
+          "file-cover-RetrievalTelemetry-single"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 52,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 52,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 52,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 0
+      },
+      "identical": 52,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 52,
+      "before": {
+        "candidate_recall": 1,
+        "cases": 52,
+        "delivered_recall": 0.625,
+        "mrr": 0.1668526785714286,
+        "ndcg_at_8": 0.35389015136690666,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "after": {
+        "candidate_recall": 1,
+        "cases": 52,
+        "delivered_recall": 0.9375,
+        "mrr": 0.1668526785714286,
+        "ndcg_at_8": 0.35389015136690666,
+        "no_match_injection_rate": 1,
+        "recall_at_8": 1
+      },
+      "identical": 41,
+      "primary_before": 32,
+      "primary_after": 32,
+      "changes": {
+        "gains": [
+          "file-cover-MemorySettings-single",
+          "file-cover-MemorySettings-filtered",
+          "file-cover-MemoryState-single",
+          "file-cover-MemoryState-duplicate-hints",
+          "file-cover-MemoryState-filtered",
+          "file-cover-MemoryEntry-single",
+          "file-cover-MemoryEntry-duplicate-hints",
+          "file-cover-MemoryEntry-filtered",
+          "file-cover-RetrievedMemory-single",
+          "file-cover-RetrievedMemory-duplicate-hints"
+        ],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "coverageguards",
+      "split": "development",
+      "policy": "lexical",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 8,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "coverageguards",
+      "split": "development",
+      "policy": "hybrid",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0.125,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.017857142857142856,
+        "ndcg_at_8": 0.041666666666666664,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.125
+      },
+      "after": {
+        "candidate_recall": 0.125,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.017857142857142856,
+        "ndcg_at_8": 0.041666666666666664,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.125
+      },
+      "identical": 8,
+      "primary_before": 1,
+      "primary_after": 1,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "coverageguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "after": {
+        "candidate_recall": 0,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0,
+        "ndcg_at_8": 0,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0
+      },
+      "identical": 8,
+      "primary_before": 0,
+      "primary_after": 0,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    },
+    {
+      "key": "coverageguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "cases": 8,
+      "before": {
+        "candidate_recall": 0.375,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.05952380952380952,
+        "ndcg_at_8": 0.13071846344367222,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.375
+      },
+      "after": {
+        "candidate_recall": 0.375,
+        "cases": 8,
+        "delivered_recall": 0,
+        "mrr": 0.05952380952380952,
+        "ndcg_at_8": 0.13071846344367222,
+        "no_match_injection_rate": null,
+        "recall_at_8": 0.375
+      },
+      "identical": 8,
+      "primary_before": 3,
+      "primary_after": 3,
+      "changes": {
+        "gains": [],
+        "losses": [],
+        "rank_losses": [],
+        "negative_changes": [],
+        "safety": []
+      }
+    }
+  ],
+  "changed_cases": [
+    {
+      "suite": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "dense-SharedMemoryStore-file-dense",
+      "before": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-SharedMemoryStore-file-dense",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 533,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-SharedMemoryStore-file-dense",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 526,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "dense-RetrievalQuery-file-dense",
+      "before": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-RetrievalQuery-file-dense",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 553,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-RetrievalQuery-file-dense",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 542,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "dense-MemoryRecord-file-dense",
+      "before": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-MemoryRecord-file-dense",
+        "incident": "MemoryRecord",
+        "packet_tokens": 542,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-MemoryRecord-file-dense",
+        "incident": "MemoryRecord",
+        "packet_tokens": 531,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "dense-WorkloadStatus-file-dense",
+      "before": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-WorkloadStatus-file-dense",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 535,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-WorkloadStatus-file-dense",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 528,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "dense-BrowserProxy-file-dense",
+      "before": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-BrowserProxy-file-dense",
+        "incident": "BrowserProxy",
+        "packet_tokens": 508,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-BrowserProxy-file-dense",
+        "incident": "BrowserProxy",
+        "packet_tokens": 501,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "dense-CommandOutput-file-dense",
+      "before": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-CommandOutput-file-dense",
+        "incident": "CommandOutput",
+        "packet_tokens": 538,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-CommandOutput-file-dense",
+        "incident": "CommandOutput",
+        "packet_tokens": 531,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "dense-ProcessTree-file-dense",
+      "before": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-ProcessTree-file-dense",
+        "incident": "ProcessTree",
+        "packet_tokens": 543,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-000000000007"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-ProcessTree-file-dense",
+        "incident": "ProcessTree",
+        "packet_tokens": 536,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "dense-BrowserScreenshot-file-dense",
+      "before": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-BrowserScreenshot-file-dense",
+        "incident": "BrowserScreenshot",
+        "packet_tokens": 519,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "file-dense",
+        "embedding_fallback": false,
+        "id": "dense-BrowserScreenshot-file-dense",
+        "incident": "BrowserScreenshot",
+        "packet_tokens": 512,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 1,
+        "required_delivered": 1,
+        "required_ranks": {},
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-SharedMemoryStore-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-SharedMemoryStore-single",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 545,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-SharedMemoryStore-single",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 534,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-SharedMemoryStore-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-SharedMemoryStore-snake",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 533,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-SharedMemoryStore-snake",
+        "incident": "SharedMemoryStore",
+        "packet_tokens": 526,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-RetrievalQuery-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-single",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 553,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-single",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 542,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-RetrievalQuery-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-snake",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 553,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-RetrievalQuery-snake",
+        "incident": "RetrievalQuery",
+        "packet_tokens": 542,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001d"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-MemoryRecord-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-single",
+        "incident": "MemoryRecord",
+        "packet_tokens": 542,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-single",
+        "incident": "MemoryRecord",
+        "packet_tokens": 531,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-MemoryRecord-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-snake",
+        "incident": "MemoryRecord",
+        "packet_tokens": 542,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-MemoryRecord-snake",
+        "incident": "MemoryRecord",
+        "packet_tokens": 531,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-WorkloadStatus-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-WorkloadStatus-single",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 547,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-WorkloadStatus-single",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 536,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-focus-WorkloadStatus-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-WorkloadStatus-snake",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 535,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-WorkloadStatus-snake",
+        "incident": "WorkloadStatus",
+        "packet_tokens": 528,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-BrowserProxy-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 5,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserProxy-single",
+        "incident": "BrowserProxy",
+        "packet_tokens": 520,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 5,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000d"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 5,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserProxy-single",
+        "incident": "BrowserProxy",
+        "packet_tokens": 517,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 5,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-BrowserProxy-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserProxy-snake",
+        "incident": "BrowserProxy",
+        "packet_tokens": 508,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserProxy-snake",
+        "incident": "BrowserProxy",
+        "packet_tokens": 501,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000002",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-CommandOutput-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-CommandOutput-single",
+        "incident": "CommandOutput",
+        "packet_tokens": 549,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000004"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-CommandOutput-single",
+        "incident": "CommandOutput",
+        "packet_tokens": 538,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000004"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-CommandOutput-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-CommandOutput-snake",
+        "incident": "CommandOutput",
+        "packet_tokens": 538,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-CommandOutput-snake",
+        "incident": "CommandOutput",
+        "packet_tokens": 531,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-ProcessTree-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-ProcessTree-single",
+        "incident": "ProcessTree",
+        "packet_tokens": 555,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001c"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-ProcessTree-single",
+        "incident": "ProcessTree",
+        "packet_tokens": 544,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001c"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-ProcessTree-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-ProcessTree-snake",
+        "incident": "ProcessTree",
+        "packet_tokens": 543,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-000000000007"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-ProcessTree-snake",
+        "incident": "ProcessTree",
+        "packet_tokens": 536,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-BrowserScreenshot-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserScreenshot-single",
+        "incident": "BrowserScreenshot",
+        "packet_tokens": 519,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserScreenshot-single",
+        "incident": "BrowserScreenshot",
+        "packet_tokens": 512,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-focus-BrowserScreenshot-snake",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserScreenshot-snake",
+        "incident": "BrowserScreenshot",
+        "packet_tokens": 519,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000b"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 1,
+        "category": "snake",
+        "embedding_fallback": false,
+        "id": "file-focus-BrowserScreenshot-snake",
+        "incident": "BrowserScreenshot",
+        "packet_tokens": 512,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 1,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 8
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-SemanticIndex-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-single",
+        "incident": "SemanticIndex",
+        "packet_tokens": 552,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000021"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-SemanticIndex-single",
+        "incident": "SemanticIndex",
+        "packet_tokens": 541,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000021"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalWeights-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-single",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 552,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalWeights-single",
+        "incident": "RetrievalWeights",
+        "packet_tokens": 541,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001f"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievalTelemetry-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-single",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 553,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievalTelemetry-single",
+        "incident": "RetrievalTelemetry",
+        "packet_tokens": 542,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001e"
+        ],
+        "split": "development"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-MemorySettings-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-MemorySettings-single",
+        "incident": "MemorySettings",
+        "packet_tokens": 536,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-MemorySettings-single",
+        "incident": "MemorySettings",
+        "packet_tokens": 529,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-MemorySettings-filtered",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-MemorySettings-filtered",
+        "incident": "MemorySettings",
+        "packet_tokens": 526,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": null,
+          "File context": null,
+          "Memory state": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000000b",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-MemorySettings-filtered",
+        "incident": "MemorySettings",
+        "packet_tokens": 523,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 6,
+          "Memory state": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001c",
+          "00000000-0000-0000-0000-00000000001b"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-MemoryState-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryState-single",
+        "incident": "MemoryState",
+        "packet_tokens": 547,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001c"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryState-single",
+        "incident": "MemoryState",
+        "packet_tokens": 536,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001c"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-MemoryState-duplicate-hints",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "duplicate-hints",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryState-duplicate-hints",
+        "incident": "MemoryState",
+        "packet_tokens": 528,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 3,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001c"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "duplicate-hints",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryState-duplicate-hints",
+        "incident": "MemoryState",
+        "packet_tokens": 525,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001c"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-MemoryState-filtered",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryState-filtered",
+        "incident": "MemoryState",
+        "packet_tokens": 537,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": null,
+          "File context": null,
+          "Memory settings": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001c"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryState-filtered",
+        "incident": "MemoryState",
+        "packet_tokens": 525,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 4,
+          "File context": 5,
+          "Memory settings": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-00000000001c"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-MemoryEntry-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryEntry-single",
+        "incident": "MemoryEntry",
+        "packet_tokens": 551,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryEntry-single",
+        "incident": "MemoryEntry",
+        "packet_tokens": 540,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-MemoryEntry-duplicate-hints",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "duplicate-hints",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryEntry-duplicate-hints",
+        "incident": "MemoryEntry",
+        "packet_tokens": 531,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 3,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "duplicate-hints",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryEntry-duplicate-hints",
+        "incident": "MemoryEntry",
+        "packet_tokens": 529,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-MemoryEntry-filtered",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryEntry-filtered",
+        "incident": "MemoryEntry",
+        "packet_tokens": 526,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 4,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": null,
+          "File context": null,
+          "Memory settings": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000005"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 7,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-MemoryEntry-filtered",
+        "incident": "MemoryEntry",
+        "packet_tokens": 518,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 7,
+        "required_count": 4,
+        "required_delivered": 4,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 8,
+          "Memory settings": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-00000000001b",
+          "00000000-0000-0000-0000-00000000001a",
+          "00000000-0000-0000-0000-000000000019"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievedMemory-single",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievedMemory-single",
+        "incident": "RetrievedMemory",
+        "packet_tokens": 547,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 1,
+        "required_ranks": {
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000020"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "single",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievedMemory-single",
+        "incident": "RetrievedMemory",
+        "packet_tokens": 536,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 2,
+        "required_delivered": 2,
+        "required_ranks": {
+          "File context": 7
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-000000000020"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievedMemory-duplicate-hints",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "duplicate-hints",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievedMemory-duplicate-hints",
+        "incident": "RetrievedMemory",
+        "packet_tokens": 527,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 3,
+        "required_delivered": 2,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000020"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": true,
+        "answerable": true,
+        "candidate_rank": 8,
+        "category": "duplicate-hints",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievedMemory-duplicate-hints",
+        "incident": "RetrievedMemory",
+        "packet_tokens": 524,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 8,
+        "required_count": 3,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Dispatch context": 7,
+          "File context": 6
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-000000000006",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000005",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000020"
+        ],
+        "split": "heldout"
+      }
+    },
+    {
+      "suite": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "id": "file-cover-RetrievedMemory-filtered",
+      "before": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievedMemory-filtered",
+        "incident": "RetrievedMemory",
+        "packet_tokens": 534,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 4,
+        "required_delivered": 1,
+        "required_ranks": {
+          "Dispatch context": null,
+          "File context": null,
+          "Memory settings": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-000000000003",
+          "00000000-0000-0000-0000-000000000020",
+          "00000000-0000-0000-0000-000000000004",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      },
+      "after": {
+        "answer_delivered": false,
+        "answerable": true,
+        "candidate_rank": 6,
+        "category": "filtered",
+        "embedding_fallback": false,
+        "id": "file-cover-RetrievedMemory-filtered",
+        "incident": "RetrievedMemory",
+        "packet_tokens": 526,
+        "primary_delivered": true,
+        "prohibited": false,
+        "rank": 6,
+        "required_count": 4,
+        "required_delivered": 3,
+        "required_ranks": {
+          "Dispatch context": 5,
+          "File context": 7,
+          "Memory settings": null
+        },
+        "returned": 8,
+        "returned_ids": [
+          "00000000-0000-0000-0000-00000000000a",
+          "00000000-0000-0000-0000-000000000007",
+          "00000000-0000-0000-0000-000000000009",
+          "00000000-0000-0000-0000-000000000008",
+          "00000000-0000-0000-0000-00000000000c",
+          "00000000-0000-0000-0000-000000000020",
+          "00000000-0000-0000-0000-000000000019",
+          "00000000-0000-0000-0000-00000000001a"
+        ],
+        "split": "heldout"
+      }
+    }
+  ],
+  "fingerprints": [
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc",
+      "candidate": "a6415c525a842237f9f905f7e746c962a4a414153318cf31b051f4637ab9dacc"
+    },
+    {
+      "key": "expanded",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "1f7efde4569b54708d1d9eba3b3aff6475f16d409b6e9bace228388941415fba",
+      "candidate": "4ad54d15665acade298e7e70a3c92295d9fba27a731b3d73ffcf1b0f90b6a24f"
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c",
+      "candidate": "0e34c7b78b9aac2dd08de1b07657042969e16df67086ebaf9280dff34e37609c"
+    },
+    {
+      "key": "expanded",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "0f8c378f69677094ea7e5bd04872afa9c503748e117eaefeb5faf9d686568773",
+      "candidate": "c32140dd7a579c38490ae0d4b637c5d6c38cd9e66e472ab2ad34e9a5874c0cf1"
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "7d787ebe63b47b83e3a9c9958f8dd871c3492c54dca34b3dd58f5b758a4539ea",
+      "candidate": "7d787ebe63b47b83e3a9c9958f8dd871c3492c54dca34b3dd58f5b758a4539ea"
+    },
+    {
+      "key": "retention",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "69fe5e2f3394e16c3730abdbc6dc63808660985f109ce3bfeb073f8a2ac6c2d4",
+      "candidate": "69fe5e2f3394e16c3730abdbc6dc63808660985f109ce3bfeb073f8a2ac6c2d4"
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "df99df8628125d25542d36ab1a5f816687513acfcfe9f4f35155e438af106170",
+      "candidate": "df99df8628125d25542d36ab1a5f816687513acfcfe9f4f35155e438af106170"
+    },
+    {
+      "key": "retention",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "f6629698f66887c2a5747fee32043c4efb32291fbce915ac181e0b26fd22df5d",
+      "candidate": "f6629698f66887c2a5747fee32043c4efb32291fbce915ac181e0b26fd22df5d"
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571",
+      "candidate": "4b174ddf36b4da6e0a54bd49697a0a9d8e70309884937e12e5342d6cf473b571"
+    },
+    {
+      "key": "guards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d",
+      "candidate": "af899b41e1a7595febffa58243e041723aa1e043932c731eb05e49c2a9ee911d"
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0",
+      "candidate": "01421f8d19d383e20cd5680b0056db47711954144a484c836fc4b4087b93b6a0"
+    },
+    {
+      "key": "guards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4",
+      "candidate": "81562bc9de35a4232feb3ab4804348b1e5cc2c2d9eca155273ef5182cb15b8e4"
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "555ce63e548dd075f4e4a1ffc58b12fdd129b0e0cb0cd4e93eca4668efb4a9ec",
+      "candidate": "555ce63e548dd075f4e4a1ffc58b12fdd129b0e0cb0cd4e93eca4668efb4a9ec"
+    },
+    {
+      "key": "overflow",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "be8543b9da7f9141b2176e0294a8d01b4471b8c00ab5f38d2490f08eaa655d6a",
+      "candidate": "be8543b9da7f9141b2176e0294a8d01b4471b8c00ab5f38d2490f08eaa655d6a"
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "0b699a29957472ce5c3fb3eca954e516e9bbb4faccfa03378854ac504a3eaa1e",
+      "candidate": "0b699a29957472ce5c3fb3eca954e516e9bbb4faccfa03378854ac504a3eaa1e"
+    },
+    {
+      "key": "overflow",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "cd33b3d069f4f09cab30928198bce232215b6bb28ac6b377ac3f8d96d278314a",
+      "candidate": "cd33b3d069f4f09cab30928198bce232215b6bb28ac6b377ac3f8d96d278314a"
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "cf475b64b87414fa638e9f356142d95e2a4951433ce020a834a34310061e3a08",
+      "candidate": "cf475b64b87414fa638e9f356142d95e2a4951433ce020a834a34310061e3a08"
+    },
+    {
+      "key": "cross",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "274ab7c57663ed42d914ed7ce0a411b295833a0ce22f2a0f442936791d23f8e3",
+      "candidate": "274ab7c57663ed42d914ed7ce0a411b295833a0ce22f2a0f442936791d23f8e3"
+    },
+    {
+      "key": "cross",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "201eb5f390f75231222ef4215ab3d4cbf4ca2e332a1b7a3c192a82dd97cb159b",
+      "candidate": "201eb5f390f75231222ef4215ab3d4cbf4ca2e332a1b7a3c192a82dd97cb159b"
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "219f61d31b716a3eea6e3f5424cbcd5bec16d7fd23868f03dc26a4c48ef3d7e0",
+      "candidate": "219f61d31b716a3eea6e3f5424cbcd5bec16d7fd23868f03dc26a4c48ef3d7e0"
+    },
+    {
+      "key": "original",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28",
+      "candidate": "75bf71282838a7317dc77df3d5af41d0fe646051b9875a78b4139e913fc87a28"
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "8aa2ab9680da85d84689d9592780a2652a541904abd55131eaaa64ca37c1ae86",
+      "candidate": "8aa2ab9680da85d84689d9592780a2652a541904abd55131eaaa64ca37c1ae86"
+    },
+    {
+      "key": "fresh",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d",
+      "candidate": "c8797073185104a139ba636169a626c6499f1f3024248f9dbf279f57b3a3d81d"
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "86853934e60d2d055b5815ca5c02cad94ed408e094900fe70c333a5e68d6e139",
+      "candidate": "86853934e60d2d055b5815ca5c02cad94ed408e094900fe70c333a5e68d6e139"
+    },
+    {
+      "key": "diagnostic",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274",
+      "candidate": "0ec37b34c6590e21ae4249ea6d48094a1b708f5b475576723a356162e7433274"
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "c5ea9b5f971ee442c1a55ddfc250e454580864d35c596b8a36549aac94f277b2",
+      "candidate": "c5ea9b5f971ee442c1a55ddfc250e454580864d35c596b8a36549aac94f277b2"
+    },
+    {
+      "key": "identifier",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d",
+      "candidate": "b1dc42d60ef9420b1df537bd8bb2f32cba9434ec7270e759c9b1ad36ac555e9d"
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "72ee5c291219eb683630fde29a6c51b91da2111310e5a5b2f2ff716abf7b8b6b",
+      "candidate": "72ee5c291219eb683630fde29a6c51b91da2111310e5a5b2f2ff716abf7b8b6b"
+    },
+    {
+      "key": "complex",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "abf3f06c79329e80713d4415fbf00bd1f377f583cbc35ef476c54c95c9ea7cae",
+      "candidate": "abf3f06c79329e80713d4415fbf00bd1f377f583cbc35ef476c54c95c9ea7cae"
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "20d5d363ece969ccd9ca050846cbc1b325b1579059356dab270fd6344d2b3bc2",
+      "candidate": "20d5d363ece969ccd9ca050846cbc1b325b1579059356dab270fd6344d2b3bc2"
+    },
+    {
+      "key": "snake",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877",
+      "candidate": "b092161c7aa61095dbf2b67f880168f46dee9cc00730531a9da0107ff86f3877"
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb",
+      "candidate": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb"
+    },
+    {
+      "key": "longfailure",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb",
+      "candidate": "1aa56ee26ea9007cb688dadb760369e3a0f1e659d8e1716dc2bd6f6922ebc7eb"
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "6eb76482c2b101bd9e4cadfd644b19d3624824e8a014bccc038a350e6e01567f",
+      "candidate": "6eb76482c2b101bd9e4cadfd644b19d3624824e8a014bccc038a350e6e01567f"
+    },
+    {
+      "key": "longguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "c652604ba86d749bd99bc79ee0a48836664005568de0572f1c0a865a3d0b50e1",
+      "candidate": "c652604ba86d749bd99bc79ee0a48836664005568de0572f1c0a865a3d0b50e1"
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3",
+      "candidate": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3"
+    },
+    {
+      "key": "genericguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3",
+      "candidate": "ed28766393bdc593fa62b6c65805d506336d354b572c268d934344f284a54fe3"
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8",
+      "candidate": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8"
+    },
+    {
+      "key": "pluralguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8",
+      "candidate": "80ead91371bacf82128057d01f69a8e11afad219183d330abeebf41c4a8f79b8"
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "b23a22889ad4c1f7cdb6285bc7b3e52ba0f420fc883259f6b922ce7128244954",
+      "candidate": "b23a22889ad4c1f7cdb6285bc7b3e52ba0f420fc883259f6b922ce7128244954"
+    },
+    {
+      "key": "lists",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "3d8cacd68f8d2b65ae613a9b7a0ffd3c993bd483777de20e86ac3a489e408971",
+      "candidate": "3d8cacd68f8d2b65ae613a9b7a0ffd3c993bd483777de20e86ac3a489e408971"
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "bf7337c0f41a26735df0a9e8c9edb8a4a682350467a35ed55a8a83bcf4a07c41",
+      "candidate": "bf7337c0f41a26735df0a9e8c9edb8a4a682350467a35ed55a8a83bcf4a07c41"
+    },
+    {
+      "key": "listguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "8019b30fc552e34209101935e1232ac9ebe30a874744259d4d5f63d864edfdaa",
+      "candidate": "8019b30fc552e34209101935e1232ac9ebe30a874744259d4d5f63d864edfdaa"
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "f94aa064c03c82146feda349a0423c2852fddbf057b33cb956ea676015807f2e",
+      "candidate": "f94aa064c03c82146feda349a0423c2852fddbf057b33cb956ea676015807f2e"
+    },
+    {
+      "key": "filefocus",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "8f28819a7614122592ffac7c124b118086f7e1758cfeef2b12ce07ce0b207e4e",
+      "candidate": "ce964dfa3b924c55a78e434d555b9d1b80a2c5254a737ad0717e40719bf86162"
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "201a6aa3f5e16448326412a26f83cecfb04936f007b43c7dad2b12a0558e7f88",
+      "candidate": "201a6aa3f5e16448326412a26f83cecfb04936f007b43c7dad2b12a0558e7f88"
+    },
+    {
+      "key": "filefocus",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "86750a0707d6469a07ecdd47a2e51205283964a8bad9ebd42b3d6cd362d695ce",
+      "candidate": "5613f740ac5450be3264c57b683eec571d07560f8a5136969e1725307055796e"
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "11cb12cdfbf78100c2f4827e09e0337aea410464f74e2a7027bc77743097706e",
+      "candidate": "11cb12cdfbf78100c2f4827e09e0337aea410464f74e2a7027bc77743097706e"
+    },
+    {
+      "key": "fileguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "982d06bb3a6c6c4a1842aef186b49ddeec3b5594509751cf6c7cbf07486058da",
+      "candidate": "982d06bb3a6c6c4a1842aef186b49ddeec3b5594509751cf6c7cbf07486058da"
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "664ac88fc134bd26a8a6ae21f45d258fe71cd7c65b035315437595d054c53017",
+      "candidate": "664ac88fc134bd26a8a6ae21f45d258fe71cd7c65b035315437595d054c53017"
+    },
+    {
+      "key": "fileguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "c78fac3fd1fc74a78e9de511e775983d1e519754839e5bcf188e45022160525b",
+      "candidate": "c78fac3fd1fc74a78e9de511e775983d1e519754839e5bcf188e45022160525b"
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "ff14c03ae74fa5a20bd8a94e3b93ccf8c165f38b03f7cefd25b66cb8300e6b8b",
+      "candidate": "ff14c03ae74fa5a20bd8a94e3b93ccf8c165f38b03f7cefd25b66cb8300e6b8b"
+    },
+    {
+      "key": "coverage",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "e27e1daa272107b864c859c22bf4cdbcd3eb71b4d223df4702bcfe142218f51d",
+      "candidate": "58732969381432299d4a2990254f31a55cbb0fb20475ea859a7f090006958857"
+    },
+    {
+      "key": "coverage",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "75db94159fba39a593ae5c2b91d7f4fb9206e09609e5da9425aba996ccfd92b6",
+      "candidate": "75db94159fba39a593ae5c2b91d7f4fb9206e09609e5da9425aba996ccfd92b6"
+    },
+    {
+      "key": "coverage",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "c98fdb9bd731b26b08feba1cdf77cde7b95fc3b651ed1c80a5a92bfaecdabbd0",
+      "candidate": "3de9b259f8369d8a6cbca88f2a954042dd7beb7ce33b466c07463a870134eccc"
+    },
+    {
+      "key": "coverageguards",
+      "split": "development",
+      "policy": "lexical",
+      "baseline": "e3a42d454684716c9ac60637f6aa8e60389edc645c815bf3652f2352868d87e8",
+      "candidate": "e3a42d454684716c9ac60637f6aa8e60389edc645c815bf3652f2352868d87e8"
+    },
+    {
+      "key": "coverageguards",
+      "split": "development",
+      "policy": "hybrid",
+      "baseline": "9fc81817b39de52bcd9b6c883461d4557a264bf1388306a7b59ee9c34be0a541",
+      "candidate": "9fc81817b39de52bcd9b6c883461d4557a264bf1388306a7b59ee9c34be0a541"
+    },
+    {
+      "key": "coverageguards",
+      "split": "heldout",
+      "policy": "lexical",
+      "baseline": "df9e834e02cd672e25cb48408a1aa31ec41e460b47b01ef47f0ba309ad36e56d",
+      "candidate": "df9e834e02cd672e25cb48408a1aa31ec41e460b47b01ef47f0ba309ad36e56d"
+    },
+    {
+      "key": "coverageguards",
+      "split": "heldout",
+      "policy": "hybrid",
+      "baseline": "2a66fec811f00735a1fb09cf488042152c31f664d261183b58182dc0f36a48bc",
+      "candidate": "2a66fec811f00735a1fb09cf488042152c31f664d261183b58182dc0f36a48bc"
+    }
+  ],
+  "audit": {
+    "historical_views": 1643,
+    "historical_identical": 1619,
+    "new_views": 240,
+    "new_identical": 226,
+    "complete_answer_gains": 29,
+    "losses": [],
+    "rank_losses": [],
+    "negative_changes": [],
+    "safety": []
+  },
+  "source_sha256": {
+    "baseline": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+    "candidate": "c3c777cf9007ad868cd9d7e97d8a0607835e30536e95c1281acb6aec7d6696ee",
+    "baseline_store": "d3d4aea3b4623346fada775eb739b95162e18c67682832608888a5df8bc3c8b9",
+    "candidate_store": "168546d05fe9f0479e6a354abc479a05c5333a7ce58673b52caca43c61e4f093",
+    "shared_evaluator": "d5666ac6e095f1ee0229a61d14027a91cd0ee7e15968f422839ec8ac3f238bb3"
+  },
+  "registered_inputs_sha256": {
+    "scripts/eval/memory-file-coverage-cases.json": "94ccaac231afaa37c4290eeeb51464fb79958583d36eeaa0128e0a332a59ac3f",
+    "scripts/eval/memory-file-coverage-retention-cases.json": "43ec3b081fe999cd14aec91fdd2fceb81fac864774d8e6e6967b599c732dd98b"
+  },
+  "committed_inputs_sha256": {
+    "scripts/eval/memory-file-coverage-cases.json": "75ff31a901ff9d960da3f52575c4d89c81f961d4d10e98baccd0eedd67deefa2",
+    "scripts/eval/memory-file-coverage-retention-cases.json": "bfaeaed2b7ac772c5749ee1a6cc685db14e88fe59408f3316c00c7698f28e8e8"
+  },
+  "validation": {
+    "rust_all_targets_passed": 158,
+    "focused_fixture_randomized_repeats": 10,
+    "native_onnx_tests_passed": 2,
+    "doctests_passed": 1,
+    "clippy": "warnings denied",
+    "frontend_tests_passed": 1046,
+    "typecheck": "passed",
+    "format": "Final check not run: user requested stopping tests and committing."
+  },
+  "status": "Committed at user request after completed development and crate checks; reserved evaluation stopped before completion.",
+  "expected_policy_views": 2708,
+  "baseline_harness": "Baseline evaluator rebuilt with optional case.files support and unchanged retrieval; no historical case used this field.",
+  "trials": [
+    {
+      "id": "atomic-all",
+      "selection": "rejected on development contract before reserved scoring",
+      "development": [
+        {
+          "key": "coverage",
+          "label": "candidate",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 52,
+          "metrics": {
+            "candidate_recall": 0,
+            "cases": 52,
+            "delivered_recall": 0,
+            "mrr": 0,
+            "ndcg_at_8": 0,
+            "no_match_injection_rate": 1,
+            "recall_at_8": 0
+          },
+          "changes": {
+            "gains": [],
+            "losses": [],
+            "rank_losses": [],
+            "negative_changes": [],
+            "safety": []
+          },
+          "safe": true
+        },
+        {
+          "key": "coverage",
+          "label": "candidate",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 52,
+          "metrics": {
+            "candidate_recall": 0.34375,
+            "cases": 52,
+            "delivered_recall": 0.1875,
+            "mrr": 0.051636904761904766,
+            "ndcg_at_8": 0.11688149154613164,
+            "no_match_injection_rate": 1,
+            "recall_at_8": 0.34375
+          },
+          "changes": {
+            "gains": [
+              "file-cover-SemanticIndex-single",
+              "file-cover-RetrievalWeights-single",
+              "file-cover-RetrievalTelemetry-single"
+            ],
+            "losses": [],
+            "rank_losses": [],
+            "negative_changes": [],
+            "safety": []
+          },
+          "safe": true
+        },
+        {
+          "key": "coverageguards",
+          "label": "candidate",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 8,
+          "metrics": {
+            "candidate_recall": 0,
+            "cases": 8,
+            "delivered_recall": 0,
+            "mrr": 0,
+            "ndcg_at_8": 0,
+            "no_match_injection_rate": null,
+            "recall_at_8": 0
+          },
+          "changes": {
+            "gains": [],
+            "losses": [],
+            "rank_losses": [],
+            "negative_changes": [],
+            "safety": []
+          },
+          "safe": true
+        },
+        {
+          "key": "coverageguards",
+          "label": "candidate",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 8,
+          "metrics": {
+            "candidate_recall": 0.125,
+            "cases": 8,
+            "delivered_recall": 0,
+            "mrr": 0.017857142857142856,
+            "ndcg_at_8": 0.041666666666666664,
+            "no_match_injection_rate": null,
+            "recall_at_8": 0.125
+          },
+          "changes": {
+            "gains": [],
+            "losses": [],
+            "rank_losses": [],
+            "negative_changes": [],
+            "safety": []
+          },
+          "safe": true
+        },
+        {
+          "key": "filefocus",
+          "label": "candidate",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 32,
+          "metrics": {
+            "candidate_recall": 0,
+            "cases": 32,
+            "delivered_recall": 0,
+            "mrr": 0,
+            "ndcg_at_8": 0,
+            "no_match_injection_rate": 1,
+            "recall_at_8": 0
+          },
+          "changes": {
+            "gains": [],
+            "losses": [],
+            "rank_losses": [],
+            "negative_changes": [],
+            "safety": []
+          },
+          "safe": true
+        },
+        {
+          "key": "filefocus",
+          "label": "candidate",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 32,
+          "metrics": {
+            "candidate_recall": 1,
+            "cases": 32,
+            "delivered_recall": 1,
+            "mrr": 0.13526785714285713,
+            "ndcg_at_8": 0.32551051510990603,
+            "no_match_injection_rate": 1,
+            "recall_at_8": 1
+          },
+          "changes": {
+            "gains": [
+              "file-focus-SharedMemoryStore-single",
+              "file-focus-SharedMemoryStore-snake",
+              "file-focus-RetrievalQuery-single",
+              "file-focus-RetrievalQuery-snake",
+              "file-focus-MemoryRecord-single",
+              "file-focus-MemoryRecord-snake",
+              "file-focus-WorkloadStatus-single",
+              "file-focus-WorkloadStatus-snake"
+            ],
+            "losses": [],
+            "rank_losses": [],
+            "negative_changes": [],
+            "safety": []
+          },
+          "safe": true
+        },
+        {
+          "key": "expanded",
+          "label": "candidate",
+          "policy": "lexical",
+          "split": "development",
+          "cases": 40,
+          "metrics": {
+            "candidate_recall": 0.42857142857142855,
+            "cases": 40,
+            "delivered_recall": 0.42857142857142855,
+            "mrr": 0.35714285714285715,
+            "ndcg_at_8": 0.3758471076530654,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 0.42857142857142855
+          },
+          "changes": {
+            "gains": [],
+            "losses": [],
+            "rank_losses": [],
+            "negative_changes": [],
+            "safety": []
+          },
+          "safe": true
+        },
+        {
+          "key": "expanded",
+          "label": "candidate",
+          "policy": "hybrid",
+          "split": "development",
+          "cases": 40,
+          "metrics": {
+            "candidate_recall": 1,
+            "cases": 40,
+            "delivered_recall": 1,
+            "mrr": 0.4292091836734694,
+            "ndcg_at_8": 0.5567509106930392,
+            "no_match_injection_rate": 0.6666666666666666,
+            "recall_at_8": 1
+          },
+          "changes": {
+            "gains": [],
+            "losses": [],
+            "rank_losses": [],
+            "negative_changes": [],
+            "safety": []
+          },
+          "safe": true
+        }
+      ],
+      "counterexample": {
+        "test": "insufficient_file_coverage_capacity_keeps_the_successful_name_only_plan",
+        "baseline_passed": true,
+        "trial_failed": true,
+        "reason": "Seven protected file incumbents leave one slot. The baseline recovers the missing name; a combined plan cancels that recovery when it cannot also fit another file.",
+        "baseline_log_sha256": "0f1064a940f00ae83f005fb88e83142c763d36ddaab9b2c7d1c5e7217d90f29e",
+        "trial_log_sha256": "a0c6b3e9adaa09aed468488454705675e6a98a83556a84a0d48a1b672cc1af2e"
+      },
+      "source_sha256": {
+        "semantic": "c7140ae9c9823a27fcade088fee42a6e7cb4e317d5127a99f8a320b54e9cfc07",
+        "store": "168546d05fe9f0479e6a354abc479a05c5333a7ce58673b52caca43c61e4f093"
+      },
+      "patch": "--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -543,7 +543,7 @@\n                             }\n                         }\n                         if represented.is_empty() {\n-                            let Some(candidate) = self\n+                            let Some(mut candidate) = self\n                                 .store\n                                 .identifier_candidates_filtered(&lookup, &accept)?\n                                 .into_iter()\n@@ -551,9 +551,35 @@\n                             else {\n                                 return Ok(None);\n                             };\n+                            candidate\n+                                .reason\n+                                .push_str(\", requested complete symbol match\");\n                             additions.push(candidate);\n                         }\n                     }\n+                    // Ordinary lexical ranking can discard a file match before\n+                    // fusion. Cover each known path within the same atomic plan.\n+                    for file in &query.files {\n+                        if found.iter().chain(&additions).any(|hit| {\n+                            hit.record\n+                                .files\n+                                .iter()\n+                                .any(|stored| crate::retrieval::path_overlap(file, stored))\n+                        }) {\n+                            continue;\n+                        }\n+                        let mut lookup = query.clone();\n+                        lookup.files = vec![file.clone()];\n+                        if let Some(mut hit) = self\n+                            .store\n+                            .file_candidates_filtered(&lookup, &accept)?\n+                            .into_iter()\n+                            .next()\n+                        {\n+                            hit.reason.push_str(\", requested file coverage\");\n+                            additions.push(hit);\n+                        }\n+                    }\n                     let slots: Vec<_> = (1..found.len()).rev().filter(|i| !protected[*i]).collect();\n                     if additions.len() > slots.len() {\n                         return Ok(None);\n@@ -564,7 +590,6 @@\n                     Ok(Some((slots, additions))) => {\n                         for (slot, mut hit) in slots.into_iter().zip(additions) {\n                             hit.score = found[slot].score;\n-                            hit.reason.push_str(\", requested complete symbol match\");\n                             found[slot] = hit;\n                         }\n                     }\n\n--- a/src-tauri/crates/verified-code-memory/src/store.rs\n+++ b/src-tauri/crates/verified-code-memory/src/store.rs\n@@ -1618,6 +1618,22 @@\n         Ok(found)\n     }\n \n+    /// Eligible file matches before the ordinary lexical result limit.\n+    pub(crate) fn file_candidates_filtered(\n+        &self,\n+        query: &RetrievalQuery,\n+        accept: impl Fn(&MemoryRecord) -> bool,\n+    ) -> Result<Vec<RetrievedMemory>> {\n+        let mut found = self.lock()?.file_candidates(\n+            query,\n+            &accept,\n+            Utc::now(),\n+            &mut RetrievalTelemetry::default(),\n+        )?;\n+        found.sort_by(compare_memories);\n+        Ok(found)\n+    }\n+\n     /// See [`MemoryStore::retrieve_with_telemetry`].\n     ///\n     /// # Errors\n"
+    },
+    {
+      "id": "preserve-name-plan",
+      "selection": "selected on development, historical development and crate contracts before reserved scoring",
+      "description": "Keep the existing name plan and slot assignments. Append all missing eligible file coverage only if it fits the remaining slots; otherwise preserve the name-only plan."
+    }
+  ],
+  "additional_incidents": [
+    {
+      "title": "ONNX Mini LM",
+      "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+      "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+      "symbol": "OnnxMiniLm"
+    },
+    {
+      "title": "Semantic index",
+      "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+      "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+      "symbol": "SemanticIndex"
+    },
+    {
+      "title": "Retrieval weights",
+      "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+      "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+      "symbol": "RetrievalWeights"
+    },
+    {
+      "title": "Retrieval telemetry",
+      "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+      "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+      "symbol": "RetrievalTelemetry"
+    },
+    {
+      "title": "Memory settings",
+      "file": "src-tauri/crates/rovik-core/src/memory.rs",
+      "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+      "symbol": "MemorySettings"
+    },
+    {
+      "title": "Memory state",
+      "file": "src-tauri/crates/rovik-core/src/memory.rs",
+      "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+      "symbol": "MemoryState"
+    },
+    {
+      "title": "Memory entry",
+      "file": "src-tauri/crates/rovik-core/src/memory.rs",
+      "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+      "symbol": "MemoryEntry"
+    },
+    {
+      "title": "Retrieved memory",
+      "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+      "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+      "symbol": "RetrievedMemory"
+    }
+  ]
+}

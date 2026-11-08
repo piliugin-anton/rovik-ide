@@ -1618,6 +1618,22 @@ impl SharedMemoryStore {
         Ok(found)
     }
 
+    /// Eligible file matches before the ordinary lexical result limit.
+    pub(crate) fn file_candidates_filtered(
+        &self,
+        query: &RetrievalQuery,
+        accept: impl Fn(&MemoryRecord) -> bool,
+    ) -> Result<Vec<RetrievedMemory>> {
+        let mut found = self.lock()?.file_candidates(
+            query,
+            &accept,
+            Utc::now(),
+            &mut RetrievalTelemetry::default(),
+        )?;
+        found.sort_by(compare_memories);
+        Ok(found)
+    }
+
     /// See [`MemoryStore::retrieve_with_telemetry`].
     ///
     /// # Errors

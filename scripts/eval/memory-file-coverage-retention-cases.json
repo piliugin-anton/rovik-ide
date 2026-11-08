@@ -1,0 +1,1440 @@
+{
+  "version": 1,
+  "description": "Capacity-infeasible protected-file retention; all crowding claims match a requested file. Preserve previously delivered facts and ranks; exclude from headline recall.",
+  "corpus": [
+    {
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      }
+    },
+    {
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      }
+    },
+    {
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      }
+    },
+    {
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      }
+    },
+    {
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      }
+    },
+    {
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      }
+    },
+    {
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      }
+    },
+    {
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "verified": true,
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      }
+    },
+    {
+      "title": "Crowding observation 0",
+      "content": "Crowding sample 0 records a distinct metric with its own provenance.",
+      "verified": true,
+      "files": ["src/noise.rs"]
+    },
+    {
+      "title": "Crowding observation 1",
+      "content": "Crowding sample 1 records a distinct metric with its own provenance.",
+      "verified": true,
+      "files": ["src/noise.rs"]
+    },
+    {
+      "title": "Crowding observation 2",
+      "content": "Crowding sample 2 records a distinct metric with its own provenance.",
+      "verified": true,
+      "files": ["src/noise.rs"]
+    },
+    {
+      "title": "Crowding observation 3",
+      "content": "Crowding sample 3 records a distinct metric with its own provenance.",
+      "verified": true,
+      "files": ["src/noise.rs"]
+    },
+    {
+      "title": "Crowding observation 4",
+      "content": "Crowding sample 4 records a distinct metric with its own provenance.",
+      "verified": true,
+      "files": ["src/noise.rs"]
+    },
+    {
+      "title": "Crowding observation 5",
+      "content": "Crowding sample 5 records a distinct metric with its own provenance.",
+      "verified": true,
+      "files": ["src/noise.rs"]
+    },
+    {
+      "title": "Crowding observation 6",
+      "content": "Crowding sample 6 records a distinct metric with its own provenance.",
+      "verified": true,
+      "files": ["src/noise.rs"]
+    },
+    {
+      "title": "Crowding observation 7",
+      "content": "Crowding sample 7 records a distinct metric with its own provenance.",
+      "verified": true,
+      "files": ["src/noise.rs"]
+    },
+    {
+      "title": "Crowding observation 8",
+      "content": "Crowding sample 8 records a distinct metric with its own provenance.",
+      "verified": true,
+      "files": ["src/noise.rs"]
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "Duplicate context",
+      "content": "Duplicates retain the same contextual observation.",
+      "verified": true
+    },
+    {
+      "title": "File context",
+      "content": "This file configures logging destinations.",
+      "files": ["src/noise.rs"],
+      "verified": true
+    },
+    {
+      "title": "Dispatch context",
+      "content": "This file assigns incoming commands to available executors.",
+      "files": ["src/dispatch.rs"],
+      "verified": true
+    },
+    {
+      "title": "Suffix collision",
+      "content": "This file has a different whole path segment.",
+      "files": ["src/notnoise.rs"],
+      "verified": true
+    },
+    {
+      "title": "provisional file observation",
+      "content": "This observation must not pass the requested visibility filters.",
+      "files": ["src/noise.rs", "src/dispatch.rs"],
+      "verified": false
+    },
+    {
+      "title": "hidden file observation",
+      "content": "This observation must not pass the requested visibility filters.",
+      "files": ["src/noise.rs", "src/dispatch.rs"],
+      "verified": true,
+      "tags": ["hidden"]
+    },
+    {
+      "title": "foreign file observation",
+      "content": "This observation must not pass the requested visibility filters.",
+      "files": ["src/noise.rs", "src/dispatch.rs"],
+      "verified": true,
+      "repo": "other"
+    }
+  ],
+  "cases": [
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-OnnxMiniLm-terse",
+      "category": "terse",
+      "task": "OnnxMiniLm,SemanticIndex,RetrievalWeights crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "OnnxMiniLm",
+      "split": "development",
+      "title": "ONNX Mini LM",
+      "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/embedding.rs",
+        "sha256": "b874ba09493ba37cd176f4d423541fe4b8ca5fbee98b00210b997ee20e3a3fce",
+        "symbol": "OnnxMiniLm"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-OnnxMiniLm-collection",
+      "category": "collection",
+      "task": "Preserve every crowding fact for OnnxMiniLm",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-SemanticIndex-terse",
+      "category": "terse",
+      "task": "SemanticIndex,OnnxMiniLm,RetrievalWeights crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "SemanticIndex",
+      "split": "development",
+      "title": "Semantic index",
+      "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/semantic.rs",
+        "sha256": "c29448d08591777cb9de7b987cd5da235e22ebf4df9f37ab1d4168dd86d19e84",
+        "symbol": "SemanticIndex"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-SemanticIndex-collection",
+      "category": "collection",
+      "task": "Preserve every crowding fact for SemanticIndex",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Retrieval weights",
+          "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-RetrievalWeights-terse",
+      "category": "terse",
+      "task": "RetrievalWeights,OnnxMiniLm,SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievalWeights",
+      "split": "development",
+      "title": "Retrieval weights",
+      "content": "Configure lexical relevance, text overlap, file overlap, failure overlap, trust, recency and outcome contributions.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalWeights"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-RetrievalWeights-collection",
+      "category": "collection",
+      "task": "Preserve every crowding fact for RetrievalWeights",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-RetrievalTelemetry-terse",
+      "category": "terse",
+      "task": "RetrievalTelemetry,OnnxMiniLm,SemanticIndex crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievalTelemetry",
+      "split": "development",
+      "title": "Retrieval telemetry",
+      "content": "Report scanned candidates, full-text and file matches, rejected candidates, returned records and elapsed milliseconds.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/retrieval.rs",
+        "sha256": "86a001fbacf1efa3a4a3c857d5123920620fd3669890c040ffd9e4d350085de6",
+        "symbol": "RetrievalTelemetry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-RetrievalTelemetry-collection",
+      "category": "collection",
+      "task": "Preserve every crowding fact for RetrievalTelemetry",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "ONNX Mini LM",
+          "content": "Load the local ONNX model and tokenizer once, then reuse compiled CPU inference without downloading files during embedding."
+        },
+        {
+          "title": "Semantic index",
+          "content": "Bind derived vectors to an exact model revision and dimension; check the authoritative claim hash when reading and writing."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-MemorySettings-terse",
+      "category": "terse",
+      "task": "MemorySettings,MemoryState,MemoryEntry crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemorySettings",
+      "split": "heldout",
+      "title": "Memory settings",
+      "content": "The project flag enables memory by default until the user turns it off.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemorySettings"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-MemorySettings-collection",
+      "category": "collection",
+      "task": "Preserve every crowding fact for MemorySettings",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-MemoryState-terse",
+      "category": "terse",
+      "task": "MemoryState,MemorySettings,MemoryEntry crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemoryState",
+      "split": "heldout",
+      "title": "Memory state",
+      "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryState"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-MemoryState-collection",
+      "category": "collection",
+      "task": "Preserve every crowding fact for MemoryState",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory entry",
+          "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-MemoryEntry-terse",
+      "category": "terse",
+      "task": "MemoryEntry,MemorySettings,MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "MemoryEntry",
+      "split": "heldout",
+      "title": "Memory entry",
+      "content": "Expose an opaque paging cursor, claim text, associated paths, tags, verification and applicability in the settings manager.",
+      "source_reference": {
+        "file": "src-tauri/crates/rovik-core/src/memory.rs",
+        "sha256": "41e736b28a21dd347712806a4ac046ef1792806b18fb04f14e02d55725b85b0c",
+        "symbol": "MemoryEntry"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-MemoryEntry-collection",
+      "category": "collection",
+      "task": "Preserve every crowding fact for MemoryEntry",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-RetrievedMemory-terse",
+      "category": "terse",
+      "task": "RetrievedMemory,MemorySettings,MemoryState crowding",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        }
+      ],
+      "capacity_feasible": false
+    },
+    {
+      "incident": "RetrievedMemory",
+      "split": "heldout",
+      "title": "Retrieved memory",
+      "content": "Carry the underlying record, total score, explanation and individual ranking components together.",
+      "source_reference": {
+        "file": "src-tauri/crates/verified-code-memory/src/model.rs",
+        "sha256": "181e7255b2a4dffa1286bea7f29ae87de9dda2d11e2bdefd718d52eb13719107",
+        "symbol": "RetrievedMemory"
+      },
+      "supersede": false,
+      "answerable": true,
+      "verifications": ["verified"],
+      "excluded_tags": ["hidden"],
+      "id": "file-cover-guard-RetrievedMemory-collection",
+      "category": "collection",
+      "task": "Preserve every crowding fact for RetrievedMemory",
+      "file": "src/noise.rs",
+      "files": ["src/dispatch.rs"],
+      "required": [
+        {
+          "title": "Crowding observation 0",
+          "content": "Crowding sample 0 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 1",
+          "content": "Crowding sample 1 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 2",
+          "content": "Crowding sample 2 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 3",
+          "content": "Crowding sample 3 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 4",
+          "content": "Crowding sample 4 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 5",
+          "content": "Crowding sample 5 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 6",
+          "content": "Crowding sample 6 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 7",
+          "content": "Crowding sample 7 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "Crowding observation 8",
+          "content": "Crowding sample 8 records a distinct metric with its own provenance."
+        },
+        {
+          "title": "File context",
+          "content": "This file configures logging destinations."
+        },
+        {
+          "title": "Dispatch context",
+          "content": "This file assigns incoming commands to available executors."
+        },
+        {
+          "title": "Memory settings",
+          "content": "The project flag enables memory by default until the user turns it off."
+        },
+        {
+          "title": "Memory state",
+          "content": "Cache one locked SQLite connection per project file and map isolated worktrees to stable project identities."
+        }
+      ],
+      "capacity_feasible": false
+    }
+  ]
+}

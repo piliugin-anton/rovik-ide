@@ -139,6 +139,13 @@ fn fixture_query(
     {
         query = query.with_files([file]);
     }
+    if config["query_mode"] != "intent_only" {
+        query.files.extend(
+            fixture_strings(&case["files"])?
+                .into_iter()
+                .map(str::to_owned),
+        );
+    }
     query.limit = config["candidate_limit"].as_u64().unwrap_or(8) as usize;
     if !case["verifications"].is_null() {
         query.verifications = serde_json::from_value(case["verifications"].clone())?;
@@ -608,6 +615,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiple_fixture_files_reach_lookup_and_intent_only_omits_both_file_fields() {
+        let case = json!({"task":"lookup","file":"src/a.rs","files":["src/b.rs"]});
+        assert_eq!(
+            fixture_query(&case, &json!({})).unwrap().files,
+            ["src/a.rs", "src/b.rs"]
+        );
+        assert!(fixture_query(&case, &json!({"query_mode":"intent_only"}))
+            .unwrap()
+            .files
+            .is_empty());
+        assert!(fixture_query(&json!({"task":"lookup","files":[false]}), &json!({})).is_err());
+    }
 
     #[test]
     fn malformed_fixture_filters_fail_instead_of_silently_removing_protections() {
