@@ -251,6 +251,7 @@ import {
   pastedSegments,
   writeSegments,
 } from '../lib/composerClipboard';
+import { revealCaret } from '../lib/composerCaret';
 import ChatInputContextMenu from './ChatInputContextMenu';
 
 const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
@@ -1494,18 +1495,7 @@ export default function ChatPanel(props: ChatProps) {
     setFileQuery('');
     setSelectedSuggestionIndex(0);
 
-    /*
-     * Keep the caret visible. Note: getClientRects() returns nothing for a
-     * collapsed range, so use getBoundingClientRect() on the range instead.
-     */
-    setTimeout(() => {
-      const caretRect = caretRange.getBoundingClientRect();
-      const containerRect = container.getBoundingClientRect();
-
-      if (caretRect.bottom > containerRect.bottom) {
-        container.scrollTop += caretRect.bottom - containerRect.bottom;
-      }
-    }, 0);
+    revealCaret(container);
   }
 
   /**
@@ -2020,35 +2010,41 @@ export default function ChatPanel(props: ChatProps) {
 
     // A paste is its own undo step, not part of the word being typed.
     pastingText = true;
+    let inserted: boolean;
     try {
-      if (document.execCommand('insertText', false, text)) return;
+      inserted = document.execCommand('insertText', false, text);
     } finally {
       pastingText = false;
     }
 
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) return;
+    if (!inserted) {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
 
-    const range = selection.getRangeAt(0);
-    if (!container.contains(range.commonAncestorContainer)) return;
+      const range = selection.getRangeAt(0);
+      if (!container.contains(range.commonAncestorContainer)) return;
 
-    range.deleteContents();
-    const fragment = document.createDocumentFragment();
-    text.split('\n').forEach((line, i) => {
-      if (i > 0) fragment.append(document.createElement('br'));
-      if (line) fragment.append(document.createTextNode(line));
-    });
-    const last = fragment.lastChild;
-    range.insertNode(fragment);
+      range.deleteContents();
+      const fragment = document.createDocumentFragment();
+      text.split('\n').forEach((line, i) => {
+        if (i > 0) fragment.append(document.createElement('br'));
+        if (line) fragment.append(document.createTextNode(line));
+      });
+      const last = fragment.lastChild;
+      range.insertNode(fragment);
 
-    if (last) {
-      range.setStartAfter(last);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
+      if (last) {
+        range.setStartAfter(last);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+
+      handleComposerInput(container);
     }
 
-    handleComposerInput(container);
+    // Pasted text makes the box scroll, not its scroll follow the caret.
+    revealCaret(container);
   }
 
   /**
@@ -2593,6 +2589,7 @@ export default function ChatPanel(props: ChatProps) {
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
+    revealCaret(container);
   }
 
   /** Chips, each followed by a space, as they're inserted. */
