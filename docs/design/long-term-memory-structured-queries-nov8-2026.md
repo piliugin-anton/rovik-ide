@@ -59,5 +59,32 @@ The second registered experiment uses source-grounded views of eight disjoint
 symbols, four per split, with prose, qualified names, adjacent unknown names and
 generic CamelCase controls. The claims are synthetic summaries of the source at
 the protocol's baseline commit; source references bind each to that revision.
-This experiment is prepared for a separate trial after the diagnostic gain is
-committed. It does not yet change production lexical retrieval.
+This experiment was run separately against the committed diagnostic improvement
+(`04c29e3`). The fallback splits ASCII CamelCase/PascalCase and acronym boundaries,
+requires all distinct components with FTS `AND`, and rejects names containing
+generic words, components shorter than three letters, digits or underscores.
+It accepts at most four distinct names, eight components per name and 128 bytes
+per name. Ordinary lexical or explicit-file results prevent the fallback from
+running. The existing FTS collector applies scope, trust, tags and caller
+visibility before its result limit; no new index or stored aliases are needed.
+
+| Identifier split / policy | Baseline supplied | Candidate supplied |
+| ------------------------- | ----------------- | ------------------ |
+| Development / lexical     | 8/16              | 16/16              |
+| Heldout / lexical         | 8/16              | 16/16              |
+| Development / hybrid      | 16/16             | 16/16              |
+| Heldout / hybrid          | 14/16             | 16/16              |
+
+All 16 negative cases retain exactly the same record IDs. Lexical retrieval
+abstains on all of them before and after. Hybrid still injects on 3/8 development
+and 4/8 heldout negatives: this change preserves, rather than fixes, the model's
+existing false matches. No delivered answer is lost or ranked lower. The 258
+incumbent cases under both policies and the 90 diagnostic hybrid cases are
+checked again against the first improvement. The second improvement preserves
+the first one's gains.
+
+Use `dataset_file: "scripts/eval/memory-identifier-cases.json"` with the same
+evaluator configuration to reproduce this trial. Omit all `ROVIK_MEMORY_EVAL_*`
+environment variables for lexical retrieval; provide the pinned native model
+for hybrid. These are constructed source-symbol/prose views, not independent
+human-rated coding results or a corpus-wide recall estimate.

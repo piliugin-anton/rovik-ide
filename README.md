@@ -2035,6 +2035,10 @@ encoder's character limit, an independent diagnostic lookup can fill unused
 result slots while preserving existing ranks and visibility checks. See the
 [structured-query experiments](docs/design/long-term-memory-structured-queries-nov8-2026.md).
 
+If ordinary text and file retrieval find nothing, meaningful CamelCase names can
+match prose by requiring every component (`SharedMemoryStore` matches all of
+"shared", "memory" and "store"). Generic, short or partial names are rejected.
+
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
 setup. An existing incomplete or corrupt directory is reported and left intact;

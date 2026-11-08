@@ -366,6 +366,59 @@ pub fn build_fts_query(inputs: &[&str]) -> String {
         .join(" OR ")
 }
 
+/// A conservative fallback for code names whose spelling hides prose words.
+/// Every distinct component must match; generic or short components reject the
+/// entire name rather than leaving an ambiguous fragment behind.
+pub(crate) fn identifier_fts_query(inputs: &[&str]) -> String {
+    let mut names = Vec::new();
+    for input in inputs {
+        for name in input.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+            let bytes = name.as_bytes();
+            if bytes.len() > 128 || !bytes.iter().all(u8::is_ascii_alphabetic) {
+                continue;
+            }
+            let mut starts = vec![0];
+            for i in 1..bytes.len() {
+                if bytes[i].is_ascii_uppercase()
+                    && (bytes[i - 1].is_ascii_lowercase()
+                        || (bytes[i - 1].is_ascii_uppercase()
+                            && bytes.get(i + 1).is_some_and(u8::is_ascii_lowercase)))
+                {
+                    starts.push(i);
+                }
+            }
+            starts.push(bytes.len());
+            let mut parts: Vec<_> = starts
+                .windows(2)
+                .map(|pair| name[pair[0]..pair[1]].to_ascii_lowercase())
+                .collect();
+            if !(2..=8).contains(&parts.len()) || parts.iter().any(|part| !is_distinctive(part)) {
+                continue;
+            }
+            parts.sort();
+            parts.dedup();
+            if parts.len() < 2 {
+                continue;
+            }
+            let clause = format!(
+                "({})",
+                parts
+                    .iter()
+                    .map(|part| format!("\"{part}\""))
+                    .collect::<Vec<_>>()
+                    .join(" AND ")
+            );
+            if !names.contains(&clause) {
+                names.push(clause);
+            }
+            if names.len() == 4 {
+                return names.join(" OR ");
+            }
+        }
+    }
+    names.join(" OR ")
+}
+
 fn raw_terms(input: &str) -> Vec<String> {
     input
         .split(|character: char| {
@@ -425,6 +478,43 @@ pub fn path_overlap(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compound_identifiers_require_all_distinct_meaningful_words() {
+        assert_eq!(
+            identifier_fts_query(&["crate::SharedMemoryStore"]),
+            "(\"memory\" AND \"shared\" AND \"store\")"
+        );
+        assert_eq!(
+            identifier_fts_query(&["httpRequest", "HTTPRequest"]),
+            "(\"http\" AND \"request\")"
+        );
+        for text in [
+            "FixTheTests",
+            "MakeTheChange",
+            "GetMemoryStore",
+            "HttpIOState",
+            "MemoryMemory",
+            "shared_memory_store",
+            "SharedMemoryStore2",
+            "MEMORY",
+            "",
+            "AlphaBravoCharlieDeltaEchoFoxtrotGolfHotelIndigo",
+        ] {
+            assert!(identifier_fts_query(&[text]).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn identifier_expansion_is_bounded_and_cannot_introduce_fts_operators() {
+        let query = identifier_fts_query(&[
+            "AlphaBravo CharlieDelta EchoFoxtrot GolfHotel IndiaJuliet \" OR *",
+        ]);
+        assert_eq!(query.matches(" AND ").count(), 4);
+        assert!(!query.contains("india"));
+        assert!(!query.contains('*'));
+        assert!(identifier_fts_query(&[&"aB".repeat(100)]).is_empty());
+    }
 
     #[test]
     fn fts_query_is_safe_and_quoted() {

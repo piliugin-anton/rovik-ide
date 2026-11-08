@@ -404,5 +404,502 @@
       "crate_tests_run_separately": true
     }
   },
-  "identifier_trial": "registered; not yet executed"
+  "identifier_trial": {
+    "baseline_commit": "04c29e3",
+    "trials": [
+      {
+        "split": "development",
+        "policy": "lexical",
+        "before": {
+          "candidate_recall": 0.5,
+          "cases": 24,
+          "delivered_recall": 0.5,
+          "mrr": 0.5,
+          "ndcg_at_8": 0.5,
+          "no_match_injection_rate": 0,
+          "recall_at_8": 0.5
+        },
+        "after": {
+          "candidate_recall": 1,
+          "cases": 24,
+          "delivered_recall": 1,
+          "mrr": 1,
+          "ndcg_at_8": 1,
+          "no_match_injection_rate": 0,
+          "recall_at_8": 1
+        },
+        "changes": {
+          "gains": [
+            "SharedMemoryStore-symbol",
+            "SharedMemoryStore-qualified",
+            "RetrievalQuery-symbol",
+            "RetrievalQuery-qualified",
+            "MemoryRecord-symbol",
+            "MemoryRecord-qualified",
+            "WorkloadStatus-symbol",
+            "WorkloadStatus-qualified"
+          ],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "split": "development",
+        "policy": "hybrid",
+        "before": {
+          "candidate_recall": 1,
+          "cases": 24,
+          "delivered_recall": 1,
+          "mrr": 1,
+          "ndcg_at_8": 1,
+          "no_match_injection_rate": 0.375,
+          "recall_at_8": 1
+        },
+        "after": {
+          "candidate_recall": 1,
+          "cases": 24,
+          "delivered_recall": 1,
+          "mrr": 1,
+          "ndcg_at_8": 1,
+          "no_match_injection_rate": 0.375,
+          "recall_at_8": 1
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "split": "heldout",
+        "policy": "lexical",
+        "before": {
+          "candidate_recall": 0.5,
+          "cases": 24,
+          "delivered_recall": 0.5,
+          "mrr": 0.5,
+          "ndcg_at_8": 0.5,
+          "no_match_injection_rate": 0,
+          "recall_at_8": 0.5
+        },
+        "after": {
+          "candidate_recall": 1,
+          "cases": 24,
+          "delivered_recall": 1,
+          "mrr": 1,
+          "ndcg_at_8": 1,
+          "no_match_injection_rate": 0,
+          "recall_at_8": 1
+        },
+        "changes": {
+          "gains": [
+            "BrowserProxy-symbol",
+            "BrowserProxy-qualified",
+            "CommandOutput-symbol",
+            "CommandOutput-qualified",
+            "ProcessTree-symbol",
+            "ProcessTree-qualified",
+            "BrowserScreenshot-symbol",
+            "BrowserScreenshot-qualified"
+          ],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "split": "heldout",
+        "policy": "hybrid",
+        "before": {
+          "candidate_recall": 0.875,
+          "cases": 24,
+          "delivered_recall": 0.875,
+          "mrr": 0.875,
+          "ndcg_at_8": 0.875,
+          "no_match_injection_rate": 0.5,
+          "recall_at_8": 0.875
+        },
+        "after": {
+          "candidate_recall": 1,
+          "cases": 24,
+          "delivered_recall": 1,
+          "mrr": 1,
+          "ndcg_at_8": 1,
+          "no_match_injection_rate": 0.5,
+          "recall_at_8": 1
+        },
+        "changes": {
+          "gains": ["CommandOutput-symbol", "CommandOutput-qualified"],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      }
+    ],
+    "guards": [
+      {
+        "dataset": "memory-diagnostic-cases",
+        "split": "development",
+        "policy": "hybrid",
+        "cases": 45,
+        "before": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8253953169047639,
+          "no_match_injection_rate": 1,
+          "recall_at_8": 0.9
+        },
+        "after": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8253953169047639,
+          "no_match_injection_rate": 1,
+          "recall_at_8": 0.9
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "dataset": "memory-diagnostic-cases",
+        "split": "heldout",
+        "policy": "hybrid",
+        "cases": 45,
+        "before": {
+          "candidate_recall": 0.9333333333333333,
+          "cases": 45,
+          "delivered_recall": 0.9333333333333333,
+          "mrr": 0.8166666666666668,
+          "ndcg_at_8": 0.8449496685608756,
+          "no_match_injection_rate": 1,
+          "recall_at_8": 0.9333333333333333
+        },
+        "after": {
+          "candidate_recall": 0.9333333333333333,
+          "cases": 45,
+          "delivered_recall": 0.9333333333333333,
+          "mrr": 0.8166666666666668,
+          "ndcg_at_8": 0.8449496685608756,
+          "no_match_injection_rate": 1,
+          "recall_at_8": 0.9333333333333333
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "dataset": "original",
+        "split": "development",
+        "policy": "lexical",
+        "cases": 110,
+        "before": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.05,
+          "recall_at_8": 0.8285714285714286
+        },
+        "after": {
+          "candidate_recall": 0.8285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.8285714285714286,
+          "mrr": 0.8285714285714286,
+          "ndcg_at_8": 0.8285714285714286,
+          "no_match_injection_rate": 0.05,
+          "recall_at_8": 0.8285714285714286
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "dataset": "original",
+        "split": "development",
+        "policy": "hybrid",
+        "cases": 110,
+        "before": {
+          "candidate_recall": 0.9285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.9285714285714286,
+          "mrr": 0.9214285714285714,
+          "ndcg_at_8": 0.9232989964795921,
+          "no_match_injection_rate": 0.075,
+          "recall_at_8": 0.9285714285714286
+        },
+        "after": {
+          "candidate_recall": 0.9285714285714286,
+          "cases": 110,
+          "delivered_recall": 0.9285714285714286,
+          "mrr": 0.9214285714285714,
+          "ndcg_at_8": 0.9232989964795921,
+          "no_match_injection_rate": 0.075,
+          "recall_at_8": 0.9285714285714286
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "dataset": "original",
+        "split": "heldout",
+        "policy": "lexical",
+        "cases": 58,
+        "before": {
+          "candidate_recall": 0.8,
+          "cases": 58,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.10714285714285714,
+          "recall_at_8": 0.8
+        },
+        "after": {
+          "candidate_recall": 0.8,
+          "cases": 58,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.10714285714285714,
+          "recall_at_8": 0.8
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "dataset": "original",
+        "split": "heldout",
+        "policy": "hybrid",
+        "cases": 58,
+        "before": {
+          "candidate_recall": 0.8666666666666667,
+          "cases": 58,
+          "delivered_recall": 0.8666666666666667,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8543643251190486,
+          "no_match_injection_rate": 0.14285714285714285,
+          "recall_at_8": 0.8666666666666667
+        },
+        "after": {
+          "candidate_recall": 0.8666666666666667,
+          "cases": 58,
+          "delivered_recall": 0.8666666666666667,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8543643251190486,
+          "no_match_injection_rate": 0.14285714285714285,
+          "recall_at_8": 0.8666666666666667
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "dataset": "fresh",
+        "split": "development",
+        "policy": "lexical",
+        "cases": 45,
+        "before": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        },
+        "after": {
+          "candidate_recall": 0.8,
+          "cases": 45,
+          "delivered_recall": 0.8,
+          "mrr": 0.8,
+          "ndcg_at_8": 0.8,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.8
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "dataset": "fresh",
+        "split": "development",
+        "policy": "hybrid",
+        "cases": 45,
+        "before": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8630929753571458,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        },
+        "after": {
+          "candidate_recall": 0.9,
+          "cases": 45,
+          "delivered_recall": 0.9,
+          "mrr": 0.85,
+          "ndcg_at_8": 0.8630929753571458,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.9
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "dataset": "fresh",
+        "split": "heldout",
+        "policy": "lexical",
+        "cases": 45,
+        "before": {
+          "candidate_recall": 0.7666666666666667,
+          "cases": 45,
+          "delivered_recall": 0.7666666666666667,
+          "mrr": 0.7666666666666667,
+          "ndcg_at_8": 0.7666666666666667,
+          "no_match_injection_rate": 0.4666666666666667,
+          "recall_at_8": 0.7666666666666667
+        },
+        "after": {
+          "candidate_recall": 0.7666666666666667,
+          "cases": 45,
+          "delivered_recall": 0.7666666666666667,
+          "mrr": 0.7666666666666667,
+          "ndcg_at_8": 0.7666666666666667,
+          "no_match_injection_rate": 0.4666666666666667,
+          "recall_at_8": 0.7666666666666667
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      },
+      {
+        "dataset": "fresh",
+        "split": "heldout",
+        "policy": "hybrid",
+        "cases": 45,
+        "before": {
+          "candidate_recall": 0.9333333333333333,
+          "cases": 45,
+          "delivered_recall": 0.9333333333333333,
+          "mrr": 0.8527777777777777,
+          "ndcg_at_8": 0.8730845355072103,
+          "no_match_injection_rate": 0.4666666666666667,
+          "recall_at_8": 0.9333333333333333
+        },
+        "after": {
+          "candidate_recall": 0.9333333333333333,
+          "cases": 45,
+          "delivered_recall": 0.9333333333333333,
+          "mrr": 0.8527777777777777,
+          "ndcg_at_8": 0.8730845355072103,
+          "no_match_injection_rate": 0.4666666666666667,
+          "recall_at_8": 0.9333333333333333
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "extra_negative_records": [],
+          "scope_or_budget": [],
+          "negative_record_changes": []
+        },
+        "safe": true
+      }
+    ],
+    "exact_incumbent_replays": 606,
+    "source_sha256": {
+      "src-tauri/crates/verified-code-memory/src/retrieval.rs": "3179a52629904ab0718b1115ec462a6fa8457feca407de0b6d2e55f529248475",
+      "src-tauri/crates/verified-code-memory/src/store.rs": "c6da498a1f76f29a5371010672480e44b7ecdba3e0dfb9e4f5c72b57f3afcad0",
+      "src-tauri/crates/verified-code-memory/tests/identifiers.rs": "9032d533c86601ed5b0fb35dac53b77bee290838e5240fadcae95f12eaa710f5"
+    },
+    "evaluated_baseline_binary_sha256": "e0955c4625195feb5a6ac08edaeea4bafd02300325f010e6123253d2e5e09624",
+    "evaluated_candidate_binary_sha256": "081c2c6c86d725049be2fd69465042d5acaaf13b5f8b099a428fe953454c73e4",
+    "verification": {
+      "memory_tests_including_doctest": 111,
+      "native_tests": 2,
+      "evaluator_tests": 9,
+      "clippy": "passed with -D warnings",
+      "frontend_tests": 1046,
+      "typecheck": "passed",
+      "format": "passed",
+      "changed_crates": ["verified-code-memory"],
+      "crate_tests_run_separately": true
+    }
+  }
 }
