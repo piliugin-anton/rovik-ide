@@ -83,6 +83,7 @@ import {
 import type { SubagentConfig } from './subagentSettings';
 import type { AutopilotConfig } from './autopilotSettings';
 import type { RecalledMemory } from './memory';
+import { refreshPlanImplementations } from './planImplementations';
 
 /** Settings runs follow (agent_run::AgentConfig). */
 export interface AgentConfig {
@@ -231,7 +232,11 @@ const [state, setState] = createStore<{
    * what its checks and its end made of it.
    */
   priorWork: Record<string, RecalledMemory[]>;
-}>({ toolNotes: {}, priorWork: {} });
+  runIds: Record<string, string>;
+}>({ toolNotes: {}, priorWork: {}, runIds: {} });
+
+/** The actual running attempt, used to reject stale implementation evidence. */
+export const activeRunId = (dialogId: string): string | undefined => state.runIds[dialogId];
 
 /** The chat's live tool call notes. */
 export const toolNotes = (dialogId: string | null): Record<string, string> | undefined =>
@@ -473,7 +478,8 @@ export function onShowChat(listener: (target?: ShowTarget) => void): () => void 
   return () => showChatListeners.delete(listener);
 }
 
-function showChat(target?: ShowTarget) {
+/** Activate the AI Chat tab, selecting the supplied chat when its panel is mounted. */
+export function showChat(target?: ShowTarget) {
   for (const l of [...showChatListeners]) l(target);
 }
 
@@ -526,8 +532,10 @@ function waitingQuestions(request: PendingQuestions): Waiting {
 function handle(event: AgentEvent) {
   switch (event.type) {
     case 'runStarted':
+      setState('runIds', event.dialogId, event.runId);
       chatStore.setRunning(event.dialogId, true);
       chatStore.setSteerable(event.dialogId, !!event.steerable);
+      refreshPlanImplementations();
       break;
     case 'steerReturned':
       handBackSteers(event.dialogId, event.messageIds, returnedNotice(event.outcome));
@@ -538,8 +546,11 @@ function handle(event: AgentEvent) {
       chatStore.setDriving(event.dialogId, event.driving);
       break;
     case 'runEnded':
+      if (state.runIds[event.dialogId] === event.runId)
+        setState('runIds', event.dialogId, undefined!);
       chatStore.setRunning(event.dialogId, false);
       chatStore.setSteerable(event.dialogId, false);
+      refreshPlanImplementations();
       // The run is over: the live items are stale. Re-ask the backend
       // (whole database, carried checklists included) for the idle panel.
       // A finished checklist resolves to null and hides the panel.
@@ -549,6 +560,8 @@ function handle(event: AgentEvent) {
       for (const listener of [...runEndedListeners]) listener(event.dialogId);
       break;
     case 'messagesAdded':
+      if (event.messages.some((m) => m.meta?.planImplementation || m.meta?.planFile))
+        refreshPlanImplementations();
       // Messages sent to the run that it read: kept until it has gone on.
       markSteerDraftsStored(
         event.messages.filter((m) => m.role === 'user' && m.meta?.steer).map((m) => m.id)
@@ -558,6 +571,7 @@ function handle(event: AgentEvent) {
       else chatStore.receiveMessages(event.dialogId, event.messages);
       break;
     case 'messagePatched':
+      if (event.patch.meta?.planImplementation) refreshPlanImplementations();
       if (isSubagentChat(event.dialogId))
         patchSubagentMessage(event.dialogId, event.messageId, event.patch);
       else chatStore.applyPatch(event.dialogId, event.messageId, event.patch);
@@ -707,7 +721,9 @@ function seedSteering(status: AgentStatus) {
  */
 async function reseedSteering() {
   try {
-    seedSteering(await invoke<AgentStatus>('agent_status'));
+    const status = await invoke<AgentStatus>('agent_status');
+    for (const run of status.runs) setState('runIds', run.dialogId, run.runId);
+    seedSteering(status);
   } catch (err) {
     console.error('Agent status unavailable:', err);
   }
@@ -726,7 +742,10 @@ export function initAgentRuns(): Promise<void> {
     await listen<AgentEvent>('agent-event', (e) => handle(e.payload));
     try {
       const status = await invoke<AgentStatus>('agent_status');
-      for (const run of status.runs) chatStore.setRunning(run.dialogId, true);
+      for (const run of status.runs) {
+        chatStore.setRunning(run.dialogId, true);
+        setState('runIds', run.dialogId, run.runId);
+      }
       for (const dialogId of status.driving ?? []) chatStore.setDriving(dialogId, true);
       seedSteering(status);
       for (const sub of status.subagents ?? []) seedRunningSubagent(sub);
@@ -739,6 +758,9 @@ export function initAgentRuns(): Promise<void> {
   })();
   // What already waited is told of with what its host's notice sums up.
   initRemoteNotices({ seeded: ready, show: showChat });
-  onCaughtUp(() => void reseedSteering());
+  onCaughtUp(() => {
+    void reseedSteering();
+    refreshPlanImplementations();
+  });
   return ready;
 }

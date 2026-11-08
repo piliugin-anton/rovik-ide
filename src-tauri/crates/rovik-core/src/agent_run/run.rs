@@ -1262,6 +1262,7 @@ impl Run {
         {
             panic!("a test's run panics");
         }
+        let implementation = self.begin_plan_implementation().await;
         let outcome = self.drive(entry).await;
         // Whatever ended it, the run takes no more messages from here, and
         // what it holds unread goes back to the user (D9, D15).
@@ -1332,6 +1333,8 @@ impl Run {
             entry["stage"] = json!(stage.stage.id());
         }
         log::write(&self.core, entry);
+        self.finish_plan_implementation(implementation.as_deref(), &outcome)
+            .await;
         outcome
     }
 
@@ -2931,7 +2934,7 @@ impl Run {
     }
 
     /// Stores a message's meta as given and shows it.
-    async fn store_meta(&self, message_id: &str, meta: Value) -> Result<(), String> {
+    pub(super) async fn store_meta(&self, message_id: &str, meta: Value) -> Result<(), String> {
         let id = message_id.to_string();
         let patch = MessagePatch {
             meta: Some(meta.clone()),

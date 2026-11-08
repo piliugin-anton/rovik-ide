@@ -54,6 +54,10 @@ mod mcp_tests;
 #[path = "memory_e2e_tests.rs"]
 mod memory_tests;
 
+#[cfg(test)]
+#[path = "plan_implementation_e2e_tests.rs"]
+mod plan_implementation_tests;
+
 // Their server is a shell loop.
 #[cfg(all(test, unix))]
 #[path = "background_e2e_tests.rs"]

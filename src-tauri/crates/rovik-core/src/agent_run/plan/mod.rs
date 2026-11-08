@@ -9,6 +9,7 @@ mod criteria;
 mod doc;
 mod file;
 mod format;
+mod implementation;
 mod prompt;
 mod steps;
 #[cfg(test)]
@@ -20,6 +21,7 @@ pub use criteria::*;
 pub use doc::PlanDoc;
 pub use file::*;
 pub use format::*;
+pub use implementation::*;
 pub use prompt::*;
 pub use steps::*;
 pub use validation::*;

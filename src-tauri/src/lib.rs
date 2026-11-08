@@ -267,6 +267,7 @@ pub fn run() {
             commands::chat::chats_at_work_elsewhere,
             commands::chat::chat_unsettled_sends,
             commands::chat::chat_read_plan,
+            commands::chat::chat_plan_implementation,
             commands::chat::chat_answer_copy,
             commands::chat::chat_answer_moved,
             commands::chat::chat_decline_projects,

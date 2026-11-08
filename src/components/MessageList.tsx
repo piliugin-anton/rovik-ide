@@ -62,6 +62,7 @@ import { isRequestMessage } from '../lib/requests';
 import { LATE_LABEL } from '../lib/steering';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
 import ThinkingBlock from './ThinkingBlock';
+import PlanImplementationAction from './PlanImplementationAction';
 
 const BOTTOM_TOLERANCE_PX = 8;
 /** A scroll this soon after wheel/touch/key/scrollbar input is the user's. */
@@ -1606,18 +1607,15 @@ export default function MessageList(props: {
                   )}
                 </Show>
 
-                <Show when={props.planMessageId === m.id && !props.readOnly}>
-                  <div class="chat-plan-actions">
-                    <button
-                      type="button"
-                      class="chat-action-button primary"
-                      onClick={() => props.onImplementPlan?.()}
-                      title="Switch to Agent mode and carry out this plan"
-                    >
-                      Implement this plan
-                    </button>
-                    <span class="chat-plan-hint">or reply to change it</span>
-                  </div>
+                <Show when={m.meta?.planFile}>
+                  {(file) => (
+                    <PlanImplementationAction
+                      path={file()}
+                      dialogId={props.dialogId}
+                      canImplement={props.planMessageId === m.id && !props.readOnly}
+                      onImplement={props.onImplementPlan}
+                    />
+                  )}
                 </Show>
                 <Show when={m.meta?.planFile}>
                   {(file) => (

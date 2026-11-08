@@ -205,6 +205,12 @@ pub fn expand_implementation(
     let text = std::fs::read_to_string(&file)
         .map_err(|e| format!("The plan in {file} can't be read: {e}"))?;
     let shown = relative_plan_path(&file, root);
+    meta.insert("planKey".into(), Value::String(super::plan_key(&file)));
+    meta.insert("planPath".into(), Value::String(file));
+    meta.insert(
+        "planFingerprint".into(),
+        Value::String(super::plan_fingerprint(&text)),
+    );
     meta.insert(
         "sentContent".into(),
         Value::String(implementation_request(&text, Some(&shown), todo)),

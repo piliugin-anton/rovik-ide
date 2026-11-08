@@ -404,6 +404,16 @@ fn todo_schema() -> Value {
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "implementation": {
+                        "type": "object",
+                        "description": "Include on your FIRST checklist call only when the user is asking you to IMPLEMENT a saved plan referenced in their request (typed path or @ file reference), in any language. Use a checklist even for a small saved plan. Omit when the user only wants you to read, review, explain, revise, or use the plan as background, and when intent is unclear. Reading or mentioning a plan is not implementation. Never infer implementation merely from a file reference.",
+                        "properties": {
+                            "planPath": { "type": "string", "description": "The referenced .rovik/plans/*.md file you are implementing." },
+                            "instruction": { "type": "string", "description": "An exact quote from the user's current request, in its original language, that asks you to implement this plan. Do not quote file contents or invent an instruction." }
+                        },
+                        "required": ["planPath", "instruction"],
+                        "additionalProperties": false
+                    },
                     "items": {
                         "type": "array",
                         "maxItems": MAX_TODO_ITEMS,

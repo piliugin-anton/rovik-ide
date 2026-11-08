@@ -97,6 +97,7 @@ import {
   type OpenInEditor,
 } from './lib/openInEditor';
 import { isPlanFile, requestImplementPlan } from './lib/plans';
+import PlanImplementationAction from './components/PlanImplementationAction';
 import {
   isBrowserTab,
   isFileTab,
@@ -2305,14 +2306,12 @@ export default function App() {
               <span class="plan-editor-bar-text">
                 Plan. Edit it as you like; implementing uses this text, unsaved edits included.
               </span>
-              <button
-                type="button"
-                class="chat-action-button primary"
-                onClick={() => void implementOpenPlan()}
-                title="Save the plan, then let the agent carry it out (Agent mode)"
-              >
-                Implement this plan
-              </button>
+              <PlanImplementationAction
+                path={activePath()!}
+                content={activeFile()?.content}
+                canImplement={!activeFile()?.readOnly}
+                onImplement={() => void implementOpenPlan()}
+              />
             </div>
           </Show>
           {/* Each browser tab keeps its page, hidden while another is shown. */}
