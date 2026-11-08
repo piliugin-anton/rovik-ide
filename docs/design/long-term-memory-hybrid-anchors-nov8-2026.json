@@ -664,5 +664,277 @@
       "crate_tests_run_separately": true
     }
   },
-  "tail_replacement_trial": "registered; not yet executed"
+  "tail_replacement_trial": {
+    "baseline_commit": "bfd35d8",
+    "decision": "rejected; prototype removed",
+    "complex": [
+      {
+        "key": "complex",
+        "label": "tail",
+        "policy": "lexical",
+        "split": "development",
+        "cases": 40,
+        "metrics": {
+          "candidate_recall": 0.5714285714285714,
+          "cases": 40,
+          "delivered_recall": 0.5714285714285714,
+          "mrr": 0.3392857142857143,
+          "ndcg_at_8": 0.3992274207908257,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.5714285714285714
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "complex",
+        "label": "tail",
+        "policy": "hybrid",
+        "split": "development",
+        "cases": 40,
+        "metrics": {
+          "candidate_recall": 1,
+          "cases": 40,
+          "delivered_recall": 1,
+          "mrr": 0.5238095238095238,
+          "ndcg_at_8": 0.6424166184949177,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 1
+        },
+        "changes": {
+          "gains": [
+            "complex-SharedMemoryStore-full-pool",
+            "complex-RetrievalQuery-full-pool",
+            "complex-MemoryRecord-full-pool",
+            "complex-WorkloadStatus-full-pool"
+          ],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "complex",
+        "label": "tail",
+        "policy": "lexical",
+        "split": "heldout",
+        "cases": 40,
+        "metrics": {
+          "candidate_recall": 0.5714285714285714,
+          "cases": 40,
+          "delivered_recall": 0.5714285714285714,
+          "mrr": 0.3392857142857143,
+          "ndcg_at_8": 0.3992274207908257,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 0.5714285714285714
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "complex",
+        "label": "tail",
+        "policy": "hybrid",
+        "split": "heldout",
+        "cases": 40,
+        "metrics": {
+          "candidate_recall": 1,
+          "cases": 40,
+          "delivered_recall": 1,
+          "mrr": 0.7601190476190476,
+          "ndcg_at_8": 0.8190818155645072,
+          "no_match_injection_rate": 0.6666666666666666,
+          "recall_at_8": 1
+        },
+        "changes": {
+          "gains": ["complex-CommandOutput-full-pool", "complex-ProcessTree-full-pool"],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      }
+    ],
+    "retention": [
+      {
+        "key": "retention",
+        "label": "tail",
+        "policy": "lexical",
+        "split": "development",
+        "cases": 4,
+        "metrics": {
+          "candidate_recall": 0,
+          "cases": 4,
+          "delivered_recall": 0,
+          "mrr": 0,
+          "ndcg_at_8": 0,
+          "no_match_injection_rate": null,
+          "recall_at_8": 0
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "retention",
+        "label": "tail",
+        "policy": "hybrid",
+        "split": "development",
+        "cases": 4,
+        "metrics": {
+          "candidate_recall": 1,
+          "cases": 4,
+          "delivered_recall": 0,
+          "mrr": 0.125,
+          "ndcg_at_8": 0.31546487678572877,
+          "no_match_injection_rate": null,
+          "recall_at_8": 1
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [
+            "retention-SharedMemoryStore Crowding observation 0",
+            "retention-RetrievalQuery Crowding observation 0",
+            "retention-MemoryRecord Crowding observation 0",
+            "retention-WorkloadStatus Crowding observation 2"
+          ],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": false
+      },
+      {
+        "key": "retention",
+        "label": "tail",
+        "policy": "lexical",
+        "split": "heldout",
+        "cases": 4,
+        "metrics": {
+          "candidate_recall": 0,
+          "cases": 4,
+          "delivered_recall": 0,
+          "mrr": 0,
+          "ndcg_at_8": 0,
+          "no_match_injection_rate": null,
+          "recall_at_8": 0
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": true
+      },
+      {
+        "key": "retention",
+        "label": "tail",
+        "policy": "hybrid",
+        "split": "heldout",
+        "cases": 4,
+        "metrics": {
+          "candidate_recall": 1,
+          "cases": 4,
+          "delivered_recall": 0,
+          "mrr": 0.3482142857142857,
+          "ndcg_at_8": 0.49106577172619775,
+          "no_match_injection_rate": null,
+          "recall_at_8": 1
+        },
+        "changes": {
+          "gains": [],
+          "losses": [],
+          "rank_losses": [
+            "retention-CommandOutput Crowding observation 8",
+            "retention-ProcessTree Crowding observation 8"
+          ],
+          "negative_changes": [],
+          "safety": []
+        },
+        "safe": false
+      }
+    ],
+    "lost_facts": [
+      {
+        "case": "retention-SharedMemoryStore",
+        "split": "development",
+        "fact": "Crowding observation 0",
+        "rank_before": 8,
+        "rank_after": null,
+        "total_facts_supplied_before": 8,
+        "total_facts_supplied_after": 8
+      },
+      {
+        "case": "retention-RetrievalQuery",
+        "split": "development",
+        "fact": "Crowding observation 0",
+        "rank_before": 8,
+        "rank_after": null,
+        "total_facts_supplied_before": 8,
+        "total_facts_supplied_after": 8
+      },
+      {
+        "case": "retention-MemoryRecord",
+        "split": "development",
+        "fact": "Crowding observation 0",
+        "rank_before": 8,
+        "rank_after": null,
+        "total_facts_supplied_before": 8,
+        "total_facts_supplied_after": 8
+      },
+      {
+        "case": "retention-WorkloadStatus",
+        "split": "development",
+        "fact": "Crowding observation 2",
+        "rank_before": 8,
+        "rank_after": null,
+        "total_facts_supplied_before": 8,
+        "total_facts_supplied_after": 8
+      },
+      {
+        "case": "retention-CommandOutput",
+        "split": "heldout",
+        "fact": "Crowding observation 8",
+        "rank_before": 8,
+        "rank_after": null,
+        "total_facts_supplied_before": 8,
+        "total_facts_supplied_after": 8
+      },
+      {
+        "case": "retention-ProcessTree",
+        "split": "heldout",
+        "fact": "Crowding observation 8",
+        "rank_before": 8,
+        "rank_after": null,
+        "total_facts_supplied_before": 8,
+        "total_facts_supplied_after": 8
+      }
+    ],
+    "prototype_patch": "diff --git a/src-tauri/crates/verified-code-memory/src/semantic.rs b/src-tauri/crates/verified-code-memory/src/semantic.rs\nindex dfb9ab3..94e6d56 100644\n--- a/src-tauri/crates/verified-code-memory/src/semantic.rs\n+++ b/src-tauri/crates/verified-code-memory/src/semantic.rs\n@@ -337,6 +337,27 @@ impl SemanticIndex {\n                 ),\n             }\n         }\n+        if found.len() == query.limit && query.files.is_empty() && !exact_title {\n+            match self.store.identifier_candidates_filtered(query, &accept) {\n+                Ok(anchors) => {\n+                    let represented = anchors.iter().any(|anchor| {\n+                        found\n+                            .iter()\n+                            .any(|hit| hit.record.same_context_claim(&anchor.record))\n+                    });\n+                    if !represented {\n+                        if let Some(mut anchor) = anchors.into_iter().next() {\n+                            if let Some(tail) = found.pop() {\n+                                anchor.score = tail.score;\n+                                anchor.reason.push_str(\", experimental tail replacement\");\n+                                found.push(anchor);\n+                            }\n+                        }\n+                    }\n+                }\n+                Err(error) => eprintln!(\"memory: tail experiment unavailable: {error}\"),\n+            }\n+        }\n         Ok(found)\n     }\n }\n",
+    "prototype_source_sha256": "2f149b7eafcea3493bd0098f5e048b2c2e242efcc6734c51a7b4e6872e62bb93",
+    "production_source_restored": true,
+    "restored_semantic_sha256": "3e01c2d6ba274a63e920fc820b350d6a6b543835e22628f86dbb71b88475fd55"
+  }
 }

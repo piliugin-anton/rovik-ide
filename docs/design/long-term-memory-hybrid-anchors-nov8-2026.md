@@ -41,11 +41,20 @@ They test whether replacing a returned item loses a previously supplied fact,
 even when the total number supplied stays constant. The free-slot change keeps
 all prior fact identities and ranks in these controls.
 
-A separately registered experiment will try replacing the final hybrid result
-when a complete symbol is absent from a full pool. It must pass these per-fact
-checks as well as ordinary recall guards; a primary-answer gain cannot compensate
-for losing another requested fact. The matrix and decision will be recorded
-separately from the committed free-slot gain.
+The separately registered tail-replacement experiment was run after the free-slot
+gain was committed and pushed as `bfd35d8`. With no complete symbol in a full
+hybrid pool, it replaced the final result with a complete symbol candidate,
+while preserving explicit files and exact titles. On the exposed complex corpus,
+hybrid delivery rose to 28/28 in both splits.
+
+That headline is rejected. Four development retention cases and two heldout
+retention cases lost an already supplied crowding observation. Total supplied
+fact counts stayed at eight: one requested fact was traded for another. The
+per-fact checks caught what aggregate delivery counts would miss. No budget,
+fixture, label, cutoff or existing test was changed to make the prototype pass.
+The prototype was removed and the committed free-slot source restored exactly.
+Its patch and measured losses are recorded in the report for reproducibility.
+Full-pool misses remain open; no tail replacement is enabled.
 
 ## Verification and reproduction
 
