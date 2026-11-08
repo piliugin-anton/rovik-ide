@@ -2042,6 +2042,10 @@ With competing text matches, complete identifier matches can fill free slots
 after ordinary results. Exact title lookups and explicit files retain their
 protected behavior. [Harder identifier experiments](docs/design/long-term-memory-complex-identifiers-nov8-2026.md)
 include composed answers, misleading context and full result pools.
+Hybrid retrieval can also fill unused slots with complete symbol matches after
+its incumbent results, including when lexical retrieval preserves a file hint.
+[Hybrid anchor experiments](docs/design/long-term-memory-hybrid-anchors-nov8-2026.md)
+check this independently of strict vector-search cutoffs and lexical behavior.
 
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline

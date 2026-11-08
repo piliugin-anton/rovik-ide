@@ -308,6 +308,35 @@ impl SemanticIndex {
                 ),
             }
         }
+        let exact_title = found.iter().any(|hit| {
+            hit.record.title.eq_ignore_ascii_case(query.task.trim())
+                || query
+                    .failure
+                    .as_deref()
+                    .is_some_and(|failure| hit.record.title.eq_ignore_ascii_case(failure.trim()))
+        });
+        if found.len() < query.limit && !exact_title {
+            match self.store.identifier_candidates_filtered(query, |record| {
+                accept(record)
+                    && !found
+                        .iter()
+                        .any(|hit| hit.record.same_context_claim(record))
+            }) {
+                Ok(hits) => {
+                    let last_score = found.last().map_or(1.0 / 61.0, |hit| hit.score);
+                    for (rank, mut hit) in
+                        hits.into_iter().take(query.limit - found.len()).enumerate()
+                    {
+                        hit.score = last_score / (rank + 2) as f32;
+                        hit.reason.push_str(", supplementary complete symbol match");
+                        found.push(hit);
+                    }
+                }
+                Err(error) => eprintln!(
+                    "memory: symbol lookup unavailable; preserving current results: {error}"
+                ),
+            }
+        }
         Ok(found)
     }
 }

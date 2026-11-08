@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "baseline_commit": "a7195a2439e56a528af1f7eb14807813294650cd",
+  "frozen_before_trials": true,
+  "selection": "Known-miss repair on the already exposed complex corpus; report both legacy splits, not a new blind generalization claim.",
+  "inputs_sha256": {
+    "scripts/eval/memory-complex-identifier-cases.json": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d",
+    "scripts/eval/memory-hybrid-retention-cases.json": "634fe28e4982c29601c392a5945d26f917c6ee3600166c668a46202268995337"
+  },
+  "policy": {
+    "threshold": 0.3,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666,
+    "candidate_limit": 8,
+    "memory_budget": 1000,
+    "deterministic": true
+  },
+  "experiments": [
+    {
+      "id": "hybrid_free_symbol_slots",
+      "description": "After incumbent hybrid fusion and diagnostic supplementation, append complete conjunctive identifier matches to unused slots, excluding known copies before limiting. Preserve exact task/failure title lookups and all existing ranks; lexical and strict-vector APIs remain unchanged."
+    },
+    {
+      "id": "hybrid_tail_replacement",
+      "description": "If no complete symbol is represented and the hybrid pool is full, replace its final result with a complete conjunctive symbol candidate. Reject if any already supplied required fact is lost or ranked lower, including capacity-infeasible retention controls."
+    }
+  ],
+  "guards": [
+    "Each supplied primary or required fact keeps delivery and rank, even when its complete multi-fact answer was not supplied.",
+    "Negative returned record IDs and order stay exactly unchanged.",
+    "Trust, tags, caller visibility, project scope, duplicate suppression and fixed record/token limits hold.",
+    "Replay all 792 older lexical/hybrid cases and the 160 complex policy/split views; preserve each previous gain.",
+    "Do not tune thresholds, edit claims, omit infeasible cases from retention guards, enlarge budgets or republish model assets."
+  ],
+  "retention_guard_clarification": "Before running any retention trials, make the requirement to keep every crowding observation explicit in the task. The exposed complex corpus is unchanged.",
+  "committed_inputs_sha256": {
+    "scripts/eval/memory-complex-identifier-cases.json": "f88f8d8f537df171d618a4cac54eb70720843a0ca73e5ce46ba69b218f72936d",
+    "scripts/eval/memory-hybrid-retention-cases.json": "4ca3dd70015fbb7b1595c98aa4cb0c64f7e1662dc82176ff9215020370e242b1"
+  },
+  "registration_serialization": "Tracked complex fixture bytes unchanged; new retention fixture uses JSON.stringify(parsed,null,2) plus final newline."
+}

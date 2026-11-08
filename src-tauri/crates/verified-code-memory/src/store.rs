@@ -1597,6 +1597,27 @@ impl SharedMemoryStore {
         self.lock()?.retrieve_filtered_with_telemetry(query, accept)
     }
 
+    /// Complete symbol matches, with eligibility applied before the bounded pool.
+    pub(crate) fn identifier_candidates_filtered(
+        &self,
+        query: &RetrievalQuery,
+        accept: impl Fn(&MemoryRecord) -> bool,
+    ) -> Result<Vec<RetrievedMemory>> {
+        let text = identifier_fts_query(&[&query.task, query.failure.as_deref().unwrap_or("")]);
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut found = self.lock()?.full_text_candidates(
+            query,
+            &accept,
+            Utc::now(),
+            &mut RetrievalTelemetry::default(),
+            text,
+        )?;
+        found.sort_by(compare_memories);
+        Ok(found)
+    }
+
     /// See [`MemoryStore::retrieve_with_telemetry`].
     ///
     /// # Errors

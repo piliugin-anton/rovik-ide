@@ -17,6 +17,163 @@ impl MemoryEmbedder for Embed {
     }
 }
 
+#[test]
+fn hybrid_free_slots_recover_complete_symbols_without_changing_file_or_vector_search() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let wanted = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store",
+            "Use a lock.",
+        ))
+        .unwrap();
+    let context = store
+        .remember(
+            NewMemory::procedure("a", "File context", "Existing observation.")
+                .with_files(["src/noise.rs"]),
+        )
+        .unwrap();
+    let query = RetrievalQuery::new("a", "SharedMemoryStore").with_files(["src/noise.rs"]);
+    let lexical = store.retrieve(&query).unwrap();
+    assert_eq!(lexical.len(), 1);
+    assert_eq!(lexical[0].record.id, context.id);
+    let index = SemanticIndex::new(store, "symbol-fixture", 2).unwrap();
+    index.backfill("a", &Embed).unwrap();
+    let strict = index.search(&query, &[0.0, 1.0], 0.8).unwrap();
+    assert!(strict.iter().all(|(record, _)| record.id != wanted.id));
+    let hybrid = index.retrieve(&query, &Embed, 0.8).unwrap();
+    assert_eq!(hybrid.len(), 2);
+    assert_eq!(hybrid[0].record.id, context.id);
+    assert_eq!(hybrid[1].record.id, wanted.id);
+    assert!(hybrid[1].score < hybrid[0].score);
+    let full = index
+        .retrieve(&query.clone().with_limit(1), &Embed, 0.8)
+        .unwrap();
+    assert_eq!(full.len(), 1);
+    assert_eq!(full[0].record.id, context.id);
+}
+
+#[test]
+fn hybrid_symbol_eligibility_and_known_copies_are_filtered_before_supplementary_limits() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let wanted = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store",
+            "Use a lock.",
+        ))
+        .unwrap();
+    store.verify(wanted.id, "fixture").unwrap();
+    for _ in 0..100 {
+        let record = store
+            .remember(
+                NewMemory::procedure("a", "Shared memory store context", "Existing observation.")
+                    .with_files(["src/noise.rs"]),
+            )
+            .unwrap();
+        store.verify(record.id, "same context").unwrap();
+    }
+    for n in 0..100 {
+        let record = store
+            .remember(
+                NewMemory::procedure(
+                    "a",
+                    format!("Shared memory store private {n}"),
+                    "Use a lock.",
+                )
+                .with_tags(["private"]),
+            )
+            .unwrap();
+        store.verify(record.id, "fixture").unwrap();
+    }
+    let denied = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store denied",
+            "Use a lock.",
+        ))
+        .unwrap();
+    store.verify(denied.id, "fixture").unwrap();
+    store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store provisional",
+            "Use a lock.",
+        ))
+        .unwrap();
+    let obsolete = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store obsolete",
+            "Use a lock.",
+        ))
+        .unwrap();
+    store.deprecate(obsolete.id, "old").unwrap();
+    let foreign = store
+        .remember(NewMemory::procedure(
+            "b",
+            "Shared memory store foreign",
+            "Use a lock.",
+        ))
+        .unwrap();
+    store.verify(foreign.id, "fixture").unwrap();
+    let index = SemanticIndex::new(store, "symbol-fixture", 2).unwrap();
+    index.backfill("a", &Embed).unwrap();
+    index.backfill("b", &Embed).unwrap();
+    let query = RetrievalQuery::new("a", "SharedMemoryStore")
+        .with_files(["src/noise.rs"])
+        .with_verifications([Verification::Verified])
+        .without_tags(["private"])
+        .with_limit(2);
+    let found = index
+        .retrieve_filtered(&query, &Embed, 0.8, |r| r.id != denied.id)
+        .unwrap();
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[1].record.id, wanted.id);
+}
+
+#[test]
+fn hybrid_symbol_supplements_preserve_exact_titles_and_reject_partial_names() {
+    let store = SharedMemoryStore::open_in_memory().unwrap();
+    let exact = store
+        .remember(NewMemory::procedure(
+            "a",
+            "SharedMemoryStore",
+            "Use a lock.",
+        ))
+        .unwrap();
+    let prose = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store",
+            "Use a lock.",
+        ))
+        .unwrap();
+    let context = store
+        .remember(
+            NewMemory::procedure("a", "Context", "Existing observation.")
+                .with_files(["src/noise.rs"]),
+        )
+        .unwrap();
+    let index = SemanticIndex::new(store, "symbol-fixture", 2).unwrap();
+    index.backfill("a", &Embed).unwrap();
+    let query = RetrievalQuery::new("a", "SharedMemoryStore");
+    let found = index.retrieve(&query, &Embed, 0.8).unwrap();
+    assert!(found.iter().any(|r| r.record.id == exact.id));
+    assert!(found.iter().all(|r| r.record.id != prose.id));
+    for task in ["SharedMemoryEncryptor", "FixTheTests"] {
+        let found = index
+            .retrieve(
+                &RetrievalQuery::new("a", task).with_files(["src/noise.rs"]),
+                &Embed,
+                0.8,
+            )
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].record.id, context.id);
+    }
+}
+
 struct Diagnostic {
     limit: Option<usize>,
     unavailable: bool,
