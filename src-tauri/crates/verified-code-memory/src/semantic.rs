@@ -506,7 +506,7 @@ impl SemanticIndex {
                     let mut protected = vec![false; found.len()];
                     protected[0] = true;
                     for (i, hit) in found.iter().enumerate() {
-                        if query.task.split_whitespace().any(|word| {
+                        if focused_words(&query.task).any(|word| {
                             hit.record.title.eq_ignore_ascii_case(word)
                                 || hit.record.title.eq_ignore_ascii_case(
                                     word.trim_matches(|c: char| !c.is_alphanumeric()),
@@ -576,7 +576,7 @@ impl SemanticIndex {
 }
 
 fn focused_identifiers(task: &str) -> Option<Vec<&str>> {
-    let words: Vec<_> = task.split_whitespace().collect();
+    let words: Vec<_> = focused_words(task).collect();
     if !(2..=5).contains(&words.len()) || !focused_scope(task) {
         return None;
     }
@@ -593,6 +593,11 @@ fn focused_identifiers(task: &str) -> Option<Vec<&str>> {
         }
     }
     (context <= 1 && (2..=4).contains(&names.len())).then_some(names)
+}
+
+fn focused_words(task: &str) -> impl Iterator<Item = &str> {
+    task.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';'))
+        .filter(|word| !word.is_empty())
 }
 
 fn focused_identifier(task: &str) -> bool {

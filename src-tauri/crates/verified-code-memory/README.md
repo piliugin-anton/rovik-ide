@@ -132,6 +132,9 @@ request keep their positions; only other trailing slots may be used. The request
 may contain at most one other term. If a name has no eligible match or the slots
 cannot cover all missing names, the pool stays intact. The same collection,
 file/failure, numeric and wildcard protections apply, with no extra inference.
+Spaces, commas and semicolons separate names and literal context terms; qualified
+names are supported. The request may contain at most five nonempty terms after
+splitting, including repeated mentions. Duplicate names need no additional slot.
 
 ## Development
 

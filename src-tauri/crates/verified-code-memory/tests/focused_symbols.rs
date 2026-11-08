@@ -288,6 +288,10 @@ fn multiple_named_facts_are_recovered_atomically_without_moving_existing_named_f
     for task in [
         "SharedMemoryStore RetrievalQuery crowding",
         "shared_memory_store RetrievalQuery crowding",
+        "SharedMemoryStore,RetrievalQuery crowding",
+        "SharedMemoryStore;RetrievalQuery crowding",
+        "crate::SharedMemoryStore,crate::RetrievalQuery crowding",
+        "SharedMemoryStore,SharedMemoryStore,RetrievalQuery crowding",
     ] {
         let query = RetrievalQuery::new("a", task);
         let before = index
@@ -311,6 +315,12 @@ fn multiple_named_facts_are_recovered_atomically_without_moving_existing_named_f
         "SharedMemoryStore UnknownMemory crowding",
         "all SharedMemoryStore RetrievalQuery crowding",
         "Please review SharedMemoryStore RetrievalQuery crowding",
+        "SharedMemoryStore,UnknownMemory crowding",
+        "all SharedMemoryStore,RetrievalQuery crowding",
+        "SharedMemoryStore;RetrievalQuery all_crowding",
+        "SharedMemoryStore,RetrievalQuery crowding 2",
+        "SharedMemoryStore,RetrievalQuery crowding*",
+        "Please review SharedMemoryStore,RetrievalQuery crowding",
     ] {
         let query = RetrievalQuery::new("a", task);
         let before = index
@@ -346,17 +356,23 @@ fn an_explicit_context_title_is_protected_alongside_compound_names() {
         .unwrap();
     store.verify(context.id, "context source").unwrap();
     index.backfill("a", &FocusModel).unwrap();
-    let query = RetrievalQuery::new("a", "SharedMemoryStore RetrievalQuery crowding");
-    let before = index
-        .retrieve(&query.clone().with_failure(""), &FocusModel, 0.8)
-        .unwrap();
-    let rank = before
-        .iter()
-        .position(|h| h.record.id == context.id)
-        .unwrap();
-    assert_eq!(rank, 7);
-    let after = index.retrieve(&query, &FocusModel, 0.8).unwrap();
-    assert_eq!(after[rank].record.id, context.id);
-    assert!(after.iter().any(|h| h.record.id == first));
-    assert!(after.iter().any(|h| h.record.id == second.id));
+    for task in [
+        "SharedMemoryStore RetrievalQuery crowding",
+        "SharedMemoryStore,RetrievalQuery,crowding",
+        "SharedMemoryStore;RetrievalQuery;crowding",
+    ] {
+        let query = RetrievalQuery::new("a", task);
+        let before = index
+            .retrieve(&query.clone().with_failure(""), &FocusModel, 0.8)
+            .unwrap();
+        let rank = before
+            .iter()
+            .position(|h| h.record.id == context.id)
+            .unwrap();
+        assert_eq!(rank, 7);
+        let after = index.retrieve(&query, &FocusModel, 0.8).unwrap();
+        assert_eq!(after[rank].record.id, context.id);
+        assert!(after.iter().any(|h| h.record.id == first));
+        assert!(after.iter().any(|h| h.record.id == second.id));
+    }
 }

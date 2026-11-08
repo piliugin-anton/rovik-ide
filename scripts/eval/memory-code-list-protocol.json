@@ -1,0 +1,18 @@
+{
+  "baseline": "7ab2d56",
+  "frozen_before_trials": true,
+  "inputs_sha256": {
+    "scripts/eval/memory-code-list-cases.json": "ebfa057e91431aaa611b60ece9f3f5765f40eab38dd3e02f14238a84ea65a264",
+    "scripts/eval/memory-code-list-retention-cases.json": "6db51ba13994f38a148ad51462d46cf0503869b433db7bdab38adf80fd3d7083"
+  },
+  "hypothesis": "Complete code-name lists separated by commas or semicolons should receive the same atomic coverage as whitespace-separated names. Normalize only those explicit separators, preserve scope words, numeric/wildcard limits, literal context and represented-name ranks.",
+  "policy": {
+    "threshold": 0.3,
+    "limit": 8,
+    "budget": 1000,
+    "short_query_words": 2,
+    "short_query_scale": 0.9166666666666666
+  },
+  "selection": "Development and all old development outcomes plus unchanged crate contracts before exposed reserved scoring. Reject each fact/rank loss, negative ID/order change, scope/trust/tag/visibility violation or token overrun.",
+  "limitation": "New correlated views of historical incidents. Keep original suites and counts separate; no independent or live-agent claim."
+}

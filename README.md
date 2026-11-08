@@ -2063,6 +2063,10 @@ within that same pool. Already supplied named facts and exact requested titles
 keep their ranks; only other trailing slots can be replaced. Every requested name
 must have an eligible match, with enough slots for the entire set. See the
 [multiple-symbol experiment](docs/design/long-term-memory-multi-symbols-nov8-2026.md).
+Names may be separated by spaces, commas or semicolons, including qualified names
+such as `crate::SharedMemoryStore`. The same limits and context protections apply
+after splitting the list. See the
+[harder list cases](docs/design/long-term-memory-code-lists-nov8-2026.md).
 
 An optional absolute `modelPath` can select an existing directory containing
 these exact pinned `model.onnx` and `tokenizer.json` files, including for offline
