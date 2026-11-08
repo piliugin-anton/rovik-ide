@@ -110,6 +110,21 @@ fn dataset_input(config: &Value) -> std::io::Result<String> {
     }
 }
 
+fn fixture_strings(value: &Value) -> Result<Vec<&str>, Box<dyn std::error::Error>> {
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    value
+        .as_array()
+        .ok_or("fixture list must be an array")?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| "fixture list entries must be strings".into())
+        })
+        .collect()
+}
+
 fn fixture_query(
     case: &Value,
     config: &Value,
@@ -125,7 +140,86 @@ fn fixture_query(
         query = query.with_files([file]);
     }
     query.limit = config["candidate_limit"].as_u64().unwrap_or(8) as usize;
+    if !case["verifications"].is_null() {
+        query.verifications = serde_json::from_value(case["verifications"].clone())?;
+    }
+    query.excluded_tags = fixture_strings(&case["excluded_tags"])?
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
     Ok(query)
+}
+
+fn populate_corpus(
+    store: &SharedMemoryStore,
+    corpus: &Value,
+    primary_title: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if corpus.is_null() {
+        return Ok(());
+    }
+    for entry in corpus.as_array().ok_or("corpus must be an array")? {
+        let title = entry["title"].as_str().ok_or("missing corpus title")?;
+        let repo = if entry["repo"].is_null() {
+            "project"
+        } else {
+            entry["repo"].as_str().ok_or("invalid corpus repository")?
+        };
+        if repo == "project" && title == primary_title {
+            continue;
+        }
+        let content = entry["content"].as_str().ok_or("missing corpus content")?;
+        let mut input = NewMemory::project_fact(repo, title, content);
+        input = input
+            .with_files(fixture_strings(&entry["files"])?)
+            .with_tags(fixture_strings(&entry["tags"])?);
+        let record = store.remember(input)?;
+        if serde_json::from_value::<Option<bool>>(entry["verified"].clone())?.unwrap_or(false) {
+            store.verify(record.id, "fixture corpus evidence")?;
+        }
+        if serde_json::from_value::<Option<bool>>(entry["deprecated"].clone())?.unwrap_or(false) {
+            store.deprecate(record.id, "fixture obsolete claim")?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct RequiredEvidence {
+    count: usize,
+    delivered: usize,
+    ranks: serde_json::Map<String, Value>,
+}
+
+fn required_evidence(
+    required: &Value,
+    live: &[verified_code_memory::MemoryRecord],
+    found: &[verified_code_memory::RetrievedMemory],
+    packet: &str,
+    shown: &[uuid::Uuid],
+) -> Result<RequiredEvidence, Box<dyn std::error::Error>> {
+    let mut evidence = RequiredEvidence::default();
+    if required.is_null() {
+        return Ok(evidence);
+    }
+    for fact in required.as_array().ok_or("required must be an array")? {
+        let title = fact["title"].as_str().ok_or("missing required title")?;
+        let content = fact["content"].as_str().ok_or("missing required content")?;
+        let record = live
+            .iter()
+            .find(|r| r.title == title && r.content == content)
+            .ok_or("required fact absent from corpus")?;
+        evidence.count += 1;
+        evidence.delivered += usize::from(shown.contains(&record.id) && packet.contains(content));
+        evidence.ranks.insert(
+            title.to_owned(),
+            json!(found
+                .iter()
+                .position(|h| h.record.id == record.id)
+                .map(|i| i + 1)),
+        );
+    }
+    Ok(evidence)
 }
 
 /// Fixes fixture IDs and claim times before indexing: randomly generated UUIDs
@@ -341,6 +435,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &keys,
             )?)?;
         }
+        populate_corpus(&store, &dataset["corpus"], title)?;
+        populate_corpus(&store, &case["corpus"], title)?;
         // An identical record in another project must never leak.
         store.remember(fact("other", title, text("content")?, &keys)?)?;
         let expected = if deterministic {
@@ -355,8 +451,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             capture_order(fixture_uri, offset as usize)?;
         }
         let query = fixture_query(case, &config)?;
+        let excluded: Vec<String> = fixture_strings(&case["exclude_titles"])?
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let accept =
+            |record: &verified_code_memory::MemoryRecord| !excluded.contains(&record.title);
         let started = std::time::Instant::now();
-        let (baseline, telemetry) = store.retrieve_with_telemetry(&query)?;
+        let (baseline, telemetry) = store.retrieve_filtered_with_telemetry(&query, accept)?;
         let mut embedding_fallback = false;
         let mut found = if let Some((embedder, revision, dimensions, threshold)) = &backend {
             let index = verified_code_memory::semantic::SemanticIndex::new(
@@ -390,19 +492,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 embedder
                     .embed(&format!("{}\n", query.task))
                     .and_then(|vector| {
-                        index.search(&query, &vector, *threshold).map(|hits| {
-                            hits.into_iter()
-                                .map(|(record, score)| verified_code_memory::RetrievedMemory {
-                                    record,
-                                    score,
-                                    reason: "semantic-only ablation".into(),
-                                    components: Default::default(),
-                                })
-                                .collect()
-                        })
+                        index
+                            .search_filtered(&query, &vector, *threshold, accept)
+                            .map(|hits| {
+                                hits.into_iter()
+                                    .map(|(record, score)| verified_code_memory::RetrievedMemory {
+                                        record,
+                                        score,
+                                        reason: "semantic-only ablation".into(),
+                                        components: Default::default(),
+                                    })
+                                    .collect()
+                            })
                     })
             } else {
-                index.retrieve(&query, embedder, *threshold)
+                index.retrieve_filtered(&query, embedder, *threshold, accept)
             };
             match retrieved {
                 Ok(found) => found,
@@ -428,13 +532,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         found.truncate(8);
         let memory_budget = config["memory_budget"].as_u64().unwrap_or(1000) as usize;
         let (packet, shown) = store.render_packet_traced(&found, memory_budget);
-        let answer_delivered = shown.contains(&expected) && packet.contains(text("content")?);
+        let primary_delivered = shown.contains(&expected) && packet.contains(text("content")?);
+        let live = store.list("project", "")?;
+        let additional = required_evidence(&case["required"], &live, &found, &packet, &shown)?;
+        let required_count = 1 + additional.count;
+        let required_delivered = usize::from(primary_delivered) + additional.delivered;
+        let required_ranks = additional.ranks;
+        let answer_delivered = required_delivered == required_count;
         let rank = found
             .iter()
             .position(|hit| hit.record.id == expected)
             .map(|at| at + 1);
-        let prohibited = found.iter().any(|hit| hit.record.repo != "project");
-        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
+        let prohibited = found.iter().any(|hit| {
+            hit.record.repo != "project"
+                || !accept(&hit.record)
+                || hit.record.verification == verified_code_memory::Verification::Deprecated
+                || (!query.verifications.is_empty()
+                    && !query.verifications.contains(&hit.record.verification))
+                || hit
+                    .record
+                    .tags
+                    .iter()
+                    .any(|tag| query.excluded_tags.contains(tag))
+        });
+        rows.push(json!({"id":case["id"],"incident":case["incident"],"split":case["split"],"category":case["category"],"answerable":case["answerable"],"rank":rank,"candidate_rank":candidate_rank,"answer_delivered":answer_delivered,"primary_delivered":primary_delivered,"required_delivered":required_delivered,"required_count":required_count,"required_ranks":required_ranks,"packet_tokens":verified_code_memory::retrieval::estimate_tokens(&packet),"returned":found.len(),"returned_ids":found.iter().map(|hit|hit.record.id.to_string()).collect::<Vec<_>>(),"prohibited":prohibited,"embedding_fallback":embedding_fallback,"latency_us":started.elapsed().as_micros(),"telemetry":telemetry}));
     }
     let mut groups = serde_json::Map::new();
     for split in ["development", "heldout"] {
@@ -487,6 +608,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_fixture_filters_fail_instead_of_silently_removing_protections() {
+        for value in [json!("hidden"), json!([true])] {
+            assert!(fixture_strings(&value).is_err());
+        }
+        assert!(fixture_query(
+            &json!({"task":"lookup","verifications":"verified"}),
+            &json!({})
+        )
+        .is_err());
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        assert!(populate_corpus(
+            &store,
+            &json!([{"title":"bad","content":"claim","verified":"yes"}]),
+            "none"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn composed_answers_require_each_claims_full_text_in_the_rendered_packet() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        let corpus = json!([
+            {"title":"alpha","content":"Alpha constraint.","verified":true},
+            {"title":"beta","content":"Beta constraint.","verified":true}
+        ]);
+        populate_corpus(&store, &corpus, "no-primary").unwrap();
+        let query = RetrievalQuery::new("project", "alpha beta");
+        let hits = store.retrieve(&query).unwrap();
+        let (packet, shown) = store.render_packet_traced(&hits, 1000);
+        let required = json!([{"title":"alpha","content":"Alpha constraint."},{"title":"beta","content":"Beta constraint."}]);
+        let live = store.list("project", "").unwrap();
+        let full = required_evidence(&required, &live, &hits, &packet, &shown).unwrap();
+        assert_eq!((full.delivered, full.count), (2, 2));
+        let missing_text =
+            required_evidence(&required, &live, &hits, "Alpha constraint.", &shown).unwrap();
+        assert_eq!((missing_text.delivered, missing_text.count), (1, 2));
+        assert!(required_evidence(
+            &json!([{"title":"missing","content":"absent"}]),
+            &live,
+            &hits,
+            &packet,
+            &shown
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fixture_corpus_trust_tags_and_caller_filters_reach_the_real_lookup() {
+        let store = SharedMemoryStore::open_in_memory().unwrap();
+        populate_corpus(
+            &store,
+            &json!([
+                {"title":"wanted","content":"Constraint.","verified":true},
+                {"title":"private","content":"Constraint.","verified":true,"tags":["hidden"]},
+                {"title":"denied","content":"Constraint.","verified":true},
+                {"title":"provisional","content":"Constraint."}
+            ]),
+            "no-primary",
+        )
+        .unwrap();
+        let query = fixture_query(
+            &json!({"task":"constraint","verifications":["verified"],"excluded_tags":["hidden"]}),
+            &json!({}),
+        )
+        .unwrap();
+        let hits = store
+            .retrieve_filtered(&query, |r| r.title != "denied")
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].record.title, "wanted");
+    }
 
     #[test]
     fn fixture_failure_text_reaches_the_real_retriever() {

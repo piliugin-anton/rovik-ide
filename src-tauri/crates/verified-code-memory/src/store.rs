@@ -925,7 +925,8 @@ impl MemoryStore {
         // Keep ordinary lexical and explicit-file behavior intact. A compound
         // code name can name the words of a prose claim without sharing its
         // literal FTS token; require all its meaningful components together.
-        if candidates.is_empty() {
+        let had_ordinary = !candidates.is_empty();
+        if !had_ordinary {
             let fallback =
                 identifier_fts_query(&[&query.task, query.failure.as_deref().unwrap_or("")]);
             candidates =
@@ -939,6 +940,39 @@ impl MemoryStore {
         candidates.sort_by(compare_memories);
         deduplicate_memories(&mut candidates);
         candidates.truncate(query.limit);
+
+        let exact_title = candidates.iter().any(|hit| {
+            hit.record.title.eq_ignore_ascii_case(query.task.trim())
+                || query
+                    .failure
+                    .as_deref()
+                    .is_some_and(|failure| hit.record.title.eq_ignore_ascii_case(failure.trim()))
+        });
+        // A concrete file or an exact claim title already provides deliberate
+        // context. Supplement only unresolved text matches, never those paths.
+        if had_ordinary && query.files.is_empty() && !exact_title && candidates.len() < query.limit
+        {
+            let fallback =
+                identifier_fts_query(&[&query.task, query.failure.as_deref().unwrap_or("")]);
+            let eligible = |record: &MemoryRecord| {
+                accept(record)
+                    && !candidates
+                        .iter()
+                        .any(|hit| hit.record.same_context_claim(record))
+            };
+            let mut supplemental =
+                self.full_text_candidates(query, &eligible, now, &mut telemetry, fallback)?;
+            supplemental.sort_by(compare_memories);
+            let last_score = candidates.last().map_or(1.0, |hit| hit.score);
+            for (rank, mut hit) in supplemental
+                .into_iter()
+                .take(query.limit - candidates.len())
+                .enumerate()
+            {
+                hit.score = last_score / (rank + 2) as f32;
+                candidates.push(hit);
+            }
+        }
 
         telemetry.used_full_text_search = telemetry.fts_matches > 0;
         telemetry.returned = candidates.len();
@@ -1551,10 +1585,16 @@ impl SharedMemoryStore {
         query: &RetrievalQuery,
         accept: impl Fn(&MemoryRecord) -> bool,
     ) -> Result<Vec<RetrievedMemory>> {
-        Ok(self
-            .lock()?
-            .retrieve_filtered_with_telemetry(query, accept)?
-            .0)
+        Ok(self.retrieve_filtered_with_telemetry(query, accept)?.0)
+    }
+
+    /// Returns retrieval telemetry with caller visibility applied before limits.
+    pub fn retrieve_filtered_with_telemetry(
+        &self,
+        query: &RetrievalQuery,
+        accept: impl Fn(&MemoryRecord) -> bool,
+    ) -> Result<(Vec<RetrievedMemory>, RetrievalTelemetry)> {
+        self.lock()?.retrieve_filtered_with_telemetry(query, accept)
     }
 
     /// See [`MemoryStore::retrieve_with_telemetry`].

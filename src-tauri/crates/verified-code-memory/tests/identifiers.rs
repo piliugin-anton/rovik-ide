@@ -1,6 +1,132 @@
 use verified_code_memory::{MemoryStore, NewMemory, RetrievalQuery, Verification};
 
 #[test]
+fn competing_text_matches_retain_priority_while_symbols_fill_free_slots() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let wanted = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store",
+            "Reuse a locked connection.",
+        ))
+        .unwrap();
+    let context = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Telemetry notes",
+            "Track telemetry observations.",
+        ))
+        .unwrap();
+    for query in [
+        RetrievalQuery::new("a", "SharedMemoryStore telemetry"),
+        RetrievalQuery::new("a", "telemetry").with_failure("SharedMemoryStore"),
+    ] {
+        let hits = store.retrieve(&query).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].record.id, context.id);
+        assert_eq!(hits[1].record.id, wanted.id);
+        assert!(hits[0].score > hits[1].score);
+    }
+    for task in ["SharedMemoryEncryptor telemetry", "FixTheTests telemetry"] {
+        let hits = store.retrieve(&RetrievalQuery::new("a", task)).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].record.id, context.id);
+    }
+}
+
+#[test]
+fn existing_copies_and_ineligible_rows_cannot_hide_a_supplementary_claim() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let wanted = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store",
+            "Visible constraint.",
+        ))
+        .unwrap();
+    store.verify(wanted.id, "fixture").unwrap();
+    for _ in 0..100 {
+        let context = store
+            .remember(NewMemory::procedure(
+                "a",
+                "Shared memory store telemetry",
+                "Existing telemetry context.",
+            ))
+            .unwrap();
+        store.verify(context.id, "same fixture").unwrap();
+    }
+    let hidden = store
+        .remember(
+            NewMemory::procedure("a", "Shared memory store private", "Tag-private.")
+                .with_tags(["private"]),
+        )
+        .unwrap();
+    store.verify(hidden.id, "fixture").unwrap();
+    let denied = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store restricted",
+            "Caller-private.",
+        ))
+        .unwrap();
+    store.verify(denied.id, "fixture").unwrap();
+    store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store provisional",
+            "Unverified.",
+        ))
+        .unwrap();
+    let foreign = store
+        .remember(NewMemory::procedure(
+            "b",
+            "Shared memory store foreign",
+            "Foreign.",
+        ))
+        .unwrap();
+    store.verify(foreign.id, "fixture").unwrap();
+    let query = RetrievalQuery::new("a", "SharedMemoryStore telemetry")
+        .with_verifications([Verification::Verified])
+        .without_tags(["private"])
+        .with_limit(2);
+    let (hits, _) = store
+        .retrieve_filtered_with_telemetry(&query, |r| r.id != denied.id)
+        .unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[1].record.id, wanted.id);
+}
+
+#[test]
+fn a_full_result_pool_keeps_its_incumbent_context() {
+    let store = MemoryStore::open_in_memory().unwrap();
+    let wanted = store
+        .remember(NewMemory::procedure(
+            "a",
+            "Shared memory store",
+            "Unrelated to crowding.",
+        ))
+        .unwrap();
+    // The wanted claim must not itself match the ordinary contextual word.
+    store
+        .edit(wanted.id, "Shared memory store", "Reuse a connection.")
+        .unwrap();
+    for n in 0..3 {
+        store
+            .remember(NewMemory::procedure(
+                "a",
+                format!("Crowding {n}"),
+                format!("Distinct crowding observation {n}."),
+            ))
+            .unwrap();
+    }
+    let hits = store
+        .retrieve(&RetrievalQuery::new("a", "SharedMemoryStore crowding").with_limit(2))
+        .unwrap();
+    assert_eq!(hits.len(), 2);
+    assert!(hits.iter().all(|hit| hit.record.id != wanted.id));
+}
+
+#[test]
 fn qualified_and_failure_symbols_find_prose_without_admitting_partial_or_generic_names() {
     let store = MemoryStore::open_in_memory().unwrap();
     let wanted = store
