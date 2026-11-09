@@ -8,11 +8,12 @@ mod entries;
 mod watch;
 
 pub use entries::*;
+use rovik_client::desktop_api::{settings::SettingsRequest, DesktopRequest};
+use rovik_client::desktop_connection::DesktopConnection;
 pub use watch::*;
 
 use crate::util::ErrText;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use rovik_client::provider_keys::ProviderKeys;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -412,15 +413,22 @@ fn editorconfigs_for(path: &str) -> Vec<EditorConfigFile> {
 // `ai-settings.json`, its API keys in the keychain (H06): off the main
 // thread, as the keychain may take a moment, or ask the user.
 #[tauri::command]
-pub async fn load_ai_settings(keys: State<'_, Arc<ProviderKeys>>) -> Result<String, String> {
-    let keys = Arc::clone(&keys);
-    crate::util::blocking(move || keys.load()).await
+pub async fn load_ai_settings(
+    backend: State<'_, DesktopConnection>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(SettingsRequest::LoadAi))
+        .await
 }
 
 /// When the AI settings were last saved, by any window (ProviderKeys::stamp).
 #[tauri::command]
-pub fn ai_settings_stamp(keys: State<'_, Arc<ProviderKeys>>) -> u64 {
-    keys.stamp()
+pub async fn ai_settings_stamp(
+    backend: State<'_, DesktopConnection>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(SettingsRequest::AiStamp))
+        .await
 }
 
 /// `base`: the settings the frontend made `json` of, as it loaded them:
@@ -428,16 +436,13 @@ pub fn ai_settings_stamp(keys: State<'_, Arc<ProviderKeys>>) -> u64 {
 /// saved meanwhile (ProviderKeys::save_onto).
 #[tauri::command]
 pub async fn save_ai_settings(
-    keys: State<'_, Arc<ProviderKeys>>,
+    backend: State<'_, DesktopConnection>,
     json: String,
     base: Option<String>,
-) -> Result<(), String> {
-    let keys = Arc::clone(&keys);
-    crate::util::blocking(move || match base {
-        Some(base) => keys.save_onto(&json, &base),
-        None => keys.save(&json),
-    })
-    .await
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(SettingsRequest::SaveAi { json, base }))
+        .await
 }
 
 #[derive(Serialize, Deserialize)]

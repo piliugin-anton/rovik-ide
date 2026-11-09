@@ -32,6 +32,7 @@ async fn desktop_services_persist_chats_and_publish_without_a_window() {
     let backend = Arc::new(backend);
     let connection = DesktopConnection::embedded(backend.clone());
     desktop_operations::check_filesystem_and_overlay_contract(&connection).await;
+    desktop_operations::check_settings_and_chat_contract(&connection).await;
     api::chat_create_dialog(
         &backend.core.db,
         NewDialog {

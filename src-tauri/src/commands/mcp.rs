@@ -8,16 +8,16 @@
 //! (mcp-plan-2.md, Q12), and so do the servers' sign-ins made here (Q14):
 //! this computer's own, while a host's goes to its daemon.
 
+use rovik_client::desktop_api::{mcp::McpRequest, DesktopRequest};
+use rovik_client::desktop_connection::DesktopConnection;
 use rovik_client::mcp_sign_in::{KeychainGrants, KeychainRegistrations};
-use rovik_client::secrets::{SecretName, SecretStore, StoreKind};
+use rovik_client::secrets::SecretStore;
 use rovik_client::Remote;
 use rovik_core::mcp::oauth::GrantStore;
-use rovik_core::mcp::{McpServer, Tested};
+use rovik_core::mcp::McpServer;
 use rovik_core::Core;
-use rovik_protocol::mcp::{is_secret_key, SignedInServer};
 use rovik_protocol::Secret;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use tauri::State;
 
@@ -25,11 +25,12 @@ use tauri::State;
 /// place and whether its passphrase was given (Cloud hosts' `hosts_unlock`).
 /// Off the async threads, as finding the keychain may take a moment.
 #[tauri::command]
-pub async fn mcp_store(secrets: State<'_, Arc<SecretStore>>) -> Result<StoreKind, String> {
-    let secrets = Arc::clone(&secrets);
-    rovik_core::rt::spawn_blocking(move || secrets.kind())
+pub async fn mcp_store(
+    backend: State<'_, DesktopConnection>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(McpRequest::Store))
         .await
-        .map_err(|e| e.to_string())
 }
 
 /// Keeps the secret values typed for `server` (its id), by key (`env/NAME`,
@@ -39,34 +40,16 @@ pub async fn mcp_store(secrets: State<'_, Arc<SecretStore>>) -> Result<StoreKind
 /// may take a moment or ask the user.
 #[tauri::command]
 pub async fn mcp_save_secrets(
-    secrets: State<'_, Arc<SecretStore>>,
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     server: String,
     values: HashMap<String, Secret>,
-) -> Result<(), String> {
-    if let Some(key) = values.keys().find(|key| !is_secret_key(key)) {
-        return Err(format!("{key} isn't an env var's or a header's key."));
-    }
-    let secrets = Arc::clone(&secrets);
-    let id = server.clone();
-    let kept = rovik_core::rt::spawn_blocking(move || {
-        for (key, value) in &values {
-            let name = SecretName::McpValue {
-                server: id.clone(),
-                key: key.clone(),
-            };
-            match value.0.is_empty() {
-                true => secrets.delete(&name),
-                false => secrets.set(&name, value),
-            }
-            .map_err(|e| e.to_string())?;
-        }
-        Ok::<_, String>(())
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    core.mcp.forget(&server);
-    kept
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(McpRequest::SaveSecrets {
+            server,
+            values,
+        }))
+        .await
 }
 
 /// Starts `server` as the page has it, with the secret values typed there
@@ -76,27 +59,19 @@ pub async fn mcp_save_secrets(
 /// secrets under the typed ones.
 #[tauri::command]
 pub async fn mcp_test(
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     server: McpServer,
     values: HashMap<String, Secret>,
     root: Option<String>,
     host: Option<String>,
-) -> Result<Tested, String> {
-    if let Some(host) = host {
-        let given = values.into_iter().collect();
-        return remote
-            .mcp_test(&host, server, given)
-            .await
-            .map_err(|e| e.message);
-    }
-    let given: HashMap<String, String> = values
-        .iter()
-        .filter(|(_, value)| !value.0.is_empty())
-        .map(|(key, value)| (key.clone(), value.0.clone()))
-        .collect();
-    core.mcp
-        .test(&server, &given, root.as_deref().map(Path::new), None)
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(McpRequest::Test {
+            server,
+            values,
+            root,
+            host,
+        }))
         .await
 }
 
@@ -104,8 +79,14 @@ pub async fn mcp_test(
 /// apart from the `taken` names (Q01): a secret's value is in it, for the
 /// page to save as a form's.
 #[tauri::command]
-pub fn mcp_import(text: String, taken: Vec<String>) -> Result<Vec<McpServer>, String> {
-    rovik_core::mcp::import(&text, &taken)
+pub async fn mcp_import(
+    backend: State<'_, DesktopConnection>,
+    text: String,
+    taken: Vec<String>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(McpRequest::Import { text, taken }))
+        .await
 }
 
 /// Keeps the values the user gave for `project`'s variables, by name
@@ -115,63 +96,34 @@ pub fn mcp_import(text: String, taken: Vec<String>) -> Result<Vec<McpServer>, St
 /// keychain may take a moment or ask the user.
 #[tauri::command]
 pub async fn mcp_save_project_values(
-    secrets: State<'_, Arc<SecretStore>>,
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     project: String,
     values: HashMap<String, Secret>,
-) -> Result<(), String> {
-    let server = rovik_core::mcp::project::values_place(&project, values.keys())?;
-    let secrets = Arc::clone(&secrets);
-    let place = server.clone();
-    let kept = rovik_core::rt::spawn_blocking(move || {
-        for (key, value) in &values {
-            let name = SecretName::McpValue {
-                server: server.clone(),
-                key: key.clone(),
-            };
-            match value.0.is_empty() {
-                true => secrets.delete(&name),
-                false => secrets.set(&name, value),
-            }
-            .map_err(|e| e.to_string())?;
-        }
-        Ok::<_, String>(())
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    core.mcp.forget(&place);
-    kept
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(McpRequest::SaveProjectValues {
+            project,
+            values,
+        }))
+        .await
 }
 
 /// What the fields of a project's variables start with when the user is
 /// asked to allow its servers (Q12).
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectPrefill {
-    /// This computer's environment's values, by variable.
-    values: HashMap<String, Secret>,
-    /// The variables whose values the keychain has already: none is asked
-    /// for again.
-    saved: Vec<String>,
-}
-
 /// The fields of `project`'s variables `names` (Q12): what this computer's
 /// environment has for them, and which have a value saved already.
 #[tauri::command]
 pub async fn mcp_project_prefill(
-    core: State<'_, Core>,
+    backend: State<'_, DesktopConnection>,
     project: String,
     names: Vec<String>,
-) -> Result<ProjectPrefill, String> {
-    use rovik_core::mcp::project;
-    project::values_place(&project, &names)?;
-    let names: std::collections::BTreeSet<String> = names.into_iter().collect();
-    let saved = core.mcp.project_values(&project, &names).await;
-    let values = project::from_environment(&names);
-    Ok(ProjectPrefill {
-        values: values.into_iter().map(|(k, v)| (k, Secret(v))).collect(),
-        saved: saved.into_keys().collect(),
-    })
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(McpRequest::ProjectPrefill {
+            project,
+            names,
+        }))
+        .await
 }
 
 /// The values typed on the page that were given, by key.
@@ -282,69 +234,29 @@ pub async fn mcp_project_sign_in(
 /// connects. Only this computer's can fail, and says so.
 #[tauri::command]
 pub async fn mcp_sign_out(
-    secrets: State<'_, Arc<SecretStore>>,
-    core: State<'_, Core>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     server: String,
-) -> Result<(), String> {
-    let (grants, id) = (KeychainGrants(Arc::clone(&secrets)), server.clone());
-    let here = rovik_core::rt::spawn_blocking(move || grants.forget(&id)).await;
-    core.mcp.forget(&server);
-    remote.mcp_sign_out(&server).await;
-    (here.map_err(|e| e.to_string()).and_then(|forgot| forgot))
-        .map_err(|e| format!("Not signed out on this computer: {e}"))
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(McpRequest::SignOut { server }))
+        .await
 }
 
 /// Where the MCP servers are signed in (Q14): which of `servers` (their
 /// ids) here, and on each of `hosts` that can say, each with the scopes
 /// it asked for that its sign-in there lacks.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SignedIn {
-    here: Vec<SignedInServer>,
-    hosts: HashMap<String, Vec<SignedInServer>>,
-}
-
 /// Which of `servers` are signed in here, and on each of `hosts`; a host
 /// that doesn't answer is left out, as not known.
 #[tauri::command]
 pub async fn mcp_signed_in(
-    secrets: State<'_, Arc<SecretStore>>,
-    remote: State<'_, Arc<Remote>>,
+    backend: State<'_, DesktopConnection>,
     servers: Vec<String>,
     hosts: Vec<String>,
-) -> Result<SignedIn, String> {
-    let (grants, ids) = (KeychainGrants(Arc::clone(&secrets)), servers.clone());
-    let here = rovik_core::rt::spawn_blocking(move || {
-        let signed = |id: String| match grants.get(&id) {
-            Ok(Some(grant)) => Some(SignedInServer {
-                server: id,
-                wants: grant.wants,
-            }),
-            _ => None,
-        };
-        ids.into_iter().filter_map(signed).collect::<Vec<_>>()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    let mut on_hosts = HashMap::new();
-    for host in hosts {
-        match remote.mcp_signed_in(&host).await {
-            Ok(signed) => {
-                let ours = (signed.into_iter())
-                    .filter(|s| servers.contains(&s.server))
-                    .collect();
-                on_hosts.insert(host, ours);
-            }
-            Err(e) => log::info!(
-                "{} didn't say which MCP servers are signed in: {}",
-                remote.host_name(&host),
-                e.message
-            ),
-        }
-    }
-    Ok(SignedIn {
-        here,
-        hosts: on_hosts,
-    })
+) -> Result<serde_json::Value, serde_json::Value> {
+    backend
+        .desktop_raw(DesktopRequest::from(McpRequest::SignedIn {
+            servers,
+            hosts,
+        }))
+        .await
 }

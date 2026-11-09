@@ -13,12 +13,13 @@ existing protocol and routing. Native window actions stay in Tauri.
 
 ## Commit and push phases
 
-1. Overlay operations and non-streaming VFS mount, file, and history commands.
+1. **Completed (`be2bb55`)**: Overlay operations and non-streaming VFS mount, file, and history commands.
    Preserve remote imported-result behavior and idle checks. Validate embedded
    and real-daemon calls, errors, and connection reuse.
-2. Remaining chat, memory, MCP, host, and settings request/reply operations.
+2. Chat data, memory, non-browser MCP, host, and settings request/reply operations.
    Preserve credentials handling, remote routing, and local mirror reads.
-3. Filesystem and execution ownership, including terminal controls. Separate
+3. Per-client project registration, filesystem and execution ownership, including
+   terminal controls. Separate
    native window callbacks from backend services.
 4. Complete the subscription-dependent adapters with the event transport:
    terminal output, filesystem watches, VFS subscriptions, streamed model

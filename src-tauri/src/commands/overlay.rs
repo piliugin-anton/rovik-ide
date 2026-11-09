@@ -16,9 +16,7 @@ pub async fn overlay_status(
     dialog_id: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::Status {
-            dialog_id,
-        }))
+        .desktop(DesktopRequest::from(OverlayRequest::Status { dialog_id }))
         .await
 }
 
@@ -30,7 +28,7 @@ pub async fn overlay_file(
     path: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::File {
+        .desktop(DesktopRequest::from(OverlayRequest::File {
             dialog_id,
             path,
         }))
@@ -43,9 +41,7 @@ pub async fn overlay_discard(
     dialog_id: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::Discard {
-            dialog_id,
-        }))
+        .desktop(DesktopRequest::from(OverlayRequest::Discard { dialog_id }))
         .await
 }
 
@@ -56,7 +52,7 @@ pub async fn overlay_land(
     keep_chat: bool,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::Land {
+        .desktop(DesktopRequest::from(OverlayRequest::Land {
             dialog_id,
             keep_chat,
         }))
@@ -72,10 +68,7 @@ pub async fn overlay_undo(
     id: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::Undo {
-            dialog_id,
-            id,
-        }))
+        .desktop(DesktopRequest::from(OverlayRequest::Undo { dialog_id, id }))
         .await
 }
 
@@ -85,7 +78,7 @@ pub async fn overlay_undo_merge(
     dialog_id: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::UndoMerge {
+        .desktop(DesktopRequest::from(OverlayRequest::UndoMerge {
             dialog_id,
         }))
         .await
@@ -100,7 +93,7 @@ pub async fn overlay_unmark(
     files: Vec<String>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::Unmark {
+        .desktop(DesktopRequest::from(OverlayRequest::Unmark {
             dialog_id,
             files,
         }))
@@ -114,7 +107,7 @@ pub async fn overlay_conflict_file(
     path: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::ConflictFile {
+        .desktop(DesktopRequest::from(OverlayRequest::ConflictFile {
             dialog_id,
             path,
         }))
@@ -130,7 +123,7 @@ pub async fn overlay_conflict_resolve(
     side: Option<String>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::ConflictResolve {
+        .desktop(DesktopRequest::from(OverlayRequest::ConflictResolve {
             dialog_id,
             path,
             content,
@@ -147,7 +140,7 @@ pub async fn overlay_conflicts_to_chat(
     dialog_id: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::ConflictsToChat {
+        .desktop(DesktopRequest::from(OverlayRequest::ConflictsToChat {
             dialog_id,
         }))
         .await
@@ -161,7 +154,7 @@ pub async fn overlay_redo_group(
     group: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::RedoGroup {
+        .desktop(DesktopRequest::from(OverlayRequest::RedoGroup {
             dialog_id,
             group,
         }))
@@ -176,9 +169,7 @@ pub async fn overlay_sync_now(
     dialog_id: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::SyncNow {
-            dialog_id,
-        }))
+        .desktop(DesktopRequest::from(OverlayRequest::SyncNow { dialog_id }))
         .await
 }
 
@@ -190,7 +181,7 @@ pub async fn overlay_sync_to_chat(
     dialog_id: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::SyncToChat {
+        .desktop(DesktopRequest::from(OverlayRequest::SyncToChat {
             dialog_id,
         }))
         .await
@@ -204,7 +195,7 @@ pub async fn overlay_keep_older(
     dialog_id: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::KeepOlder {
+        .desktop(DesktopRequest::from(OverlayRequest::KeepOlder {
             dialog_id,
         }))
         .await
@@ -218,7 +209,7 @@ pub async fn overlay_take_newer(
     dialog_id: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Overlay(OverlayRequest::TakeNewer {
+        .desktop(DesktopRequest::from(OverlayRequest::TakeNewer {
             dialog_id,
         }))
         .await

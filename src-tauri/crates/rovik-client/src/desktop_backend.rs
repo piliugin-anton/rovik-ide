@@ -302,14 +302,14 @@ mod routing_tests {
         use crate::desktop_api::{overlay::OverlayRequest, DesktopRequest};
         // A disconnected remote chat must never mutate a local overlay as a
         // fallback. Redo also retains its existing local-only restriction.
-        assert!(DesktopRequest::Overlay(OverlayRequest::Discard {
+        assert!(DesktopRequest::from(OverlayRequest::Discard {
             dialog_id: "remote".into(),
         })
         .dispatch(&backend)
         .await
         .is_err());
         assert_eq!(
-            DesktopRequest::Overlay(OverlayRequest::RedoGroup {
+            DesktopRequest::from(OverlayRequest::RedoGroup {
                 dialog_id: "remote".into(),
                 group: "group".into(),
             })

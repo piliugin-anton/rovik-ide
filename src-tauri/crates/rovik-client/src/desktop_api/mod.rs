@@ -5,31 +5,184 @@
 use crate::desktop_backend::DesktopBackend;
 use serde::{Deserialize, Serialize};
 
+pub mod chat;
+pub mod clm;
+pub mod hosts;
+pub mod mcp;
+pub mod memory;
+pub mod network;
 pub mod overlay;
+pub mod settings;
 pub mod vfs;
+
+/// A desktop response preserves both string and structured UI errors.
+pub type DesktopResult = Result<serde_json::Value, serde_json::Value>;
 
 /// Operations owned by the local desktop backend, separate from cloud RPC.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "service", content = "request", rename_all = "camelCase")]
 pub enum DesktopRequest {
+    /// Backend-owned clm operations.
+    Clm(Box<clm::ClmRequest>),
+    /// Backend-owned chat operations.
+    Chat(Box<chat::ChatRequest>),
+    /// Shared AI and project settings.
+    Settings(Box<settings::SettingsRequest>),
+    /// Backend-owned mcp operations.
+    Mcp(Box<mcp::McpRequest>),
+    /// Backend-owned hosts operations.
+    Hosts(Box<hosts::HostsRequest>),
+    /// Project memories and their remote synchronization.
+    Memory(Box<memory::MemoryRequest>),
+    /// Network settings and credentials.
+    Network(Box<network::NetworkRequest>),
     /// Chat overlays, including imported remote results.
-    Overlay(overlay::OverlayRequest),
+    Overlay(Box<overlay::OverlayRequest>),
     /// The backend's virtual filesystem and mount.
-    Vfs(vfs::VfsRequest),
+    Vfs(Box<vfs::VfsRequest>),
 }
 
 impl DesktopRequest {
-    pub(crate) async fn dispatch(
-        self,
-        backend: &DesktopBackend,
-    ) -> Result<serde_json::Value, String> {
+    pub(crate) async fn dispatch(self, backend: &DesktopBackend) -> DesktopResult {
         match self {
-            Self::Overlay(request) => request.dispatch(backend).await,
-            Self::Vfs(request) => request.dispatch(backend).await,
+            Self::Clm(request) => request.dispatch(backend).await,
+            Self::Chat(request) => request.dispatch(backend).await,
+            Self::Settings(request) => request.dispatch(backend).await,
+            Self::Mcp(request) => request.dispatch(backend).await,
+            Self::Hosts(request) => request.dispatch(backend).await,
+            Self::Overlay(request) => request
+                .dispatch(backend)
+                .await
+                .map_err(serde_json::Value::String),
+            Self::Vfs(request) => request
+                .dispatch(backend)
+                .await
+                .map_err(serde_json::Value::String),
+            Self::Memory(request) => request.dispatch(backend).await,
+            Self::Network(request) => request.dispatch(backend).await,
         }
     }
 }
 
 fn encode(value: impl Serialize) -> Result<serde_json::Value, String> {
     serde_json::to_value(value).map_err(|e| format!("Could not encode desktop reply: {e}"))
+}
+
+fn encode_result<T: Serialize, E: Serialize>(result: Result<T, E>) -> DesktopResult {
+    match result {
+        Ok(value) => encode(value).map_err(serde_json::Value::String),
+        Err(error) => Err(encode(error).unwrap_or_else(serde_json::Value::String)),
+    }
+}
+
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    rovik_core::rt::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+// Compact binary fields avoid JSON's per-byte integer expansion. The frame
+// bound still caps allocations before decoding; attachment validation applies
+// its own image/PDF limits in the backend.
+mod bytes {
+    use base64::Engine;
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl From<clm::ClmRequest> for DesktopRequest {
+    fn from(request: clm::ClmRequest) -> Self {
+        Self::Clm(Box::new(request))
+    }
+}
+
+impl From<chat::ChatRequest> for DesktopRequest {
+    fn from(request: chat::ChatRequest) -> Self {
+        Self::Chat(Box::new(request))
+    }
+}
+
+impl From<settings::SettingsRequest> for DesktopRequest {
+    fn from(request: settings::SettingsRequest) -> Self {
+        Self::Settings(Box::new(request))
+    }
+}
+
+impl From<mcp::McpRequest> for DesktopRequest {
+    fn from(request: mcp::McpRequest) -> Self {
+        Self::Mcp(Box::new(request))
+    }
+}
+
+impl From<hosts::HostsRequest> for DesktopRequest {
+    fn from(request: hosts::HostsRequest) -> Self {
+        Self::Hosts(Box::new(request))
+    }
+}
+
+impl From<memory::MemoryRequest> for DesktopRequest {
+    fn from(request: memory::MemoryRequest) -> Self {
+        Self::Memory(Box::new(request))
+    }
+}
+
+impl From<network::NetworkRequest> for DesktopRequest {
+    fn from(request: network::NetworkRequest) -> Self {
+        Self::Network(Box::new(request))
+    }
+}
+
+impl From<overlay::OverlayRequest> for DesktopRequest {
+    fn from(request: overlay::OverlayRequest) -> Self {
+        Self::Overlay(Box::new(request))
+    }
+}
+
+impl From<vfs::VfsRequest> for DesktopRequest {
+    fn from(request: vfs::VfsRequest) -> Self {
+        Self::Vfs(Box::new(request))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attachment_bytes_round_trip_without_integer_array_expansion() {
+        let bytes = vec![0, 127, 128, 255];
+        let request = DesktopRequest::from(chat::ChatRequest::StoreAttachment {
+            bytes: bytes.clone(),
+        });
+        let wire = serde_json::to_value(request).unwrap();
+        assert!(wire["request"]["bytes"].is_string());
+        let DesktopRequest::Chat(request) = serde_json::from_value(wire).unwrap() else {
+            panic!("wrong request")
+        };
+        let chat::ChatRequest::StoreAttachment { bytes: decoded } = *request else {
+            panic!("wrong chat operation")
+        };
+        assert_eq!(decoded, bytes);
+    }
+
+    #[test]
+    fn structured_errors_keep_their_discriminant_and_fields() {
+        let error = crate::hosts_page::DeployFailure::NeedsRoot {
+            command: "install".into(),
+            message: "administrator required".into(),
+        };
+        let result = encode_result::<(), _>(Err(error)).unwrap_err();
+        assert_eq!(result["kind"], "needsRoot");
+        assert_eq!(result["command"], "install");
+    }
 }

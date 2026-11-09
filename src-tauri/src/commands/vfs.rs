@@ -16,7 +16,7 @@ pub async fn vfs_status(
     backend: State<'_, DesktopConnection>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::Status))
+        .desktop(DesktopRequest::from(VfsRequest::Status))
         .await
 }
 
@@ -25,7 +25,7 @@ pub async fn vfs_install_driver(
     backend: State<'_, DesktopConnection>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::InstallDriver))
+        .desktop(DesktopRequest::from(VfsRequest::InstallDriver))
         .await
 }
 
@@ -35,7 +35,7 @@ pub async fn vfs_mount(
     mountpoint: Option<String>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::Mount { mountpoint }))
+        .desktop(DesktopRequest::from(VfsRequest::Mount { mountpoint }))
         .await
 }
 
@@ -50,7 +50,7 @@ pub async fn vfs_unmount(
     backend: State<'_, DesktopConnection>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::Unmount))
+        .desktop(DesktopRequest::from(VfsRequest::Unmount))
         .await
 }
 
@@ -64,7 +64,7 @@ pub async fn vfs_write_file(
     executable: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::WriteFile {
+        .desktop(DesktopRequest::from(VfsRequest::WriteFile {
             path,
             content,
             encoding,
@@ -79,7 +79,7 @@ pub async fn vfs_read_file(
     path: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::ReadFile { path }))
+        .desktop(DesktopRequest::from(VfsRequest::ReadFile { path }))
         .await
 }
 
@@ -89,7 +89,7 @@ pub async fn vfs_list(
     path: Option<String>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::List { path }))
+        .desktop(DesktopRequest::from(VfsRequest::List { path }))
         .await
 }
 
@@ -116,7 +116,7 @@ pub async fn vfs_revisions(
     path: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::Revisions { path }))
+        .desktop(DesktopRequest::from(VfsRequest::Revisions { path }))
         .await
 }
 
@@ -129,7 +129,7 @@ pub async fn vfs_read_revision(
     encoding: Option<String>,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::ReadRevision {
+        .desktop(DesktopRequest::from(VfsRequest::ReadRevision {
             path,
             revision,
             encoding,
@@ -145,7 +145,7 @@ pub async fn vfs_restore_revision(
     revision: u64,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::RestoreRevision {
+        .desktop(DesktopRequest::from(VfsRequest::RestoreRevision {
             path,
             revision,
         }))
@@ -159,7 +159,9 @@ pub async fn vfs_set_history_limits(
     limits: HistoryLimits,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::SetHistoryLimits { limits }))
+        .desktop(DesktopRequest::from(VfsRequest::SetHistoryLimits {
+            limits,
+        }))
         .await
 }
 
@@ -169,6 +171,6 @@ pub async fn vfs_remove(
     path: String,
 ) -> Result<serde_json::Value, String> {
     backend
-        .desktop(DesktopRequest::Vfs(VfsRequest::Remove { path }))
+        .desktop(DesktopRequest::from(VfsRequest::Remove { path }))
         .await
 }

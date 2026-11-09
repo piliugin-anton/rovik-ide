@@ -20,13 +20,26 @@ impl DesktopConnection {
         &self,
         request: crate::desktop_api::DesktopRequest,
     ) -> Result<serde_json::Value, String> {
+        self.desktop_raw(request)
+            .await
+            .map_err(|error| match error {
+                serde_json::Value::String(message) => message,
+                error => error.to_string(),
+            })
+    }
+
+    /// Preserves structured errors for commands such as host deployment.
+    pub async fn desktop_raw(
+        &self,
+        request: crate::desktop_api::DesktopRequest,
+    ) -> crate::desktop_api::DesktopResult {
         match &self.0 {
             Backend::Embedded(backend) => request.dispatch(backend).await,
             #[cfg(unix)]
             Backend::Local(client) => client
                 .desktop(request)
                 .await
-                .map_err(|e| transport(e).message)?,
+                .map_err(|e| serde_json::Value::String(transport(e).message))?,
         }
     }
 

@@ -101,7 +101,7 @@ pub struct HostRow {
 
 /// What the page's form changes of a host's secrets: none leaves one as
 /// it is, an empty one forgets it.
-#[derive(Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct HostSecrets {
     #[serde(default)]

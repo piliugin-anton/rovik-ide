@@ -1674,10 +1674,18 @@ never create an embedded backend as a fallback. Checklists continue to read the
 local chat rows, including cached remote rows when their host is offline.
 
 Overlay operations and non-streaming VFS mount, file, and history commands also
-use the adapter. Local protocol 3 adds explicit desktop requests and forwards
+use the adapter. Local protocol 4 adds explicit desktop requests and forwards
 the backend’s serialized replies unchanged. VFS subscriptions still use the
 embedded backend until client-scoped event delivery is available. See the
 [remaining command migration phases](docs/design/desktop-command-migration.md).
+
+Chat data and drafts, attachments, CLM tools, memory, AI/project/network settings,
+host operations, and non-browser MCP operations now run behind that boundary.
+Structured host-deployment errors retain their fields. Desktop operations keep
+their service-specific deadlines instead of using the framing timeout as a
+whole-operation deadline. Attachments use bounded base64 frames, preserving the
+existing image size limit. Project/window registration, browser sign-in, host
+test progress, and other event-dependent adapters are still being migrated.
 
 ### Chat isolation
 

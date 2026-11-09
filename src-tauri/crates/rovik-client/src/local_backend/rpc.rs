@@ -15,7 +15,16 @@ use tokio::{
     sync::Mutex,
 };
 
-const MAX_MESSAGE: usize = rovik_protocol::MAX_CALL;
+// The desktop accepts images up to 50 MiB, encoded as base64 on this wire.
+// Keep the frame bounded while preserving the desktop attachment limit.
+const MAX_MESSAGE: usize = {
+    let attachment = rovik_core::chat_db::attachments::MAX_IMAGE_BYTES.div_ceil(3) * 4 + 4096;
+    if attachment > rovik_protocol::MAX_CALL {
+        attachment
+    } else {
+        rovik_protocol::MAX_CALL
+    }
+};
 const IO_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Serialize, Deserialize)]
@@ -43,7 +52,7 @@ enum ServerFrame {
     },
     DesktopReply {
         id: u64,
-        res: Result<serde_json::Value, String>,
+        res: Result<serde_json::Value, serde_json::Value>,
     },
     Pong,
 }
@@ -150,7 +159,7 @@ impl Client {
     pub async fn desktop(
         &self,
         request: DesktopRequest,
-    ) -> io::Result<Result<serde_json::Value, String>> {
+    ) -> io::Result<Result<serde_json::Value, serde_json::Value>> {
         match self
             .exchange(ClientFrame::Desktop {
                 id: 1,
@@ -179,9 +188,26 @@ impl Client {
         })?;
         // Restore only after a complete matching response. Cancellation leaves
         // the connection unusable and never retries a possibly completed write.
-        let result = tokio::time::timeout(IO_WAIT, async {
-            write(&mut stream, &frame).await?;
-            let reply: ServerFrame = read(&mut stream).await?;
+        let uncertain = || {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Backend reply timed out; operation completion is unknown",
+            )
+        };
+        let result = async {
+            tokio::time::timeout(IO_WAIT, write(&mut stream, &frame))
+                .await
+                .map_err(|_| uncertain())??;
+            // Deployments and other desktop operations already own their
+            // deadlines. Do not cut them off at the framing timeout. Dropping
+            // the caller still invalidates this connection without a retry.
+            let reply: ServerFrame = if matches!(frame, ClientFrame::Desktop { .. }) {
+                read(&mut stream).await?
+            } else {
+                tokio::time::timeout(IO_WAIT, read(&mut stream))
+                    .await
+                    .map_err(|_| uncertain())??
+            };
             let matches = matches!(
                 (&frame, &reply),
                 (
@@ -199,14 +225,8 @@ impl Client {
                 ));
             }
             Ok(reply)
-        })
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Backend reply timed out; operation completion is unknown",
-            )
-        })?;
+        }
+        .await;
         if result.is_ok() {
             *slot = Some(stream);
         }
@@ -277,7 +297,7 @@ mod tests {
             .await
             .unwrap();
         });
-        let request = || DesktopRequest::Vfs(crate::desktop_api::vfs::VfsRequest::Status);
+        let request = || DesktopRequest::from(crate::desktop_api::vfs::VfsRequest::Status);
         assert_eq!(
             client.desktop(request()).await.unwrap_err().kind(),
             io::ErrorKind::InvalidData
@@ -360,6 +380,27 @@ mod tests {
         let calling = client.clone();
         let task = tokio::spawn(async move { calling.call(Request::AgentStatus).await });
         let _: Frame = read(&mut server).await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            client.call(Request::AgentStatus).await.unwrap_err().kind(),
+            io::ErrorKind::NotConnected
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_desktop_operation_invalidates_its_connection() {
+        let (client, mut server) = pair();
+        let client = Arc::new(client);
+        let calling = client.clone();
+        let task = tokio::spawn(async move {
+            calling
+                .desktop(DesktopRequest::from(
+                    crate::desktop_api::hosts::HostsRequest::Upgrade { id: "host".into() },
+                ))
+                .await
+        });
+        let _: ClientFrame = read(&mut server).await.unwrap();
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         assert_eq!(
