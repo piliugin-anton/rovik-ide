@@ -539,7 +539,6 @@ impl Run {
         // changes on top, mounted as a folder (src/overlay). Plan mode
         // changes nothing, so it reads the project itself, unless the chat
         // has changes that haven't landed: then it plans against those.
-        let mut isolation_problem = None;
         let isolate = request
             .isolate
             .unwrap_or_else(crate::overlay::chats::enabled);
@@ -558,34 +557,18 @@ impl Run {
                         ),
                     })
                 });
-                match crate::overlay::chats::open(&dialog_id, std::path::Path::new(r), on_warn) {
-                    Ok(o) => Some(o.view.to_string_lossy().into_owned()),
-                    Err(e) => {
-                        isolation_problem = Some(e);
-                        project_root.clone()
-                    }
-                }
+                let overlay = crate::overlay::chats::open(
+                    &dialog_id,
+                    std::path::Path::new(r),
+                    on_warn,
+                )
+                .map_err(|e| format!(
+                    "Couldn't start this isolated chat: {e}. Restore access to its isolated files and retry. The project folder was not used as a fallback."
+                ))?;
+                Some(overlay.view.to_string_lossy().into_owned())
             }
             _ => project_root.clone(),
         };
-        if let Some(problem) =
-            isolation_problem.filter(|_| crate::overlay::chats::tell_not_isolated(&dialog_id))
-        {
-            core.emit(AgentEvent::Notice {
-                dialog_id: Some(dialog_id.clone()),
-                kind: "warning".into(),
-                title: "This chat isn't isolated".into(),
-                message: if problem.contains("couldn't mount") {
-                    format!(
-                        "{problem}. It works in the project folder directly, and only one such chat at a time can run commands that change files. Installing the virtual-files driver (Settings → Virtual files) lets chats work in isolation."
-                    )
-                } else {
-                    format!(
-                        "{problem}. It works in the project folder directly, and only one such chat at a time can run commands that change files."
-                    )
-                },
-            });
-        }
         let is_send = matches!(request.start, StartKind::Send { .. });
         let is_continue_run = matches!(request.start, StartKind::ContinueRun);
         // A start that takes up a run where an earlier one ended: a Retry,

@@ -8,8 +8,7 @@
 //! on Linux), so commands can use it unquoted.
 //!
 //! Isolation needs the virtual-files driver (FUSE or macFUSE). If it can't
-//! mount, the chat works in the project directly, as before isolation, and
-//! the run says so. Windows has none: a chat of a project runs in WSL
+//! mount, the isolated run fails before execution. Windows has none: a chat of a project runs in WSL
 //! (the client's `Remote::go_home`), whose daemon gives it a worktree.
 
 use super::fs::{OverlayChange, OverlayFs, DEFAULT_LIMIT};
@@ -318,16 +317,6 @@ pub fn enabled() -> bool {
 pub(crate) fn project_key(project: &Path) -> String {
     let hash = crate::file_guard::hash(project.to_string_lossy().as_bytes());
     crate::file_guard::hex(&hash[..8])
-}
-
-/// Chats already told this session that they can't be isolated.
-static TOLD: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(Default::default);
-
-/// Whether to tell this chat it isn't isolated: once per session.
-pub fn tell_not_isolated(dialog_id: &str) -> bool {
-    TOLD.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(dialog_id.to_string())
 }
 
 pub(crate) fn data_dir() -> Option<PathBuf> {
@@ -741,15 +730,15 @@ pub const OPEN_ELSEWHERE: &str = "this chat's changes are open in another Rovik 
 
 /// The lock of the overlay store `store`, for opening it here: never in
 /// two processes at once, which would each change its files unaware of
-/// the other. None: the lock couldn't be made, and the store opens anyway.
+/// the other. Failure to acquire the lock prevents opening the store.
 fn hold_store(store: &Path) -> Result<Option<crate::os_lock::Held>, String> {
     match crate::os_lock::try_hold(&store.join(MOUNTED)) {
         Ok(Some(lock)) => Ok(Some(lock)),
         Ok(None) => Err(OPEN_ELSEWHERE.into()),
-        Err(e) => {
-            eprintln!("overlay: {}: {e}", store.display());
-            Ok(None)
-        }
+        Err(e) => Err(format!(
+            "Couldn't lock this chat's isolated files at {}: {e}",
+            store.display()
+        )),
     }
 }
 

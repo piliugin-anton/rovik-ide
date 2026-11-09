@@ -1642,6 +1642,10 @@ in the input.
 
 ### Chat isolation
 
+If an isolated chat cannot mount or lock its overlay, the run stops with an
+error. It never falls back to writing directly in the project folder. Restore
+access to the overlay and retry.
+
 Every agent run works in an **overlay**: the project as it is on disk, with
 that chat's changes on top. Only the changed files are stored. When a run
 ends, its changes are **landed**: merged with whatever changed in the

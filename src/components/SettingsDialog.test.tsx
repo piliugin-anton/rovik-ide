@@ -216,7 +216,7 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
     { label: 'Heavy commands', state: 'Auto: 1 slot on this machine', warning: false },
     {
       label: 'Virtual files',
-      state: 'FUSE isn’t installed: chats work in the project folder directly',
+      state: 'FUSE isn’t installed: isolated chats cannot start until mounting works',
       warning: true,
     },
     { label: 'Network', state: 'No proxy: connections go directly', warning: false },

@@ -81,7 +81,7 @@ export function vfsSummary(status: VfsStatus): { text: string; warning: boolean 
       warning: false,
     };
   }
-  const without = 'chats work in the project folder directly';
+  const without = 'isolated chats cannot start until mounting works';
   if (!status.driver.installed) {
     return { text: `${status.driver.driver} isn’t installed: ${without}`, warning: true };
   }
